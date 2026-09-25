@@ -2,7 +2,7 @@
 --  Tables: analysis_signals.signal_strategies + analysis_signals.history_signals
 --
 --  The SIGNAL STRATEGY tier over analysis_forecasts. A forecast bucket
---  (code × stat_month snapshot M × config, trailing 5-year window
+--  (code × stat_date snapshot M × config, trailing 5-year window
 --  (M - 5y, M]) whose MIXED forecast_results row passes the plain gate
 --  IS a signal strategy for that forecast period; the bucket's trigger
 --  days inside the snapshot month M are its history signals.
@@ -11,7 +11,10 @@
 --        setup): which config, over which forecast period
 --        (start_date .. end_date = the snapshot month), which side of
 --        the indicator, buy/sell, the threshold in the value's own
---        space (live breach target) and the gate confidence.
+--        space (live breach target), the OPTIMAL ENTRY DELAY from the
+--        bucket's delay ladder and the gate confidence, and whether
+--        the live tier flags the breach ONCE per episode (the cross
+--        families) or keeps flagging while it persists.
 --    history_signals — one row per TRIGGER DAY (the event record, a
 --        structural clone of live.live_signals): the day's indicator
 --        value, the threshold it crossed and the excess. Only dates
@@ -19,14 +22,26 @@
 --        snapshot owns each date → no cross-month PK conflicts).
 --
 --  THE GATE (the plain forecast-results rule, identical for every
---  family): on the bucket's MIXED forecast_results row,
---    - the sign-aligned blended mean forward change (dir_ave) > 1% —
---      a MEAN REVERSAL of material size (top/upper → sell → dir_ave =
---      -ave_change; bottom/lower → buy → dir_ave = +ave_change; the
+--  family): on EVERY rung of the bucket's mixed forecast_results
+--  DELAY LADDER (delay 0..5 — the rungs' stats are conditioned on the
+--  signal having persisted that long),
+--    - the sign-aligned blended mean forward change (dir_ave) > 0.75%
+--      — a MEAN REVERSAL of material size (top/upper → sell → dir_ave
+--      = -ave_change; bottom/lower → buy → dir_ave = +ave_change; the
 --      sign alignment is applied at the Python emit layer, NOT in
---      SQL), AND
---    - the blended reverse_prob > 1% (a material reversal probability).
---  confidence = that mixed row's reverse_prob. The emit currently
+--      SQL). (The blended reverse_prob > 1% leg was REMOVED 2026-09-25
+--      with forecast_results.reverse_prob.)
+--  Among the gate-passing rungs the emission picks the OPTIMAL ENTRY
+--  DELAY — the rung maximizing occurrence_count × sign-aligned dir_ave
+--  (the total forward move the entry rule captures: the opportunity
+--  cost of waiting — occurrence_count decays with the rung — balanced
+--  against the persistence-conditioned return deepening; ties → the
+--  smallest delay). The strategy registers at THAT rung:
+--  signal_delay_days, confidence = the chosen rung's sign-aligned
+--  dir_ave (the expected favorable blended move), its
+--  history rows the chosen rung's anchor days. Buckets with no
+--  gate-passing rung never register.
+--  The emit currently
 --  covers mov_rsi (pct = 1, top/bottom) and mov_std (MA/σ windows
 --  >= 60d at k >= 2.0σ, upper/lower); other forecast families have no
 --  strategy rows until implemented (naturally unticked everywhere).
@@ -51,19 +66,21 @@ CREATE TABLE IF NOT EXISTS analysis_signals.signal_strategies (
     sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
     signal_type     TEXT         NOT NULL,  -- 'mov_rsi' | 'mov_std' — the detection family
     signal_sub_type TEXT         NOT NULL,  -- indicator + window: 'rsi14' / 'std20_2' (k %g-formatted: 2.0 → "2", 2.5 → "2.5")
-    side            TEXT         NOT NULL,  -- the bucket's side: 'top' | 'bottom' (mov_rsi) / 'upper' | 'lower' (mov_std) — STORED so consumers never derive it
+    side            TEXT         NOT NULL,  -- the bucket's side: 'top' | 'bottom' (mov_rsi, and the pair-cross families — cross-up / cross-down) / 'upper' | 'lower' (mov_std) — STORED so consumers never derive it
     regime_state    TEXT         NOT NULL DEFAULT 'calm',  -- the bucket's market-regime split (stats.market_regimes day label: calm/hot/panic/quiet) — STORED like side, PK member so every regime split of one config registers
 
-    start_date      DATE         NOT NULL,  -- the forecast period start (stat_month - 5y + 1 day — the bucket's trailing-window first day)
-    end_date        DATE         NOT NULL,  -- the forecast period end (== the snapshot stat_month M of analysis_forecasts)
+    start_date      DATE         NOT NULL,  -- the forecast period start (stat_date - 5y + 1 day — the bucket's trailing-window first day)
+    end_date        DATE         NOT NULL,  -- the forecast period end (== the snapshot stat_date M of analysis_forecasts)
 
     action          TEXT         NOT NULL,  -- 'sell' (top/upper — the reversal direction is down) | 'buy' (bottom/lower — the reversal direction is up)
     signal_threshold NUMERIC(14,6),         -- the strategy's breach bar in the value's own space: mov_rsi the window's top/bottom-1% RSI percentile bar; mov_std the band level ma_W ± k·std_Wdays at the window-end trigger (price space)
-    confidence      NUMERIC(8,6),           -- the bucket's MIXED forecast_results reverse_prob (the gate's own probability — also the signal_order key; the regime-weighted score was tested and NOT adopted, see 03_signal_order_rank.sql)
+    signal_delay_days INTEGER    NOT NULL DEFAULT 0,  -- the strategy's OPTIMAL ENTRY DELAY (trading days after the trigger's first qualifying day): the delay-ladder rung 0..5 whose gate-passing mixed row maximizes occurrence_count × sign-aligned dir_ave (opportunity cost vs return), ties → the smallest delay; 0 = enter on the fresh signal
+    confidence      NUMERIC(8,6),           -- the chosen rung's sign-aligned blended mean forward change (dir_ave — the expected favorable move; also the signal_order key; the regime-weighted score was tested and NOT adopted, see 03_signal_order_rank.sql)
     reason          TEXT,                   -- human-readable explanation of the strategy
-    params          JSONB,                  -- full strategy params as JSON: the bucket config + the gate row's blended forward profile (dir_ave / reverse_prob / occurrence_count)
+    params          JSONB,                  -- full strategy params as JSON: the bucket config + the gate row's blended forward profile (dir_ave / occurrence_count)
     signal_order    INTEGER,                -- 1-based best-first rank within (sec_type, end_date) by score DESC (1 = the month's best regime-weighted strategy; nothing is trimmed)
     is_active       BOOLEAN      NOT NULL DEFAULT FALSE,  -- TRUE on the (code, sec_type, signal_type, signal_sub_type)'s LATEST end_date (refreshed after every run) — the live tier's current threshold set
+    is_triggered_once BOOLEAN    NOT NULL DEFAULT FALSE,  -- TRUE = the live tier flags the threshold breach ONCE per breach episode (the pair-cross families: the cross is an EVENT); FALSE = keep flagging on every qualifying observation while the breach persists (the state families)
 
     CONSTRAINT pk_signal_strategies PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, side, regime_state, start_date, end_date),
     CONSTRAINT chk_signal_strategies_action CHECK (action IN ('buy', 'sell')),
@@ -83,25 +100,51 @@ CREATE INDEX IF NOT EXISTS idx_signal_strategies_end_date
 ALTER TABLE analysis_signals.signal_strategies
     ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
 
+-- Existing installs gain the delay-ladder column here (fresh installs
+-- get it from the CREATE body above) — before the column COMMENT below
+-- references it. DEFAULT 0 = the pre-ladder behaviour (fresh-signal
+-- entry); --force re-emission stamps the optimal delay on every row.
+ALTER TABLE analysis_signals.signal_strategies
+    ADD COLUMN IF NOT EXISTS signal_delay_days INTEGER NOT NULL DEFAULT 0;
+
+-- Existing installs gain the trigger-once column here (fresh installs
+-- get it from the CREATE body above) — before the column COMMENT below
+-- references it. DEFAULT FALSE = the keep-flagging behaviour of every
+-- family emitted before the column existed.
+ALTER TABLE analysis_signals.signal_strategies
+    ADD COLUMN IF NOT EXISTS is_triggered_once BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- The pair-cross families' strategies are trigger-once by SEMANTICS
+-- (the cross is an event, not a state) — backfill the rows emitted
+-- before the column existed so the live tier's episode rule covers
+-- them without waiting for a re-emission. Idempotent: the emit layer
+-- stamps the same value on every (re-)emitted pair-cross row.
+UPDATE analysis_signals.signal_strategies
+SET is_triggered_once = TRUE
+WHERE signal_type IN ('mov_pairs', 'mov_pairs_ema')
+  AND NOT is_triggered_once;
+
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_signals.signal_strategies IS 'Signal STRATEGIES derived from analysis_forecasts: one row per forecast bucket whose MIXED forecast_results row passes the plain gate (sign-aligned blended mean forward change > 1% AND blended reverse_prob > 1% — the sign alignment applied in the Python emit layer). A strategy covers the bucket''s forecast period (start_date .. end_date = the snapshot stat_month; the trailing 5-year window (M - 5y, M]) and stores the breach bar in the underlying value''s own space for the live tier. Populated incrementally by python -m analyze.analysis_signals (mov_rsi pct = 1; mov_std MA/σ windows >= 60d at k >= 2.0σ; both sides; EVERY regime split of a bucket — regime_state is a PK member, each split registers on its own gate pass).';
+COMMENT ON TABLE analysis_signals.signal_strategies IS 'Signal STRATEGIES derived from analysis_forecasts: one row per forecast bucket whose MIXED forecast_results row passes the plain gate (sign-aligned blended mean forward change > 0.75% — the sign alignment applied in the Python emit layer). A strategy covers the bucket''s forecast period (start_date .. end_date = the snapshot stat_date; the trailing 5-year window (M - 5y, M]) and stores the breach bar in the underlying value''s own space for the live tier. Populated incrementally by python -m analyze.analysis_signals (mov_rsi pct = 1; mov_std MA/σ windows >= 60d at k >= 2.0σ; both sides; EVERY regime split of a bucket — regime_state is a PK member, each split registers on its own gate pass).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis_signals.signal_strategies.signal_type IS 'Detection family: mov_rsi (RSI extreme-percentile strategy) or mov_std (Bollinger band breach strategy) — mirrors the matching analysis_forecasts bucket table.';
 COMMENT ON COLUMN analysis_signals.signal_strategies.signal_sub_type IS 'Indicator + window: rsi{W} for mov_rsi (W = RSI window 6/10/14/20/60), std{W}_{k} for mov_std (W = MA/σ window 5/20/60, k = the σ multiple %g-formatted — 2.0 renders "2", 2.5 renders "2.5" — band ma_{W} ± k·std_{W}days).';
-COMMENT ON COLUMN analysis_signals.signal_strategies.side IS 'The bucket''s own side, STORED (no CASE derivation downstream): top/bottom for mov_rsi (RSI top/bottom-1% percentile), upper/lower for mov_std (above/below the band).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.side IS 'The bucket''s own side, STORED (no CASE derivation downstream): top/bottom for mov_rsi (RSI top/bottom-1% percentile) and for the pair-cross families (cross-up / cross-down — top sells the golden-cross reversal, bottom buys the death-cross reversal), upper/lower for mov_std (above/below the band).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.regime_state IS 'The bucket''s market-regime split, STORED like side: the stats.market_regimes day label (calm / hot / panic / quiet) carried by the bucket''s trigger days — each regime split passes the gates on its OWN MIXED forward profile and registers its own bar/confidence. PK member (every split of one config coexists); the live tier''s fetch_active_signals returns all, each self-contained (the strongest-breach dedup arbitrates same-bar collisions), and the forecast-table tick joins on the row''s OWN regime. Replaces the retired is_market_hyped boolean (TRUE mapped to hot, FALSE to calm in the 2026-09 migration).';
-COMMENT ON COLUMN analysis_signals.signal_strategies.start_date IS 'The forecast period start: stat_month - 5 years + 1 day — the first day of the bucket''s trailing window.';
-COMMENT ON COLUMN analysis_signals.signal_strategies.end_date IS 'The forecast period end: the snapshot stat_month M the strategy was derived from (the analysis_forecasts month; also the tick-join key for the UI forecast tables).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.start_date IS 'The forecast period start: stat_date - 5 years + 1 day — the first day of the bucket''s trailing window.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.end_date IS 'The forecast period end: the snapshot stat_date M the strategy was derived from (the analysis_forecasts month; also the tick-join key for the UI forecast tables).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.action IS 'Trading action implied by the side: sell for top/upper extremes (overbought RSI / above-band — the measured reversal is downward), buy for bottom/lower extremes (oversold RSI / below-band — the measured reversal is upward).';
-COMMENT ON COLUMN analysis_signals.signal_strategies.signal_threshold IS 'The strategy''s breach bar in the underlying value''s own space: for mov_rsi the window''s linear-interpolated top/bottom-1% RSI quantile (rsi value at the window-end trigger minus its stored trigger excess — constant per bucket); for mov_std the band level ma_{W} ± k·std_{W}days at the window-end trigger day (price space). The live tier compares the CURRENT value against this bar directly (sell breaches above, buy below).';
-COMMENT ON COLUMN analysis_signals.signal_strategies.confidence IS 'The matching forecast bucket''s MIXED forecast_results reverse_prob: P(the blended forward window''s adverse path extreme crosses the fixed ±1% bar) — the gate rule''s own probability. NULL when the bucket has no results. Also the signal_order key: the regime-weighted score (confidence × analysis_forecasts.regime_weights) was tested against it in the 2026-09 market-regimes study and did NOT beat it out-of-sample, so the weights ship as evidence/display, not as the ordering key.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.signal_threshold IS 'The strategy''s breach bar in the underlying value''s own space: for mov_rsi the window''s linear-interpolated top/bottom-1% RSI quantile (rsi value at the window-end trigger minus its stored trigger excess — constant per bucket); for mov_std the band level ma_{W} ± k·std_{W}days at the window-end trigger day (price space); for mov_pairs / mov_pairs_ema the day''s SLOW-LEG level (ma{W} / ema{W}) at the window-end trigger — the compared signal is the day''s fast leg (ma5 / ema6 / the close), the live tier''s cross space, not the zero line. The live tier compares the CURRENT value against this bar directly for the static-bar families (sell breaches above, buy below); for mov_std and the cross families it DERIVES the bar fresh per check (the day''s band / the day''s slow-leg value — the stored snapshot is never compared). The trigger quoted is the CHOSEN delay rung''s window-end anchor.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.signal_delay_days IS 'The strategy''s OPTIMAL ENTRY DELAY — the delay-ladder rung (trading days after the trigger''s first qualifying day) chosen at emission: EVERY rung 0..5 of the bucket''s mixed forecast_results ladder faces the plain gate (sign-aligned blended mean forward change > 0.75%), and among the passing rungs the one maximizing occurrence_count × sign-aligned dir_ave wins — the total blended forward move the entry rule captures over the window, balancing the OPPORTUNITY COST of waiting (occurrence_count decays with the rung — only streaks that persisted reach it) against the RETURN (the persistence-conditioned mean reversal deepens with the rung). Ties → the smallest delay; 0 = enter on the fresh signal. The strategy''s confidence/params profile and its history_signals rows are the CHOSEN rung''s (the day-d anchors — the events that fire d trading days into a qualifying streak).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.confidence IS 'The chosen rung''s sign-aligned blended mean forward change (dir_ave — the expected favorable blended move of the strategy''s entries; > 0.0075 by the gate). NULL when the bucket has no results. (Was the bucket''s mixed-row reverse_prob until 2026-09-25 — the reversal probability was removed with forecast_results.reverse_prob; see analyze/analysis_forecasts/config/horizons.py.) Also the signal_order key: the regime-weighted score (confidence × analysis_forecasts.regime_weights) was tested against it in the 2026-09 market-regimes study and did NOT beat it out-of-sample, so the weights ship as evidence/display, not as the ordering key.';
 COMMENT ON COLUMN analysis_signals.signal_strategies.reason IS 'Human-readable explanation: the window-end trigger''s indicator value vs the bar (e.g. "rsi14=88.3 >= top-1% bar 86.9 over the 5y window ending 2026-07-31").';
-COMMENT ON COLUMN analysis_signals.signal_strategies.params IS 'Full strategy parameters as JSON: the bucket config keys (family-specific) + the gate row''s blended forward profile (conf_period = ''mixed'', dir_ave / reverse_prob / occurrence_count).';
-COMMENT ON COLUMN analysis_signals.signal_strategies.signal_order IS 'Best-first rank WITHIN its own (sec_type, end_date) pool: 1 = the month''s most-confident strategy. Ordered by confidence DESC (the gate''s forecast confidence = the bucket''s mixed-row reverse_prob), PK tuple as the deterministic tiebreak. Nothing is trimmed — every gate-passing strategy is kept. Re-stamped by python -m analyze.analysis_signals after every run. (The regime-weighted score was tested as the ordering key in the 2026-09 market-regimes study and NOT adopted — see 03_signal_order_rank.sql.)';
+COMMENT ON COLUMN analysis_signals.signal_strategies.params IS 'Full strategy parameters as JSON: the bucket config keys (family-specific) + the gate row''s blended forward profile (conf_period = ''mixed'', dir_ave / occurrence_count).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.signal_order IS 'Best-first rank WITHIN its own (sec_type, end_date) pool: 1 = the month''s most-confident strategy. Ordered by confidence DESC (the chosen rung''s sign-aligned dir_ave — the expected favorable blended move), PK tuple as the deterministic tiebreak. Nothing is trimmed — every gate-passing strategy is kept. Re-stamped by python -m analyze.analysis_signals after every run. (The regime-weighted score was tested as the ordering key in the 2026-09 market-regimes study and NOT adopted — see 03_signal_order_rank.sql.)';
 COMMENT ON COLUMN analysis_signals.signal_strategies.is_active IS 'TRUE only for each (code, sec_type, signal_type, signal_sub_type)''s LATEST end_date row (the freshest forecast snapshot owning that config); FALSE everywhere else. Refreshed by python -m analyze.analysis_signals after EVERY run (including --force). Consumers (the live breach monitoring, the UI config menu) use the active rows as the current threshold set.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.is_triggered_once IS 'How the LIVE tier flags the strategy''s threshold breaches: FALSE (the state families — mov_rsi''s RSI-percentile bar, mov_std''s Bollinger band, margin_ratio''s z-bar) = KEEP FLAGGING — every qualifying observation records (the breach persists while the value stays beyond the bar, and each observation is a live row). TRUE (the pair-cross families mov_pairs / mov_pairs_ema — the death cross is an EVENT, not a state) = TRIGGER ONCE PER EPISODE — the live tier records only the FIRST breach observation after the daily legs were last on the non-breach side and stays silent until the legs reset (the evaluator resolves the episode boundary from the daily legs-row chain, fetch.resolve_threshold''s basis); history_signals is unaffected (one row per trigger day by construction). Emitted by the engines (mov_pairs stamps TRUE, every other family FALSE) and backfilled TRUE for the pair-cross rows by this script.';
 
 CREATE TABLE IF NOT EXISTS analysis_signals.history_signals (
     code            TEXT          NOT NULL,  -- ticker (etf "510050.SS" / index "000300" / stock)
@@ -110,13 +153,14 @@ CREATE TABLE IF NOT EXISTS analysis_signals.history_signals (
     signal_sub_type TEXT          NOT NULL,  -- 'rsi6'..'rsi60' / 'std5_2'..'std60_2' — the strategy this event belongs to
     date            DATE          NOT NULL,  -- the trigger day (inside the strategy's own snapshot month M)
     time            TIME          NOT NULL,  -- the bar time of the recorded breach (history rows: 15:00:00 day close)
+    signal_delay_days INTEGER     NOT NULL DEFAULT 0,  -- the owning strategy's signal_delay_days (the delay-ladder rung this event fired at — the day-d anchor of a qualifying streak); denormalized so the record is self-contained
 
     action          TEXT          NOT NULL,  -- 'sell' (upward breach, signal_excess > 0) | 'buy' (downward breach, signal_excess < 0)
     signal_excess   NUMERIC(18,6) NOT NULL,  -- signal - signal_threshold: > 0 upward breach (above threshold) | < 0 downward breach (below)
     signal_excess_pct NUMERIC(12,4),         -- (signal_excess / |signal_threshold|) * 100 — unitless breach depth pct; NULL when signal_threshold = 0
     signal          NUMERIC(16,4) NOT NULL,  -- the day's indicator value that crossed the bar (mov_rsi: the RSI value; mov_std: the close)
     signal_threshold NUMERIC(14,6) NOT NULL, -- the threshold crossed (the strategy's bar — denormalized per event)
-    confidence      INTEGER       NOT NULL DEFAULT 100,  -- the strategy's forecast confidence on the 0-100 scale (ROUND(100 × mixed reverse_prob))
+    confidence      INTEGER       NOT NULL DEFAULT 100,  -- the strategy's expected-move confidence in basis points (ROUND(10000 × strategies.confidence); DEFAULT is the legacy pre-2026-09-25 fill)
     is_day_close_trigger BOOLEAN  NOT NULL DEFAULT FALSE,  -- TRUE = history row recorded at the day close (time 15:00:00); FALSE = intraday record
     regime_state    TEXT          NOT NULL DEFAULT 'calm',  -- the trigger day's market regime (stats.market_regimes day label: calm/hot/panic/quiet)
 
@@ -139,6 +183,12 @@ CREATE INDEX IF NOT EXISTS idx_history_signals_date
 ALTER TABLE analysis_signals.history_signals
     ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
 
+-- Existing installs gain the delay-ladder column here (fresh installs
+-- get it from the CREATE body above) — before the column COMMENT below
+-- references it. DEFAULT 0 = the pre-ladder rows.
+ALTER TABLE analysis_signals.history_signals
+    ADD COLUMN IF NOT EXISTS signal_delay_days INTEGER NOT NULL DEFAULT 0;
+
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
@@ -147,21 +197,23 @@ COMMENT ON COLUMN analysis_signals.history_signals.sec_type IS 'Security type: e
 COMMENT ON COLUMN analysis_signals.history_signals.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis_signals.history_signals.signal_type IS 'The strategy''s detection family: mov_rsi or mov_std.';
 COMMENT ON COLUMN analysis_signals.history_signals.signal_sub_type IS 'The strategy this event belongs to: rsi{W} / std{W}_{k} (same %g k-formatting as signal_strategies.signal_sub_type).';
-COMMENT ON COLUMN analysis_signals.history_signals.date IS 'The trigger day — a bucket trigger date inside the strategy''s own snapshot month M.';
+COMMENT ON COLUMN analysis_signals.history_signals.date IS 'The trigger day — a bucket trigger date inside the strategy''s own snapshot month M. With a delayed strategy (signal_delay_days > 0) this is the streak''s day-d anchor — the day the delayed entry fires, d trading days after the streak''s first qualifying day.';
+COMMENT ON COLUMN analysis_signals.history_signals.signal_delay_days IS 'The owning strategy''s signal_delay_days (analysis_signals.signal_strategies), denormalized per event: the delay-ladder rung this record fired at (0 = the fresh signal, d = d trading days into a qualifying streak).';
 COMMENT ON COLUMN analysis_signals.history_signals.time IS 'The bar time of the recorded breach: 15:00:00 (the day close) for history rows written by the emit pipeline.';
 COMMENT ON COLUMN analysis_signals.history_signals.action IS 'The strategy''s action: sell (top/upper — the day crossed ABOVE its bar, signal_excess > 0) or buy (bottom/lower — crossed BELOW, signal_excess < 0).';
-COMMENT ON COLUMN analysis_signals.history_signals.signal IS 'The day''s indicator value that crossed the bar, in the value''s own space (mov_rsi: the RSI value; mov_std: the close).';
-COMMENT ON COLUMN analysis_signals.history_signals.signal_threshold IS 'The bar crossed: value at the trigger day minus its stored trigger excess (mov_rsi: the window''s percentile bar; mov_std: the day''s band level ma_{W} ± k·std_{W}days).';
+COMMENT ON COLUMN analysis_signals.history_signals.signal IS 'The day''s indicator value that crossed the bar, in the value''s own space (mov_rsi: the RSI value; mov_std: the close; mov_pairs / mov_pairs_ema: the day''s FAST-LEG level — ma5 / ema6 / the close).';
+COMMENT ON COLUMN analysis_signals.history_signals.signal_threshold IS 'The bar crossed: value at the trigger day minus its stored trigger excess (mov_rsi: the window''s percentile bar; mov_std: the day''s band level ma_{W} ± k·std_{W}days; mov_pairs / mov_pairs_ema: the day''s SLOW-LEG level ma{W} / ema{W} — the live tier''s cross space).';
 COMMENT ON COLUMN analysis_signals.history_signals.signal_excess IS 'signal - signal_threshold — the signed breach depth (> 0 above the bar, < 0 below).';
 COMMENT ON COLUMN analysis_signals.history_signals.signal_excess_pct IS 'signal_excess / |signal_threshold| * 100 — the unitless breach depth pct; NULL when signal_threshold = 0.';
-COMMENT ON COLUMN analysis_signals.history_signals.confidence IS 'The owning strategy''s forecast confidence on the 0-100 INTEGER scale: ROUND(100 × the bucket''s mixed-row reverse_prob).';
+COMMENT ON COLUMN analysis_signals.history_signals.confidence IS 'The owning strategy''s expected-move confidence on the INTEGER basis-point scale: ROUND(10000 × signal_strategies.confidence) — the chosen rung''s sign-aligned blended mean forward change (dir_ave) in bp of expected move. (Was the 0-100 scale of the removed reverse_prob until 2026-09-25.)';
 COMMENT ON COLUMN analysis_signals.history_signals.is_day_close_trigger IS 'TRUE = day-close history row (time 15:00:00, written by the emit pipeline); FALSE = intraday record (reserved — the live tier writes its own live.live_signals table, not this one).';
 COMMENT ON COLUMN analysis_signals.history_signals.regime_state IS 'The trigger day''s market regime — the stats.market_regimes day label (calm / hot / panic / quiet) looked up per (code, date). Recorded, never a gate: the strategy''s bucket is the SAME regime''s split (PK-joined), so the event flags which regime produced it; regime weights order the strategy pool, not the event.';
 
 -- ----------------------------------------------------------------------------
 --  Data-quality gates (shared helpers, see 00_partition_utils.sql): the
---  confidence scales (strategies carry the 0-1 reverse_prob; history rows
---  the 0-100 integer) and the excess-sign convention (sell breaches above
+--  confidence scales (strategies carry the fractional dir_ave in [0, 1];
+--  history rows the integer basis points ROUND(10000 × dir_ave), in
+--  [0, 10000]) and the excess-sign convention (sell breaches above
 --  the bar → excess >= 0; buy below → excess <= 0). The sign requirement
 --  carries a 0.0001 rounding tolerance: signal stores 4dp while the bar
 --  stores 6dp, so a genuine breach can sit within half a 4dp ulp of the
@@ -173,10 +225,16 @@ SELECT public.ensure_check_constraint(
     'analysis_signals.signal_strategies',
     'chk_signal_strategies_confidence',
     $chk$confidence BETWEEN 0 AND 1$chk$);
+-- 2026-09-25 confidence re-sourcing: drop the retired 0-100 form first
+-- (ensure_check_constraint skips a same-named constraint regardless of
+-- its definition; the --force re-emit rewrites every row on the bp
+-- scale, so the validation sweep passes).
+ALTER TABLE analysis_signals.history_signals
+    DROP CONSTRAINT IF EXISTS chk_history_signals_confidence;
 SELECT public.ensure_check_constraint(
     'analysis_signals.history_signals',
     'chk_history_signals_confidence',
-    $chk$confidence BETWEEN 0 AND 100$chk$);
+    $chk$confidence BETWEEN 0 AND 10000$chk$);
 SELECT public.ensure_check_constraint(
     'analysis_signals.history_signals',
     'chk_history_signals_excess_sign',

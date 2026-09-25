@@ -2,7 +2,7 @@
 
 Covers:
   - pe: raw PE with the invalid-value rule applied (PE <= 0 / NULL → NaN)
-  - monthly 5y rolling min/max of PE (month-end rows for
+  - annual 10y rolling min/max of PE (year-end rows for
     analysis.pe_and_dividend_stats)
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import pandas as pd
 
 from _common.df_utils import to_dt64
 from _common.df_utils.rolling import grouped_rolling_agg
-from analyze.pe_and_dividends.config import ROLLING_5Y_DAYS
+from analyze.pe_and_dividends.config import ROLLING_10Y_DAYS
 
 
 # ---------------------------------------------------------------------------
@@ -47,42 +47,42 @@ def clean_pe(df: pd.DataFrame) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
-#  Monthly 5y rolling min/max of PE (for analysis.pe_and_dividend_stats)
+#  Annual 10y rolling min/max of PE (for analysis.pe_and_dividend_stats)
 # ---------------------------------------------------------------------------
-def compute_monthly_pe_extremes(
+def compute_annual_pe_extremes(
     pe_df: pd.DataFrame,
-    month_end_ts: pd.DatetimeIndex,
+    year_end_ts: pd.DatetimeIndex,
 ) -> pd.DataFrame:
-    """Compute 5y rolling min/max of daily PE, filtered to month-end dates.
+    """Compute 10y rolling min/max of daily PE, filtered to year-end dates.
 
     Args:
         pe_df: DataFrame with columns code, date (datetime64), pe — the
-            full daily PE history (the 5y rolling window needs it).
-        month_end_ts: DatetimeIndex of month-end trading dates
+            full daily PE history (the 10y rolling window needs it).
+        year_end_ts: DatetimeIndex of year-end trading dates
             (datetime64[us]).
 
     Returns:
-        DataFrame with columns code, date, min_pe_5y, max_pe_5y — one row
-        per (code, month-end date) present in pe_df.
+        DataFrame with columns code, date, min_pe_10y, max_pe_10y — one row
+        per (code, year-end date) present in pe_df.
     """
     if pe_df is None or pe_df.empty:
         return pd.DataFrame(
-            columns=["code", "date", "min_pe_5y", "max_pe_5y"]
+            columns=["code", "date", "min_pe_10y", "max_pe_10y"]
         )
 
-    # Full daily PE for rolling computation (5y window needs history)
+    # Full daily PE for rolling computation (10y window needs history)
     pe_daily = pe_df[["code", "date", "pe"]].copy()
     pe_daily["date"] = to_dt64(pe_daily["date"])
     pe_daily = pe_daily.sort_values(["code", "date"]).reset_index(drop=True)
-    pe_daily["min_pe_5y"] = grouped_rolling_agg(
+    pe_daily["min_pe_10y"] = grouped_rolling_agg(
         pe_daily, "code", "pe",
-        window=ROLLING_5Y_DAYS, min_periods=1, agg="min", sort=False,
+        window=ROLLING_10Y_DAYS, min_periods=1, agg="min", sort=False,
     )
-    pe_daily["max_pe_5y"] = grouped_rolling_agg(
+    pe_daily["max_pe_10y"] = grouped_rolling_agg(
         pe_daily, "code", "pe",
-        window=ROLLING_5Y_DAYS, min_periods=1, agg="max", sort=False,
+        window=ROLLING_10Y_DAYS, min_periods=1, agg="max", sort=False,
     )
-    # Filter to month-end dates
-    return pe_daily[pe_daily["date"].isin(month_end_ts)][
-        ["code", "date", "min_pe_5y", "max_pe_5y"]
+    # Filter to year-end dates
+    return pe_daily[pe_daily["date"].isin(year_end_ts)][
+        ["code", "date", "min_pe_10y", "max_pe_10y"]
     ]

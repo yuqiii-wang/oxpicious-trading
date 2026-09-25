@@ -15,17 +15,17 @@ Per sec_type (index / etf / stock):
        (etf_adjustment).
      - stock: close (stock_basic_stats) + dividends (stock_dividends).
   3. Compute pe (raw, invalid values masked) and dividend_yield
-     (trailing-12m D/P) on FULL history (trailing-12m DPS + 5y rolling
+     (trailing-12m D/P) on FULL history (trailing-12m DPS + 10y rolling
      windows need it).
   4. Write daily rows to analysis.pe + analysis.dividends (2026-09 split):
      - ``--force``: DELETE sec_type rows + COPY-insert.
      - default: upsert ONLY rows whose date is in the missing-dates set.
-  5. Compute monthly 5y rolling stats. Write to
+  5. Compute annual 10y rolling stats. Write to
      analysis.pe_and_dividend_stats:
      - ``--force``: DELETE sec_type rows + COPY-insert.
-     - default: if new month-end dates are missing, DELETE sec_type rows
-       + recompute (is_active flag + 5y rolling windows require full
-       recompute when a new month appears). If no missing month-end
+     - default: if new year-end dates are missing, DELETE sec_type rows
+       + recompute (is_active flag + 10y rolling windows require full
+       recompute when a new year appears). If no missing year-end
        dates, skip stats entirely.
   6. Compute monthly trailing percentile BANDS of pe / dividend_yield
      (analysis.pe_and_dividend_pct — internal step pct_bands.py):
@@ -42,9 +42,9 @@ Per sec_type (index / etf / stock):
 Incremental mode rationale
   The pe and dividend_yield for past dates don't change retroactively
   (PE and dividends are historical facts), so existing rows are valid.
-  New dates get appended via upsert. The monthly stats table has an
-  is_active flag that flips when a new month-end appears, so stats is
-  recomputed per sec_type only when new month-end dates are detected
+  New dates get appended via upsert. The annual stats table has an
+  is_active flag that flips when a new year-end appears, so stats is
+  recomputed per sec_type only when new year-end dates are detected
   (otherwise skipped).
 """
 from __future__ import annotations
@@ -64,6 +64,7 @@ from _common.db_commons import (
     copy_or_upsert_split_async,
     copy_insert_async,
     copy_frame_chunked_async,
+    chunked_purge_async,
 )
 
 import pandas as pd
@@ -98,8 +99,8 @@ from analyze.pe_and_dividends.compute import (
     compute_index_dividend_yield,
     compute_simple_dividend_yield,
     build_detail_rows,
-    compute_monthly_stats,
-    find_month_end_dates,
+    compute_annual_stats,
+    find_year_end_dates,
 )
 from analyze.pe_and_dividends.pct_bands import run_pd_pct_bands
 from analyze.pe_and_dividends.pct_streaks import run_pd_pct_streaks
@@ -213,24 +214,24 @@ async def _process_index(
         target_dates_dy=target_dates_dy,
     )
 
-    # ---- Compute + insert monthly stats ----------------------------------
-    # Stats always needs full recompute when new month-end dates appear
-    # (is_active flag flips). Skip entirely if no missing month-end dates.
+    # ---- Compute + insert annual stats ------------------------------------
+    # Stats always needs full recompute when new year-end dates appear
+    # (is_active flag flips). Skip entirely if no missing year-end dates.
     # Single-code mode always recomputes the code's stats rows.
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        logger.info(f"  [{st}] Computing monthly 5y rolling stats...")
+        logger.info(f"  [{st}] Computing annual 10y rolling stats...")
         pe_df = (
             close_df[["code", "date", "pe"]].copy()
             if "pe" in safe_columns(close_df) else None
         )
 
-        stats_rows = compute_monthly_stats(
+        stats_rows = compute_annual_stats(
             detail_df, pe_df, comp_df, div_df, trading_dates, st
         )
-        logger.info(f"  [{st}]   {len(stats_rows):,} monthly stats rows")
+        logger.info(f"  [{st}]   {len(stats_rows):,} annual stats rows")
         await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
-        logger.info(f"  [{st}] Monthly stats up to date; skipping stats step.")
+        logger.info(f"  [{st}] Annual stats up to date; skipping stats step.")
 
     # ---- Percentile bands + band-break excursion streaks (internal
     # steps). Bands are incremental (trailing windows are immutable per
@@ -307,16 +308,16 @@ async def _process_etf(
         target_dates_dy=target_dates_dy,
     )
 
-    # Monthly stats
+    # Annual stats
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        logger.info(f"  [{st}] Computing monthly 5y rolling stats...")
-        stats_rows = compute_monthly_stats(
+        logger.info(f"  [{st}] Computing annual 10y rolling stats...")
+        stats_rows = compute_annual_stats(
             detail_df, pe_df, None, div_events, trading_dates, st
         )
-        logger.info(f"  [{st}]   {len(stats_rows):,} monthly stats rows")
+        logger.info(f"  [{st}]   {len(stats_rows):,} annual stats rows")
         await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
-        logger.info(f"  [{st}] Monthly stats up to date; skipping stats step.")
+        logger.info(f"  [{st}] Annual stats up to date; skipping stats step.")
 
     # ---- Percentile bands + band-break excursion streaks (see the
     # index processor's comment).
@@ -392,16 +393,16 @@ async def _process_stock(
         target_dates_dy=target_dates_dy,
     )
 
-    # Monthly stats
+    # Annual stats
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        logger.info(f"  [{st}] Computing monthly 5y rolling stats...")
-        stats_rows = compute_monthly_stats(
+        logger.info(f"  [{st}] Computing annual 10y rolling stats...")
+        stats_rows = compute_annual_stats(
             detail_df, pe_df, None, div_df, trading_dates, st
         )
-        logger.info(f"  [{st}]   {len(stats_rows):,} monthly stats rows")
+        logger.info(f"  [{st}]   {len(stats_rows):,} annual stats rows")
         await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
-        logger.info(f"  [{st}] Monthly stats up to date; skipping stats step.")
+        logger.info(f"  [{st}] Annual stats up to date; skipping stats step.")
 
     # ---- Percentile bands + band-break excursion streaks (see the
     # index processor's comment).
@@ -471,8 +472,8 @@ async def _write_metric_table(
     if force:
         logger.info(f"  [{sec_type}] Deleting existing {sec_type} rows from "
               f"{table}...")
-        await conn.execute(
-            f"DELETE FROM {table} WHERE sec_type = $1", sec_type
+        await chunked_purge_async(
+            conn, table, where_sql="sec_type = $1", params=(sec_type,)
         )
         n = await copy_frame_chunked_async(
             conn, table, sub,
@@ -533,12 +534,12 @@ async def _write_stats(
     conn, sec_type: str, stats_rows: list[dict], *, force: bool,
     code: str | None = None,
 ) -> int:
-    """Write monthly stats rows to analysis.pe_and_dividend_stats.
+    """Write annual stats rows to analysis.pe_and_dividend_stats.
 
-    Always DELETE + COPY-insert. The is_active flag + 5y rolling
-    windows require full recompute when a new month-end date appears, so
+    Always DELETE + COPY-insert. The is_active flag + 10y rolling
+    windows require full recompute when a new year-end date appears, so
     there is no per-row upsert path for stats — the caller gates this call
-    on whether new month-end dates are actually missing.
+    on whether new year-end dates are actually missing.
 
     Single-code mode (``code``): deletes only that code's rows first
     (the recomputed stats_rows cover just that code) instead of the
@@ -558,8 +559,9 @@ async def _write_stats(
     else:
         logger.info(f"  [{sec_type}] Deleting existing {sec_type} rows from "
               f"{STATS_TABLE}...")
-        await conn.execute(
-            f"DELETE FROM {STATS_TABLE} WHERE sec_type = $1", sec_type
+        await chunked_purge_async(
+            conn, STATS_TABLE, where_sql="sec_type = $1",
+            params=(sec_type,),
         )
     logger.info(f"  [{sec_type}] Inserting {len(stats_rows):,} stats rows "
           f"(COPY)...")
@@ -583,10 +585,10 @@ async def _detect_missing_dates(
         in analysis.pe for that sec_type.
       - target_dates_dy[st]: dates present in the identity table but NOT
         in analysis.dividends for that sec_type.
-      - target_dates_stats[st]: MONTH-END trading dates present in the
+      - target_dates_stats[st]: YEAR-END trading dates present in the
         identity table but NOT in analysis.pe_and_dividend_stats for that
         sec_type. Used to gate the stats recompute (is_active flips when a
-        new month-end appears).
+        new year-end appears).
 
     In force mode all dicts map to None (meaning "all dates").
     """
@@ -639,9 +641,9 @@ async def _detect_missing_dates(
         target_dates_dy[st] = set(missing_dy)
         logger.info(f"    -> dividends[{st}]: {len(missing_dy)} missing dates")
 
-        # ---- Stats table: missing MONTH-END dates ----
-        # The stats table only has month-end rows, so we need to compare
-        # month-end trading dates from the identity table against the
+        # ---- Stats table: missing YEAR-END dates ----
+        # The stats table only has year-end rows, so we need to compare
+        # year-end trading dates from the identity table against the
         # stats table's dates for this sec_type.
         all_identity_dates = await conn.fetch(
             f'SELECT DISTINCT date FROM {identity_table}'
@@ -649,7 +651,7 @@ async def _detect_missing_dates(
         identity_dates = sorted(
             {r["date"] for r in all_identity_dates if r["date"] is not None}
         )
-        month_ends = set(find_month_end_dates(identity_dates))
+        year_ends = set(find_year_end_dates(identity_dates))
 
         existing_stats_rows = await conn.fetch(
             f'SELECT DISTINCT date FROM {STATS_TABLE} WHERE sec_type = $1',
@@ -658,9 +660,9 @@ async def _detect_missing_dates(
         existing_stats_dates = {
             r["date"] for r in existing_stats_rows if r["date"] is not None
         }
-        missing_stats = month_ends - existing_stats_dates
+        missing_stats = year_ends - existing_stats_dates
         target_dates_stats[st] = missing_stats
-        logger.info(f"    -> stats[{st}]: {len(missing_stats)} missing month-end "
+        logger.info(f"    -> stats[{st}]: {len(missing_stats)} missing year-end "
               f"dates")
 
     return target_dates_pe, target_dates_dy, target_dates_stats

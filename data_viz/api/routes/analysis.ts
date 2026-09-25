@@ -230,14 +230,15 @@ router.get("/market-regimes", async (req: Request, res: Response) => {
 // ---- Forecast buckets table (Recent Movements page's 2nd plot; migrated
 //      off the MA-Spread panel) ----
 // GET /api/analysis/mov-ave-spread/forecast?sec_type=etf&code=510050&kind=mov_rsi
-//   kind ∈ {mov_rsi, mov_std, mov_pairs, mov_pairs_ema, px_vol,
+//   kind ∈ {mov_rsi, mov_std, mov_pairs, mov_pairs_ema,
 //   margin_ratio, high_low_streaks, pe, dividend} — returns the code's bucket
-//   rows (bucket config incl. cooldown_days + regime_state + mean_t +
-//   mean_z for px_vol / mean_ratio + mean_z for margin_ratio, read from
+//   rows (bucket config incl. cooldown_days + regime_state +
+//   mean_ratio + mean_z for margin_ratio, read from
 //   forecast_results.config) joined 1:1 with their
-//   analysis_forecasts.forecast_results columns. ALL stat_months are
-//   returned; optional `month=YYYY-MM-DD` narrows to stat_months >= month.
-//   The response's `months` lists every available stat_month.
+//   analysis_forecasts.forecast_results columns. ALL stat_dates are
+//   returned (annual grid: one snapshot per completed year-end plus the
+//   running year); optional `date=YYYY-MM-DD` narrows to stat_dates >= date.
+//   The response's `stat_dates` lists every available stat_date.
 router.get("/mov-ave-spread/forecast", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);
@@ -246,8 +247,8 @@ router.get("/mov-ave-spread/forecast", async (req: Request, res: Response) => {
       return;
     }
     const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
-    const month = typeof req.query.month === "string" ? req.query.month : null;
-    res.json(await getForecastTable(parseSecType(req), code, kind, month));
+    const date = typeof req.query.date === "string" ? req.query.date : null;
+    res.json(await getForecastTable(parseSecType(req), code, kind, date));
   } catch (err) {
     console.error("[analysis/mov-ave-spread/forecast] error:", err);
     res.status(400).json({ error: String(err) });
@@ -255,12 +256,15 @@ router.get("/mov-ave-spread/forecast", async (req: Request, res: Response) => {
 });
 
 // ---- Forecast bucket trigger dates (Recent Movements row-click) ----
-// GET /api/analysis/mov-ave-spread/forecast-dates?forecast_id=123
+// GET /api/analysis/mov-ave-spread/forecast-dates?forecast_id=123[&delay=0]
 //   One bucket's 4 period rows' trigger_dates DATE[] — the calendar
 //   dates behind each horizon's occurrence_count (the exact days the
 //   row's mean/max/min/P>1% stats were computed over; length ==
 //   occurrence_count, null for pre-rebuild rows). The UI marks them on
 //   the code's trend chart when a forecast table row is clicked.
+//   `delay` selects the anchor-delay rung (0..5, default 0) — the table's
+//   inline expansion rows pass their rung's delay so the chart shades
+//   THAT rung's trigger days.
 router.get("/mov-ave-spread/forecast-dates", async (req: Request, res: Response) => {
   try {
     const raw = typeof req.query.forecast_id === "string" ? req.query.forecast_id : "";
@@ -269,7 +273,13 @@ router.get("/mov-ave-spread/forecast-dates", async (req: Request, res: Response)
       res.status(400).json({ error: "Invalid or missing 'forecast_id' parameter" });
       return;
     }
-    res.json(await getForecastTriggerDates(forecastId));
+    const delayRaw = typeof req.query.delay === "string" ? Number(req.query.delay) : 0;
+    const delay = Number.isInteger(delayRaw) ? delayRaw : 0;
+    if (delay < 0 || delay > 5) {
+      res.status(400).json({ error: "Invalid 'delay' parameter (expected 0..5)" });
+      return;
+    }
+    res.json(await getForecastTriggerDates(forecastId, delay));
   } catch (err) {
     console.error("[analysis/mov-ave-spread/forecast-dates] error:", err);
     res.status(400).json({ error: String(err) });
@@ -279,11 +289,11 @@ router.get("/mov-ave-spread/forecast-dates", async (req: Request, res: Response)
 // ---- Forecast bucket identity (search by forecast_id) ----
 // GET /api/analysis/mov-ave-spread/forecast-identity?forecast_id=123
 //   Resolves a forecast_id against analysis_forecasts.forecast_identities
-//   (the shared-PK registry — sec_type / code / stat_month / bucket
+//   (the shared-PK registry — sec_type / code / stat_date / bucket
 //   family per forecast bucket, the leading-PK identity every motivation
 //   table repeats, migrated into one searchable table) so the UI can
-//   jump straight to the bucket's security + family + month. 404 when
-//   the id is not registered.
+//   jump straight to the bucket's security + family + snapshot date.
+//   404 when the id is not registered.
 router.get("/mov-ave-spread/forecast-identity", async (req: Request, res: Response) => {
   try {
     const raw = typeof req.query.forecast_id === "string" ? req.query.forecast_id : "";
@@ -906,7 +916,7 @@ router.get("/industry-etf-contribution/etf-bars", async (req: Request, res: Resp
 
 // ---- PE & Dividend Yield (per-(sec_type, code, date) valuation analytics)
 //   analysis.pe / analysis.dividends   — daily raw pe / trailing-12m dividend_yield (split 2026-09)
-//   analysis.pe_and_dividend_stats     — monthly 5y rolling stats snapshot
+//   analysis.pe_and_dividend_stats     — annual 10y rolling stats snapshot
 //
 //   Close price is NOT stored in the analysis tables
 //   (they live in stats); the chart endpoint JOINs stats live at request time.
@@ -924,7 +934,7 @@ router.get("/industry-etf-contribution/etf-bars", async (req: Request, res: Resp
 //   GET /api/analysis/pe-and-dividend/strategy-themes?sec_type=index
 //     Parallel L1 strategy → L2 theme tree (RIGHT column).
 //   GET /api/analysis/pe-and-dividend/stats?sec_type=index&code=000300
-//     Returns PeAndDividendStatsResponse: ALL monthly 5y rolling stats
+//     Returns PeAndDividendStatsResponse: ALL annual 10y rolling stats
 //     snapshots for one code (most recent first). is_active marks the latest.
 //   GET /api/analysis/pe-and-dividend/streaks?sec_type=index&code=000300
 //     Returns PeAndDividendStreaksResponse: band-BREAK excursion streaks of

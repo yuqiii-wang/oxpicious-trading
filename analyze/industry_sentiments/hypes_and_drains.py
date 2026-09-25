@@ -59,13 +59,48 @@ WEIGHTING VARIANTS
     'equal'       (attribution_type='equal'):       metric_value = hype
     'amt'         (attribution_type='trading_amt'): metric_value = hype * shared_trading_amt
 
-  The pipeline calls the INSERT SQL twice per (benchmark, period) — once for
-  each attribution_type. The weighting column in industry_hypes_and_drains
-  maps directly: 'equal' -> 'equal', 'trading_amt' -> 'amt'.
+  The daily decomposition inputs (shared weight / non-industry price /
+  non-industry trading amount) are IDENTICAL on both attribution_types'
+  rows — the attributions build writes the same daily columns per type —
+  so ONE input frame (attribution_type='trading_amt', the canonical set
+  COUNT_SOURCE_SQL has always keyed on) feeds BOTH weightings; only
+  metric_value differs. Emitting a weighting for a (benchmark, date,
+  industry) present in either type's rows therefore matches the former
+  per-type INSERTs (both types are always written over the same keys by
+  run_attributions).
 
 PERIODS: {5, 20, 60, 120, 255, 500}. 120d is the UI default. The 120d
 column on industry_attributions is added by 08_industry_hypes_and_drains.sql
 and populated by the attributions step (ROLLING_WINDOWS includes 120).
+
+PIPELINE (pandas vectorized — migrated 2026-09-25 from the former
+per-(benchmark, period, weighting) server-side INSERT...SELECT, whose
+CASE WHEN guards + window arithmetic now live here):
+  1. Guard: bail out if industry_attributions has no broad-market rows
+     with daily non-industry price data.
+  2. Fetch three RAW frames (no SQL-side computation):
+       bench_daily  — (benchmark, date) close + trading_amount;
+       attr_daily   — (benchmark, date, industry) daily decomposition
+                      columns;
+       label pairs  — industry_id -> industry_label.
+  3. Vectorized compute (cudf.pandas-accelerated under the __main__
+     bootstrap): LAG returns via groupby shift, the daily identity
+     inversion, per-period exp/ln rolling compounding via
+     grouped_rolling_agg (FULL-window gate = rolling count == N),
+     hype / metric_value per weighting, and the HYPE/DRAIN top-5 via
+     stable sort + groupby cumcount.
+  4. Truncate + ONE chunked CSV COPY into industry_hypes_and_drains
+     (rank on UNROUNDED metric_value, store ROUNDed to 6 — the former
+     SQL ranked pre-ROUND and rounded in the final SELECT, identical).
+  5. Upsert analysis.analysis_identity + sanity summary.
+  6. Seasonal (monthly) aggregation — same compute from the stored
+     (rounded) per-date rows: per (month, benchmark, period, weighting,
+     side, industry) peak = MAX (HYPE) / MIN (DRAIN), rank top-5.
+
+Tie note: the former ROW_NUMBER() ORDER BY metric_value DESC/ASC had no
+deterministic tiebreak (Postgres leaves equal-key order unspecified); the
+stable-sort + cumcount equivalent keeps the input row order for exact
+ties (measure-zero at the rank-5 boundary; metrics stored at 6dp).
 
 This module is an INTERNAL step of analyze.industry_sentiments — it is
 invoked from __main__.py after the attributions step, reusing the same DB
@@ -76,8 +111,20 @@ from __future__ import annotations
 import gc
 import time
 
+import numpy as np
+import pandas as pd
+
 from _common.build_commons import (
+    rec_cols,
     truncate_table_async,
+)
+from _common.db_commons import (
+    copy_frame_chunked_async,
+)
+from _common.df_utils import (
+    epoch_col_to_dt64,
+    grouped_rolling_agg,
+    host_array,
 )
 from analyze._common import upsert_analysis_identity
 
@@ -108,9 +155,9 @@ ANALYSIS_DESCRIPTION = (
     "construction artifacts the 1/swf inversion would amplify into noise. "
     "period_days in {5,20,60,120,255,500} (120 default). Built by "
     "analyze.industry_sentiments.hypes_and_drains (internal step, "
-    "truncate-then-recompute). Depends on analysis.industry_attributions "
-    "(incl. the daily benchmark_non_this_industry_price column) being "
-    "populated first."
+    "truncate-then-recompute, pandas-vectorized). Depends on "
+    "analysis.industry_attributions (incl. the daily "
+    "benchmark_non_this_industry_price column) being populated first."
 )
 
 # Trailing windows (trading days). Must match the rolling_{N}days_price
@@ -118,9 +165,33 @@ ANALYSIS_DESCRIPTION = (
 # attributions.ROLLING_WINDOWS). 120d is the UI default.
 PERIODS: tuple[int, ...] = (5, 20, 60, 120, 255, 500)
 
+# Output column order (mirrors the former INSERT column list).
+HD_COLUMNS: list[str] = [
+    "date", "benchmark_code", "period_days", "weighting", "rank_side",
+    "rank", "industry_id", "industry_label", "metric_value",
+    "shared_trading_amt", "benchmark_return_nd", "industry_return_nd",
+    "benchmark_shared_weight",
+]
+HD_FLOAT_COLUMNS = [
+    "metric_value", "shared_trading_amt", "benchmark_return_nd",
+    "industry_return_nd", "benchmark_shared_weight",
+]
+SEASONAL_COLUMNS: list[str] = [
+    "season_qkey", "season_year", "season_month", "season_start",
+    "season_end", "benchmark_code", "period_days", "weighting",
+    "rank_side", "rank", "industry_id", "industry_label",
+    "peak_metric_value",
+]
+SEASONAL_FLOAT_COLUMNS = ["peak_metric_value"]
+
+# The rolling-window partition of the daily identity inversion: one
+# series per (benchmark, industry) — the former per-benchmark INSERT's
+# PARTITION BY industry_id, scoped by its benchmark_code parameter.
+_GROUP_KEYS = ["benchmark_code", "industry_id"]
+
 
 # ---------------------------------------------------------------------------
-#  SQL
+#  Raw-input SQL (fetch only — every computation lives in pandas below)
 # ---------------------------------------------------------------------------
 
 # Fetch all broad-market benchmark codes that have industry_attributions data.
@@ -149,332 +220,368 @@ COUNT_SOURCE_SQL = """
       AND ia.benchmark_non_this_industry_price IS NOT NULL
 """
 
-# Per-(benchmark_code, period, attribution_type) INSERT...SELECT.
-#
-# Builds the full pipeline server-side for ONE (benchmark, period, variant):
-#   bench_daily    — per (benchmark, date): close, 1d and N-day returns via
-#                    LAG windows ordered by date.
-#   industry_daily — per (date, industry): the DAILY non-industry return
-#                    from consecutive benchmark_non_this_industry_price
-#                    levels (LAG within the industry's own row sequence),
-#                    + shared weight + the non-industry trading amount.
-#   shared_daily   — invert the DAILY decomposition identity:
-#                    bench_1d = swf*shared_1d + (1-swf)*non_ind_1d
-#                      -> shared_1d = (bench_1d - (1-swf)*non_ind_1d) / swf
-#                    (swf = benchmark_shared_weight / 100; NULL / swf = 0
-#                    -> NULL). Inverting DAILY returns is numerically
-#                    clean — the non-industry daily price column was
-#                    built FROM this identity; inverting the pre-aggregated
-#                    rolling_{N}days column instead would amplify its
-#                    clamping/compounding artifacts by (1-swf)/swf and
-#                    flood the rankings with noise for narrow industries.
-#   shared_nd      — compound the shared daily returns over the trailing N
-#                    trading-day rows (ROWS BETWEEN N-1 PRECEDING), the
-#                    same exp(SUM ln(1+r)) convention as the attributions
-#                    build's rolling columns: daily returns outside
-#                    (-0.5, 0.5] contribute 0. The window must be FULL
-#                    (COUNT = N) or the row gets NULL — a partial window
-#                    would understate the compounded return.
-#   per_industry   — JOIN shared_nd x bench_daily on date;
-#                    hype = shared_return_nd - benchmark_return_nd;
-#                    shared_trading_amt = benchmark total trading
-#                    - non-industry trading (NULL when non-positive).
-#   per_industry_metric — computes metric_value based on attribution_type:
-#                    'equal' -> hype; 'trading_amt' -> hype * shared_trading_amt.
-#   ranked         — ROW_NUMBER() OVER (PARTITION BY date ORDER BY
-#                    metric_value DESC/ASC) for HYPE/DRAIN, filter <= 5.
-#
-# Parameters:
-#   $1 = period N (int)
-#   $2 = benchmark_code (text)
-#   $3 = attribution_type (text) — 'equal' or 'trading_amt'
-# The {period} placeholder is format-substituted; benchmark_code and
-# attribution_type are bound parameters (validated from the DB / frozen
-# enum) — never format-substituted.
-#
-# The weighting column in industry_hypes_and_drains is derived from
-# attribution_type: 'equal' -> 'equal', 'trading_amt' -> 'amt'.
-_INSERT_SQL_TEMPLATE = """
-WITH bench_daily AS (
-    SELECT
-        ib.date,
-        ib.close,
-        ib.trading_amount,
-        LAG(ib.close) OVER w AS bench_prev_close,
-        ib.close / NULLIF(LAG(ib.close) OVER w, 0) - 1.0
-            AS bench_return_1d,
-        CASE
-            WHEN LAG(ib.close, $1::int) OVER w IS NOT NULL
-                 AND LAG(ib.close, $1::int) OVER w != 0
-            THEN ib.close / LAG(ib.close, $1::int) OVER w - 1.0
-            ELSE NULL
-        END AS benchmark_return_nd
-    FROM stats.index_basic_stats ib
-    WHERE ib.code = $2::text
-      AND ib.close IS NOT NULL
-    WINDOW w AS (ORDER BY ib.date)
-),
-industry_daily AS (
-    SELECT
-        ia.date,
-        ia.industry_id,
-        ia.benchmark_shared_weight,
-        ia.benchmark_non_this_industry_price,
-        ia.benchmark_non_this_industry_trading_amt
+# Per-(benchmark, date) benchmark legs: the LAG returns (1d + per-period Nd)
+# are computed in pandas (_compute_bench_frame) — the former CTE's
+# LAG(...) OVER / NULLIF / CASE WHEN arithmetic, verbatim semantics:
+#   bench_return_1d    = close / NULLIF(lag1, 0) - 1
+#   benchmark_return_N = close / NULLIF(lagN, 0) - 1   (NULL when lagN NULL/0)
+# Rows keep close IS NOT NULL (the former CTE's WHERE) so the row space —
+# and thus every LAG window position — is identical.
+BENCH_DAILY_SQL = """
+    SELECT code AS benchmark_code,
+           extract(epoch from date)::float8 AS date,
+           close::float8                    AS close,
+           trading_amount::float8           AS trading_amount
+    FROM stats.index_basic_stats
+    WHERE code = ANY($1::text[])
+      AND close IS NOT NULL
+    ORDER BY code, date
+"""
+
+# (benchmark, date, industry) daily decomposition legs. attribution_type
+# ='trading_amt' only — BOTH weightings read these identical daily columns
+# (see the module docstring's WEIGHTING VARIANTS); the 'equal' rows would
+# duplicate the same values. The broad-market scope is an IN-subquery, NOT
+# a JOIN: sec_index_tags is keyed (code, sector_id, industry_id) and a
+# benchmark can carry SEVERAL broad-market tag rows (e.g. 000001 =
+# BROAD_SSE + benchmark_broadmarket) — a JOIN would fan every attribution
+# row out per tag row (the former per-benchmark INSERT never joined this
+# table; only its DISTINCT benchmark-list / >0-count guard queries did,
+# whose semantics absorb the fan-out). The shared_return_1d inversion +
+# per-period compounding are computed in pandas (_compute_shared_daily /
+# _compute_shared_nd).
+ATTR_DAILY_SQL = """
+    SELECT ia.benchmark_code,
+           extract(epoch from ia.date)::float8                 AS date,
+           ia.industry_id,
+           ia.benchmark_shared_weight::float8                  AS benchmark_shared_weight,
+           ia.benchmark_non_this_industry_price::float8        AS non_ind_price,
+           ia.benchmark_non_this_industry_trading_amt::float8  AS non_ind_amt
     FROM analysis.industry_attributions ia
-    WHERE ia.benchmark_code = $2::text
-      AND ia.attribution_type = $3::text
+    WHERE ia.attribution_type = 'trading_amt'
       AND ia.benchmark_non_this_industry_price IS NOT NULL
-),
-shared_daily AS (
-    -- Invert the DAILY decomposition identity (see the template comment
-    -- block above). NULL on any leg or swf = 0 -> NULL.
-    --
-    -- The non-industry DAILY return must be recovered EXACTLY as
-    --   non_industry_return_1d = price[t] / bench_close[t-1] - 1
-    -- because the build materializes the level as
-    --   price[t] = bench_close[t-1] * (1 + non_industry_return_t).
-    -- Ratios of CONSECUTIVE LEVELS (price[t]/price[t-1]) instead carry a
-    -- (1+bench_ret[t-1])/(1+non_ind_ret[t-1]) cross-term whose
-    -- compounding random-walks to ~+-20% error in the trailing-N-day
-    -- shared return (weight-independent), flipping industries between
-    -- the HYPE and DRAIN sides.
-    SELECT
-        d.date,
-        d.industry_id,
-        d.benchmark_shared_weight,
-        CASE
-            WHEN d.benchmark_shared_weight IS NULL
-                 OR d.benchmark_shared_weight = 0
-                 OR br.bench_prev_close IS NULL
-                 OR br.bench_prev_close = 0
-                 OR d.benchmark_non_this_industry_price IS NULL THEN NULL
-            ELSE (br.bench_return_1d
-                  - (1.0 - d.benchmark_shared_weight / 100.0)
-                    * (d.benchmark_non_this_industry_price
-                       / br.bench_prev_close - 1.0))
-                 / (d.benchmark_shared_weight / 100.0)
-        END AS shared_return_1d,
-        d.benchmark_non_this_industry_trading_amt
-    FROM industry_daily d
-    JOIN bench_daily br ON br.date = d.date
-),
-shared_nd AS (
-    SELECT
-        sd.date,
-        sd.industry_id,
-        sd.benchmark_shared_weight,
-        CASE WHEN COUNT(sd.shared_return_1d) OVER wnd = $1::int
-             THEN 100.0 * exp(
-                      SUM(CASE
-                          WHEN sd.shared_return_1d > -0.5
-                               AND sd.shared_return_1d <= 0.5
-                          THEN ln(1.0 + sd.shared_return_1d)
-                          ELSE 0
-                      END) OVER wnd
-                  ) - 100.0
-            ELSE NULL
-        END AS shared_return_nd,
-        sd.benchmark_non_this_industry_trading_amt
-    FROM shared_daily sd
-    WINDOW wnd AS (
-        PARTITION BY sd.industry_id
-        ORDER BY sd.date
-        ROWS BETWEEN ($1::int - 1) PRECEDING AND CURRENT ROW
-    )
-),
-per_industry AS (
-    SELECT
-        bd.date,
-        sn.industry_id,
-        sn.benchmark_shared_weight,
-        bd.benchmark_return_nd,
-        -- The shared portfolio's trailing-N-day return (fractional):
-        -- the "industry return" the hype is measured on.
-        sn.shared_return_nd / 100.0 AS industry_return_nd,
-        -- hype = industry_return_nd - benchmark_return_nd
-        sn.shared_return_nd / 100.0 - bd.benchmark_return_nd AS hype,
-        CASE
-            WHEN bd.trading_amount IS NOT NULL
-                 AND sn.benchmark_non_this_industry_trading_amt IS NOT NULL
-                 AND bd.trading_amount - sn.benchmark_non_this_industry_trading_amt > 0
-            THEN bd.trading_amount - sn.benchmark_non_this_industry_trading_amt
-            ELSE NULL
-        END AS shared_trading_amt
-    FROM shared_nd sn
-    JOIN bench_daily bd ON bd.date = sn.date
-    WHERE sn.shared_return_nd IS NOT NULL
-      AND bd.benchmark_return_nd IS NOT NULL
-),
--- Compute metric_value based on attribution_type:
---   'equal'       -> metric_value = hype
---   'trading_amt' -> metric_value = hype * shared_trading_amt (the "amt" variant)
-per_industry_metric AS (
-    SELECT
-        *,
-        CASE
-            WHEN $3::text = 'equal' THEN hype
-            WHEN $3::text = 'trading_amt' THEN hype * shared_trading_amt
-            ELSE NULL
-        END AS metric_value
-    FROM per_industry
-    WHERE hype IS NOT NULL
-),
-industry_label AS (
+      AND ia.benchmark_code IN (
+          SELECT sit.code FROM stats.sec_index_tags sit
+          WHERE sit.is_broad_market = TRUE)
+    ORDER BY ia.benchmark_code, ia.date, ia.industry_id
+"""
+
+# industry_id -> industry_label pairs (the former industry_label CTE).
+INDUSTRY_LABEL_SQL = """
     SELECT DISTINCT industry_id, industry_label
     FROM stats.sec_classification
     WHERE type = 'index' AND industry_id IS NOT NULL AND industry_id <> ''
       AND industry_label IS NOT NULL
       AND is_industry_not_strategy = TRUE
-),
-ranked AS (
-    SELECT
-        *,
-        ROW_NUMBER() OVER (
-            PARTITION BY date ORDER BY metric_value DESC NULLS LAST
-        ) AS hype_rank,
-        ROW_NUMBER() OVER (
-            PARTITION BY date ORDER BY metric_value ASC NULLS LAST
-        ) AS drain_rank
-    FROM per_industry_metric
-    WHERE metric_value IS NOT NULL
-)
-INSERT INTO analysis.industry_hypes_and_drains
-    (date, benchmark_code, period_days, weighting, rank_side, rank,
-     industry_id, industry_label, metric_value, shared_trading_amt,
-     benchmark_return_nd, industry_return_nd, benchmark_shared_weight)
-SELECT
-    r.date,
-    $2::text                                                AS benchmark_code,
-    {period}::int                                           AS period_days,
-    -- Map attribution_type to weighting:
-    --   'equal' -> 'equal', 'trading_amt' -> 'amt'
-    CASE WHEN $3::text = 'equal' THEN 'equal' ELSE 'amt' END AS weighting,
-    side.rank_side,
-    side.rank,
-    r.industry_id,
-    COALESCE(il.industry_label, r.industry_id)              AS industry_label,
-    ROUND(r.metric_value::numeric, 6)                       AS metric_value,
-    ROUND(r.shared_trading_amt::numeric, 4)                 AS shared_trading_amt,
-    ROUND(r.benchmark_return_nd::numeric, 6)                AS benchmark_return_nd,
-    ROUND(r.industry_return_nd::numeric, 6)                 AS industry_return_nd,
-    ROUND(r.benchmark_shared_weight::numeric, 4)            AS benchmark_shared_weight
-FROM ranked r
-CROSS JOIN LATERAL (
-    VALUES
-        ('HYPE'::text,  r.hype_rank),
-        ('DRAIN'::text, r.drain_rank)
-) AS side(rank_side, rank)
-LEFT JOIN industry_label il ON il.industry_id = r.industry_id
-WHERE side.rank <= 5
 """
 
 
-def _build_insert_sql(benchmark_code: str, period: int) -> str:
-    """Format the INSERT template for one (benchmark_code, period).
+# ---------------------------------------------------------------------------
+#  Fetch
+# ---------------------------------------------------------------------------
 
-    The attribution_type is passed as a SQL parameter ($3) at execute time,
-    NOT format-substituted, to avoid SQL injection and allow the same
-    formatted SQL to be reused for both 'equal' and 'trading_amt' calls.
+async def _fetch_frames(conn, benchmark_codes: list[str]) -> tuple[
+        pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Fetch the three raw frames (epoch-transport + float casts).
+
+    Dates arrive as native float8 (extract(epoch)::float8 — the DB-read
+    convention) and are materialized to datetime64[us] in ONE host pass;
+    NUMERIC legs arrive as Decimal and are cast to float64 vectorized.
     """
-    return _INSERT_SQL_TEMPLATE.format(period=period)
+    bench_rows = await conn.fetch(BENCH_DAILY_SQL, benchmark_codes)
+    attr_rows = await conn.fetch(ATTR_DAILY_SQL)
+    label_rows = await conn.fetch(INDUSTRY_LABEL_SQL)
 
+    bench_df = pd.DataFrame(
+        rec_cols(bench_rows),
+        columns=["benchmark_code", "date", "close", "trading_amount"],
+    )
+    attr_df = pd.DataFrame(
+        rec_cols(attr_rows),
+        columns=["benchmark_code", "date", "industry_id",
+                 "benchmark_shared_weight", "non_ind_price", "non_ind_amt"],
+    )
+    label_df = pd.DataFrame(
+        rec_cols(label_rows),
+        columns=["industry_id", "industry_label"],
+    )
 
-# Bump work_mem for the window functions + hash aggregate.
-SET_WORK_MEM_SQL = "SET work_mem = '512MB'"
+    for df in (bench_df, attr_df):
+        df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    for col in ("close", "trading_amount"):
+        bench_df[col] = bench_df[col].astype(float)
+    for col in ("benchmark_shared_weight", "non_ind_price", "non_ind_amt"):
+        attr_df[col] = attr_df[col].astype(float)
+    return bench_df, attr_df, label_df
 
 
 # ---------------------------------------------------------------------------
-#  Seasonal (monthly) aggregation SQL
+#  Compute (pure pandas / cuDF — vectorized)
 # ---------------------------------------------------------------------------
 
-# Aggregates the per-date rankings into per-month rankings.
-#
-# For each (month, benchmark, period, rank_side, industry):
-#   HYPE:  peak_metric_value = MAX(metric_value) over all trading days in the
-#          month where this industry was in the top-5 HYPE.
-#   DRAIN: peak_metric_value = MIN(metric_value) over all trading days in the
-#          month where this industry was in the bottom-5 DRAIN.
-#
-# Then ranks by peak_metric_value (DESC for HYPE, ASC for DRAIN) and keeps
-# the top-5 per (month, benchmark, period, rank_side).
-#
-# season_qkey format: '2026-08' (year + '-' + zero-padded month).
-# season_start/season_end: calendar month boundaries (inclusive).
-_SEASONAL_INSERT_SQL = """
-WITH per_date AS (
-    SELECT
-        date,
-        EXTRACT(YEAR FROM date)::int    AS season_year,
-        EXTRACT(MONTH FROM date)::int   AS season_month,
-        to_char(date, 'YYYY-MM')        AS season_qkey,
-        (DATE_TRUNC('month', date))::date
-                                         AS season_start,
-        (DATE_TRUNC('month', date) + INTERVAL '1 month' - INTERVAL '1 day')::date
-                                         AS season_end,
-        benchmark_code,
-        period_days,
-        weighting,
-        rank_side,
-        industry_id,
-        industry_label,
-        metric_value
-    FROM analysis.industry_hypes_and_drains
-    WHERE metric_value IS NOT NULL
-),
-monthly AS (
-    SELECT
-        season_year,
-        season_month,
-        season_qkey,
-        MIN(season_start)               AS season_start,
-        MIN(season_end)                 AS season_end,
-        benchmark_code,
-        period_days,
-        weighting,
-        rank_side,
-        industry_id,
-        MAX(industry_label)             AS industry_label,
-        CASE WHEN rank_side = 'HYPE'
-             THEN MAX(metric_value)
-             ELSE MIN(metric_value)
-        END                             AS peak_metric_value
-    FROM per_date
-    GROUP BY
-        season_year,
-        season_month,
-        season_qkey,
-        benchmark_code,
-        period_days,
-        weighting,
-        rank_side,
-        industry_id
-),
-ranked AS (
-    SELECT
-        *,
-        ROW_NUMBER() OVER (
-            PARTITION BY season_qkey, benchmark_code, period_days, weighting, rank_side
-            ORDER BY
-                CASE WHEN rank_side = 'HYPE'
-                     THEN peak_metric_value END DESC NULLS LAST,
-                CASE WHEN rank_side = 'DRAIN'
-                     THEN peak_metric_value END ASC NULLS LAST
-        ) AS rank
-    FROM monthly
-)
-INSERT INTO analysis.industry_hypes_seasonal
-    (season_qkey, season_year, season_month, season_start, season_end,
-     benchmark_code, period_days, weighting, rank_side, rank,
-     industry_id, industry_label, peak_metric_value)
-SELECT
-    season_qkey, season_year, season_month, season_start, season_end,
-    benchmark_code, period_days, weighting, rank_side, rank,
-    industry_id, industry_label,
-    ROUND(peak_metric_value::numeric, 6)
-FROM ranked
-WHERE rank <= 5
-"""
+def _compute_bench_frame(bench_df: pd.DataFrame) -> pd.DataFrame:
+    """Add the benchmark LAG legs: prev close, 1d return, per-period Nd
+    returns (the former bench_daily CTE).
+
+    ``close / NULLIF(LAG(close[, N]) OVER (ORDER BY date), 0) - 1`` becomes
+    a groupby shift + a zero-masked divisor (a NULL/zero lag -> NaN return,
+    identical to the SQL CASE/NULLIF outcome).
+    """
+    df = bench_df.sort_values(
+        ["benchmark_code", "date"], kind="mergesort"
+    ).reset_index(drop=True)
+    g = df.groupby("benchmark_code", sort=False)["close"]
+    prev_close = g.shift(1)
+    df["bench_prev_close"] = prev_close
+    safe_prev = prev_close.where(prev_close != 0.0)
+    df["bench_return_1d"] = df["close"] / safe_prev - 1.0
+    for n in PERIODS:
+        lag_n = g.shift(n)
+        df[f"bench_return_nd_{n}"] = (
+            df["close"] / lag_n.where(lag_n != 0.0) - 1.0
+        )
+    return df
+
+
+def _compute_shared_daily(attr_df: pd.DataFrame,
+                          bench_df: pd.DataFrame) -> pd.DataFrame:
+    """Invert the DAILY decomposition identity per (benchmark, industry,
+    date) — the former shared_daily CTE.
+
+    NULL on any leg (weight NULL/0, bench prev close NULL/0, price NULL)
+    -> NULL shared_return_1d, exactly the former CASE WHEN guard; the
+    bench 1d return is non-NULL whenever that guard passes (close is
+    NOT NULL in the bench row space), so it needs no extra leg.
+    """
+    m = attr_df.merge(
+        bench_df[["benchmark_code", "date", "bench_prev_close",
+                  "bench_return_1d", "trading_amount",
+                  *[f"bench_return_nd_{n}" for n in PERIODS]]],
+        on=["benchmark_code", "date"], how="inner",
+    )
+    m = m.sort_values(
+        ["benchmark_code", "industry_id", "date"], kind="mergesort"
+    ).reset_index(drop=True)
+
+    weight = m["benchmark_shared_weight"]
+    swf = weight / 100.0
+    safe_prev = m["bench_prev_close"].where(m["bench_prev_close"] != 0.0)
+    non_ind_1d = m["non_ind_price"] / safe_prev - 1.0
+    guard = (
+        weight.notna()
+        & (weight != 0.0)
+        & m["bench_prev_close"].notna()
+        & (m["bench_prev_close"] != 0.0)
+        & m["non_ind_price"].notna()
+    )
+    m["shared_return_1d"] = (
+        (m["bench_return_1d"] - (1.0 - swf) * non_ind_1d) / swf
+    ).where(guard)
+    return m
+
+
+def _compute_shared_nd(m: pd.DataFrame, n: int) -> pd.Series:
+    """Compound the shared daily returns over the trailing n trading-day
+    rows — the former shared_nd CTE, one window at a time.
+
+    Window must be FULL: COUNT(shared_return_1d) OVER wnd = n (the
+    ROWS-window clamps at the partition head, so partial heads fail the
+    count too) — rolling(n, min_periods=n).count() == n is the same
+    predicate. Daily returns outside (-0.5, 0.5] and NULLs contribute 0
+    to the ln sum (the former inner CASE WHEN -> ELSE 0). np.log(1.0 + r)
+    mirrors ln(1.0 + r) operation-for-operation.
+    """
+    r = m["shared_return_1d"]
+    in_band = (r > -0.5) & (r <= 0.5)
+    m["_ln_term"] = np.log(1.0 + r.where(in_band, 0.0))
+    full_count = grouped_rolling_agg(
+        m, _GROUP_KEYS, "shared_return_1d", n,
+        min_periods=n, agg="count", sort=False,
+    )
+    ln_sum = grouped_rolling_agg(
+        m, _GROUP_KEYS, "_ln_term", n,
+        min_periods=n, agg="sum", sort=False,
+    )
+    nd = 100.0 * np.exp(ln_sum) - 100.0
+    return nd.where(full_count == float(n))
+
+
+def _rank_top5(part: pd.DataFrame, *, side: str) -> pd.DataFrame:
+    """Top-5 rows of one (period, weighting) slice by metric_value —
+    the former ranked CTE's ROW_NUMBER per date (DESC for HYPE, ASC for
+    DRAIN), scoped here per (benchmark, date).
+
+    Stable sort + groupby cumcount: equal metrics keep input row order
+    (the SQL left equal-key order to the planner — see the docstring's
+    tie note).
+    """
+    ascending = side == "DRAIN"
+    ordered = part.sort_values(
+        ["benchmark_code", "date", "metric_value"],
+        ascending=[True, True, ascending], kind="mergesort",
+    )
+    rank = ordered.groupby(
+        ["benchmark_code", "date"], sort=False
+    ).cumcount() + 1
+    top = ordered[rank <= 5].copy()
+    top["rank_side"] = side
+    top["rank"] = rank[rank <= 5].astype("int64")
+    return top
+
+
+def _compute_hypes_and_drains(
+    bench_df: pd.DataFrame,
+    attr_df: pd.DataFrame,
+    label_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Full per-date ranking frame for ALL (benchmark, period, weighting).
+
+    One vectorized pass replaces the former benchmarks x periods x
+    weightings INSERT loop: the daily legs are computed once, the
+    per-period compounding once per window, and each (period, weighting)
+    slice is ranked + emitted with the same columns / rounding the
+    former INSERT SELECT produced.
+    """
+    if attr_df.empty or bench_df.empty:
+        return pd.DataFrame(columns=HD_COLUMNS)
+
+    m = _compute_shared_daily(attr_df, _compute_bench_frame(bench_df))
+    if m.empty:
+        return pd.DataFrame(columns=HD_COLUMNS)
+
+    # Per-period compounded shared returns (one grouped-rolling pass each).
+    for n in PERIODS:
+        m[f"shared_return_nd_{n}"] = _compute_shared_nd(m, n)
+    m = m.drop(columns=["_ln_term"])
+
+    bench_amt = m["trading_amount"]
+    non_amt = m["non_ind_amt"]
+    amt_diff = bench_amt - non_amt
+    shared_trading_amt = amt_diff.where(
+        bench_amt.notna() & non_amt.notna() & (amt_diff > 0.0)
+    )
+
+    parts: list[pd.DataFrame] = []
+    for n in PERIODS:
+        bench_nd = m[f"bench_return_nd_{n}"]
+        industry_nd = m[f"shared_return_nd_{n}"] / 100.0
+        hype = industry_nd - bench_nd
+        base_ok = m[f"shared_return_nd_{n}"].notna() & bench_nd.notna()
+        for weighting in ("equal", "amt"):
+            metric = hype if weighting == "equal" \
+                else hype * shared_trading_amt
+            part = pd.DataFrame({
+                "date": m["date"],
+                "benchmark_code": m["benchmark_code"],
+                "period_days": np.int64(n),
+                "weighting": weighting,
+                "industry_id": m["industry_id"],
+                "metric_value": metric,
+                "shared_trading_amt": shared_trading_amt,
+                "benchmark_return_nd": bench_nd,
+                "industry_return_nd": industry_nd,
+                "benchmark_shared_weight": m["benchmark_shared_weight"],
+            })
+            part = part[base_ok & part["metric_value"].notna()]
+            if part.empty:
+                continue
+            parts.append(_rank_top5(part, side="HYPE"))
+            parts.append(_rank_top5(part, side="DRAIN"))
+
+    if not parts:
+        return pd.DataFrame(columns=HD_COLUMNS)
+
+    out = pd.concat(parts, ignore_index=True)
+    # COALESCE(il.industry_label, r.industry_id) — the former final-SELECT
+    # join against the DISTINCT label pairs (a duplicated pair would fan
+    # out identically there).
+    if not label_df.empty:
+        out = out.merge(label_df, on="industry_id", how="left")
+        out["industry_label"] = out["industry_label"].fillna(
+            out["industry_id"])
+    else:
+        out["industry_label"] = out["industry_id"]
+
+    # Storage rounding — the former ROUND(...::numeric, k) per column.
+    # Ranked on UNROUNDED metric_value above; rounding happens here (the
+    # SQL rounded in the final SELECT, after ranked).
+    for col, ndp in (
+        ("metric_value", 6), ("shared_trading_amt", 4),
+        ("benchmark_return_nd", 6), ("industry_return_nd", 6),
+        ("benchmark_shared_weight", 4),
+    ):
+        out[col] = np.round(out[col].astype(float), ndp)
+    out = out[HD_COLUMNS]
+    out["rank"] = out["rank"].astype("int64")
+    out["period_days"] = out["period_days"].astype("int64")
+    return out
+
+
+def _compute_seasonal(hd_df: pd.DataFrame) -> pd.DataFrame:
+    """Monthly (seasonal) top-5 re-ranking from the stored per-date rows.
+
+    The former _SEASONAL_INSERT_SQL: per (month, benchmark, period,
+    weighting, side, industry) peak_metric_value = MAX (HYPE) / MIN (DRAIN)
+    of the (already 6dp-rounded) metric_value, then ROW_NUMBER per
+    (month, benchmark, period, weighting, side) — DESC for HYPE, ASC for
+    DRAIN — keeping rank <= 5. season_year/month/qkey/start/end are pure
+    functions of the month bucket (host numpy, no per-group aggregation).
+    """
+    if hd_df.empty:
+        return pd.DataFrame(columns=SEASONAL_COLUMNS)
+
+    df = hd_df
+    months = host_array(df["date"].to_numpy()).astype("datetime64[M]")
+    df = df.assign(season_qkey=months.astype(str))
+
+    gk = ["season_qkey", "benchmark_code", "period_days", "weighting",
+          "rank_side", "industry_id"]
+    parts: list[pd.DataFrame] = []
+    for side, agg in (("HYPE", "max"), ("DRAIN", "min")):
+        sub = df[df["rank_side"] == side]
+        if sub.empty:
+            continue
+        gb = sub.groupby(gk, sort=False)
+        monthly = pd.concat([
+            gb["metric_value"].agg(agg).rename("peak_metric_value"),
+            gb["industry_label"].max().rename("industry_label"),
+        ], axis=1).reset_index()
+
+        ascending = side == "DRAIN"
+        ordered = monthly.sort_values(
+            ["season_qkey", "benchmark_code", "period_days", "weighting",
+             "rank_side", "peak_metric_value"],
+            ascending=[True] * 5 + [ascending], kind="mergesort",
+        )
+        rank = ordered.groupby(
+            ["season_qkey", "benchmark_code", "period_days", "weighting",
+             "rank_side"], sort=False
+        ).cumcount() + 1
+        top = ordered[rank <= 5].copy()
+        top["rank"] = rank[rank <= 5].astype("int64")
+        parts.append(top)
+
+    if not parts:
+        return pd.DataFrame(columns=SEASONAL_COLUMNS)
+
+    out = pd.concat(parts, ignore_index=True)
+    # Month parts from the qkey ('YYYY-MM', matching to_char(date,'YYYY-MM')).
+    qm = host_array(out["season_qkey"].to_numpy()).astype("datetime64[M]")
+    out["season_year"] = (
+        qm.astype("datetime64[Y]").astype("int64") + 1970
+    ).astype("int64")
+    out["season_month"] = ((qm.astype("int64") % 12) + 1).astype("int64")
+    out["season_start"] = qm.astype("datetime64[D]").astype("datetime64[us]")
+    out["season_end"] = (
+        (qm + np.timedelta64(1, "M")).astype("datetime64[D]")
+        - np.timedelta64(1, "D")
+    ).astype("datetime64[us]")
+    out["peak_metric_value"] = np.round(
+        out["peak_metric_value"].astype(float), 6)
+    out = out[SEASONAL_COLUMNS]
+    for col in ("season_year", "season_month", "period_days", "rank"):
+        out[col] = out[col].astype("int64")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -488,18 +595,16 @@ async def run_hypes_and_drains(
 ) -> None:
     """Run the industry hypes & drains ranking pipeline.
 
-    Reuses the caller's DB connection. Truncates the table first (force is
+    Reuses the caller's DB connection. Fetches the raw frames, computes
+    the full ranking vectorized, then truncates + COPY-writes (force is
     the default — the table is small and cheap to fully recompute).
 
     Pipeline
       1. Guard: bail out if industry_attributions has no broad-market rows
          with daily non-industry price data.
       2. Fetch all broad-market benchmark codes.
-      3. Truncate analysis.industry_hypes_and_drains.
-      4. For each (benchmark_code, period, weighting): run the INSERT...SELECT.
-         weighting 'equal' uses attribution_type='equal' (metric_value=hype);
-         weighting 'amt' uses attribution_type='trading_amt'
-         (metric_value=hype * shared_trading_amt).
+      3. Fetch + compute the per-date HYPE/DRAIN rankings (pandas).
+      4. Truncate analysis.industry_hypes_and_drains, CSV-COPY the frame.
       5. Upsert analysis.analysis_identity.
       6. Sanity summary by (benchmark_code, period, weighting).
       7. Seasonal (monthly) aggregation.
@@ -529,43 +634,34 @@ async def run_hypes_and_drains(
     logger.info(f"\n[hd2/6] Found {len(benchmark_codes)} broad-market benchmarks: "
           f"{', '.join(benchmark_codes)}")
 
-    # ---- Step 4: truncate -------------------------------------------
-    logger.info(f"\n[hd3/6] Truncating {TABLE} (full recompute)...")
-    await truncate_table_async(conn, TABLE)
-
-    # ---- Step 5: per-(benchmark, period, weighting) INSERT ----------
-    # Loop over weighting types: 'equal' (attribution_type='equal',
-    # metric_value = hype) and 'amt' (attribution_type='trading_amt',
-    # metric_value = hype * shared_trading_amt). The weighting column in
-    # industry_hypes_and_drains maps directly: 'equal' -> 'equal',
-    # 'trading_amt' -> 'amt'.
-    WEIGHTINGS = ('equal', 'amt')
-    await conn.execute(SET_WORK_MEM_SQL)
-    n_total = 0
-    for bm_code in benchmark_codes:
-        for period in PERIODS:
-            for weighting in WEIGHTINGS:
-                attribution_type = (
-                    'trading_amt' if weighting == 'amt' else 'equal'
-                )
-                t_iter = time.time()
-                sql = _build_insert_sql(bm_code, period)
-                status = await conn.execute(
-                    sql, period, bm_code, attribution_type
-                )
-                n_iter = _parse_insert_count(status)
-                n_total += n_iter
-                logger.info(f"  [hd4/6] {bm_code} period={period:>3d}d "
-                      f"{weighting:5s}: inserted {n_iter:>7,} rows "
-                      f"({time.time() - t_iter:.1f}s)")
-                del status, n_iter, sql
-                gc.collect()
+    # ---- Step 3: fetch raw frames + vectorized compute --------------
+    bench_df, attr_df, label_df = await _fetch_frames(conn, benchmark_codes)
+    logger.info(f"[hd3/6] Fetched bench={len(bench_df):,} rows, "
+          f"attr={len(attr_df):,} rows, labels={len(label_df):,} — "
+          f"computing rankings (periods={list(PERIODS)})...")
+    hd_df = _compute_hypes_and_drains(bench_df, attr_df, label_df)
+    del bench_df, attr_df
     gc.collect()
-    logger.info(f"  total: {n_total:,} rows inserted across "
-          f"{len(benchmark_codes)} benchmarks x {len(PERIODS)} periods "
-          f"x {len(WEIGHTINGS)} weightings")
+    logger.info(f"        -> {len(hd_df):,} ranked rows "
+          f"({time.time() - t0:.1f}s)")
 
-    # ---- Step 6: upsert analysis_identity ---------------------------
+    # ---- Step 4: truncate + COPY ------------------------------------
+    logger.info(f"\n[hd4/6] Truncating {TABLE} (full recompute)...")
+    await truncate_table_async(conn, TABLE)
+    if not hd_df.empty:
+        n_inserted = await copy_frame_chunked_async(
+            conn, TABLE, hd_df,
+            columns=HD_COLUMNS,
+            numeric_cols=HD_FLOAT_COLUMNS + ["period_days", "rank"],
+            round_to=None,  # pre-rounded per column in _compute_*
+            date_cols=["date"],
+            label="[hd4/6]",
+        )
+        logger.info(f"        inserted {n_inserted:,} rows")
+    else:
+        logger.info("        no rows to insert.")
+
+    # ---- Step 5: upsert analysis_identity ---------------------------
     await upsert_analysis_identity(
         conn,
         name=ANALYSIS_NAME,
@@ -573,7 +669,7 @@ async def run_hypes_and_drains(
         description=ANALYSIS_DESCRIPTION,
     )
 
-    # ---- Step 7: sanity summary -------------------------------------
+    # ---- Step 6: sanity summary -------------------------------------
     summary = await conn.fetch("""
         SELECT benchmark_code, period_days, weighting,
                COUNT(*) AS n_rows,
@@ -598,32 +694,17 @@ async def run_hypes_and_drains(
     logger.info(f"\n  hypes_and_drains wall time: {time.time() - t0:.1f}s")
 
     # ---- Seasonal (monthly) aggregation -----------------------------
-    await run_hypes_and_drains_seasonal(conn)
-
-
-def _parse_insert_count(status: str) -> int:
-    """Parse the row count from an asyncpg INSERT status string.
-
-    asyncpg ``Connection.execute`` returns a status like
-    ``"INSERT 0 18128883"``. The third token is the inserted row count.
-    Returns 0 if the status can't be parsed.
-    """
-    if not status:
-        return 0
-    parts = status.split()
-    if len(parts) >= 3 and parts[0] == "INSERT":
-        try:
-            return int(parts[2])
-        except ValueError:
-            return 0
-    return 0
+    await run_hypes_and_drains_seasonal(conn, hd_df)
 
 
 # ---------------------------------------------------------------------------
 #  Seasonal (monthly) aggregation pipeline
 # ---------------------------------------------------------------------------
 
-async def run_hypes_and_drains_seasonal(conn) -> None:
+async def run_hypes_and_drains_seasonal(
+    conn,
+    hd_df: pd.DataFrame | None = None,
+) -> None:
     """Aggregate per-date rankings into per-month (seasonal) rankings.
 
     Truncates analysis.industry_hypes_seasonal, then inserts one row per
@@ -637,25 +718,58 @@ async def run_hypes_and_drains_seasonal(conn) -> None:
     DRAIN) and the top-5 per side are kept.
 
     Must be called AFTER run_hypes_and_drains has populated the per-date
-    table.
+    table. ``hd_df`` (the computed per-date frame) is passed by the
+    pipeline to avoid re-reading the table; when omitted the stored rows
+    are fetched instead (standalone re-runs).
     """
     t0 = time.time()
     logger.info("\n" + "=" * 78)
     logger.info("  INDUSTRY HYPES & DRAINS — SEASONAL (monthly) aggregation")
     logger.info("=" * 78)
 
-    # ---- Truncate ----------------------------------------------------
+    # ---- Source rows (the pipeline frame, or the stored table) -------
+    if hd_df is None:
+        rows = await conn.fetch(f"""
+            SELECT extract(epoch from date)::float8 AS date,
+                   benchmark_code, period_days, weighting, rank_side,
+                   industry_id, industry_label, metric_value::float8
+                   AS metric_value
+            FROM {TABLE}
+            WHERE metric_value IS NOT NULL
+        """)
+        hd_df = pd.DataFrame(rec_cols(rows), columns=[
+            "date", "benchmark_code", "period_days", "weighting",
+            "rank_side", "industry_id", "industry_label", "metric_value",
+        ])
+        hd_df["date"] = epoch_col_to_dt64(hd_df["date"], index=hd_df.index)
+        hd_df["metric_value"] = hd_df["metric_value"].astype(float)
+
+    # ---- Compute monthly re-ranking ----------------------------------
+    seasonal_df = _compute_seasonal(hd_df)
+    del hd_df
+    gc.collect()
+
+    # ---- Truncate + COPY ---------------------------------------------
     logger.info(f"\n[hd-s1/3] Truncating {SEASONAL_TABLE}...")
     await truncate_table_async(conn, SEASONAL_TABLE)
-
-    # ---- Insert ------------------------------------------------------
-    logger.info("[hd-s2/3] Aggregating per-date rankings into monthly "
-          "rankings...")
-    await conn.execute(SET_WORK_MEM_SQL)
-    status = await conn.execute(_SEASONAL_INSERT_SQL)
-    n_inserted = _parse_insert_count(status)
-    logger.info(f"  inserted {n_inserted:,} seasonal ranking rows "
-          f"({time.time() - t0:.1f}s)")
+    if not seasonal_df.empty:
+        logger.info("[hd-s2/3] Copying monthly rankings...")
+        n_inserted = await copy_frame_chunked_async(
+            conn, SEASONAL_TABLE, seasonal_df,
+            columns=SEASONAL_COLUMNS,
+            numeric_cols=SEASONAL_FLOAT_COLUMNS
+                         + ["season_year", "season_month", "period_days",
+                            "rank"],
+            round_to=None,
+            date_cols=["season_start", "season_end"],
+            partition_key="season_qkey",
+            label="[hd-s2/3]",
+        )
+        logger.info(f"  inserted {n_inserted:,} seasonal ranking rows "
+              f"({time.time() - t0:.1f}s)")
+    else:
+        logger.info(f"[hd-s2/3] no seasonal rows to insert "
+              f"({time.time() - t0:.1f}s)")
 
     # ---- Summary -----------------------------------------------------
     summary = await conn.fetch("""

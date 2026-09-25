@@ -110,8 +110,9 @@ class IndexCompositionBuild(DataBuild):
             if self.args.force:
                 logger.info("    [DB] Force mode: deleting existing index composition rows "
                       "(source_type='index', ETF rows preserved)")
-                await conn.execute(
-                    "DELETE FROM stats.sec_composition WHERE source_type = 'index'"
+                await chunked_purge_async(
+                    conn, "stats.sec_composition",
+                    where_sql="source_type = 'index'",
                 )
                 existing_comp_keys = set()
             else:

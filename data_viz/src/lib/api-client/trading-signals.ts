@@ -65,16 +65,24 @@ export interface TradingSignal {
   signal_excess_pct: number | null;
   signal: number;
   signal_threshold: number;
+  /** The strategy's expected-move confidence in BASIS POINTS
+   *  (ROUND(10000 × signal_strategies.confidence) — the chosen rung's
+   *  sign-aligned dir_ave). The SignalActionChip input (its 1..100 ramp
+   *  clamps above 100 bp, the ForecastTable treatment). */
   confidence: number;
+  /** The same confidence as the EXPECTED-MOVE PERCENT (confidence / 100,
+   *  e.g. 0.87 = 0.87%) — the display number (text cells + tooltips). */
+  confidence_pct: number;
   /** TRUE = day-close mirror row (analysis run, time 15:00);
    *  FALSE = intraday live-monitor breach. */
   is_day_close_trigger: boolean;
-  /** TRUE when the breach bar's DATE sits inside one of the code's
-   *  market-hype episodes (stats.mov_ave_market_hypes) — regime
-   *  context; strategies are calibrated on non-hyped buckets only. */
+  /** The breach bar's DATE market regime — the stats.market_regimes day
+   *  label (calm / hot / panic / quiet); recorded context, never a gate,
+   *  and the same split the strategy itself registered under. */
   regime_state: string;
-  /** The code's signal count over the last 20 TRADING DAYS ending on
-   *  `date` (all signal types) — the main table's "20d count" column. */
+  /** The code's SIGNAL-DAY count over the last 20 TRADING DAYS ending on
+   *  `date`: one day = one entry (its highest-confidence row), across all
+   *  signal types — the main table's "20d count" column. */
   count_20d: number;
 }
 

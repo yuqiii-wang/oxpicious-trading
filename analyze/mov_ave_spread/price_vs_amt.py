@@ -10,11 +10,10 @@ joins EXACTLY ONE of the 15 price-speed × amount-state categories.
 
 A (code, date) gets a row when BOTH legs are computable with
 information available at that day (every rolling stat shifted 1 row →
-no look-ahead). The category definitions are the analysis_forecasts
-px_vol engine's VERBATIM — this module imports
-``add_px_vol_features`` + the ``PX_VOL_*`` constants from
-analyze.analysis_forecasts (single source of truth), so the registry
-audits 1:1 against the forecast buckets and the signal detections:
+no look-ahead). The category definitions are THIS package's —
+``add_px_vol_features`` (px_vol.py) + the ``PX_VOL_*`` calibration
+constants (config.py), recorded on every row so consumers can verify
+what they read:
 
   t = ret_1d / σ_ret(code, 255 rows ending t-1)   (rolling sample std
       ddof=1, min_periods 60, shifted 1 row; σ below sigma_floor 0.005
@@ -37,26 +36,19 @@ audits 1:1 against the forecast buckets and the signal detections:
       stale registries.)
 
 The row also records the state evidence (px_t / px_z / ret_1d /
-px_sigma / amt_ratio) so consumers (the forecast buckets' mean_t /
-mean_z config, the signal params JSON, the UI tooltips) recompute
+px_sigma / amt_ratio) so consumers (the UI tooltips) recompute
 nothing, and the build-parameter set (sigma_window / lb_window /
 k_* / z_* / sigma_floor / amt_metric) for consumer-side verification.
 
 Consumers:
-  - analysis_forecasts.compute_px_vol — bucket membership + mean_t /
-    mean_z (bucket AGGREGATES stay in analysis_forecasts.px_vol_state;
-    the dates live here).
-  - analysis_forecasts.compute_px_vol — the px_vol forecast buckets.
   - data_viz MA-Spread panel — the Px-Vol States date shading.
 
 Source: NOT the parent DataFrame's price column — the parent's etf /
-index rows include ESTIMATED closes that the forecast engine filters
-out, and the registry must classify on exactly the price series the
-engine consumes. Each sec_type's price + trading_amount series is
-fetched via fetch_price_vs_amt_source (analyze.analysis_forecasts
-.fetch — the engine's price conventions verbatim: ETF =
-COALESCE(adj_close, close); estimated closes excluded), scoped to the
-parent's active-code universe.
+index rows include ESTIMATED closes that would pollute ret_1d / σ_ret.
+Each sec_type's price + trading_amount series is fetched via
+fetch_price_vs_amt_source (px_vol.py — the shared per-sec_type price
+conventions: ETF = COALESCE(adj_close, close); estimated closes
+excluded), scoped to the parent's active-code universe.
 
 This module is an INTERNAL step of analyze.mov_ave_spread — invoked
 from __main__.py right after the trading-amt-ratios step, reusing the
@@ -82,8 +74,13 @@ import pandas as pd
 
 from _common.db_commons import csv_copy_from_frame_async
 from _common.df_utils import column_subset, host_unique
+from _common.db_commons import chunked_purge_async
 from analyze._common import upsert_analysis_identity
-from analyze.analysis_forecasts.config import (
+from analyze.mov_ave_spread.config import (
+    PRICE_VS_AMT_ANALYSIS_NAME,
+    PRICE_VS_AMT_COLUMNS,
+    PRICE_VS_AMT_DESCRIPTION,
+    PRICE_VS_AMT_TABLE,
     PX_VOL_AMT_METRIC,
     PX_VOL_K_SHARP,
     PX_VOL_K_SLOW_DN,
@@ -97,15 +94,9 @@ from analyze.analysis_forecasts.config import (
     PX_VOL_Z_HEAVY,
     PX_VOL_Z_SHRINK,
 )
-from analyze.analysis_forecasts.fetch import (
+from analyze.mov_ave_spread.px_vol import (
     add_px_vol_features,
     fetch_price_vs_amt_source,
-)
-from analyze.mov_ave_spread.config import (
-    PRICE_VS_AMT_ANALYSIS_NAME,
-    PRICE_VS_AMT_COLUMNS,
-    PRICE_VS_AMT_DESCRIPTION,
-    PRICE_VS_AMT_TABLE,
 )
 
 import logging
@@ -295,12 +286,12 @@ async def run_price_vs_amt(
 ) -> None:
     """Run the price-vs-amt STATE registry pipeline.
 
-    The registry must classify on EXACTLY the price series the forecast
-    engine consumes — so the source frame is NOT the parent's DataFrame
-    (whose etf/index rows include estimated closes that the forecast
-    engine filters out): each sec_type's price + trading_amount series
-    is fetched via fetch_price_vs_amt_source (the forecast engine's
-    fetch conventions verbatim), scoped to the parent DataFrame's
+    The registry must classify on EXACTLY the analysis_forecasts input
+    price series — so the source frame is NOT the parent's DataFrame
+    (whose etf/index rows include estimated closes that would pollute
+    ret_1d / σ_ret): each sec_type's price + trading_amount series
+    is fetched via fetch_price_vs_amt_source (the shared per-sec_type
+    price conventions), scoped to the parent DataFrame's
     active-code universe. The frame is the FULL per-code history: the
     states are trailing-window stats (shifted 1 row), so new dates
     never change past rows — but ETF adj_close back-adjustments DO,
@@ -308,8 +299,8 @@ async def run_price_vs_amt(
 
     Pipeline
       1. Per sec_type: fetch the clean source frame, run
-         add_px_vol_features (the forecast engine's feature layer,
-         imported verbatim), then classify every fully-valid day into
+         add_px_vol_features (this package's feature layer), then
+         classify every fully-valid day into
          its px_speed × vol_state category.
       2. DELETE the step's entire scope (the given sec_type — or the
          single --code, whose rows the caller already deleted), then
@@ -421,11 +412,10 @@ async def run_price_vs_amt(
                   f"({st}/{code_filter})")
     else:
         for st in sec_types:
-            status = await conn.execute(
-                f"DELETE FROM {PRICE_VS_AMT_TABLE} WHERE sec_type = $1",
-                st,
+            n_del = await chunked_purge_async(
+                conn, PRICE_VS_AMT_TABLE,
+                where_sql="sec_type = $1", params=(st,),
             )
-            n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
             logger.info(f"    -> deleted {n_del:,} existing state rows "
                   f"({st})")
 

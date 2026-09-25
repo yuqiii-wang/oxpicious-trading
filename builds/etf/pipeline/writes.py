@@ -6,6 +6,7 @@ import pandas as pd
 
 from _common.build_commons import copy_or_upsert_split_async
 from _common.df_utils import host_array, safe_columns
+from builds._commons.eps import compute_eps_vec
 from builds._commons.row_emission import dates_as_date_list, records_from_frame
 
 import logging
@@ -70,13 +71,6 @@ def filter_missing_rows(
     return out, n_resync_codes
 
 
-def _compute_eps_vec(close: pd.Series, pe: pd.Series) -> pd.Series:
-    """Float-native EPS with NaN on miss — nan_to_none in records_from_frame
-    converts NaN→None at emission (no object column on the frame)."""
-    mask = close.notna() & pe.notna() & (pe > 0)
-    return (close.astype(float) / pe.astype(float)).where(mask).round(6)
-
-
 async def write_split_tables(conn, merged_missing: pd.DataFrame, force: bool) -> None:
     """Build per-table row lists and COPY/upsert into the 5 split tables."""
     if len(merged_missing) == 0 and not force:
@@ -111,7 +105,7 @@ async def write_split_tables(conn, merged_missing: pd.DataFrame, force: bool) ->
 
     cols = safe_columns(src)
     basic_cols = ["prev_close", "open", "high", "low", "close", "pct_change"]
-    src["eps"] = _compute_eps_vec(src["close"], src["pe"].astype(float))
+    src["eps"] = compute_eps_vec(src["close"], src["pe"].astype(float))
     if "is_close_estimated" in cols:
         src["is_close_estimated"] = src["is_close_estimated"].fillna(False).astype(bool)
     else:

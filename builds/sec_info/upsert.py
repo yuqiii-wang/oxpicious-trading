@@ -14,8 +14,12 @@ Writes four targets:
                              so builds.etf full-composition snapshots are never
                              overwritten by the smaller top-10 source.
 
-All upserts use the shared bulk_upsert_async / truncate_table_async helpers
-from _common.build_commons.
+All writes use the shared _common.build_commons helpers: rows that are
+conflict-free by construction (post-truncate rebuilds, or pre-filtered to
+PKs missing from the target) go through the COPY fast path
+(``copy_insert_async`` — no ON CONFLICT arbiter, no per-row Bind/Execute);
+``stats.sec_info`` keeps the upsert because its incremental rows include
+existing codes refreshed with a newer last_report_date (real PK conflicts).
 """
 from __future__ import annotations
 
@@ -23,8 +27,9 @@ import datetime
 from typing import Any, Dict, List
 
 from _common.build_commons import (
-    bulk_upsert_async, truncate_table_async, rec_col,
+    bulk_upsert_async, copy_insert_async, truncate_table_async, rec_col,
 )
+from _common.db_commons import batched_copy_by_key_async
 
 import logging
 logger = logging.getLogger(__name__)
@@ -57,8 +62,9 @@ async def upsert_owners(
         "full_names": list(o.get("full_names", [])),
     } for o in owners]
     await truncate_table_async(conn, "stats.sec_owners")
-    inserted = await bulk_upsert_async(
-        conn, "stats.sec_owners", owner_rows, ["owner_id"])
+    # Conflict-free by construction: the truncate above emptied the table,
+    # so the rebuild takes the COPY fast path.
+    inserted = await copy_insert_async(conn, "stats.sec_owners", owner_rows)
     if verbose:
         logger.info(f"    [DB] Inserted {inserted:,} owner rows into "
               f"stats.sec_owners")
@@ -119,6 +125,9 @@ async def upsert_sec_info(conn, rows: List[Dict[str, Any]], force: bool,
         if verbose:
             logger.info("    [DB] No sec_info rows to insert")
         return 0
+    # KEEP UPSERT (not COPY): incremental rows intentionally include
+    # EXISTING codes refreshed with a newer last_report_date — real PK
+    # conflicts, and the table has no date column for a MAX(date) split.
     inserted = await bulk_upsert_async(conn, "stats.sec_info", rows, ["code"])
     if verbose:
         logger.info(f"    [DB] Upserted {inserted:,} rows into stats.sec_info "
@@ -163,8 +172,12 @@ async def upsert_sec_reports(conn, rows: List[Dict[str, Any]], force: bool,
         if verbose:
             logger.info("    [DB] No sec_reports rows to insert")
         return 0
-    inserted = await bulk_upsert_async(
-        conn, "stats.sec_reports", rows, ["code", "report_date"])
+    # Conflict-free by construction: incremental rows are pre-filtered to
+    # (code, report_date) pairs missing from the table (build_sec_reports_
+    # rows), force mode truncated above — COPY fast path.
+    inserted = await batched_copy_by_key_async(
+        conn, "stats.sec_reports", rows, key="code",
+    )
     if verbose:
         logger.info(f"    [DB] Upserted {inserted:,} rows into stats.sec_reports "
               f"({'force' if force else 'incremental'})")
@@ -217,9 +230,12 @@ async def inject_top10_composition(conn, rows: List[Dict[str, Any]],
         if verbose:
             logger.info("    [DB] No new sec_composition rows from top10_holdings — skipping")
         return 0
-    inserted = await bulk_upsert_async(
-        conn, "stats.sec_composition", rows,
-        ["code", "snapshot_date", "rank"])
+    # Conflict-free by construction: build_composition_rows skipped every
+    # (code, snapshot_date) pair already present and assigns fresh ranks —
+    # COPY fast path.
+    inserted = await batched_copy_by_key_async(
+        conn, "stats.sec_composition", rows, key="code",
+    )
     if verbose:
         logger.info(f"    [DB] Inserted {inserted:,} top10-holdings rows into "
               f"stats.sec_composition")

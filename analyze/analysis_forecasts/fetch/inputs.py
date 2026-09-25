@@ -3,8 +3,8 @@
 
 One row per (code, date) with the indicator columns every bucket family
 consumes: price (+ ma / std / rsi / relative-MA / relative-EMA /
-price-vs-MA / price-vs-EMA spreads), trading_amount + rz_buy (px_vol /
-margin_ratio) and pe + dividend_yield (valuation). The frame the
+price-vs-MA / price-vs-EMA spreads), trading_amount + rz_buy
+(margin_ratio) and pe + dividend_yield (valuation). The frame the
 engines scatter into their
 (T, C) grids — loaded through the repo's cudf.pandas contract: every
 numeric column cast ``::float8`` at the SQL source (no Decimal object
@@ -100,7 +100,7 @@ async def fetch_analysis_inputs(
 
     One row per (code, date) with columns ``_COLUMNS``. Rows are bounded
     to date >= ``since`` (the earliest trailing-window start across the
-    target stat months); there is NO upper date bound — forward changes
+    target stat dates); there is NO upper date bound — forward changes
     for the last bucket days of the newest month need post-month-end
     prices.
 

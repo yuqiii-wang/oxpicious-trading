@@ -1,8 +1,9 @@
 """CASE-free SQL templates for the mov_rsi signal family.
 
 Plain SELECTs only — no CASE/WHEN, no conditional expressions. The
-bucket read fans the forecast bucket's trigger arrays out to a LONG
-frame (one row per bucket trigger day) via LATERAL unnest, so every
+bucket read fans the forecast bucket's mixed-row DELAY LADDER + the
+matching per-rung trigger arrays out to a LONG frame (one row per
+bucket × ladder rung × trigger day) via LATERAL unnest, so every
 column arrives as a plain scalar (arrays never cross into the frames);
 the indicator-value read is a WIDE literal-column SELECT (the
 window→column mapping happens in the engine's vectorized melt).
@@ -19,29 +20,31 @@ from analyze.analysis_forecasts.config import (
     TABLE_IDENTITIES,
     TABLE_MOV_RSI,
 )
+from analyze.analysis_signals.config import SIGNAL_DELAY_MAX
 
 # ---------------------------------------------------------------------------
-#  mov_rsi buckets (long: one row per bucket × trigger day)
+#  mov_rsi buckets (long: one row per bucket × ladder rung × trigger day)
 # ---------------------------------------------------------------------------
 
 MOV_RSI_BUCKET_COLUMNS = [
-    "code", "stat_month", "rsi_window", "side", "regime_state",
-    "ave_change", "reverse_prob", "occurrence_count",
+    "code", "stat_date", "rsi_window", "side", "regime_state",
+    "delay",
+    "ave_change", "occurrence_count",
     "ave_next",
     "ave_5d", "max_5d", "min_5d",
     "ave_20d", "max_20d", "min_20d",
     "trig_date", "trig_excess",
 ]
-MOV_RSI_BUCKET_EPOCH_COLS = ("stat_month", "trig_date")
+MOV_RSI_BUCKET_EPOCH_COLS = ("stat_date", "trig_date")
 
 MOV_RSI_BUCKETS_SQL = f"""
     SELECT i.code,
-           extract(epoch from i.stat_month)::float8 AS stat_month,
+           extract(epoch from i.stat_date)::float8 AS stat_date,
            m.rsi_window::int                        AS rsi_window,
            m.side,
            m.regime_state,
+           fmx.delay::int                           AS delay,
            fmx.ave_change::float8                   AS ave_change,
-           fmx.reverse_prob::float8                 AS reverse_prob,
            fmx.occurrence_count::float8             AS occurrence_count,
            qn.ave_next                              AS ave_next,
            q5.ave_5d                                AS ave_5d,
@@ -56,17 +59,26 @@ MOV_RSI_BUCKETS_SQL = f"""
     JOIN {TABLE_MOV_RSI} m
       ON m.forecast_id = i.forecast_id
     CROSS JOIN LATERAL (
-        SELECT f.ave_change, f.reverse_prob, f.occurrence_count
+        -- the bucket's mixed DELAY LADDER (one row per rung
+        -- 0..{SIGNAL_DELAY_MAX}: rung d's stats are conditioned on the
+        -- signal having lasted d days) — the plain gate + the
+        -- occurrence × edge balance rule run PER RUNG in the engine
+        SELECT f.delay, f.ave_change, f.occurrence_count
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'mixed' AND f.delay = 0
+        WHERE f.forecast_id = i.forecast_id AND f.period = 'mixed'
+          AND f.delay BETWEEN 0 AND {SIGNAL_DELAY_MAX}
         OFFSET 0
     ) fmx
     LEFT JOIN LATERAL (
-        SELECT f.trigger_dates, f.trigger_excess
+        -- the rung's own trigger anchors (the day-d days of the
+        -- bucket's qualifying streaks — a delayed strategy's history
+        -- rows are its CHOSEN rung's anchors)
+        SELECT f.delay, f.trigger_dates, f.trigger_excess
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'next' AND f.delay = 0
+        WHERE f.forecast_id = i.forecast_id AND f.period = 'next'
+          AND f.delay BETWEEN 0 AND {SIGNAL_DELAY_MAX}
         OFFSET 0
-    ) fnx ON TRUE
+    ) fnx ON fnx.delay = fmx.delay
     LEFT JOIN LATERAL unnest(fnx.trigger_dates, fnx.trigger_excess)
       AS u(trig_date, trig_excess) ON TRUE
     LEFT JOIN LATERAL (
@@ -96,9 +108,9 @@ MOV_RSI_BUCKETS_SQL = f"""
     ) q20 ON TRUE
     WHERE i.sec_type = $1
       AND i.bucket = 'mov_rsi'
-      AND i.stat_month = $2
+      AND i.stat_date = $2
       AND m.pct = $3::int
-    ORDER BY i.code, m.rsi_window, m.side, u.trig_date
+    ORDER BY i.code, m.rsi_window, m.side, fmx.delay, u.trig_date
 """
 
 # ---------------------------------------------------------------------------

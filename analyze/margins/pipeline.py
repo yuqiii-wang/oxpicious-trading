@@ -17,6 +17,7 @@ from _common.build_commons import (
 from _common.db_commons import (
     copy_or_upsert_split_async,
     copy_frame_chunked_async,
+    chunked_purge_async,
 )
 from analyze._common import sanitize_for_db_insert
 from analyze.margins.config import (
@@ -84,8 +85,9 @@ async def delete_tech_stats_for_sec_type(conn, sec_type: str) -> None:
     rows). When both sec_types are selected, the whole table is truncated
     instead (faster).
     """
-    await conn.execute(
-        f"DELETE FROM {TABLE_TECH_STATS} WHERE sec_type = $1", sec_type
+    await chunked_purge_async(
+        conn, TABLE_TECH_STATS,
+        where_sql="sec_type = $1", params=(sec_type,),
     )
 
 

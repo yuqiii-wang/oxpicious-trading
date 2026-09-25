@@ -14,6 +14,7 @@ import LiveDataEtfPage from "@/live/pages/LiveDataEtfPage";
 import LiveDataStockPage from "@/live/pages/LiveDataStockPage";
 import LiveDataMarketMovementsPage from "@/live/pages/LiveDataMarketMovementsPage";
 import LiveDataTradingSignalsPage from "@/live/pages/LiveDataTradingSignalsPage";
+import LiveDataOptionsPage from "@/live/pages/LiveDataOptionsPage";
 import CommonsPage from "@/analysis/pages/CommonsPage";
 import DerivativesPage from "@/analysis/pages/DerivativesPage";
 import CompositesPage from "@/analysis/pages/CompositesPage";
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="/live" element={<Navigate to="/live/market-movements" replace />} />
           <Route path="/live/market-movements" element={<LiveDataMarketMovementsPage />} />
           <Route path="/live/trading-signals" element={<LiveDataTradingSignalsPage />} />
+          <Route path="/live/options" element={<LiveDataOptionsPage />} />
           <Route path="/live/index" element={<LiveDataIndexPage />} />
           <Route path="/live/etf" element={<LiveDataEtfPage />} />
           <Route path="/live/stock" element={<LiveDataStockPage />} />

@@ -43,19 +43,23 @@ def is_valid_file(path: Path, *, min_bytes: int = MIN_VALID_BYTES) -> bool:
         return False
 
 
-def is_fresh_today(
-    path: Path, *, min_bytes: int = MIN_VALID_BYTES, hour: int = 17,
+def is_fresh_within(
+    path: Path, *, hours: float, min_bytes: int = MIN_VALID_BYTES,
 ) -> bool:
-    """Check if a file exists, is valid, and was modified at or after *hour* on today's date."""
+    """Check if a file exists, is valid, and was modified within the last *hours* hours.
+
+    Retry-backoff guard only — NEVER a completeness gate. A download
+    timestamp says nothing about whether the source has published newer
+    records since (publishes land at arbitrary times of day), so
+    skip-decisions must be content-based (see the per-downloader
+    csv/record coverage checks); this only bounds how often a code whose
+    content check keeps failing re-hits the network.
+    """
     if not is_valid_file(path, min_bytes=min_bytes):
         return False
     try:
-        mtime = path.stat().st_mtime
-        mtime_dt = datetime.fromtimestamp(mtime)
-        today = datetime.now()
-        if mtime_dt.date() != today.date():
-            return False
-        return mtime_dt.hour >= hour
+        age_sec = datetime.now().timestamp() - path.stat().st_mtime
+        return age_sec <= hours * 3600
     except OSError:
         return False
 

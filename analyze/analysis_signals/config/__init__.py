@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import datetime
 
-from analyze.analysis_forecasts.config import SEC_TYPES
+from analyze.analysis_forecasts.config import SEC_TYPES, TRIGGER_DELAY_MAX
 
 from .mov_pairs import (
     PAIRS_SIGNAL_SIDES,
@@ -46,20 +46,47 @@ BELOW_ACTION = "buy"
 #
 # On the bucket's MIXED forecast_results row: the sign-aligned blended
 # mean forward change (dir_ave — top/upper negated, bottom/lower as-is;
-# the sign alignment happens in the engine) > 0.75% AND the blended
-# reverse_prob > 1%. confidence = reverse_prob.
+# the sign alignment happens in the engine) > 0.75%. (The blended
+# reverse_prob > 1% leg was REMOVED 2026-09-25 with
+# forecast_results.reverse_prob — see
+# analyze/analysis_forecasts/config/horizons.py.)
+#
+# confidence = dir_ave — the chosen rung's sign-aligned blended mean
+# forward change (the expected favorable move; the FLOAT value ranks
+# signal_order). history/live rows denormalize it as the INTEGER
+# ROUND(10000 x dir_ave) — basis points of expected move.
 
 GATE_DIR_AVE_MIN = 0.0075
-GATE_REVERSE_PROB_MIN = 0.01
 
-# ---- Refresh window --------------------------------------------------------------
+# ---- The delay ladder (the optimal entry-delay selection) ----------------------
+#
+# Every rung 0..TRIGGER_DELAY_MAX of the bucket's mixed forecast_results
+# ladder (each rung's stats conditioned on the signal having persisted
+# that long — analyze.analysis_forecasts.config.buckets) faces THE gate;
+# the bucket's OPTIMAL ENTRY DELAY is the gate-passing rung maximizing
+#
+#     score(d) = sign-aligned dir_ave(d) × occurrence_count(d)
+#
+# — the total blended forward move the entry rule captures over the
+# window, balancing the OPPORTUNITY COST of waiting (occurrence_count
+# decays with the rung: only streaks that persisted reach it) against
+# the RETURN (the persistence-conditioned mean reversal deepens with
+# the rung). Ties → the smallest delay; a bucket with no gate-passing
+# rung never registers. The strategy's confidence/params profile and
+# its history rows are the CHOSEN rung's (its day-d anchors).
 
-# The newest N present stat_months are deleted + re-emitted on every
-# run (mirrors analysis_forecasts' REFRESH_MONTHS: the RUNNING month —
-# present there as a partial snapshot keyed at its month-end, recomputed
-# daily — plus the last 4 COMPLETED months, whose long-horizon mixed
-# rows carry truncated 20d forward legs right after month-end).
-REFRESH_MONTHS = 5
+SIGNAL_DELAY_MAX = TRIGGER_DELAY_MAX
+
+# ---- Mutable scope --------------------------------------------------------------
+
+# The snapshots re-emitted on every run are the MUTABLE SCOPE resolved
+# by config.mutable_dates (imported from analysis_forecasts — the
+# single source): the ROLLING LATEST snapshot (keyed at the sec_type's
+# latest available data date, always refreshed — its long-horizon
+# mixed legs complete late) plus the newest completed year-end while
+# its 20-trading-day forward windows are still unrealized. The former
+# blanket REFRESH_MONTHS=5 window re-emitted immutable year-end
+# snapshots on every run — retired with the rolling-key migration.
 
 # ---- Stage keys (--metrics) ------------------------------------------------------
 
@@ -72,8 +99,9 @@ STRATEGY_COLUMNS = [
     "code", "sec_type", "signal_type", "signal_sub_type", "side",
     "regime_state",
     "start_date", "end_date",
-    "action", "signal_threshold", "confidence", "reason", "params",
-    "signal_order", "is_active",
+    "action", "signal_threshold", "signal_delay_days", "confidence",
+    "reason", "params",
+    "signal_order", "is_active", "is_triggered_once",
 ]
 STRATEGY_PK = [
     "code", "sec_type", "signal_type", "signal_sub_type", "side",
@@ -85,6 +113,7 @@ STRATEGY_PK = [
 # its DEFAULT).
 HISTORY_COLUMNS = [
     "code", "sec_type", "signal_type", "signal_sub_type", "date", "time",
+    "signal_delay_days",
     "action", "signal_excess", "signal_excess_pct", "signal",
     "signal_threshold", "confidence", "is_day_close_trigger",
     "regime_state",
@@ -113,13 +142,12 @@ __all__ = [
     "ABOVE_ACTION",
     "BELOW_ACTION",
     "GATE_DIR_AVE_MIN",
-    "GATE_REVERSE_PROB_MIN",
+    "SIGNAL_DELAY_MAX",
     "RSI_PCT",
     "STD_MA_WINDOW_MIN",
     "STD_K_MIN",
     "PAIRS_SIGNAL_WINDOW_MIN",
     "PAIRS_SIGNAL_SIDES",
-    "REFRESH_MONTHS",
     "STAGE_NAMES",
     "STRATEGY_COLUMNS",
     "STRATEGY_PK",

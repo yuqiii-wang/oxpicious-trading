@@ -33,7 +33,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from downloads._common import read_csv_gpu_safe
+from downloads._common import DEFAULT_START_DATE, read_csv_gpu_safe
 
 from builds._commons.safe_parse import safe_to_datetime, safe_to_numeric
 
@@ -441,6 +441,13 @@ def load_cnindex_history(verbose: bool = True,
 
         df["date"] = safe_to_datetime(df["date"])
         df = df.dropna(subset=["date"])
+
+        # The cnindex daily API serves each code's FULL history (2002/2009
+        # onward) and the archive CSVs carry it — restrict to the
+        # project-wide baseline start (csindex DEFAULT_START_DATE) so a
+        # --force build cannot write pre-2020 rows into the 2020+ DB grid
+        # every other index source follows.
+        df = df[df["date"] >= DEFAULT_START_DATE]
 
         dfs.append(df)
 

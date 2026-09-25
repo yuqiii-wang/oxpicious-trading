@@ -47,12 +47,14 @@
  */
 import {
   Accordion, AccordionDetails, AccordionSummary,
-  Box, Chip, Tooltip, Typography,
+  Box, Chip, Tooltip, Typography, useTheme,
 } from "@mui/material";
+import type { Theme } from "@mui/material";
 import { Fragment, type ReactNode } from "react";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import type { StrategyDecision } from "@shared/types";
+import { SignalActionChip } from "@/shared/components/signal-action";
 
 // ---------------------------------------------------------------------------
 // Mixed-mode signal_reason parser
@@ -103,8 +105,11 @@ function parseMixReason(reason: string | null | undefined): {
 
 /** Build a structured tooltip ReactNode for a mixed-mode decision. Shows
  *  each algo's weight, raw signal_confidence, and net contribution as
- *  colored bars. */
-function renderMixTooltip(mix: MixData): ReactNode {
+ *  colored bars. Buy/sell hues come from the theme palette — the same
+ *  source the shared SignalActionChip uses. */
+function renderMixTooltip(mix: MixData, theme: Theme): ReactNode {
+  const buyColor = theme.palette.success.main;
+  const sellColor = theme.palette.error.main;
   const maxAbs = Math.max(100, ...mix.algos.map((a) => Math.abs(a.c)));
   return (
     <Box sx={{ p: 1, minWidth: 280, maxWidth: 360 }}>
@@ -116,7 +121,7 @@ function renderMixTooltip(mix: MixData): ReactNode {
         const barWidth = Math.min(100, (Math.abs(a.n) / maxAbs) * 100);
         const isBuy = a.c > 0;
         const isSell = a.c < 0;
-        const barColor = isBuy ? "#4caf50" : isSell ? "#f44336" : "#9e9e9e";
+        const barColor = isBuy ? buyColor : isSell ? sellColor : "#9e9e9e";
         return (
           <Box key={a.algo} sx={{ mb: 0.75 }}>
             <Box sx={{ display: "flex", justifyContent: "space-between", fontSize: "0.7rem", mb: 0.25 }}>
@@ -126,7 +131,7 @@ function renderMixTooltip(mix: MixData): ReactNode {
               </span>
             </Box>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, fontSize: "0.68rem" }}>
-              <span style={{ width: 32, color: isBuy ? "#4caf50" : isSell ? "#f44336" : "#9e9e9e", fontWeight: 600 }}>
+              <span style={{ width: 32, color: isBuy ? buyColor : isSell ? sellColor : "#9e9e9e", fontWeight: 600 }}>
                 {isBuy ? "BUY" : isSell ? "SELL" : "—"}
               </span>
               <Box sx={{ flex: 1, height: 8, bgcolor: "rgba(0,0,0,0.08)", borderRadius: 0.5, position: "relative" }}>
@@ -155,7 +160,7 @@ function renderMixTooltip(mix: MixData): ReactNode {
       })}
       <Box sx={{ mt: 1, pt: 0.5, borderTop: 1, borderColor: "divider", display: "flex", justifyContent: "space-between", fontSize: "0.7rem" }}>
         <span style={{ fontWeight: 700 }}>Blended Σ</span>
-        <span style={{ fontWeight: 700, color: mix.blended >= 0 ? "#4caf50" : "#f44336" }}>
+        <span style={{ fontWeight: 700, color: mix.blended >= 0 ? buyColor : sellColor }}>
           {mix.blended >= 0 ? "+" : ""}{mix.blended.toFixed(1)}
         </span>
       </Box>
@@ -190,6 +195,8 @@ export default function DecisionTable({
   maxHeight = 400,
   faultTolerance = 0,
 }: DecisionTableProps) {
+  // Before the early return — hooks must run unconditionally.
+  const theme = useTheme();
   if (decisions.length === 0) return null;
 
   const nBuys = decisions.filter((d) => d.side === "BUY").length;
@@ -286,7 +293,7 @@ export default function DecisionTable({
               </tr>
             </thead>
             <tbody>
-              {decisions.map((d, i) => {
+              {decisions.map((d) => {
                 const normDelta = d.normalized_fill_price - 100;
                 const normColor = normDelta > 0.01
                   ? "#2e7d32"
@@ -318,8 +325,12 @@ export default function DecisionTable({
                   <Fragment key={d.decision_no}>
                     <tr style={isLastDaySell(d) ? { backgroundColor: LAST_DAY_SELL_ROW_BG } : undefined}>
                       <td>{d.decision_no}</td>
-                      <td style={{ color: d.side === "BUY" ? "#4caf50" : isLastDaySell(d) ? LAST_DAY_SELL_COLOR : "#f44336", fontWeight: 700 }}>
-                        {d.side}
+                      <td>
+                        <SignalActionChip
+                          action={d.side}
+                          confidence={confidence}
+                          color={isLastDaySell(d) ? LAST_DAY_SELL_COLOR : undefined}
+                        />
                       </td>
                       <td>{d.exec_date}</td>
                       <td>
@@ -508,7 +519,7 @@ export default function DecisionTable({
                             // Mixed mode: combine mix tooltip + FT block.
                             const combinedTitle = (
                               <Box>
-                                {renderMixTooltip(mix)}
+                                {renderMixTooltip(mix, theme)}
                                 {ftBlock}
                               </Box>
                             );

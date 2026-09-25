@@ -201,6 +201,55 @@ def build_history_csv(
 
 
 # ---------------------------------------------------------------------------
+# Content-freshness: does the local daily-record CSV cover a session?
+# ---------------------------------------------------------------------------
+
+def csv_has_date(out_dir: Path, index_code: str, yyyymmdd: str) -> bool:
+    """True iff the code's local 1m or history CSV contains a row for *yyyymmdd*.
+
+    The completeness gate for the daily-record download steps — a download
+    timestamp says nothing about what the source published after the last
+    fetch (rows land at arbitrary times of day, and laggard indices
+    publish hours behind peers), so skip decisions must read the data
+    itself, never the file mtime.
+
+    Optimized: header + last ~500KB of each CSV — CSVs are append-only in
+    chronological order, so the target date is always near the end.
+    Pure local check; missing/unreadable files count as NOT having the date.
+    """
+    import io
+
+    for fname in (f"{index_code}_1m.csv", f"{index_code}_history.csv"):
+        f = out_dir / fname
+        if not f.is_file():
+            continue
+        try:
+            fsize = f.stat().st_size
+            if fsize == 0:
+                continue
+
+            with open(f, "r", encoding="utf-8") as fh:
+                header = fh.readline().strip()
+
+            tail_size = min(fsize, 500_000)
+            with open(f, "rb") as fh:
+                fh.seek(-tail_size, 2)
+                if fsize > tail_size:
+                    fh.readline()  # skip the first partial line to align to a row boundary
+                tail_data = fh.read().decode("utf-8")
+
+            df = pd.read_csv(io.StringIO(header + "\n" + tail_data))
+            col = _find_date_column(df)
+            if not col:
+                continue
+            if (df[col].apply(clean_date) == yyyymmdd).any():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Incremental xlsx -> csv merge (append missing dates, never overwrite)
 # ---------------------------------------------------------------------------
 

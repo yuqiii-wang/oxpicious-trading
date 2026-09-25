@@ -1,4 +1,4 @@
-"""MA / EMA-pair cross (golden / death cross) event-bucket monthly
+"""MA / EMA-pair cross (golden / death cross) event-bucket annual-snapshot
 aggregation (analysis_forecasts) — sparse tensor engine.
 
 The percentile engines' streak-merge / hype-split / horizon-aggregation
@@ -32,21 +32,20 @@ fast legs. Row payloads are identical (fast_leg, pair_window, side,
 regime_state); the caller writes them to mov_pairs or mov_pairs_ema.
 
 One-day EVENT signals (the 2026-09 streak migration's "one day"
-branch of the unified pipeline — wide.iter_bucket_subsets with
-merge=False): every cross day is its OWN forecast signal with a 1-day
+branch of the unified pipeline — ``_dfengine``'s df-side
+implementation with merge=False): every cross day is its OWN forecast signal with a 1-day
 run length. A cross is structurally a single day — a cross day's
 predecessor sits on the OTHER side of zero, so consecutive cross days
 are mutually exclusive and a streak-merge pass would be a no-op — so
 the engines skip it; the recorded streak_signal_days is the 1 constant
 and the result rows' streak spans are the signal day itself. Split by
-PK member regime_state, per-code ADAPTIVE reversal bar
-(wide.thresholds: k_n·σ of the window's n-day forward
-changes). No config JSONB payload (the mov_rsi precedent — the trigger
+PK member regime_state. No config JSONB payload (the mov_rsi
+precedent — the trigger
 evidence is the stored spread itself, joinable via the bucket keys).
 
-Yields (stat_month, rows) so __main__ can split each row into the
+Yields (stat_date, rows) so __main__ can split each row into the
 mov_pairs / mov_pairs_ema motivation dicts and the forecast_results
-result dicts and write month-major.
+result dicts and write snapshot-major.
 """
 from __future__ import annotations
 
@@ -185,7 +184,7 @@ def compute_pairs_results(
     legs: tuple[tuple[str, str], ...] = MOV_PAIRS_LEGS,
     windows: tuple = MOV_PAIRS_WINDOWS,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, bucket rows) per stat month — ``legs``
+    """Yield (stat_date, bucket rows) per stat date — ``legs``
     ((ma5, pair), (price, px_pair)) for mov_pairs (the MA detail
     table's ma5_vs_ma{W} / price_vs_ma{W} columns) or the EMA sibling
     for mov_pairs_ema."""

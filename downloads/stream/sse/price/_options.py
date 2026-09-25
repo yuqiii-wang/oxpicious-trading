@@ -18,6 +18,12 @@ fourth asset of ``downloads.stream.sse.price``:
   * identity — the stream writes ``stats.options_identity`` rows itself
     (numeric contract_code + name from the day-contract map, exchange
     'SSE'), satisfying the FK of ``stats.options_intraday_5min``
+  * OI estimate — each bar also lands in ``live.options_intraday_oi``:
+    ``open_interest_est = oi_base + cum_volume`` (GENERATED column) where
+    ``oi_base`` is the contract's prev-trading-day daily OI
+    (stats.options_volume_oi; 0 for SSE — no daily per-contract source)
+    and ``cum_volume`` is the day-cumulative traded volume. An upper-bound
+    estimator: closes / rolls are not netted out.
 
 A single post-close sample carries the day's final OHLC + day totals, so
 ``run_options_eod_capture`` (``--options-eod``) fetches once and emits the
@@ -80,6 +86,10 @@ class OptionsStream:
     list_url: str = ""  # unused: options sweep ≈20 code-month URLs, not one
     identity_table: str = "stats.options_identity"
     intraday_table: str = "stats.options_intraday_5min"
+    oi_table: str = "live.options_intraday_oi"
+    # The generic progress/completeness helpers key on this column — the
+    # options tables use contract_code where stock/etf/index use code.
+    code_column: str = "contract_code"
     exchange: Optional[str] = None
     has_volume: bool = True
     allowed_codes: Optional[set] = None
@@ -89,6 +99,9 @@ class OptionsStream:
     underlyings: List[str] = field(default_factory=list)
     months: Dict[str, List[str]] = field(default_factory=dict)
     contract_map: Dict[str, Tuple[str, str]] = field(default_factory=dict)
+    # numeric contract_code -> prev-trading-day daily OI (the estimator's
+    # base); contracts absent from the map (new listings) base at 0.
+    oi_base: Dict[str, float] = field(default_factory=dict)
 
     buffer: List[Tuple[datetime, Dict[str, dict]]] = field(default_factory=list)
     prev_bar_cumvol: Dict[str, float] = field(default_factory=dict)
@@ -148,6 +161,40 @@ def build_options_asset(
 
 
 # ---------------------------------------------------------------------------
+# OI estimator base (prev-trading-day daily OI per contract)
+# ---------------------------------------------------------------------------
+def fetch_oi_base(conn, trade_date) -> Dict[str, float]:
+    """Per-contract daily OI of the latest trading day STRICTLY BEFORE
+    ``trade_date`` (stats.options_volume_oi) — the base the intraday
+    estimator adds the day's traded volume onto. SSE rows carry 0 (no
+    per-contract daily OI source); contracts absent here (new listings)
+    base at 0 in the aggregation."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT contract_code, COALESCE(open_interest, 0) "
+                "FROM stats.options_volume_oi "
+                "WHERE date = (SELECT MAX(date) FROM stats.options_volume_oi "
+                "             WHERE date < %s)",
+                (trade_date,),
+            )
+            return {row[0]: float(row[1] or 0.0) for row in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to load options OI base for %s: %s", trade_date, e)
+        return {}
+
+
+def load_options_oi_base(conn, asset: OptionsStream, trade_date) -> None:
+    """(Re)load the asset's OI base map — at startup and on trade-date
+    rollover (the base advances one daily snapshot per trading day)."""
+    asset.oi_base = fetch_oi_base(conn, trade_date)
+    logger.info(
+        "options OI base loaded: %d contracts (prev daily snapshot before %s)",
+        len(asset.oi_base), trade_date,
+    )
+
+
+# ---------------------------------------------------------------------------
 # CSV archive
 # ---------------------------------------------------------------------------
 def write_options_snapshot_csv(
@@ -182,7 +229,7 @@ def write_options_snapshot_csv(
 def aggregate_options_bars(
     asset: OptionsStream,
     trade_date: date,
-) -> Tuple[List[dict], List[dict], Optional[time]]:
+) -> Tuple[List[dict], List[dict], List[dict], Optional[time]]:
     """Aggregate buffered samples into per-contract 5-min bars.
 
     Bar time = ceiling_5min of the last sample, CLAMPED to CLOSE_TIME: a
@@ -193,11 +240,16 @@ def aggregate_options_bars(
     the day-contract map are skipped (no numeric contract_code → FK target
     unknown).
 
-    Returns (identity_rows, bar_rows, bar_time).
+    Also emits one OI-estimate row per bar (``live.options_intraday_oi``):
+    oi_base (prev-trading-day daily OI) + cum_volume (day-cumulative
+    traded volume — the tstyle source value, NOT the subtracted per-bar
+    volume) with the GENERATED open_interest_est = base + volume.
+
+    Returns (identity_rows, bar_rows, oi_rows, bar_time).
     """
     buffer = asset.buffer
     if not buffer:
-        return [], [], None
+        return [], [], [], None
 
     last_dt = buffer[-1][0]
     bar_time = min(ceiling_5min(last_dt.time()), CLOSE_TIME)
@@ -208,6 +260,7 @@ def aggregate_options_bars(
 
     identity_rows: List[dict] = []
     bar_rows: List[dict] = []
+    oi_rows: List[dict] = []
     n_unmapped = 0
     for code in sorted(all_codes):
         if code in asset.finished_codes:
@@ -216,6 +269,7 @@ def aggregate_options_bars(
         lasts: List[float] = []
         day_open = day_high = day_low = None
         end_cumvol = end_cumamt = None
+        underlying = ""
         for _, snap in buffer:
             entry = snap.get(code)
             if entry is None:
@@ -233,6 +287,9 @@ def aggregate_options_bars(
                 end_cumvol = entry["volume"]
             if entry.get("amount") is not None:
                 end_cumamt = entry["amount"]
+            u = entry.get("underlying")
+            if u:
+                underlying = u
         if not lasts:
             continue
 
@@ -284,6 +341,17 @@ def aggregate_options_bars(
             "change": change,
             "change_pct": change_pct,
         })
+        oi_rows.append({
+            "date": trade_date,
+            "contract_code": security_id,
+            # Same shared bar grid as bar_rows — `time` is part of the OI
+            # table's PK, so a row without it fails the bulk-write key read.
+            "time": bar_time,
+            "underlying_code": underlying,
+            "exchange": "SSE",
+            "oi_base": asset.oi_base.get(security_id, 0.0),
+            "cum_volume": end_cumvol,
+        })
 
         if bar_time >= CLOSE_TIME:
             asset.finished_codes.add(code)
@@ -294,7 +362,7 @@ def aggregate_options_bars(
             "contract map — skipped (no numeric contract_code)",
             n_unmapped, len(all_codes),
         )
-    return identity_rows, bar_rows, bar_time
+    return identity_rows, bar_rows, oi_rows, bar_time
 
 
 def load_options_bars(
@@ -302,8 +370,9 @@ def load_options_bars(
     asset: OptionsStream,
     identity_rows: List[dict],
     bar_rows: List[dict],
+    oi_rows: Optional[List[dict]] = None,
 ) -> None:
-    """Upsert identity rows (FK parent) then option bars, deduped by PK."""
+    """Upsert identity rows (FK parents) then option bars and OI estimates."""
     if identity_rows:
         seen = set()
         uniq = []
@@ -316,6 +385,10 @@ def load_options_bars(
         bulk_upsert(conn, asset.identity_table, uniq, ["date", "contract_code"])
     if bar_rows:
         bulk_upsert(conn, asset.intraday_table, bar_rows, ["date", "contract_code", "time"])
+    if oi_rows:
+        # GENERATED column open_interest_est is computed server-side — the
+        # rows carry only its inputs (oi_base, cum_volume).
+        bulk_upsert(conn, asset.oi_table, oi_rows, ["date", "contract_code", "time"])
 
 
 def prepopulate_options_finished_codes(
@@ -452,20 +525,25 @@ def backfill_options_asset(conn, asset: OptionsStream, contract_map: Dict[str, T
             continue
 
         scratch = OptionsStream(contract_map=contract_map)
+        # OI base is date-specific (prev daily snapshot before the CSV's
+        # date) — reload per file, shared by all windows of that day.
+        scratch.oi_base = fetch_oi_base(conn, trade_date)
         all_identity: List[dict] = []
         all_bars: List[dict] = []
+        all_oi: List[dict] = []
         for wend in sorted(windows.keys()):
             samples = windows[wend]
             scratch.buffer = samples
             scratch.finished_codes = set()
             day = samples[0][0].date()
-            identity_rows, bar_rows, _ = aggregate_options_bars(scratch, day)
+            identity_rows, bar_rows, oi_rows, _ = aggregate_options_bars(scratch, day)
             all_identity.extend(identity_rows)
             all_bars.extend(bar_rows)
+            all_oi.extend(oi_rows)
         # scratch baselines persist across windows by construction (same object)
 
         if all_bars:
-            load_options_bars(conn, asset, all_identity, all_bars)
+            load_options_bars(conn, asset, all_identity, all_bars, all_oi)
             total_bars += len(all_bars)
         logger.info(
             "backfill options: %s → %d windows, %d bars in %.1fs",
@@ -508,11 +586,14 @@ def run_options_eod_capture(
     )
 
     asset.buffer = [(update_dt, snapshot)]
-    identity_rows, bar_rows, bar_time = aggregate_options_bars(asset, update_dt.date())
+    load_options_oi_base(conn, asset, update_dt.date())
+    identity_rows, bar_rows, oi_rows, bar_time = aggregate_options_bars(asset, update_dt.date())
     if bar_rows:
-        load_options_bars(conn, asset, identity_rows, bar_rows)
+        load_options_bars(conn, asset, identity_rows, bar_rows, oi_rows)
         logger.info(
-            "options EOD capture: upserted %d identity + %d bars for %s %s",
-            len(identity_rows), len(bar_rows), update_dt.date(), bar_time,
+            "options EOD capture: upserted %d identity + %d bars + %d OI rows "
+            "for %s %s",
+            len(identity_rows), len(bar_rows), len(oi_rows),
+            update_dt.date(), bar_time,
         )
     return len(identity_rows), len(bar_rows)

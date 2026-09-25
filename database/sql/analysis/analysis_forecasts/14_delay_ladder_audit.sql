@@ -1,6 +1,6 @@
 -- 14_delay_ladder_audit.sql — the delay-ladder invariant, DB-side audit.
 --
--- The writer enforces the invariant per month batch at write time (see
+-- The writer enforces the invariant per snapshot batch at write time (see
 -- analyze.analysis_forecasts.writer: each bucket's forecast_results.delay
 -- column must be contiguous 0..max and <= 5 — delay d exists iff the run
 -- reached day d, per the 2026-09-21 incremental-anchor convention).
@@ -22,15 +22,15 @@ WITH delays AS (
     WHERE period = 'mixed'
     GROUP BY forecast_id
 )
-SELECT i.bucket, i.sec_type, date_trunc('month', i.stat_month)::date AS stat_month,
+SELECT i.bucket, i.sec_type, date_trunc('year', i.stat_date)::date AS stat_date,
        count(*) AS violating_buckets,
        min(d.min_delay) AS min_min_delay, max(d.max_delay) AS max_max_delay
 FROM delays d
 JOIN analysis_forecasts.forecast_identities i ON i.forecast_id = d.forecast_id
 WHERE d.min_delay != 0                          -- no delay-0 anchor
    OR d.max_delay - d.min_delay + 1 != d.n_delays  -- hole in the ladder
-GROUP BY i.bucket, i.sec_type, stat_month
-ORDER BY i.bucket, i.sec_type, stat_month DESC;
+GROUP BY i.bucket, i.sec_type, stat_date
+ORDER BY i.bucket, i.sec_type, stat_date DESC;
 
 -- 2. Delay-rung coverage: buckets by their max delay (the ladder reach
 --    distribution — how far the bucket's streaks actually got).

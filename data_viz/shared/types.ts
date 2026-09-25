@@ -1207,7 +1207,7 @@ export interface MovAveSpreadHighLowStreak {
 }
 
 /** Price-speed state of one day (the px_vol family's px_speed —
- *  analysis.mov_ave_price_vs_amt / analysis_forecasts.px_vol_state). */
+ *  analysis.mov_ave_price_vs_amt). */
 export type MovAveSpreadPxVolSpeed =
   | "sharp_up"
   | "slow_up"
@@ -1281,10 +1281,10 @@ export interface MovAveSpreadExtrasResponse {
 
 // ----------------------------------------------------------------------------
 //  Analysis Commons — Forecast buckets (analysis_forecasts schema)
-//    mov_rsi / mov_std / px_vol — bucket-definition (motivation)
-//      tables, each row linking 1:1 via forecast_id to its forecast_results
-//      rows (normalized: 3 period rows next/5d/20d + the blended
-//      'mixed' row).
+//    mov_rsi / mov_std / mov_pairs / mov_pairs_ema — bucket-definition
+//      (motivation) tables, each row linking 1:1 via forecast_id to its
+//      forecast_results rows (normalized: 3 period rows next/5d/20d +
+//      the blended 'mixed' row).
 //    Served by GET /api/analysis/mov-ave-spread/forecast — the MA-Spread
 //    panel's second plot: a config→result table beneath the spread chart.
 // ----------------------------------------------------------------------------
@@ -1292,7 +1292,31 @@ export interface MovAveSpreadExtrasResponse {
 /** Which bucket family the forecast table shows. (mov_gap is retired —
  *  the gap indicator columns were removed from analysis.mov_ave_rsi;
  *  the family has no tab and no kind here.) */
-export type ForecastKind = "mov_rsi" | "mov_std" | "mov_pairs" | "mov_pairs_ema" | "px_vol" | "margin_ratio" | "high_low_streaks" | "pe" | "dividend";
+export type ForecastKind = "mov_rsi" | "mov_std" | "mov_pairs" | "mov_pairs_ema" | "margin_ratio" | "high_low_streaks" | "pe" | "dividend";
+
+/** One horizon's forecast stats at one ladder rung — the delay's OWN
+ *  forecast for that horizon (the forecast_results (delay, period) row),
+ *  the same stats the main table's delay-0 pivoted columns show but
+ *  conditioned on the signal having lasted delay + 1 days. ave / max /
+ *  min are SIGN-ALIGNED like the rung's blended mean (top → −, bottom
+ *  → +) so favorable reads positive on both sides; std is a dispersion
+ *  magnitude and close a raw price level — never sign-aligned. */
+export interface DelayRungHorizon {
+  /** Sign-aligned mean n-day forward change (fractional). */
+  ave: number | null;
+  /** Std-dev of the same horizon's forward changes (magnitude). */
+  std: number | null;
+  /** Trigger anchors with a valid forward window (occurrence_count —
+   *  the mean's denominator; the horizon's "days" column). */
+  n: number | null;
+  /** Close-based extreme forward changes (NULL on the next horizon —
+   *  no 1-day close-based high/low). */
+  max: number | null;
+  min: number | null;
+  /** Mean PERIOD-END close — raw price units, the level the horizon
+   *  lands at (NULL on the next horizon). */
+  close: number | null;
+}
 
 /** One anchor-delay rung of the bucket's delay ladder (the
  *  forecast_results delay 0..5 axis — the 2026-09-21 incremental-anchor
@@ -1308,20 +1332,24 @@ export interface DelayLadderRung {
   n: number;
   /** Sign-aligned blended mean forward change (top → −ave_change,
    *  bottom → +; flat sides raw) — the "expected reversal return if
-   *  the signal is `delay` days old" number the decay rule reads. */
+   *  the signal is `delay` days old" number the decay rule reads. The
+   *  delay's WEIGHTED RETURN (the fixed 5d 65% / next 25% / 20d 10%
+   *  blend). */
   dir_ave: number | null;
   /** Sign-aligned per-horizon means for the rung tooltip. */
   dir_ave_next: number | null;
   dir_ave_5d: number | null;
   dir_ave_20d: number | null;
-  /** Blended reversal probability at the fixed 1% bar. */
-  reverse_prob: number | null;
+  /** The rung's per-horizon forecast stats — each delay's own
+   *  next / 5d / 20d forecast for the row-click expansion panel. */
+  horizons: Record<"next" | "5d" | "20d", DelayRungHorizon>;
 }
 
 /** The forecast_results numeric columns: mean + std-dev of the forward
  *  fractional changes at all 3 horizons; close-based max/min forward
- *  changes at the 5d/20d horizons only; per-horizon P(>1% reversal)
- *  and occurrence counts. */
+ *  changes at the 5d/20d horizons only; per-horizon occurrence
+ *  counts. (The per-horizon P(>1% reversal) columns were REMOVED
+ *  2026-09-25 with forecast_results.reverse_prob.) */
 export interface ForecastResultCols {
   /** The bucket's surrogate id into analysis_forecasts.forecast_results —
    *  links to the row-click trigger-dates endpoint
@@ -1346,6 +1374,11 @@ export interface ForecastResultCols {
    *  no positive edge at delay 0 or a flat side (no directional
    *  claim). Rungs past decay_stop render de-emphasized. */
   decay_stop?: number | null;
+  /** The delay whose rung carries the HIGHEST weighted return
+   *  (sign-aligned blended mean) of the ladder — set ONLY when that
+   *  max is > 0 (a favorable edge worth acting on); null when every
+   *  rung is non-positive. The ladder highlights exactly this rung. */
+  best_delay?: number | null;
   ave_next_change: number | null;
   ave_next_5d_change: number | null;
   ave_next_20d_change: number | null;
@@ -1358,10 +1391,14 @@ export interface ForecastResultCols {
   max_20d_change: number | null;
   min_5d_change: number | null;
   min_20d_change: number | null;
-  reverse_prob: number | null;
-  reverse_prob_5d: number | null;
-  reverse_prob_20d: number | null;
-  /** Bucket days with a valid {n}-day forward change — the mean/prob
+  /** Mean PERIOD-END close — mean of close[t+n] over the SAME bucket
+   *  days as the ave (raw price units, NOT a fractional change): the
+   *  average price level the 5d/20d horizon lands at. Null on the
+   *  mixed row (price levels do not blend) and on rows written before
+   *  the column existed (pre-2026-09-22). */
+  ave_close_5d: number | null;
+  ave_close_20d: number | null;
+  /** Bucket days with a valid {n}-day forward change — the mean's
    *  denominator per horizon. NULL for pre-migration rows. */
   occurrence_count_next: number | null;
   occurrence_count_5d: number | null;
@@ -1369,10 +1406,10 @@ export interface ForecastResultCols {
 }
 
 /** One mov_rsi bucket row (RSI extreme-percentile bucket) + its results.
- *  Bucket key: (stat_month, rsi_window, side, pct,
+ *  Bucket key: (stat_date, rsi_window, side, pct,
  *  regime_state). */
 export interface MovRsiForecastRow extends ForecastResultCols {
-  stat_month: string;
+  stat_date: string;
   rsi_window: number;
   side: "top" | "bottom";
   pct: number;
@@ -1381,19 +1418,25 @@ export interface MovRsiForecastRow extends ForecastResultCols {
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
   regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
+  /** The registered signal strategy's OWN action — "buy" / "sell"
+   *  (analysis_signals.signal_strategies.action): non-null when the
+   *  row's own bucket (config × side × regime split × stat_date) was
+   *  emitted as a signal strategy — its MIXED forecast_results row
+   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
+   *  10%) cleared the gates the signals layer applies; null when the
+   *  bucket never registered. */
+  signal_action: "buy" | "sell" | null;
+  /** The registered strategy's confidence — the chosen entry rung's
+   *  sign-aligned dir_ave (the expected favorable blended move,
+   *  fractional); null when no strategy exists. */
+  signal_confidence: number | null;
 }
 
 /** One mov_std bucket row (Bollinger-breach bucket) + its results.
- *  Bucket key: (stat_month, ma_window, k, side,
+ *  Bucket key: (stat_date, ma_window, k, side,
  *  regime_state). */
 export interface MovStdForecastRow extends ForecastResultCols {
-  stat_month: string;
+  stat_date: string;
   ma_window: number;
   k: number;
   side: "upper" | "lower";
@@ -1402,22 +1445,28 @@ export interface MovStdForecastRow extends ForecastResultCols {
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
   regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
+  /** The registered signal strategy's OWN action — "buy" / "sell"
+   *  (analysis_signals.signal_strategies.action): non-null when the
+   *  row's own bucket (config × side × regime split × stat_date) was
+   *  emitted as a signal strategy — its MIXED forecast_results row
+   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
+   *  10%) cleared the gates the signals layer applies; null when the
+   *  bucket never registered. */
+  signal_action: "buy" | "sell" | null;
+  /** The registered strategy's confidence — the chosen entry rung's
+   *  sign-aligned dir_ave (the expected favorable blended move,
+   *  fractional); null when no strategy exists. */
+  signal_confidence: number | null;
 }
 
 /** One mov_pairs bucket row (MA-pair cross bucket — golden / death cross
  *  read off the EXISTING ma5_vs_ma{pair_window} (fast_leg "ma5") or
  *  price_vs_ma{pair_window} (fast_leg "price", the close price)
  *  relative-MA spread of analysis.mov_ave_spreads_detail) + its
- *  results. Bucket key: (stat_month, fast_leg, pair_window, side,
+ *  results. Bucket key: (stat_date, fast_leg, pair_window, side,
  *  regime_state). */
 export interface MovPairsForecastRow extends ForecastResultCols {
-  stat_month: string;
+  stat_date: string;
   /** Fast leg of the pair: "ma5" — ma5_vs_ma{pair_window}; "price" —
    *  the close price, price_vs_ma{pair_window}. */
   fast_leg: "ma5" | "price";
@@ -1433,22 +1482,28 @@ export interface MovPairsForecastRow extends ForecastResultCols {
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
   regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
+  /** The registered signal strategy's OWN action — "buy" / "sell"
+   *  (analysis_signals.signal_strategies.action): non-null when the
+   *  row's own bucket (config × side × regime split × stat_date) was
+   *  emitted as a signal strategy — its MIXED forecast_results row
+   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
+   *  10%) cleared the gates the signals layer applies; null when the
+   *  bucket never registered. */
+  signal_action: "buy" | "sell" | null;
+  /** The registered strategy's confidence — the chosen entry rung's
+   *  sign-aligned dir_ave (the expected favorable blended move,
+   *  fractional); null when no strategy exists. */
+  signal_confidence: number | null;
 }
 
 /** One mov_pairs_ema bucket row — the EMA sibling of MovPairsForecastRow
  *  (identical shape): golden / death cross read off the EXISTING
  *  ema6_vs_ema{pair_window} (fast_leg "ema6") or price_vs_ema{pair_window}
  *  (fast_leg "price", the close price) relative-EMA spread of
- *  analysis.mov_ave_spreads_detail_ema. Bucket key: (stat_month,
+ *  analysis.mov_ave_spreads_detail_ema. Bucket key: (stat_date,
  *  fast_leg, pair_window, side, regime_state). */
 export interface MovPairsEmaForecastRow extends ForecastResultCols {
-  stat_month: string;
+  stat_date: string;
   /** Fast leg of the pair: "ema6" — ema6_vs_ema{pair_window}; "price" —
    *  the close price, price_vs_ema{pair_window}. */
   fast_leg: "ema6" | "price";
@@ -1464,73 +1519,53 @@ export interface MovPairsEmaForecastRow extends ForecastResultCols {
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
   regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
-}
-
-/** One px_vol bucket row (σ-standardized price-speed × z-scored 量比
- *  state cell) + its results. Bucket key: (stat_month, px_speed,
- *  vol_state, regime_state). State cells — NO cooldown (every
- *  qualifying day joins). */
-export interface PxVolForecastRow extends ForecastResultCols {
-  stat_month: string;
-  /** σ-standardized 1-day price change state: sharp_up / slow_up / flat /
-   *  slow_dn / sharp_dn (t = ret_1d / rolling-255 σ_ret of the code). */
-  px_speed: "sharp_up" | "slow_up" | "flat" | "slow_dn" | "sharp_dn";
-  /** Trading-amount state: heavy / normal / shrink (z-scored 量比). */
-  vol_state: "heavy" | "normal" | "shrink";
-  /** Reversal side of reverse_prob: top (up speeds) / bottom (down
-   *  speeds) / flat (no directional claim — reverse_prob NULL). */
-  side: "top" | "bottom" | "flat";
-  regime_state: MarketRegime;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
-  /** Mean σ-standardized price speed t over the bucket's days (from the
-   *  linked forecast_results.config JSONB — descriptive magnitude). */
-  mean_t: number | null;
-  /** Mean z-scored 量比 over the bucket's days (same config JSONB). */
-  mean_z: number | null;
+  /** The registered signal strategy's OWN action — "buy" / "sell"
+   *  (analysis_signals.signal_strategies.action): non-null when the
+   *  row's own bucket (config × side × regime split × stat_date) was
+   *  emitted as a signal strategy — its MIXED forecast_results row
+   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
+   *  10%) cleared the gates the signals layer applies; null when the
+   *  bucket never registered. */
+  signal_action: "buy" | "sell" | null;
+  /** The registered strategy's confidence — the chosen entry rung's
+   *  sign-aligned dir_ave (the expected favorable blended move,
+   *  fractional); null when no strategy exists. */
+  signal_confidence: number | null;
 }
 
 /** One margin_ratio bucket row (margin-buy intensity z-score state —
  *  融资买入额/成交额 ratio vs the code's own trailing distribution) + its
- *  results. Bucket key: (stat_month, ratio_state, regime_state).
+ *  results. Bucket key: (stat_date, ratio_state, regime_state).
  *  State cells — NO cooldown (every qualifying day joins). ETF + Stock
  *  only (index has no margin data). */
 export interface MarginRatioForecastRow extends ForecastResultCols {
-  stat_month: string;
+  stat_date: string;
   /** Margin-intensity state: no_buy (rz_buy <= 0 that day) / vlow
    *  (z <= -2) / low (-2,-1] / mid (-1,+1] / high (+1,+2] / vhigh
    *  (z > +2) of the code's rolling-1220-row (min 250) ratio moments
    *  shifted 1 row. */
   ratio_state: "no_buy" | "vlow" | "low" | "mid" | "high" | "vhigh";
-  /** Reversal side of reverse_prob: top (high/vhigh crowding — the
+  /** Directional claim of the bucket: top (high/vhigh crowding — the
    *  study's bearish reading) / bottom (vlow/low/no_buy) / flat (mid —
-   *  reverse_prob NULL). */
+   *  no directional claim). */
   side: "top" | "bottom" | "flat";
   regime_state: MarketRegime;
   /** Per-code self-adaptive regime weight
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
   regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
+  /** The registered signal strategy's OWN action — "buy" / "sell"
+   *  (analysis_signals.signal_strategies.action): non-null when the
+   *  row's own bucket (config × side × regime split × stat_date) was
+   *  emitted as a signal strategy — its MIXED forecast_results row
+   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
+   *  10%) cleared the gates the signals layer applies; null when the
+   *  bucket never registered. */
+  signal_action: "buy" | "sell" | null;
+  /** The registered strategy's confidence — the chosen entry rung's
+   *  sign-aligned dir_ave (the expected favorable blended move,
+   *  fractional); null when no strategy exists. */
+  signal_confidence: number | null;
   /** Mean raw ratio (rz_buy / trading_amount, fraction) over the
    *  bucket's days (from the linked forecast_results.config JSONB —
    *  NULL for no_buy). */
@@ -1542,12 +1577,12 @@ export interface MarginRatioForecastRow extends ForecastResultCols {
 
 /** One pe bucket row (PE extreme-percentile bucket — the raw pe series
  *  of analysis.pe vs the code's own trailing distribution, the mov_rsi
- *  pct convention) + its results. Bucket key: (stat_month, side, pct,
+ *  pct convention) + its results. Bucket key: (stat_date, side, pct,
  *  regime_state). Qualifying runs STREAK-MERGED (consecutive
  *  qualifying days = ONE mid-anchored signal). */
 export interface PeForecastRow extends ForecastResultCols {
-  stat_month: string;
-  /** Reversal side of reverse_prob — pe is LOWER the better: the
+  stat_date: string;
+  /** Directional claim — pe is LOWER the better: the
    *  top-pct% (expensive) days = top (bearish), the bottom-pct% (cheap)
    *  days = bottom (bullish). */
   side: "top" | "bottom";
@@ -1560,24 +1595,30 @@ export interface PeForecastRow extends ForecastResultCols {
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
   regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
+  /** The registered signal strategy's OWN action — "buy" / "sell"
+   *  (analysis_signals.signal_strategies.action): non-null when the
+   *  row's own bucket (config × side × regime split × stat_date) was
+   *  emitted as a signal strategy — its MIXED forecast_results row
+   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
+   *  10%) cleared the gates the signals layer applies; null when the
+   *  bucket never registered. */
+  signal_action: "buy" | "sell" | null;
+  /** The registered strategy's confidence — the chosen entry rung's
+   *  sign-aligned dir_ave (the expected favorable blended move,
+   *  fractional); null when no strategy exists. */
+  signal_confidence: number | null;
 }
 
 /** One dividend bucket row (dividend-yield extreme-percentile bucket —
  *  the trailing-12m D/P series of analysis.dividends vs the code's own
  *  trailing distribution, the mov_rsi pct convention) + its results.
- *  Bucket key: (stat_month, side, pct, regime_state). Qualifying
+ *  Bucket key: (stat_date, side, pct, regime_state). Qualifying
  *  runs STREAK-MERGED (consecutive qualifying days = ONE mid-anchored
  *  signal). Dividend rows exist only where the code has payout
  *  history. */
 export interface DividendForecastRow extends ForecastResultCols {
-  stat_month: string;
-  /** Reversal side of reverse_prob — the yield is HIGHER the better
+  stat_date: string;
+  /** Directional claim — the yield is HIGHER the better
    *  (the REVERSE of the pe family's mapping): the top-pct% (cheap,
    *  well-supported) days = bottom (bullish), the bottom-pct% days =
    *  top (bearish). */
@@ -1591,12 +1632,18 @@ export interface DividendForecastRow extends ForecastResultCols {
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
   regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
+  /** The registered signal strategy's OWN action — "buy" / "sell"
+   *  (analysis_signals.signal_strategies.action): non-null when the
+   *  row's own bucket (config × side × regime split × stat_date) was
+   *  emitted as a signal strategy — its MIXED forecast_results row
+   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
+   *  10%) cleared the gates the signals layer applies; null when the
+   *  bucket never registered. */
+  signal_action: "buy" | "sell" | null;
+  /** The registered strategy's confidence — the chosen entry rung's
+   *  sign-aligned dir_ave (the expected favorable blended move,
+   *  fractional); null when no strategy exists. */
+  signal_confidence: number | null;
 }
 
 /** One high_low_streaks bucket row (MA-Spread High/Low streak — a
@@ -1604,10 +1651,10 @@ export interface DividendForecastRow extends ForecastResultCols {
  *  ((day_count-1)//2 + 1)-th trading day of the span, e.g. an 8-day
  *  streak anchors its 4th day; EX-POST anchor — the streak length is
  *  known only after the streak closes) + its results. Bucket key:
- *  (stat_month, band_period, pct_type, side, regime_state). One
+ *  (stat_date, band_period, pct_type, side, regime_state). One
  *  trigger per streak — NO cooldown. */
 export interface HighLowStreaksForecastRow extends ForecastResultCols {
-  stat_month: string;
+  stat_date: string;
   /** Band lookback of the audited band (trading rows): 255 / 500 /
    *  750 / 1275 (~1/2/3/5 trading years). */
   band_period: number;
@@ -1615,21 +1662,26 @@ export interface HighLowStreaksForecastRow extends ForecastResultCols {
    *  low_val the close breaks. */
   pct_type: number;
   /** Excursion side: top = ABOVE-band (close on end_date above the end
-   *  month's high_val band — reverse_prob counts DOWN moves) / bottom =
-   *  BELOW-band (reverse_prob counts UP moves — the mean-reversion
-   *  reading). */
+   *  month's high_val band — the mean-reversion bearish reading) /
+   *  bottom = BELOW-band (bullish). */
   side: "top" | "bottom";
   regime_state: MarketRegime;
   /** Per-code self-adaptive regime weight
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
   regime_weight?: number | null;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 65% / next 25% / 20d 10%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
+  /** The registered signal strategy's OWN action — "buy" / "sell"
+   *  (analysis_signals.signal_strategies.action): non-null when the
+   *  row's own bucket (config × side × regime split × stat_date) was
+   *  emitted as a signal strategy — its MIXED forecast_results row
+   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
+   *  10%) cleared the gates the signals layer applies; null when the
+   *  bucket never registered. */
+  signal_action: "buy" | "sell" | null;
+  /** The registered strategy's confidence — the chosen entry rung's
+   *  sign-aligned dir_ave (the expected favorable blended move,
+   *  fractional); null when no strategy exists. */
+  signal_confidence: number | null;
   /** Mean streak length (day_count, trading rows) over the bucket's
    *  streaks (from the linked forecast_results.config JSONB — the
    *  bucket's streak-length context). */
@@ -1640,19 +1692,27 @@ export interface HighLowStreaksForecastRow extends ForecastResultCols {
   max_day_count: number | null;
 }
 
-/** Response for GET /forecast?sec_type=&code=&kind=[&month=] — the code's
+/** Response for GET /forecast?sec_type=&code=&kind=[&date=] — the code's
  *  buckets of the requested kind joined 1:1 with their forecast_results
- *  columns. `month` is a START month: rows cover every stat_month >= month
- *  (only the latest stat_month when month is omitted). `months` lists every
- *  stat_month available for the code (DESC) for the UI's start-month
+ *  columns. `date` is a START date: rows cover every stat_date >= date
+ *  (ALL stat_dates when date is omitted — the annual grid: one snapshot
+ *  per completed year-end plus the running year). `stat_dates` lists
+ *  every stat_date available for the code (DESC) for the UI's snapshot
  *  selector. */
 export interface ForecastResponse {
   kind: ForecastKind;
   code: string;
   sec_type: string;
-  /** All distinct stat_months (YYYY-MM-DD) with rows for this code, DESC. */
-  months: string[];
-  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovPairsForecastRow[] | MovPairsEmaForecastRow[] | PxVolForecastRow[] | MarginRatioForecastRow[] | HighLowStreaksForecastRow[] | PeForecastRow[] | DividendForecastRow[];
+  /** All distinct stat_dates (YYYY-MM-DD) with rows for this code, DESC. */
+  stat_dates: string[];
+  /** The code's earliest ACTUAL trading day in the pipeline's own bars
+   *  source (stats.{sec_type}_basic_stats, estimated closes excluded) —
+   *  the honest lower end of every stats window: the lookback claims 10y
+   *  but the data may start later (e.g. 2020), so the year column labels
+   *  the window as max(stat_date − 10y, data_start) → stat_date. Null
+   *  when the code has no bars (label falls back to the nominal 10y). */
+  data_start: string | null;
+  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovPairsForecastRow[] | MovPairsEmaForecastRow[] | MarginRatioForecastRow[] | HighLowStreaksForecastRow[] | PeForecastRow[] | DividendForecastRow[];
   /** Backend arg for the shared ExpandedTable: whether the table renders
    *  its per-column header filters. Default false (filters disabled). */
   enable_filters: boolean;
@@ -1691,35 +1751,32 @@ export interface ForecastTriggerDatesResponse {
 
 /** Motivation table names registered in
  *  analysis_forecasts.forecast_identities (identity.bucket values).
- *  (mov_gap was retired 2026-09 — table dropped, its registry rows
- *  purged.) */
+ *  (mov_gap and opp_pair_state — industry opposite-pair buckets — were
+ *  retired 2026-09: tables dropped, their registry rows purged.) */
 export type ForecastIdentityBucket =
   | "mov_rsi"
   | "mov_std"
   | "mov_pairs"
   | "mov_pairs_ema"
-  | "px_vol_state"
   | "margin_ratio_state"
-  | "opp_pair_state"
   | "high_low_streaks"
   | "pe_state"
   | "dividend_state";
 
 /** Response for GET /forecast-identity?forecast_id= — the shared-PK
  *  registry row (analysis_forecasts.forecast_identities): what a
- *  forecast_id resolves to (sec_type / code / stat_month / bucket
- *  family) without probing the nine motivation tables. `kind` is the
- *  ForecastTable family that renders the bucket (null for
- *  opp_pair_state — the industry-pair family has no table in this UI).
- *  `code` is the forecast SUBJECT (the security ticker; for opp_pair
- *  rows the DROPPING industry — the forecast-target pair_industry_id
- *  lives on the opp_pair_state motivation row). */
+ *  forecast_id resolves to (sec_type / code / stat_date / bucket
+ *  family) without probing the eight motivation tables. `kind` is the
+ *  ForecastTable family that renders the bucket (null for retired
+ *  families that have no table in this UI). `code` is the forecast
+ *  SUBJECT (the security ticker). */
 export interface ForecastIdentityResponse {
   forecast_id: number;
   sec_type: string;
   code: string;
-  /** Completed month-end (YYYY-MM-DD) of the bucket's snapshot. */
-  stat_month: string;
+  /** Snapshot date (YYYY-MM-DD) of the bucket — a completed year-end
+   *  on the annual grid (the running year keys at its year-end). */
+  stat_date: string;
   bucket: ForecastIdentityBucket;
   kind: ForecastKind | null;
   /** The bucket's mean streak length per merged signal (the 2026-09
@@ -1740,9 +1797,9 @@ export interface ForecastIdentityResponse {
 // ----------------------------------------------------------------------------
 //  Analysis Commons — PE & Dividend Yield (per-(sec_type, code, date) valuation)
 //    analysis.pe / analysis.dividends   — daily raw pe / trailing-12m dividend_yield (split 2026-09)
-//    analysis.pe_and_dividend_stats     — monthly 5y rolling stats snapshot
+//    analysis.pe_and_dividend_stats     — annual 10y rolling stats snapshot
 //    PK (detail): (sec_type, code, date)
-//    PK (stats):  (sec_type, code, date, is_active)  [date = month-end]
+//    PK (stats):  (sec_type, code, date, is_active)  [date = year-end]
 //
 //    Close price is NOT stored in the analysis tables (it lives in
 //    stats: index_basic_stats.close, etf_basic_stats.close,
@@ -1772,28 +1829,28 @@ export interface PeAndDividendChartResponse {
   rows: PeAndDividendChartRow[];
 }
 
-/** One monthly snapshot row from analysis.pe_and_dividend_stats. */
+/** One annual snapshot row from analysis.pe_and_dividend_stats. */
 export interface PeAndDividendStatsRow {
-  /** Month-end trading date (YYYY-MM-DD). */
+  /** Year-end trading date (YYYY-MM-DD). */
   date: string;
-  /** TRUE for the most recent monthly snapshot per (sec_type, code). */
+  /** TRUE for the most recent annual snapshot per (sec_type, code). */
   is_active: boolean;
-  /** Rolling 5y min/max of PE (index-only; NULL for etf/stock). */
-  min_pe_5y: number | null;
-  max_pe_5y: number | null;
-  /** Rolling 5y population std (ddof=0) of dividend_yield, x100 as a
+  /** Rolling 10y min/max of PE (index-only; NULL for etf/stock). */
+  min_pe_10y: number | null;
+  max_pe_10y: number | null;
+  /** Rolling 10y population std (ddof=0) of dividend_yield, x100 as a
    *  percentage (e.g. 0.5 = 0.5%). NULL when < 2 values in the window. */
-  dividend_var_5y: number | null;
+  dividend_var_10y: number | null;
   /** Frequency-robust stability score (0-100) of per-share dividend AMOUNT
-   *  over trailing 5 calendar years (annualized per year so payment-frequency
+   *  over trailing 10 calendar years (annualized per year so payment-frequency
    *  changes don't create artificial gaps). 100 = perfectly stable. */
-  dividend_stability_5y: number | null;
+  dividend_stability_10y: number | null;
   /** Rolling record of the latest single dividend_per_share_pre_tax as of
-   *  the month-end date (stock/etf own events; NULL for index). */
+   *  the year-end date (stock/etf own events; NULL for index). */
   last_dividend_per_share: number | null;
-  /** TRUE if at least one ex_dividend_date falls in the same (year, month)
-   *  as the month-end date. Drives bold styling on the Last Div cell. */
-  dividend_issued_this_month: boolean;
+  /** TRUE if at least one ex_dividend_date falls in the same calendar year
+   *  as the year-end date. Drives bold styling on the Last Div cell. */
+  dividend_issued_this_year: boolean;
 }
 
 /** Response for GET /api/analysis/pe-and-dividend/stats. */
@@ -3035,6 +3092,76 @@ export interface LiveDataDatesResponse {
   type: LiveDataSecType;
   dates: string[];
 }
+
+// ----------------------------------------------------------------------------
+// Live Options — intraday OI-weighted moneyness skewness
+//  GET /api/live-options/* — spot bars from the underlying's 5-min table +
+//  the computed series in live.options_intraday_skewness (written on
+//  demand by python -m live.options_intraday_skewness; the per-bar OI is
+//  the estimator prev-day daily OI + day-cumulative traded volume).
+// ----------------------------------------------------------------------------
+
+/** Target type of an option underlying: ETF venues (SZSE/SSE) vs index
+ *  venue (CFFEX). Routes which 5-min spot table backs the chart. */
+export type LiveOptionsTargetType = "ETF" | "INDEX";
+
+/** Sentinel expiry_date of the MEAN series row (all active expiry groups
+ *  blended) — real rows carry their group's actual expiry date. */
+export const LIVE_OPTIONS_MEAN_EXPIRY = "9998-12-31";
+
+/** One 5-min bar of the underlying's spot (close only — the chart's solid
+ *  line; time is the 5-min bar END time 'HH:MM'). */
+export interface LiveOptionsSpotBar {
+  time: string;
+  close: number;
+}
+
+/** One computed skewness point: a (time × expiry group) pair, or the MEAN
+ *  row (expiry_date = LIVE_OPTIONS_MEAN_EXPIRY). Semantics mirror
+ *  analysis.options_skewness_stats skew_type='oi_moneyness': skew_price =
+ *  S(t) × E[M], E[M] = Σ(OI·K/S(t)) / Σ(OI) with OI per bar estimated as
+ *  prev-day daily OI + day-cumulative traded volume. */
+export interface LiveOptionsSkewPoint {
+  time: string;
+  expiry_date: string;
+  /** Underlying 5-min close the point was computed at (yuan / index pts). */
+  spot: number | null;
+  skew_price: number | null;
+  skew_pct: number | null;
+  /** Group's total OI weight (contracts; drives the line-width encoding). */
+  oi_total: number | null;
+  otm_call_share: number | null;
+  otm_put_share: number | null;
+  skew_type: SkewType;
+}
+
+/** Response for GET /api/live-options/oi-skew-intraday. */
+export interface LiveOptionsOiSkewResponse {
+  underlying_code: string;
+  /** Trading day the bars belong to (resolved to the latest when omitted). */
+  date: string;
+  /** Date of the prev-trading-day options snapshot the OI base came from
+   *  (null when no snapshot exists before the date). */
+  snapshot_date: string | null;
+  bars: LiveOptionsSpotBar[];
+  series: LiveOptionsSkewPoint[];
+  /** True when this request spawned the on-demand compute (rows were
+   *  missing or stale — the response may still predate the run finishing). */
+  computing: boolean;
+}
+
+/** Response for GET /api/live-options/dates — distinct trading days with
+ *  spot bars for the underlying, descending. */
+export interface LiveOptionsDatesResponse {
+  underlying_code: string;
+  dates: string[];
+}
+
+/** Response for GET /api/live-options/run/status — process-id tag → running. */
+export interface LiveOptionsRunStatusResponse {
+  status: Record<string, boolean>;
+}
+
 
 // ----------------------------------------------------------------------------
 //  Strategy — singleton backtest

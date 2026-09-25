@@ -47,6 +47,13 @@ DETAIL_REFERER = CSINDEX_BASE + "/zh-CN/indices/index#/indices/family/detail?ind
 
 UPDATE_WINDOW_DAYS = 35  # ~1 month plus weekend/holiday buffer
 SLEEP_SEC = DEFAULT_SLEEP_SEC
+# Retry backoff for the content-freshness gates (runner._run_1m/_run_pe):
+# when a code's local records lack the newest publishable session, the
+# export is re-fetched at most once per this many hours. Bounds the
+# anti-bot cost of codes that never satisfy the content check (indices
+# CSIndex stopped publishing) without delaying a laggard index's
+# late-landing row past the next scheduled run.
+REFETCH_MIN_INTERVAL_HOURS = 6.0
 CSINDEX_TIMEOUT: Tuple[int, int] = (15, 120)
 
 CSINDEX_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)

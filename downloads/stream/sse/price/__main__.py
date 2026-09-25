@@ -80,7 +80,7 @@ import argparse
 import locale as _locale
 import sys
 import time as _time
-from datetime import datetime
+from datetime import date, datetime
 
 from downloads._common import (
     HostStatusTracker,
@@ -121,9 +121,11 @@ from ._index import (
     sync_index_has_intraday_flag,
 )
 from ._options import (
+    OptionsStream,
     aggregate_options_bars,
     build_options_asset,
     load_options_bars,
+    load_options_oi_base,
     prepopulate_options_finished_codes,
     refresh_options_universe,
     run_options_eod_capture,
@@ -146,6 +148,33 @@ for _s in (sys.stdout, sys.stderr):
 
 
 logger = setup_logger("stream_sse")
+
+
+def _emit_options_bars(conn, asset: OptionsStream, trade_date: date, verb: str):
+    """Aggregate + upsert one options bar window, isolated from the other assets.
+
+    The options leg shares the polling loop with stock/etf/index, so an
+    options-side failure here must never propagate — one used to kill the
+    whole streamer at the day's first bar and starve every live page of
+    ticks. Failures are logged and the window dropped (the CSV backfill
+    recovers it on a later startup/periodic pass). Returns the (possibly
+    reconnected) connection.
+    """
+    try:
+        identity_rows, bar_rows, oi_rows, bar_time = aggregate_options_bars(asset, trade_date)
+        if bar_rows:
+            conn = _ensure_conn(conn)
+            load_options_bars(conn, asset, identity_rows, bar_rows, oi_rows)
+            logger.info(
+                "%s %d %s bars for %s %s",
+                verb, len(bar_rows), asset.name, trade_date, bar_time,
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "options bar emission failed for %s: %s: %s",
+            trade_date, type(e).__name__, e,
+        )
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +280,17 @@ def stream(
             elif asset.name == "etf":
                 prepopulate_etf_finished_codes(conn, today, asset.finished_codes)
             elif asset.name == "options":
-                prepopulate_options_finished_codes(conn, asset, today)
+                # Same isolation as the streaming loop: a failed options
+                # start must not abort the whole streamer before it begins.
+                try:
+                    prepopulate_options_finished_codes(conn, asset, today)
+                    # OI estimator base: prev-trading-day daily OI per contract.
+                    load_options_oi_base(conn, asset, today)
+                except Exception as e:  # noqa: BLE001
+                    logger.error(
+                        "options startup prepopulate failed for %s: %s: %s",
+                        today, type(e).__name__, e,
+                    )
             else:
                 prepopulate_index_finished_codes(conn, today, asset.finished_codes)
             logger.info(
@@ -281,14 +320,7 @@ def stream(
                     update_dt = asset.buffer[-1][0]
                     trade_date = update_dt.date()
                     if asset.name == "options":
-                        identity_rows, bar_rows, bar_time = aggregate_options_bars(asset, trade_date)
-                        if bar_rows:
-                            conn = _ensure_conn(conn)
-                            load_options_bars(conn, asset, identity_rows, bar_rows)
-                            logger.info(
-                                "flushed %d %s bars for %s %s",
-                                len(bar_rows), asset.name, trade_date, bar_time,
-                            )
+                        conn = _emit_options_bars(conn, asset, trade_date, "flushed")
                     else:
                         identity_rows, bar_rows, bar_time = aggregate_bars(
                             asset, trade_date, etf_member_codes=etf_member_codes,
@@ -376,8 +408,18 @@ def stream(
                         asset.prev_bar_cumamt.clear()
                 if options_asset is not None:
                     # New listings/expiries roll daily — re-discover the
-                    # universe (underlyings, months, contract-code map).
-                    refresh_options_universe(options_asset, session, host_tracker)
+                    # universe (underlyings, months, contract-code map)
+                    # and advance the OI base to the fresh daily snapshot.
+                    # Same isolation as _emit_options_bars: the options leg
+                    # must not take the other assets' day down with it.
+                    try:
+                        refresh_options_universe(options_asset, session, host_tracker)
+                        load_options_oi_base(conn, options_asset, current_trade_date)
+                    except Exception as e:  # noqa: BLE001
+                        logger.error(
+                            "options daily refresh failed for %s: %s: %s",
+                            current_trade_date, type(e).__name__, e,
+                        )
                 logger.info("New trading day %s; per-asset state reset.", current_trade_date)
 
             cycle_start = _time.time()
@@ -420,16 +462,7 @@ def stream(
                 if len(asset.buffer) >= bar_window:
                     trade_date = update_dt.date()
                     if asset.name == "options":
-                        identity_rows, bar_rows, bar_time = aggregate_options_bars(
-                            asset, trade_date,
-                        )
-                        if bar_rows:
-                            conn = _ensure_conn(conn)
-                            load_options_bars(conn, asset, identity_rows, bar_rows)
-                            logger.info(
-                                "emitted %d %s bars for %s %s",
-                                len(bar_rows), asset.name, trade_date, bar_time,
-                            )
+                        conn = _emit_options_bars(conn, asset, trade_date, "emitted")
                     else:
                         identity_rows, bar_rows, bar_time = aggregate_bars(
                             asset, trade_date, etf_member_codes=etf_member_codes,

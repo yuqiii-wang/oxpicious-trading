@@ -4,18 +4,27 @@ Flow per index:
   1. Download full-range daily history via export Excel, from ``start_date``
      (default 2020-01-01) to today (skip if already cached).
   2. Download 1-month daily history via export Excel (incremental update;
-     skip if xlsx already fetched today, append missing dates to the csv).
-  3. Fetch PE (peg) series for the full range (skip if cached and fresh today after 17:00).
+     skip when the local CSVs already cover the newest publishable session,
+     append missing dates to the csv).
+  3. Fetch PE (peg) series for the full range (skip when the PE cache
+     already covers the newest publishable session).
   4. Merge full-range + 1m + PE into ``{indexCode}_history.csv``.
   5. Fetch intraday granular ticks for the latest trading day (skip if unavailable).
 
+CONTENT FRESHNESS, NOT MTIME: the skip decisions for the daily-record
+steps (2 and 3) compare the local records against the newest session whose
+data CSIndex could have published — ``last_business_day(today - 1)`` —
+never against the file mtime. A morning fetch must not pin the whole
+calendar day: CSIndex publishes laggard indices' rows hours behind peers,
+so a code whose CSVs lack the expected session is re-fetched by every
+later run that day (bounded by REFETCH_MIN_INTERVAL_HOURS so indices
+CSIndex stopped publishing don't burn the anti-bot sleep budget).
+
 Targeted mode (``ensure_prev_trading_day=True`` — used by the "Build Yday
-Ref" UI button chain): compute the PREVIOUS trading day from the holiday
-calendar and, per code, skip ALL network work when the local 1m/history
-CSV already contains that date. Only codes MISSING the prev-day row run
-the per-code pipeline (steps 1-2 + history merge; PE/intraday stay owned
-by the nightly run). Turns the common case (nightly 19:00 run already
-fetched yday) into a seconds-long local check instead of a ~500-code
+Ref" UI button chain): only codes MISSING the expected session run the
+per-code pipeline (steps 1-2 + history merge; PE/intraday stay owned by
+the nightly run). Turns the common case (nightly run already fetched the
+previous session) into a seconds-long local check instead of a ~500-code
 full sweep.
 """
 from __future__ import annotations
@@ -25,9 +34,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
-
-from _common._holidays_and_weekdays import is_trading_day
+from _common._holidays_and_weekdays import last_business_day
 
 from downloads._common import (
     MIN_VALID_BYTES,
@@ -38,7 +45,7 @@ from downloads._common import (
     resolve_out_dir,
     parse_date_window,
     is_valid_file,
-    is_fresh_today,
+    is_fresh_within,
     convert_xlsx_to_csv,
     load_classification_index_names,
 )
@@ -47,10 +54,12 @@ from ._config import (
     CSINDEX_BASE,
     CSINDEX_SKIP_CODES,
     UPDATE_WINDOW_DAYS,
+    REFETCH_MIN_INTERVAL_HOURS,
     SLEEP_SEC,
     logger,
     build_session,
     make_proxy,
+    ymd,
 )
 from ._export import download_export_excel
 from ._pe import (
@@ -63,54 +72,8 @@ from ._intraday import fetch_intraday, save_intraday
 from ._history import (
     build_history_csv,
     append_missing_dates_to_csv,
-    _find_date_column,
-    clean_date,
+    csv_has_date,
 )
-
-
-def _csv_has_date(out_dir: Path, code: str, yyyymmdd: str) -> bool:
-    """True iff the code's local 1m or history CSV contains the date.
-
-    Optimized: reads only the header + last ~500KB of each CSV instead of
-    the full file. CSVs are append-only in chronological order, so the
-    target date (prev trading day) is always near the end.
-
-    Pure local check (small recent-window files) — the targeted mode's
-    per-code cost. Missing/unreadable files count as NOT having the date.
-    """
-    import io
-    import os
-
-    for fname in (f"{code}_1m.csv", f"{code}_history.csv"):
-        f = out_dir / fname
-        if not f.is_file():
-            continue
-        try:
-            fsize = f.stat().st_size
-            if fsize == 0:
-                continue
-
-            # Read header (first line) — needed for column names
-            with open(f, "r", encoding="utf-8") as fh:
-                header = fh.readline().strip()
-
-            # Read last portion of file (append-only → recent dates at end)
-            tail_size = min(fsize, 500_000)  # ~500KB covers many rows
-            with open(f, "rb") as fh:
-                fh.seek(-tail_size, 2)
-                if fsize > tail_size:
-                    fh.readline()  # skip first partial line to align to row boundary
-                tail_data = fh.read().decode("utf-8")
-
-            df = pd.read_csv(io.StringIO(header + "\n" + tail_data))
-            col = _find_date_column(df)
-            if not col:
-                continue
-            if (df[col].apply(clean_date) == yyyymmdd).any():
-                return True
-        except Exception:
-            continue
-    return False
 
 
 def download_index(
@@ -156,18 +119,20 @@ def download_index(
     update_end = _end
     update_start = _end - timedelta(days=update_days)
 
-    # Targeted mode: resolve the prev trading day ONCE (calendar-walk).
+    # Newest COMPLETED session whose data CSIndex may have published:
+    # yesterday's session when today is a trading day (today's EOD is not
+    # assumed), the last session otherwise (weekend/holiday — everything
+    # up to it is publishable). ONE expectation for both the targeted-mode
+    # target and the per-step content gates below.
+    expected_day = last_business_day(_dt.date.today() - _dt.timedelta(days=1))
+    expected_yyyymmdd = expected_day.strftime("%Y%m%d")
+
+    # Targeted mode: resolve the expected session ONCE (calendar-aware).
     target_yyyymmdd: Optional[str] = None
     if ensure_prev_trading_day:
-        live = _dt.date.today()
-        while not is_trading_day(live):
-            live -= timedelta(days=1)
-        prev = live - timedelta(days=1)
-        while not is_trading_day(prev):
-            prev -= timedelta(days=1)
-        target_yyyymmdd = prev.strftime("%Y%m%d")
+        target_yyyymmdd = expected_yyyymmdd
         logger.info(
-            "Targeted mode: ensuring prev trading day %s is present in local "
+            "Targeted mode: ensuring session %s is present in local "
             "CSVs (codes already covering it are skipped entirely)",
             target_yyyymmdd,
         )
@@ -193,11 +158,11 @@ def download_index(
                 stats.skipped_cached += 1
                 continue
 
-            # Targeted fast path: local CSVs already have the prev trading
-            # day → nothing to fetch for the yday-ref purpose.
+            # Targeted fast path: local CSVs already cover the expected
+            # session → nothing to fetch for the yday-ref purpose.
             if (
                 target_yyyymmdd is not None
-                and _csv_has_date(out_dir, code, target_yyyymmdd)
+                and csv_has_date(out_dir, code, target_yyyymmdd)
             ):
                 stats.skipped_cached += 1
                 continue
@@ -216,7 +181,8 @@ def download_index(
                 stats.failed += 3
                 continue
 
-            _run_1m(session, code, update_start, update_end, out_dir, proxy, stats)
+            _run_1m(session, code, update_start, update_end, out_dir, proxy,
+                    stats, expected_yyyymmdd)
 
             if target_yyyymmdd is not None:
                 # Targeted mode stops after the daily rows: PE / history
@@ -229,7 +195,8 @@ def download_index(
                 stats.failed += 2
                 continue
 
-            pe_records = _run_pe(session, code, _start, _end, out_dir, proxy, stats)
+            pe_records = _run_pe(session, code, _start, _end, out_dir, proxy,
+                                 stats, expected_yyyymmdd)
 
             # --- Step 4: Merge into history CSV ---
             history_file = build_history_csv(code, name, out_dir, pe_records)
@@ -291,19 +258,36 @@ def _run_from2020(
 
 def _run_1m(
     session, code, update_start, update_end, out_dir, proxy, stats,
+    expected_yyyymmdd: str,
 ) -> None:
     """Step 2: 1-month export (incremental update window).
 
-    Skip re-downloading the xlsx if it was already fetched today (checked via
-    mtime). The xlsx is downloaded with auto_convert disabled so the companion
-    csv is NOT overwritten; instead we append only the dates missing from the
-    existing csv, letting the 1m csv accumulate recent history across runs.
+    Content-freshness gate: skip the download only when the local 1m or
+    history CSV already contains a row for *expected_yyyymmdd* — the
+    newest session CSIndex could have published. The xlsx mtime is NOT a
+    skip reason by itself: a fetch from earlier the same day must not pin
+    the day, because CSIndex publishes laggard indices' rows hours after
+    peers (e.g. overseas indices landing their T-1 row mid-day). A code
+    missing the expected session re-fetches on every later run, bounded by
+    REFETCH_MIN_INTERVAL_HOURS so never-published indices don't burn the
+    anti-bot sleep budget on every attempt.
+
+    The xlsx is downloaded with auto_convert disabled so the companion csv
+    is NOT overwritten; the append below merges only the dates missing
+    from the existing csv, letting the 1m csv accumulate recent history
+    across runs (idempotent — also runs after a skipped download so a
+    still-unmerged xlsx from the backoff window is not lost).
     """
     onem_xlsx = out_dir / f"{code}_1m.xlsx"
     onem_csv = onem_xlsx.with_suffix(".csv")
 
-    if is_fresh_today(onem_xlsx, min_bytes=MIN_VALID_BYTES, hour=0):
-        logger.info("  [1m] %s: xlsx already downloaded today, skipping download", code)
+    if csv_has_date(out_dir, code, expected_yyyymmdd):
+        logger.info("  [1m] %s: local CSVs cover %s, skipping download", code, expected_yyyymmdd)
+        stats.skipped_cached += 1
+    elif is_fresh_within(onem_xlsx, hours=REFETCH_MIN_INTERVAL_HOURS,
+                         min_bytes=MIN_VALID_BYTES):
+        logger.info("  [1m] %s: missing %s but xlsx fetched <%.0fh ago, backing off",
+                    code, expected_yyyymmdd, REFETCH_MIN_INTERVAL_HOURS)
         stats.skipped_cached += 1
     else:
         ok = download_export_excel(
@@ -331,8 +315,16 @@ def _run_1m(
 
 def _run_pe(
     session, code, start, end, out_dir, proxy, stats,
+    expected_yyyymmdd: str,
 ) -> List[Dict[str, Any]]:
     """Step 3: PE series (incremental: skip already-fetched dates).
+
+    Content-freshness gate: skip the fetch when the cache already covers
+    *expected_yyyymmdd* (the newest session CSIndex could have published);
+    the json mtime is only a REFETCH_MIN_INTERVAL_HOURS retry backoff for
+    codes that keep failing the content check. PE publishes with the quote
+    data (sometimes hours later for laggard indices), so a cache fetched
+    earlier the same day must not pin the day.
 
     If PE is already present in the cache, only fetch dates newer than the
     latest cached PE date (instead of overwriting the whole history).
@@ -359,15 +351,24 @@ def _run_pe(
         except ValueError:
             pass
 
-    # Skip fetch entirely if cache is fresh today after 17:00 (already up-to-date)
-    pe_cache_fresh = (
-        is_fresh_today(pe_cache_file, min_bytes=MIN_VALID_BYTES, hour=17)
-        and bool(existing_by_date)
-    )
-
-    if pe_cache_fresh:
+    # Content gate: cache covers the newest publishable session → nothing
+    # to gain from a fetch. Backoff guard otherwise (never a skip reason
+    # on its own — see _run_1m).
+    if existing_by_date and max(existing_by_date.keys()) >= expected_yyyymmdd:
         pe_records = list(existing_by_date.values())
-        logger.info("  [pe] %s: cached and fresh (%d records), skipping fetch", code, len(pe_records))
+        logger.info(
+            "  [pe] %s: cache covers %s (latest=%s), skipping fetch",
+            code, expected_yyyymmdd, max(existing_by_date.keys()),
+        )
+        stats.skipped_cached += 1
+    elif is_fresh_within(pe_cache_file, hours=REFETCH_MIN_INTERVAL_HOURS,
+                         min_bytes=MIN_VALID_BYTES) and existing_by_date:
+        pe_records = list(existing_by_date.values())
+        logger.info(
+            "  [pe] %s: missing %s (latest=%s) but cache fetched <%.0fh ago, backing off",
+            code, expected_yyyymmdd, max(existing_by_date.keys()),
+            REFETCH_MIN_INTERVAL_HOURS,
+        )
         stats.skipped_cached += 1
     else:
         new_records = fetch_pe_series(session, code, fetch_start, end, proxy)

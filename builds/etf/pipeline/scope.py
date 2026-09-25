@@ -34,7 +34,9 @@ async def purge_existing_data(conn, code_filter: str | None) -> None:
     else:
         logger.info("    [DB] Force mode: truncating ETF tables")
         await truncate_table_async(conn, "stats.etf_identity")
-        await conn.execute("DELETE FROM stats.sec_composition WHERE source_type = 'etf'")
+        await chunked_purge_async(
+            conn, "stats.sec_composition", where_sql="source_type = 'etf'",
+        )
 
 
 async def fetch_existing_identity_keys(

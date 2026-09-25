@@ -683,16 +683,14 @@ HOLIDAY_COLUMNS = (
 
 # ============================================================================
 #  analysis.mov_ave_price_vs_amt — per-date Price × Trading-Amount state
-#  registry (the px_vol family's DATE-LEVEL source of truth)
+#  registry (the px_vol family's date-level record)
 #
 #  One row per (sec_type, code, date): every day with valid inputs joins
 #  EXACTLY ONE of the 15 price-speed × amount-state categories. The
-#  category definitions / thresholds are the analysis_forecasts px_vol
-#  engine's verbatim (imported from analyze.analysis_forecasts.config +
-#  fetch — single source of truth, so the registry audits against the
-#  buckets 1:1). Consumers: analysis_forecasts.px_vol_state +
-#  analysis_signals px_vol (bucket membership + mean_t / mean_z) and
-#  the MA-Spread UI's Px-Vol States date shading.
+#  category definitions live in THIS package (px_vol.py's feature layer
+#  + the PX_VOL_* calibration constants below) and every row records
+#  them, so consumers can verify what they read. Consumer: the
+#  MA-Spread UI's Px-Vol States date shading.
 #
 #  Internal step of the parent mov_ave_spread pipeline (see
 #  price_vs_amt.py) — reuses the parent source DataFrame's price +
@@ -703,6 +701,71 @@ HOLIDAY_COLUMNS = (
 
 PRICE_VS_AMT_TABLE = "analysis.mov_ave_price_vs_amt"
 PRICE_VS_AMT_ANALYSIS_NAME = "mov_ave_price_vs_amt"
+
+# ---- px_vol calibration constants (recorded on every registry row) --------
+#
+# The Price × Amount state's per-code ADAPTIVE bars: a day's speed /
+# volume states are t / z scores vs the code's OWN trailing moments
+# (σ_ret spans ~1%–2.9% daily across equity-like indices; fixed ±2% /
+# 量比 1.5/0.8 bars systematically misfire on high/low-σ codes).
+#
+# Calibration: k/z bars are chosen to reproduce the legacy fixed
+# thresholds' POOLED trigger rates on equity-like indices (up 8.4% /
+# down 7.6% / 放量 4.0% / 缩量 14.2%), so bucket sample shares stay
+# comparable with the studies. The z bars were calibrated on the
+# RETIRED ratio5d metric and carry over to log_level as the starting
+# calibration (re-measure the pooled rates after a rebuild).
+
+# Rolling windows (rows): σ_ret of ret_1d + the log-amount level
+# moments; PX_VOL_LB_WINDOW is the classic 量比 base window
+# (trading_amount mean of t-lb_window..t-1) — evidence-only since the
+# log_level refactor. All shifted 1 row before use.
+PX_VOL_SIGMA_WINDOW = 255
+PX_VOL_SIGMA_MIN_DAYS = 60
+PX_VOL_LB_WINDOW = 5
+
+# The vol leg's metric (recorded on every analysis.mov_ave_price_vs_amt
+# row as amt_metric — consumers can check which DEFINITION a registry
+# was built with):
+#   "log_level" — px_z = z-scored log(trading_amount) vs the code's own
+#                 trailing PX_VOL_SIGMA_WINDOW-row moments (shift 1) —
+#                 the LEVEL statement heavy/shrink claim. The retired
+#                 "ratio5d" (z-scored 量比 vs its own moments) fired
+#                 heavy on drought bounces: in a declining-volume
+#                 regime the 5-day base collapses, so a day whose
+#                 amount sat far below the code's level scored
+#                 ratio ≈ 1.7 → z > 2 ("Amt Up" on visibly low amt).
+PX_VOL_AMT_METRIC = "log_level"
+
+# t = ret_1d / σ_ret state bars.
+PX_VOL_K_SLOW_UP = 1.26
+PX_VOL_K_SLOW_DN = 1.29
+PX_VOL_K_SHARP = 2.0
+
+# Amount-level z state bars (px_z).
+PX_VOL_Z_HEAVY = 2.0
+PX_VOL_Z_SHRINK = -0.92
+
+# σ_ret floor: below this the code is bond-like (σ ≈ 0.01–0.02% for
+# 中证短融/企债) and no state row is ever written — tiny wiggles would
+# be classified as extremes.
+PX_VOL_SIGMA_FLOOR = 0.005
+
+# Speed-state names in PX_VOL_SPEEDS order and volume states in
+# PX_VOL_VOL_STATES order (the 15 = 5 × 3 categories).
+PX_VOL_SPEEDS: tuple[str, ...] = (
+    "sharp_up", "slow_up", "flat", "slow_dn", "sharp_dn",
+)
+PX_VOL_VOL_STATES: tuple[str, ...] = ("heavy", "normal", "shrink")
+
+# Reversal side per speed (recorded on the registry's side column):
+# the up speeds expect reversal DOWN, the down speeds reversal UP;
+# flat carries 'flat' — no directional claim.
+PX_VOL_SPEED_SIDE: dict[str, str] = {
+    "sharp_up": "top", "slow_up": "top",
+    "flat": "flat",
+    "slow_dn": "bottom", "sharp_dn": "bottom",
+}
 
 PRICE_VS_AMT_COLUMNS = (
     "sec_type", "code", "date",
@@ -727,24 +790,20 @@ PRICE_VS_AMT_DESCRIPTION = (
     "shrink z < -0.92 — a LEVEL statement vs the code's own "
     "trailing-year amount distribution; the retired 量比-ratio z "
     "fired heavy on drought bounces, i.e. 'Amt Up' on visibly low "
-    "amount). NULL trading_amount → no row. side mirrors "
-    "px_vol_state (top/bottom/flat). The px_t / px_z / ret_1d / "
+    "amount). NULL trading_amount → no row. side per speed: "
+    "top (up speeds — expect reversal down) / bottom (down speeds) / "
+    "flat (no directional claim). The px_t / px_z / ret_1d / "
     "px_sigma / amt_ratio columns record the state evidence (amt_ratio "
     "is the classic 量比, evidence-only since the log_level refactor) "
     "so consumers recompute nothing; amt_metric records the vol leg's "
-    "definition for the consumer-side audit. This is the DATE-LEVEL "
-    "source of truth of the px_vol family: "
-    "analysis_forecasts.px_vol_state bucket aggregates, "
-    "the analysis_signals px_vol detections and the MA-Spread UI "
-    "shading all audit against this table. Rows are REBUILT WHOLESALE "
+    "definition so consumers can check which one a registry was built "
+    "with. Rows are REBUILT WHOLESALE "
     "per sec_type on every pipeline run (ETF adj_close back-adjustments "
     "rewrite price history — the market_regimes precedent). Source: the "
-    "forecast engine's own price/amt series (COALESCE(adj_close, close) "
-    "for ETF, estimated closes excluded — identical conventions to "
-    "analysis_forecasts.fetch_analysis_inputs, so the buckets audit "
-    "1:1); category definitions imported verbatim from "
-    "analyze.analysis_forecasts (add_px_vol_features + PX_VOL_* "
-    "constants)."
+    "shared per-sec_type price/amt series (COALESCE(adj_close, close) "
+    "for ETF, estimated closes excluded — the analysis_forecasts input "
+    "conventions); the feature layer + classification live in this "
+    "package (px_vol.py + the PX_VOL_* constants)."
 )
 
 

@@ -135,17 +135,27 @@ def download_sse_options_risk(
     # DB-first: skip dates already present in the options identity table.
     # check_identity returns the set of expected trading days that are NOT
     # yet in the DB; dates outside this set are skipped (already built).
-    db_missing: Set[date] = set()
+    # None = DB unreachable -> the loop falls back to the local CSV cache:
+    # dates with a valid file (or a known empty marker) are skipped, the
+    # rest download.
+    db_missing: Optional[Set[date]] = None
     if db_table:
         # options_identity has no exchange column (PK is date +
         # contract_code), so the check is date-only.
-        db_missing = check_identity(db_table, _start, _end)
+        try:
+            db_missing = check_identity(db_table, _start, _end)
+        except Exception as e:
+            logger.warning(
+                "DB identity check failed (%s: %s) — falling back to the "
+                "local CSV cache for missing dates", type(e).__name__, e)
 
     stats = RunStats()
 
     logger.info(
-        "Starting SSE options risk download: %s -> %s (%d trading days, %d missing in DB)",
-        _start, _end, total_days, len(db_missing) if db_table else total_days,
+        "Starting SSE options risk download: %s -> %s (%d trading days, %s)",
+        _start, _end, total_days,
+        f"{len(db_missing)} missing in DB" if db_missing is not None
+        else "DB unreachable — CSV cache decides",
     )
 
     try:
@@ -156,7 +166,9 @@ def download_sse_options_risk(
                 break
 
             # Skip dates already present in the DB identity table
-            if db_table and d not in db_missing:
+            # (db_missing None = DB unreachable -> the local file checks
+            # below decide what's already cached)
+            if db_missing is not None and d not in db_missing:
                 stats.skipped_cached += 1
                 continue
 

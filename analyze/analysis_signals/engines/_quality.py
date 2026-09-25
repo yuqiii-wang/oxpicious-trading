@@ -2,7 +2,7 @@
 (analyze.analysis_signals.engines._quality).
 
 ONE strategy must pass this gate to register as a signal strategy
-(engines._base emit_month applies it right after the plain mixed-row
+(engines._base emit_snapshot applies it right after the plain mixed-row
 gate, BEFORE the strategy/history split — history events only ever
 come from quality-passing strategies).
 

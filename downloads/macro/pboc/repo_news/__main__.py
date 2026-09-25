@@ -1295,10 +1295,14 @@ def download_pboc_repo_news(
                 logger.info("  [%s] all dates already cached, skipping download", cat)
                 continue
 
+            # List pages are newest-first and everything older than the oldest
+            # missing date is already cached, so once items predate
+            # missing_dates[0] deeper pages hold nothing new.
+            eff_start = missing_dates[0]
             found_dates = set()
 
             if cat == "omo_transaction":
-                target_start = missing_dates[0] if missing_dates else _start
+                target_start = eff_start
                 pages_to_process, page_prefix_fmt = smart_pagination_pages(
                     session, cat, target_start, max_pages=max_pages, jump_interval=10,
                     proxy=proxy,
@@ -1329,6 +1333,21 @@ def download_pboc_repo_news(
                 for item in items:
                     if proxy.is_blocked(PBOC_BASE):
                         logger.warning("  [host-blocked] pboc.gov.cn blocked, skipping remaining items")
+                        reached_boundary = True
+                        break
+
+                    # A list item dated before eff_start cannot be missing
+                    # (missing dates are all >= eff_start), so stop the walk
+                    # before paying for a detail fetch. Falls through when the
+                    # list page carries no date; the authoritative pub_date
+                    # check below remains the backstop.
+                    est_date = estimate_item_date(item)
+                    if est_date is not None and est_date < eff_start:
+                        skipped_oob += 1
+                        logger.info(
+                            "  [boundary %s < %s] stop: %s",
+                            est_date, eff_start, item.title[:50],
+                        )
                         reached_boundary = True
                         break
 

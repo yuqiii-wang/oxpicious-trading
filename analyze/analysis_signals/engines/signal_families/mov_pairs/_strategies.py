@@ -4,12 +4,12 @@ the plain gate AND the final SignalQuality gate
 Shared by both pair-cross families (mov_pairs / mov_pairs_ema — each
 covering BOTH its fast legs).
 
-The bar is the ZERO line — the crossed level of every golden / death
-cross — recovered per bucket as `spread(d) − trigger_excess(d)` at the
-bucket's WINDOW-END trigger (exactly 0 for the pairs families: the
-trigger excess IS the day's spread, so the recovery stays uniform with
-the mov_rsi / mov_std pattern instead of hard-coding 0). The fast leg
-+ slow-leg window ride IN the sub_type (pair{W} / pxpair{W} /
+The bar is the day's SLOW-LEG level (ma{W} / ema{W}) at the bucket's
+WINDOW-END trigger, and the compared signal the day's FAST leg (ma5 /
+ema6 / the close) — the live tier's "cross" value space (fast leg vs
+the day's slow leg, never the zero line). The spread survives as the
+strategy's params context; the trigger excess IS fast − slow. The fast
+leg + slow-leg window ride IN the sub_type (pair{W} / pxpair{W} /
 emapair{W} / pxemapair{W} — the live tier's spread-key parsing), so
 each (fast leg, window, side) is its own strategy.
 
@@ -23,38 +23,42 @@ from datetime import date
 import pandas as pd
 
 from analyze.analysis_signals.config import THRESHOLD_SCALE
-from analyze.analysis_forecasts.config import LOOKBACK_PERIOD
+from analyze.analysis_signals.engines._primitives import SELL_SIDES
+from analyze.analysis_forecasts.config import (
+    LOOKBACK_PERIOD,
+    window_lower,
+)
 from analyze.analysis_signals.engines._base import SignalEngine
 
 
 def strategy_rows(
     engine: SignalEngine,
     sec_type: str,
-    month: date,
+    stat_date: date,
     passing: pd.DataFrame,
     long: pd.DataFrame,
 ) -> list[dict]:
-    """The COPY-boundary strategy records for the month's quality-
-    passing buckets (``long`` = the melted (code, date, fast_leg,
-    window, value) spread frame)."""
+    """The COPY-boundary strategy records for the snapshot's
+    quality-passing buckets (``long`` = the melted (code, date,
+    fast_leg, window, value, fast, slow) frame — the day's spread plus
+    the day's absolute legs)."""
     if passing.empty:
         return []
 
-    # The spread AT the window-end trigger defines the bar (the zero
-    # line: value − its stored excess).
+    # The day's legs AT the window-end trigger define the bar (the
+    # slow leg) and the strategy's fast-leg context value.
     bucket = passing.merge(
         long,
         left_on=["code", "trig_date", "fast_leg", "pair_window"],
         right_on=["code", "date", "fast_leg", "window"],
         how="left",
     ).drop(columns=["date", "window"])
-    bucket = bucket[bucket["value"].notna()].reset_index(drop=True)
+    bucket = bucket[bucket["fast"].notna() & bucket["slow"].notna()]
+    bucket = bucket.reset_index(drop=True)
     if bucket.empty:
         return []
 
-    threshold = (bucket["value"] - bucket["trig_excess"]).round(
-        THRESHOLD_SCALE,
-    )
+    threshold = bucket["slow"].round(THRESHOLD_SCALE)
 
     sub_type = (
         bucket["fast_leg"].map(engine.sub_type_prefixes)
@@ -62,17 +66,21 @@ def strategy_rows(
     )
     cmp_op = pd.Series("<=", index=bucket.index)
     cmp_op = cmp_op.mask(bucket["side"].isin(("top",)), ">=")
-    spread_col = (
-        bucket["fast_leg"].map(engine.spread_labels)
+    slow_name = (
+        pd.Series(engine.slow_stem, index=bucket.index)
         + bucket["pair_window"].astype(str)
     )
     reason = (
-        spread_col + " spread " + bucket["value"].round(4).astype(str)
-        + " " + cmp_op + " the " + bucket["side"] + " cross bar "
+        bucket["fast_leg"] + " " + bucket["fast"].round(4).astype(str)
+        + " " + cmp_op + " " + slow_name + " "
         + threshold.round(4).astype(str)
-        + " (" + sub_type + " sign flip) over the 5y window ending "
-        + month.isoformat()
+        + " (" + sub_type + " " + bucket["side"] + " cross) over the "
+        "10y window ending " + stat_date.isoformat()
     )
+
+    dir_sign = pd.Series(1.0, index=bucket.index)
+    dir_sign = dir_sign.mask(bucket["side"].isin(SELL_SIDES), -1.0)
+    _dir_ave = dir_sign * bucket["ave_change"]
 
     out = pd.DataFrame({
         "code": bucket["code"],
@@ -81,14 +89,19 @@ def strategy_rows(
         "regime_state": bucket["regime_state"],
         "action": engine.action_of(bucket["side"]),
         "signal_threshold": threshold,
-        "confidence": bucket["reverse_prob"].round(6),
-        "reason": reason,
+        "signal_delay_days": bucket["delay"],
+        # confidence = the chosen rung's sign-aligned dir_ave (the
+        # expected favorable blended move; history/live rows scale it
+        # to ROUND(10000 x dir_ave) integer basis points)
+        "confidence": _dir_ave.round(6),
+        "reason": reason + "; entry delay " + bucket["delay"].astype(str)
+                          + "d (ladder optimum)",
         # helpers for the params materialization
         "fast_leg": bucket["fast_leg"],
         "pair_window": bucket["pair_window"],
+        "fast_value": bucket["fast"],
         "spread": bucket["value"],
-        "dir_ave": bucket["ave_change"],
-        "reverse_prob": bucket["reverse_prob"],
+        "dir_ave": _dir_ave,
         "occurrence_count": bucket["occurrence_count"],
     })
     records = engine.frame_records(out)
@@ -96,10 +109,14 @@ def strategy_rows(
         rec.update(
             sec_type=sec_type,
             signal_type=engine.signal_type,
-            start_date=engine.window_start(month),
-            end_date=month,
+            start_date=window_lower(stat_date),
+            end_date=stat_date,
             signal_order=None,
             is_active=False,
+            # the cross is an EVENT, not a state — the live tier flags
+            # the breach ONCE per episode (until the legs reset), never
+            # on every bar the fast leg stays beyond the slow leg
+            is_triggered_once=True,
         )
         rec["params"] = json.dumps({
             "fast_leg": rec.pop("fast_leg"),
@@ -108,9 +125,11 @@ def strategy_rows(
             "regime_state": rec["regime_state"],
             "lookback_period": LOOKBACK_PERIOD,
             "conf_period": "mixed",
+            # NOT popped — the delay is ALSO a stored column
+            "signal_delay_days": rec["signal_delay_days"],
+            "fast_value": rec.pop("fast_value"),
             "spread": rec.pop("spread"),
             "dir_ave": rec.pop("dir_ave"),
-            "reverse_prob": rec.pop("reverse_prob"),
             "occurrence_count": rec.pop("occurrence_count"),
         })
     return records

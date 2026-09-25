@@ -21,19 +21,23 @@ from datetime import date
 import pandas as pd
 
 from analyze.analysis_signals.config import RSI_PCT, THRESHOLD_SCALE
-from analyze.analysis_forecasts.config import LOOKBACK_PERIOD
+from analyze.analysis_signals.engines._primitives import SELL_SIDES
+from analyze.analysis_forecasts.config import (
+    LOOKBACK_PERIOD,
+    window_lower,
+)
 from analyze.analysis_signals.engines._base import SignalEngine
 
 
 def strategy_rows(
     engine: SignalEngine,
     sec_type: str,
-    month: date,
+    stat_date: date,
     passing: pd.DataFrame,
     long: pd.DataFrame,
 ) -> list[dict]:
-    """The COPY-boundary strategy records for the month's quality-
-    passing buckets (``long`` = the melted (code, date, window, value)
+    """The COPY-boundary strategy records for the snapshot's
+    quality-passing buckets (``long`` = the melted (code, date, window, value)
     RSI frame)."""
     if passing.empty:
         return []
@@ -66,8 +70,12 @@ def strategy_rows(
         sub_type + "=" + bucket["value"].round(1).astype(str)
         + " " + cmp_op + " " + bucket["side"] + "-1% bar "
         + threshold.round(1).astype(str)
-        + " over the 5y window ending " + month.isoformat()
+        + " over the 10y window ending " + stat_date.isoformat()
     )
+
+    dir_sign = pd.Series(1.0, index=bucket.index)
+    dir_sign = dir_sign.mask(bucket["side"].isin(SELL_SIDES), -1.0)
+    _dir_ave = dir_sign * bucket["ave_change"]
 
     out = pd.DataFrame({
         "code": bucket["code"],
@@ -76,12 +84,16 @@ def strategy_rows(
         "regime_state": bucket["regime_state"],
         "action": engine.action_of(bucket["side"]),
         "signal_threshold": threshold,
-        "confidence": bucket["reverse_prob"].round(6),
-        "reason": reason,
+        "signal_delay_days": bucket["delay"],
+        # confidence = the chosen rung's sign-aligned dir_ave (the
+        # expected favorable blended move; history/live rows scale it
+        # to ROUND(10000 x dir_ave) integer basis points)
+        "confidence": _dir_ave.round(6),
+        "reason": reason + "; entry delay " + bucket["delay"].astype(str)
+                          + "d (ladder optimum)",
         # helpers for the params materialization
         "rsi_window": bucket["rsi_window"],
-        "dir_ave": bucket["ave_change"],
-        "reverse_prob": bucket["reverse_prob"],
+        "dir_ave": _dir_ave,
         "occurrence_count": bucket["occurrence_count"],
     })
     records = engine.frame_records(out)
@@ -89,10 +101,13 @@ def strategy_rows(
         rec.update(
             sec_type=sec_type,
             signal_type=engine.signal_type,
-            start_date=engine.window_start(month),
-            end_date=month,
+            start_date=window_lower(stat_date),
+            end_date=stat_date,
             signal_order=None,
             is_active=False,
+            # the RSI extreme is a STATE — the live tier keeps flagging
+            # on every qualifying observation while the breach persists
+            is_triggered_once=False,
         )
         rec["params"] = json.dumps({
             "rsi_window": rec.pop("rsi_window"),
@@ -101,8 +116,9 @@ def strategy_rows(
             "pct": RSI_PCT,
             "lookback_period": LOOKBACK_PERIOD,
             "conf_period": "mixed",
+            # NOT popped — the delay is ALSO a stored column
+            "signal_delay_days": rec["signal_delay_days"],
             "dir_ave": rec.pop("dir_ave"),
-            "reverse_prob": rec.pop("reverse_prob"),
             "occurrence_count": rec.pop("occurrence_count"),
         })
     return records

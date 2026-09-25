@@ -1,4 +1,4 @@
-"""mov_rsi history-row construction — the strategies' month-owned
+"""mov_rsi history-row construction — the strategies' snapshot-owned
 trigger days (analyze.analysis_signals.engines.signal_families.
 mov_rsi._history).
 
@@ -24,21 +24,22 @@ from analyze.analysis_signals.config import (
     THRESHOLD_SCALE,
 )
 from analyze.analysis_signals.engines._base import SignalEngine
+from analyze.analysis_signals.engines._primitives import SELL_SIDES
 
 
 def history_rows(
     engine: SignalEngine,
     sec_type: str,
-    month: date,
-    month_trig: pd.DataFrame,
+    stat_date: date,
+    snap_trig: pd.DataFrame,
     long: pd.DataFrame,
 ) -> list[dict]:
-    """The COPY-boundary history records for the strategies' month-
-    owned trigger days (``long`` = the melted (code, date, window,
-    value) RSI frame; ``month_trig`` is already semi-joined to the
-    strategies + month-owned by the ABC)."""
+    """The COPY-boundary history records for the strategies'
+    snapshot-owned trigger days (``long`` = the melted (code, date, window,
+    value) RSI frame; ``snap_trig`` is already semi-joined to the
+    strategies + snapshot-owned by the ABC)."""
     # The RSI value AT each trigger day.
-    rows = month_trig.merge(
+    rows = snap_trig.merge(
         long,
         left_on=["code", "trig_date", "rsi_window"],
         right_on=["code", "date", "window"],
@@ -61,6 +62,14 @@ def history_rows(
         .where(threshold != 0)
     )
 
+    # confidence = the strategy's chosen rung's sign-aligned dir_ave
+    # scaled to integer basis points of expected move
+    # (ROUND(10000 x dir_ave); the strategies row keeps the float).
+    dir_sign = pd.Series(1.0, index=rows.index)
+    dir_sign = dir_sign.mask(rows["side"].isin(SELL_SIDES), -1.0)
+    _dir_ave_bp = (dir_sign * rows["ave_change"]).mul(10_000).round(
+    ).astype(int)
+
     out = pd.DataFrame({
         "code": rows["code"],
         "signal_sub_type": (
@@ -72,8 +81,11 @@ def history_rows(
         "signal_excess_pct": excess_pct,
         "signal": signal,
         "signal_threshold": threshold,
-        "confidence": (rows["reverse_prob"] * 100).round().astype(int),
+        "confidence": _dir_ave_bp,
         "date": rows["trig_date"],
+        # the strategy's chosen delay rung (the day-d anchor this
+        # event fired at — denormalized from the strategy row)
+        "signal_delay_days": rows["delay"],
         # the trigger day's regime (FrameMachinery.regime_label —
         # matches the strategy's own regime split (joined 1:1 by the
         # against the current episode table)

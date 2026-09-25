@@ -63,8 +63,10 @@
  * shared per-date tooltip metrics. The other metric groups load ON DEMAND:
  * the first pick of an Amt/MA chip, an OHLC Window button, a High/Low
  * Streaks period, or a Px-Vol state fetches that group via
- * fetchMovAveSpreadExtras; while any group is in flight every control in
- * the panel is disabled and the plot shows the shared spinner.
+ * fetchMovAveSpreadExtras (a regime button's first pick fetches the spans
+ * via fetchMarketRegimeSpans); while any group is in flight every control
+ * in the panel is disabled and the plot freezes under a translucent
+ * spinner backdrop (BaseChart freezeOnLoading).
  *
  * Every button-group title carries a small info mark (SectionLabel) that
  * opens a popover with the group's description — the texts live in
@@ -936,7 +938,8 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         variant="bare"
         option={chartOption}
         height={420}
-        loading={loading || extrasLoading}
+        loading={loading || extrasLoading || regimesLoading}
+        freezeOnLoading
         error={error}
         emptyText={
           selectedPair

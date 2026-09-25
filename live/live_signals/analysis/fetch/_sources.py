@@ -16,7 +16,12 @@ from __future__ import annotations
 
 import datetime
 
+import numpy as np
+import pandas as pd
 from asyncpg import Connection
+
+from _common.build_commons import rec_cols
+from _common.df_utils import host_array
 
 from analyze.analysis_forecasts.config import (
     MA_WINDOWS,
@@ -29,8 +34,9 @@ from analyze.analysis_forecasts.config import (
 
 from live.live_signals.config import RSI_TABLE
 from live.live_signals.analysis.fetch._values import (
+    _CROSS_KINDS,
+    _PAIR_FAST_EMA,
     _RSI_ROW_KINDS,
-    _SPREAD_KINDS,
     SIGNAL_VALUE_SOURCE,
     LiveValues,
 )
@@ -38,8 +44,6 @@ from live.live_signals.analysis.fetch._values import (
 # Spread + state sources (the daily registries the day-close mirror
 # audits against).
 _SPREAD_TABLE = "analysis.mov_ave_spreads_detail"
-_EMA_SPREAD_TABLE = "analysis.mov_ave_spreads_detail_ema"
-_PX_VOL_TABLE = "analysis.mov_ave_price_vs_amt"
 
 # margin-ratio source table + the estimated-close row filter per
 # sec_type (the frame-row space the detection z windows were computed
@@ -81,134 +85,31 @@ async def _fetch_latest_indicators(
             if row[f"rsi_{w}"] is not None}
 
 
-async def _fetch_latest_spreads(
+async def _fetch_latest_ma_ema_std(
     conn: Connection, sec_type: str, code: str,
     as_of: datetime.date | None = None,
-) -> dict[str, float]:
-    """The latest relative spreads (pair_{W} / ema_pair_{W} /
-    px_pair_{W} / px_ema_pair_{W} — the MA5-vs-MA, EMA6-vs-EMA,
-    close-vs-MA and close-vs-EMA families), keyed by the
-    LiveValues.spread names. ``as_of`` bounds to the latest row
-    at-or-before D."""
-    ma_cols = ", ".join(
-        f"ma5_vs_ma{w}::float8 AS pair_{w}" for w in MOV_PAIRS_WINDOWS
-    )
-    px_cols = ", ".join(
-        f"price_vs_ma{w}::float8 AS px_pair_{w}" for w in MOV_PAIRS_WINDOWS
-    )
-    ema_cols = ", ".join(
-        f"ema6_vs_ema{w}::float8 AS ema_pair_{w}"
-        for w in MOV_PAIRS_EMA_WINDOWS
-    )
-    px_ema_cols = ", ".join(
-        f"price_vs_ema{w}::float8 AS px_ema_pair_{w}"
-        for w in MOV_PAIRS_EMA_WINDOWS
-    )
-    bound = "AND ($3::date IS NULL OR date <= $3::date)"
-    ma_row = await conn.fetchrow(
-        f"SELECT {ma_cols}, {px_cols} FROM {_SPREAD_TABLE} "
-        f"WHERE sec_type = $1 AND code = $2 {bound} "
-        f"ORDER BY date DESC LIMIT 1",
-        sec_type, code, as_of,
-    )
-    ema_row = await conn.fetchrow(
-        f"SELECT {ema_cols}, {px_ema_cols} FROM {_EMA_SPREAD_TABLE} "
-        f"WHERE sec_type = $1 AND code = $2 {bound} "
-        f"ORDER BY date DESC LIMIT 1",
-        sec_type, code, as_of,
-    )
-    spread: dict[str, float] = {}
-    for row in (ma_row, ema_row):
-        if row is None:
-            continue
-        for k, v in row.items():
-            if v is not None:
-                spread[k] = v
-    return spread
-
-
-async def _fetch_latest_px_t(
-    conn: Connection, sec_type: str, code: str,
-    as_of: datetime.date | None = None,
-) -> float | None:
-    """The latest recorded px_t from the price_vs_amt registry
-    (``as_of``-bounded for the on-demand replay)."""
-    row = await conn.fetchrow(
-        f"SELECT px_t::float8 AS px_t FROM {_PX_VOL_TABLE} "
-        f"WHERE sec_type = $1 AND code = $2 AND px_t IS NOT NULL "
-        f"  AND ($3::date IS NULL OR date <= $3::date) "
-        f"ORDER BY date DESC LIMIT 1",
-        sec_type, code, as_of,
-    )
-    return None if row is None else row["px_t"]
-
-
-async def _fetch_latest_margin_z(
-    conn: Connection, sec_type: str, code: str,
-    as_of: datetime.date | None = None,
-) -> float | None:
-    """The latest margin-ratio z-score, recomputed by SQL window
-    functions over EXACTLY the frame-row space and definition the
-    detection used (ratio = rz_buy / trading_amount on rz_buy > 0
-    days; 1220-row trailing moments shifted 1 row, min 250 non-NULL —
-    per code, latest defined row). ``as_of`` bounds the frame to rows
-    at-or-before D (the on-demand replay).
-    Index has no margin data — None."""
-    if sec_type not in _MARGIN_SOURCE:
-        return None
-    base, est = _MARGIN_SOURCE[sec_type]
-    w = MARGIN_RATIO_Z_WINDOW
-    mp = MARGIN_RATIO_Z_MIN_PERIODS
-    row = await conn.fetchrow(
-        f"""
-        WITH frame AS (
-            SELECT b.date,
-                   CASE WHEN m.rz_buy > 0 AND m.trading_amount > 0
-                        THEN m.rz_buy::float8
-                             / NULLIF(m.trading_amount::float8, 0)
-                   END AS ratio
-            FROM {base}
-            WHERE b.code = $1 AND b.close IS NOT NULL
-              AND ($2::date IS NULL OR b.date <= $2::date)
-              {est}
-        ), z0 AS (
-            SELECT date,
-                   (ratio - avg(ratio) OVER w)
-                   / NULLIF(stddev_samp(ratio) OVER w, 0) AS z,
-                   count(ratio) OVER w AS n
-            FROM frame
-            WINDOW w AS (
-                ORDER BY date
-                ROWS BETWEEN {w} PRECEDING AND 1 PRECEDING
-            )
-        )
-        SELECT z::float8 AS z FROM z0
-        WHERE z IS NOT NULL AND n >= {mp}
-        ORDER BY date DESC LIMIT 1
-        """,
-        code, as_of,
-    )
-    return None if row is None else row["z"]
-
-
-async def _fetch_latest_ma_std(
-    conn: Connection, sec_type: str, code: str,
-    as_of: datetime.date | None = None,
-) -> tuple[dict[int, float], dict[int, float]]:
-    """Latest daily ma_{W} (stats.{sec}_tech_stats) and σ of price
-    std_{W}days (analysis.mov_ave_spreads_detail) — the Bollinger
-    band inputs the mov_std thresholds derive from (the bands move
-    daily; the strategy's stored bar is never compared). ``as_of``
-    bounds to the latest row at-or-before D — the band is derived from
-    THE DAY'S OWN ma/σ, never a later snapshot's."""
-    ma_cols = ", ".join(
-        f"t.ma{w}::float8 AS ma{w}" for w in MA_WINDOWS
-    )
+) -> tuple[dict[int, float], dict[int, float], dict[int, float],
+           datetime.date | None]:
+    """Latest daily ma_{W} + ema_{W} legs (stats.{sec}_tech_stats) and
+    σ of price std_{W}days (analysis.mov_ave_spreads_detail) — the
+    mov_std band inputs AND the cross-family legs (all from ONE
+    tech_stats row; bands and cross legs move daily — the strategies'
+    stored bars are never compared). The ma keys cover the mov_std
+    windows plus the pair slow legs; the ema keys cover the ema6 fast
+    leg plus the pair slow legs. ``as_of`` bounds to the latest row
+    at-or-before D — the values come from THE DAY'S OWN row, never a
+    later snapshot's. Returns (ma, ema, std, legs_date) — legs_date is
+    that row's date (the derived-bar families' state basis; the
+    is_triggered_once episode gate steps one row earlier from it)."""
+    ma_ws = sorted(set(MA_WINDOWS) | set(MOV_PAIRS_WINDOWS))
+    ema_ws = sorted({_PAIR_FAST_EMA, *MOV_PAIRS_EMA_WINDOWS})
+    ma_cols = ", ".join(f"t.ma{w}::float8 AS ma{w}" for w in ma_ws)
+    ema_cols = ", ".join(f"t.ema{w}::float8 AS ema{w}" for w in ema_ws)
     std_cols = ", ".join(
         f"d.std_{w}days::float8 AS std{w}" for w in MA_WINDOWS
     )
     row = await conn.fetchrow(
-        f"SELECT {ma_cols}, {std_cols} "
+        f"SELECT t.date AS legs_date, {ma_cols}, {ema_cols}, {std_cols} "
         f"FROM stats.{sec_type}_tech_stats t "
         f"LEFT JOIN {_SPREAD_TABLE} d "
         f"  ON d.sec_type = $1 AND d.code = t.code AND d.date = t.date "
@@ -218,12 +119,77 @@ async def _fetch_latest_ma_std(
         sec_type, code, as_of,
     )
     if row is None:
-        return {}, {}
-    ma = {w: row[f"ma{w}"] for w in MA_WINDOWS
-          if row[f"ma{w}"] is not None}
+        return {}, {}, {}, None
+    ma = {w: row[f"ma{w}"] for w in ma_ws if row[f"ma{w}"] is not None}
+    ema = {w: row[f"ema{w}"] for w in ema_ws
+           if row[f"ema{w}"] is not None}
     std = {w: row[f"std{w}"] for w in MA_WINDOWS
            if row[f"std{w}"] is not None}
-    return ma, std
+    return ma, ema, std, row["legs_date"]
+
+
+async def _fetch_latest_margin_z(
+    conn: Connection, sec_type: str, code: str,
+    as_of: datetime.date | None = None,
+) -> float | None:
+    """The latest margin-ratio z-score, recomputed in pandas over
+    EXACTLY the frame-row space and definition the detection used
+    (analyze.analysis_forecasts.fetch.margin.add_margin_ratio_features):
+    ratio = rz_buy / trading_amount on rz_buy > 0 days; 1220-row
+    trailing sample moments shifted 1 row, min 250 non-NULL — per code,
+    latest defined row. ``as_of`` bounds the frame to rows at-or-before
+    D (the on-demand replay). Index has no margin data — None.
+
+    The former SQL window-form (CASE WHEN ratio + avg/stddev_samp OVER
+    ROWS BETWEEN w PRECEDING AND 1 PRECEDING + a ``n >= min_periods``
+    post-filter) selects the same row: pandas' min_periods=mp on the
+    shifted moments makes a defined z IMPLY count >= mp, so z-notna is
+    the exact former ``z IS NOT NULL AND n >= mp`` predicate.
+    """
+    if sec_type not in _MARGIN_SOURCE:
+        return None
+    base, est = _MARGIN_SOURCE[sec_type]
+    w = MARGIN_RATIO_Z_WINDOW
+    mp = MARGIN_RATIO_Z_MIN_PERIODS
+    rows = await conn.fetch(
+        f"""
+        SELECT m.rz_buy::float8          AS rz_buy,
+               m.trading_amount::float8  AS trading_amount
+        FROM {base}
+        WHERE b.code = $1 AND b.close IS NOT NULL
+          AND ($2::date IS NULL OR b.date <= $2::date)
+          {est}
+        ORDER BY b.date
+        """,
+        code, as_of,
+    )
+    if not rows:
+        return None
+    df = pd.DataFrame(
+        rec_cols(rows), columns=["rz_buy", "trading_amount"],
+    )
+    ta = df["trading_amount"].astype(float)
+    rb = df["rz_buy"].astype(float)
+    # Pure-boolean guards (the detection's cudf.pandas discipline —
+    # comparisons on NULL-bearing series are filled BEFORE the compare):
+    # ta_pos = trading_amount NOT NULL AND > 0; rb_buy = rz_buy NOT NULL
+    # AND > 0.
+    ta_pos = ta.fillna(0.0) > 0
+    rb_buy = rb.fillna(-1.0) > 0
+    ratio = (rb / ta).where(rb_buy & ta_pos)
+
+    # Trailing w-row sample moments SHIFTED 1 row (yesterday's moments
+    # are today's bars — no look-ahead), min_periods=mp non-NULL — the
+    # detection's grouped_rolling_agg(min_periods=mp) + grouped_shift(1)
+    # for a one-code frame (single group ⇒ plain rolling is identical).
+    mu = ratio.rolling(w, min_periods=mp).mean()
+    sig = ratio.rolling(w, min_periods=mp).std(ddof=1)
+    sig_l = sig.shift(1)
+    z = ((ratio - mu.shift(1)) / sig_l).where(sig_l.fillna(0.0) > 0)
+
+    z_arr = host_array(z.to_numpy())
+    valid = np.flatnonzero(~np.isnan(z_arr))
+    return float(z_arr[valid[-1]]) if valid.size else None
 
 
 async def fetch_current_values(
@@ -245,18 +211,13 @@ async def fetch_current_values(
         values.rsi = await _fetch_latest_indicators(
             conn, sec_type, code, as_of,
         )
-    if kinds & _SPREAD_KINDS:
-        values.spread = await _fetch_latest_spreads(
+    if "mov_std" in signal_types or kinds & _CROSS_KINDS:
+        (values.ma, values.ema, values.std,
+         values.legs_date) = await _fetch_latest_ma_ema_std(
             conn, sec_type, code, as_of,
         )
-    if "px_t" in kinds:
-        values.px_t = await _fetch_latest_px_t(conn, sec_type, code, as_of)
     if "margin_z" in kinds:
         values.margin_z = await _fetch_latest_margin_z(
-            conn, sec_type, code, as_of,
-        )
-    if "mov_std" in signal_types:
-        values.ma, values.std = await _fetch_latest_ma_std(
             conn, sec_type, code, as_of,
         )
     return values

@@ -1,10 +1,9 @@
 """cudf-native wide engine base (analyze.analysis_forecasts._dfengine).
 
 ``WideDfEngine`` — the DataFrame engine behind the forecast bucket
-families (compute_rsi / compute_base today; one metric one file). The
-numpy wide machinery in ``wide/`` + ``_engine.py`` remains the
-exactness reference; the FORECAST path runs entirely on cudf.pandas
-DataFrames:
+families (one metric one file). The FORECAST path runs entirely on
+cudf.pandas DataFrames (the former numpy wide reference machinery went
+with the retired opp_pair legacy pipeline in 2026-09):
 
   - the (code chunk × stat month) PARTITION lives here — the base owns
     the month loop and the chunking that bounds every frame's device
@@ -31,10 +30,10 @@ DataFrames:
 Semantics are the historic numpy pipeline's: consecutive qualifying
 UNION-CALENDAR days merge into ONE signal with incremental anchor
 triggers at delays 0..TRIGGER_DELAY_MAX (a suspended
-day's missing row breaks the run), the full-window live gate is
-date-space (first data strictly precedes the window start), the
-reversal event is the forward window's adverse PATH extreme beyond the
-bar, and the mixed row blends the three horizons at MIXED_HORIZON_WEIGHTS
+day's missing row breaks the run), the live gate is date-space (a code
+joins a snapshot from its own first-data date — its stats span the
+ACTUAL window, min(actual history, WINDOW_YEARS)), and the mixed row
+blends the three horizons at MIXED_HORIZON_WEIGHTS
 renormalized over the legs with stats (the SQL 01 backfill's blend,
 over 6dp-rounded legs).
 """
@@ -59,10 +58,6 @@ from analyze.analysis_forecasts.config import (
     LOOKBACK_PERIOD,
     MIXED_HORIZON_WEIGHTS,
     MM_HORIZONS,
-    REVERSE_THRESHOLD,
-    REVERSE_THRESHOLD_MODE,
-    REVERSE_THRESHOLD_STD_K,
-    REVERSE_THRESHOLD_STD_MIN_DAYS,
     TRIGGER_DELAY_MAX,
 )
 
@@ -171,7 +166,7 @@ class WideDfEngine(ABC):
     # ------------------------------------------------------------------
 
     def run(self) -> Iterator[tuple[date, object]]:
-        """Yield (stat_month, payload) per stat month — month-major, so
+        """Yield (stat_date, payload) per stat date — snapshot-major, so
         __main__ writes one atomic transaction per month. The payload is
         a bucket-major result FRAME for the bucket families (the
         writer's fast path: CSV render + frame-firsts mov/identity
@@ -193,11 +188,11 @@ class WideDfEngine(ABC):
             if not items:
                 continue
             if isinstance(items[0], pd.DataFrame):
-                yield (spec.stat_month,
+                yield (spec.stat_date,
                        items[0] if len(items) == 1
                        else pd.concat(items, ignore_index=True))
             else:
-                yield spec.stat_month, items
+                yield spec.stat_date, items
 
     def month_rows(self, win: pd.DataFrame, spec) -> list:
         """One (month × code chunk) partition — the bucket pipeline:
@@ -254,10 +249,12 @@ class WideDfEngine(ABC):
 
     def _month_chunks(self, spec) -> Iterator[pd.DataFrame]:
         """Yield the (live code chunk × window dates) slices of the
-        prepared frame. The live gate is DATE-space (a code joins only
-        once its first data strictly precedes the window start); codes
-        are the sorted universe, so each chunk is one contiguous string
-        range — the slice is two vectorized compares, no isin hash."""
+        prepared frame. The live gate is DATE-space (a code joins from
+        its own first-data date — a snapshot's stats span its ACTUAL
+        window, min(actual history, WINDOW_YEARS), so partial windows
+        are expected); codes are the sorted universe, so each chunk is
+        one contiguous string range — the slice is two vectorized
+        compares, no isin hash."""
         df = self._prepared
         cols = self._window_cols()
         codes_frame = self._codes_frame()
@@ -268,14 +265,16 @@ class WideDfEngine(ABC):
         # date (merged once in _prepare) — non-live codes sorting inside
         # a partition stay out, no per-month isin hash joins
         lower, upper = np.datetime64(spec.lower), np.datetime64(spec.upper)
-        fd_cut = np.datetime64(spec.lower)
+        fd_cut = np.datetime64(spec.upper)
         live_pcs = codes_frame.loc[
-            codes_frame["first_date"] < fd_cut, "_pc"
+            codes_frame["first_date"] <= fd_cut, "_pc"
         ].drop_duplicates()
-        for pc in sorted(live_pcs.tolist()):
+        # ONE device→host conversion — Series.tolist is not a cuDF op and
+        # forces a whole-operation pandas fallback on every call
+        for pc in sorted(live_pcs.to_numpy().tolist()):
             mask = (
                 (df["_pc"] == pc)
-                & (df["_fd"] < fd_cut)
+                & (df["_fd"] <= fd_cut)
                 & (df["date"] >= lower)
                 & (df["date"] <= upper)
             )
@@ -285,12 +284,12 @@ class WideDfEngine(ABC):
 
     def _window_cols(self) -> list[str]:
         """The prepared frame's columns one month window needs: cell
-        identity + the family's extra columns + forward changes."""
+        identity + the family's extra columns + forward changes / closes."""
         cols = ["code", "date", "_t", "regime"] + self._extra_window_cols()
         for n in FORWARD_HORIZONS:
             cols.append(f"next_change_{n}d")
-        for n in MM_HORIZONS:
-            cols.extend((f"path_high_{n}d", f"path_low_{n}d"))
+        for n in FORWARD_HORIZONS:
+            cols.append(f"next_close_{n}")
         return cols
 
     def _extra_window_cols(self) -> list[str]:
@@ -322,7 +321,7 @@ class WideDfEngine(ABC):
 
     def _codes_frame(self) -> pd.DataFrame:
         """(code, first_date) — the universe with its true first-data
-        dates (datetime64; the full-window live gate's input)."""
+        dates (datetime64; the live gate's input)."""
         if self._codes_frame_cache is None:
             if self._code_chunk is None:
                 self._code_chunk = self._compute_code_chunk()
@@ -430,43 +429,6 @@ class WideDfEngine(ABC):
     #  Aggregation + row building
     # ------------------------------------------------------------------
 
-    def _reverse_thresholds(self, win: pd.DataFrame) -> pd.DataFrame | None:
-        """Per-(code, horizon) reversal bars of one window frame.
-        "fixed" mode → None (the constant REVERSE_THRESHOLD applies);
-        "std" mode → k_n · σ of the code's window forward changes
-        (population σ over ALL window days — no look-ahead), with the
-        fixed bar where σ is degenerate / under-sampled."""
-        if REVERSE_THRESHOLD_MODE != "std":
-            return None
-        w = win
-        helper: dict = {}
-        for n in FORWARD_HORIZONS:
-            col = w[f"next_change_{n}d"]
-            fin = _finite_mask(col)
-            w = w.assign(**{
-                f"_fin{n}": fin,
-                f"_w{n}": col.where(fin, 0.0),
-                f"_w2{n}": col.where(fin, 0.0) ** 2,
-            })
-            helper[f"_cnt{n}"] = (f"_fin{n}", "sum")
-            helper[f"_s{n}"] = (f"_w{n}", "sum")
-            helper[f"_s2{n}"] = (f"_w2{n}", "sum")
-        g = w.groupby("code", sort=False).agg(**helper)
-        out = pd.DataFrame(index=g.index)
-        for n in FORWARD_HORIZONS:
-            cnt = g[f"_cnt{n}"]
-            mean = g[f"_s{n}"] / cnt
-            sig = np.sqrt((g[f"_s2{n}"] / cnt - mean ** 2).clip(lower=0.0))
-            ok = (
-                _finite_mask(sig)
-                & (sig > 0)
-                & (cnt >= REVERSE_THRESHOLD_STD_MIN_DAYS)
-            )
-            out[f"thr_{n}"] = np.where(
-                ok, REVERSE_THRESHOLD_STD_K[n] * sig, REVERSE_THRESHOLD,
-            )
-        return out.reset_index()
-
     def _cells_to_rows(
         self,
         cells: pd.DataFrame,
@@ -480,14 +442,14 @@ class WideDfEngine(ABC):
         FRAME the writer's fast path consumes."""
         ids = ["code", "regime", "side"] + list(self.BUCKET_COLS)
         keys = ids + ["delay"]
-        thr_frame = self._reverse_thresholds(win)
 
         # Forward changes ride each trigger's own row — one keyed join.
         # (Engines whose cells are a subset of the window frame —
         # high_low_streaks — already carry them; skip the join, a
         # duplicate column would suffix-split the frame.)
         fwd_cols = self._window_cols()[4 + len(self._extra_window_cols()):]
-        missing = [c for c in fwd_cols if c not in cells.columns]
+        cells_cols = set(cells.columns)  # one host transfer, not per-column
+        missing = [c for c in fwd_cols if c not in cells_cols]
         if missing:
             c = cells.merge(
                 win[["code", "date"] + missing], on=["code", "date"],
@@ -495,18 +457,10 @@ class WideDfEngine(ABC):
             )
         else:
             c = cells.copy()
-        if thr_frame is not None:
-            c = c.merge(thr_frame, on="code", how="left").fillna(
-                {f"thr_{n}": REVERSE_THRESHOLD for n in FORWARD_HORIZONS}
-            )
-        else:
-            for n in FORWARD_HORIZONS:
-                c[f"thr_{n}"] = REVERSE_THRESHOLD
 
         # Per-horizon helper columns (vectorized; invalid cells
         # contribute exact zeros so the all-cell sums are the valid-day
         # sums — the NC0 semantics of the numpy pipeline).
-        top = c["side"] == "top"
         agg: dict = {}
         for n in FORWARD_HORIZONS:
             col = c[f"next_change_{n}d"]
@@ -514,24 +468,14 @@ class WideDfEngine(ABC):
             c[f"_fin{n}"] = fin
             c[f"_c{n}"] = col.where(fin, 0.0)
             c[f"_c2_{n}"] = c[f"_c{n}"] ** 2
-            # SWING-AWARE reversal: the period's adverse PATH extreme
-            # beyond the code's bar against the side — at the next-day
-            # horizon the path IS the endpoint change.
-            if n in MM_HORIZONS:
-                adv_pos = c[f"path_low_{n}d"]
-                adv_neg = c[f"path_high_{n}d"]
-            else:
-                adv_pos = col
-                adv_neg = col
-            c[f"_r{n}"] = (
-                fin & ((top & (adv_pos < -c[f"thr_{n}"]))
-                       | (~top & (adv_neg > c[f"thr_{n}"])))
-            ).astype("int64")
+            # PERIOD-END close sum (the ave_close numerator):
+            # close[t+n] over the SAME finite-change cells — invalid
+            # cells contribute exact zeros (the NC0 semantics).
+            c[f"_cl{n}"] = c[f"next_close_{n}"].where(fin, 0.0)
             agg[f"cnt_{n}"] = (f"_fin{n}", "sum")
             agg[f"s_{n}"] = (f"_c{n}", "sum")
+            agg[f"sc_{n}"] = (f"_cl{n}", "sum")
             agg[f"s2_{n}"] = (f"_c2_{n}", "sum")
-            agg[f"thr_{n}"] = (f"thr_{n}", "max")
-            agg[f"rev_{n}"] = (f"_r{n}", "sum")
             if n in MM_HORIZONS:
                 c[f"_hx{n}"] = col.where(fin, -np.inf)
                 c[f"_ln{n}"] = col.where(fin, np.inf)
@@ -551,28 +495,20 @@ class WideDfEngine(ABC):
             (kid.shift().fillna("") != kid).any(axis=1)
             .astype("int64").cumsum()
         )
-        # 'flat' buckets (px_vol's flat speed, valuation mid states)
-        # make no directional claim — their reverse counts are junk by
-        # construction (no top/bottom test applies); null them.
-        flat = a["side"] == "flat"
-        if flat.any():
-            for n in FORWARD_HORIZONS:
-                a[f"rev_{n}"] = a[f"rev_{n}"].where(~flat)
         extras = self.bucket_extras(c, keys)
         if extras is not None:
             a = a.merge(extras, on=keys, how="left")
-        has_config = "bucket_config" in a.columns
+        has_config = "bucket_config" in set(a.columns)
         a = a.merge(self._ragged_arrays(c, keys), on=keys, how="left")
 
         # ---- period rows (next/5d/20d) + the blended mixed row ----
         legs = {
             n: {
                 "ave": (a[f"s_{n}"] / a[f"cnt_{n}"]).where(a[f"cnt_{n}"] > 0),
+                "close": (a[f"sc_{n}"] / a[f"cnt_{n}"]).where(
+                    a[f"cnt_{n}"] > 0),
                 "std": _std_col(a[f"s2_{n}"], a[f"s_{n}"], a[f"cnt_{n}"]),
                 "occ": a[f"cnt_{n}"],
-                "rev": (a[f"rev_{n}"] / a[f"cnt_{n}"]).where(
-                    a[f"cnt_{n}"] > 0),
-                "thr": a[f"thr_{n}"],
                 "max": a[f"max_{n}"] if n in MM_HORIZONS else None,
                 "min": a[f"min_{n}"] if n in MM_HORIZONS else None,
             }
@@ -636,12 +572,12 @@ class WideDfEngine(ABC):
         per-row dict COPY boundary is gone for the df-engine families
         (the writer renders forecast_results via the CSV path and
         extracts the mov/identity rows from each bucket group's first
-        row). stat_month lands as a datetime64 scalar (the CSV
+        row). stat_date lands as a datetime64 scalar (the CSV
         renderer's np.datetime_as_string path); no object-date
         columns."""
         for k, v in {
             "sec_type": self.sec_type,
-            "stat_month": np.datetime64(spec.stat_month),
+            "stat_date": np.datetime64(spec.stat_date),
             "lookback_period": LOOKBACK_PERIOD,
             **self.family_constants(),
         }.items():
@@ -654,8 +590,8 @@ class WideDfEngine(ABC):
 
     def family_constants(self) -> dict:
         """Constant columns stamped onto every row of this family (the
-        recorded build parameters the mov tables carry — e.g. px_vol's
-        sigma_window / k bars)."""
+        recorded build parameters the mov tables carry — e.g. mov_std's
+        ma window / k bars)."""
         return {}
 
     def bucket_extras(
@@ -664,7 +600,7 @@ class WideDfEngine(ABC):
         keys: list[str],
     ) -> pd.DataFrame | None:
         """Optional per-bucket aggregates beyond the standard legs —
-        e.g. px_vol's config JSONB {mean_t, mean_z} or high_low_streaks'
+        e.g. high_low_streaks'
         {mean,min,max}_day_count. Returns a frame keyed by ``keys`` with
         a ``bucket_config`` column (the JSONB string); None = none."""
         return None
@@ -769,12 +705,13 @@ def _std_col(s2, s, cnt):
 
 def _mixed_blend(a, legs: dict[int, dict]):
     """The FIXED-weight blended mixed row (the SQL 01 backfill's blend
-    over the 6dp-rounded legs): ave / reverse_prob renormalized over
-    the horizons with stats, std the mixture dispersion
+    over the 6dp-rounded legs): ave renormalized over the horizons with
+    stats, std the mixture dispersion
     sqrt(Σw·E[x²] / Σw − mean²) — NOT the mean of the stds —
-    occurrence_count the MIN positive leg count, threshold the
-    full-weight mean of the three bars, extrema + arrays NULL. A small
-    (R × 3) leg-table algebra — one vectorized pass per column."""
+    occurrence_count the MIN positive leg count, extrema + arrays NULL.
+    A small (R × 3) leg-table algebra — one vectorized pass per column.
+    ave_close is NULL on the mixed row: period-end price LEVELS do not
+    blend across horizons (only the fractional changes do)."""
     # NOTE: the weight vector stays 1-D — cudf.pandas' numpy interop
     # breaks column-vector (3,1) broadcasts against (R, 3) tables (the
     # probe in temp_scripts), while last-axis (3,) broadcasts are fine.
@@ -797,8 +734,6 @@ def _mixed_blend(a, legs: dict[int, dict]):
 
     ave = _leg("ave", "float64").round(6)
     std = _leg("std", "float64").round(6)
-    rev = np.nan_to_num(_leg("rev", "float64").round(6))
-    thr = np.nan_to_num(_leg("thr", "float64").round(6))
     occ = _leg("occ", "int64")
 
     valid = (ave == ave)                      # NaN = leg without stats
@@ -808,21 +743,18 @@ def _mixed_blend(a, legs: dict[int, dict]):
     ex2 = (np.where(valid, np.nan_to_num(std ** 2 + ave ** 2), 0.0)
            * w).sum(axis=1) / safe
     std_m = np.sqrt(np.maximum(ex2 - ave_m ** 2, 0.0))
-    rev_m = (rev * w).sum(axis=1) / safe
     pos = occ > 0
     occ_m = np.where(
         pos.any(axis=1),
         np.where(pos, occ, np.iinfo(np.int64).max).min(axis=1),
         0,
     )
-    thr_m = (thr * w).sum(axis=1)
     idx = a.index
     return {
         "ave": pd.Series(ave_m, index=idx),
         "std": pd.Series(std_m, index=idx),
+        "close": None,
         "occ": pd.Series(occ_m, index=idx),
-        "rev": pd.Series(rev_m, index=idx),
-        "thr": pd.Series(thr_m, index=idx),
         "max": None,
         "min": None,
     }
@@ -844,9 +776,9 @@ def _period_frame(a, keys, payload, period, n, config=None):
                          else np.nan)
     out["min_change"] = (payload["min"] if payload["min"] is not None
                          else np.nan)
+    out["ave_close"] = (payload["close"] if payload["close"] is not None
+                        else np.nan)
     out["occurrence_count"] = payload["occ"].astype("int64")
-    out["reverse_prob"] = payload["rev"]
-    out["threshold"] = payload["thr"]
     if n is None:
         for col in ("trigger_dates", "streak_starts", "streak_ends",
                     "streak_days", "trigger_excess"):

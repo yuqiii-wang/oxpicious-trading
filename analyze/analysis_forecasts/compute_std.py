@@ -1,4 +1,4 @@
-"""Bollinger-breach monthly aggregation (analysis_forecasts) — sparse
+"""Bollinger-breach annual-snapshot aggregation (analysis_forecasts) — sparse
 tensor engine.
 
 For each stat month's trailing 5-year window [lo, hi) of the (T, C) wide
@@ -8,9 +8,10 @@ grid, each MA window W and each sigma multiple k:
   lower breach: price < ma_{W} - k·std_{W}days
 
 (NaN bounds / NaN price compare False, so rows without a fully-populated
-band never enter a bucket.) Codes whose own history does not span the
-full window (first data date > window start) are gated out — no
-partial-window stats. Each (code, w, k, side) bucket is SPLIT into
+band never enter a bucket.) Codes join a snapshot from their own
+first-data date — a snapshot's stats span its ACTUAL window
+(min(actual history, WINDOW_YEARS); partial windows expected). Each
+(code, w, k, side) bucket is SPLIT into
 buckets split by regime_state — the stats.market_regimes day label
 (calm/hot/panic/quiet) of the bucket's breach days:
 one row for the hyped breach days and one for the non-hyped breach days
@@ -19,21 +20,23 @@ one row for the hyped breach days and one for the non-hyped breach days
 The (k, side) configs are stacked into ONE (T, C, K) bucket mask tensor
 per MA window (K = len(STD_MULTIPLES), side-major: the first half of
 the config axis is the upper-side ks, the second the lower-side ks).
-The UNIFIED bucket-signal pipeline (wide.iter_bucket_subsets) then runs
+The UNIFIED bucket-signal pipeline (``_dfengine``'s df-side
+implementation) then runs
 the whole shared span ONCE on the flattened (T, C·K) stack (columns are
 config-independent): streak-merge, sparsification with a single
 np.nonzero, live-gated per-config streak counts and the (side, hype)
 subset splits as trigger-cell lists — every downstream reduction works
-on those lists: the hype split is a cell filter, the per-horizon mean /
-high / low n-day forward change and P(reverse beyond the code's
-adaptive threshold) come from wide.aggregate_horizons_sparse
-(bincount/reduceat passes scaling with the trigger count). The row
-payload (forecast_results fields) is expanded by wide.build_result_rows
-(vectorized rounding). No per-config / per-code Python loops.
+on those lists: the hype split is a cell filter, the per-horizon
+mean / high / low n-day forward change comes from the engine's
+vectorized horizon
+aggregation (grouped passes scaling with the trigger count). The row
+payload (forecast_results fields) is expanded by the engine's
+result-row builder (vectorized rounding). No per-config / per-code
+Python loops.
 
-Yields (stat_month, rows) so __main__ can split each row into the
+Yields (stat_date, rows) so __main__ can split each row into the
 mov_std motivation dicts and the forecast_results result dicts and write
-month-major.
+snapshot-major.
 """
 
 from __future__ import annotations
@@ -144,7 +147,7 @@ class _StdEngine(WideDfEngine):
 def compute_std_results(
     *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, mov_std bucket rows) per stat month."""
+    """Yield (stat_date, mov_std bucket rows) per stat date."""
     engine = _StdEngine(
         df=df,
         first_dates=first_dates,

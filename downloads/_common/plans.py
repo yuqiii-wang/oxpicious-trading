@@ -5,6 +5,7 @@ download loops, plus the generic RunStats + run_plan_with_sleep executor.
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -22,6 +23,8 @@ from downloads._common.filescan import (
     scan_present_day_keys,
     scan_present_year_keys,
 )
+
+logger = logging.getLogger(__name__)
 
 # Empty markers newer than this many calendar days are retried on each run
 # (a recent "no data" response is often just an export that wasn't
@@ -135,12 +138,30 @@ def build_day_download_plan(
     elif not weekdays_only and sort_newest_first:
         all_dates = list(date_range_backward(end_date, start_date))
 
+    # DB-first missing-date detection with a local-file fallback: when the
+    # identity DB is unreachable (down / connection timeout), the plan falls
+    # back to scanning the local temps files — a date with a valid cached
+    # file counts as present, every other date is queued for download.
+    missing_from_db: Optional[Set[date]] = None
     if db_table:
-        # check_identity returns the set of expected trading days that are
-        # NOT in the identity table; the present set is the complement within
-        # all_dates. skip_holidays matches the weekdays_only filter so the
-        # expected-date generation matches all_dates.
-        #
+        from _common.pre_check_and_load import check_identity
+        try:
+            # check_identity returns the set of expected trading days that are
+            # NOT in the identity table; the present set is the complement within
+            # all_dates. skip_holidays matches the weekdays_only filter so the
+            # expected-date generation matches all_dates.
+            missing_from_db = check_identity(
+                db_table, start_date, end_date,
+                date_column=db_date_column,
+                exchange=db_exchange,
+                skip_holidays=weekdays_only,
+            )
+        except Exception as e:
+            logger.warning(
+                "db_table %s unreachable (%s: %s) — falling back to local "
+                "file scan for missing dates", db_table, type(e).__name__, e)
+
+    if missing_from_db is not None:
         # IMPORTANT: DB-first alone is not sufficient because identity tables
         # are shared across multiple downloaders (archive, trend, etc.). A
         # date marked "present" in stats.stock_identity by the archive
@@ -151,14 +172,7 @@ def build_day_download_plan(
         # markers (0-byte files older than EMPTY_MARKER_RETRY_DAYS) are also
         # treated as present regardless of DB state, since they represent a
         # confirmed "server returned no data" result from THIS downloader.
-        from _common.pre_check_and_load import check_identity
-        missing_dates = check_identity(
-            db_table, start_date, end_date,
-            date_column=db_date_column,
-            exchange=db_exchange,
-            skip_holidays=weekdays_only,
-        )
-        present_from_db = set(all_dates) - missing_dates
+        present_from_db = set(all_dates) - missing_from_db
 
         # Cross-check with local valid xlsx files — this downloader must
         # actually have a file for the date to be truly cached.
@@ -244,12 +258,24 @@ def build_year_download_plan(
 
     years = list(range(start_date.year, end_date.year + 1))
 
+    # DB-first missing-year detection with the same local-file fallback as
+    # the per-day plan: DB unreachable -> years with a valid local file count
+    # as present, everything else downloads.
+    missing_years: Optional[Set[int]] = None
     if db_table:
         from _common.pre_check_and_load import check_identity_years
-        missing_years = check_identity_years(
-            db_table, start_date, end_date,
-            date_column=db_date_column,
-        )
+        try:
+            missing_years = check_identity_years(
+                db_table, start_date, end_date,
+                date_column=db_date_column,
+            )
+        except Exception as e:
+            logger.warning(
+                "db_table %s unreachable (%s: %s) — falling back to local "
+                "file scan for missing years",
+                db_table, type(e).__name__, e)
+
+    if missing_years is not None:
         present_from_db = set(years) - missing_years
 
         # Cross-check with local valid year files — a year is truly present
@@ -330,23 +356,34 @@ def build_chunk_download_plan(
     prefix_map = {tk: type_configs[tk]["prefix"] for tk in type_keys}
     prefixes = list(prefix_map.values())
 
+    # Same DB-unreachable fallback as the per-day plan: a connection
+    # failure downgrades the chunk plan to the local-file scan below.
+    missing_from_db: Optional[Set[date]] = None
     if db_table:
         all_chunks_flat = [c for chunks in chunks_by_type.values() for c in chunks]
         if all_chunks_flat:
             min_cs = min(c[0] for c in all_chunks_flat)
             max_ce = max(c[1] for c in all_chunks_flat)
             from _common.pre_check_and_load import check_identity
-            # skip_holidays=False because chunk end dates may be weekends/holidays
-            missing_dates = check_identity(
-                db_table, min_cs, max_ce,
-                date_column=db_date_column,
-                skip_holidays=False,
-            )
-        else:
-            missing_dates = set()
-        # A chunk (cs, ce) is "present from DB" if ce is NOT in the missing set.
+            try:
+                # skip_holidays=False because chunk end dates may fall on
+                # weekends/holidays
+                missing_from_db = check_identity(
+                    db_table, min_cs, max_ce,
+                    date_column=db_date_column,
+                    skip_holidays=False,
+                )
+            except Exception as e:
+                logger.warning(
+                    "db_table %s unreachable (%s: %s) — falling back to "
+                    "local file scan for missing chunks",
+                    db_table, type(e).__name__, e)
+
+    if missing_from_db is not None:
+        # A chunk (cs, ce) is "present from DB" if its end date is NOT in the
+        # missing set.
         present_from_db_by_prefix: Dict[str, Set[Tuple[date, date]]] = {
-            p: {(cs, ce) for (cs, ce) in chunks_by_type.get(tk, []) if ce not in missing_dates}
+            p: {(cs, ce) for (cs, ce) in chunks_by_type.get(tk, []) if ce not in missing_from_db}
             for p, tk in zip(prefixes, type_keys)
         }
 

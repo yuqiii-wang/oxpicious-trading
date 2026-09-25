@@ -82,13 +82,47 @@ export interface OhlcTradeSignal {
   action: string;
   signal_type: string;
   signal_sub_type: string;
+  /** The signal's expected-move confidence as a % of price (the live
+   *  basis-point confidence / 100) — tooltip text only. */
   confidence: number;
+}
+
+/** The clicked forecast bucket's registered signal action (the Recent
+ *  Movements forecast table's signal chip — the signals-layer gate's
+ *  buy/sell + the chosen rung's expected blended move). Labels the
+ *  highlighted trigger days with the trade-signal triangle markers — a
+ *  green up-triangle below the day's low for buy, a red down-triangle
+ *  above the day's high for sell, the exact `tradeSignals` style — and
+ *  reports the action in the axis tooltip. */
+export interface OhlcForecastAction {
+  /** "buy" | "sell" (anything else labels nothing). */
+  action: string;
+  /** The strategy's confidence as a fraction (the chosen rung's
+   *  sign-aligned blended mean) — tooltip text only. */
+  confidence: number | null;
 }
 
 /** Stable id of the forecast trigger-day overlay series — the base
  * option always carries an empty placeholder under this id, and the
  * overlay effect merge-updates its data / markArea in place. */
 const TRIGGER_SERIES_ID = "trigger-days";
+
+/** Stable id of the forecast-action triangle overlay series (the
+ * highlightAction labels) — same imperative placeholder pattern. */
+const TRIGGER_ACTION_SERIES_ID = "trigger-actions";
+
+/** One forecast-action triangle overlay point — per-item symbol
+ *  overrides on the action scatter host reproducing the tradeSignals
+ *  markPoint look (triangle at the bar, up below for buy / down above
+ *  for sell). */
+interface TriggerActionPoint {
+  value: [string, number];
+  symbol: "triangle";
+  symbolRotate: 0 | 180;
+  symbolSize: [number, number];
+  symbolOffset: [number, number];
+  itemStyle: { color: string };
+}
 
 /** Fixed y position of the signal-day rail circles on the hidden [0, 1]
  * trigger axis (0.93 ≈ near the chart top). */
@@ -169,6 +203,14 @@ interface Props {
    *  light purple shade stays uniform (dense buckets would otherwise
    *  stack the translucent fill darker). Default 1. */
   highlightHorizonDays?: number;
+  /** The clicked forecast bucket's registered signal action — when set,
+   *  every highlighted trigger day ALSO draws a trade-signal triangle
+   *  (OhlcForecastAction: green up-triangle below the day's low for buy,
+   *  red down-triangle above the day's high for sell — the tradeSignals
+   *  style) and the axis tooltip reports the action. Null/undefined =
+   *  no labels (the bucket never registered). Rides the incremental
+   *  trigger overlay — no base-chart rebuild on a row click. */
+  highlightAction?: OhlcForecastAction | null;
   /** Fired after the trigger overlay's setOption has been applied (or
    *  determined to be a no-op) — the "rendering done" gate the Recent
    *  Movements page uses to unfreeze the forecast table after a row
@@ -195,7 +237,7 @@ interface Props {
   onChartReady?: (instance: ECharts) => void;
 }
 
-function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, regimeSpans, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: Props) {
+function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, regimeSpans, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, highlightAction = null, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -208,14 +250,26 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
 
   // Anchor stash for the trigger overlay effect (declared before the
   // option build that assigns it) — the chart dates (with gap-break
-  // inserts), refreshed on every base rebuild.
-  const triggerAnchorRef = useRef<{ dates: string[] } | null>(null);
+  // inserts) plus the rebased low / high / close arrays the action
+  // triangles anchor at (below the day's low / above its high), all
+  // refreshed on every base rebuild.
+  const triggerAnchorRef = useRef<{
+    dates: string[];
+    low: Array<number | null>;
+    high: Array<number | null>;
+    close: Array<number | null>;
+  } | null>(null);
 
   // Date → streak context of the trigger overlay's DARK spans, read by
   // the axis tooltip formatter at hover time (declared here so the
   // option closure can reference it; the overlay memo below refreshes
   // it on every highlight change — no option rebuild on a row click).
   const streakInfoByDateRef = useRef<Map<string, CodeTrendStreakInfo>>(new Map());
+
+  // Date → the trigger overlay's forecast-action labels (the clicked
+  // bucket's registered buy/sell), read by the axis tooltip formatter
+  // the same way as the streak context above.
+  const forecastActionByDateRef = useRef<Map<string, OhlcForecastAction>>(new Map());
 
   const option = useMemo<EChartsOption>(() => {
     const c = axisColors(themeMode);
@@ -629,12 +683,30 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
       silent: true,
       z: 8,
     });
+    // Forecast-action triangle host (the clicked bucket's registered
+    // buy/sell per highlighted day) — placeholder ONLY, applied
+    // imperatively like the trigger host above. Rides the PRICE axis so
+    // the triangles can anchor at the day's low / high exactly like the
+    // tradeSignals markPoints; the anchors sit within the candles'
+    // extent, so the scale:true axis never moves.
+    series.push({
+      type: "scatter",
+      id: TRIGGER_ACTION_SERIES_ID,
+      name: "Forecast action",
+      yAxisIndex: 0,
+      data: [],
+      silent: true,
+      z: 9,
+    });
     // Date → chart-row lookup for the overlay effect (chart dates with
     // gap-break inserts). Assigning a ref inside the memo is an
     // idempotent side effect — the overlay memo below re-reads it
     // (keyed on this memo's output) so the two never diverge.
     triggerAnchorRef.current = {
       dates: broken.dates,
+      low: broken.arrays[2],
+      high: broken.arrays[1],
+      close: broken.arrays[3],
     };
 
     if (hasPe && peAxisIdx >= 0) {
@@ -702,6 +774,7 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
           dividendByDate,
           signalsByDate,
           streakInfoByDateRef,
+          forecastActionByDateRef,
         }),
       }),
       // legend: base default commonLegend(mode) == the previous explicit
@@ -731,16 +804,25 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
   // (highlightHorizonDays = the +1/+5/+20/+60 period the clicked row's
   // forward change was measured over; overlapping windows merge so the
   // light purple shade stays uniform no matter how dense the bucket),
-  // and the UNION-MERGED RELATIVELY DARK streak-period spans
+  // the UNION-MERGED RELATIVELY DARK streak-period spans
   // (highlightSpans — each signal's qualifying run [start, end] behind
-  // the mid). Built LIGHT (no chart rebuild) from the date anchor
-  // stashed by the base option build; keyed on `option` so it re-reads
-  // a refreshed anchor after every base rebuild.
+  // the mid), and — when the clicked bucket registered as a signal
+  // strategy (highlightAction) — the buy/sell triangle labels at each
+  // mid day (anchored below the day's low / above its high on the price
+  // axis, the tradeSignals markPoint style). Built LIGHT (no chart
+  // rebuild) from the date anchor stashed by the base option build;
+  // keyed on `option` so it re-reads a refreshed anchor after every
+  // base rebuild.
   const triggerOverlay = useMemo(() => {
     const anchor = triggerAnchorRef.current;
-    const empty = { points: [] as Array<[string, number]>, markArea: undefined };
+    const empty = {
+      points: [] as Array<[string, number]>,
+      actionPoints: [] as TriggerActionPoint[],
+      markArea: undefined,
+    };
     if (!anchor || (highlightDates.length === 0 && highlightSpans.length === 0)) {
       streakInfoByDateRef.current = new Map();
+      forecastActionByDateRef.current = new Map();
       return empty;
     }
     const rowIdx = new Map(anchor.dates.map((d, i) => [d, i]));
@@ -767,15 +849,48 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
     }
     streakInfoByDateRef.current = streakInfo;
     const points: Array<[string, number]> = [];
+    // Action triangles: the bucket's registered buy/sell per mid day —
+    // anchored at the rebased low (buy, below the bar) / high (sell,
+    // above the bar) with the close as fallback, exactly like the
+    // tradeSignals markPoints. Per-item symbol overrides on the scatter
+    // host; the tooltip labels come from forecastActionByDateRef.
+    const actionPoints: TriggerActionPoint[] = [];
+    const forecastActionInfo = new Map<string, OhlcForecastAction>();
+    const act =
+      highlightAction != null &&
+      (highlightAction.action === "buy" || highlightAction.action === "sell")
+        ? highlightAction
+        : null;
     // Light spans: mid day through its forward forecast window.
     const fwd: Array<[number, number]> = [];
     for (const d of new Set(highlightDates)) {
       const i = rowIdx.get(d);
       if (i === undefined) continue; // signal day not on the chart
       points.push([d, TRIGGER_RAIL_Y]);
+      if (act) {
+        const bar = act.action === "buy" ? anchor.low[i] : anchor.high[i];
+        const y = bar != null && Number.isFinite(bar)
+          ? bar
+          : anchor.close[i];
+        if (y != null && Number.isFinite(y)) {
+          const buy = act.action === "buy";
+          actionPoints.push({
+            value: [d, y],
+            symbol: "triangle",
+            symbolRotate: buy ? 0 : 180,
+            symbolSize: [11, 10],
+            // Up-triangle below the bar for buys, down-triangle above
+            // for sells (symbolOffset px: +y down, -y up).
+            symbolOffset: buy ? [0, 12] : [0, -12],
+            itemStyle: { color: buy ? UP_COLOR : DOWN_COLOR },
+          });
+          forecastActionInfo.set(d, act);
+        }
+      }
       const H = Math.max(1, highlightHorizonDays);
       fwd.push([i, Math.min(i + H, lastRow)]);
     }
+    forecastActionByDateRef.current = forecastActionInfo;
     // Dark spans: each signal's qualifying streak period, clipped to
     // the visible rows (the run may extend beyond the chart window).
     const dark: Array<[number, number]> = [];
@@ -804,7 +919,9 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
     };
     const mergedFwd = merge(fwd);
     const mergedDark = merge(dark);
-    if (mergedFwd.length === 0 && mergedDark.length === 0) return empty;
+    if (mergedFwd.length === 0 && mergedDark.length === 0 && actionPoints.length === 0) {
+      return empty;
+    }
     const markArea = {
       silent: true,
       data: [
@@ -824,9 +941,9 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
         ),
       ],
     };
-    return { points, markArea };
+    return { points, actionPoints, markArea };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlightDates, highlightSpans, highlightHorizonDays, option]);
+  }, [highlightDates, highlightSpans, highlightHorizonDays, highlightAction, option]);
 
   // Apply the overlay with a MERGE setOption on the placeholder series
   // only — a row click costs a data swap on one scatter series instead
@@ -938,7 +1055,10 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
   }, [focusDateRequest, chartDates]);
   useEffect(() => {
     const chart = chartRef.current;
-    const empty = triggerOverlay.points.length === 0 && !triggerOverlay.markArea;
+    const empty =
+      triggerOverlay.points.length === 0 &&
+      triggerOverlay.actionPoints.length === 0 &&
+      !triggerOverlay.markArea;
     try {
       if (chart && !(empty && overlayEmptyRef.current)) {
         chart.setOption(
@@ -948,6 +1068,10 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
                 id: TRIGGER_SERIES_ID,
                 data: triggerOverlay.points,
                 markArea: triggerOverlay.markArea ?? { silent: true, data: [] },
+              },
+              {
+                id: TRIGGER_ACTION_SERIES_ID,
+                data: triggerOverlay.actionPoints,
               },
             ],
           } as unknown as EChartsOption,

@@ -49,6 +49,8 @@ bootstrap_runtime()
 from _common.db_commons import (
     copy_or_upsert_split_async,
     copy_insert_async,
+    _wait_for_replica_lag_async,
+    DEFAULT_MAX_REPLICA_LAG_MB,
 )
 from _common.df_utils import host_array
 
@@ -226,12 +228,16 @@ async def _write_rows(
         if force_delete_where:
             logger.info(f"  Deleting rows ({force_delete_where}) from "
                   f"{table_name}...")
-            await conn.execute(
-                f"DELETE FROM {table_name} WHERE {force_delete_where}"
+            await chunked_purge_async(
+                conn, table_name, where_sql=force_delete_where,
+                key_column="underlying_code",
             )
         else:
             logger.info(f"  Deleting existing rows from {table_name}...")
-            await conn.execute(f"DELETE FROM {table_name}")
+            await chunked_purge_async(
+                conn, table_name, where_sql="TRUE",
+                key_column="underlying_code",
+            )
     else:
         if target_pairs is not None and len(target_pairs) == 0:
             logger.info("  up to date; nothing to insert.")
@@ -258,6 +264,9 @@ async def _write_rows(
           f"in {n_chunks} chunks...")
 
     for i in range(n_chunks):
+        # Between commit chunks: wait out standby replay lag before
+        # generating more WAL (the bulk-write rule).
+        await _wait_for_replica_lag_async(conn, DEFAULT_MAX_REPLICA_LAG_MB)
         chunk = result_df.iloc[
             i * _CHUNK_SIZE : (i + 1) * _CHUNK_SIZE
         ].copy()

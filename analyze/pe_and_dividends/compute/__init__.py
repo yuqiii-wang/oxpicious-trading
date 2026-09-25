@@ -1,15 +1,15 @@
 """Compute layer for analyze.pe_and_dividends.
 
 Split by concern:
-  - compute.pe         — PE logic: raw pe (invalid-value masked), monthly
-                         5y rolling min/max
+  - compute.pe         — PE logic: raw pe (invalid-value masked), annual
+                         10y rolling min/max
   - compute.dividends  — dividend logic: trailing-12m DPS, dividend_yield,
-                         monthly var/stability/last-dividend stats
+                         annual var/stability/last-dividend stats
 
 This package's ``__init__`` holds the SHARED assembly logic:
-  - find_month_end_dates — month-end trading dates
-  - build_detail_rows    — daily detail frame assembly
-  - compute_monthly_stats — monthly stats orchestration (pe + dividends)
+  - find_year_end_dates — year-end trading dates
+  - build_detail_rows   — daily detail frame assembly
+  - compute_annual_stats — annual stats orchestration (pe + dividends)
 
 cudf.pandas conventions (B-A2 / B-A3 fixes, 2026-08-29):
   - Dates stay datetime64[us] end-to-end; python ``date`` objects are
@@ -19,7 +19,7 @@ cudf.pandas conventions (B-A2 / B-A3 fixes, 2026-08-29):
     represent them and every subsequent frame op (even unrelated numeric
     column access) pays a MixedTypeError fast-path failure + fallback.
   - Per-row lookups (iterrows + nested reversed scans) are replaced by
-    merge_asof / month-key merge / groupby aggregation — never iterrows.
+    merge_asof / year-key merge / groupby aggregation — never iterrows.
   - Grouped rolling via the shared ``grouped_rolling_agg`` helper (single
     pandas path; cudf.pandas routes to GPU transparently at volume).
 """
@@ -35,15 +35,16 @@ from _common.df_utils import to_dt64
 from analyze._common.sanitize import sanitize_for_db_insert
 from analyze.pe_and_dividends.compute.pe import (
     clean_pe,
-    compute_monthly_pe_extremes,
+    compute_annual_pe_extremes,
 )
 from analyze.pe_and_dividends.compute.dividends import (
     _running_dps_events,
     compute_trailing_12m_dps,
     compute_index_dividend_yield,
     compute_simple_dividend_yield,
-    add_monthly_dividend_stats,
-    compute_dividend_stability_5y,
+    compute_annual_yield_var,
+    add_annual_dividend_stats,
+    compute_dividend_stability_10y,
 )
 
 
@@ -100,22 +101,21 @@ def build_detail_rows(
 
 
 # ---------------------------------------------------------------------------
-#  Monthly 5y rolling stats
+#  Annual 10y rolling stats
 # ---------------------------------------------------------------------------
-def find_month_end_dates(dates: list[datetime.date]) -> list[datetime.date]:
-    """Return the last trading date of each month from a sorted list of
+def find_year_end_dates(dates: list[datetime.date]) -> list[datetime.date]:
+    """Return the last trading date of each year from a sorted list of
     trading dates."""
     if not dates:
         return []
-    month_ends: dict[tuple[int, int], datetime.date] = {}
+    year_ends: dict[int, datetime.date] = {}
     for d in dates:
-        key = (d.year, d.month)
-        if key not in month_ends or d > month_ends[key]:
-            month_ends[key] = d
-    return sorted(month_ends.values())
+        if d.year not in year_ends or d > year_ends[d.year]:
+            year_ends[d.year] = d
+    return sorted(year_ends.values())
 
 
-def compute_monthly_stats(
+def compute_annual_stats(
     detail_df: pd.DataFrame,
     pe_df: pd.DataFrame | None,
     composition_df: pd.DataFrame | None,
@@ -123,10 +123,13 @@ def compute_monthly_stats(
     trading_dates: list[datetime.date],
     sec_type: str,
 ) -> list[dict]:
-    """Compute monthly 5y rolling stats for analysis.pe_and_dividend_stats.
+    """Compute annual 10y rolling stats for analysis.pe_and_dividend_stats.
 
     Orchestrates the PE-side (compute.pe) and dividend-side
-    (compute.dividends) monthly logic over the month-end frame.
+    (compute.dividends) annual logic over the year-end frame. The PE
+    extremes and the yield var both roll over the FULL DAILY series
+    (trailing ROLLING_10Y_DAYS observations) and are sampled at the
+    year-end rows.
 
     Args:
         detail_df: DataFrame with columns sec_type, code, date (datetime64),
@@ -149,57 +152,68 @@ def compute_monthly_stats(
     if detail_df.empty:
         return []
 
-    # Month-end trading dates (from the MARKET-WIDE date axis, not per
-    # code — a code suspended on the market month-end gets no row, as before).
+    # Year-end trading dates (from the MARKET-WIDE date axis, not per
+    # code — a code suspended on the market year-end gets no row, as before).
     # to_dt64: aligned to the frame's datetime64[us] unit (isin requires
     # both sides to share the unit — cuDF mixed-unit fallback otherwise).
-    month_end_ts = to_dt64(find_month_end_dates(trading_dates))
+    year_end_ts = to_dt64(find_year_end_dates(trading_dates))
 
-    # Filter detail to month-end dates (vectorized isin on datetime64 —
+    # Filter detail to year-end dates (vectorized isin on datetime64 —
     # no .dt.date object conversion).
-    monthly = detail_df.copy()
-    monthly["date"] = to_dt64(monthly["date"])
-    monthly = monthly[monthly["date"].isin(month_end_ts)]
-    if monthly.empty:
+    annual = detail_df.copy()
+    annual["date"] = to_dt64(annual["date"])
+    annual = annual[annual["date"].isin(year_end_ts)]
+    if annual.empty:
         return []
 
-    # Sort by code, date for rolling computations
-    monthly = monthly.sort_values(["code", "date"]).reset_index(drop=True)
+    # Sort by code, date for the merges
+    annual = annual.sort_values(["code", "date"]).reset_index(drop=True)
 
-    # ---- Rolling 5y min/max of PE (index + etf + stock) -----------------
-    pe_monthly = compute_monthly_pe_extremes(pe_df, month_end_ts)
-    if not pe_monthly.empty:
-        monthly = monthly.merge(
-            pe_monthly,
+    # ---- Rolling 10y min/max of PE (index + etf + stock) ----------------
+    pe_annual = compute_annual_pe_extremes(pe_df, year_end_ts)
+    if not pe_annual.empty:
+        annual = annual.merge(
+            pe_annual,
             on=["code", "date"],
             how="left",
         )
     else:
-        monthly["min_pe_5y"] = np.nan
-        monthly["max_pe_5y"] = np.nan
+        annual["min_pe_10y"] = np.nan
+        annual["max_pe_10y"] = np.nan
 
-    # ---- Dividend stats (var / stability / last-dividend + flag) --------
-    add_monthly_dividend_stats(monthly, composition_df, stock_dividends_df, sec_type)
+    # ---- Rolling 10y std of dividend_yield (daily series → year-end) ----
+    dy_annual = compute_annual_yield_var(detail_df, year_end_ts)
+    if not dy_annual.empty:
+        annual = annual.merge(
+            dy_annual,
+            on=["code", "date"],
+            how="left",
+        )
+    else:
+        annual["dividend_var_10y"] = np.nan
 
-    # ---- Determine is_active (latest month-end per code) ---------------
+    # ---- Dividend stats (stability / last-dividend + flag) --------------
+    add_annual_dividend_stats(annual, composition_df, stock_dividends_df, sec_type)
+
+    # ---- Determine is_active (latest year-end per code) -----------------
     # Vectorized groupby-transform (replaces the per-row .apply).
-    monthly["is_active"] = (
-        monthly["date"] == monthly.groupby("code")["date"].transform("max")
+    annual["is_active"] = (
+        annual["date"] == annual.groupby("code")["date"].transform("max")
     )
 
     # ---- Select final columns ------------------------------------------
-    out = monthly[[
+    out = annual[[
         "sec_type", "code", "date", "is_active",
-        "min_pe_5y", "max_pe_5y",
-        "dividend_var_5y", "dividend_stability_5y",
-        "last_dividend_per_share", "dividend_issued_this_month",
+        "min_pe_10y", "max_pe_10y",
+        "dividend_var_10y", "dividend_stability_10y",
+        "last_dividend_per_share", "dividend_issued_this_year",
     ]]
 
     return sanitize_for_db_insert(
         out,
         numeric_cols=[
-            "min_pe_5y", "max_pe_5y",
-            "dividend_var_5y", "dividend_stability_5y",
+            "min_pe_10y", "max_pe_10y",
+            "dividend_var_10y", "dividend_stability_10y",
             "last_dividend_per_share",
         ],
         round_to=10,
@@ -210,14 +224,15 @@ def compute_monthly_stats(
 __all__ = [
     # PE side
     "clean_pe",
-    "compute_monthly_pe_extremes",
+    "compute_annual_pe_extremes",
     # Dividend side
     "compute_trailing_12m_dps",
     "compute_index_dividend_yield",
     "compute_simple_dividend_yield",
-    "compute_dividend_stability_5y",
+    "compute_annual_yield_var",
+    "compute_dividend_stability_10y",
     # Shared / orchestration
     "build_detail_rows",
-    "compute_monthly_stats",
-    "find_month_end_dates",
+    "compute_annual_stats",
+    "find_year_end_dates",
 ]

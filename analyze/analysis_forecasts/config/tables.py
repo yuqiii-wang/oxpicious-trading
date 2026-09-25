@@ -20,8 +20,8 @@ ANALYSIS_NAME_BASE_RATE = "base_rates"
 # code-clustered read/write axis (a per-security read prunes to ONE
 # partition and walks the code-leading PK; forecast_id-only
 # joins/searches use the secondary idx_<table>_forecast_id). The other
-# identity columns (sec_type, stat_month — opp_pair: industry_id plays
-# code) are NOT stored on the motivation tables — they live ONLY in
+# identity columns (sec_type, stat_date) are NOT stored on the
+# motivation tables — they live ONLY in
 # forecast_identities (one registry row per forecast_id, written in the
 # same transaction), which is also the search-by-identity table. The
 # family-unique bucket-key columns below are plain NOT NULL columns —
@@ -72,7 +72,7 @@ MOV_PAIRS_EMA_COLUMNS = MOV_PAIRS_COLUMNS
 # same-named motivation key). No cooldown_days member — each streak
 # contributes exactly ONE trigger and streaks are inherently separated
 # (a streak ends only after a 6+-day in-band gap or a side switch), so
-# trigger suppression is redundant (state-family shape, like px_vol /
+# trigger suppression is redundant (state-family shape, like
 # margin_ratio). No hype-derived parameter columns — the config JSONB
 # carries the bucket's streak-length context.
 HIGH_LOW_STREAKS_COLUMNS = (
@@ -84,18 +84,19 @@ HIGH_LOW_STREAKS_COLUMNS = (
 
 # forecast_results columns in write order (forecast_id, period, delay
 # first). config is duplicated across all rows of the same forecast_id.
-# threshold is the bar that row's reverse_prob was computed against
-# (the fixed 0.01 bar in "fixed" mode, the adaptive k·σ bar in "std"
-# mode / fallback). trigger_dates is the DATE[] of the row's own bucket
-# days (ascending, length == occurrence_count — NULL when the count is
-# 0/NULL), row-local per (period, delay).
-# streak_starts / streak_ends are the
+# (The swing-aware reverse_prob + its threshold bar were REMOVED
+# 2026-09-25 — see config/horizons.py.) trigger_dates is the DATE[] of
+# the row's own bucket days (ascending, length == occurrence_count —
+# NULL when the count is 0/NULL), row-local per (period, delay).
+# ave_close is the mean n-day PERIOD-END close over the same valid days
+# as ave_change (raw price units; NULL on the mixed row — price levels
+# do not blend). streak_starts / streak_ends are the
 # parallel DATE[] of each merged signal's qualifying-run start / end
 # calendar date and streak_days the parallel BIGINT[] of each run's
 # trading-day count (element-wise parallel to trigger_dates; the
 # streak engines mov_rsi / mov_std / mov_pairs /
-# mov_pairs_ema / px_vol — the pairs families' runs are single days,
-# NULL for margin_ratio / opp_pair / high_low_streaks), row-local per
+# mov_pairs_ema — the pairs families' runs are single days,
+# NULL for margin_ratio / high_low_streaks), row-local per
 # period. trigger_excess is the parallel NUMERIC(10,6)[] of each
 # signal's TRIGGER EXCESS — the anchor day's trigger value minus the
 # bucket's qualifying bar (signed, value − bar: the live_signals
@@ -123,35 +124,33 @@ RESULT_COLUMNS: list[str] = [
     "std_change",
     "max_change",
     "min_change",
+    "ave_close",
     "occurrence_count",
     "trigger_dates",
     "streak_starts",
     "streak_ends",
     "streak_days",
     "trigger_excess",
-    "reverse_prob",
-    "threshold",
 ]
 
-# base_rates columns in write order (PK: sec_type, code, stat_month,
-# period). The unconditional reference the bucket results are read
-# against (lift) — the probs use the SAME threshold as the bucket rows
-# of the same (code, stat_month, period).
+# base_rates columns in write order (PK: sec_type, code, stat_date,
+# period). The unconditional same-window reference the bucket
+# ave_change is read against (lift). (The reversal base probs
+# base_down_prob / base_up_prob + their threshold bar were REMOVED
+# 2026-09-25 with forecast_results.reverse_prob — see
+# config/horizons.py.)
 BASE_RATE_COLUMNS: list[str] = [
     "sec_type",
     "code",
-    "stat_month",
+    "stat_date",
     "period",
     "lookback_period",
     "base_count",
     "base_ave_change",
-    "base_down_prob",
-    "base_up_prob",
-    "threshold",
 ]
 
 # One row per forecast bucket: the identity columns (sec_type, code,
-# stat_month) keyed by the surrogate forecast_id, tagged with the
+# stat_date) keyed by the surrogate forecast_id, tagged with the
 # bucket family (the motivation table name) and the bucket's mean
 # streak length (streak_signal_days — the merged-signal semantics of
 # the 2026-09 streak migration; 1 for the state families) + the mean
@@ -161,35 +160,21 @@ BASE_RATE_COLUMNS: list[str] = [
 # 1-day signals). Both INTEGER whole days. Since the
 # 2026-09 forecast_id-keyed rebuild this is the ONLY table storing the
 # identity (the motivation tables carry forecast_id + their
-# family-unique bucket keys alone), written by _write_month in the
+# family-unique bucket keys alone), written by _write_snapshot in the
 # SAME transaction as the motivation + result rows; searched by
 # forecast_id via fetch.fetch_forecast_identity (python -m
 # analyze.analysis_forecasts --search-forecast-id) and by identity via
-# the (sec_type, code, bucket, stat_month) / (sec_type, bucket,
-# stat_month) indexes (the UI/API identity endpoint, the signals
+# the (sec_type, code, bucket, stat_date) / (sec_type, bucket,
+# stat_date) indexes (the UI/API identity endpoint, the signals
 # layer). base_rates is NOT registered (no forecast_id).
 IDENTITY_COLUMNS: list[str] = [
     "forecast_id",
     "sec_type",
     "code",
-    "stat_month",
+    "stat_date",
     "bucket",
     "streak_signal_days",
     "delayed_signal_days",
-    "lookback_period",
-]
-
-TABLE_PX_VOL = "analysis_forecasts.px_vol_state"
-ANALYSIS_NAME_PX_VOL = "px_vol"
-
-# px_vol_state columns in write order (forecast_id + code + bucket keys
-# + side + recorded build parameters + lookback).
-BUCKET_KEY_COLUMNS_PX_VOL = ["px_speed", "vol_state", "regime_state"]
-PX_VOL_COLUMNS = ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_PX_VOL + [
-    "side",
-    "sigma_window", "lb_window",
-    "k_slow_up", "k_slow_dn", "k_sharp", "z_heavy", "z_shrink",
-    "sigma_floor",
     "lookback_period",
 ]
 
@@ -204,24 +189,6 @@ MARGIN_RATIO_COLUMNS = (
         "side",
         "z_window", "z_min_periods",
         "vlow_bar", "low_bar", "high_bar", "vhigh_bar",
-        "lookback_period",
-    ]
-)
-
-TABLE_OPP_PAIR = "analysis_forecasts.opp_pair_state"
-ANALYSIS_NAME_OPP_PAIR = "opp_pair"
-
-# PK + write columns (forecast_id + industry_id + bucket keys + side +
-# recorded build parameters). No regime_state split — industries
-# have no stats.market_regimes source. industry_id (the dropping side) is the
-# partition key + PK lead, and plays the identities row's code; the
-# remaining identity columns (sec_type = constant 'index', stat_month)
-# live ONLY in forecast_identities. pair_industry_id (the forecast
-# target) is a bucket metric.
-BUCKET_KEY_COLUMNS_OPP_PAIR = ["pair_industry_id", "trend_window", "side"]
-OPP_PAIR_COLUMNS = (
-    ["forecast_id", "industry_id"] + BUCKET_KEY_COLUMNS_OPP_PAIR + [
-        "benchmark_code", "pool_size",
         "lookback_period",
     ]
 )
@@ -261,17 +228,15 @@ DIVIDEND_COLUMNS = PE_COLUMNS
 # Motivation table short name (identity.bucket value) → schema-qualified
 # table. Declared at the END of the module: it references every family's
 # TABLE_* constant above. bucket == the table name minus the schema
-# prefix; opp_pair_state is the ONLY family whose subject column is not
-# "code" (it stores the dropping industry_id as identity.code — the
-# forecast-target pair_industry_id stays on the motivation row).
+# prefix. (The former opp_pair_state family — industry opposite-pair
+# buckets, the only family whose subject column was industry_id rather
+# than code — was removed 2026-09 with its table and SQL file.)
 IDENTITY_BUCKET_TABLES: dict[str, str] = {
     "mov_rsi":            TABLE_MOV_RSI,
     "mov_std":            TABLE_MOV_STD,
     "mov_pairs":          TABLE_MOV_PAIRS,
     "mov_pairs_ema":      TABLE_MOV_PAIRS_EMA,
-    "px_vol_state":       TABLE_PX_VOL,
     "margin_ratio_state": TABLE_MARGIN_RATIO,
-    "opp_pair_state":     TABLE_OPP_PAIR,
     "high_low_streaks":   TABLE_HIGH_LOW_STREAKS,
     "pe_state":           TABLE_PE,
     "dividend_state":     TABLE_DIVIDEND,

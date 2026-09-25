@@ -74,7 +74,7 @@ from downloads._common.filescan import (
     _extract_datekey,
     _extract_yearkey,
     is_error_html,
-    is_fresh_today,
+    is_fresh_within,
     is_valid_file,
     resolve_out_dir,
     scan_present_chunk_keys,

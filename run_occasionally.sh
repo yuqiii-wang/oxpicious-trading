@@ -2,18 +2,6 @@
 # Set FORCE_DOWNLOADS=1 to bypass the guard for manual/test runs.
 main() {
 
-# optional to run on daily
-if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_hm" -ge 1900 ]; }; then
-for m in \
-  builds.market_hypes \
-  analyze.analysis_forecasts \
-  analyze.analysis_signals \
-  analyze.analysis_composites
-do
-  python -m "$m"
-done
-fi
-
 # on monthly start date
 python -m downloads.etf.sse.composition
 python -m downloads.etf.szse.composition
@@ -22,7 +10,7 @@ python -m downloads.index.szse.composition
 python -m downloads.etf.csindex.linked_etf
 python -m downloads.macro.pboc.stats
 
-# run quarterly
+# run semi-annually on 1st Mar and 1st Sep
 python -m downloads.stock.sse.dividend
 python -m downloads.stock.szse.dividend
 python -m downloads.etf.szse.archive reports
@@ -44,7 +32,6 @@ python -m builds.sec_info
 # backtest them, then compute internal risk metrics for every run.
 python -m strategy.singleton_trading
 
-cd data_viz && npm run dev
 }
 
 main "$@"

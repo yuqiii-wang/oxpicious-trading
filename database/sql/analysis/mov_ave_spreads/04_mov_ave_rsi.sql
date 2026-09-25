@@ -59,11 +59,18 @@ CREATE TABLE analysis.mov_ave_rsi (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
 SELECT public.create_hash_partitions('analysis', 'mov_ave_rsi', 16);
 
--- NOTE: no separate (sec_type, code, date) index — the PK already covers
--- that lookup (same rationale as mov_ave_spreads_detail above). A duplicate
--- index was previously created here and dropped because it doubled index-
--- maintenance cost on every INSERT for zero benefit (PK B-tree already
--- serves equality + range scans on the (sec_type, code, date) prefix).
+-- NOTE: the PK (code, sec_type, date) serves per-code lookups, but it
+-- CANNOT serve sec_type-scoped reads — sec_type is its SECOND column, so
+-- a build/read filtered on sec_type alone (analysis_forecasts' input
+-- fetch hash-builds its LEFT JOIN side on exactly that) degraded to a
+-- full seq scan of all 16 partitions (~9.4M rows / ~1 GB to match ~8% of
+-- the table; observed 2026-09-25). A (sec_type, code, date) index was
+-- previously created and dropped here as a PK duplicate — that rationale
+-- holds for per-code equality lookups only; this index exists for the
+-- sec_type-leading build-side shape. The added index-maintenance cost on
+-- the mov_ave_spread build's INSERTs is the trade.
+CREATE INDEX IF NOT EXISTS idx_mov_ave_rsi_sec_type_code_date
+    ON analysis.mov_ave_rsi (sec_type, code, date);
 
 COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (3/6/10/14/20/60 days). One row per (code, sec_type, date). sec_type ∈ {etf, index, stock}. analysis.mov_ave_rsi_holiday FK-references this table ON DELETE CASCADE.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';

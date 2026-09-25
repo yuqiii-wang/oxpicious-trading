@@ -16,6 +16,11 @@
  *      reveals a search-query line pre-filled with the chart title and the
  *      chart's latest plotted date (the engine searches THAT text, not the
  *      question);
+ *      When the plot is date-selectable the modal also shows the as-of
+ *      date selector (an exact "YYYY-MM-DD" or a year-month "YYYY-MM"),
+ *      pre-filled with the chart's latest plotted date and sent inside
+ *      plotInfo (`date`) — the adviser's reference "now" for
+ *      time-relative questions;
  *   3. renders the answer.
  *
  * Concise layout: the series-tags strip is capped at two rows with a
@@ -33,7 +38,7 @@
  * (shared/components/description), so it renders exactly what the adviser
  * knows — the same authored text feeds the LLM.
  */
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import type { ECharts } from "echarts";
 import {
@@ -58,6 +63,10 @@ import KeyboardDoubleArrowUpIcon from "@mui/icons-material/KeyboardDoubleArrowUp
 import { Close as CloseIcon } from "@mui/icons-material";
 import { askChartAi } from "@/lib/api-client/aiAsk";
 import { DescriptionView } from "@/shared/components/description";
+import {
+  DateOrMonthField,
+  normalizeDateOrMonth,
+} from "@/shared/components/date-selector";
 // Leaf-module import (not the base-chart barrel): BaseChart imports this
 // package, so going through the barrel would close a module cycle.
 import { useChartThemeMode } from "@/shared/charts/base-chart/useChartThemeMode";
@@ -162,6 +171,19 @@ export default function AiAskModal({
   const [tagsEl, setTagsEl] = useState<HTMLDivElement | null>(null);
   const answerRef = useRef<HTMLDivElement | null>(null);
 
+  // As-of date (the modal's date selector): pins time-relative questions
+  // ("now", "latest", …) to a point in time the adviser treats as now —
+  // an exact "YYYY-MM-DD" or a year-month "YYYY-MM". Shown only when the
+  // plot is date-selectable; seeded from the chart window on open (an
+  // empty field means no date pinned), cleared on close so every fresh
+  // open re-seeds from the CURRENT plotted window.
+  const [asOfDate, setAsOfDate] = useState("");
+  const [asOfTouched, setAsOfTouched] = useState(false);
+  const dateSelectable = plotInfo.dateSelectable === true;
+  const asOfTrim = asOfDate.trim();
+  const asOfNorm = asOfTrim ? normalizeDateOrMonth(asOfTrim) : undefined;
+  const asOfValid = asOfTrim === "" || asOfNorm !== undefined;
+
   // Overflow check + reset whenever the plot info changes or the dialog
   // opens (MUI mounts the dialog content only when open). A one-shot
   // layout-effect read races the dialog's portal mount/transition and
@@ -182,6 +204,25 @@ export default function AiAskModal({
     };
   }, [plotInfo, open, tagsEl]);
 
+  // Seed the as-of date whenever the dialog opens: the chart's latest
+  // plotted date is the natural "now" for time-relative questions, with
+  // the global filter range as the fallback. Only fills an empty field —
+  // user edits are never clobbered (close() clears so each open re-seeds).
+  useEffect(() => {
+    if (!open || !dateSelectable) return;
+    setAsOfDate((prev) => {
+      if (prev.trim()) return prev;
+      const s = useStore.getState();
+      return (
+        normalizeDateOrMonth(plotInfo.window.end) ??
+        normalizeDateOrMonth(plotInfo.window.start) ??
+        normalizeDateOrMonth(s.endDate) ??
+        normalizeDateOrMonth(s.startDate) ??
+        ""
+      );
+    });
+  }, [open, dateSelectable, plotInfo]);
+
   const close = () => {
     if (submitting) return; // one ask at a time — don't orphan an in-flight POST
     setAnswer(null);
@@ -189,6 +230,8 @@ export default function AiAskModal({
     setScreenshots([]);
     setZoomed(null);
     setShowDescription(false);
+    setAsOfDate("");
+    setAsOfTouched(false);
     // the modal component outlives its Dialog — reset the tick so every
     // fresh open starts with online search OFF (the default), and the
     // search line so it re-seeds from the current chart on the next tick.
@@ -201,13 +244,18 @@ export default function AiAskModal({
    *  title + items-of-interest keywords (index/instrument names and the
    *  active indicator tags — RSI, Bollinger, …, auto-derived or chart-
    *  author-supplied) + the latest plotted date. Search engines want the
-   *  topic + recency, not the full question. Store endDate covers charts
-   *  whose x-axis window wasn't derived; user edits are never clobbered. */
+   *  topic + recency, not the full question. The user's chosen as-of date
+   *  (when pinned and valid) leads; the chart window and the store's date
+   *  range follow; user edits are never clobbered. */
   const seedSearchQuery = () => {
     setSearchQuery((prev) => {
       if (prev.trim()) return prev;
       const s = useStore.getState();
-      const date = plotInfo.window.end ?? s.endDate ?? undefined;
+      const date =
+        (asOfTrim && asOfNorm ? asOfNorm : undefined) ??
+        plotInfo.window.end ??
+        s.endDate ??
+        undefined;
       return (
         [plotInfo.chart.title, ...(plotInfo.searchKeywords ?? []), date]
           .filter(Boolean)
@@ -240,6 +288,11 @@ export default function AiAskModal({
 
   const submit = async () => {
     if (!question.trim() || submitting) return;
+    if (!asOfValid) {
+      setAsOfTouched(true);
+      setError("As-of date must be YYYY-MM-DD or YYYY-MM.");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     setAnswer(null);
@@ -264,6 +317,9 @@ export default function AiAskModal({
           start: plotInfo.window.start ?? s.startDate ?? undefined,
           end: plotInfo.window.end ?? s.endDate ?? undefined,
         },
+        // Pinned as-of date (the selector above) — the adviser treats it
+        // as "now" for time-relative questions; undefined drops the key.
+        date: asOfTrim && asOfNorm ? asOfNorm : undefined,
         page: plotInfo.page ?? pathname,
       };
 
@@ -449,6 +505,27 @@ export default function AiAskModal({
                 </IconButton>
               )}
             </Box>
+          )}
+
+          {/* as-of date — shown for date-selectable plots and pre-filled
+              with the chart's latest plotted date; the adviser treats it
+              as the reference "now" for time-relative questions. Accepts
+              an exact date or a year-month; clear to ask unpinned. */}
+          {dateSelectable && (
+            <DateOrMonthField
+              label="As-of date"
+              value={asOfDate}
+              onChange={(v) => {
+                setAsOfDate(v);
+                setAsOfTouched(false);
+              }}
+              error={asOfTouched && !asOfValid}
+              helperText={
+                asOfTouched && !asOfValid ? "Use YYYY-MM-DD or YYYY-MM" : undefined
+              }
+              disabled={submitting}
+              tooltip="Reference date for the answer — exact (YYYY-MM-DD) or year-month (YYYY-MM); pre-filled with the chart's latest plotted date."
+            />
           )}
 
           <TextField

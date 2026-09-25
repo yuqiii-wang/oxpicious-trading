@@ -49,3 +49,24 @@ async def fetch_daily_close_on(
         code, on_date,
     )
     return None if row is None else row["close"]
+
+
+async def fetch_daily_close_before(
+    conn: Connection, sec_type: str, code: str,
+    on_or_before: datetime.date,
+) -> float | None:
+    """The code's latest OFFICIAL daily close AT OR BEFORE the date
+    from the sec_type's basic_stats baseline, or None. The
+    is_triggered_once episode gate's previous-day basis for the
+    price-leg cross fragments (the anchor date is the day before a
+    daily legs row — often a weekend — so the exact-date
+    fetch_daily_close_on would miss the previous TRADING day)."""
+    table = DAILY_TABLES[sec_type]
+    row = await conn.fetchrow(
+        f"SELECT close::float8 AS close FROM {table} "
+        f"WHERE code = $1 AND date <= $2 AND close IS NOT NULL "
+        f"  AND close::text <> 'NaN' "
+        f"ORDER BY date DESC LIMIT 1",
+        code, on_or_before,
+    )
+    return None if row is None else row["close"]

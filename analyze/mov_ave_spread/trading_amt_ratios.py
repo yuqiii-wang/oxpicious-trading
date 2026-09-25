@@ -109,6 +109,7 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
+from _common.db_commons import chunked_purge_async
 from _common.df_utils import column_subset, grouped_rolling_agg, host_unique, to_dt64
 from analyze._common import (
     build_and_insert_chunked,
@@ -444,12 +445,10 @@ async def run_trading_amt_ratios(
             # rebuilt).
             logger.info(f"\n[t0/4] Force mode: deleting {sec_type} rows from "
                   "mov_ave_trading_amt_ratios...")
-            status = await conn.execute(
-                f"DELETE FROM {TRADING_AMT_RATIOS_TABLE} "
-                f"WHERE sec_type = $1",
-                sec_type,
+            n_del = await chunked_purge_async(
+                conn, TRADING_AMT_RATIOS_TABLE,
+                where_sql="sec_type = $1", params=(sec_type,),
             )
-            n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
             logger.info(f"    -> deleted {n_del:,} rows; will recompute all "
                   f"{sec_type} rows")
         else:

@@ -433,10 +433,10 @@ class MovAveSpreadAnalysis(DataAnalysis):
                               PRICE_VS_AMT_TABLE,
                               HIGH_LOW_PCT_TABLE,
                               HIGH_LOW_PCT_STREAKS_TABLE):
-                    await conn.execute(
-                        f"DELETE FROM {table} "
-                        f"WHERE sec_type = ANY($1::text[])",
-                        list(sec_types),
+                    await chunked_purge_async(
+                        conn, table,
+                        where_sql="sec_type = ANY($1::text[])",
+                        params=(list(sec_types),),
                     )
                 logger.info("    -> deleted; will recompute scoped rows")
             # Use empty set (not None) so _process_one_sec_type knows to

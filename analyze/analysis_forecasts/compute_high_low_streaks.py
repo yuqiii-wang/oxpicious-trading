@@ -1,4 +1,4 @@
-"""MA-Spread High/Low streak MEAN-MID anchor monthly aggregation
+"""MA-Spread High/Low streak MEAN-MID anchor annual-snapshot aggregation
 (analysis_forecasts) — sparse tensor engine.
 
 The mov_pairs engine's event-bucket machinery applied to the EXISTING
@@ -39,21 +39,22 @@ NOT a live trigger.
            n and the anchor shifts to the nearest available mid row —
            the anchor must be a date the forward-change matrices know.
 
-``compute_high_low_streaks_results`` then runs the mov_pairs per-month
-loop over the anchor cells: window filter (anchor date in (stat_month
-- 5y, stat_month]), full-window gate, per-(period, pct_type) combo and
-side, hype split of the ANCHOR cells, per-code adaptive reversal bar
-(wide.thresholds), sparse horizon aggregation
-(aggregate_horizons_sparse) and result-row expansion. No cooldown —
+``compute_high_low_streaks_results`` then runs the _HlStreaksEngine
+(WideDfEngine) over the anchor cells: window filter (anchor date in
+(stat_date - WINDOW_YEARS, stat_date]), the live gate (codes join from
+their own first-data date — actual windows, min(actual, WINDOW_YEARS)),
+per-(period, pct_type) combo and
+side, hype split of the ANCHOR cells, horizon aggregation
+and result-row expansion. No cooldown —
 each streak contributes exactly ONE trigger and streaks are inherently
 separated (a streak ends only after a 6+-day in-band gap or a side
-switch), the state-family shape (px_vol / margin_ratio precedent).
+switch), the state-family shape (margin_ratio precedent).
 
 The config JSONB records the bucket's streak-length context:
 {"mean_day_count": float, "min_day_count": int, "max_day_count": int}
-(asyncpg COPY needs a JSON text string — compute_opp_pair precedent).
+(asyncpg COPY needs a JSON text string).
 
-Yields (stat_month, rows) so __main__ can write month-major batches to
+Yields (stat_date, rows) so __main__ can write snapshot-major batches to
 analysis_forecasts.high_low_streaks + forecast_results.
 """
 
@@ -164,22 +165,31 @@ class _HlStreaksEngine(WideDfEngine):
             min_day_count=("run_len", "min"),
             max_day_count=("run_len", "max"),
         ).reset_index()
-        g["bucket_config"] = [
+        g["bucket_config"] = self._bucket_config_json(g)
+        return g.drop(columns=["mean_day_count", "min_day_count",
+                               "max_day_count"])
+
+    @staticmethod
+    def _bucket_config_json(g) -> list[str]:
+        """The per-bucket streak-length context JSON — built from ONE
+        device→host conversion per column (Series.tolist is not a cuDF
+        op; per-group .tolist() would force a whole-operation pandas
+        fallback per bucket at full-universe scale)."""
+        means = g["mean_day_count"].to_numpy().tolist()
+        mins = g["min_day_count"].to_numpy().tolist()
+        maxs = g["max_day_count"].to_numpy().tolist()
+        return [
             json.dumps({"mean_day_count": round(float(m), 2),
                         "min_day_count": int(mn),
                         "max_day_count": int(mx)})
-            for m, mn, mx in zip(g["mean_day_count"].tolist(),
-                                 g["min_day_count"].tolist(),
-                                 g["max_day_count"].tolist())
+            for m, mn, mx in zip(means, mins, maxs)
         ]
-        return g.drop(columns=["mean_day_count", "min_day_count",
-                               "max_day_count"])
 
 
 def compute_high_low_streaks_results(
     *, df, first_dates, regimes, codes, sec_type, specs, streaks_df,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, high_low_streaks bucket rows) per month."""
+    """Yield (stat_date, high_low_streaks bucket rows) per month."""
     engine = _HlStreaksEngine(
         df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs, streaks_df=streaks_df,

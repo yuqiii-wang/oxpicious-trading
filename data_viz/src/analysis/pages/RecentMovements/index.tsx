@@ -12,7 +12,7 @@
  *     Forecast section beneath it (migrated from the MA-Spread panel's 2nd
  *     plot) shows the code's analysis_forecasts extreme-day bucket table
  *     via ForecastTable — a card panel whose kind toggle group picks the
- *     bucket family (mov_rsi default / mov_std / px_vol /
+ *     bucket family (mov_rsi default / mov_std /
  *     margin_ratio); clicking the active family again hides the table.
  *     Clicking a forecast ROW fetches the bucket's trigger_dates
  *     (forecast_results per-period DATE[] — under the 2026-09
@@ -23,9 +23,16 @@
  *     a relatively DARK purple band over each signal's streak period,
  *     and a light band over the mid's forward forecast window
  *     (+1/+5/+20/+60 of the clicked horizon; overlapping bands merge
- *     into one uniform shade). Hovering a streak-shaded day reports the
- *     run in the axis tooltip — its streak day count and span. A chip
- *     in the chart header names the bucket and clears the markers;
+ *     into one uniform shade). When the clicked bucket registered as a
+ *     signal strategy (the table's signal ✓ chip), each mid day is ALSO
+ *     labeled with the code trend's trade-signal buy/sell triangle — a
+ *     green up-triangle below the day's low for buy, a red
+ *     down-triangle above the day's high for sell, driven by the
+ *     bucket's own signal_action — and the axis tooltip reports the
+ *     action with its expected move. Hovering a streak-shaded day
+ *     reports the run in the axis tooltip — its streak day count and
+ *     span. A chip in the chart header names the bucket (plus the
+ *     buy/sell action) and clears the markers;
  *     while the dates query is in flight the chip spins and further
  *     row clicks are ignored (no query-per-click forecast switching).
  *
@@ -34,10 +41,9 @@
  *     the shared-PK registry analysis_forecasts.forecast_identities
  *     (GET /mov-ave-spread/forecast-identity) and jumps the whole panel
  *     to the bucket: sec_type + code (trend chart + table), bucket
- *     family and month, tinting the found row (the caption shows the
- *     bucket's mean streak_signal_days). Industry-pair
- *     (opp_pair_state) ids resolve to a caption only — that family has
- *     no table in this UI.
+ *     family and snapshot year, tinting the found row (the caption shows
+ *     bucket's mean streak_signal_days). Ids of retired families without
+ *     a table here resolve to a caption only.
  *
  *   • Forecast header AI Ask — a shared-kit "?" beside the Forecast title
  *     (AiAskButton + derivePlotInfo) whose payload is MAPPED FROM THE
@@ -72,10 +78,11 @@ import { ArrowForward, Insights, Search } from "@mui/icons-material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import type { SecNavSecType, SecNavThemesSource } from "@/shared/components/sec-nav";
 import CodeTrendChart from "@/components/CodeTrendChart";
+import type { OhlcForecastAction } from "@/components/StockOhlcChart";
 import { findCodeInStrategyThemes, findCodeInThemes } from "@/components/CodeSearchBar";
 import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
 import { ForecastTable } from "./ForecastTable";
-import { TRIGGER_DATE_COLOR } from "@/theme/chart-palette";
+import { DOWN_COLOR, TRIGGER_DATE_COLOR, UP_COLOR } from "@/theme/chart-palette";
 import type {
   ForecastIdentityResponse,
   ForecastKind,
@@ -88,7 +95,6 @@ import type {
   MovStdForecastRow,
   PeForecastRow,
   DividendForecastRow,
-  PxVolForecastRow,
   SectorNode,
 } from "@shared/types";
 import {
@@ -138,7 +144,6 @@ const FORECAST_KINDS: {
   { kind: "mov_std", label: "Bollinger", tooltip: "Bollinger breach buckets (mov_std)", search: "Bollinger 布林带" },
   { kind: "mov_pairs", label: "MA cross", tooltip: "MA5 (and close-price) vs MA60/120/255 cross buckets (mov_pairs — fast legs ma5 + price)", search: "MA 均线交叉" },
   { kind: "mov_pairs_ema", label: "EMA cross", tooltip: "EMA6 (and close-price) vs EMA60/120/255 cross buckets (mov_pairs_ema — fast legs ema6 + price)", search: "EMA 交叉" },
-  { kind: "px_vol", label: "Px×Vol", tooltip: "σ-speed × amount-level-z state cells (px_vol)", search: "量价" },
   { kind: "margin_ratio", label: "Margin", tooltip: "Margin-buy intensity z states (margin_ratio)", search: "融资余额" },
   { kind: "high_low_streaks", label: "HL streak", tooltip: "MA-Spread High/Low streak mean-mid anchor buckets (high_low_streaks) — every band-break excursion streak audited at its mid day", search: "high low streak" },
   { kind: "pe", label: "PE", tooltip: "PE extreme-percentile buckets over the raw pe series (pe_state) — top-pct% PE days = expensive = bearish/top (lower the better), bottom-pct% = cheap = bullish/bottom", search: "PE 市盈率" },
@@ -148,7 +153,7 @@ const FORECAST_KINDS: {
 /** Union of all bucket row shapes (matches ForecastTable's ForecastRow). */
 type ForecastRow =
   | MovRsiForecastRow | MovStdForecastRow
-  | MovPairsForecastRow | MovPairsEmaForecastRow | PxVolForecastRow
+  | MovPairsForecastRow | MovPairsEmaForecastRow
   | MarginRatioForecastRow | HighLowStreaksForecastRow
   | PeForecastRow | DividendForecastRow;
 
@@ -165,8 +170,8 @@ const PERIOD_DAYS: Record<ForecastPeriod, number> = {
 };
 
 /** forecast_id search status (Forecast header). `found` keeps the whole
- *  identity so the jump below can read code / sec_type / stat_month /
- *  kind — and so the row tint + month focus can be re-derived after the
+ *  identity so the jump below can read code / sec_type / stat_date /
+ *  kind — and so the row tint + snapshot focus can be re-derived after
  *  scope changes the jump itself causes. */
 type IdSearchState =
   | { status: "idle" }
@@ -175,11 +180,10 @@ type IdSearchState =
   | { status: "found"; identity: ForecastIdentityResponse };
 
 /** Resolved identity → short caption ("→ 000300.SS · mov_rsi · 2026-05
- * · 2d · delay 1d"). Ids of families without a table here (opp_pair
- * industry pairs; retired mov_gap) name the bucket family instead of
- * jumping. */
+ * · 2d · delay 1d"). Ids of families without a table here (retired
+ * mov_gap / opp_pair) name the bucket family instead of jumping. */
 function describeIdentity(i: ForecastIdentityResponse): string {
-  const m = i.stat_month.slice(0, 7);
+  const m = i.stat_date.slice(0, 4);
   const streak =
     i.streak_signal_days != null ? ` · ${i.streak_signal_days}d` : "";
   const delay =
@@ -205,7 +209,7 @@ function describeBucket(
   r: ForecastRow,
   period: ForecastPeriod,
 ): string {
-  const m = r.stat_month.slice(0, 7);
+  const m = r.stat_date.slice(0, 4);
   let cfg: string;
   if (kind === "mov_rsi") {
     const x = r as MovRsiForecastRow;
@@ -218,9 +222,6 @@ function describeBucket(
     const leg = x.fast_leg === "price" ? "close"
       : kind === "mov_pairs" ? "MA5" : "EMA6";
     cfg = `${leg} cross · ${x.side}`;
-  } else if (kind === "px_vol") {
-    const x = r as PxVolForecastRow;
-    cfg = `${x.px_speed} × ${x.vol_state}`;
   } else if (kind === "high_low_streaks") {
     const x = r as HighLowStreaksForecastRow;
     cfg = `HL${x.band_period} · ${x.side === "top" ? "above" : "below"} ${x.pct_type}%`;
@@ -281,6 +282,13 @@ export default function RecentMovementsPage() {
     streaks: Array<{ start: string; end: string; days: number | null }>;
     base: string;
     period: ForecastPeriod;
+    /** The clicked bucket's registered signal action (the table's
+     *  signal ✓ chip — the signals-layer gate's buy/sell + expected
+     *  move): labels the trigger days on the trend chart with the
+     *  trade-signal buy/sell triangles (green up below the low / red
+     *  down above the high). null = the bucket never registered — no
+     *  triangles, circles + shading only. */
+    action: OhlcForecastAction | null;
   } | null>(null);
   const [selectedForecastId, setSelectedForecastId] = useState<number | null>(null);
   // One trigger-dates query at a time: from the row click until the
@@ -297,9 +305,9 @@ export default function RecentMovementsPage() {
   // ---- Search by forecast_id (shared-PK registry jump) -----------------
   // Typing a forecast_id in the Forecast header resolves it against
   // analysis_forecasts.forecast_identities and jumps the whole panel to
-  // the bucket's security + family + month. idFocus is deliberately NOT
+  // the bucket's security + family + snapshot. idFocus is deliberately NOT
   // cleared by the scope-change effect above — the jump itself changes
-  // the scope; the derived row tint / month focus below drop out as
+  // the scope; the derived row tint / snapshot focus below drop out as
   // soon as the panel no longer matches the identity.
   const [idInput, setIdInput] = useState("");
   const [idSearch, setIdSearch] = useState<IdSearchState>({ status: "idle" });
@@ -342,7 +350,7 @@ export default function RecentMovementsPage() {
   }, [pendingJump, nav.loading, nav.secType, nav.sectors, applyCodeJump]);
 
   /** Enter in the forecast-id field → resolve via the identities registry
-   *  and jump the panel (family + security + month; found row tinted). */
+   *  and jump the panel (family + security + snapshot; found row tinted). */
   const handleIdSearch = () => {
     const raw = idInput.trim();
     const id = Number(raw);
@@ -355,9 +363,8 @@ export default function RecentMovementsPage() {
       .then((identity) => {
         setIdSearch({ status: "found", identity });
         setIdFocus(identity);
-        // Viewable families only (opp_pair ids — industry pairs — have no
-        // table in this UI; the caption alone reports them, and their
-        // code is an industry id the trend chart could not render).
+        // Viewable families only (ids of retired families have no table
+        // in this UI — the caption alone reports them).
         if (identity.kind != null) {
           setForecastKind(identity.kind);
           if (identity.sec_type === "etf" || identity.sec_type === "index" || identity.sec_type === "stock") {
@@ -390,32 +397,52 @@ export default function RecentMovementsPage() {
 
   /** Forecast row click → fetch the bucket's trigger_dates and shade
    *  them on the trend chart (the clicked row stays tinted in the
-   *  table). Identity-stable (memoized ForecastTable consumer) — the
-   *  freeze guard lives in the ref, not the closure. */
+   *  table). `delay` > 0 = the click landed on an INLINE EXPANSION
+   *  (delay) row — that rung's own trigger days shade instead of the
+   *  delay-0 ones, and the chip names the rung ("· d2"). Identity-
+   *  stable (memoized ForecastTable consumer) — the freeze guard lives
+   *  in the ref, not the closure. */
   const handleForecastRowClick = useCallback(
-    (row: ForecastRow, period: ForecastPeriod) => {
+    (row: ForecastRow, period: ForecastPeriod, delay = 0) => {
       if (triggerLoadingRef.current) return;
       triggerLoadingRef.current = true;
       const seq = ++triggerSeq.current;
-      const base = describeBucket(forecastKind || "mov_rsi", row, period);
+      const base =
+        describeBucket(forecastKind || "mov_rsi", row, period) +
+        (delay > 0 ? ` · d${delay}` : "");
+      // The bucket's registered signal action (the signal ✓ chip) — the
+      // forecast signal the trend chart labels the trigger days with.
+      // Synthetic delay-rung rows carry signal_action null (the gate
+      // reads delay 0), so rung clicks shade without triangles.
+      const rawAction = row.signal_action;
+      const action: OhlcForecastAction | null =
+        rawAction === "buy" || rawAction === "sell"
+          ? { action: rawAction, confidence: row.signal_confidence ?? null }
+          : null;
       setSelectedForecastId(row.forecast_id);
       setPendingBase(base);
       setTriggerLoading(true);
-      fetchForecastTriggerDates(row.forecast_id)
+      fetchForecastTriggerDates(row.forecast_id, delay)
         .then((d) => {
           if (seq !== triggerSeq.current) return;
           const dates = d.periods[period];
           setTriggerDates({
-            dates: dates ?? [],
-            streaks: d.streaks[period] ?? [],
+            // Fresh array identities on EVERY fetch — the client cache
+            // hands the same response object back on a same-row re-click,
+            // and the chart's overlay effect (memoized on these arrays)
+            // would skip re-applying and never report settled, sticking
+            // the table freeze.
+            dates: dates ? [...dates] : [],
+            streaks: (d.streaks[period] ?? []).map((s) => ({ ...s })),
             base,
             period,
+            action,
           });
           setPendingBase(null);
         })
         .catch(() => {
           if (seq !== triggerSeq.current) return;
-          setTriggerDates({ dates: [], streaks: [], base, period });
+          setTriggerDates({ dates: [], streaks: [], base, period, action: null });
           setPendingBase(null);
         });
       // NOTE: the freeze is RELEASED by handleHighlightSettled, once the
@@ -470,6 +497,10 @@ export default function RecentMovementsPage() {
       // Light shade over each mid day's forward forecast window
       // (+1/+5/+20/+60 of the clicked horizon).
       highlightHorizonDays: triggerDates ? PERIOD_DAYS[triggerDates.period] : 1,
+      // The clicked bucket's registered buy/sell — trade-signal triangle
+      // labels at each trigger day (null = no triangles). Applied with
+      // the rest of the trigger overlay (no chart rebuild).
+      highlightAction: triggerDates?.action ?? null,
       onHighlightSettled: handleHighlightSettled,
       onChartReady: handleTrendChartReady,
     }),
@@ -497,6 +528,12 @@ export default function RecentMovementsPage() {
     [],
   );
 
+  // Header chip's forecast-action tag — the colored ▲ buy / ▼ sell
+  // segment. While a new fetch is in flight it shows the PREVIOUS
+  // action, consistent with the chip keeping the previous base text
+  // until the fetch settles.
+  const triggerAction = triggerDates?.action ?? null;
+
   // The Forecast card's AI-ask payload — the "?" beside the Forecast
   // title. The toggles ARE the panel's view state, so they map straight
   // into the spec: the active family supplies the state tag + the intro's
@@ -519,12 +556,18 @@ export default function RecentMovementsPage() {
           `Extreme-day forecast buckets for ${nav.searchCode}` +
           (securityName ? ` (${securityName})` : "") +
           (fam ? ` — family: ${fam.tooltip}.` : " — no family selected.") +
-          " Each row = one bucket config; stats span the trailing 5y ending at its" +
-          " stat_month. Horizon toggle (Next/5d/20d) picks the forward columns —" +
+          " Each row = one bucket config; stats span the trailing 10y ending at" +
+          " its stat_date (annual snapshots). Horizon toggle (Next/5d/20d) picks" +
+          " the forward columns —" +
           " mean/max/min/std forward change, P>1%, days. signal ✓ = the weight-blended" +
           " forward profile clears the signals-layer gate — the tradable subset;" +
-          " clicking a row shades its trigger days, streaks and forward window on the" +
-          " trend chart.",
+          " clicking a row expands its per-delay forecast rows inline" +
+          " (every anchor delay's own stats at the selected horizon under" +
+          " the same columns, the highest weighted-return delay bold) and" +
+          " marks its trigger days on the trend chart — labeled with the" +
+          " bucket's registered buy/sell triangles when the signal ✓ is set" +
+          " (green up below the low / red down above the high) — plus the" +
+          " streak and forward-window shading.",
         instruments: [
           {
             code: nav.searchCode,
@@ -576,11 +619,28 @@ export default function RecentMovementsPage() {
                       <CircularProgress size={11} thickness={5} sx={{ color: TRIGGER_DATE_COLOR, ml: "6px" }} />
                     ) : undefined
                   }
-                  label={`⦿ trigger days · ${triggerDates?.base ?? pendingBase} · ${
-                    triggerLoading ? "loading…" : triggerDates && triggerDates.dates.length > 0
-                      ? `${triggerDates.dates.length} days`
-                      : "no dates"
-                  }`}
+                  label={
+                    <>
+                      {"⦿ trigger days · "}
+                      {triggerDates?.base ?? pendingBase}
+                      {triggerAction && (
+                        <Box
+                          component="span"
+                          sx={{
+                            color: triggerAction.action === "buy" ? UP_COLOR : DOWN_COLOR,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {` · ${triggerAction.action === "buy" ? "▲ buy" : "▼ sell"}`}
+                        </Box>
+                      )}
+                      {` · ${
+                        triggerLoading ? "loading…" : triggerDates && triggerDates.dates.length > 0
+                          ? `${triggerDates.dates.length} days`
+                          : "no dates"
+                      }`}
+                    </>
+                  }
                   onDelete={clearTriggerDates}
                   sx={{
                     maxWidth: 400,
@@ -604,12 +664,11 @@ export default function RecentMovementsPage() {
               picks which bucket family to show — RSI extreme-percentile
               buckets (mov_rsi), Bollinger breach buckets (mov_std), MA5-vs-MA
               cross buckets (mov_pairs), EMA6-vs-EMA cross buckets
-              (mov_pairs_ema), σ-speed ×
-              量比-z state cells (px_vol) or margin-buy intensity z states
+              (mov_pairs_ema) or margin-buy intensity z states
               (margin_ratio); clicking the active one again hides the table.
-              Selecting one mounts ForecastTable, which lists ALL stat_months
+              Selecting one mounts ForecastTable, which lists ALL stat_dates
               of this code's buckets (config + regime_state [+ excess/
-              mean-t-z cols] → forecast results). */}
+              mean-ratio-z cols] → forecast results). */}
           <Card variant="outlined" sx={{ mt: 1.5 }}>
             <Stack
               direction="row"
@@ -710,9 +769,9 @@ export default function RecentMovementsPage() {
                     ? idSearch.message
                     : idSearch.status === "found"
                       ? describeIdentity(idSearch.identity)
-                      : forecastKind
-                        ? "header dropdowns filter buckets (month header = end-month selector, seeded at the latest month — only that month's rows show) · click a row to mark its trigger days on the trend chart above · forecast id ⏎ jumps to its bucket"
-                        : "pick a bucket family to show its extreme-day forecast table"}
+                        : forecastKind
+                          ? "header dropdowns filter buckets (year header = end-month selector over annual snapshots, seeded at the latest snapshot — only that snapshot's rows show) · click a row to expand its per-delay forecasts + mark its trigger days on the trend chart above · forecast id ⏎ jumps to its bucket"
+                          : "pick a bucket family to show its extreme-day forecast table"}
               </Typography>
             </Stack>
             {forecastKind && (
@@ -731,7 +790,7 @@ export default function RecentMovementsPage() {
                         ? String(idFocus.forecast_id)
                         : null
                   }
-                  focusStatMonth={idFocusActive && idFocus != null ? idFocus.stat_month : null}
+                  focusStatDate={idFocusActive && idFocus != null ? idFocus.stat_date : null}
                   frozen={triggerLoading}
                 />
               </Box>

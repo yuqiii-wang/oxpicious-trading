@@ -65,6 +65,15 @@ export interface AiAskSpec {
   searchKeywords?: string[];
   /** Free-form caveats worth telling the LLM (e.g. "rebased to 100"). */
   notes?: string[];
+  /**
+   * Whether the modal gets the as-of date selector (pin the question to an
+   * exact date "YYYY-MM-DD" or a year-month "YYYY-MM"). Omitted =
+   * auto-detect: on when the plotted window (x-axis labels or this spec's
+   * window) parses as dates, off otherwise. Set false to force it off for
+   * a date-looking chart whose dates are meaningless (e.g. rebased
+   * buckets), true to force it on when the derivation can't see dates.
+   */
+  dateSelectable?: boolean;
 }
 
 /** Best-effort numeric summary of one series' plotted values. */
@@ -122,4 +131,18 @@ export interface AiAskPlotInfo {
   /** Route path the ask was submitted from (set by AiAskModal at submit) —
    *  the product fallback for ask-history keyword search. */
   page?: string;
+  /**
+   * Pinned as-of date for the ask — "YYYY-MM-DD" or "YYYY-MM" (the
+   * modal's date selector, seeded with the chart's latest plotted date
+   * and editable per ask). The adviser treats it as "now" for
+   * time-relative questions; absent when the user cleared the field or
+   * the chart has no date selector.
+   */
+  date?: string;
+  /**
+   * Whether the modal shows the as-of date selector (computed by
+   * derivePlotInfo: the spec's `dateSelectable` when set, else whether
+   * the plotted window parses as dates).
+   */
+  dateSelectable?: boolean;
 }

@@ -4,16 +4,14 @@
 --  Per-(code, date) Price × Trading-Amount STATE registry of the
 --  mov_ave_spread analysis (price_vs_amt.py internal step): every day
 --  whose state inputs are valid joins EXACTLY ONE of the 15
---  price-speed × amount-state categories. This is the DATE-LEVEL source
---  of truth for the px_vol family — analysis_forecasts.px_vol_state
---  stores bucket AGGREGATES only (no member dates), so the forecast /
---  signal engines and the MA-Spread UI shading all AUDIT against this
---  table instead of re-deriving the categories.
+--  price-speed × amount-state categories. This is the px_vol family's
+--  DATE-LEVEL record — the MA-Spread UI's Px-Vol States date shading
+--  reads it.
 --
 --  A (code, date) gets a row when BOTH legs are computable with
 --  information available at that day (every rolling stat is shifted
---  1 row → no look-ahead; identical definitions to
---  analysis_forecasts.px_vol_state / fetch.add_px_vol_features):
+--  1 row → no look-ahead; the feature layer lives in this package —
+--  analyze.mov_ave_spread.px_vol):
 --
 --    px_speed — the day's 1-row fractional price change ret_1d,
 --               standardized by the code's OWN trailing σ:
@@ -43,16 +41,14 @@
 --               — amount far below the code's level — and is guarded
 --               against by the consumer-side audit).
 --
---  side mirrors px_vol_state: top (up speeds) / bottom (down speeds) /
---  flat — the reversal direction of the family's reverse_prob. The
+--  side per speed: top (up speeds) / bottom (down speeds) /
+--  flat — the reversal direction of the px_vol side semantics. The
 --  state values (px_t / px_z / ret_1d / px_sigma / amt_ratio) are
---  recorded so consumers can compute means (the forecast buckets'
---  config mean_t / mean_z) without re-deriving the features.
+--  recorded so consumers can compute means without re-deriving the
+--  features.
 --
---  The threshold columns are RECORDED BUILD PARAMETERS (like
---  px_vol_state's): NOT part of the PK — rebuilding with different
---  values requires --force. The forecast / signal engines VERIFY the
---  recorded set against their own constants before consuming.
+--  The threshold columns are RECORDED BUILD PARAMETERS: NOT part of
+--  the PK — rebuilding with different values requires --force.
 --
 --  REBUILD SEMANTICS (market_hypes precedent): rows are rebuilt
 --  WHOLESALE per sec_type (or per --code) on every mov_ave_spread run —
@@ -96,13 +92,13 @@ SELECT public.create_hash_partitions('analysis', 'mov_ave_price_vs_amt', 16);
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis.mov_ave_price_vs_amt IS 'Per-(code, date) Price × Trading-Amount state registry (mov_ave_spread internal step): every day with valid inputs joins exactly ONE of the 15 px_speed × vol_state categories — σ-standardized 1-day price change (t = ret_1d / rolling-255 σ_ret ddof=1, min 60, shifted 1 row; σ floor 0.005 excludes bond-like codes) × z-scored log trading-amount LEVEL (z vs rolling-255 moments of log(trading_amount), shifted 1 row — a LEVEL statement vs the code''s own trailing-year amount distribution). The DATE-LEVEL source of truth of the px_vol family: analysis_forecasts.px_vol_state (bucket aggregates) and the MA-Spread UI shading audit against this table. Same price convention as the parent analysis (ETF = COALESCE(adj_close, close)). Populated by python -m analyze.mov_ave_spread (price_vs_amt.py step, wholesale per sec_type).';
+COMMENT ON TABLE analysis.mov_ave_price_vs_amt IS 'Per-(code, date) Price × Trading-Amount state registry (mov_ave_spread internal step): every day with valid inputs joins exactly ONE of the 15 px_speed × vol_state categories — σ-standardized 1-day price change (t = ret_1d / rolling-255 σ_ret ddof=1, min 60, shifted 1 row; σ floor 0.005 excludes bond-like codes) × z-scored log trading-amount LEVEL (z vs rolling-255 moments of log(trading_amount), shifted 1 row — a LEVEL statement vs the code''s own trailing-year amount distribution). The px_vol family''s date-level record; the MA-Spread UI shading reads this table. Same price convention as the parent analysis (ETF = COALESCE(adj_close, close)). Populated by python -m analyze.mov_ave_spread (price_vs_amt.py step, wholesale per sec_type).';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.date IS 'The state day. States are backward-looking (all rolling stats shifted 1 row), but rows are rebuilt wholesale per sec_type because ETF adj_close back-adjustments rewrite price history.';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.px_speed IS 'Price-speed state: t = ret_1d / σ_ret(code, 255 rows ending t-1, min 60, ddof=1). sharp_up t > 2.0; slow_up 1.26 < t <= 2.0; flat -1.29 <= t <= 1.26; slow_dn -2.0 <= t < -1.29; sharp_dn t < -2.0. Never fires when σ_ret is NaN or below sigma_floor (0.005).';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.vol_state IS 'Trading-amount state: z = (log(trading_amount[t]) - μ) / σ where μ/σ are the rolling-255 (min 60, ddof=1) moments of log(trading_amount), shifted 1 row — a LEVEL statement vs the code''s own trailing-year amount distribution. heavy z > 2.0; normal -0.92 <= z <= 2.0; shrink z < -0.92. NULL trading_amount → no row.';
-COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.side IS 'Reversal side of the px_vol family: top (sharp_up/slow_up — reversal = n-day change below -reverse_threshold), bottom (slow_dn/sharp_dn — reversal above +reverse_threshold), flat (no directional claim). Mirrors analysis_forecasts.px_vol_state.side.';
+COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.side IS 'Reversal side of the px_vol family: top (sharp_up/slow_up — reversal = n-day change below -reverse_threshold), bottom (slow_dn/sharp_dn — reversal above +reverse_threshold), flat (no directional claim).';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.px_t IS 'The day''s σ-standardized price speed t = ret_1d / px_sigma (recorded so consumers compute bucket mean_t without re-deriving features).';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.px_z IS 'The day''s z-scored log trading-amount LEVEL (recorded for the buckets'' mean_z).';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.ret_1d IS '1-row fractional price change of the code''s own price series (COALESCE(adj_close, close) for ETF).';

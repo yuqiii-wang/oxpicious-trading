@@ -175,67 +175,69 @@ ON CONFLICT (name) DO UPDATE SET
 DELETE FROM analysis.analysis_identity WHERE name = 'pe_and_dividends';
 
 -- ============================================================================
---  PE & Dividend Stats — monthly 5-year rolling stats snapshot of PE and
+--  PE & Dividend Stats — ANNUAL 10-year rolling stats snapshot of PE and
 --  dividend_yield, with an is_active flag for efficient "latest snapshot per
---  code" queries. Updated MONTHLY (one row per (sec_type, code, month-end
+--  code" queries. Updated ANNUALLY (one row per (sec_type, code, year-end
 --  trading date)).
 --
 --  Table: analysis.pe_and_dividend_stats
 --    PK: (sec_type, code, date, is_active)
---      date = month-end trading date (last trading day of each month)
---      is_active = TRUE for the most recent monthly snapshot per
---                  (sec_type, code); FALSE for all prior months. Part of the
+--      date = year-end trading date (last trading day of each year)
+--      is_active = TRUE for the most recent annual snapshot per
+--                  (sec_type, code); FALSE for all prior years. Part of the
 --                  PK so a partial unique index can enforce "at most one
 --                  latest per code" while keeping the flag queryable via
 --                  the primary index.
 --    sec_type ∈ ('index' | 'etf' | 'stock')
 --
 --  COLUMNS
---    min_pe_5y / max_pe_5y
---                   — Rolling 5-year (~1275 trading days) min / max of PE.
+--    min_pe_10y / max_pe_10y
+--                   — Rolling 10-year (~2550 trading days) min / max of PE.
 --                     Computed from stats.index_valuation.pe (index-only;
 --                     NULL for etf/stock). The window ends on `date`. NULL
 --                     when fewer than 1 non-NULL PE value exists in the
---                     window (e.g. new index with < 5y history — the window
+--                     window (e.g. new index with < 10y history — the window
 --                     still computes over whatever history is available,
---                     matching pandas rolling(1275, min_periods=1)).
+--                     matching pandas rolling(2550, min_periods=1)).
 --
 --    min_dividend_5y / max_dividend_5y  — REMOVED. The 5y min/max of
 --                     dividend_yield were dropped in favor of the more
---                     informative dividend_var_5y (std) +
+--                     informative dividend_var (std) +
 --                     last_dividend_per_share columns. Existing columns are
 --                     dropped via the DROP TABLE + CREATE TABLE migration
 --                     below.
 --
---    dividend_var_5y
---                   — Rolling 5-year POPULATION std (ddof=0) of
+--    dividend_var_10y
+--                   — Rolling 10-year POPULATION std (ddof=0) of
 --                     dividend_yield, scaled x100 to express it as a
 --                     percentage (e.g. a fractional-yield std of 0.005
 --                     becomes 0.5). Measures dispersion of the trailing-12m
---                     yield over the last 5y. NULL when fewer than 2 non-NULL
+--                     yield over the last 10y. Computed over the DAILY
+--                     yield series (rolling 2550 observations), sampled at
+--                     the year-end rows. NULL when fewer than 2 non-NULL
 --                     dividend_yield values exist in the window (std
 --                     undefined for a single observation).
 --
 --    last_dividend_per_share
 --                   — Rolling record of the latest single dividend per
 --                     share amount (dividend_per_share_pre_tax) as of the
---                     month-end date. For stock/etf this is the security's
+--                     year-end date. For stock/etf this is the security's
 --                     own most recent ex-dividend event on or before `date`
 --                     (summed when multiple events share the same ex-date).
 --                     NULL for index (the bare index code does not appear
 --                     in stock_dividends) or when no dividend event exists
---                     on or before the month-end.
+--                     on or before the year-end.
 --
---    dividend_issued_this_month
+--    dividend_issued_this_year
 --                   — TRUE if at least one ex_dividend_date falls in the
---                     same (year, month) as the month-end `date`. FALSE
+--                     same CALENDAR YEAR as the year-end `date`. FALSE
 --                     otherwise (including NULL/FALSE for index, which has
 --                     no direct dividend events). Drives the bold styling
 --                     on the Last Div cell in the UI.
 --
---    dividend_stability_5y
+--    dividend_stability_10y
 --                   — Frequency-robust stability score (0-100) of the
---                     per-share dividend AMOUNT over the trailing 5
+--                     per-share dividend AMOUNT over the trailing 10
 --                     CALENDAR YEARS. Measures dividend-POLICY consistency
 --                     (NOT yield — yield conflates price moves with policy,
 --                     so this column uses DPS amounts directly).
@@ -263,61 +265,65 @@ DELETE FROM analysis.analysis_identity WHERE name = 'pe_and_dividends';
 --                     (1 - min(CV, 1)) × 100, clamped [0, 100]. 100 =
 --                     perfectly stable (all years equal); 0 = highly
 --                     variable (std >= mean). NULL when fewer than 2 years
---                     have non-zero annual_dps in the 5y window.
+--                     have non-zero annual_dps in the 10y window.
 --
---  MONTHLY UPDATE
---    One row per (sec_type, code, month-end trading date). The build script
---    (analyze.pe_and_dividends.stats — internal step run_monthly_stats)
---    inserts a new row for the just-completed month and flips is_active:
+--  ANNUAL UPDATE
+--    One row per (sec_type, code, year-end trading date). The build script
+--    (analyze.pe_and_dividends — internal step compute_annual_stats)
+--    inserts a new row for the just-completed year and flips is_active:
 --      1. UPDATE ... SET is_active = FALSE WHERE sec_type=? AND code=?
 --         AND is_active = TRUE
---      2. INSERT new row with is_active = TRUE for the new month-end date
---    Run monthly (not daily) — the 5y rolling window is heavy and the
---    month-end snapshot is sufficient for valuation-band charts.
+--      2. INSERT new row with is_active = TRUE for the new year-end date
+--    Run annually (not daily) — the 10y rolling window is heavy and the
+--    year-end snapshot is sufficient for valuation-band charts.
 --
 --  POPULATION
---    analyze.pe_and_dividends.stats (Python internal step). Per project
---    rule, ALL INSERTs/UPDATEs are in Python — no raw SQL in this file.
---    For generic test runs, populate sec_type='index' first.
+--    analyze.pe_and_dividends (Python builder, compute_annual_stats internal
+--    step). Per project rule, ALL INSERTs/UPDATEs are in Python — no raw
+--    SQL in this file. For generic test runs, populate sec_type='index'
+--    first.
 --
 --  Register in analysis.analysis_identity (name='pe_and_dividend_stats').
 -- ============================================================================
 
--- DROP + recreate: the PK column was renamed from is_latest to is_active
--- (a PK cannot be changed in place). The table holds no data at this
--- point (the Python populator has not run yet), so a clean rebuild is safe.
--- On fresh installs this is a no-op; on upgraded DBs it discards any prior
--- is_latest-based rows (acceptable — the table is rebuilt monthly anyway).
+-- DROP + recreate: the 5y columns were renamed to their 10y counterparts and
+-- the snapshot cadence moved from month-end to year-end (a PK/column set
+-- cannot be renamed in place). The table is fully regenerated by the Python
+-- builder anyway (full recompute per sec_type), so a clean rebuild is safe.
+-- On fresh installs this is a no-op; on upgraded DBs it discards the prior
+-- monthly 5y rows (regenerated as annual 10y rows on the next run).
 DROP TABLE IF EXISTS analysis.pe_and_dividend_stats;
 
 CREATE TABLE IF NOT EXISTS analysis.pe_and_dividend_stats (
     sec_type            TEXT         NOT NULL,  -- 'index' | 'etf' | 'stock'
     code                TEXT         NOT NULL,
-    date                DATE         NOT NULL,  -- month-end trading date
+    date                DATE         NOT NULL,  -- year-end trading date
     is_active           BOOLEAN      NOT NULL DEFAULT FALSE,
 
-    -- Rolling 5-year (~1275 trading days) min / max of PE (index-only).
+    -- Rolling 10-year (~2550 trading days) min / max of PE (index-only).
     -- Computed from stats.index_valuation.pe. NULL for etf/stock or when
     -- no PE history exists in the window.
-    min_pe_5y           NUMERIC(10,4),
-    max_pe_5y           NUMERIC(10,4),
+    min_pe_10y          NUMERIC(10,4),
+    max_pe_10y          NUMERIC(10,4),
 
-    -- Rolling 5-year POPULATION std (ddof=0) of dividend_yield, x100 as a
-    -- percentage. NULL when fewer than 2 non-NULL values in the window.
-    dividend_var_5y     NUMERIC(20,10),
+    -- Rolling 10-year POPULATION std (ddof=0) of dividend_yield, x100 as a
+    -- percentage. Computed over the DAILY yield series (rolling 2550 obs),
+    -- sampled at the year-end rows. NULL when fewer than 2 non-NULL values
+    -- in the window.
+    dividend_var_10y    NUMERIC(20,10),
 
     -- Frequency-robust stability score (0-100) of the per-share dividend
-    -- AMOUNT over the trailing 5 CALENDAR YEARS (annualized per year so
+    -- AMOUNT over the trailing 10 CALENDAR YEARS (annualized per year so
     -- payment-frequency changes don't create artificial gaps). See header.
-    dividend_stability_5y NUMERIC(6,2),
+    dividend_stability_10y NUMERIC(6,2),
 
     -- Rolling record of the latest single dividend_per_share_pre_tax as of
-    -- the month-end date (stock/etf own dividend events; NULL for index).
+    -- the year-end date (stock/etf own dividend events; NULL for index).
     last_dividend_per_share NUMERIC(18,6),
 
-    -- TRUE if at least one ex_dividend_date falls in the same (year, month)
-    -- as the month-end `date`. Drives bold styling on the Last Div cell.
-    dividend_issued_this_month BOOLEAN NOT NULL DEFAULT FALSE,
+    -- TRUE if at least one ex_dividend_date falls in the same CALENDAR YEAR
+    -- as the year-end `date`. Drives bold styling on the Last Div cell.
+    dividend_issued_this_year BOOLEAN NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_pe_and_dividend_stats PRIMARY KEY (code, sec_type, date, is_active),
     CONSTRAINT chk_pe_and_dividend_stats_sec_type
@@ -329,36 +335,36 @@ CREATE TABLE IF NOT EXISTS analysis.pe_and_dividend_stats (
 SELECT public.create_hash_partitions('analysis', 'pe_and_dividend_stats', 8);
 
 -- Partial unique index: at most ONE row per (sec_type, code) with is_active=TRUE.
--- Enforces the "single latest snapshot" invariant while allowing full monthly
+-- Enforces the "single latest snapshot" invariant while allowing full annual
 -- history to accumulate. This is the index that makes is_active queryable
 -- efficiently — "get latest stats for code X" resolves to a single index lookup.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_pe_and_dividend_stats_latest
     ON analysis.pe_and_dividend_stats (sec_type, code)
     WHERE is_active = TRUE;
 
--- Secondary index for per-code time-series retrieval (all monthly snapshots
+-- Secondary index for per-code time-series retrieval (all annual snapshots
 -- for a code, ignoring the is_active flag — drives the valuation-band chart).
 -- idx_pe_and_dividend_stats_code_sec_type_date (code, sec_type, date) dropped:
 -- a prefix of the code-first PK, which already serves per-code lookups.
 
-COMMENT ON TABLE  analysis.pe_and_dividend_stats                  IS 'Monthly 5-year rolling stats snapshot of PE and dividend_yield. One row per (code, sec_type, month-end trading date, is_active). is_active=TRUE for the most recent monthly snapshot per code (enforced by partial unique index uq_pe_and_dividend_stats_latest). min_pe_5y/max_pe_5y: rolling 5y (~1275 trading days) min/max of stats.index_valuation.pe (index-only, NULL for etf/stock). dividend_var_5y: rolling 5y population std (ddof=0) of dividend_yield x100 as a percentage. last_dividend_per_share: rolling record of the latest single dividend_per_share_pre_tax as of the month-end (stock/etf; NULL for index). dividend_issued_this_month: TRUE if any ex_dividend_date falls in the same (year, month) as the month-end. dividend_stability_5y: frequency-robust stability score (0-100) of per-share dividend AMOUNT over trailing 5 calendar years (annualized per year so payment-frequency changes do not create artificial gaps; CV-based: stability=(1-min(CV,1))×100). Updated MONTHLY by analyze.pe_and_dividends.stats (internal step). All INSERTs/UPDATEs in Python per project rule.';
+COMMENT ON TABLE  analysis.pe_and_dividend_stats                  IS 'Annual 10-year rolling stats snapshot of PE and dividend_yield. One row per (code, sec_type, year-end trading date, is_active). is_active=TRUE for the most recent annual snapshot per code (enforced by partial unique index uq_pe_and_dividend_stats_latest). min_pe_10y/max_pe_10y: rolling 10y (~2550 trading days) min/max of stats.index_valuation.pe (index-only, NULL for etf/stock). dividend_var_10y: rolling 10y population std (ddof=0) of dividend_yield x100 as a percentage, computed over the daily yield series and sampled at the year-end rows. last_dividend_per_share: rolling record of the latest single dividend_per_share_pre_tax as of the year-end (stock/etf; NULL for index). dividend_issued_this_year: TRUE if any ex_dividend_date falls in the same calendar year as the year-end. dividend_stability_10y: frequency-robust stability score (0-100) of per-share dividend AMOUNT over trailing 10 calendar years (annualized per year so payment-frequency changes do not create artificial gaps; CV-based: stability=(1-min(CV,1))×100). Updated ANNUALLY by analyze.pe_and_dividends (compute_annual_stats internal step). All INSERTs/UPDATEs in Python per project rule.';
 COMMENT ON COLUMN analysis.pe_and_dividend_stats.sec_type         IS 'Subject security type: index, etf, or stock.';
 COMMENT ON COLUMN analysis.pe_and_dividend_stats.code             IS 'Security code (bare index code e.g. 000300; ETF/stock ticker with exchange suffix e.g. 159001.SZ / 600008.SS).';
-COMMENT ON COLUMN analysis.pe_and_dividend_stats.date             IS 'Month-end trading date (last trading day of the month). One snapshot per month per (sec_type, code).';
-COMMENT ON COLUMN analysis.pe_and_dividend_stats.is_active        IS 'TRUE for the most recent monthly snapshot per (sec_type, code); FALSE for all prior months. Part of the PK and backed by partial unique index uq_pe_and_dividend_stats_latest (at most one TRUE per code). The build script flips prior is_active=TRUE to FALSE before inserting the new month''s row with is_active=TRUE.';
-COMMENT ON COLUMN analysis.pe_and_dividend_stats.min_pe_5y        IS 'Rolling 5-year (~1275 trading days) minimum of PE, ending on `date`. Computed from stats.index_valuation.pe (index-only; NULL for etf/stock). Window uses min_periods=1 so newer indices with < 5y history still get a value over available data. NULL when no non-NULL PE exists in the window.';
-COMMENT ON COLUMN analysis.pe_and_dividend_stats.max_pe_5y        IS 'Rolling 5-year (~1275 trading days) maximum of PE, ending on `date`. Computed from stats.index_valuation.pe (index-only; NULL for etf/stock). Window uses min_periods=1. NULL when no non-NULL PE exists in the window.';
-COMMENT ON COLUMN analysis.pe_and_dividend_stats.dividend_var_5y  IS 'Rolling 5-year POPULATION std (ddof=0) of analysis.dividends.dividend_yield, ending on `date`, scaled x100 to express it as a percentage (e.g. a fractional-yield std of 0.005 becomes 0.5). Measures dispersion of the trailing-12m yield over the last 5y. Computed via pandas rolling(1275).std(ddof=0) per code (min_periods=2), then x100. NULL when fewer than 2 non-NULL dividend_yield values exist in the window (std undefined for a single observation).';
-COMMENT ON COLUMN analysis.pe_and_dividend_stats.dividend_stability_5y IS 'Frequency-robust stability score (0-100) of the per-share dividend AMOUNT over the trailing 5 CALENDAR YEARS ending on `date`. Measures dividend-POLICY consistency using DPS amounts directly (NOT yield — yield conflates price moves with policy, so this is distinct from dividend_var_5y). FREQUENCY-CHANGE FIX: dividends are summed to an ANNUAL TOTAL per calendar year before comparison, so a year with 2 semi-annual payments and a year with 1 annual payment are compared on equal footing (no artificial gap from dividing a single payment by 2 to force a semi-annual equivalent). stock: SUM(stock_dividends.dividend_per_share_pre_tax WHERE ex_dividend_date in year y); etf: SUM(etf_adjustment.implied_dividend_per_share over year y); index: SUM(weight_fraction × constituent annual DPS). SCORE: CV=std(annual_dps)/mean(annual_dps) over years with non-zero annual_dps; stability=(1-min(CV,1))×100 clamped [0,100]. 100=perfectly stable; 0=highly variable (std>=mean). NULL when fewer than 2 years have non-zero annual_dps in the 5y window.';
-COMMENT ON COLUMN analysis.pe_and_dividend_stats.last_dividend_per_share IS 'Rolling record of the latest single dividend_per_share_pre_tax as of the month-end `date`. For stock/etf: the security''s own most recent ex-dividend event on or before `date` (summed when multiple events share the same ex-date). For index: NULL (the bare index code does not appear in stock_dividends, so no dividend event matches). NULL when no dividend event exists on or before the month-end.';
-COMMENT ON COLUMN analysis.pe_and_dividend_stats.dividend_issued_this_month IS 'TRUE if at least one ex_dividend_date falls in the same (year, month) as the month-end `date`. FALSE otherwise (including for index, which has no direct dividend events). Drives the bold styling on the Last Div cell in the UI.';
+COMMENT ON COLUMN analysis.pe_and_dividend_stats.date             IS 'Year-end trading date (last trading day of the year). One snapshot per year per (sec_type, code).';
+COMMENT ON COLUMN analysis.pe_and_dividend_stats.is_active        IS 'TRUE for the most recent annual snapshot per (sec_type, code); FALSE for all prior years. Part of the PK and backed by partial unique index uq_pe_and_dividend_stats_latest (at most one TRUE per code). The build script flips prior is_active=TRUE to FALSE when recomputing the scope with a new year-end row carrying is_active=TRUE.';
+COMMENT ON COLUMN analysis.pe_and_dividend_stats.min_pe_10y       IS 'Rolling 10-year (~2550 trading days) minimum of PE, ending on `date`. Computed from stats.index_valuation.pe (index-only; NULL for etf/stock). Window uses min_periods=1 so newer indices with < 10y history still get a value over available data. NULL when no non-NULL PE exists in the window.';
+COMMENT ON COLUMN analysis.pe_and_dividend_stats.max_pe_10y       IS 'Rolling 10-year (~2550 trading days) maximum of PE, ending on `date`. Computed from stats.index_valuation.pe (index-only; NULL for etf/stock). Window uses min_periods=1. NULL when no non-NULL PE exists in the window.';
+COMMENT ON COLUMN analysis.pe_and_dividend_stats.dividend_var_10y IS 'Rolling 10-year POPULATION std (ddof=0) of analysis.dividends.dividend_yield, ending on `date`, scaled x100 to express it as a percentage (e.g. a fractional-yield std of 0.005 becomes 0.5). Measures dispersion of the trailing-12m yield over the last 10y. Computed over the DAILY yield series via pandas rolling(2550).std(ddof=0) per code (min_periods=2), then sampled at the year-end rows and x100. NULL when fewer than 2 non-NULL dividend_yield values exist in the window (std undefined for a single observation).';
+COMMENT ON COLUMN analysis.pe_and_dividend_stats.dividend_stability_10y IS 'Frequency-robust stability score (0-100) of the per-share dividend AMOUNT over the trailing 10 CALENDAR YEARS ending on `date`. Measures dividend-POLICY consistency using DPS amounts directly (NOT yield — yield conflates price moves with policy, so this is distinct from dividend_var_10y). FREQUENCY-CHANGE FIX: dividends are summed to an ANNUAL TOTAL per calendar year before comparison, so a year with 2 semi-annual payments and a year with 1 annual payment are compared on equal footing (no artificial gap from dividing a single payment by 2 to force a semi-annual equivalent). stock: SUM(stock_dividends.dividend_per_share_pre_tax WHERE ex_dividend_date in year y); etf: SUM(etf_adjustment.implied_dividend_per_share over year y); index: SUM(weight_fraction × constituent annual DPS). SCORE: CV=std(annual_dps)/mean(annual_dps) over years with non-zero annual_dps; stability=(1-min(CV,1))×100 clamped [0,100]. 100=perfectly stable; 0=highly variable (std>=mean). NULL when fewer than 2 years have non-zero annual_dps in the 10y window.';
+COMMENT ON COLUMN analysis.pe_and_dividend_stats.last_dividend_per_share IS 'Rolling record of the latest single dividend_per_share_pre_tax as of the year-end `date`. For stock/etf: the security''s own most recent ex-dividend event on or before `date` (summed when multiple events share the same ex-date). For index: NULL (the bare index code does not appear in stock_dividends, so no dividend event matches). NULL when no dividend event exists on or before the year-end.';
+COMMENT ON COLUMN analysis.pe_and_dividend_stats.dividend_issued_this_year IS 'TRUE if at least one ex_dividend_date falls in the same CALENDAR YEAR as the year-end `date`. FALSE otherwise (including for index, which has no direct dividend events). Drives the bold styling on the Last Div cell in the UI.';
 
 -- ----------------------------------------------------------------------------
 --  Register in analysis.analysis_identity
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('pe_and_dividend_stats', 'pe_and_dividend_stats', NULL, NOW(),
-     'Monthly 5-year rolling stats snapshot of PE and dividend_yield. One row per (sec_type, code, month-end trading date, is_active). is_active=TRUE for the most recent monthly snapshot per code (partial unique index enforces at most one TRUE per code). min_pe_5y/max_pe_5y: rolling 5y min/max of stats.index_valuation.pe (index-only). dividend_var_5y: rolling 5y population std (ddof=0) of dividend_yield x100 as a percentage. last_dividend_per_share: rolling record of the latest single dividend_per_share_pre_tax as of the month-end (stock/etf; NULL for index). dividend_issued_this_month: TRUE if any ex_dividend_date falls in the same (year, month) as the month-end. dividend_stability_5y: frequency-robust stability score (0-100) of per-share dividend AMOUNT over trailing 5 calendar years (annualized per year so payment-frequency changes do not create artificial gaps; CV-based: stability=(1-min(CV,1))×100). Updated MONTHLY by analyze.pe_and_dividends.stats (internal step). All INSERTs/UPDATEs in Python per project rule.')
+     'Annual 10-year rolling stats snapshot of PE and dividend_yield. One row per (sec_type, code, year-end trading date, is_active). is_active=TRUE for the most recent annual snapshot per code (partial unique index enforces at most one TRUE per code). min_pe_10y/max_pe_10y: rolling 10y min/max of stats.index_valuation.pe (index-only). dividend_var_10y: rolling 10y population std (ddof=0) of dividend_yield x100 as a percentage (daily rolling series sampled at the year-end rows). last_dividend_per_share: rolling record of the latest single dividend_per_share_pre_tax as of the year-end (stock/etf; NULL for index). dividend_issued_this_year: TRUE if any ex_dividend_date falls in the same calendar year as the year-end. dividend_stability_10y: frequency-robust stability score (0-100) of per-share dividend AMOUNT over trailing 10 calendar years (annualized per year so payment-frequency changes do not create artificial gaps; CV-based: stability=(1-min(CV,1))×100). Updated ANNUALLY by analyze.pe_and_dividends (compute_annual_stats internal step). All INSERTs/UPDATEs in Python per project rule.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

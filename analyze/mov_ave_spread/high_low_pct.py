@@ -96,7 +96,12 @@ from _common.build_commons import (
     RECENT_TRADING_DAYS,
     fetch_codes_with_recent_data_async,
 )
-from _common.db_commons import csv_copy_from_frame_async
+from _common.db_commons import (
+    _wait_for_replica_lag_async,
+    chunked_purge_async,
+    csv_copy_from_frame_async,
+    DEFAULT_MAX_REPLICA_LAG_MB,
+)
 from _common.df_utils import column_subset, host_array, host_unique
 from analyze._common import upsert_analysis_identity
 from analyze.mov_ave_spread.config import (
@@ -119,7 +124,7 @@ logger = logging.getLogger(__name__)
 # Band rows per CSV COPY chunk (bounds the in-memory chunk sliced off
 # the long frame before rendering — same spirit as
 # _EPISODE_CHUNK_ROWS in market_hypes.py).
-_BAND_CHUNK_ROWS = 200_000
+_BAND_CHUNK_ROWS = 100_000
 
 
 # ---------------------------------------------------------------------------
@@ -230,14 +235,14 @@ async def _delete_incomplete_pairs(
     if not pairs:
         return 0
     codes_l, ym_dates = zip(*pairs)
-    n = await conn.execute(
-        f"DELETE FROM {HIGH_LOW_PCT_TABLE} t "
-        f"WHERE t.sec_type = $1 "
-        f"  AND (t.code, t.date_year_month) IN ("
-        f"SELECT * FROM unnest($2::text[], $3::date[]))",
-        sec_type, list(codes_l), list(ym_dates),
+    return await chunked_purge_async(
+        conn, HIGH_LOW_PCT_TABLE,
+        where_sql="t.sec_type = $1 "
+                  "AND (t.code, t.date_year_month) IN ("
+                  "SELECT * FROM unnest($2::text[], $3::date[]))",
+        params=(sec_type, list(codes_l), list(ym_dates)),
+        key_column="t.code",
     )
-    return int(n.rsplit(" ", 1)[-1]) if n else 0
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +421,9 @@ async def _copy_bands_chunked(conn, bands: pd.DataFrame) -> int:
     n_chunks = (n_total + _BAND_CHUNK_ROWS - 1) // _BAND_CHUNK_ROWS
     total = 0
     for i in range(n_chunks):
+        # Between commit chunks: wait out standby replay lag before
+        # generating more WAL (the bulk-write rule).
+        await _wait_for_replica_lag_async(conn, DEFAULT_MAX_REPLICA_LAG_MB)
         lo = i * _BAND_CHUNK_ROWS
         chunk = bands.iloc[lo:lo + _BAND_CHUNK_ROWS]
         n = await csv_copy_from_frame_async(

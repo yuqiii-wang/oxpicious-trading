@@ -4,14 +4,16 @@
   _values    LiveValues / the SIGNAL_VALUE_SOURCE map / the sub_type
              parsers / resolve_value / resolve_threshold — the
              value-threshold SPACE (no SQL).
-  _sources   the code's CURRENT values (latest RSI row / spreads /
-             px_t / recomputed margin z / ma+σ), each source fetched
-             at most once per check, as-of bounded.
+  _sources   the code's CURRENT values (latest RSI row / the day's
+             ma+ema legs and σ / recomputed margin z), each source
+             fetched at most once per check, as-of bounded.
   _bars      the as-of bar resolution (last intraday bar ON D, else
-             the official daily close — the on-demand --date mode).
+             the official daily close — the on-demand --date mode) and
+             the at-or-before daily close (the episode gate's
+             previous-day basis).
   _active    the ACTIVE threshold set (analysis_signals.
-             signal_strategies is_active rows) + the market-hype
-             probe.
+             signal_strategies is_active rows), the market-regime
+             probe, and the trigger-once episode probe.
 
 Everything here is DATA ACCESS — no decision logic beyond the
 declarative value-source map; the ONE generic breach check lives in
@@ -21,9 +23,11 @@ path keeps working: this package re-exports the full former surface.
 from ._active import (
     fetch_active_codes,
     fetch_active_signals,
+    fetch_episode_flagged,
     fetch_regime_state,
 )
 from ._bars import (
+    fetch_daily_close_before,
     fetch_daily_close_on,
     fetch_intraday_bar_on,
 )
@@ -41,7 +45,9 @@ from ._values import (
 __all__ = [
     "fetch_active_codes",
     "fetch_active_signals",
+    "fetch_episode_flagged",
     "fetch_regime_state",
+    "fetch_daily_close_before",
     "fetch_daily_close_on",
     "fetch_intraday_bar_on",
     "fetch_current_values",

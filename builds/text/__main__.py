@@ -161,6 +161,8 @@ class TextBuild(DataBuild):
                 rows, await upsert.fetch_existing_news(conn), force=self.args.force)
             logger.info("    [DB] upserting %d rows into text.news "
                         "(%d new/changed) …", len(rows), len(needing))
+            # KEEP UPSERT (not COPY): rows include EXISTING articles whose
+            # word_count / industry_id changed — real PK conflicts by design.
             await bulk_upsert_async(conn, upsert.NEWS_TABLE,
                                     upsert.build_news_rows(rows),
                                     ["title", "source", "date"])

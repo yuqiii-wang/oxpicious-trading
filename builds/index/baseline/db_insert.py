@@ -26,8 +26,8 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import bulk_upsert_async, get_max_table_date_async
-from _common.db_commons import csv_copy_from_frame_async
 from _common.df_utils import safe_columns
+from _common.db_commons import csv_copy_frame_chunked_async
 from builds._commons.row_emission import dates_as_date_list, records_from_frame
 
 import logging
@@ -54,15 +54,24 @@ async def _copy_or_upsert_frame_split(conn, table_name: str, df: pd.DataFrame,
 
     max_day = await get_max_table_date_async(conn, table_name)
     if max_day is None:
-        return (await csv_copy_from_frame_async(conn, table_name, df), 0)
+        # Whole-table rebuild (force): chunk by the partition key — a
+        # single CSV COPY retains all its WAL behind one commit (the
+        # docstring's own 885k-row rebuild is one COPY too many).
+        return (await csv_copy_frame_chunked_async(
+            conn, table_name, df, label=table_name.split(".")[-1],
+        ), 0)
 
     # np.datetime64 scalar compares cudf-natively; a pd.Timestamp proxy
     # scalar costs a fallback pair (_Unusable transform + slow compare).
     is_new = df["date"] > np.datetime64(max_day)
     n_copied = 0
     if is_new.any():
-        n_copied = await csv_copy_from_frame_async(conn, table_name,
-                                                   df.loc[is_new])
+        # A long source/DB gap (lag repair) can push this tail well past
+        # the commit-chunk target — keep it chunked too.
+        n_copied = await csv_copy_frame_chunked_async(
+            conn, table_name, df.loc[is_new],
+            label=table_name.split(".")[-1],
+        )
 
     n_upserted = 0
     stale = ~is_new

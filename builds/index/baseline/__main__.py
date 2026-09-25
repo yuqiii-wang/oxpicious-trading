@@ -153,9 +153,33 @@ class BaselineBuild(DataBuild):
                 )
                 latest_dates = {code_filter: row["max_date"].isoformat()} \
                     if row and row["max_date"] else {}
-                stale_keys: set = set()
                 logger.info(f"    [DB] code {code_filter} latest date in stats.index_tech_stats: "
                       f"{latest_dates.get(code_filter) or '(none)'}")
+                # Self-heal applies in single-code mode too — a --code rerun
+                # after the CSV publish lands is exactly when estimated rows
+                # need rebuilding (the flag must not be silently ignored).
+                stale_keys: set = set()
+                if args.refresh_estimated_days > 0 and forced is None:
+                    stale_rows = await conn.fetch(
+                        """
+                        SELECT date
+                        FROM stats.index_basic_stats
+                        WHERE code = $1
+                          AND date >= CURRENT_DATE - ($2::int)
+                          AND (is_close_estimated = TRUE
+                               OR open IS NULL
+                               OR open::text = 'NaN')
+                        """,
+                        code_filter,
+                        args.refresh_estimated_days,
+                    )
+                    stale_keys = {f"{str(r['date'])[:10]}|{code_filter}"
+                                  for r in stale_rows}
+                    logger.info(
+                        f"    [DB] refresh-estimated({args.refresh_estimated_days}d, "
+                        f"code {code_filter}): "
+                        f"{len(stale_keys):,} estimated/NULL-open keys marked for rebuild",
+                    )
             else:
                 # Latest-missing-dates check: one MAX(date) per code from
                 # stats.index_tech_stats (the LAST table in the insert sequence)

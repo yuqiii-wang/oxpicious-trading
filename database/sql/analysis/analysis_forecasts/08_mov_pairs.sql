@@ -39,7 +39,7 @@
 --  per-security read prunes to ONE partition and walks the code-leading
 --  PK; forecast_id-only joins/searches use the secondary
 --  idx_mov_pairs_forecast_id). code is the ONLY identity column stored
---  here (the partition key); sec_type and stat_month live ONLY in
+--  here (the partition key); sec_type and stat_date live ONLY in
 --  analysis_forecasts.forecast_identities — the search table
 --  (see 02_mov_rsi_mov_std.sql).
 --
@@ -51,15 +51,15 @@
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.mov_pairs (
-    code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
+    code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_date live in forecast_identities
     forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_mov_pairs_forecast_id
     fast_leg        TEXT         NOT NULL,  -- fast leg of the pair: 'ma5' (ma5_vs_ma{W}) | 'price' (price_vs_ma{W} — the close price)
     pair_window     INTEGER      NOT NULL,  -- slow MA leg of the pair (trading days): 60/120/255
     side            TEXT         NOT NULL,  -- 'top' (cross up / golden cross) | 'bottom' (cross down / death cross)
 
     -- recorded build parameter (NOT PK): trailing window the bucket was
-    -- computed over — '5y' = (stat_month - 5y, stat_month]
-    lookback_period TEXT         NOT NULL DEFAULT '5y',
+    -- computed over — '10y' = (stat_date - 10y, stat_date]
+    lookback_period TEXT         NOT NULL DEFAULT '10y',
 
     -- motivation cols
     regime_state    TEXT         NOT NULL,  -- the bucket's market-regime split (stats.market_regimes day label of its bucket days)
@@ -78,13 +78,13 @@ CREATE INDEX IF NOT EXISTS idx_mov_pairs_forecast_id
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.mov_pairs IS 'MA-pair cross (golden/death cross) bucket definitions (motivation): one row per forecast_id — the days of one security-month within the trailing 5-year window ending at the bucket''s stat_month where the stored relative-MA spread of analysis.mov_ave_spreads_detail changes sign: fast_leg=''ma5'' reads ma5_vs_ma{pair_window} = (ma5 - ma_{W}) / ma_{W}, fast_leg=''price'' reads price_vs_ma{pair_window} = (price - ma_{W}) / ma_{W} (the close-price leg, merged from the former separate mov_pairs_price family). side=top a CROSS UP / golden cross (spread turns > 0 from <= 0, the fast leg rises through the slow MA), side=bottom a CROSS DOWN / death cross (spread turns < 0 from >= 0), one-day signals (2026-09: the legacy fixed-5-day cooldown was removed; a cross day''s predecessor sits on the other side of zero so consecutive cross days are mutually exclusive — every cross day is its own forecast signal with streak_signal_days = 1). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / reversal probabilities) live in analysis_forecasts.forecast_results via forecast_id. NO new MA computation — the buckets read the parent mov_ave_spread analysis''s existing spread columns. Source: analysis.mov_ave_spreads_detail (ma5_vs_ma{W} / price_vs_ma{W}, W ∈ 60/120/255).';
-COMMENT ON COLUMN analysis_forecasts.mov_pairs.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON TABLE analysis_forecasts.mov_pairs IS 'MA-pair cross (golden/death cross) bucket definitions (motivation): one row per forecast_id — the window days of one security snapshot within the trailing 10-year window ending at the bucket''s stat_date where the stored relative-MA spread of analysis.mov_ave_spreads_detail changes sign: fast_leg=''ma5'' reads ma5_vs_ma{pair_window} = (ma5 - ma_{W}) / ma_{W}, fast_leg=''price'' reads price_vs_ma{pair_window} = (price - ma_{W}) / ma_{W} (the close-price leg, merged from the former separate mov_pairs_price family). side=top a CROSS UP / golden cross (spread turns > 0 from <= 0, the fast leg rises through the slow MA), side=bottom a CROSS DOWN / death cross (spread turns < 0 from >= 0), one-day signals (2026-09: the legacy fixed-5-day cooldown was removed; a cross day''s predecessor sits on the other side of zero so consecutive cross days are mutually exclusive — every cross day is its own forecast signal with streak_signal_days = 1). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_date) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / reversal probabilities) live in analysis_forecasts.forecast_results via forecast_id. NO new MA computation — the buckets read the parent mov_ave_spread analysis''s existing spread columns. Source: analysis.mov_ave_spreads_detail (ma5_vs_ma{W} / price_vs_ma{W}, W ∈ 60/120/255).';
+COMMENT ON COLUMN analysis_forecasts.mov_pairs.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_date) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
 COMMENT ON COLUMN analysis_forecasts.mov_pairs.fast_leg IS 'Fast leg of the pair: ''ma5'' — the cross is read off ma5_vs_ma{pair_window}; ''price'' — the close price, read off price_vs_ma{pair_window}.';
 COMMENT ON COLUMN analysis_forecasts.mov_pairs.pair_window IS 'Slow MA leg of the pair (trading days): 60 / 120 / 255. The cross is read off the fast_leg''s spread column against ma{pair_window}.';
 COMMENT ON COLUMN analysis_forecasts.mov_pairs.side IS 'Bucket side: top = cross UP / golden cross (spread[t] > 0 and spread[t-1] <= 0 — the pair turns bullish; reversals are changes below the bucket''s FIXED 1% threshold (0.01 — the period-end n-day close vs ±1%); bottom = cross DOWN / death cross (spread turns < 0 from >= 0 — the pair turns bearish; reversals are changes above it).';
 COMMENT ON COLUMN analysis_forecasts.mov_pairs.regime_state IS 'The bucket''s market-regime split: the stats.market_regimes day label (calm / hot / panic / quiet) carried by the bucket''s trigger days — every trigger day joins exactly one regime, so each (config, regime) pair is its own bucket. Replaces the retired is_market_hyped boolean (stats.mov_ave_market_hypes episode overlap); hot is the closest successor of the old TRUE split.';
-COMMENT ON COLUMN analysis_forecasts.mov_pairs.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
+COMMENT ON COLUMN analysis_forecasts.mov_pairs.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''10y'' = (stat_date - 10 years, stat_date]. Default ''10y''; a rebuild with a different lookback requires --force.';
 
 -- ----------------------------------------------------------------------------
 --  Data-quality gate: the mov_pairs vocabularies (shared helpers, see

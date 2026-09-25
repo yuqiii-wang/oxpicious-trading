@@ -9,6 +9,7 @@
  * an exception.
  */
 import type { EChartsOption } from "echarts";
+import { normalizeDateOrMonth } from "@/shared/components/date-selector";
 import type {
   AiAskPlotInfo,
   AiAskSeriesInfo,
@@ -350,6 +351,15 @@ export function derivePlotInfo(input: {
       end: specWindow?.end ?? derivedWindow.end,
       granularity: specWindow?.granularity,
     };
+    // The as-of date selector shows when the plot is date-selectable: the
+    // author's flag wins; otherwise the window must actually parse as
+    // dates (non-date category axes — industry names, buckets — stay off).
+    const dateSelectable =
+      spec?.dateSelectable ??
+      Boolean(
+        normalizeDateOrMonth(window.end) ??
+          normalizeDateOrMonth(window.start),
+      );
 
     const kindLabel = [...kinds].sort().join(" + ") || "chart";
     const seriesNames = series.map((s) => s.name).join(", ");
@@ -379,6 +389,7 @@ export function derivePlotInfo(input: {
         titleText, instruments, series, spec?.searchKeywords),
       notes: spec?.notes ?? [],
       product: spec?.product,
+      dateSelectable,
     };
   } catch {
     // Unrecognized option shape — degrade to the minimal payload.
@@ -397,6 +408,12 @@ export function derivePlotInfo(input: {
         titleText, spec?.instruments ?? [], [], spec?.searchKeywords),
       notes: spec?.notes ?? [],
       product: spec?.product,
+      dateSelectable:
+        spec?.dateSelectable ??
+        Boolean(
+          normalizeDateOrMonth(spec?.window?.end) ??
+            normalizeDateOrMonth(spec?.window?.start),
+        ),
     };
   }
 }

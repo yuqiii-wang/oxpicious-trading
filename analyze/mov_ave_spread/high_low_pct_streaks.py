@@ -88,6 +88,7 @@ import pandas as pd
 
 from _common._holidays_and_weekdays import is_trading_day
 from _common.build_commons import rec_cols
+from _common.db_commons import chunked_purge_async
 from _common.db_commons import csv_copy_from_frame_async
 from _common.df_utils import host_array, host_unique
 from analyze._common import upsert_analysis_identity
@@ -495,9 +496,9 @@ async def run_high_low_pct_streaks(
 
         # ---- Wholesale scope wipe (episodes shift; PK coverage diffing
         # does not apply to this table).
-        await conn.execute(
-            f"DELETE FROM {HIGH_LOW_PCT_STREAKS_TABLE} WHERE sec_type = $1",
-            st,
+        await chunked_purge_async(
+            conn, HIGH_LOW_PCT_STREAKS_TABLE,
+            where_sql="sec_type = $1", params=(st,),
         )
 
         # ---- Bands for the audited scope (bands step ran earlier) ----

@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from _common.build_commons import bulk_upsert_async
+from _common.db_commons import chunked_purge_async
 
 from builds.classification.sector_industry.catalog import _lookup_labels, _parse_date
 
@@ -27,8 +28,8 @@ async def upsert_stocks(
     # Stocks can have MULTIPLE rows (one per qualifying index). Delete all
     # existing stock rows first to avoid stale entries when the set of
     # qualifying indexes changes between runs.
-    await conn.execute(
-        "DELETE FROM stats.sec_classification WHERE type = 'stock'")
+    await chunked_purge_async(
+        conn, "stats.sec_classification", where_sql="type = 'stock'")
 
     stock_rows: List[Dict[str, Any]] = []
     for v in stocks:

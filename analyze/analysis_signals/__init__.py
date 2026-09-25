@@ -1,7 +1,7 @@
 """Signal strategies + history signals over analysis_forecasts
 (analyze.analysis_signals).
 
-A forecast bucket (code × stat_month snapshot M × config, trailing
+A forecast bucket (code × stat_date snapshot M × config, trailing
 5-year window (M - 5y, M]) whose MIXED forecast_results row passes the
 plain gate IS a signal strategy for that forecast period
 (analysis_signals.signal_strategies); the bucket's trigger days inside

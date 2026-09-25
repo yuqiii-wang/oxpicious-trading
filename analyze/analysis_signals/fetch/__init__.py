@@ -136,13 +136,15 @@ async def fetch_mov_pairs_values(
 ) -> pd.DataFrame:
     """The family's stored relative spreads — BOTH fast legs (the
     ma5_vs_ma{W} / price_vs_ma{W} / ema6_vs_ema{W} / price_vs_ema{W}
-    columns of whichever of the two families ``signal_type`` names) at
-    the given (code, date) points (wide frame, one ``{prefix}_{W}``
-    column per fast leg × slow-leg window)."""
+    columns of whichever of the two families ``signal_type`` names) —
+    PLUS the absolute legs (the fast-leg level ma5 / ema6 / the day's
+    close and the slow-leg level ma{W} / ema{W}) at the given (code,
+    date) points (wide frame, one ``{prefix}_{W}`` spread column per
+    fast leg × slow-leg window)."""
     source = PAIRS_FAMILY_SOURCES[signal_type]
     sql, value_columns = mov_pairs_values_sql(
         source["spread_table"], source["legs"], source["windows"],
-        source["suffix"],
+        source["suffix"], sec_type,
     )
     if not codes or not dates:
         return pd.DataFrame(columns=value_columns)

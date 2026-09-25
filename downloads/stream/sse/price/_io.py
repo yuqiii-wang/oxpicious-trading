@@ -144,10 +144,13 @@ def is_intraday_complete(conn, asset: AssetStream, trade_date, threshold: float 
     cover far more codes than the stream tracks).
     """
     try:
+        # The code column is 'code' on stock/etf/index tables but
+        # 'contract_code' on the options tables (OptionsStream.code_column).
+        code_col = getattr(asset, "code_column", "code")
         # Count identity rows for this date
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT COUNT(DISTINCT code) FROM {asset.identity_table} WHERE date = %s",
+                f"SELECT COUNT(DISTINCT {code_col}) FROM {asset.identity_table} WHERE date = %s",
                 (trade_date,),
             )
             n_total = cur.fetchone()[0]
@@ -162,7 +165,7 @@ def is_intraday_complete(conn, asset: AssetStream, trade_date, threshold: float 
             params.append(asset.exchange)
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT COUNT(DISTINCT code) FROM {asset.intraday_table} "
+                f"SELECT COUNT(DISTINCT {code_col}) FROM {asset.intraday_table} "
                 f"WHERE date = %s AND time = %s{code_filter}",
                 tuple(params),
             )
@@ -209,6 +212,9 @@ def get_intraday_progress(conn, asset: AssetStream, trade_date) -> dict:
         "complete": False,
     }
     try:
+        # 'code' on stock/etf/index tables, 'contract_code' on options —
+        # see is_intraday_complete above.
+        code_col = getattr(asset, "code_column", "code")
         # Count identity rows
         with conn.cursor() as cur:
             cur.execute(f"SELECT COUNT(*) FROM {asset.identity_table} WHERE date = %s", (trade_date,))
@@ -219,7 +225,7 @@ def get_intraday_progress(conn, asset: AssetStream, trade_date) -> dict:
 
         # Count distinct codes in identity
         with conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(DISTINCT code) FROM {asset.identity_table} WHERE date = %s", (trade_date,))
+            cur.execute(f"SELECT COUNT(DISTINCT {code_col}) FROM {asset.identity_table} WHERE date = %s", (trade_date,))
             result["n_total_codes"] = cur.fetchone()[0]
 
         # Get max bar time
@@ -236,7 +242,7 @@ def get_intraday_progress(conn, asset: AssetStream, trade_date) -> dict:
             params.append(asset.exchange)
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT COUNT(DISTINCT code) FROM {asset.intraday_table} "
+                f"SELECT COUNT(DISTINCT {code_col}) FROM {asset.intraday_table} "
                 f"WHERE date = %s AND time = %s{code_filter}",
                 tuple(params),
             )

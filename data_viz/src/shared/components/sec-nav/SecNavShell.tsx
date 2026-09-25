@@ -50,6 +50,10 @@ interface SecNavShellProps {
   /** Show the RefreshButton. Default true. */
   showRefresh?: boolean;
   refreshTooltip?: string;
+  /** Page-specific controls inserted right AFTER the sec_type toggle (before
+   *  CodeSearchBar + Refresh) — e.g. a view-mode switch that conceptually
+   *  scopes the whole page like the sec_type does. */
+  headerAfterSecType?: ReactNode;
   /** Page-specific controls appended to the header controls row. */
   headerExtra?: ReactNode;
   /** Replace the default single-select SecClassificationNav with a custom
@@ -84,6 +88,7 @@ export default function SecNavShell({
   searchPlaceholder,
   showRefresh = true,
   refreshTooltip,
+  headerAfterSecType,
   headerExtra,
   navSlot,
   errorPrefix = "data",
@@ -126,6 +131,7 @@ export default function SecNavShell({
               disabled={disableToggle}
             />
           )}
+          {headerAfterSecType}
           {showSearch && (
             <CodeSearchBar
               activeCode={nav.searchCode}

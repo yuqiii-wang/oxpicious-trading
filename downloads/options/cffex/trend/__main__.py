@@ -103,12 +103,16 @@ def get_latest_db_date() -> Optional[date]:
 def _cffex_missing_dates_in_range(
     start_date: date,
     end_date: date,
-) -> Set[date]:
+) -> Optional[Set[date]]:
     """Find trading days in [start_date, end_date] that lack CFFEX data.
 
     Queries stats.options_identity for dates with CFFEX contract codes
     (IO%, HO%, MO%, CO%) and returns the complement set of expected
     trading days that are completely absent.
+
+    Returns None when the DB is unreachable — NOT an empty set, which
+    would (wrongly) tell the caller that every date is already stored and
+    silently turn the run into a no-op.
 
     This mirrors the build module's find_missing_cffex_dates() logic but
     works with the sync psycopg2 connection used by the downloader.
@@ -133,7 +137,7 @@ def _cffex_missing_dates_in_range(
         return expected - present
     except Exception as e:
         logger.warning("CFFEX-specific DB check failed: %s", e)
-        return set()
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -247,18 +251,22 @@ def find_missing_dates(
     # We use CFFEX-specific contract code filters (IO%, HO%, MO%, CO%)
     # so that SZSE entries in the same table don't mask CFFEX gaps.
     # ------------------------------------------------------------------
-    cffex_missing_from_db: Set[date] = set()
-    use_cffex_scan: bool = False
+    cffex_missing_from_db: Optional[Set[date]] = None
     if start_date is None and start_from.month == today.month:
-        try:
-            cffex_missing_from_db = _cffex_missing_dates_in_range(
-                start_from, end_date,
-            )
-            use_cffex_scan = True
-        except Exception:
+        # None = DB unreachable — NOT "nothing missing", which would
+        # silently skip the whole month. When None, the logic below falls
+        # back to the MAX(date) comparison against latest_db_date, which on
+        # an unreachable DB is also None -> every date without a local or
+        # shared CSV file is queued (the CSV files decide).
+        cffex_missing_from_db = _cffex_missing_dates_in_range(
+            start_from, end_date,
+        )
+        if cffex_missing_from_db is None:
             logger.warning(
-                "CFFEX-specific DB check failed, falling back to MAX(date) logic"
+                "DB unreachable — using local/shared CSV dates to find "
+                "missing dates"
             )
+    use_cffex_scan: bool = cffex_missing_from_db is not None
 
     missing: List[date] = []
     d = start_from
@@ -360,7 +368,10 @@ def main() -> None:
     if latest_db_date:
         logger.info(f"    Latest DB date: {latest_db_date}")
     else:
-        logger.info("    No data in database (will download everything)")
+        logger.info(
+            "    DB empty or unreachable — missing dates come from the "
+            "local/shared CSV files"
+        )
 
     # ------------------------------------------------------------------
     # Step 2: Check local + shared trend files

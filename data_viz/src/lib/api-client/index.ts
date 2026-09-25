@@ -188,6 +188,15 @@ export {
 } from "./intraday-movements";
 
 export {
+  fetchLiveOptionsDates,
+  fetchLiveOiSkewIntraday,
+  fetchLiveOptionsRunStatus,
+  liveOptionsComputeTag,
+  liveOptionsRefChainTags,
+  runLiveOptionsRefChain,
+} from "./live-options";
+
+export {
   runSecAllocLivePipeline,
   fetchSecAllocLiveAttribution,
   fetchSecAllocLiveRunStatus,

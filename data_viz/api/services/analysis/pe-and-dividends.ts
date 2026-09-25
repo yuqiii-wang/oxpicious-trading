@@ -4,7 +4,7 @@
  * Reads from:
  *   analysis.pe                    — daily raw pe
  *   analysis.dividends             — daily trailing-12m dividend_yield
- *   analysis.pe_and_dividend_stats — monthly 5y rolling stats snapshot
+ *   analysis.pe_and_dividend_stats — annual 10y rolling stats snapshot
  *   (2026-09: pe and dividends SPLIT from the former combined
  *   analysis.pe_and_dividends table)
  *
@@ -108,12 +108,12 @@ interface DbChartRow extends QueryResultRow {
 interface DbStatsRow extends QueryResultRow {
   date: Date | string;
   is_active: boolean;
-  min_pe_5y: number | null;
-  max_pe_5y: number | null;
-  dividend_var_5y: number | null;
-  dividend_stability_5y: number | null;
+  min_pe_10y: number | null;
+  max_pe_10y: number | null;
+  dividend_var_10y: number | null;
+  dividend_stability_10y: number | null;
   last_dividend_per_share: number | null;
-  dividend_issued_this_month: boolean;
+  dividend_issued_this_year: boolean;
 }
 
 interface DbMetaRow extends QueryResultRow {
@@ -333,8 +333,8 @@ export async function getPeAndDividendChart(
 }
 
 // ----------------------------------------------------------------------------
-//  listPeAndDividendStats — monthly 5y rolling stats snapshot rows for one
-//  code from analysis.pe_and_dividend_stats. Returns ALL monthly snapshots
+//  listPeAndDividendStats — annual 10y rolling stats snapshot rows for one
+//  code from analysis.pe_and_dividend_stats. Returns ALL annual snapshots
 //  (most recent first) so the UI can render the full history table; the
 //  is_active flag marks the latest row for highlighting.
 // ----------------------------------------------------------------------------
@@ -343,12 +343,12 @@ function buildStatsSql(): string {
     SELECT
       date,
       is_active,
-      min_pe_5y,
-      max_pe_5y,
-      dividend_var_5y,
-      dividend_stability_5y,
+      min_pe_10y,
+      max_pe_10y,
+      dividend_var_10y,
+      dividend_stability_10y,
       last_dividend_per_share,
-      dividend_issued_this_month
+      dividend_issued_this_year
     FROM analysis.pe_and_dividend_stats
     WHERE sec_type = $2
       AND code = ANY($1::text[])
@@ -373,12 +373,12 @@ export async function listPeAndDividendStats(
   const rows: PeAndDividendStatsRow[] = statsRows.map((r) => ({
     date: formatDate(r.date),
     is_active: r.is_active === true,
-    min_pe_5y: toNum(r.min_pe_5y),
-    max_pe_5y: toNum(r.max_pe_5y),
-    dividend_var_5y: toNum(r.dividend_var_5y),
-    dividend_stability_5y: toNum(r.dividend_stability_5y),
+    min_pe_10y: toNum(r.min_pe_10y),
+    max_pe_10y: toNum(r.max_pe_10y),
+    dividend_var_10y: toNum(r.dividend_var_10y),
+    dividend_stability_10y: toNum(r.dividend_stability_10y),
     last_dividend_per_share: toNum(r.last_dividend_per_share),
-    dividend_issued_this_month: r.dividend_issued_this_month === true,
+    dividend_issued_this_year: r.dividend_issued_this_year === true,
   }));
 
   return { code: target, name, rows };

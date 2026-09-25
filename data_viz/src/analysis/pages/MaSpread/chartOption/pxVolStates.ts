@@ -1,16 +1,15 @@
 /**
- * Client-side px_vol_state computation + shading for the MA-Spread charts.
+ * Client-side px_vol state computation + shading for the MA-Spread charts.
  *
- * Source: analysis_forecasts.px_vol_state (the forecast engine's price
- * speed × trading-amount STATE buckets, see
- * analyze/analysis_forecasts/fetch.py add_px_vol_features and
- * database/sql/analysis/analysis_forecasts/05_px_vol_state.sql). The DB
- * table stores per-(stat_month, speed, vol) bucket AGGREGATES only — no
- * bucket member dates — so the panel recomputes the per-date state here
- * from the chart's own rows. The inputs match the engine exactly:
+ * Source: the price speed × trading-amount STATE categories of
+ * analysis.mov_ave_price_vs_amt (the mov_ave_spread registry, see
+ * analyze/mov_ave_spread/px_vol.py add_px_vol_features and
+ * database/sql/analysis/19_price_vs_amt.sql). The panel recomputes the
+ * per-date state client-side from the chart's own rows. The inputs match
+ * the registry exactly:
  *   price  = short_value of a price pair = COALESCE(adj_close, close)
- *            (the same COALESCE(a.adj_close, b.close) the engine's price
- *            column uses)
+ *            (the same COALESCE(a.adj_close, b.close) the registry's price
+ *            source uses)
  *   amount = trading_amount (basic_stats) carried on every detail row
  *
  * Per (code, date), a day joins a state when BOTH legs hold, evaluated
@@ -36,7 +35,7 @@ export type PxVolSpeed = "sharp_up" | "slow_up" | "flat" | "slow_dn" | "sharp_dn
 /** Trading-amount states in PX_VOL_VOL_STATES order. */
 export type PxVolVolState = "heavy" | "normal" | "shrink";
 
-/** Engine thresholds (05_px_vol_state.sql recorded build parameters). */
+/** Registry thresholds (19_price_vs_amt.sql recorded build parameters). */
 export const PX_VOL_SIGMA_WINDOW = 255;
 export const PX_VOL_SIGMA_MIN_DAYS = 60;
 export const PX_VOL_K_SHARP = 2.0;
@@ -74,8 +73,7 @@ export const PX_VOL_VOL_OPTIONS: Array<{
 ];
 
 /** Base shade hue per speed direction: green = rise (growth), red = drop,
- *  gray = flat (no directional claim — the engine's side='flat' rows carry
- *  NULL reverse_prob). */
+ *  gray = flat (no directional claim). */
 const PX_VOL_BASE_COLORS: Record<PxVolSpeed, string> = {
   sharp_up: "46, 125, 50",   // green  (#2E7D32)
   slow_up: "46, 125, 50",

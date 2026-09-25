@@ -1,4 +1,4 @@
-"""analyze.analysis_forecasts — monthly per-security forecast analysis
+"""analyze.analysis_forecasts — annual per-security forecast analysis (annual snapshot grid)
 (analysis_forecasts.mov_rsi / mov_std motivation tables +
 analysis_forecasts.forecast_results result table).
 

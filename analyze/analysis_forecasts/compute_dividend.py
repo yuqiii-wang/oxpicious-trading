@@ -1,4 +1,4 @@
-"""dividend_state bucket monthly aggregation (analysis_forecasts) —
+"""dividend_state bucket annual-snapshot aggregation (analysis_forecasts) —
 extreme-percentile engine.
 
 The valuation extreme-PERCENTILE buckets over the dividend-yield
@@ -28,7 +28,7 @@ the bucket's mean run length recorded on
 forecast_identities.streak_signal_days), the market-hype split, the
 forward-change aggregation, the blended mixed row and the row
 emission — is inherited from ``_dfengine.WideDfEngine``. Yields
-(stat_month, rows) month-major. Each anchor's trigger excess (the
+(stat_date, rows) snapshot-major. Each anchor's trigger excess (the
 anchor day's yield minus the bucket's quantile bar, value − bar) rides
 forecast_results.trigger_excess — the family now has a scalar
 qualifying bar (the quantile), unlike the former band membership.
@@ -54,7 +54,7 @@ class _DividendValPctEngine(ValPctEngine):
 def compute_dividend_results(
     *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, dividend_state bucket rows) per month."""
+    """Yield (stat_date, dividend_state bucket rows) per month."""
     engine = _DividendValPctEngine(
         df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs,

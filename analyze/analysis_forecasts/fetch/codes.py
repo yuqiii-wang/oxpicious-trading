@@ -42,6 +42,25 @@ _FIRST_DATE_SOURCE = {
 }
 
 
+async def fetch_latest_data_date(conn, sec_type: str) -> date | None:
+    """The sec_type's LATEST AVAILABLE DATA DATE (max(date) on the base
+    OHLCV table with the same close IS NOT NULL filter the input fetch
+    uses) — the ROLLING LATEST snapshot's key and window end.
+
+    Keying on DATA (not ``last_business_day()``) gives the rolling key
+    two properties: a key is never written ahead of its data (a
+    snapshot is always complete when written), and the key is
+    idempotent across weekends / holidays (no new data → no new key →
+    the run is a clean no-op). Returns None when the table has no rows
+    at all (nothing to compute; the caller skips the sec_type)."""
+    rows = await conn.fetch(
+        f"SELECT max(b.date) AS latest "
+        f"FROM {_FIRST_DATE_SOURCE[sec_type]} b "
+        f"WHERE b.close IS NOT NULL",
+    )
+    return rows[0]["latest"] if rows else None
+
+
 async def fetch_first_dates(
     conn,
     sec_type: str,
@@ -55,8 +74,7 @@ async def fetch_first_dates(
     boundary, not its listing date — deriving first rows from the frame
     would wrongly treat 5-year-history codes as fresh. Returns {} for an
     empty code list; codes absent from the table are simply missing from
-    the dict (they map to the int64 sentinel = never-live in
-    wide.first_ords_from_dates).
+    the dict (they map to the never-live sentinel of the live-data gate).
     """
     if not codes:
         return {}

@@ -17,10 +17,10 @@
  * button is highlighted only while a bound is actually set.
  *
  * END-ONLY mode (frozenFromYears set) — a SINGLE editable end-period
- * input that selects rows whose stats month EQUALS it (emitted as the
+ * input that selects rows whose stats period EQUALS it (emitted as the
  * inclusive [end, end] range, so exactly one month's rows show). The
  * lower bound is auto-FROZEN at (end − frozenFromYears years — the
- * stats' trailing lookback window, e.g. the forecast buckets' 5y
+ * stats' trailing lookback window, e.g. the forecast buckets' 10y
  * window) and reported as a muted caption only — the recorded stats
  * window behind the selected month, never a second editable input or
  * a filter bound. Clearing the end input unbounds both sides.
@@ -198,7 +198,7 @@ export function HeaderDateFilterMenu({
           {endOnly ? (
             <Stack spacing={0.4}>
               {/* The ONLY editable date — the end period. Rows match the
-                  stats month EQUALING it (the emitted [end, end] range);
+                  stats period EQUALING it (the emitted [end, end] range);
                   the derived min (end − lookback) is the stats window
                   start, caption-only — never a filter bound. */}
               {boundInput("to", "end", (v) =>

@@ -16,7 +16,7 @@ PIPELINE_DESCRIPTION = (
     "(stats.*_intraday_5min; 404 when none) and compare every active "
     "analysis_signals.signal_strategies config's CURRENT value (per "
     "the declarative value-source map — intraday close, current RSI / "
-    "spread, registry px_t, recomputed margin z) against the "
+    "spread, recomputed margin z) against the "
     "row's bar — static in the value's own space for every family "
     "EXCEPT mov_std, whose Bollinger band moves daily and is derived "
     "FRESH from the latest ma ± k·σ (fetch.resolve_threshold) — "

@@ -1,7 +1,7 @@
 """FramePrimitives — the shared vectorized primitives of SignalEngine
 (analyze.analysis_signals.engines._primitives).
 
-action_of / frame_records / window_start (+ the private date
+action_of / frame_records (+ the private date
 materialization _dates_to_python and the side→action constants): the
 native cudf ops the frame machinery (_frame) AND every family's
 build() use — stateless, so they live on one mixin mixed into the
@@ -30,19 +30,8 @@ from analyze.analysis_signals.config import (
 
 
 class FramePrimitives:
-    """action_of / frame_records / window_start — the shared vectorized
-    helpers of the machinery and the family builds (see module
-    docstring)."""
-
-    def window_start(self, month: date) -> date:
-        """The forecast period's first day: the bucket's trailing-window
-        start (stat_month − 5y) + 1 day. stat_month is always a COMPLETED
-        month-end, so the day after (M − 5y) is exactly the first of the
-        next month."""
-        year, mon = month.year - 5, month.month
-        if mon == 12:
-            return date(year + 1, 1, 1)
-        return date(year, mon + 1, 1)
+    """action_of / frame_records — the shared vectorized helpers of
+    the machinery and the family builds (see module docstring)."""
 
     def action_of(self, side: pd.Series) -> pd.Series:
         """The strategy action by the bucket's OWN stored side (sell for

@@ -117,8 +117,9 @@ async def _run_composition(force: bool, code_filter: str | None = None,
                 )
             else:
                 logger.info("    [DB] Force mode: deleting existing index composition rows")
-                await conn.execute(
-                    "DELETE FROM stats.sec_composition WHERE source_type = 'index'"
+                await chunked_purge_async(
+                    conn, "stats.sec_composition",
+                    where_sql="source_type = 'index'",
                 )
         else:
             # Date-check fast-path already filtered CSVs before reading,

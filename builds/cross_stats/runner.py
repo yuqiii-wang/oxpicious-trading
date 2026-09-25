@@ -41,6 +41,7 @@ from _common.build_commons import (
     RECENT_TRADING_DAYS,
     recent_trading_day_cutoff,
 )
+from _common.db_commons import _wait_for_replica_lag_async, DEFAULT_MAX_REPLICA_LAG_MB
 
 from builds.cross_stats._perf import timed, print_declared_blockers
 from builds.cross_stats.config import (
@@ -76,6 +77,12 @@ from builds.cross_stats._summary import (
 
 import logging
 logger = logging.getLogger(__name__)
+
+# Date-batch sizes for the FULL-mode date-scoped writes (rows/commit
+# bounding — the pair grain runs ~28K rows/date; the industry grain
+# fewer; each batch commits ~100K rows, the commit-chunk target).
+_UPDATE_DATE_BATCH = 4
+_INDUSTRY_DATE_BATCH = 10
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +352,25 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
         # truncated table then re-derives everything).
         t_w = time.time()
         if target_dates is None:
-            status = await conn.execute(PAIR_WEIGHTED_UPDATE_SQL_FULL)
+            # Force: the date axis is the just-built pair grain's own
+            # dates; batch them so each UPDATE commits ~100K-row chunks
+            # (the FULL all-at-once UPDATE rewrote tens of millions of
+            # rows in ONE transaction — the slot's WAL bound).
+            update_dates = [
+                r["date"] for r in await conn.fetch(
+                    f"SELECT DISTINCT date FROM {TABLE} "
+                    f"WHERE sec_type = 'index' ORDER BY date")
+            ]
+            n_total = 0
+            for i in range(0, len(update_dates), _UPDATE_DATE_BATCH):
+                await _wait_for_replica_lag_async(
+                    conn, DEFAULT_MAX_REPLICA_LAG_MB)
+                status = await conn.execute(
+                    PAIR_WEIGHTED_UPDATE_SQL_INCREMENTAL,
+                    update_dates[i:i + _UPDATE_DATE_BATCH],
+                )
+                n_total += int(status.split()[-1])
+            status = f"UPDATE {n_total} (batched x{(len(update_dates) + _UPDATE_DATE_BATCH - 1) // _UPDATE_DATE_BATCH})"
         else:
             status = await conn.execute(
                 PAIR_WEIGHTED_UPDATE_SQL_INCREMENTAL, sorted(target_dates)
@@ -358,8 +383,17 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
           f"(sec_type='industry')...")
     await conn.execute(SET_WORK_MEM_SQL)
     if target_dates is None:
-        sql, params = INDUSTRY_INSERT_SQL_FULL, []
-        scope = "FULL (unbounded history, all pairs)"
+        # Force: batch the source dates (the just-built pair grain's) —
+        # the FULL all-at-once INSERT retained the whole industry grain
+        # (tens of millions of rows) behind one commit.
+        industry_dates = {
+            r["date"] for r in await conn.fetch(
+                f"SELECT DISTINCT date FROM {TABLE} "
+                f"WHERE sec_type = 'index'")
+        }
+        sql, params = INDUSTRY_INSERT_SQL_INCREMENTAL, [sorted(industry_dates)]
+        scope = (f"FULL via {len(industry_dates)} date-batched "
+                 f"INCREMENTAL inserts")
     else:
         candidates = set(target_dates) | await _industry_catchup_dates(conn)
         have = await _dates_with_industry_rows(conn, candidates)
@@ -377,8 +411,15 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
     logger.info(f"    -> {scope}")
     if sql is not None:
         with timed("industry-grain"):
-            status = await conn.execute(sql, *params)
-        logger.info(f"    -> industry grain: {status}")
+            n_total = 0
+            dates = params[0] if params else []
+            for i in range(0, len(dates), _INDUSTRY_DATE_BATCH):
+                await _wait_for_replica_lag_async(
+                    conn, DEFAULT_MAX_REPLICA_LAG_MB)
+                status = await conn.execute(sql, dates[i:i + _INDUSTRY_DATE_BATCH])
+                n_total += int(status.split()[-1])
+        logger.info(f"    -> industry grain: INSERT {n_total:,} rows "
+                    f"({len(dates)} dates)")
 
     # ---- Step 5: register dates + post-create index -------------------
     # Post-create the secondary index FIRST so the written-dates probe

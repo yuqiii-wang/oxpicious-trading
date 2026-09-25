@@ -12,7 +12,9 @@
  * State precedence in the chart area: `error` → Alert; no option yet →
  * spinner while `loading`, else the `emptyText` caption; option present →
  * EChart (a `loading` refresh then only overlays a small spinner, keeping
- * the mounted chart's zoom / tooltip state). `children` (controls) render in
+ * the mounted chart's zoom / tooltip state — or, with `freezeOnLoading`, a
+ * full-cover translucent backdrop with a centered spinner that freezes the
+ * plot by swallowing pointer events). `children` (controls) render in
  * every state.
  *
  * Also owns the AI Ask "?" beside the title (card variant): captures the
@@ -39,6 +41,7 @@ export default function BaseChart({
   headerAction,
   children,
   loading = false,
+  freezeOnLoading = false,
   error = null,
   emptyText = "No data",
   group,
@@ -115,12 +118,33 @@ export default function BaseChart({
         onEvents={onEvents}
         onCanvasClick={onCanvasClick}
       />
-      {loading && (
-        <CircularProgress
-          size={18}
-          sx={{ position: "absolute", top: 8, right: 8, opacity: 0.7 }}
-        />
-      )}
+      {loading &&
+        (freezeOnLoading ? (
+          // Frozen refresh — the backdrop's hit area swallows canvas /
+          // dataZoom pointer events so the mounted plot can't be interacted
+          // with while a fetch is in flight (same treatment as the
+          // ForecastTable freeze backdrop).
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 2,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              bgcolor: "rgba(122, 122, 122, 0.12)",
+              backdropFilter: "blur(1px)",
+              cursor: "wait",
+            }}
+          >
+            <CircularProgress size={28} />
+          </Box>
+        ) : (
+          <CircularProgress
+            size={18}
+            sx={{ position: "absolute", top: 8, right: 8, opacity: 0.7 }}
+          />
+        ))}
     </Box>
   );
 

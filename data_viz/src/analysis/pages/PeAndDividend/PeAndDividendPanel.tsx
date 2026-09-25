@@ -1,6 +1,10 @@
 /**
  * PeAndDividendPanel — one card per code: the EXACT data-viz baseline plot
- * for the security on top, monthly PE & Dividend stats table beneath.
+ * for the security on top, ONE analysis card beneath, switched by the page
+ * header's PE / Dividends toggle (`mode`):
+ *   • mode="pe"        → Valuation Streaks (band-break) card
+ *   • mode="dividends" → Dividend Stats (10y rolling) table card
+ * Only the active mode's data is fetched (streaks + daily rows vs stats).
  *
  * The plot is NOT reimplemented here — it delegates to the shared baseline
  * panel used across the app:
@@ -11,13 +15,9 @@
  *   • sec_type=stock → StockPanel (OHLC + MAs + PE; dividends already shown
  *                     as gold diamond markPoints on ex-dividend dates)
  *
- * Clicking any date on the plot fires onDateClick → the monthly stats table
- * beneath highlights the row whose month-end contains the clicked date and
- * scrolls it into view.
- *
- * The monthly PE & Dividend stats table (analysis.pe_and_dividend_stats) is
- * rendered beneath the plot: one row per month-end snapshot, most recent
- * first. is_active row is tagged with a "latest" chip.
+ * Clicking any date on the plot fires onDateClick → the dividends-mode stats
+ * table highlights the row whose year-end is the latest one not after the
+ * clicked date and scrolls it into view.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -67,8 +67,7 @@ import { buildStreakChartOption, type MetricObsRow } from "./chartOption/streakC
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts } from "echarts";
-import type { PanelProps } from "./types";
-import {
+import type { PanelProps } from "./types";import {
   expandedTableBodyCellSx,
   expandedTableBodyRowSx,
   expandedTableContainerSx,
@@ -77,20 +76,22 @@ import {
 } from "@/shared/styles/expanded-table-styles";
 import useTableHeaderFilters, { type HeaderFilterDef } from "@/hooks/table-header-filters";
 
-/** Format a YYYY-MM-DD date as a short YYYY-MM string for month display. */
-function fmtMonth(dateStr: string): string {
-  return dateStr.length >= 7 ? dateStr.slice(0, 7) : dateStr;
+/** Format a YYYY-MM-DD date as a YYYY year string for the annual snapshot
+ *  display. */
+function fmtYear(dateStr: string): string {
+  return dateStr.length >= 4 ? dateStr.slice(0, 4) : dateStr;
 }
 
-/** Return the YYYY-MM key for a YYYY-MM-DD date string. */
-function monthKey(dateStr: string): string {
-  return dateStr.slice(0, 7);
+/** Return the YYYY key for a YYYY-MM-DD date string. */
+function yearKey(dateStr: string): string {
+  return dateStr.slice(0, 4);
 }
 
 // ---- Band-break excursion streaks (analysis.pe_and_dividend_pct_streaks,
 // the mov_ave_high_low_pct_streaks pattern applied to pe /
 // dividend_yield) — nested metric → period → pct selection mirrors the
-// MaSpread High/Low Streaks buttons. ----
+// MaSpread High/Low Streaks buttons. UI is PE-only: this card is the PE-mode
+// analysis card, so dividend-yield streaks are not selectable. ----
 
 /** Band lookback windows (observations) — mirrors PD_PCT_PERIODS. */
 const STREAK_PERIODS = [255, 500, 750, 1275] as const;
@@ -107,10 +108,10 @@ const STREAK_HIGH_ACCENT = "#AB47BC";
  *  streak accent). */
 const STREAK_LOW_ACCENT = "#F9A825";
 
-const STREAK_METRICS: Array<{ value: PeAndDividendStreakMetric; label: string }> = [
-  { value: "pe", label: "PE" },
-  { value: "dividend_yield", label: "Div Yield" },
-];
+/** The streaks card's fixed metric — PE (this card is the PE-mode analysis
+ *  card; dividend-yield streaks are not offered, so there is no metric
+ *  filter row — the card just shows PE content). */
+const STREAK_METRIC: PeAndDividendStreakMetric = "pe";
 
 /** Format one streak's metric value: dividend_yield is a FRACTIONAL ratio
  *  (0.035 = 3.5%) — scale to percent for display; pe is a plain
@@ -123,24 +124,24 @@ function fmtStreakValue(
   return metric === "dividend_yield" ? `${fmtNum(v * 100, 2)}%` : fmtNum(v, 2);
 }
 
-/** Opt-in per-column header filters — Month is a date-range selector (month
- *  granularity over the month-end snapshot dates), Active is a discrete
- *  label (ticks), the rolling 5y metrics are continuous magnitudes
- *  (numeric range). */
+/** Opt-in per-column header filters — Year is a date-range selector over
+ *  the year-end snapshot dates, Active is a discrete label (ticks), the
+ *  rolling 10y metrics are continuous magnitudes (numeric range). */
 const FILTER_DEFS: HeaderFilterDef<PeAndDividendStatsRow>[] = [
-  { key: "month", label: "Month", type: "date", granularity: "month", value: (r) => r.date.slice(0, 7) },
+  { key: "year", label: "Year", type: "date", value: (r) => r.date },
   { key: "active", label: "Active", type: "ticks", value: (r) => (r.is_active ? "latest" : "earlier") },
-  { key: "min_pe", label: "Min PE 5y", type: "range", value: (r) => r.min_pe_5y },
-  { key: "max_pe", label: "Max PE 5y", type: "range", value: (r) => r.max_pe_5y },
-  { key: "div_var", label: "Div Var 5y", type: "range", value: (r) => r.dividend_var_5y },
+  { key: "min_pe", label: "Min PE 10y", type: "range", value: (r) => r.min_pe_10y },
+  { key: "max_pe", label: "Max PE 10y", type: "range", value: (r) => r.max_pe_10y },
+  { key: "div_var", label: "Div Var 10y", type: "range", value: (r) => r.dividend_var_10y },
   { key: "last_div", label: "Last Div", type: "range", value: (r) => r.last_dividend_per_share },
-  { key: "div_stab", label: "Div Stability 5y", type: "range", value: (r) => r.dividend_stability_5y },
+  { key: "div_stab", label: "Div Stability 10y", type: "range", value: (r) => r.dividend_stability_10y },
 ];
 const DEF_BY_KEY = new Map(FILTER_DEFS.map((d) => [d.key, d]));
 
 export function PeAndDividendPanel({
   code,
   secType,
+  mode,
 }: PanelProps) {
   // Reactive light/dark theme — feeds the streak-chart builder and the
   // delegated baseline panels (no prop drilling from the page).
@@ -164,9 +165,8 @@ export function PeAndDividendPanel({
   // ---- Daily chart rows (observation series for the streak shading) -------
   const [chartData, setChartData] = useState<PeAndDividendChartResponse | null>(null);
 
-  // Nested single-select streak combo: layer 1 = metric (null = off),
-  // layer 2 = band lookback period, layer 3 = band tightness pct.
-  const [streakMetric, setStreakMetric] = useState<PeAndDividendStreakMetric | null>(null);
+  // Streak combo selection: band lookback period + band tightness pct. The
+  // metric is FIXED to PE (STREAK_METRIC — no metric filter row).
   const [streakPeriod, setStreakPeriod] = useState<number | null>(null);
   const [streakPct, setStreakPct] = useState<number | null>(null);
 
@@ -217,8 +217,10 @@ export function PeAndDividendPanel({
     };
   }, [code, secType]);
 
-  // Fetch stats data on mount and whenever code/sec_type changes.
+  // Fetch stats data on mount and whenever code/sec_type changes — only in
+  // dividends mode (the stats table IS the dividends card).
   useEffect(() => {
+    if (mode !== "dividends") return;
     let cancelled = false;
     setStatsLoading(true);
     setStatsError(null);
@@ -236,11 +238,13 @@ export function PeAndDividendPanel({
     return () => {
       cancelled = true;
     };
-  }, [code, secType, refreshKey]);
+  }, [code, secType, refreshKey, mode]);
 
-  // Fetch the band-break excursion streaks + daily chart rows (parallel
-  // with stats) — same deps, so a per-security rebuild refreshes all.
+  // Fetch the band-break excursion streaks + daily chart rows — only in pe
+  // mode (the streaks card + its shading chart ARE the pe card). Same deps
+  // as stats, so a per-security rebuild refreshes whichever card is active.
   useEffect(() => {
+    if (mode !== "pe") return;
     let cancelled = false;
     setStreaksLoading(true);
     setStreaksError(null);
@@ -269,12 +273,11 @@ export function PeAndDividendPanel({
     return () => {
       cancelled = true;
     };
-  }, [code, secType, refreshKey]);
+  }, [code, secType, refreshKey, mode]);
 
   // Reset clicked date + streak combo/anchor when the code changes.
   useEffect(() => {
     setClickedDate(null);
-    setStreakMetric(null);
     setStreakPeriod(null);
     setStreakPct(null);
     setStreakAnchorIdx(null);
@@ -284,21 +287,6 @@ export function PeAndDividendPanel({
   // ---- Streak section: availability + selected-combo subset --------------
   const allStreaks = useMemo(() => streakData?.streaks ?? [], [streakData]);
   const hasStreakData = allStreaks.length > 0;
-
-  const toggleStreakMetric = useCallback((m: PeAndDividendStreakMetric) => {
-    // The anchor indexes into the selected metric's observation rows, so a
-    // metric switch invalidates it (and the selected archive streak).
-    setStreakAnchorIdx(null);
-    setSelectedStreak(null);
-    setStreakMetric((prev) => {
-      if (prev === m) {
-        setStreakPeriod(null);
-        setStreakPct(null);
-        return null;
-      }
-      return m;
-    });
-  }, []);
 
   const toggleStreakPeriod = useCallback((w: number) => {
     setStreakPeriod((prev) => {
@@ -316,35 +304,35 @@ export function PeAndDividendPanel({
 
   // The selected combo's streaks, most recent first (capped for render).
   const selectedStreaks = useMemo(() => {
-    if (streakMetric == null || streakPeriod == null || streakPct == null) return [];
+    if (streakPeriod == null || streakPct == null) return [];
     return allStreaks
-      .filter((s) => s.metric === streakMetric && s.period === streakPeriod && s.pctType === streakPct)
+      .filter((s) => s.metric === STREAK_METRIC && s.period === streakPeriod && s.pctType === streakPct)
       .sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
-  }, [allStreaks, streakMetric, streakPeriod, streakPct]);
+  }, [allStreaks, streakPeriod, streakPct]);
 
   // Caption summary for the selected combo: per-side streak count, total
   // days, extreme value and the first couple of spans (MaSpread caption
   // style).
   const streakSummary = useMemo(() => {
-    if (streakMetric == null || streakPeriod == null || streakPct == null) return null;
+    if (streakPeriod == null || streakPct == null) return null;
     const high = selectedStreaks.filter((s) => s.side === "high");
     const low = selectedStreaks.filter((s) => s.side === "low");
     const spanList = (arr: PeAndDividendStreak[]) =>
       arr.length === 0
         ? "none"
-        : `${arr.length} streak${arr.length === 1 ? "" : "s"} · ${arr.reduce((a, s) => a + s.dayCount, 0)}d · peak ${fmtStreakValue(streakMetric, Math.max(...arr.map((s) => s.maxValue)))} · ${arr.slice(0, 2).map((s) => `${s.startDate.slice(2)}→${s.endDate.slice(2)}`).join(", ")}${arr.length > 2 ? `, +${arr.length - 2} more` : ""}`;
+        : `${arr.length} streak${arr.length === 1 ? "" : "s"} · ${arr.reduce((a, s) => a + s.dayCount, 0)}d · peak ${fmtStreakValue(STREAK_METRIC, Math.max(...arr.map((s) => s.maxValue)))} · ${arr.slice(0, 2).map((s) => `${s.startDate.slice(2)}→${s.endDate.slice(2)}`).join(", ")}${arr.length > 2 ? `, +${arr.length - 2} more` : ""}`;
     return { high: spanList(high), low: spanList(low) };
-  }, [selectedStreaks, streakMetric, streakPeriod, streakPct]);
+  }, [selectedStreaks, streakPeriod, streakPct]);
 
   // ---- Streak shading chart (MaSpread-style window zones + break bands) --
   // Non-NULL observations of the selected metric — the series the shading
   // is detected and drawn against.
   const obsRows = useMemo<MetricObsRow[]>(() => {
-    if (streakMetric == null || chartData == null) return [];
+    if (chartData == null) return [];
     return chartData.rows
-      .filter((r) => r[streakMetric] != null && Number.isFinite(r[streakMetric]!))
-      .map((r) => ({ date: r.date, value: r[streakMetric]! }));
-  }, [chartData, streakMetric]);
+      .filter((r) => r[STREAK_METRIC] != null && Number.isFinite(r[STREAK_METRIC]!))
+      .map((r) => ({ date: r.date, value: r[STREAK_METRIC]! }));
+  }, [chartData]);
 
   /** Stable identity for an archive streak (table-row highlight state). */
   const streakKey = (s: PeAndDividendStreak): string =>
@@ -382,14 +370,14 @@ export function PeAndDividendPanel({
     if (streakPeriod == null || streakPct == null || obsRows.length === 0) return null;
     return buildStreakChartOption({
       obs: obsRows,
-      metric: streakMetric!,
+      metric: STREAK_METRIC,
       period: streakPeriod,
       pct: streakPct,
       anchorIdx: streakAnchorIdx,
       selectedStreak,
       themeMode,
     });
-  }, [obsRows, streakMetric, streakPeriod, streakPct, streakAnchorIdx, selectedStreak, themeMode]);
+  }, [obsRows, streakPeriod, streakPct, streakAnchorIdx, selectedStreak, themeMode]);
 
   // ---- Streak chart AI Ask — state carries the CURRENT metric → window →
   // tightness combo + anchor so the modal / LLM describe the shaded view. --
@@ -397,7 +385,7 @@ export function PeAndDividendPanel({
   const streakAiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Valuation band-break streaks: the selected metric (PE or dividend yield) plotted " +
+        "Valuation band-break streaks: PE plotted " +
         "daily with the trailing window's static tightness-% zones shaded (light purple " +
         "above, light yellow below); client-side break streaks drawn darker. Streak = " +
         "maximal run of days above (high) / below (low) the anchor window's static band " +
@@ -406,15 +394,13 @@ export function PeAndDividendPanel({
         "envelope — historically snaps back once the band re-anchors.",
       instruments: [{ code, assetClass: secType === "etf" ? "etf" : secType === "index" ? "index" : "stock" }],
       series: [
-        ...(streakMetric === "dividend_yield"
-          ? [{ name: "Dividend yield", description: "daily dividend yield (fraction — 0.035 = 3.5%)" }]
-          : [{ name: "PE", unit: "×", description: "daily price/earnings multiple" }]),
+        { name: "PE", unit: "×", description: "daily price/earnings multiple" },
         { name: "High streaks", description: "merged spans of days above the window's static top band edge" },
         { name: "Low streaks", description: "merged spans of days below the window's static bottom band edge" },
         { name: "Selected streak", description: "the archive streak clicked in the table (bordered when it breaks this static edge)" },
       ],
       state: {
-        metric: streakMetric ?? "none",
+        metric: STREAK_METRIC,
         window: streakPeriod ?? "none",
         tightness: streakPct != null ? `${streakPct}%` : "none",
         anchor: streakAnchorIdx != null ? "clicked chart date" : "latest",
@@ -428,7 +414,7 @@ export function PeAndDividendPanel({
         "Shading only covers values inside the drawn zone — break streaks are clipped to the window's vertical extent.",
       ],
     }),
-    [code, secType, streakMetric, streakPeriod, streakPct, streakAnchorIdx, selectedStreak],
+    [code, secType, streakPeriod, streakPct, streakAnchorIdx, selectedStreak],
   );
   const streakAiAskAddon = useAiAskAddon({
     title: "Valuation Streaks (band-break)",
@@ -441,7 +427,7 @@ export function PeAndDividendPanel({
   });
 
   // ---- Stats table: highlight + scroll-into-view --------------------------
-  // Find the stats row whose month-end is the latest one <= clickedDate.
+  // Find the stats row whose year-end is the latest one <= clickedDate.
   const statsRows: PeAndDividendStatsRow[] = statsData?.rows ?? [];
 
   // Opt-in header filters over the monthly snapshots (reset on scope change).
@@ -453,8 +439,12 @@ export function PeAndDividendPanel({
 
   // Whether this security has PE & dividend analysis rows — drives the bold
   // highlight of the per-security build button (AnalysisRunButton). Loading
-  // counts as "present" so the button doesn't bold-flicker.
-  const hasAnalysisData = statsLoading || statsRows.length > 0;
+  // counts as "present" so the button doesn't bold-flicker. Mode-aware: each
+  // mode fetches only its own card's data.
+  const hasAnalysisData =
+    mode === "pe"
+      ? streaksLoading || allStreaks.length > 0
+      : statsLoading || statsRows.length > 0;
 
   // Refetch after a per-security analysis rebuild (AnalysisRunButton):
   // drop the cached stats/streaks responses, then bump the refresh key.
@@ -467,6 +457,19 @@ export function PeAndDividendPanel({
     );
     setRefreshKey((k) => k + 1);
   }, [code, secType]);
+
+  // The per-security rebuild button — shown on whichever analysis card the
+  // active mode renders (it runs the whole pe_and_dividends module either
+  // way, refreshing both cards' data sources).
+  const rebuildButton = (
+    <AnalysisRunButton
+      module="pe_and_dividends"
+      secType={secType}
+      code={code}
+      hasData={hasAnalysisData}
+      onCompleted={handleAnalysisRunCompleted}
+    />
+  );
   const highlightedStatsRowDate = useMemo(() => {
     if (!clickedDate || statsRows.length === 0) return null;
     for (const r of statsRows) {
@@ -508,7 +511,7 @@ export function PeAndDividendPanel({
     }
     // Delegate to the exact same plot component used in /dataviz/*.
     // onDateClick fires for any click on the chart → highlights the matching
-    // month-end row in the stats table below.
+    // year-end row in the stats table below.
     if (secType === "index") {
       return <IndexPanel index={bundle as IndexBundle} onDateClick={setClickedDate} />;
     }
@@ -527,13 +530,14 @@ export function PeAndDividendPanel({
       */}
       {plotContent}
 
-      {/* ---- Band-break excursion streaks (analysis.pe_and_dividend_pct_streaks) ----
+      {/* ---- Valuation Streaks (band-break) — PE mode only ----
           The high/low streaks pattern applied to the pe / dividend_yield
           series: a day breaks out when its value is above/below its own
           month's trailing percentile band (analysis.pe_and_dividend_pct), and
           a streak is a maximal run of same-side break days with ≤5-day
           in-band gaps bridged. Nested metric → period → pct selection lists
           the DB archive rows for that combo. */}
+      {mode === "pe" && (
       <ChartCard
         title="Valuation Streaks (band-break)"
         subtitle={
@@ -542,6 +546,7 @@ export function PeAndDividendPanel({
             : undefined
         }
         titleAddon={streakAiAskAddon}
+        action={rebuildButton}
         height={undefined}
       >
         {streaksLoading && (
@@ -565,7 +570,8 @@ export function PeAndDividendPanel({
         {!streaksLoading && !streaksError && hasStreakData && (
           <>
             <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
-              {/* Layer 1 — metric (pe / dividend_yield). */}
+              {/* Band lookback period (observations) — the metric is fixed
+                  to PE (no metric filter row). */}
               <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
                 <Typography
                   variant="caption"
@@ -573,56 +579,27 @@ export function PeAndDividendPanel({
                   sx={{
                     fontSize: "0.65rem",
                     minWidth: 88,
-                    color: streakMetric != null ? "primary.main" : "text.secondary",
-                    fontWeight: streakMetric != null ? 700 : 400,
+                    color: streakPeriod != null ? "primary.main" : "text.secondary",
+                    fontWeight: streakPeriod != null ? 700 : 400,
                   }}
                 >
-                  Streaks
+                  Window
                 </Typography>
-                {STREAK_METRICS.map((m) => (
+                {STREAK_PERIODS.map((w) => (
                   <Chip
-                    key={m.value}
-                    label={m.label}
+                    key={w}
+                    label={`${w}d`}
                     size="small"
                     clickable
-                    color={streakMetric === m.value ? "primary" : "default"}
-                    variant={streakMetric === m.value ? "filled" : "outlined"}
-                    onClick={() => toggleStreakMetric(m.value)}
+                    color={streakPeriod === w ? "primary" : "default"}
+                    variant={streakPeriod === w ? "filled" : "outlined"}
+                    onClick={() => toggleStreakPeriod(w)}
                     sx={{ fontSize: "0.7rem", height: 22 }}
                   />
                 ))}
               </Box>
-              {/* Layer 2 — band lookback period (observations). */}
-              {streakMetric != null && (
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-                  <Typography
-                    variant="caption"
-                    component="span"
-                    sx={{
-                      fontSize: "0.65rem",
-                      minWidth: 88,
-                      color: streakPeriod != null ? "primary.main" : "text.secondary",
-                      fontWeight: streakPeriod != null ? 700 : 400,
-                    }}
-                  >
-                    Window
-                  </Typography>
-                  {STREAK_PERIODS.map((w) => (
-                    <Chip
-                      key={w}
-                      label={`${w}d`}
-                      size="small"
-                      clickable
-                      color={streakPeriod === w ? "primary" : "default"}
-                      variant={streakPeriod === w ? "filled" : "outlined"}
-                      onClick={() => toggleStreakPeriod(w)}
-                      sx={{ fontSize: "0.7rem", height: 22 }}
-                    />
-                  ))}
-                </Box>
-              )}
-              {/* Layer 3 — band tightness pct. */}
-              {streakMetric != null && streakPeriod != null && (
+              {/* Band tightness pct. */}
+              {streakPeriod != null && (
                 <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
                   <Typography
                     variant="caption"
@@ -651,7 +628,7 @@ export function PeAndDividendPanel({
                 </Box>
               )}
             </Box>
-            {streakMetric != null && streakPeriod != null && streakPct == null && (
+            {streakPeriod != null && streakPct == null && (
               <Typography
                 variant="caption"
                 color="text.secondary"
@@ -660,13 +637,13 @@ export function PeAndDividendPanel({
                 pick a band tightness (pct) to list streaks
               </Typography>
             )}
-            {streakMetric != null && streakPeriod != null && streakPct != null && (
+            {streakPeriod != null && streakPct != null && (
               <Typography
                 variant="caption"
                 color="text.secondary"
                 sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
               >
-                {streakMetric === "pe" ? "PE" : "dividend yield"} breaks its
+                PE breaks its
                 trailing {streakPeriod}-obs top/bottom {streakPct}% band (each day vs its
                 own month's band · ≤{STREAK_GAP_TOLERANCE}-day in-band gaps bridged) ·{" "}
                 {selectedStreaks.length === 0
@@ -696,8 +673,7 @@ export function PeAndDividendPanel({
                   sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
                 >
                   light purple/yellow = trailing {streakPeriod}-obs top/bottom{" "}
-                  {streakPct}% zones of{" "}
-                  {streakMetric === "pe" ? "PE" : "dividend yield"} (
+                  {streakPct}% zones of PE (
                   {chartBuild.win.startDate} → {chartBuild.win.endDate}), darker = break
                   streaks vs that static edge (≤{STREAK_GAP_TOLERANCE}-day bridge ·
                   high {chartBuild.streaks?.high.length ?? 0} / low{" "}
@@ -714,7 +690,7 @@ export function PeAndDividendPanel({
                 </Typography>
               </>
             )}
-            {streakMetric != null && streakPeriod != null && streakPct != null && selectedStreaks.length > 0 && (
+            {streakPeriod != null && streakPct != null && selectedStreaks.length > 0 && (
               <TableContainer component={Box} sx={expandedTableContainerSx(360)}>
                 <Table size="small" stickyHeader>
                   <TableHead>
@@ -760,16 +736,16 @@ export function PeAndDividendPanel({
                           <TableCell sx={expandedTableBodyCellSx}>{s.endDate}</TableCell>
                           <TableCell align="right" sx={expandedTableNumCellSx}>{s.dayCount}</TableCell>
                           <TableCell align="right" sx={expandedTableNumCellSx}>
-                            {fmtStreakValue(streakMetric!, s.startValue)}
+                            {fmtStreakValue(STREAK_METRIC, s.startValue)}
                           </TableCell>
                           <TableCell align="right" sx={expandedTableNumCellSx}>
-                            {fmtStreakValue(streakMetric!, s.endValue)}
+                            {fmtStreakValue(STREAK_METRIC, s.endValue)}
                           </TableCell>
                           <TableCell align="right" sx={expandedTableNumCellSx}>
-                            {fmtStreakValue(streakMetric!, s.maxValue)}
+                            {fmtStreakValue(STREAK_METRIC, s.maxValue)}
                           </TableCell>
                           <TableCell align="right" sx={expandedTableNumCellSx}>
-                            {fmtStreakValue(streakMetric!, s.minValue)}
+                            {fmtStreakValue(STREAK_METRIC, s.minValue)}
                           </TableCell>
                           <TableCell align="right" sx={expandedTableNumCellSx}>
                             {fmtNum(s.stdDev, 3)}
@@ -781,7 +757,7 @@ export function PeAndDividendPanel({
                 </Table>
               </TableContainer>
             )}
-            {streakMetric != null && streakPeriod != null && streakPct != null && selectedStreaks.length > STREAK_TABLE_CAP && (
+            {streakPeriod != null && streakPct != null && selectedStreaks.length > STREAK_TABLE_CAP && (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}>
                 showing the {STREAK_TABLE_CAP} most recent of {selectedStreaks.length} streaks
               </Typography>
@@ -789,24 +765,21 @@ export function PeAndDividendPanel({
           </>
         )}
       </ChartCard>
+      )}
 
-      {/* ---- Monthly PE & Dividend stats table ---- */}
+      {/* ---- Dividend Stats (10y rolling) — dividends mode only ----
+          Annual 10y rolling stats snapshot (analysis.pe_and_dividend_stats):
+          one row per year-end snapshot, most recent first. is_active row is
+          tagged with a "latest" chip. */}
+      {mode === "dividends" && (
       <ChartCard
-        title="Monthly PE & Dividend Stats (5y rolling)"
+        title="Dividend Stats (10y rolling)"
         subtitle={
           statsData
-            ? `${statsRows.length} month-end snapshots · click a date on the chart above to highlight the matching month`
+            ? `${statsRows.length} year-end snapshots · click a date on the chart above to highlight the matching year`
             : undefined
         }
-        action={
-          <AnalysisRunButton
-            module="pe_and_dividends"
-            secType={secType}
-            code={code}
-            hasData={hasAnalysisData}
-            onCompleted={handleAnalysisRunCompleted}
-          />
-        }
+        action={rebuildButton}
         height={undefined}
       >
         {statsLoading && (
@@ -821,8 +794,8 @@ export function PeAndDividendPanel({
         )}
         {!statsLoading && !statsError && statsRows.length === 0 && (
           <Alert severity="warning">
-            No monthly stats for {code}. (Stats are computed monthly by the
-            Python build script — run it once a month after the 5y window
+            No annual stats for {code}. (Stats are computed annually by the
+            Python build script — run it once a year after the 10y window
             updates.)
           </Alert>
         )}
@@ -835,7 +808,7 @@ export function PeAndDividendPanel({
               <TableHead>
                 <TableRow>
                   <TableCell sx={expandedTableHeadCellSx}>
-                    {menuFor(DEF_BY_KEY.get("month")!)}
+                    {menuFor(DEF_BY_KEY.get("year")!)}
                   </TableCell>
                   <TableCell sx={expandedTableHeadCellSx} align="center">
                     {menuFor(DEF_BY_KEY.get("active")!)}
@@ -862,8 +835,8 @@ export function PeAndDividendPanel({
                   const isHighlighted = r.date === highlightedStatsRowDate;
                   const isActive = r.is_active;
                   // Bold the Last Div cell when a dividend was issued in
-                  // this month — surfaces dividend-event months at a glance.
-                  const boldDiv = r.dividend_issued_this_month === true;
+                  // this year — surfaces dividend-event years at a glance.
+                  const boldDiv = r.dividend_issued_this_year === true;
                   return (
                     <TableRow
                       key={r.date}
@@ -878,7 +851,7 @@ export function PeAndDividendPanel({
                       }}
                     >
                       <TableCell sx={{ ...expandedTableBodyCellSx, fontWeight: isHighlighted ? 700 : 500 }}>
-                        {fmtMonth(r.date)}
+                        {fmtYear(r.date)}
                       </TableCell>
                       <TableCell align="center" sx={{ ...expandedTableBodyCellSx, py: 0.5 }}>
                         {isActive && (
@@ -890,9 +863,9 @@ export function PeAndDividendPanel({
                           />
                         )}
                       </TableCell>
-                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtNum(r.min_pe_5y)}</TableCell>
-                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtNum(r.max_pe_5y)}</TableCell>
-                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtPct(r.dividend_var_5y)}</TableCell>
+                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtNum(r.min_pe_10y)}</TableCell>
+                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtNum(r.max_pe_10y)}</TableCell>
+                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtPct(r.dividend_var_10y)}</TableCell>
                       <TableCell
                         align="right"
                         sx={{
@@ -904,8 +877,8 @@ export function PeAndDividendPanel({
                         {fmtNum(r.last_dividend_per_share, 4)}
                       </TableCell>
                       <TableCell align="right" sx={{ ...expandedTableNumCellSx, color: PE_COLOR }}>
-                        {r.dividend_stability_5y != null
-                          ? fmtNum(r.dividend_stability_5y, 1)
+                        {r.dividend_stability_10y != null
+                          ? fmtNum(r.dividend_stability_10y, 1)
                           : "—"}
                       </TableCell>
                     </TableRow>
@@ -917,11 +890,12 @@ export function PeAndDividendPanel({
         )}
         {clickedDate && (
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
-            Clicked date <b>{clickedDate}</b> → highlighted month{" "}
-            <b>{highlightedStatsRowDate ? monthKey(highlightedStatsRowDate) : "(none — before earliest stats)"}</b>
+            Clicked date <b>{clickedDate}</b> → highlighted year{" "}
+            <b>{highlightedStatsRowDate ? yearKey(highlightedStatsRowDate) : "(none — before earliest stats)"}</b>
           </Typography>
         )}
       </ChartCard>
+      )}
     </Stack>
   );
 }

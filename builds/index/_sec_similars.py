@@ -528,8 +528,8 @@ async def _build_for_sec_type(conn, sec_type: str, force: bool,
     elif force:
         logger.info(f"\n{tag} Force mode: truncating {TABLE} "
               f"WHERE sec_type='{sec_type}'...")
-        await conn.execute(
-            f"DELETE FROM {TABLE} WHERE sec_type = $1", sec_type
+        await chunked_purge_async(
+            conn, TABLE, where_sql="sec_type = $1", params=(sec_type,)
         )
         target_dates = source_dates
     else:

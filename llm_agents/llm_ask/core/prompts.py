@@ -88,6 +88,9 @@ def chart_context_block(plot_info: Mapping[str, Any], theme_mode: Optional[str],
     ``image_count`` is the number of screenshots actually attached (0
     when the model takes no images) — the block tells the model whether
     to expect any, and ``theme_mode`` explains the screenshot colors.
+    ``plot_info["date"]`` (the modal's pinned as-of date, "YYYY-MM-DD" or
+    year-month "YYYY-MM") renders as the 指定日期 line — the reference
+    "now" for time-relative questions — when present.
     """
     lines: list[str] = []
 
@@ -121,6 +124,17 @@ def chart_context_block(plot_info: Mapping[str, Any], theme_mode: Optional[str],
         if window.get(k))
     if win:
         lines.append(f"时间窗口：{win}")
+
+    # The modal's as-of date selector (exact "YYYY-MM-DD" or year-month
+    # "YYYY-MM", seeded with the chart's latest plotted date) — the anchor
+    # the answer's time-relative wording must resolve against.
+    as_of = plot_info.get("date")
+    if isinstance(as_of, str) and as_of.strip():
+        as_of = as_of.strip()
+        precision = "年月" if len(as_of) == 7 else "具体日期"
+        lines.append(
+            f"指定日期：{as_of}（{precision}）"
+            "——回答涉及时点（如“当前/最新/最近”）时以该日期为参考时点。")
 
     state = plot_info.get("state") or {}
     if state:

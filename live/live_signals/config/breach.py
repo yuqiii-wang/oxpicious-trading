@@ -15,11 +15,12 @@ ABOVE_ACTION = "sell"
 # ---- Record defaults ---------------------------------------------------------
 
 # (confidence is NOT a default anymore: writers store
-# ROUND(100 × analysis_signals.signal_strategies.confidence) — the
-# source forecast confidence (reverse_prob probability, [0,1]) on the
-# live 0-100 INTEGER scale. The scaling happens SQL-side in the
-# writers' fetches; live.live_signals.confidence keeps DEFAULT 100
-# for legacy.)
+# ROUND(10000 × analysis_signals.signal_strategies.confidence) — the
+# source confidence (the chosen rung's sign-aligned dir_ave, the
+# expected favorable blended move as a fraction) on the live INTEGER
+# basis-point scale. The scaling happens SQL-side in the writers'
+# fetches; live.live_signals.confidence keeps DEFAULT 100 (a legacy
+# pre-2026-09-25 fill).)
 
 # Decimal scale of live.live_signals.signal (NUMERIC(16,4)): records
 # round the compared value to this scale BEFORE writing signal, and

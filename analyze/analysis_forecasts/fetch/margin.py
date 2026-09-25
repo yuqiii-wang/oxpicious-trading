@@ -3,7 +3,7 @@
 
 The margin_ratio family's per-day state inputs, derived on the long
 cudf.pandas frame (grouped rolling moments + a 1-row shift — no
-look-ahead, the px_vol convention).
+look-ahead).
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def add_margin_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
                 MARGIN_RATIO_Z_WINDOW-row sample moments of ratio
                 (min_periods MARGIN_RATIO_Z_MIN_PERIODS non-NULL
                 observations), SHIFTED 1 row (yesterday's moments are
-                today's bars — px_vol convention). NULL where ratio is
+                today's bars — no look-ahead). NULL where ratio is
                 NULL or the history is short.
 
     The caller must have sorted df by (code, date) (the SQL ORDER BY).

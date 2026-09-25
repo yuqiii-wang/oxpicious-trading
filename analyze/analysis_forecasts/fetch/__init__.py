@@ -15,7 +15,7 @@ per-family source tables the bucket engines consume:
   ema_pair_{W} — from analysis.mov_ave_spreads_detail_ema (the
             EXISTING ema6_vs_ema{W} relative-EMA spreads, W ∈
             MOV_PAIRS_EMA_WINDOWS — the mov_pairs_ema buckets' input),
-  trading_amount + rz_buy — the px_vol / margin_ratio family inputs
+  trading_amount + rz_buy — the margin_ratio family inputs
             (daily turnover + RONGZI margin buy; rz_buy is NULL for
             'index' — indices have no margin data, so the
             margin_ratio buckets never fire there),
@@ -26,13 +26,11 @@ per-family source tables the bucket engines consume:
 
 Plus the DAILY market-regime states (stats.market_regimes — the
 4-state calm/hot/panic/quiet label every bucket family splits by) and
-the per-family source-of-truth loaders (price_vs_amt registry,
-high/low streaks, industry opposite pairs).
+the per-family source-of-truth loaders (high/low streaks).
 
 One source family per module — codes (universe + first dates) · inputs
-(the joined frame) · forward (forward changes + path extremes, derived
-on the cudf.pandas frame) · regimes · px_vol · margin · streaks ·
-opp_pair · identity.
+(the joined frame) · forward (forward changes, derived on the
+cudf.pandas frame) · regimes · margin · streaks · identity.
 
 All NUMERIC columns are cast to native float8 in SQL (Decimal objects
 would poison the cudf.pandas fast path) and the date columns arrive as
@@ -43,28 +41,12 @@ over it (no per-code Python loops).
 """
 from __future__ import annotations
 
-from .codes import fetch_active_codes, fetch_first_dates
+from .codes import fetch_active_codes, fetch_first_dates, fetch_latest_data_date
 from .inputs import fetch_analysis_inputs
-from .forward import (
-    add_forward_changes,
-    add_path_extremes,
-)
-from .regimes import fetch_market_regimes
-from .px_vol import (
-    add_px_vol_features,
-    assert_price_vs_amt_params,
-    fetch_price_vs_amt_source,
-    fetch_price_vs_amt_states,
-)
+from .forward import add_forward_changes
+from .regimes import fetch_market_regimes, fetch_market_regimes_at
 from .margin import add_margin_ratio_features
 from .streaks import fetch_high_low_streaks
-from .opp_pair import (
-    fetch_benchmark_closes,
-    fetch_industry_closes,
-    fetch_industry_first_dates,
-    fetch_opp_pair_industries,
-    fetch_opp_pair_pairs,
-)
 from .identity import fetch_forecast_identity
 
 # Legacy private aliases (historical underscore names kept for the
@@ -75,19 +57,12 @@ from ._sources import PRICE_SOURCE as _PRICE_SOURCE  # noqa: E402
 __all__ = [
     "fetch_active_codes",
     "fetch_first_dates",
+    "fetch_latest_data_date",
     "fetch_analysis_inputs",
     "add_forward_changes",
-    "add_path_extremes",
     "fetch_market_regimes",
-    "assert_price_vs_amt_params",
-    "fetch_price_vs_amt_source",
-    "fetch_price_vs_amt_states",
+    "fetch_market_regimes_at",
     "add_margin_ratio_features",
     "fetch_high_low_streaks",
-    "fetch_benchmark_closes",
-    "fetch_industry_closes",
-    "fetch_industry_first_dates",
-    "fetch_opp_pair_industries",
-    "fetch_opp_pair_pairs",
     "fetch_forecast_identity",
 ]

@@ -1,22 +1,27 @@
-"""Month-batch writer for analyze.analysis_forecasts: forecast_id
-allocation, the three-table month transaction, incremental month
-detection + refresh/force deletions."""
+"""Snapshot-batch writer for analyze.analysis_forecasts: forecast_id
+allocation, the three-table snapshot transaction, incremental
+snapshot detection + refresh/force deletions (annual grid)."""
 from __future__ import annotations
 
 import logging
 from datetime import date
 
 import numpy as np
-import pandas as pd
 
-from _common.db_commons import copy_insert_async, csv_copy_from_frame_async
+from _common.db_commons import (
+    _chunk_keys_by_weight,
+    chunked_dml_by_key_async,
+    copy_insert_async,
+    csv_copy_from_frame_async,
+    DEFAULT_MAX_REPLICA_LAG_MB,
+    _wait_for_replica_lag_async,
+)
 from _common.df_utils import host_array
 
 from analyze.analysis_forecasts.config import (
-    ALL_PERIODS,
     LOOKBACK_PERIOD,
+    REGIME_WEIGHTS_TABLE,
     RESULT_COLUMNS,
-    REFRESH_MONTHS,
     TABLE_BASE_RATE,
     TABLE_DIVIDEND,
     TABLE_FORECAST,
@@ -27,16 +32,15 @@ from analyze.analysis_forecasts.config import (
     TABLE_MOV_PAIRS_EMA,
     TABLE_MOV_RSI,
     TABLE_MOV_STD,
-    TABLE_OPP_PAIR,
     TABLE_PE,
-    TABLE_PX_VOL,
     TRIGGER_DELAY_MAX,
+    mutable_dates,
 )
-from analyze.analysis_forecasts.wide import MonthSpec
+from analyze.analysis_forecasts.wide import StatSpec
 
 logger = logging.getLogger(__name__)
 
-# Max period rows per COPY chunk (a full stock-universe month of rsi
+# Max period rows per COPY chunk (a full stock-universe snapshot of rsi
 # buckets is <= 64 × ~5,400 ≈ 345K buckets → 1.38M period rows; chunk
 # 100K period rows = 25K buckets per chunk).
 _WRITE_CHUNK = 100_000
@@ -53,30 +57,27 @@ _FORECAST_ID_SEQ = "analysis_forecasts.forecast_results_forecast_id_seq"
 
 def _identity_rows(bucket_rows: list[dict], mov_table: str) -> list[dict]:
     """One forecast_identities registry row per bucket — the shared
-    identity (sec_type, code, stat_month; NOT stored on the motivation
+    identity (sec_type, code, stat_date; NOT stored on the motivation
     tables anymore — this registry is the only place it lives), tagged
     with the bucket family (the motivation table's short name), the
     bucket's mean streak length (streak_signal_days — the 2026-09
     streak semantics: the multi-day streak families mov_rsi / mov_std /
-    px_vol_state record the MEAN run length of their merged
+    pe_state / dividend_state record the MEAN run length of their merged
     incremental-anchor signals, mov_pairs / mov_pairs_ema the 1-day constant,
-    margin_ratio / opp_pair a constant 1, high_low_streaks its config
+    margin_ratio a constant 1, high_low_streaks its config
     mean_day_count) and the mean trigger delay (delayed_signal_days —
     the mean trading-day offset of the bucket's emitted trigger anchors
     within their streaks, capped at 5; 0 for
     1-day signals). Both INTEGER whole days. Reads the UNFILTERED bucket
     payload dicts (the mov-table projection drops the identity +
-    streak_signal_days / delayed_signal_days fields).
-    opp_pair_state is the only family whose subject column is not
-    ``code``: its rows register the DROPPING industry_id (the
-    forecast-target pair_industry_id stays on the motivation row)."""
+    streak_signal_days / delayed_signal_days fields)."""
     bucket = mov_table.split(".")[-1]
     return [
         {
             "forecast_id": m["forecast_id"],
             "sec_type": m["sec_type"],
-            "code": m.get("code", m.get("industry_id")),
-            "stat_month": m["stat_month"],
+            "code": m["code"],
+            "stat_date": m["stat_date"],
             "bucket": bucket,
             "streak_signal_days": m.get("streak_signal_days"),
             "delayed_signal_days": m.get("delayed_signal_days", 0),
@@ -87,108 +88,289 @@ def _identity_rows(bucket_rows: list[dict], mov_table: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-#  Incremental month detection + refresh-window deletion
+#  Incremental snapshot detection + refresh-window deletion
 # ---------------------------------------------------------------------------
 
-async def _compute_months(
+async def _compute_dates(
     conn,
     table: str,
     sec_type: str,
-    specs: list[MonthSpec],
-) -> tuple[list[MonthSpec], list[date]]:
-    """(compute, refreshed) — the spec months to (re)compute for
+    specs: list[StatSpec],
+) -> tuple[list[StatSpec], list[date]]:
+    """(compute, refreshed) — the spec snapshots to (re)compute for
     ``table`` / sec_type.
 
-    compute = stat_months MISSING from the table plus the PRESENT
-    months inside the refresh window (the RUNNING month — always the
-    newest spec — plus the most recent REFRESH_MONTHS - 1 completed
-    months). A month written right after month-end carries
-    permanently truncated 20d occurrence counts — its forward
-    windows were not complete yet at write time — so present
-    refresh-window months are deleted and recomputed on every run
-    (the caller performs the deletion). Truly missing months need no
-    delete.
+    compute = stat_dates MISSING from the table plus the PRESENT
+    snapshots inside the MUTABLE SCOPE (config.mutable_dates — the
+    ROLLING LATEST snapshot, always, plus the newest completed year-end
+    while its 20-trading-day forward windows are still unrealized).
+    A year-end snapshot written right after New Year carries truncated
+    20d occurrence counts — its forward windows were not complete yet
+    at write time — so present mutable snapshots are deleted and
+    recomputed on every run (the caller performs the deletion). Truly
+    missing snapshots need no delete. Completed year-ends outside the
+    mutable scope are ALL-HISTORY: present ones are never recomputed
+    (the --force path rebuilds them explicitly).
 
-    Present months are read from the forecast_identities registry
+    Present snapshots are read from the forecast_identities registry
     (bucket-filtered) — the motivation tables carry no identity
     columns anymore; base_rates is not registered there (no
     forecast_id), so it is read directly.
 
-    Returns the compute list (spec order) and the refreshed months'
+    Returns the compute list (spec order) and the refreshed snapshots'
     dates (empty when nothing present needs a refresh).
     """
     if table == TABLE_BASE_RATE:
         rows = await conn.fetch(
-            f"SELECT DISTINCT stat_month FROM {table} WHERE sec_type = $1",
+            f"SELECT DISTINCT stat_date FROM {table} WHERE sec_type = $1",
             sec_type,
         )
     else:
         rows = await conn.fetch(
-            f"SELECT DISTINCT stat_month FROM {TABLE_IDENTITIES} "
+            f"SELECT DISTINCT stat_date FROM {TABLE_IDENTITIES} "
             f"WHERE sec_type = $1 AND bucket = $2",
             sec_type, table.split(".")[-1],
         )
-    present: set[date] = {r["stat_month"] for r in rows}
-    refresh_set = {s.stat_month for s in specs[-REFRESH_MONTHS:]}
+    present: set[date] = {r["stat_date"] for r in rows}
+    refresh_set = mutable_dates(present, date.today())
     refreshed = [
-        s.stat_month for s in specs
-        if s.stat_month in present and s.stat_month in refresh_set
+        s.stat_date for s in specs
+        if s.stat_date in present and s.stat_date in refresh_set
     ]
     compute = [
         s for s in specs
-        if s.stat_month not in present or s.stat_month in refresh_set
+        if s.stat_date not in present or s.stat_date in refresh_set
     ]
     return compute, refreshed
 
 
-async def _delete_months(
+# Buckets (identity rows) per delete chunk: the results fan out
+# ~4-period x <=6-delay per bucket (~34 rows/bucket on the wide
+# families), so a 3,000-bucket chunk deletes ~100K result rows per
+# COMMIT — the commit-chunk target.
+_DELETE_BUCKET_TARGET = 3_000
+
+
+async def _delete_linked_buckets(
     conn,
     table: str,
     sec_type: str,
-    months: list[date],
+    stat_dates: list[date] | None,
+    *,
+    codes: list[str] | None = None,
+) -> None:
+    """Delete the given stat_dates' linked trio (forecast_results + the
+    mov ``table`` + the forecast_identities registry rows) CHUNKED BY
+    PARTITION KEY.
+
+    Why id-sets rather than the old join-delete: ``forecast_id`` is the
+    results table's PARTITION KEY, so ``DELETE ... WHERE forecast_id =
+    ANY($1::bigint[])`` resolves through the per-partition forecast_id
+    indexes — no USING-join re-scan per chunk (a join cannot prune the
+    hash partitions and would re-pay a full scan per 100K-row chunk).
+    The doomed (code, forecast_id) pairs come from ONE indexed registry
+    scan; codes accumulate into ~_DELETE_BUCKET_TARGET-bucket chunks
+    (whole codes, never split — the bulk-write rule: a multi-million-
+    row single-statement DELETE retains all its WAL behind one
+    transaction and the replication slot cannot advance until it
+    commits), the three deletes of a chunk share ONE transaction (a
+    code's results + motivation + registry rows vanish atomically, the
+    registry rows last), and the replica-lag cap pauses between chunks.
+
+    ``codes`` (the --codes scope) restricts every delete to the given
+    codes — None (default) deletes the whole sec_type scope, so the
+    recompute that follows must cover every active code."""
+    scope = "i.sec_type = $1 AND i.bucket = $2"
+    params: list = [sec_type, table.split(".")[-1]]
+    if stat_dates is not None:
+        scope += " AND i.stat_date = ANY($3::date[])"
+        params.append(stat_dates)
+    if codes is not None:
+        scope += f" AND i.code = ANY(${len(params) + 1}::text[])"
+        params.append(codes)
+    rows = await conn.fetch(
+        f"SELECT i.code, i.forecast_id FROM {TABLE_IDENTITIES} i "
+        f"WHERE {scope}",
+        *params,
+    )
+    if not rows:
+        return
+    ids_by_code: dict[str, list[int]] = {}
+    for r in rows:
+        ids_by_code.setdefault(r["code"], []).append(r["forecast_id"])
+    weighted = [(c, len(v)) for c, v in ids_by_code.items()]
+    for chunk in _chunk_keys_by_weight(weighted, _DELETE_BUCKET_TARGET):
+        # Between commit chunks (no transaction open, no locks): wait
+        # out standby replay lag before generating more WAL.
+        await _wait_for_replica_lag_async(conn, DEFAULT_MAX_REPLICA_LAG_MB)
+        chunk_ids = [fid for c in chunk for fid in ids_by_code[c]]
+        async with conn.transaction():
+            # The delete is by the PARTITION-KEY id set — an index-
+            # resolvable point workload — but the planner's ANY-array
+            # row estimate (~millions) makes it prefer a seq scan over
+            # all 16 hash partitions (~60s+ per chunk measured). The
+            # per-partition pkey/forecast_id indexes resolve the chunk
+            # in milliseconds; force index scans for THIS statement
+            # class only (SET LOCAL — transaction-scoped).
+            await conn.execute("SET LOCAL enable_seqscan = off")
+            await conn.execute(
+                f"DELETE FROM {TABLE_FORECAST} "
+                f"WHERE forecast_id = ANY($1::bigint[])",
+                chunk_ids,
+            )
+            await conn.execute(
+                f"DELETE FROM {table} WHERE forecast_id = ANY($1::bigint[])",
+                chunk_ids,
+            )
+            # the registry rows go LAST — the scope was resolved
+            # through them before the transaction opened
+            await conn.execute(
+                f"DELETE FROM {TABLE_IDENTITIES} "
+                f"WHERE forecast_id = ANY($1::bigint[])",
+                chunk_ids,
+            )
+
+
+async def _delete_dates(
+    conn,
+    table: str,
+    sec_type: str,
+    months: list[date],  # snapshot stat_dates
     *,
     linked_results: bool,
+    codes: list[str] | None = None,
 ) -> None:
-    """Delete the given stat_months' rows of ``table`` (sec_type-scoped)
+    """Delete the given stat_dates' rows of ``table`` (sec_type-scoped)
     — plus, for the forecast_id-linked tables, the forecast_results AND
     forecast_identities rows they link to (base_rates has no link).
-    The linked deletes resolve (sec_type, bucket, stat_month) through
+    The linked deletes resolve (sec_type, bucket, stat_date) through
     the forecast_identities registry — the motivation tables carry no
-    identity columns anymore."""
+    identity columns anymore. ``codes`` (the --codes scope) restricts
+    every delete to the given codes — None (default) deletes the whole
+    sec_type scope, so the recompute that follows must cover every
+    active code. See _delete_linked_buckets for the chunking contract
+    (partition-key chunks, ~100K result rows per COMMIT)."""
     if not months:
         return
     if linked_results:
-        bucket = table.split(".")[-1]
-        # opp_pair_state plays industry_id in the code role (its
-        # partition key); every other family's column is code
-        code_col = "industry_id" if table == TABLE_OPP_PAIR else "code"
-        await conn.execute(
-            f"DELETE FROM {TABLE_FORECAST} f USING {TABLE_IDENTITIES} i "
-            f"WHERE i.forecast_id = f.forecast_id AND i.sec_type = $1 "
-            f"AND i.bucket = $2 AND i.stat_month = ANY($3::date[])",
-            sec_type, bucket, months,
-        )
-        await conn.execute(
-            f"DELETE FROM {table} m USING {TABLE_IDENTITIES} i "
-            f"WHERE m.forecast_id = i.forecast_id "
-            f"AND m.{code_col} = i.code AND i.sec_type = $1 "
-            f"AND i.bucket = $2 AND i.stat_month = ANY($3::date[])",
-            sec_type, bucket, months,
-        )
-        # the registry rows go LAST — the two deletes above resolve
-        # (sec_type, bucket, stat_month) through them
-        await conn.execute(
-            f"DELETE FROM {TABLE_IDENTITIES} i "
-            f"WHERE i.sec_type = $1 AND i.bucket = $2 "
-            f"AND i.stat_month = ANY($3::date[])",
-            sec_type, bucket, months,
+        await _delete_linked_buckets(
+            conn, table, sec_type, months, codes=codes,
         )
     else:
-        await conn.execute(
-            f"DELETE FROM {table} WHERE sec_type = $1 "
-            f"AND stat_month = ANY($2::date[])",
-            sec_type, months,
+        # base_rates: per-code doomed-row counts -> code chunks (the
+        # PK index (sec_type, code, stat_date) makes each chunk's
+        # delete an index scan)
+        weight_sql = (
+            f"SELECT code, count(*) AS n FROM {table} "
+            f"WHERE sec_type = $1 AND stat_date = ANY($2::date[])"
         )
+        params: list = [sec_type, months]
+        if codes is not None:
+            weight_sql += " AND code = ANY($3::text[])"
+            params.append(codes)
+        weight_rows = await conn.fetch(weight_sql, *params)
+        await chunked_dml_by_key_async(
+            conn,
+            statements=[(
+                f"DELETE FROM {table} "
+                f"WHERE sec_type = $1 AND stat_date = ANY($2::date[])",
+                " AND code = ANY(${ph}::text[])",
+            )],
+            params=tuple(params),
+            weighted_keys=[(r["code"], r["n"]) for r in weight_rows],
+        )
+
+
+# ---------------------------------------------------------------------------
+#  Stale-key sweep (the rolling latest key's predecessor + legacy keys)
+# ---------------------------------------------------------------------------
+
+async def _sweep_stale_dates(
+    conn,
+    sec_type: str,
+    grid_dates: set[date],
+    *,
+    metrics: set[str] | None = None,
+    codes: list[str] | None = None,
+) -> None:
+    """Delete the sec_type's scoped rows whose stat_date is NOT on the
+    current snapshot grid — the retired ROLLING LATEST keys (yesterday's
+    key once today's has taken over; on the first run after the
+    rolling-key migration, the legacy year-end-keyed running snapshot).
+
+    The registry read is metrics/codes-scoped exactly like the deletes
+    that follow, so a scoped run never judges another scope's rows.
+    regime_weights (per stat_date, no forecast_id) is swept from its
+    own table; base_rates (not registered in the identities) likewise.
+    Runs BEFORE the target resolution — stale keys must neither be
+    recomputed nor suppress anything."""
+    # registry-resolved families: ONE scoped read, per-bucket stale sets
+    linked_tables = [t for t in _STAGE_OF_TABLE if t != TABLE_BASE_RATE]
+    if metrics is not None:
+        linked_tables = [t for t in linked_tables
+                         if _STAGE_OF_TABLE[t] in metrics]
+    table_of_bucket = {t.split(".")[-1]: t for t in linked_tables}
+
+    rows: list = []
+    if metrics is None:
+        # unscoped: every bucket's keys are in scope
+        code_clause = "" if codes is None else " AND code = ANY($2::text[])"
+        params = (sec_type,) if codes is None else (sec_type, codes)
+        rows = await conn.fetch(
+            f"SELECT DISTINCT bucket, stat_date FROM {TABLE_IDENTITIES} "
+            f"WHERE sec_type = $1{code_clause}", *params,
+        )
+    elif table_of_bucket:
+        # metrics-scoped: only the selected families' keys are read, so
+        # another scope's rows are never judged (a stage set without
+        # registry-resolved families — e.g. base-only — skips the read)
+        code_clause = "" if codes is None else " AND code = ANY($3::text[])"
+        params = (sec_type, list(table_of_bucket))
+        if codes is not None:
+            params += (codes,)
+        rows = await conn.fetch(
+            f"SELECT DISTINCT bucket, stat_date FROM {TABLE_IDENTITIES} "
+            f"WHERE sec_type = $1 AND bucket = ANY($2::text[]){code_clause}",
+            *params,
+        )
+
+    stale_by_bucket: dict[str, list[date]] = {}
+    for r in rows:
+        if r["stat_date"] not in grid_dates:
+            stale_by_bucket.setdefault(r["bucket"], []).append(r["stat_date"])
+    for bucket, stale in stale_by_bucket.items():
+        await _delete_dates(conn, table_of_bucket[bucket], sec_type,
+                            sorted(set(stale)), linked_results=True,
+                            codes=codes)
+
+    # base_rates (no forecast_id) and regime_weights (no forecast_id)
+    # sweep straight off their own tables.
+    for table in (TABLE_BASE_RATE, REGIME_WEIGHTS_TABLE):
+        if codes is None:
+            rows = await conn.fetch(
+                f"SELECT DISTINCT stat_date FROM {table} "
+                f"WHERE sec_type = $1", sec_type,
+            )
+            stale = sorted({r["stat_date"] for r in rows} - grid_dates)
+            if stale:
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE sec_type = $1 "
+                    f"AND stat_date = ANY($2::date[])", sec_type, stale,
+                )
+        else:
+            rows = await conn.fetch(
+                f"SELECT DISTINCT stat_date FROM {table} "
+                f"WHERE sec_type = $1 AND code = ANY($2::text[])",
+                sec_type, codes,
+            )
+            stale = sorted({r["stat_date"] for r in rows} - grid_dates)
+            if stale:
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE sec_type = $1 "
+                    f"AND stat_date = ANY($2::date[]) "
+                    f"AND code = ANY($3::text[])",
+                    sec_type, stale, codes,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +385,6 @@ _STAGE_OF_TABLE: dict[str, str] = {
     TABLE_MOV_PAIRS: "pairs",
     TABLE_MOV_PAIRS_EMA: "epairs",
     TABLE_HIGH_LOW_STREAKS: "hstreaks",
-    TABLE_PX_VOL: "pxvol",
     TABLE_MARGIN_RATIO: "mratio",
     TABLE_PE: "pe",
     TABLE_DIVIDEND: "div",
@@ -211,19 +392,24 @@ _STAGE_OF_TABLE: dict[str, str] = {
 }
 
 
-async def _delete_sec_type(conn, sec_type: str, metrics: set[str] | None = None) -> None:
-    """Delete a sec_type's mov_* / px_vol_state / margin_ratio_state /
+async def _delete_sec_type(conn, sec_type: str, metrics: set[str] | None = None,
+                           codes: list[str] | None = None) -> None:
+    """Delete a sec_type's mov_* / margin_ratio_state /
     pe_state / dividend_state / high_low_streaks rows, the
     forecast_results + forecast_identities rows they link to, and its
     base_rates rows. Identity-keyed deletes resolve through the
-    forecast_identities registry. ``only`` (the --only stage keys)
-    restricts the deletion to the selected families — None (default)
-    deletes every family."""
+    forecast_identities registry. ``metrics`` (the --forecast-metrics
+    stage keys) restricts the deletion to the selected families — None
+    (default) deletes every family. ``codes`` (the --codes scope)
+    restricts the deletion to the given codes — None (default) deletes
+    the whole sec_type scope, so the recompute that follows must cover
+    every active code. Chunked per _delete_linked_buckets (a whole-
+    sec_type stock purge reaches ~50M result rows — per-code forecast_id
+    chunks keep every COMMIT's WAL bounded)."""
     for table, linked in ((TABLE_MOV_RSI, True), (TABLE_MOV_STD, True),
                           (TABLE_MOV_PAIRS, True),
                           (TABLE_MOV_PAIRS_EMA, True),
                           (TABLE_HIGH_LOW_STREAKS, True),
-                          (TABLE_PX_VOL, True),
                           (TABLE_MARGIN_RATIO, True),
                           (TABLE_PE, True),
                           (TABLE_DIVIDEND, True),
@@ -231,34 +417,28 @@ async def _delete_sec_type(conn, sec_type: str, metrics: set[str] | None = None)
         if metrics is not None and _STAGE_OF_TABLE[table] not in metrics:
             continue
         if linked:
-            bucket = table.split(".")[-1]
-            # opp_pair_state plays industry_id in the code role (its
-            # partition key); every other family's column is code
-            code_col = ("industry_id" if table == TABLE_OPP_PAIR
-                        else "code")
-            await conn.execute(
-                f"DELETE FROM {TABLE_FORECAST} f USING {TABLE_IDENTITIES} i "
-                f"WHERE i.forecast_id = f.forecast_id "
-                f"AND i.sec_type = $1 AND i.bucket = $2",
-                sec_type, bucket,
-            )
-            await conn.execute(
-                f"DELETE FROM {table} m USING {TABLE_IDENTITIES} i "
-                f"WHERE m.forecast_id = i.forecast_id "
-                f"AND m.{code_col} = i.code "
-                f"AND i.sec_type = $1 AND i.bucket = $2",
-                sec_type, bucket,
-            )
-            # the registry rows go LAST — the two deletes above resolve
-            # (sec_type, bucket) through them
-            await conn.execute(
-                f"DELETE FROM {TABLE_IDENTITIES} i "
-                f"WHERE i.sec_type = $1 AND i.bucket = $2",
-                sec_type, bucket,
+            # stat_dates=None = the family's whole registry scope
+            await _delete_linked_buckets(
+                conn, table, sec_type, None, codes=codes,
             )
         else:
-            await conn.execute(
-                f"DELETE FROM {table} WHERE sec_type = $1", sec_type
+            weight_sql = (
+                f"SELECT code, count(*) AS n FROM {table} "
+                f"WHERE sec_type = $1"
+            )
+            params: list = [sec_type]
+            if codes is not None:
+                weight_sql += " AND code = ANY($2::text[])"
+                params.append(codes)
+            weight_rows = await conn.fetch(weight_sql, *params)
+            await chunked_dml_by_key_async(
+                conn,
+                statements=[(
+                    f"DELETE FROM {table} WHERE sec_type = $1",
+                    " AND code = ANY(${ph}::text[])",
+                )],
+                params=tuple(params),
+                weighted_keys=[(r["code"], r["n"]) for r in weight_rows],
             )
 
 
@@ -266,34 +446,11 @@ async def _delete_sec_type(conn, sec_type: str, metrics: set[str] | None = None)
 #  Month-batch writes (COPY both tables with allocated forecast_ids)
 # ---------------------------------------------------------------------------
 
-_ARRAY_COLUMNS = ("trigger_dates", "streak_starts", "streak_ends",
-                  "streak_days", "trigger_excess")
-
 # The float result columns (the CSV NULL-sweep targets — see
-# _write_month): the max/min legs carry ±inf aggregation sentinels on
+# _write_snapshot): the max/min legs carry ±inf aggregation sentinels on
 # all-invalid groups.
 _FLOAT_RESULT_COLUMNS = ("ave_change", "std_change", "max_change",
-                         "min_change", "reverse_prob", "threshold")
-
-
-def _pg_array_lit(v) -> object:
-    """One array-column value → its PostgreSQL array-literal TEXT (the
-    dict path's render of what the df engine emits natively): lists
-    become ``{a,b,...}`` (NULL elements for NaN/None/NaT), None stays
-    None (a NULL array)."""
-    if v is None:
-        return None
-    parts = []
-    for x in v:
-        if x is None:
-            parts.append("NULL")
-        elif isinstance(x, float):
-            parts.append("NULL" if x != x else repr(x))
-        elif hasattr(x, "isoformat"):          # datetime.date / datetime
-            parts.append(x.isoformat())
-        else:
-            parts.append(str(x))
-    return "{" + ",".join(parts) + "}"
+                         "min_change", "ave_close")
 
 
 def _py_scalars(records: list[dict]) -> list[dict]:
@@ -308,24 +465,23 @@ def _py_scalars(records: list[dict]) -> list[dict]:
     return records
 
 
-async def _write_month(
+async def _write_snapshot(
     conn,
     mov_table: str,
     mov_columns: list[str],
     payload,
+    *,
+    max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
 ) -> int:
-    """Write one month-batch of bucket rows to the mov table + its linked
+    """Write one snapshot-batch of bucket rows to the mov table + its linked
     forecast_results rows + the forecast_identities registry rows.
 
-    ``payload`` is bucket-major — consecutive runs of equal ``_bkt``
-    share one bucket, 4 period rows each. Two shapes reach here:
-
-      - a result FRAME from the df-engine families (the fast path: the
-        engine stamped the shared constants as columns and the ragged
-        arrays as PostgreSQL array-literal TEXT);
-      - a list of row DICTS from the legacy numpy pipeline (opp_pair) —
-        normalized to the same frame shape here (arrays literalized,
-        ``_bkt`` stamped by the 4-period stride).
+    ``payload`` is a bucket-major result FRAME from the df-engine
+    families — consecutive runs of equal ``_bkt`` share one bucket, 4
+    period rows each (the engine stamped the shared constants as
+    columns and the ragged arrays as PostgreSQL array-literal TEXT;
+    the legacy list-of-dicts shape of the retired opp_pair numpy
+    pipeline was removed with that family).
 
     forecast_results streams via the CSV COPY path
     (``csv_copy_from_frame_async`` — whole-column host rendering; the
@@ -333,26 +489,16 @@ async def _write_month(
     the mov + identity tables are small bucket-first projections and
     stay on the binary dict path. One transaction per ~_WRITE_CHUNK-row
     span group; pure COPY, NO pre-clear — crash safety comes from
-    transactional atomicity.
+    transactional atomicity. Between chunk transactions the writer
+    pauses while a streaming standby's replay lag exceeds
+    ``max_replica_lag_mb`` (4096 MB default, None disables) so bulk
+    loads cannot outrun the replica into slot-retained WAL.
 
     Returns the number of BUCKETS written (R, not 4·R).
     """
-    if isinstance(payload, list):
-        if not payload:
-            return 0
-        real_pd = getattr(pd, "_fsproxy_slow", pd)
-        stride = len(ALL_PERIODS)
-        rows = payload
-        for i, r in enumerate(rows):
-            r["_bkt"] = i // stride
-            for col in _ARRAY_COLUMNS:
-                if col in r:
-                    r[col] = _pg_array_lit(r[col])
-        frame = real_pd.DataFrame(rows)
-    else:
-        frame = payload
-        if frame is None or len(frame) == 0:
-            return 0
+    if payload is None or len(payload) == 0:
+        return 0
+    frame = payload
 
     bkt = np.asarray(
         host_array(frame["_bkt"].to_numpy()), dtype="int64",
@@ -369,8 +515,7 @@ async def _write_month(
     # regression guard): within every bucket span the delay column is
     # contiguous 0..max and capped at TRIGGER_DELAY_MAX — delay d
     # exists iff the run reached day d, so a gap or a missing 0 means
-    # the run detection broke. (The legacy dict path — opp_pair — is
-    # delay-0 only and trivially satisfies it.)
+    # the run detection broke.
     delays = np.asarray(
         host_array(frame["delay"].to_numpy()), dtype="int64",
     )
@@ -402,7 +547,7 @@ async def _write_month(
             pass
         bad_codes = frame.iloc[bad_idx[:5]]["code"].tolist()
         raise ValueError(
-            f"delay-ladder invariant violated in {mov_table} month "
+            f"delay-ladder invariant violated in {mov_table} snapshot "
             f"batch: {len(bad_idx)} rows whose bucket's delay column "
             f"is not contiguous 0..max(≤{TRIGGER_DELAY_MAX}) — first "
             f"bad buckets {bad_codes} (dumped context to "
@@ -420,6 +565,12 @@ async def _write_month(
     n_total_buckets = 0
     for spans_part in chunk_spans:
         n_buckets = len(spans_part)
+        # Between-chunk throttle: each chunk commits its own transaction,
+        # so pausing here lets the standby's replay position (and the
+        # replication slot's WAL bound) advance before more WAL is
+        # generated. No-op while lag is within the cap.
+        if max_replica_lag_mb is not None:
+            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
         # The chunk's spans are contiguous (packed in order) — one iloc
         # slice carries exactly its rows; ids assign CHUNK-LOCALLY.
         lo, hi = spans_part[0][0], spans_part[-1][1]

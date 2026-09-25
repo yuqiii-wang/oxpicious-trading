@@ -49,15 +49,23 @@ export interface TradingSignalRow {
   signal_excess_pct: number | null;
   signal: number;
   signal_threshold: number;
+  /** The strategy's expected-move confidence in BASIS POINTS
+   *  (ROUND(10000 × signal_strategies.confidence) — the chosen rung's
+   *  sign-aligned dir_ave). The SignalActionChip input (its 1..100 ramp
+   *  clamps above 100 bp, the ForecastTable treatment). */
   confidence: number;
+  /** The same confidence as the EXPECTED-MOVE PERCENT (confidence / 100,
+   *  e.g. 0.87 = 0.87%) — the display number (text cells + tooltips). */
+  confidence_pct: number;
   is_day_close_trigger: boolean;
   /** The breach bar's DATE market regime — the stats.market_regimes
    *  day label (calm/hot/panic/quiet). Context, not a gate: the breach
    *  still fires; the label matches the strategy's own regime split. */
   regime_state: string;
-  /** The code's live_signals count over the LAST 20 TRADING DAYS ending on
-   *  `date` (all signal types, intraday + day-close rows) — the main
-   *  table's "20d count" column. */
+  /** The code's SIGNAL-DAY count over the LAST 20 TRADING DAYS ending on
+   *  `date`: one day = one entry — the day's highest-confidence row —
+   *  counted once however many rows it has (signal types, intraday
+   *  re-checks, day-close). The main table's "20d count" column. */
   count_20d: number;
 }
 
@@ -112,9 +120,10 @@ const BASIC_STATS_TABLE: Record<string, string> = {
  *  DESC. `date` is 'YYYY-MM-DD' (the UI pre-resolves biz today).
  *  Joins the sec_type's identity table (latest row per code) to resolve
  *  the display name; falls back to NULL when no identity row exists.
- *  Each row also carries count_20d — the code's live_signals count over
- *  the last 20 TRADING DAYS ending on `date` (window anchored on the
- *  sec_type's daily-close baseline; all signal types). */
+ *  Each row also carries count_20d — the code's SIGNAL-DAY count over the
+ *  last 20 TRADING DAYS ending on `date` (window anchored on the sec_type's
+ *  daily-close baseline): each day enters once through its highest-
+ *  confidence row, all signal types. */
 export async function fetchTriggeredSignals(
   secType: string | null | undefined,
   date: string,
@@ -146,9 +155,10 @@ export async function fetchTriggeredSignals(
             s.signal::float8              AS signal,
             s.signal_threshold::float8     AS signal_threshold,
             s.confidence,
+            (s.confidence::float8 / 100.0) AS confidence_pct,
             s.is_day_close_trigger,
             s.regime_state,
-            (SELECT count(*)::int
+            (SELECT count(DISTINCT ls.date)::int
              FROM live.live_signals ls
              WHERE ls.sec_type = s.sec_type
                AND ls.code = s.code
@@ -253,6 +263,7 @@ export async function fetchTradingSignalHistory(
             s.signal::float8              AS signal,
             s.signal_threshold::float8     AS signal_threshold,
             s.confidence,
+            (s.confidence::float8 / 100.0) AS confidence_pct,
             s.is_day_close_trigger,
             s.regime_state
      FROM live.live_signals s

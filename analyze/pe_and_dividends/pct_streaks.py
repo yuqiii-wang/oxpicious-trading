@@ -100,7 +100,11 @@ import pandas as pd
 
 from _common._holidays_and_weekdays import is_trading_day
 from _common.build_commons import rec_cols
-from _common.db_commons import csv_copy_from_frame_async
+from _common.db_commons import (
+    _wait_for_replica_lag_async,
+    csv_copy_from_frame_async,
+    DEFAULT_MAX_REPLICA_LAG_MB,
+)
 from _common.df_utils import host_array, safe_columns
 from analyze._common import upsert_analysis_identity
 from analyze.pe_and_dividends.config import (
@@ -126,7 +130,7 @@ _DAY_SRC_COLS = ("sec_type", "code", "date", "pe", "dividend_yield")
 # Streak rows per CSV COPY chunk (bounds the in-memory chunk sliced off
 # the long frame before rendering — the high_low_pct_streaks.py
 # precedent).
-_STREAK_CHUNK_ROWS = 200_000
+_STREAK_CHUNK_ROWS = 100_000
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +477,9 @@ async def _copy_streaks_chunked(conn, streaks: pd.DataFrame) -> int:
     n_chunks = (n_total + _STREAK_CHUNK_ROWS - 1) // _STREAK_CHUNK_ROWS
     total = 0
     for i in range(n_chunks):
+        # Between commit chunks: wait out standby replay lag before
+        # generating more WAL (the bulk-write rule).
+        await _wait_for_replica_lag_async(conn, DEFAULT_MAX_REPLICA_LAG_MB)
         lo = i * _STREAK_CHUNK_ROWS
         chunk = streaks.iloc[lo:lo + _STREAK_CHUNK_ROWS]
         n = await csv_copy_from_frame_async(

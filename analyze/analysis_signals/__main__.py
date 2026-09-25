@@ -6,27 +6,41 @@ Signal STRATEGIES + history signals over analysis_forecasts (see
 database/sql/analysis/analysis_signals/00_schema.sql and
 01_signals.sql):
 
-  - A forecast bucket (code × stat_month snapshot M × config, trailing
-    5-year window (M - 5y, M]) whose MIXED forecast_results row passes
-    the plain gate — the sign-aligned blended mean forward change
-    (dir_ave) > 0.75% AND the blended reverse_prob > 1% (confidence =
-    reverse_prob) — IS a signal strategy: ONE
+  - A forecast bucket (code × stat_date snapshot M × config, trailing
+    5-year window (M - 5y, M]) whose mixed forecast_results DELAY
+    LADDER (rung d 0..5 is conditioned on the signal having persisted
+    d days) has a gate-passing rung — the plain rule: the sign-aligned
+    blended mean forward change (dir_ave) > 0.75% — IS a signal
+    strategy: ONE
     analysis_signals.signal_strategies row over the bucket's forecast
-    period (start_date .. end_date = the snapshot month), carrying the
-    breach bar in the underlying value's own space (the live tier's
-    threshold set) and the bucket's OWN side as a STORED column.
+    period (start_date .. end_date = the snapshot key — the
+    ROLLING LATEST snapshot is keyed at the sec_type's latest
+    available data date). The
+    registered rung is the OPTIMAL ENTRY DELAY — the balance rule's
+    argmax occurrence_count × sign-aligned dir_ave over the
+    gate-passing rungs (the opportunity cost of waiting — fewer
+    occurrences as the rung deepens — against the persistence-
+    conditioned return), ties → the smallest delay — stored as
+    signal_delay_days, carrying the chosen rung's confidence
+    (the sign-aligned dir_ave — the expected favorable blended move)
+    and breach bar in the underlying value's own space
+    (the live tier's threshold set) and the bucket's OWN side as a
+    STORED column.
 
-  - The bucket's trigger days INSIDE the snapshot month M are its
-    history signals: ONE analysis_signals.history_signals row per day
-    (the day's value, the bar it crossed, the excess — a structural
-    clone of live.live_signals; one snapshot owns each date, so no
-    cross-month PK conflicts).
+  - The bucket's CHOSEN-RUNG trigger days INSIDE the snapshot key's
+    calendar year M
+    are its history signals: ONE analysis_signals.history_signals row
+    per day (the day's value, the bar it crossed, the excess — a
+    structural clone of live.live_signals; one snapshot owns each
+    date, so no cross-snapshot PK conflicts). A delayed strategy's
+    history days are its streaks' day-d anchors (signal_delay_days
+    rides both tables).
 
   - Emission slices (current build): mov_rsi pct = 1 (top → sell /
     bottom → buy), mov_std MA/σ windows >= 20d at k >= 2.0σ
     (upper → sell / lower → buy), and the two pair-cross families —
     mov_pairs / mov_pairs_ema, each covering BOTH its fast legs
-    (ma5/ema6 and the close price) — at slow-leg windows >= 120d,
+    (ma5/ema6 and the close price) — at slow-leg windows >= 60d,
     cross-down (bottom → buy) side only. All slices cover every regime
     splits. Other forecast families get strategies as their engines
     land.
@@ -40,13 +54,16 @@ Pipeline per sec_type (index / etf / stock), every step owned by the
 family's engine (engines/signal_families/<family>/ — one
 SignalEngine subclass per family, dispatched through the registry;
 see engines/_base):
-  1. Resolve the target months per family: the stat_months PRESENT in
-     analysis_forecasts.forecast_identities (bucket-filtered) that are
-     missing from signal_strategies, plus the newest REFRESH_MONTHS
-     months re-emitted every run (long-horizon mixed legs complete
-     late). ``--force`` purges the sec_type's family rows and
-     re-emits every present month.
-  2. Per month: fetch the buckets (long, carrying the quality
+  1. Resolve the target snapshots per family: the stat_dates PRESENT
+     in analysis_forecasts.forecast_identities (bucket-filtered) that
+     are missing from signal_strategies, plus the MUTABLE SCOPE
+     (config.mutable_dates — the ROLLING LATEST snapshot keyed at the
+     sec_type's latest available data date, always re-emitted; the
+     newest completed year-end while its 20d forward windows
+     realize). Retired keys (yesterday's rolling-latest date) are
+     SWEPT from both tables before the resolution. ``--force`` purges
+     the sec_type's family rows and re-emits every present snapshot.
+  2. Per snapshot: fetch the buckets (long, carrying the quality
      periods' forward profiles) + the indicator values at exactly the
      trigger points (wide) → vectorized plain gate → the FINAL
      SignalQuality gate (engines/_quality — breach coherence +
@@ -56,7 +73,7 @@ see engines/_base):
      carries the decision — long-horizon failures alone can't kill);
      only quality-passing buckets register as strategies) →
      vectorized strategy/history
-     frames → ONE transaction: purge the month, COPY both tables.
+     frames → ONE transaction: purge the snapshot, COPY both tables.
   3. After every run: refresh is_active (each config's latest
      end_date) and rank signal_order (confidence DESC within each
      (sec_type, end_date) pool) — 02_is_active.sql /
@@ -106,16 +123,19 @@ async def main() -> None:
         description="Analysis Signals (signal strategies + history "
                     "signals over analysis_forecasts): one "
                     "signal_strategies row per forecast bucket whose "
-                    "MIXED forecast_results row passes the plain gate "
-                    "(sign-aligned blended mean forward change > 0.75% "
-                    "AND blended reverse_prob > 1%), covering the "
+                    "mixed forecast_results delay ladder has a rung "
+                    "passing the plain gate (sign-aligned blended mean "
+                    "forward change > 0.75%), at "
+                    "the OPTIMAL ENTRY DELAY (occurrence_count × "
+                    "aligned dir_ave argmax over the gate-passing "
+                    "rungs — opportunity cost vs return), covering the "
                     "bucket's forecast period (the trailing 5-year "
-                    "snapshot month), plus the bucket's trigger days "
-                    "inside its own snapshot month as "
+                    "snapshot key), plus the chosen rung's trigger "
+                    "days inside its own snapshot year as "
                     "history_signals rows. Emission slices: mov_rsi "
                     "pct = 1; mov_std >= 20d windows at k >= 2.0σ; "
                     "the two pair-cross families (mov_pairs / "
-                    "mov_pairs_ema, both fast legs) at >= 120d slow "
+                    "mov_pairs_ema, both fast legs) at >= 60d slow "
                     "legs, cross-down side; every regime split.",
     )
     ap.add_argument(
@@ -129,8 +149,8 @@ async def main() -> None:
     )
     ap.add_argument(
         "--months", type=int, default=None, metavar="N",
-        help="Cap the target stat_months to the newest N present in "
-             "analysis_forecasts (default: all present months).",
+        help="Cap the target stat_dates to the newest N present in "
+             "analysis_forecasts (default: all present snapshots).",
     )
     add_force_arg(ap)
     args = ap.parse_args()
@@ -157,9 +177,10 @@ async def main() -> None:
                "analysis_signals.history_signals",
         sec_types=", ".join(sec_types),
         metrics=", ".join(sorted(metrics)) if metrics else "all",
-        mode="FORCE (purge + re-emit every present month)" if force
-        else "incremental (missing months + refresh of the newest "
-             "months)",
+        mode="FORCE (purge + re-emit every present snapshot)" if force
+        else "incremental (missing snapshots + the mutable scope: "
+             "the rolling latest snapshot and the newest year-end "
+             "while its 20d forward windows realize)",
     )
 
     conn = await get_db_connection_async()

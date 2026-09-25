@@ -13,6 +13,12 @@
  * is omitted where there is no valid previous tick — the series start,
  * the first tick after a gap break (comparing across a data gap would
  * pair non-adjacent trading days), and PE right after a 0 placeholder.
+ *
+ * The Open / High / Low / Close rows are built from the gap-broken OHLC
+ * arrays at the hovered index, not from tooltip params: the OHLC bars are
+ * an ECharts custom series, and custom series never reach the axis-trigger
+ * params (the data carries no x dimension for the nearest-index lookup),
+ * so a params-driven candle row would never render.
  */
 import React from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
@@ -26,7 +32,7 @@ import {
   UP_COLOR,
 } from "@/theme/chart-palette";
 import type { StockDividend } from "@shared/types";
-import type { OhlcTradeSignal } from "./StockOhlcChart";
+import type { OhlcForecastAction, OhlcTradeSignal } from "./StockOhlcChart";
 
 /** One forecast signal streak period, as reported on hover — the
  *  [start, end] qualifying run behind a merged signal's mid day, plus
@@ -69,6 +75,10 @@ export interface CodeTrendTooltipContext {
   signalsByDate?: Map<string, OhlcTradeSignal[]>;
   /** Live ref — refreshed by the trigger overlay memo (no option rebuild). */
   streakInfoByDateRef?: React.MutableRefObject<Map<string, CodeTrendStreakInfo>>;
+  /** Live ref — the trigger overlay's forecast-action labels (the clicked
+   *  Recent Movements bucket's registered buy/sell per highlighted day),
+   *  refreshed by the overlay memo (no option rebuild). */
+  forecastActionByDateRef?: React.MutableRefObject<Map<string, OhlcForecastAction>>;
 }
 
 interface AxisTooltipParam {
@@ -123,13 +133,13 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
       React.createElement(tooltipComponents.Header, null, text);
     const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
       React.createElement(tooltipComponents.Row, { style }, children);
-    const makeTextRow = (marker: string, name: string, text: React.ReactNode) =>
+    const makeTextRow = (marker: React.ReactNode, name: string, text: React.ReactNode) =>
       makeRow([marker, " ", name, ": ", text]);
     const makeBold = (vstr: string) =>
       React.createElement(tooltipComponents.Bold, null, vstr);
     /** Value row with the stat's daily-change suffix (when resolvable). */
     const makeBoldRow = (
-      marker: string,
+      marker: React.ReactNode,
       name: string,
       vstr: string,
       delta?: React.ReactElement | null,
@@ -181,7 +191,34 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
           buy ? "BUY" : "SELL",
         ),
         ` · ${s.signal_type} · ${s.signal_sub_type}`,
-        ` (conf ${s.confidence})`,
+        ` (conf ${s.confidence}%)`,
+      ]));
+    }
+
+    // Forecast-action row — the hovered day is one of the trigger
+    // overlay's highlighted days AND the clicked forecast bucket
+    // registered as a signal strategy: report the bucket's own buy/sell
+    // (the same action the triangle marker carries) with its expected
+    // blended move. The map is refreshed by the trigger overlay memo —
+    // reading the ref here keeps the option build independent of the
+    // highlight state.
+    const forecastAction = ctx.forecastActionByDateRef?.current.get(dateStr);
+    if (forecastAction) {
+      const buy = forecastAction.action === "buy";
+      const color = buy ? UP_COLOR : DOWN_COLOR;
+      const conf = forecastAction.confidence;
+      const confStr = conf != null && Number.isFinite(conf)
+        ? ` (exp ${conf >= 0 ? "+" : ""}${(conf * 100).toFixed(2)}%)`
+        : "";
+      children.push(makeRow([
+        React.createElement("span", { style: { color } }, buy ? "▲" : "▼"),
+        " ",
+        React.createElement(
+          tooltipComponents.Bold,
+          { style: { color } },
+          buy ? "BUY" : "SELL",
+        ),
+        ` · forecast${confStr}`,
       ]));
     }
 
@@ -206,29 +243,55 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
       ]));
     }
 
+    // --- OHLC rows (Open / High / Low / Close, one row each) -----------------
+    // Built from the broken arrays at the hovered index, NOT from tooltip
+    // params: the OHLC bars are an ECharts custom series whose data carries
+    // no x dimension, so the axis-trigger tooltip never includes it — only
+    // the line/bar series reach the formatter's params. The hovered
+    // dataIndex comes from whichever param has one (all axis params share
+    // it), and the same index drives the per-series deltas below.
+    const hoveredIdx = arr.find((p) => p.dataIndex != null)?.dataIndex ?? null;
+    if (hoveredIdx != null && hoveredIdx >= 0 && hoveredIdx < broken.dates.length) {
+      const o = broken.open[hoveredIdx];
+      const h = broken.high[hoveredIdx];
+      const l = broken.low[hoveredIdx];
+      const cl = broken.close[hoveredIdx];
+      const finite = (v: number | null) => v != null && Number.isFinite(v);
+      if (finite(o) || finite(h) || finite(l) || finite(cl)) {
+        // Square marker tinted like the day's candle (close >= open = up) —
+        // one per row so the OHLC block aligns with the marker-led rows below.
+        const marker = React.createElement(
+          "span",
+          { style: { color: o != null && cl != null && cl < o ? DOWN_COLOR : UP_COLOR } },
+          "▪",
+        );
+        const row = (label: string, cur: number | null, prevArr: Array<number | null>) => {
+          if (!finite(cur)) return;
+          children.push(makeBoldRow(
+            marker,
+            label,
+            formatPriceValue(cur, ohlcMode),
+            priceDelta(tickDelta(prevArr, hoveredIdx, cur)),
+          ));
+        };
+        row("Open", o, broken.open);
+        row("High", h, broken.high);
+        row("Low", l, broken.low);
+        row("Close", cl, broken.close);
+      }
+    }
+
     const isPriceSeries = (name: string) =>
-      name === "OHLC" || name === "Close" || name.startsWith("MA");
+      name === "Close" || name.startsWith("MA");
     for (const p of arr) {
       if (p.value == null) continue;
       const name = p.seriesName ?? "";
+      // The candle row above already reports OHLC from the broken arrays —
+      // skip the custom-series params should ECharts ever deliver them
+      // (it currently does not), so the row never renders twice.
+      if (name === "OHLC") continue;
       const di = p.dataIndex;
-      if (Array.isArray(p.value)) {
-        // OHLC candle — every component gets its own daily-change suffix
-        // (O vs prev open, H vs prev high, L vs prev low, C vs prev close).
-        const [o, cl, l, h] = p.value;
-        if (o == null && cl == null && l == null && h == null) continue;
-        const rowNodes: React.ReactNode[] = [p.marker ?? "", " ", name, ": "];
-        const component = (label: string, cur: number | null, prevArr: Array<number | null>) => {
-          rowNodes.push(` ${label}=${formatPriceValue(cur, ohlcMode)}`);
-          if (cur == null || !Number.isFinite(cur)) return;
-          rowNodes.push(priceDelta(tickDelta(prevArr, di, cur)));
-        };
-        component("O", o, broken.open);
-        component("H", h, broken.high);
-        component("L", l, broken.low);
-        component("C", cl, broken.close);
-        children.push(makeRow(rowNodes));
-      } else {
+      if (!Array.isArray(p.value)) {
         const v = p.value as number;
         if (!Number.isFinite(v)) continue;
         let vstr: string;

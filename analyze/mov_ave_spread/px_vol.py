@@ -1,17 +1,16 @@
-"""px_vol registry loaders (analyze.analysis_forecasts.fetch.px_vol).
+"""px_vol feature layer for the price_vs_amt registry
+(analyze.mov_ave_spread.px_vol).
 
-The price × volume state registry (analysis.mov_ave_price_vs_amt) is
-the px_vol family's DATE-LEVEL source of truth: the forecast / signal
-engines consume the registry's recorded categories instead of
-re-deriving them from raw features, so every bucket audits against the
-recorded states 1:1. Includes the parameter audit guard — a registry
-built with a different calibration than the consumption-side constants
-must not be consumed silently.
+``add_px_vol_features`` derives the per-day RAW state inputs (no
+look-ahead) that ``classify_price_vs_amt`` bins into the 15
+price-speed × amount-state categories; ``fetch_price_vs_amt_source``
+fetches the registry build's source frame (price + trading_amount per
+(code, date) with the shared per-sec_type conventions — ETF price =
+COALESCE(adj_close, close); estimated closes excluded for etf/index;
+trading_amount from the sec_type's own source) so the registry
+classifies on exactly the analysis_forecasts input price series.
 """
 from __future__ import annotations
-
-import logging
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -19,66 +18,17 @@ import pandas as pd
 from _common.build_commons import rec_cols
 from _common.df_utils import epoch_col_to_dt64
 
-from analyze.analysis_forecasts.config import (
-    PX_VOL_AMT_METRIC,
-    PX_VOL_K_SHARP,
-    PX_VOL_K_SLOW_DN,
-    PX_VOL_K_SLOW_UP,
+from analyze.mov_ave_spread.config import (
     PX_VOL_LB_WINDOW,
     PX_VOL_SIGMA_FLOOR,
     PX_VOL_SIGMA_MIN_DAYS,
     PX_VOL_SIGMA_WINDOW,
-    PX_VOL_Z_HEAVY,
-    PX_VOL_Z_SHRINK,
 )
 
-from ._sources import AMT_SOURCE, PRICE_SOURCE
-
-logger = logging.getLogger(__name__)
-
-_PVA_STATE_COLUMNS = [
-    "code", "date", "px_speed", "vol_state", "px_t", "px_z",
-]
-
-
-async def fetch_price_vs_amt_states(
-    conn,
-    sec_type: str,
-    codes: list[str],
-    since: date,
-) -> pd.DataFrame:
-    """Fetch the sec_type's per-(code, date) Price × Amt state rows
-    from analysis.mov_ave_price_vs_amt, bounded to date >= ``since``.
-
-    One row per state-valid day (the registry stores EVERY day whose
-    σ_ret and amount-level z legs are valid — the 5×3 bands are
-    exhaustive).
-    Returns a DataFrame with columns ``_PVA_STATE_COLUMNS`` (dates as
-    datetime64[us]; px_speed / vol_state as the recorded names).
-    """
-    if not codes:
-        return pd.DataFrame(columns=_PVA_STATE_COLUMNS)
-    rows = await conn.fetch(
-        """
-        SELECT m.code,
-               extract(epoch from m.date)::float8 AS date,
-               m.px_speed, m.vol_state,
-               m.px_t::float8, m.px_z::float8
-        FROM analysis.mov_ave_price_vs_amt m
-        WHERE m.sec_type = $1
-          AND m.code = ANY($2::text[])
-          AND m.date >= $3
-        ORDER BY m.code, m.date ASC
-        """,
-        sec_type,
-        sorted(codes),
-        since,
-    )
-    if not rows:
-        return pd.DataFrame(columns=_PVA_STATE_COLUMNS)
-    df = pd.DataFrame(rec_cols(rows), columns=_PVA_STATE_COLUMNS)
-    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
-    return df
+from analyze.analysis_forecasts.fetch._sources import (
+    AMT_SOURCE,
+    PRICE_SOURCE,
+)
 
 
 async def fetch_price_vs_amt_source(
@@ -87,13 +37,9 @@ async def fetch_price_vs_amt_source(
     codes: list[str],
 ) -> pd.DataFrame:
     """Fetch the REGISTRY build's source frame — price + trading_amount
-    per (code, date) with the SAME conventions as fetch_analysis_inputs
-    (ETF price = COALESCE(adj_close, close); estimated closes excluded
-    for etf/index; trading_amount from the sec_type's own source). The
-    registry (analysis.mov_ave_price_vs_amt, built by
-    analyze.mov_ave_spread.price_vs_amt) must classify on exactly the
-    price series the forecast engine consumes, or the buckets would not
-    audit 1:1 against the recorded states.
+    per (code, date) with the shared per-sec_type price conventions
+    (PRICE_SOURCE / AMT_SOURCE — ETF = COALESCE(adj_close, close);
+    estimated closes excluded for etf/index).
 
     Returns an unbounded FULL-history frame (the trailing σ/z windows
     need the code's whole past) with columns [sec_type, code, date,
@@ -123,58 +69,12 @@ async def fetch_price_vs_amt_source(
     return df
 
 
-async def assert_price_vs_amt_params(conn, sec_type: str) -> None:
-    """Audit guard: the registry's recorded build parameters must match
-    the engine's PX_VOL_* constants exactly — a mismatch means the
-    registry was built with a different calibration than the
-    consumption-side thresholds (rebuild the registry, or realign the
-    constants, before trusting the buckets). ``amt_metric`` guards the
-    vol leg's DEFINITION (a level-z registry mixed with ratio-z
-    consumers would misclassify every bucket silently)."""
-    rows = await conn.fetch(
-        """
-        SELECT DISTINCT sigma_window, lb_window, k_slow_up, k_slow_dn,
-               k_sharp, z_heavy, z_shrink, sigma_floor, amt_metric
-        FROM analysis.mov_ave_price_vs_amt
-        WHERE sec_type = $1
-        """,
-        sec_type,
-    )
-    if not rows:
-        return  # empty registry — the caller skips the px_vol stage
-    expected = {
-        "sigma_window": PX_VOL_SIGMA_WINDOW,
-        "lb_window": PX_VOL_LB_WINDOW,
-        "k_slow_up": float(PX_VOL_K_SLOW_UP),
-        "k_slow_dn": float(PX_VOL_K_SLOW_DN),
-        "k_sharp": float(PX_VOL_K_SHARP),
-        "z_heavy": float(PX_VOL_Z_HEAVY),
-        "z_shrink": float(PX_VOL_Z_SHRINK),
-        "sigma_floor": float(PX_VOL_SIGMA_FLOOR),
-        "amt_metric": PX_VOL_AMT_METRIC,
-    }
-    for r in rows:
-        got = {k: float(r[k]) for k in expected if k != "amt_metric"}
-        got["amt_metric"] = r["amt_metric"]
-        if got != expected:
-            raise ValueError(
-                f"[{sec_type}] analysis.mov_ave_price_vs_amt recorded "
-                f"build parameters {got} differ from the engine "
-                f"constants {expected} — rebuild the registry "
-                f"(python -m analyze.mov_ave_spread) or realign the "
-                f"px_vol constants before running the forecast engines."
-            )
-
-
 def add_px_vol_features(df) -> object:
     """Add the px_vol family's per-day RAW state inputs (no look-ahead).
 
     Derived on the long cudf.pandas frame with grouped ops (grouped_shift
-    / grouped_rolling_agg). NOTE: the forecast px_vol buckets do NOT
-    consume these — they audit the analysis.mov_ave_price_vs_amt REGISTRY
-    (the date-level source of truth); this frame builder serves the
-    registry's own build path (analyze.mov_ave_spread.price_vs_amt) and
-    the live signals layer.
+    / grouped_rolling_agg). Serves the registry's own build path
+    (analyze.mov_ave_spread.price_vs_amt).
 
     Columns added:
         ret_1d    — 1-row fractional price change per code.
@@ -183,7 +83,7 @@ def add_px_vol_features(df) -> object:
                     SHIFTED 1 row (yesterday's σ is today's bar).
         px_t      — t = ret_1d / px_sigma, NULL where px_sigma is
                     NaN/<=0 or below PX_VOL_SIGMA_FLOOR (bond-like
-                    codes never join a bucket).
+                    codes never join a state).
         px_z      — z-scored log trading-amount LEVEL vs the code's OWN
                     trailing PX_VOL_SIGMA_WINDOW-row moments (min
                     PX_VOL_SIGMA_MIN_DAYS) SHIFTED 1 row.

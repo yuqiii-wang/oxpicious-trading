@@ -17,7 +17,14 @@ import time
 import pandas as pd
 
 from _common.build_commons import truncate_table_async
-from _common.db_commons import csv_copy_from_frame_async
+from _common.db_commons import (
+    csv_copy_from_frame_async,
+    _partition_key_frame_order,
+    _wait_for_replica_lag_async,
+    DEFAULT_COMMIT_CHUNK_ROWS,
+    DEFAULT_MAX_REPLICA_LAG_MB,
+    chunked_purge_async,
+)
 from builds.market_regimes.config import (
     AMT_BAR,
     AMT_Z_MIN_PERIODS,
@@ -42,28 +49,33 @@ from builds.market_regimes.fetch import fetch_regime_source
 import logging
 logger = logging.getLogger(__name__)
 
-# Registry rows per CSV-COPY chunk (the price_vs_amt precedent — bounds
-# the frame slice + rendered CSV bytes held between the DataFrame and
-# the COPY stream; the CSV path renders whole columns host-side, so no
-# per-row dict list is ever materialized).
-_CHUNK_ROWS = 200_000
+# Rows per CSV-COPY chunk — the bulk-write rule's commit-chunk target
+# (DEFAULT_COMMIT_CHUNK_ROWS): bounds the frame slice + rendered CSV
+# bytes held between the DataFrame and the COPY stream (the CSV path
+# renders whole columns host-side, so no per-row dict list is ever
+# materialized), and keeps each chunk a single COMMIT the replication
+# slot can advance between. Chunks are PARTITION-KEY-ALIGNED (whole
+# codes per chunk — both targets are HASH(code)-partitioned), so a
+# chunk never splits one code's day history across commit boundaries.
+_CHUNK_ROWS = DEFAULT_COMMIT_CHUNK_ROWS
+_PARTITION_KEY = "code"
 
 
 async def _copy_rows_chunked(
     conn, pool, rows_df: pd.DataFrame, *, table: str,
     columns: tuple[str, ...], label: str, max_concurrent: int,
 ) -> int:
-    """COPY-insert a frame in row-count chunks (the price_vs_amt
-    precedent — the caller DELETEd the whole scope first, so the
-    inserted rows are guaranteed conflict-free)."""
+    """COPY-insert a frame in partition-key-aligned chunks (the
+    bulk-write rule: whole codes per chunk → one COMMIT per chunk →
+    replica-lag throttle between chunks; the caller DELETEd the whole
+    scope first, so the inserted rows are guaranteed conflict-free)."""
     n_total = len(rows_df)
     if n_total == 0:
         return 0
 
-    bounds = [
-        (lo, min(lo + _CHUNK_ROWS, n_total))
-        for lo in range(0, n_total, _CHUNK_ROWS)
-    ]
+    bounds, order = _partition_key_frame_order(
+        rows_df, _PARTITION_KEY, _CHUNK_ROWS,
+    )
     n_chunks = len(bounds)
     columns = list(columns)
 
@@ -73,8 +85,13 @@ async def _copy_rows_chunked(
     if not use_parallel:
         total = 0
         for i, (lo, hi) in enumerate(bounds, start=1):
+            await _wait_for_replica_lag_async(conn, DEFAULT_MAX_REPLICA_LAG_MB)
+            chunk = (
+                rows_df.take(order[lo:hi]) if order is not None
+                else rows_df.iloc[lo:hi]
+            )
             n = await csv_copy_from_frame_async(
-                conn, table, rows_df.iloc[lo:hi], columns=columns,
+                conn, table, chunk, columns=columns,
             )
             total += n
             logger.info(f"      {label} chunk {i}/{n_chunks}: "
@@ -92,8 +109,14 @@ async def _copy_rows_chunked(
     async def _task(i: int, lo: int, hi: int) -> int:
         async with sem:
             async with pool.acquire() as c:
+                await _wait_for_replica_lag_async(
+                    c, DEFAULT_MAX_REPLICA_LAG_MB)
+                chunk = (
+                    rows_df.take(order[lo:hi]) if order is not None
+                    else rows_df.iloc[lo:hi]
+                )
                 n = await csv_copy_from_frame_async(
-                    c, table, rows_df.iloc[lo:hi], columns=columns,
+                    c, table, chunk, columns=columns,
                 )
         async with lock:
             counter[0] += n
@@ -202,16 +225,12 @@ async def run_market_regimes(
                 st, code_filter,
             )
         else:
-            status = await conn.execute(
-                f"DELETE FROM {TABLE} WHERE sec_type = $1", st,
+            n_del = await chunked_purge_async(
+                conn, TABLE, where_sql="sec_type = $1", params=(st,),
             )
-            spans_status = await conn.execute(
-                f"DELETE FROM {SPANS_TABLE} WHERE sec_type = $1", st,
+            n_spans_del = await chunked_purge_async(
+                conn, SPANS_TABLE, where_sql="sec_type = $1", params=(st,),
             )
-        n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-        n_spans_del = (
-            int(spans_status.rsplit(" ", 1)[-1]) if spans_status else 0
-        )
         logger.info(f"[mr4/4] deleted {n_del:,} existing state rows + "
               f"{n_spans_del:,} span rows ({st})")
 

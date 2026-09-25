@@ -58,6 +58,14 @@ __all__ = [
     # Key-bounded chunked COPY
     "batched_copy_by_key_async",
     "copy_frame_chunked_async",
+    "csv_copy_frame_chunked_async",
+    # Partition-key chunked DML (the bulk-write rule for DELETEs)
+    "chunked_dml_by_key_async",
+    "chunked_purge_async",
+    # Replica replay-lag throttle (pause bulk writers while the standby
+    # falls behind — shared by the chunked writers in analyze/_common)
+    "DEFAULT_MAX_REPLICA_LAG_MB",
+    "_wait_for_replica_lag_async",
 ]
 
 # -- Internal helpers (exported for sibling modules) --
@@ -65,6 +73,13 @@ from ._helpers import (
     _load_env_vars,
     _get_conn_params,
     _parse_table_name,
+    _group_rows_by_key,
+    _build_chunks,
+    _resolve_partition_key,
+    _build_commit_chunks,
+    _chunk_keys_by_weight,
+    DEFAULT_COMMIT_CHUNK_ROWS,
+    PARTITION_KEY_AUTO,
 )
 
 # -- Connection utilities --
@@ -110,6 +125,10 @@ from ._async_ops import (
     csv_copy_from_frame_async,
     ensure_table_exists_async,
     truncate_table_async,
+    chunked_dml_by_key_async,
+    chunked_purge_async,
+    DEFAULT_MAX_REPLICA_LAG_MB,
+    _wait_for_replica_lag_async,
 )
 
 # -- Copy-or-upsert split --
@@ -123,4 +142,6 @@ from ._copy_or_upsert import (
 from ._batched_copy import (
     batched_copy_by_key_async,
     copy_frame_chunked_async,
+    csv_copy_frame_chunked_async,
+    _partition_key_frame_order,
 )

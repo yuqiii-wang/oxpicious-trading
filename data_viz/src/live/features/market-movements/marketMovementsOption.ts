@@ -52,24 +52,27 @@ export type IndustryFilter = "all" | "industry" | "strategy";
 
 // ============================================================================
 //  Full trading-day tick generation — produces every 5-min tick from
-//  9:30 to 15:30 (spanning morning + afternoon sessions with the lunch
-//  break between). Used to freeze the x-axis so the chart always shows
-//  the full day range, even when intraday data only covers a partial
-//  window (e.g. morning session only).
+//  9:30 to 15:30 as ONE CONTINUOUS timeline (the 11:30–13:00 lunch break
+//  keeps its real slots, so the noon break renders as a proper 90-minute
+//  gap at constant per-tick spacing instead of crashing 11:30 next to
+//  13:00, and the 30-min label cadence flows straight through noon:
+//  11:30, 12:00, 12:30, 13:00). Used to freeze the x-axis so the chart
+//  always shows the full day range, even when intraday data only covers
+//  a partial window (e.g. morning session only). Lunch slots carry no
+//  data — series null there, so every curve (benchmark line, selected
+//  overlay, industry shades) is CUT at the break (connectNulls false),
+//  matching the oiSkew intraday chart's convention.
 // ============================================================================
 function generateFullTradingDayTicks(): string[] {
   const ticks: string[] = [];
-  const morningStart = 9 * 60 + 30;   // 09:30
-  const morningEnd = 11 * 60 + 30;    // 11:30
-  const afternoonStart = 13 * 60;     // 13:00
-  const afternoonEnd = 15 * 60 + 30;  // 15:30
+  const dayStart = 9 * 60 + 30;       // 09:30
+  const dayEnd = 15 * 60 + 30;        // 15:30 (lunch slots included, see above)
   const fmt = (mins: number): string => {
     const h = Math.floor(mins / 60);
     const m = mins % 60;
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
   };
-  for (let t = morningStart; t <= morningEnd; t += 5) ticks.push(fmt(t));
-  for (let t = afternoonStart; t <= afternoonEnd; t += 5) ticks.push(fmt(t));
+  for (let t = dayStart; t <= dayEnd; t += 5) ticks.push(fmt(t));
   return ticks;
 }
 
@@ -160,7 +163,7 @@ export function buildMarketMovementsTopOption(
     data: benchPct,
     showSymbol: false,
     smooth: false,
-    connectNulls: noBenchmark ? false : true,
+    connectNulls: false,
     lineStyle: { width: 2.5, color: benchmarkLineColor },
     itemStyle: { color: benchmarkLineColor },
     z: 10,
@@ -277,7 +280,7 @@ export function buildMarketMovementsTopOption(
         data: pad(times.map((t) => entry.pctByTime.get(t) ?? null)),
         showSymbol: false,
         smooth: false,
-        connectNulls: true,
+        connectNulls: false,
         lineStyle: { width: 2, color, type: "solid" as const },
         itemStyle: { color },
         z: 9,
@@ -296,7 +299,7 @@ export function buildMarketMovementsTopOption(
         data: pad(times.map((t) => byTime.get(t) ?? null)),
         showSymbol: false,
         smooth: false,
-        connectNulls: true,
+        connectNulls: false,
         lineStyle: { width: 2, color, type: "dashed" as const },
         itemStyle: { color },
         z: 9,

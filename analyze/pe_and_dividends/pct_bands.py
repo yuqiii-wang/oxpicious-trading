@@ -96,7 +96,11 @@ import time
 import numpy as np
 import pandas as pd
 
-from _common.db_commons import csv_copy_from_frame_async
+from _common.db_commons import (
+    _wait_for_replica_lag_async,
+    csv_copy_from_frame_async,
+    DEFAULT_MAX_REPLICA_LAG_MB,
+)
 from _common.df_utils import host_array
 from analyze._common import upsert_analysis_identity
 from _common.df_utils import grouped_rolling_quantile
@@ -119,7 +123,7 @@ logger = logging.getLogger(__name__)
 
 # Band rows per CSV COPY chunk (bounds the in-memory chunk sliced off
 # the long frame before rendering — the high_low_pct.py precedent).
-_BAND_CHUNK_ROWS = 200_000
+_BAND_CHUNK_ROWS = 100_000
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +472,9 @@ async def _copy_bands_chunked(conn, bands: pd.DataFrame) -> int:
     n_chunks = (n_total + _BAND_CHUNK_ROWS - 1) // _BAND_CHUNK_ROWS
     total = 0
     for i in range(n_chunks):
+        # Between commit chunks: wait out standby replay lag before
+        # generating more WAL (the bulk-write rule).
+        await _wait_for_replica_lag_async(conn, DEFAULT_MAX_REPLICA_LAG_MB)
         lo = i * _BAND_CHUNK_ROWS
         chunk = bands.iloc[lo:lo + _BAND_CHUNK_ROWS]
         n = await csv_copy_from_frame_async(

@@ -3,20 +3,26 @@
  *
  * Built on the shared analysis nav kit (@/shared/components/sec-nav):
  *   • SecNavShell — header (sec_type toggle ETF/Index/Stock · CodeSearchBar ·
- *     Refresh) + SecClassificationNav (two-level cascade L1 sector → L2
- *     industry + parallel strategy column + exchange filter row + L3
- *     security-level chips), fully wired from useSecNav
+ *     Refresh · PE/Dividends view-mode toggle) + SecClassificationNav
+ *     (two-level cascade L1 sector → L2 industry + parallel strategy column
+ *     + exchange filter row + L3 security-level chips), fully wired from
+ *     useSecNav
  *   • Stack of PeAndDividendPanel cards — one per code on the current page.
- *     Each panel renders (top → bottom):
+ *     The header's PE / Dividends toggle (page-level view mode) picks the
+ *     ONE analysis card each panel renders beneath its baseline plot:
  *       1. Dual-axis time-series chart:
  *            - Left y-axis:  close price
  *            - Right y-axis: PE + dividend_yield (%)
- *          Click anywhere on the plot to select that date — the monthly
- *          stats table beneath highlights the row whose month-end contains
- *          the clicked date and scrolls it into view.
- *       2. Monthly PE & Dividend stats table (analysis.pe_and_dividend_stats):
- *          one row per month-end snapshot, most recent first. is_active row
- *          is tagged with a "latest" chip.
+ *          Click anywhere on the plot to select that date — in dividends
+ *          mode the stats table beneath highlights the row whose year-end
+ *          is the latest one not after the clicked date and scrolls it
+ *          into view.
+ *       2. mode="pe"        → Valuation Streaks (band-break) card
+ *                              (analysis.pe_and_dividend_pct_streaks)
+ *          mode="dividends" → Dividend Stats (10y rolling) table card
+ *                              (analysis.pe_and_dividend_stats), one row
+ *                              per year-end snapshot, most recent first;
+ *                              is_active row tagged with a "latest" chip.
  *   • Pagination — PAGE_SIZE codes per page.
  *
  * Backed by analysis.pe / analysis.dividends + analysis.pe_and_dividend_stats.
@@ -24,7 +30,15 @@
  * time so the UI always shows the freshest source values.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Box, Pagination, Stack, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Pagination,
+  Stack,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from "@mui/material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import type { SecNavThemesSource } from "@/shared/components/sec-nav";
 import {
@@ -36,6 +50,7 @@ import {
 import type { PeAndDividendCodesResponse } from "@shared/types";
 import { PAGE_SIZE } from "./constants";
 import { PeAndDividendPanel } from "./PeAndDividendPanel";
+import type { PeDividendViewMode } from "./types";
 
 /** Nav trees endpoints per sec_type (all PE & Dividend scoped). */
 const THEMES_SOURCES: Record<"etf" | "index" | "stock", SecNavThemesSource> = {
@@ -60,6 +75,13 @@ export default function PeAndDividendPage() {
     dataLabel: "PE & Dividend",
     onInvalidateCache: () => invalidateCacheForPrefix("/api/analysis/pe-and-dividend/"),
   });
+
+  // View mode for the per-code analysis card, switched by the header's
+  // PE / Dividends toggle (a page-level view preference — persists across
+  // sec_type / selection / pagination changes):
+  //   pe        → Valuation Streaks (band-break) card
+  //   dividends → Dividend Stats (10y rolling) table card
+  const [mode, setMode] = useState<PeDividendViewMode>("pe");
 
   // Page-specific state: the codes list + pagination.
   const [codesData, setCodesData] = useState<PeAndDividendCodesResponse | null>(null);
@@ -139,13 +161,29 @@ export default function PeAndDividendPage() {
       backPath="/analysis/commons"
       backLabel="back to commons"
       subtitle={`${nav.headerLabel} — per-security valuation: close price (left axis) vs
-            PE + trailing-12m dividend yield (right axis). Click any
-            date on the chart to highlight the matching month-end row in the
-            5-year rolling stats table beneath. Index securities show all four
-            series; ETF/Stock show close + dividend_yield only (no PE source).`}
+            PE + trailing-12m dividend yield (right axis). Use the PE /
+            Dividends toggle to switch the analysis card beneath each chart —
+            band-break streaks for PE, 10-year rolling stats for dividends.
+            Click any date on the chart to highlight the matching year-end row
+            in the stats table. Index securities show all four series;
+            ETF/Stock show close + dividend_yield only (no PE source).`}
       secTypes={["etf", "index", "stock"]}
       refreshTooltip="Refresh PE & Dividend themes + codes + chart data (bypass cache)"
       errorPrefix="PE & Dividend data"
+      headerAfterSecType={
+        <ToggleButtonGroup
+          value={mode}
+          exclusive
+          size="small"
+          onChange={(_, v) => {
+            if (v) setMode(v as PeDividendViewMode);
+          }}
+          aria-label="analysis view mode"
+        >
+          <ToggleButton value="pe">PE</ToggleButton>
+          <ToggleButton value="dividends">Dividends</ToggleButton>
+        </ToggleButtonGroup>
+      }
     >
       {visibleCodes.length === 0 ? (
         <Alert severity="warning">
@@ -167,6 +205,7 @@ export default function PeAndDividendPage() {
                 code={c.code}
                 name={c.name}
                 secType={nav.secType}
+                mode={mode}
               />
             ))}
           </Stack>

@@ -1,9 +1,9 @@
-"""pe_state bucket monthly aggregation (analysis_forecasts) —
+"""pe_state bucket annual-snapshot aggregation (analysis_forecasts) —
 extreme-percentile engine.
 
 The valuation extreme-PERCENTILE buckets over the PE series of
 analysis.pe (see database/sql/analysis/analysis_forecasts/
-11_pe_state.sql): per stat month's trailing 5-year window [lo, hi) of
+11_pe_state.sql): per stat date's trailing 5-year window [lo, hi) of
 the (T, C) wide grid, a (code, date) joins a bucket when its raw PE
 sits in the top pct% (bucket extreme 'top' — the linearly-interpolated
 quantile of the window's non-NULL pe values at q = 1 - pct/100) or
@@ -26,7 +26,7 @@ the bucket's mean run length recorded on
 forecast_identities.streak_signal_days), the market-hype split, the
 forward-change aggregation, the blended mixed row and the row
 emission — is inherited from ``_dfengine.WideDfEngine``. Yields
-(stat_month, rows) month-major. Each anchor's trigger excess (the
+(stat_date, rows) snapshot-major. Each anchor's trigger excess (the
 anchor day's pe minus the bucket's quantile bar, value − bar) rides
 forecast_results.trigger_excess — the family now has a scalar
 qualifying bar (the quantile), unlike the former band membership.
@@ -145,7 +145,7 @@ class _PeValPctEngine(ValPctEngine):
 def compute_pe_results(
     *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, pe_state bucket rows) per month."""
+    """Yield (stat_date, pe_state bucket rows) per month."""
     engine = _PeValPctEngine(
         df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs,

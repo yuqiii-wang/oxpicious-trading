@@ -20,7 +20,7 @@ streak-merge (consecutive qualifying days → ONE signal with
 incremental anchor triggers at delays 0..TRIGGER_DELAY_MAX),
 the market-hype split, the forward-change aggregation, the blended
 mixed row and the row emission — is inherited from
-``_dfengine.WideDfEngine``. Yields (stat_month, rows) month-major.
+``_dfengine.WideDfEngine``. Yields (stat_date, rows) snapshot-major.
 """
 from __future__ import annotations
 
@@ -177,7 +177,7 @@ def compute_rsi_results(
     *,
     df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, mov_rsi bucket rows) per stat month."""
+    """Yield (stat_date, mov_rsi bucket rows) per stat date."""
     return _run(_RsiEngine, df=df, first_dates=first_dates,
                 regimes=regimes, codes=codes, sec_type=sec_type,
                 specs=specs)

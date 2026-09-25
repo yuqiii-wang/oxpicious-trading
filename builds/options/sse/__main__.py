@@ -526,8 +526,21 @@ class SseOptionsBuild(DataBuild):
             if not ymd or ymd not in meta_ymds:
                 continue
             if not _quotes_file_is_final(f):
-                n_not_final += 1
-                continue
+                # --date rebuild accepts a non-final quotes file: a day cut
+                # short by a streamer crash will never gain a 15:00 sample,
+                # so its last snapshot is the best EOD that date will ever
+                # have, and the terms enrichment (the part the intraday
+                # skewness estimator reads the prev-day snapshot for) comes
+                # from the same-day contract listing, not the quotes. The
+                # regular missing-data pass keeps requiring finality.
+                if not (forced_date is not None
+                        and ymd == forced_date.strftime("%Y%m%d")):
+                    n_not_final += 1
+                    continue
+                logger.info(
+                    f"    → {ymd}: non-final quotes file accepted for "
+                    f"--date rebuild (last snapshot wins)"
+                )
             d = ymd_to_date(ymd)
             if d:
                 available_dates.add(d)

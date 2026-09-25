@@ -42,6 +42,7 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
+from _common.db_commons import chunked_purge_async
 from _common.df_utils import grouped_diff, host_unique, to_dt64
 from analyze.mov_ave_spread.helpers import null_if_overflow_counted
 from analyze._common import (
@@ -426,10 +427,10 @@ async def run_rsi(
             # (in a --sec-type scoped run they are NOT rebuilt).
             logger.info(f"\n[r0/3] Force mode: deleting {sec_type} rows from "
                   "mov_ave_rsi...")
-            status = await conn.execute(
-                f"DELETE FROM {RSI_TABLE} WHERE sec_type = $1", sec_type,
+            n_del = await chunked_purge_async(
+                conn, RSI_TABLE,
+                where_sql="sec_type = $1", params=(sec_type,),
             )
-            n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
             logger.info(f"    -> deleted {n_del:,} rows; will recompute all "
                   f"{sec_type} rows")
         else:

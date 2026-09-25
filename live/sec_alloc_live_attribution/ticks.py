@@ -23,7 +23,7 @@ from __future__ import annotations
 import datetime
 import time
 
-from _common.build_commons import bulk_upsert_async
+from _common.build_commons import bulk_upsert_async, copy_insert_async
 
 from .config import TICK_TABLE
 from .fetch import fetch_fallback_ticks, fetch_missing_ticks
@@ -94,13 +94,22 @@ async def _load_pair(
     rows = compute_tick_rows(
         bars, benchmark_code, is_without_trading_amt=fallback
     )
-    n = await bulk_upsert_async(
-        conn,
-        TICK_TABLE,
-        rows,
-        key_columns=["code", "date", "time", "sec_type", "benchmark_code"],
-        batch_size=5000,
-    )
+    if fallback:
+        # Conflict-free by construction: fetch_fallback_ticks anti-joins
+        # EVERY existing row (fallback values are deterministic; weighted
+        # rows are never downgraded) — COPY fast path.
+        n = await copy_insert_async(conn, TICK_TABLE, rows)
+    else:
+        # KEEP UPSERT: fetch_missing_ticks deliberately re-fetches rows
+        # present only as FALLBACK and this write UPGRADES them in place
+        # (TRUE -> FALSE) — a real, intended PK conflict.
+        n = await bulk_upsert_async(
+            conn,
+            TICK_TABLE,
+            rows,
+            key_columns=["code", "date", "time", "sec_type", "benchmark_code"],
+            batch_size=5000,
+        )
     return n
 
 

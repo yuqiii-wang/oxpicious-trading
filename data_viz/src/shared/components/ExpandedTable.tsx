@@ -37,8 +37,12 @@
  *
  * Rows are zebra-striped; when every row is filtered out a single muted
  * row says so; when `rows` is empty from the start `emptyState` renders.
+ * A row can carry INLINE expansion rows beneath it (expandedRows +
+ * expandedRowKey — extra rows sharing the same columns and headers, no
+ * click handler; the caller owns the expanded state and typically
+ * toggles it from onRowClick).
  */
-import { memo, useMemo, type ReactNode } from "react";
+import { Fragment, memo, useMemo, type ReactNode } from "react";
 import {
   Box,
   Table,
@@ -126,6 +130,23 @@ export interface ExpandedTableProps<T> {
   /** rowKey of the currently selected row (tinted) — paired with
    *  onRowClick to show which row the selection state belongs to. */
   selectedRowKey?: string | null;
+  /** Zebra striping on/off. Default true (the alternating paper /
+   *  hover-bg rows); false gives every body row the SAME background
+   *  (paper) — hover still highlights, expansion rows keep their own
+   *  muted shade. */
+  zebra?: boolean;
+  /** Expandable rows: when `expandedRows` is set, the row whose
+   *  rowKey === `expandedRowKey` renders the rows it returns directly
+   *  beneath it — INLINE, sharing the same columns and headers (no
+   *  nested table, no repeated header row). The caller owns the
+   *  expanded state and typically toggles it from onRowClick.
+   *  Null/undefined key = no row expanded. */
+  expandedRows?: (row: T) => T[];
+  expandedRowKey?: string | null;
+  /** Click handler for the INLINE expansion rows themselves (cursor
+   *  turns pointer when set) — e.g. mark the clicked delay rung's own
+   *  trigger days on a chart. The main rows keep onRowClick. */
+  onExpandedRowClick?: (row: T) => void;
 }
 
 /** Top header-row height (px) — fixed so the sub-header row's sticky top
@@ -174,20 +195,29 @@ interface BodyRowProps<T> {
   valueByKey: Map<string, (r: T) => string | number | null>;
   selected: boolean;
   idx: number;
+  /** false = unified background (no zebra alternation). */
+  zebra: boolean;
   onRowClick?: (row: T) => void;
 }
+
+/** Unified (non-zebra) body row sx — every row the SAME paper
+ *  background; hover still lifts to action.selected. */
+const unifiedBodyRowSx = {
+  bgcolor: "background.paper",
+  "&:hover": { bgcolor: "action.selected" },
+} as const;
 
 /** One body row, individually MEMOIZED: a selection-tint change
  *  (selectedRowKey) or a freeze flip re-renders only the affected row
  *  instead of the whole 100+ row body (the tint render measured ~0.9 s
  *  on the Recent Movements forecast table, 2026-09). All props stay
  *  identity-stable for untouched rows (memoized columns in callers). */
-function BodyRowImpl<T>({ row, columns, valueByKey, selected, idx, onRowClick }: BodyRowProps<T>) {
+function BodyRowImpl<T>({ row, columns, valueByKey, selected, idx, zebra, onRowClick }: BodyRowProps<T>) {
   return (
     <TableRow
       onClick={onRowClick ? () => onRowClick(row) : undefined}
       sx={{
-        ...expandedTableBodyRowSx(idx),
+        ...(zebra ? expandedTableBodyRowSx(idx) : unifiedBodyRowSx),
         ...(onRowClick ? { cursor: "pointer" } : {}),
         ...(selected ? { bgcolor: "action.selected" } : {}),
       }}
@@ -213,6 +243,10 @@ export function ExpandedTableImpl<T>({
   emptyState,
   onRowClick,
   selectedRowKey,
+  zebra = true,
+  expandedRows,
+  expandedRowKey,
+  onExpandedRowClick,
 }: ExpandedTableProps<T>) {
   // Filters are opt-in via enableFilters (default false — "explicitly said
   // to set up filter args from backend"). Column defs alone are not enough.
@@ -341,16 +375,44 @@ export function ExpandedTableImpl<T>({
           ) : (
             filtered.map((row, idx) => {
               const key = rowKey(row);
+              const extra =
+                expandedRows != null &&
+                expandedRowKey != null &&
+                key === expandedRowKey
+                  ? expandedRows(row)
+                  : null;
               return (
-                <BodyRow<T>
-                  key={key}
-                  row={row}
-                  columns={columns}
-                  valueByKey={valueByKey}
-                  selected={selectedRowKey != null && key === selectedRowKey}
-                  idx={idx}
-                  onRowClick={onRowClick}
-                />
+                <Fragment key={key}>
+                  <BodyRow<T>
+                    row={row}
+                    columns={columns}
+                    valueByKey={valueByKey}
+                    selected={selectedRowKey != null && key === selectedRowKey}
+                    idx={idx}
+                    zebra={zebra}
+                    onRowClick={onRowClick}
+                  />
+                  {extra?.map((er, ei) => (
+                    // Inline expansion rows: SAME columns, no headers —
+                    // a muted fixed shade (distinct from the main rows
+                    // whichever zebra mode), optionally clickable.
+                    <TableRow
+                      key={`${key}-x-${ei}`}
+                      onClick={onExpandedRowClick ? () => onExpandedRowClick(er) : undefined}
+                      sx={{
+                        ...expandedTableBodyRowSx(idx + ei + 1),
+                        bgcolor: "action.hover",
+                        ...(onExpandedRowClick ? { cursor: "pointer" } : {}),
+                      }}
+                    >
+                      {columns.map((c) => (
+                        <TableCell key={c.key} sx={colSx(c, expandedTableBodyCellSx)}>
+                          {cellText(c, er, valueByKey)}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </Fragment>
               );
             })
           )}

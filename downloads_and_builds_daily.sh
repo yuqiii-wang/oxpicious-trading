@@ -1,3 +1,5 @@
+# download + build, run on every biz date 19:00 (A-share trading day AND hour >= 19).
+# Set FORCE_DOWNLOADS=1 to bypass the guard for manual/test runs.
 _is_biz_date=$(python -c "from _common._holidays_and_weekdays import is_trading_day; from datetime import date; print(int(is_trading_day(date.today())))")
 _cur_hm=$(date +%H%M)
 if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_hm" -ge 1900 ]; }; then
@@ -32,8 +34,9 @@ done
 
 # download, run on every biz date 19:00 (cont.)
 for m in \
-  downloads.index.csindex.quote
-do 
+  downloads.index.csindex.quote \
+  downloads.index.cnindex.archive
+do
   python -m "$m"
 done
 
@@ -53,47 +56,22 @@ done
 # build's own pipeline (no standalone build): builds.stock writes the
 # stock rows, builds.etf the ETF mixes, builds.index the index mixes —
 # each reads the data its own run just wrote.
+# builds.market_regimes reads the sec_types' basic_stats close + amount
+# (wholesale per-scope rebuild, no incremental mode) — it must stay in
+# this loop, AFTER the basic_stats builds and BEFORE the analyze tier
+# (analysis_forecasts buckets + live.live_signals breaches join the
+# daily states; a lagging table silently defaults them to 'calm').
 for m in \
   builds.stock \
   builds.etf \
   builds.index \
   builds.industry \
   builds.cross_stats \
+  builds.market_regimes \
   builds.bond \
   builds.options \
   builds.futures \
   builds.text
-do
-  python -m "$m"
-done
-
-# analyze, run daily. The industry baseline now lives in
-# stats.industry_basic_stats (built by builds.industry above);
-# industry_correlations + industry_attributions + industry_etf_contribution
-# are internal steps of industry_sentiments (run automatically reading from
-# the baseline table, reusing the same DB connection; stats.cross_stats is
-# the producer (builds.cross_stats above) that the attributions +
-# etf_contribution aggregations read from). mov_ave_rsi is
-# now an internal step of mov_ave_spread (runs automatically after the
-# detail + peaks_and_floors tables are repopulated, reusing the same DB
-# connection and source price DataFrame). analysis_forecasts reads
-# analysis.mov_ave_rsi + analysis.mov_ave_spreads_detail (mov_ave_spread
-# above) + stats.*_tech_stats, so it must run after mov_ave_spread; it is
-# incremental at completed-month granularity (no-ops until a new month
-# closes). analysis_signals reads the forecast buckets (the plain
-# forecast-results rule: mixed-row mean reversal > 1% + reverse P > 1%)
-# + the same mov_ave inputs, so it must run after analysis_forecasts; it
-# is also incremental at month granularity. analysis_composites reads
-# stats.industry_basic_stats + stats.index_basic_stats (builds.industry /
-# builds.index above), so it runs after those; incremental at window-end
-# granularity (opposite industry correlations by benchmark offset).
-for m in \
-  analyze.industry_sentiments \
-  analyze.mov_ave_spread \
-  analyze.pe_and_dividends \
-  analyze.margins \
-  analyze.futures \
-  analyze.options
 do
   python -m "$m"
 done

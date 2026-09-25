@@ -60,9 +60,18 @@ export interface BaseChartProps
    * True while fetching. Without an option yet, a centered spinner replaces
    * the chart; with an option already rendered (background refresh) the
    * chart stays mounted — keeping zoom / tooltip state — with a small
-   * non-blocking spinner on top.
+   * non-blocking spinner on top (or the `freezeOnLoading` backdrop).
    */
   loading?: boolean;
+  /**
+   * Freeze mode for refreshes while an option is mounted: instead of the
+   * small corner spinner, a translucent full-cover backdrop with a centered
+   * spinner overlays the plot and swallows pointer events — the plot can't
+   * be zoomed / clicked until the fetch resolves. No effect before the
+   * first option exists (the placeholder spinner already replaces the
+   * chart).
+   */
+  freezeOnLoading?: boolean;
   /** Error message; replaces the chart body with an error Alert. */
   error?: string | null;
   /** Placeholder text when there is no option to render. Default "No data". */

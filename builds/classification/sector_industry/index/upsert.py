@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from _common.build_commons import bulk_upsert_async, truncate_table_async
+from _common.build_commons import (
+    bulk_upsert_async, copy_insert_async, truncate_table_async,
+)
 
 from builds.classification.sector_industry.catalog import _lookup_labels, _parse_date
 
@@ -98,9 +100,8 @@ async def upsert_index_tags(
             })
     if tag_rows:
         await truncate_table_async(conn, "stats.sec_index_tags")
-        inserted = await bulk_upsert_async(
-            conn, "stats.sec_index_tags", tag_rows,
-            ["code", "sector_id", "industry_id"])
+        # Conflict-free by construction: truncate-then-rebuild — COPY fast path.
+        inserted = await copy_insert_async(conn, "stats.sec_index_tags", tag_rows)
         if verbose:
             logger.info(f"    [DB] Inserted {inserted:,} index tag rows into "
                   f"stats.sec_index_tags")

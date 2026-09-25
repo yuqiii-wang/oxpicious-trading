@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import rec_cols
-from _common.db_commons import copy_insert_async
+from _common.db_commons import copy_insert_async, batched_copy_by_key_async
 from builds._commons.row_emission import records_from_frame
 
 import logging
@@ -171,7 +171,13 @@ async def insert_split_tables(conn, tables: Dict[str, List[dict]]) -> None:
     """COPY-insert each split table (FK parent first)."""
     for tbl, rows in tables.items():
         if rows:
-            inserted = await copy_insert_async(conn, tbl, rows)
+            # Chunked by the partition key: an incremental run's rows are
+            # a few K, but a --force full-history rebuild can push
+            # millions of rows into ONE COPY transaction (all WAL retained
+            # behind it) — key-aligned ~100K-row commits instead.
+            inserted = await batched_copy_by_key_async(
+                conn, tbl, rows, key="contract_code",
+            )
             logger.info(f"    [DB] Inserted {inserted:,} rows into {tbl}")
         else:
             logger.info(f"    [DB] No new rows to insert into {tbl}")

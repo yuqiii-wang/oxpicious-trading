@@ -40,9 +40,7 @@
 \ir analysis_forecasts/01_forecast_results.sql
 \ir analysis_forecasts/02_mov_rsi_mov_std.sql
 \ir analysis_forecasts/04_base_rates.sql
-\ir analysis_forecasts/05_px_vol_state.sql
 \ir analysis_forecasts/06_margin_ratio.sql
-\ir analysis_forecasts/07_opp_pair_state.sql
 \ir analysis_forecasts/08_mov_pairs.sql
 \ir analysis_forecasts/09_mov_pairs_ema.sql
 \ir analysis_forecasts/10_high_low_streaks.sql

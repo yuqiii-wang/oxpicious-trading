@@ -5,10 +5,11 @@ Covers:
     -dps on ex_date+365d, cumsum, merge_asof to trading dates)
   - index dividend_yield: weighted sum of constituent trailing-12m DPS / close
   - etf/stock dividend_yield: trailing-12m DPS / close (merge_asof, no grid)
-  - monthly dividend stats: rolling 5y population std of dividend_yield
-    (x100 as percentage), dividend_stability_5y (CV-based, frequency-robust),
-    last_dividend_per_share + dividend_issued_this_month (vectorized as-of /
-    month-key merges — never iterrows)
+  - annual dividend stats: rolling 10y population std of dividend_yield
+    (daily series, sampled at the year-end rows; x100 as percentage),
+    dividend_stability_10y (CV-based, frequency-robust),
+    last_dividend_per_share + dividend_issued_this_year (vectorized as-of /
+    year-key merges — never iterrows)
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from _common.df_utils import host_array, host_unique, to_dt64
 from _common.df_utils.rolling import grouped_rolling_agg
 from analyze.pe_and_dividends.config import (
     TRAILING_DIVIDEND_DAYS,
-    ROLLING_5Y_DAYS,
+    ROLLING_10Y_DAYS,
     STABILITY_WINDOW_YEARS,
 )
 
@@ -281,87 +282,120 @@ def compute_simple_dividend_yield(
 
 
 # ---------------------------------------------------------------------------
-#  Monthly dividend stats (added IN PLACE to the month-end frame)
+#  Annual dividend stats (10y rolling var / stability / last-dividend + flag)
 # ---------------------------------------------------------------------------
-def add_monthly_dividend_stats(
-    monthly: pd.DataFrame,
+def compute_annual_yield_var(
+    detail_df: pd.DataFrame,
+    year_end_ts: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    """Compute 10y rolling population std of daily dividend_yield, filtered
+    to year-end dates.
+
+    The rolling window runs over the FULL DAILY series (window =
+    ROLLING_10Y_DAYS observations, min_periods=2), mirroring the PE-side
+    extremes; the result is sampled at the year-end snapshot rows and
+    scaled x100 to express it as a percentage (e.g. a fractional-yield
+    std of 0.005 becomes 0.5). NULL when fewer than 2 non-NULL
+    dividend_yield values exist in the window (std undefined for a single
+    observation).
+
+    Args:
+        detail_df: DataFrame with columns code, date (datetime64),
+            dividend_yield — the full daily detail data.
+        year_end_ts: DatetimeIndex of year-end trading dates
+            (datetime64[us]).
+
+    Returns:
+        DataFrame with columns code, date, dividend_var_10y — one row
+        per (code, year-end date) present in detail_df.
+    """
+    if detail_df is None or detail_df.empty:
+        return pd.DataFrame(columns=["code", "date", "dividend_var_10y"])
+
+    dy_daily = detail_df[["code", "date", "dividend_yield"]].copy()
+    dy_daily["date"] = to_dt64(dy_daily["date"])
+    dy_daily = dy_daily.sort_values(["code", "date"]).reset_index(drop=True)
+    dy_daily["dividend_var_10y"] = (
+        grouped_rolling_agg(
+            dy_daily, "code", "dividend_yield",
+            window=ROLLING_10Y_DAYS, min_periods=2, agg="std", ddof=0,
+            sort=False,
+        )
+        * 100.0
+    )
+    # Filter to year-end dates
+    return dy_daily[dy_daily["date"].isin(year_end_ts)][
+        ["code", "date", "dividend_var_10y"]
+    ]
+
+
+def add_annual_dividend_stats(
+    annual: pd.DataFrame,
     composition_df: pd.DataFrame | None,
     stock_dividends_df: pd.DataFrame | None,
     sec_type: str,
 ) -> None:
-    """Add the four dividend stat columns to the month-end frame IN PLACE:
-      - dividend_var_5y: rolling 5y population std of dividend_yield x100
-      - dividend_stability_5y: CV-based score on annualized DPS
-      - last_dividend_per_share: latest single DPS as of each month-end
-      - dividend_issued_this_month: any ex-date in the same calendar month
+    """Add the dividend stat columns to the year-end frame IN PLACE:
+      - dividend_stability_10y: CV-based score on annualized DPS
+      - last_dividend_per_share: latest single DPS as of each year-end
+      - dividend_issued_this_year: any ex-date in the same calendar year
+
+    (dividend_var_10y is computed separately by ``compute_annual_yield_var``
+    over the daily series and merged by the caller.)
 
     Args:
-        monthly: month-end frame with columns code, date (datetime64),
+        annual: year-end frame with columns code, date (datetime64),
             dividend_yield; modified in place.
         composition_df: index composition (index path only) or None.
         stock_dividends_df: the security's OWN dividend events (stock: from
             stats.stock_dividends; etf: from etf_adjustment) or None.
         sec_type: 'index', 'etf', or 'stock'.
     """
-    # ---- Rolling 5y std of dividend_yield (x100 → percentage) ----------
-    # dividend_var_5y stores POPULATION std (ddof=0) of the fractional
-    # dividend_yield, scaled x100 to express it as a percentage (e.g. a std
-    # of 0.005 on the fractional yield becomes 0.5). NULL when fewer than 2
-    # non-NULL dividend_yield values exist in the window.
-    monthly["dividend_var_5y"] = (
-        grouped_rolling_agg(
-            monthly, "code", "dividend_yield",
-            window=ROLLING_5Y_DAYS, min_periods=2, agg="std", ddof=0,
-            sort=False,
-        )
-        * 100.0
+    # ---- dividend_stability_10y (frequency-robust, annualized DPS) ------
+    annual["dividend_stability_10y"] = compute_dividend_stability_10y(
+        annual, composition_df, stock_dividends_df, sec_type
     )
 
-    # ---- dividend_stability_5y (frequency-robust, annualized DPS) ------
-    monthly["dividend_stability_5y"] = compute_dividend_stability_5y(
-        monthly, composition_df, stock_dividends_df, sec_type
-    )
-
-    # ---- last_dividend_per_share + dividend_issued_this_month ----------
+    # ---- last_dividend_per_share + dividend_issued_this_year ------------
     # Rolling record of the latest single dividend per share amount as of
-    # each month-end, plus a flag for whether any ex-dividend event falls in
-    # the same calendar month as the month-end date (drives bold styling in
+    # each year-end, plus a flag for whether any ex-dividend event falls in
+    # the same calendar year as the year-end date (drives bold styling in
     # the UI). SKIPPED for index: the index processing pipeline strips
     # exchange suffixes from stock_dividend codes (so "000001.SZ" → "000001"),
     # which would falsely match bare index codes like "000001" (上证指数).
     # Indices have no direct dividend events, so both columns are NULL/FALSE.
     if sec_type == "index":
-        monthly["last_dividend_per_share"] = np.nan
-        monthly["dividend_issued_this_month"] = False
+        annual["last_dividend_per_share"] = np.nan
+        annual["dividend_issued_this_year"] = False
     else:
-        _add_last_dividend_and_flag(monthly, stock_dividends_df)
+        _add_last_dividend_and_flag(annual, stock_dividends_df)
 
 
 def _add_last_dividend_and_flag(
-    monthly_df: pd.DataFrame,
+    annual_df: pd.DataFrame,
     stock_dividends_df: pd.DataFrame | None,
 ) -> None:
-    """Add last_dividend_per_share and dividend_issued_this_month columns
-    to monthly_df IN PLACE (vectorized as-of lookups — no iterrows).
+    """Add last_dividend_per_share and dividend_issued_this_year columns
+    to annual_df IN PLACE (vectorized as-of lookups — no iterrows).
 
-    For each month-end row:
+    For each year-end row:
       - last_dividend_per_share: the dividend_per_share_pre_tax of the latest
-        ex_dividend_date <= month-end date (summed when multiple events share
+        ex_dividend_date <= year-end date (summed when multiple events share
         the same ex-date). NaN when no dividend event exists on or before the
-        month-end, or when the code has no dividend events at all.
-      - dividend_issued_this_month: TRUE if any ex_dividend_date falls in the
-        same (year, month) as the month-end date. FALSE otherwise. Drives the
+        year-end, or when the code has no dividend events at all.
+      - dividend_issued_this_year: TRUE if any ex_dividend_date falls in the
+        same CALENDAR YEAR as the year-end date. FALSE otherwise. Drives the
         bold styling on the Last Div cell in the UI.
 
     NOTE: This function is ONLY called for stock/etf sec_types. The caller
-    (add_monthly_dividend_stats) skips it entirely for index, because the
+    (add_annual_dividend_stats) skips it entirely for index, because the
     index processing pipeline strips exchange suffixes from stock_dividend
     codes (so "000001.SZ" → "000001"), which would falsely match bare index
     codes like "000001" (上证指数). Indices have no direct dividend events.
 
     Args:
-        monthly_df: DataFrame with columns code, date (datetime64
-            month-end dates); modified in place. Requires a unique
+        annual_df: DataFrame with columns code, date (datetime64
+            year-end dates); modified in place. Requires a unique
             RangeIndex aligned to row positions.
         stock_dividends_df: DataFrame with columns code, ex_dividend_date,
             dividend_per_share_pre_tax — the security's OWN dividend events
@@ -370,10 +404,10 @@ def _add_last_dividend_and_flag(
     if (
         stock_dividends_df is None
         or stock_dividends_df.empty
-        or monthly_df.empty
+        or annual_df.empty
     ):
-        monthly_df["last_dividend_per_share"] = np.nan
-        monthly_df["dividend_issued_this_month"] = False
+        annual_df["last_dividend_per_share"] = np.nan
+        annual_df["dividend_issued_this_year"] = False
         return
 
     # Sum DPS per (code, ex_dividend_date) so multiple events on the same
@@ -393,8 +427,8 @@ def _add_last_dividend_and_flag(
     )
 
     # --- last_dividend_per_share: merge_asof backward per code -----------
-    left = monthly_df[["code", "date"]].copy()
-    left["_ord"] = np.arange(len(monthly_df))
+    left = annual_df[["code", "date"]].copy()
+    left["_ord"] = np.arange(len(annual_df))
     merged = pd.merge_asof(
         left.sort_values("date"),
         div,
@@ -402,40 +436,38 @@ def _add_last_dividend_and_flag(
         by="code",
         direction="backward",
     )
-    # _ord labels are exactly monthly_df's RangeIndex values — assignment
+    # _ord labels are exactly annual_df's RangeIndex values — assignment
     # aligns them back to row positions.
-    monthly_df["last_dividend_per_share"] = merged.set_index("_ord")[
+    annual_df["last_dividend_per_share"] = merged.set_index("_ord")[
         "dividend_per_share_pre_tax"
     ]
 
-    # --- dividend_issued_this_month: (code, year*12+month) key merge -----
-    monthly_df["_mkey"] = (
-        monthly_df["date"].dt.year * 12 + monthly_df["date"].dt.month
-    )
-    div["_mkey"] = div["date"].dt.year * 12 + div["date"].dt.month
-    ev_keys = div[["code", "_mkey"]].drop_duplicates().assign(_hit=1)
-    hit = monthly_df[["code", "_mkey"]].merge(
-        ev_keys, on=["code", "_mkey"], how="left"
+    # --- dividend_issued_this_year: (code, year) key merge ----------------
+    annual_df["_ykey"] = annual_df["date"].dt.year
+    div["_ykey"] = div["date"].dt.year
+    ev_keys = div[["code", "_ykey"]].drop_duplicates().assign(_hit=1)
+    hit = annual_df[["code", "_ykey"]].merge(
+        ev_keys, on=["code", "_ykey"], how="left"
     )
     # merge(how="left") preserves left row order → positional alignment.
-    monthly_df["dividend_issued_this_month"] = (
+    annual_df["dividend_issued_this_year"] = (
         (hit["_hit"].fillna(0) == 1).to_numpy()
     )
-    monthly_df.drop(columns=["_mkey"], inplace=True)
+    annual_df.drop(columns=["_ykey"], inplace=True)
 
 
 # ---------------------------------------------------------------------------
-#  dividend_stability_5y — CV-based, frequency-robust annualized DPS
+#  dividend_stability_10y — CV-based, frequency-robust annualized DPS
 # ---------------------------------------------------------------------------
-def compute_dividend_stability_5y(
-    monthly_df: pd.DataFrame,
+def compute_dividend_stability_10y(
+    annual_df: pd.DataFrame,
     composition_df: pd.DataFrame | None,
     stock_dividends_df: pd.DataFrame | None,
     sec_type: str,
 ) -> pd.Series:
     """Compute frequency-robust dividend stability score (0-100) per row.
 
-    For each month-end date, looks back STABILITY_WINDOW_YEARS calendar
+    For each year-end date, looks back STABILITY_WINDOW_YEARS calendar
     years and computes:
       1. Annual DPS per calendar year (summed to annual totals so
          payment-frequency changes don't create artificial gaps)
@@ -447,9 +479,9 @@ def compute_dividend_stability_5y(
 
     Fully vectorized (code × year cross-merge + groupby — no per-row loop).
 
-    Returns a Series aligned to monthly_df's index.
+    Returns a Series aligned to annual_df's index.
     """
-    n = len(monthly_df)
+    n = len(annual_df)
     if n == 0:
         return pd.Series(dtype=float)
 
@@ -460,16 +492,16 @@ def compute_dividend_stability_5y(
         annual = _compute_simple_annual_dps(stock_dividends_df)
     else:
         # No dividend data — all stability values are None
-        return pd.Series(np.nan, index=monthly_df.index)
+        return pd.Series(np.nan, index=annual_df.index)
 
     if annual.empty:
-        return pd.Series(np.nan, index=monthly_df.index)
+        return pd.Series(np.nan, index=annual_df.index)
 
-    # Cross-merge monthly rows with their code's annual totals, keep the
+    # Cross-merge annual rows with their code's annual totals, keep the
     # trailing STABILITY_WINDOW_YEARS window (including the current year)
     # with non-zero DPS.
-    work = monthly_df[["code", "date"]].copy()
-    work["_ridx"] = np.arange(n)  # == monthly_df's RangeIndex labels
+    work = annual_df[["code", "date"]].copy()
+    work["_ridx"] = np.arange(n)  # == annual_df's RangeIndex labels
     work["_year"] = work["date"].dt.year
 
     cand = work.merge(annual, on="code", how="inner")
@@ -479,7 +511,7 @@ def compute_dividend_stability_5y(
         & (cand["annual_dps"] > 0)
     ]
     if cand.empty:
-        return pd.Series(np.nan, index=monthly_df.index)
+        return pd.Series(np.nan, index=annual_df.index)
 
     g = cand.groupby("_ridx", sort=False)["annual_dps"]
     counts = g.count()
@@ -487,8 +519,8 @@ def compute_dividend_stability_5y(
     stds = g.std(ddof=0)
     cv = (stds / means).clip(upper=1.0)
     stability = ((1.0 - cv) * 100.0).where(counts >= 2)
-    # Sparse result → align back to the full monthly index.
-    return stability.reindex(monthly_df.index)
+    # Sparse result → align back to the full annual index.
+    return stability.reindex(annual_df.index)
 
 
 def _compute_index_annual_dps(

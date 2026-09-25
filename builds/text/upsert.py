@@ -1,7 +1,7 @@
 """builds.text.upsert — DB writers for text.news / text.news_keywords.
 
-Write order (one connection, no cross-table transactions beyond what
-bulk_upsert_async already wraps):
+Write order (one connection, no cross-table transactions beyond what the
+bulk helpers already wrap):
 
   1. text.news          — upsert on the natural key (title, source, date).
                           Before the upsert, the stored state decides which
@@ -33,7 +33,7 @@ import datetime
 import logging
 from typing import Any, Dict, List, Tuple
 
-from _common.build_commons import bulk_upsert_async
+from _common.build_commons import copy_insert_async
 
 logger = logging.getLogger(__name__)
 
@@ -155,10 +155,11 @@ async def refresh_keyword_rows(conn, articles: List[Tuple[int, Dict[str, Any]]])
     for nid, row in articles:
         all_rows.extend(build_keyword_rows(nid, row))
     if all_rows:
-        # bulk_upsert conflicts on (keyword, news_id); rows are fresh deletes
-        # so a plain insert would do — the shared helper keeps one code path.
-        await bulk_upsert_async(conn, KEYWORDS_TABLE, all_rows,
-                                ["keyword", "news_id"])
+        # Conflict-free by construction: the DELETE above emptied every
+        # touched news_id's rows and build_keyword_rows emits one row per
+        # distinct keyword per article (dict keys) — no in-batch or stored
+        # PK can collide, so the rows take the COPY fast path.
+        await copy_insert_async(conn, KEYWORDS_TABLE, all_rows)
     logger.info("    [DB] keyword rows rewritten for %d articles "
                 "(%d rows)", len(articles), len(all_rows))
     return len(all_rows)
@@ -318,10 +319,11 @@ def filter_new_comments(
 
 
 async def insert_comments(conn, comment_rows: List[Dict[str, Any]]) -> int:
-    """Idempotent write of PK-checked comment rows (bulk_upsert on the PK)."""
+    """Write PK-checked comment rows (COPY — see the conflict note)."""
     if not comment_rows:
         return 0
-    await bulk_upsert_async(conn, COMMENTS_TABLE, comment_rows,
-                            ["source", "comment_id"])
+    # Conflict-free by construction: filter_new_comments dropped stored PKs
+    # AND in-batch duplicates (first occurrence wins) — COPY fast path.
+    await copy_insert_async(conn, COMMENTS_TABLE, comment_rows)
     logger.info("    [DB] %d comment rows written", len(comment_rows))
     return len(comment_rows)

@@ -29,8 +29,8 @@ DESCRIPTION_DIVIDENDS = (
     "snapshot (temporal extrapolation) — NOT weighted-DPS / index-close, "
     "which mixes per-share CNY with index points and understates the "
     "yield ~100x. Split (2026-09) from the former combined "
-    "analysis.pe_and_dividends table. Monthly 5y rolling dividend stats "
-    "(var / stability / last dividend) in pe_and_dividend_stats."
+    "analysis.pe_and_dividends table. Annual 10y rolling dividend stats "
+    "in pe_and_dividend_stats."
 )
 
 SEC_TYPES = ("index", "etf", "stock")
@@ -44,11 +44,11 @@ SEC_TYPE_IDENTITY_TABLE = {
 # Trailing-12m dividend window in calendar days.
 TRAILING_DIVIDEND_DAYS = 365
 
-# Rolling 5-year window in trading days (~255 × 5).
-ROLLING_5Y_DAYS = 1275
+# Rolling 10-year window in trading days (~255 × 10).
+ROLLING_10Y_DAYS = 2550
 
-# Calendar years for dividend_stability_5y.
-STABILITY_WINDOW_YEARS = 5
+# Calendar years for dividend_stability_10y.
+STABILITY_WINDOW_YEARS = 10
 
 
 # ============================================================================

@@ -1,10 +1,10 @@
-"""margin_ratio_state bucket monthly aggregation (analysis_forecasts) —
+"""margin_ratio_state bucket annual-snapshot aggregation (analysis_forecasts) —
 sparse tensor engine.
 
 The margin-buy intensity STATE buckets (see
 database/sql/analysis/analysis_forecasts/06_margin_ratio.sql and the
 2026-09 study temp_scripts/study_margin_ratio_forecast.py /
-docs/margin_ratio_study.md): per stat month's trailing 5-year window
+docs/margin_ratio_study.md): per stat date's trailing 5-year window
 [lo, hi) of the (T, C) wide grid, a (code, date) joins ONE of the 6
 ratio states:
 
@@ -20,23 +20,21 @@ ratio states:
 
 There is NO cooldown (a state cell admits every qualifying day —
 1-day signals, the identity registry's streak_signal_days constant;
-px_vol_state moved onto the event families' streak-merge in 2026-09,
-margin_ratio did not), and the bucket split is by PK member
+the event families' streak-merge does not apply here), and the bucket
+split is by PK member
 regime_state only. The bucket is etf/stock only — index rz_buy is
 NULL so every mask is False and no rows emit.
 
 Per (side, hype) subset the horizon aggregates reuse
-wide.aggregate_horizons_sparse against the code's ADAPTIVE reversal
-bar (thresholds: k_n·σ of the window's n-day forward changes)
-— the crowding states high/vhigh carry side='top' (reverse on change
-< -thr, the study's bearish reading), vlow/low/no_buy side='bottom'
-(reverse on change > +thr), mid side='flat' with reverse_prob = NULL
-(no directional claim). The config JSONB records the bucket's mean
-ratio / mean z (motivation magnitude, like px_vol's mean_t / mean_z).
+the engine's vectorized horizon aggregation — the crowding states
+high/vhigh carry side='top' (the study's bearish reading),
+vlow/low/no_buy side='bottom', mid side='flat' (no directional
+claim). The config JSONB records the bucket's mean
+ratio / mean z (motivation magnitude).
 
-Yields (stat_month, rows) so __main__ can split each row into the
+Yields (stat_date, rows) so __main__ can split each row into the
 margin_ratio_state motivation dicts and the forecast_results result
-dicts and write month-major.
+dicts and write snapshot-major.
 """
 
 
@@ -120,7 +118,7 @@ class _MarginRatioEngine(WideDfEngine):
 def compute_margin_ratio_results(
     *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, margin_ratio_state bucket rows) per month."""
+    """Yield (stat_date, margin_ratio_state bucket rows) per month."""
     engine = _MarginRatioEngine(
         df=df,
         first_dates=first_dates,

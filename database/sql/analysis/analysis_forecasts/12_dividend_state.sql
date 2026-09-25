@@ -10,7 +10,7 @@
 --    a day is in the bucket when dividend_yield sits in the top pct%
 --    (side=top bucket) or bottom pct% (side=bottom bucket) of the
 --    window's non-NULL yield values — the percentile computed per code
---    over the trailing 5-year window (stat_month - 5y, stat_month]
+--    over the trailing 10-year window (stat_date - 10y, stat_date]
 --    with linear interpolation; pct ∈ {1, 5, 10, 25}. Only EXTREME
 --    days form buckets (the central bulk has none — the RSI semantics;
 --    the former z ladder's mid/flat state is gone).
@@ -18,10 +18,8 @@
 --  SIDE (the yield is HIGHER the better — a high trailing yield is a
 --  cheap, well-supported valuation; the REVERSE of the pe_state
 --  family's mapping, 11_pe_state.sql):
---    top-pct% (high yield) days = 'bottom' (bullish — reverse_prob =
---              P(the n-day forward window's path high > +threshold)),
---    bottom-pct% (low yield) days = 'top' (bearish — reverse_prob =
---              P(path low < -threshold)).
+--    top-pct% (high yield) days = 'bottom' (bullish),
+--    bottom-pct% (low yield) days = 'top' (bearish).
 --
 --  side is MATERIALIZED per row, so analysis_signals.gate and every
 --  other consumer read the tables unchanged (dir_ave = -ave_change for
@@ -43,13 +41,13 @@
 --  quantile bar) rides forecast_results.trigger_excess.
 --
 --  lookback_period is a RECORDED BUILD PARAMETER (NOT part of the PK —
---  rebuilding with a different value requires --force). The full-5y
+--  rebuilding with a different value requires --force). The full-10y
 --  window gate is identical to the other engines.
 --  CODE-CLUSTERED, forecast_id-keyed (2026-09 shape): PK (code,
 --  forecast_id) on HASH (code) partitions — the code-clustered
 --  read/write axis; forecast_id-only joins/searches use the secondary
 --  idx_dividend_state_forecast_id. code is the ONLY identity column
---  stored here (the partition key); sec_type and stat_month live ONLY
+--  stored here (the partition key); sec_type and stat_date live ONLY
 --  in analysis_forecasts.forecast_identities — the search table
 --  (see 02_mov_rsi_mov_std.sql).
 -- ============================================================================
@@ -76,14 +74,14 @@ WHERE bucket = 'dividend_state';
 DROP TABLE IF EXISTS analysis_forecasts.dividend_state CASCADE;
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.dividend_state (
-    code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
+    code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_date live in forecast_identities
     forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_dividend_state_forecast_id
     side            TEXT         NOT NULL,  -- yield HIGHER the better: top-pct% (high-yield) days → 'bottom' (bullish), bottom-pct% (low-yield) days → 'top' (bearish)
     pct             INTEGER      NOT NULL,  -- percentile width of the extreme bucket: 1 / 5 / 10 / 25
 
     -- recorded build parameter (NOT PK): trailing window the bucket was
-    -- computed over — '5y' = (stat_month - 5y, stat_month]
-    lookback_period TEXT         NOT NULL DEFAULT '5y',
+    -- computed over — '10y' = (stat_date - 10y, stat_date]
+    lookback_period TEXT         NOT NULL DEFAULT '10y',
 
     -- motivation cols
     regime_state    TEXT         NOT NULL,  -- the bucket's market-regime split (stats.market_regimes day label of its bucket days)
@@ -103,11 +101,11 @@ CREATE INDEX IF NOT EXISTS idx_dividend_state_forecast_id
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.dividend_state IS 'Valuation extreme-percentile buckets (motivation) over the dividend-yield series of analysis.dividends: one row per forecast_id — the days of one security-month whose trailing-12m D/P (fractional) sits in the top pct% or bottom pct% of the trailing 5-year window''s non-NULL yield values, per the code''s OWN distribution (linearly-interpolated quantile bars — the mov_rsi pct convention; pct ∈ {1, 5, 10, 25}; only extreme days form buckets). SIDE (yield HIGHER the better — the REVERSE of pe_state''s mapping): top-pct% (cheap, well-supported) days carry side ''bottom'' (bullish — reverse_prob = P(the forward window''s path high > +threshold)), bottom-pct% (low-yield) days ''top'' (bearish). Non-payer days (NULL yield) form no bucket. The pe sibling lives in analysis_forecasts.pe_state (same pct grid, REVERSED side mapping). Streak-merged signals (consecutive qualifying days = ONE mid-anchored signal; mean run length on forecast_identities.streak_signal_days). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / swing-aware reversal probabilities at the FIXED 1% bar) live in analysis_forecasts.forecast_results via forecast_id. Populated by python -m analyze.analysis_forecasts.';
-COMMENT ON COLUMN analysis_forecasts.dividend_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
-COMMENT ON COLUMN analysis_forecasts.dividend_state.side IS 'Reversal side of the bucket''s forecast_results.reverse_prob — the yield is HIGHER the better (a high trailing yield is a cheap, well-supported valuation): the top-pct% (high-yield) bucket days = ''bottom'' (bullish — reversal counts n-day changes above +threshold), the bottom-pct% (low-yield) days = ''top'' (bearish — reversal below -threshold). The REVERSE of the pe_state mapping. Mirrors the mov_* side semantics so analysis_signals.gate consumes the table unchanged.';
+COMMENT ON TABLE analysis_forecasts.dividend_state IS 'Valuation extreme-percentile buckets (motivation) over the dividend-yield series of analysis.dividends: one row per forecast_id — the window days of one security snapshot whose trailing-12m D/P (fractional) sits in the top pct% or bottom pct% of the trailing 10-year window''s non-NULL yield values, per the code''s OWN distribution (linearly-interpolated quantile bars — the mov_rsi pct convention; pct ∈ {1, 5, 10, 25}; only extreme days form buckets). SIDE (yield HIGHER the better — the REVERSE of pe_state''s mapping): top-pct% (cheap, well-supported) days carry side ''bottom'' (bullish), bottom-pct% (low-yield) days ''top'' (bearish). Non-payer days (NULL yield) form no bucket. The pe sibling lives in analysis_forecasts.pe_state (same pct grid, REVERSED side mapping). Streak-merged signals (consecutive qualifying days = ONE mid-anchored signal; mean run length on forecast_identities.streak_signal_days). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_date) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes) live in analysis_forecasts.forecast_results via forecast_id. Populated by python -m analyze.analysis_forecasts.';
+COMMENT ON COLUMN analysis_forecasts.dividend_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_date) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON COLUMN analysis_forecasts.dividend_state.side IS 'Directional claim of the bucket — the yield is HIGHER the better (a high trailing yield is a cheap, well-supported valuation): the top-pct% (high-yield) bucket days = ''bottom'' (bullish), the bottom-pct% (low-yield) days = ''top'' (bearish). The REVERSE of the pe_state mapping. Mirrors the mov_* side semantics so analysis_signals.gate consumes the table unchanged.';
 COMMENT ON COLUMN analysis_forecasts.dividend_state.pct IS 'Percentile width of the extreme bucket: 1, 5, 10 or 25 (percent). The threshold is the window''s (linearly-interpolated) percentile of dividend_yield over non-NULL values: the top bucket''s bar at q = 1 - pct/100, the bottom bucket''s at q = pct/100.';
-COMMENT ON COLUMN analysis_forecasts.dividend_state.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
+COMMENT ON COLUMN analysis_forecasts.dividend_state.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''10y'' = (stat_date - 10 years, stat_date]. Default ''10y''; a rebuild with a different lookback requires --force.';
 COMMENT ON COLUMN analysis_forecasts.dividend_state.regime_state IS 'The bucket''s market-regime split: the stats.market_regimes day label (calm / hot / panic / quiet) carried by the bucket''s trigger days — every trigger day joins exactly one regime, so each (config, regime) pair is its own bucket. Replaces the retired is_market_hyped boolean (stats.mov_ave_market_hypes episode overlap); hot is the closest successor of the old TRUE split.';
 
 -- ----------------------------------------------------------------------------

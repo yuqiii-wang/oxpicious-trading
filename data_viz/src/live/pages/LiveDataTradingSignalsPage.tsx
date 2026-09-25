@@ -16,14 +16,22 @@
  *     live_signals (newest first).
  *   • Signal menu — the ACTIVE analysis_signals configs (signal_type /
  *     signal_sub_type) for the sec_type, default ALL; filters the list.
+ *   • PK grouping — the parent table shows ONE row per (code, date, time)
+ *     tick (the live_signals PK minus the config columns): several configs
+ *     breaching at the same tick collapse into the group's highest-
+ *     confidence signal, marked with a "+N" chip on the Signal cell. The
+ *     collapsed siblings reappear inside the row's expansion panel (the
+ *     signals-at-this-tick table).
  *   • Row expansion — every row is CLICKABLE: clicking toggles a panel
- *     below the row with (1) the code's daily price trend (shared
- *     CodeTrendChart over the sec_type's baseline endpoint) carrying the
- *     code's FULL signal history as buy (green ▲ below the low) / sell
- *     (red ▼ above the high) markers, and (2) the code's history-signals
- *     table (GET /api/live-data/trading-signals/history — every
- *     live.live_signals row of the code, newest first). One row expanded
- *     at a time; re-expanding a code reuses the cached history fetch.
+ *     below the row with (1) the tick's collapsed signals (only when
+ *     several configs breached the same tick), (2) the code's daily price
+ *     trend (shared CodeTrendChart over the sec_type's baseline endpoint)
+ *     carrying the code's FULL signal history as buy (green ▲ below the
+ *     low) / sell (red ▼ above the high) markers, and (3) the code's
+ *     history-signals table (GET /api/live-data/trading-signals/history —
+ *     every live.live_signals row of the code, newest first). One row
+ *     expanded at a time; re-expanding a code reuses the cached history
+ *     fetch.
  *   • Refresh button — force-triggers `python -m live.live_signals
  *     --sec-type <selection>` (the same run the 13:30 scheduler fires),
  *     then reloads the list. On an OLD date (no intraday bars exist) it
@@ -58,8 +66,8 @@ import {
   Tooltip,
   Typography,
   useTheme,
-  type Theme,
 } from "@mui/material";
+import { SignalActionChip } from "@/shared/components/signal-action";
 import {
   fetchTradingSignalConfigs,
   fetchTradingSignals,
@@ -117,70 +125,6 @@ function persistSecType(st: SecType): void {
 /** Short menu label: "rsi14" → "mov_rsi · rsi14". */
 function configLabel(c: TradingSignalConfig): string {
   return `${c.signal_type} · ${c.signal_sub_type}`;
-}
-
-// ---------------------------------------------------------------------------
-//  Buy/Sell color helpers — MUI palette.success (green) for buy,
-//  palette.error (red) for sell, visualized as a NO-FILL outlined chip
-//  so text never gets hidden. Confidence tunes *border width + text
-//  alpha* as the intensity knob: 100 → 2px solid full color, 1 → 1px
-//  still-visible tint (minimum alpha = 0.55 so never too faint).
-// ---------------------------------------------------------------------------
-
-/** Minimum border/text alpha even at confidence=1 — keeps the chip
- *  clearly visible (never a ghost outline). */
-const MIN_CONF_ALPHA = 0.55;
-
-/** Map confidence (1..100) to a border/text alpha. Linear ramp, clamped
- *  at MIN_CONF_ALPHA on the low end. */
-function confAlpha(confidence: number): number {
-  const c = Math.max(1, Math.min(100, confidence));
-  return MIN_CONF_ALPHA + (c / 100) * (1 - MIN_CONF_ALPHA);
-}
-
-/** Map confidence (1..100) to border width in px. Linear ramp: 1px at 1,
- *  2px at 100 — the thicker outline is the "intensity" signal when no
- *  fill is present. */
-function confBorderWidth(confidence: number): number {
-  const c = Math.max(1, Math.min(100, confidence));
-  return 1 + (c / 100); // 1.00 → 2.00
-}
-
-/** Convert a theme palette "main" hex (#RRGGBB) into an rgba string with
- *  the given alpha — used for confidence-tinted border + text. */
-function hexWithAlpha(hex: string, alpha: number): string {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim());
-  if (!m) return hex;
-  const n = parseInt(m[1]!, 16);
-  const r = (n >> 16) & 0xff;
-  const g = (n >> 8) & 0xff;
-  const b = n & 0xff;
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-/** Chip sx overrides — NO fill (outlined by default), so text is never
- *  hidden. Border width + border/text alpha ramp with confidence. */
-function actionChipSx(
-  action: string,
-  confidence: number,
-  theme: Theme,
-): Record<string, unknown> {
-  const buy = action === "buy";
-  const main = buy ? theme.palette.success.main : theme.palette.error.main;
-  const alpha = confAlpha(confidence);
-  return {
-    fontWeight: 600,
-    backgroundColor: "transparent",
-    borderColor: hexWithAlpha(main, alpha),
-    borderWidth: confBorderWidth(confidence),
-    borderStyle: "solid",
-    color: hexWithAlpha(main, alpha),
-    "&:hover": {
-      backgroundColor: hexWithAlpha(main, 0.08),
-      borderColor: main,
-      color: main,
-    },
-  };
 }
 
 export default function LiveDataTradingSignalsPage() {
@@ -489,11 +433,23 @@ function rowKey(s: TradingSignal): string {
   return `${s.code}-${s.signal_type}-${s.signal_sub_type}-${s.date}-${s.time}`;
 }
 
-/** The day's triggered signals, confidence DESC (server-ordered). Every row
- *  is CLICKABLE: clicking toggles an expansion below the row with (1) the
- *  code's daily price trend (shared CodeTrendChart) marked with the code's
- *  full history of buy/sell signals and (2) the code's history-signals
- *  table. One row expanded at a time. */
+/** Tick-group identity: the live_signals PK minus the config columns —
+ *  several configs breaching at the same (code, date, time) collapse into
+ *  ONE parent row; the siblings surface in the expansion panel. */
+function tickKey(s: TradingSignal): string {
+  return `${s.code}-${s.date}-${s.time}`;
+}
+
+/** The day's triggered signals, confidence DESC (server-ordered), grouped
+ *  to ONE parent row per (code, date, time) tick — the representative is
+ *  the group's highest-confidence signal (server orders confidence DESC
+ *  and the signal-menu filter preserves order), and a "+N" chip on the
+ *  Signal cell marks the collapsed siblings. Every row is CLICKABLE:
+ *  clicking toggles an expansion below the row with (1) the tick's
+ *  collapsed signals (multi-config ticks only), (2) the code's daily price
+ *  trend (shared CodeTrendChart) marked with the code's full history of
+ *  buy/sell signals and (3) the code's history-signals table. One row
+ *  expanded at a time. */
 function SignalTable({
   rows,
   loading,
@@ -507,6 +463,25 @@ function SignalTable({
 }) {
   const theme = useTheme();
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  // PK (code, date, time) grouping: one parent row per tick, the rest of
+  // each group withheld into the row's expansion. Insertion-ordered Map —
+  // parentRows keeps the server's confidence-DESC order.
+  const tickGroups = useMemo(() => {
+    const groups = new Map<string, TradingSignal[]>();
+    for (const s of rows) {
+      const k = tickKey(s);
+      const group = groups.get(k);
+      if (group) group.push(s);
+      else groups.set(k, [s]);
+    }
+    return groups;
+  }, [rows]);
+  const parentRows = useMemo(
+    () => [...tickGroups.values()].map((group) => group[0]),
+    [tickGroups],
+  );
+
   if (loading && rows.length === 0) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
@@ -514,7 +489,7 @@ function SignalTable({
       </Box>
     );
   }
-  if (rows.length === 0) {
+  if (parentRows.length === 0) {
     return (
       <Box
         sx={{
@@ -546,21 +521,31 @@ function SignalTable({
             <TableCell align="right">Signal value</TableCell>
             <TableCell align="right">Threshold</TableCell>
             <TableCell align="right">Excess</TableCell>
-            <TableCell align="right">Confidence</TableCell>
             <Tooltip
               title={
-                "The breach day sits inside one of the code's " +
-                "market-hype episodes — the regime the strategy's " +
-                "reversal stats were NOT calibrated on"
+                "The strategy's expected favorable move (the chosen entry " +
+                "rung's sign-aligned dir_ave) as a % of price — the breach " +
+                "record's confidence in basis points / 100"
               }
               arrow
             >
-              <TableCell align="center">hyped</TableCell>
+              <TableCell align="right">Confidence</TableCell>
             </Tooltip>
             <Tooltip
               title={
-                "Signals for this code over the last 20 trading days " +
-                "(all signal types)"
+                "The breach day's market regime (stats.market_regimes: " +
+                "calm / hot / panic / quiet) — recorded context, never a " +
+                "gate; the same split the strategy itself registered under"
+              }
+              arrow
+            >
+              <TableCell align="center">regime</TableCell>
+            </Tooltip>
+            <Tooltip
+              title={
+                "Signal DAYS for this code over the last 20 trading days " +
+                "— one day counts once, through its highest-confidence " +
+                "signal that day (all signal types)"
               }
               arrow
             >
@@ -569,8 +554,9 @@ function SignalTable({
           </TableRow>
         </TableHead>
         <TableBody>
-          {rows.map((s) => {
-            const key = rowKey(s);
+          {parentRows.map((s) => {
+            const key = tickKey(s);
+            const group = tickGroups.get(key) ?? [s];
             const expanded = expandedKey === key;
             return (
               <Fragment key={key}>
@@ -607,16 +593,36 @@ function SignalTable({
                   <TableCell sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
                     {s.code_name ?? s.code}
                   </TableCell>
-                  <TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>
                     {s.signal_type} · {s.signal_sub_type}
+                    {group.length > 1 && (
+                      <Tooltip
+                        title={
+                          `+${group.length - 1} more config breached this ` +
+                          "tick — expand for all: " +
+                          group
+                            .slice(1)
+                            .map((g) => `${g.signal_type} · ${g.signal_sub_type}`)
+                            .join(", ")
+                        }
+                        arrow
+                      >
+                        <Chip
+                          size="small"
+                          label={`+${group.length - 1}`}
+                          variant="outlined"
+                          sx={{
+                            ml: 0.5,
+                            height: 18,
+                            fontSize: "0.65rem",
+                            verticalAlign: "middle",
+                          }}
+                        />
+                      </Tooltip>
+                    )}
                   </TableCell>
                   <TableCell>
-                    <Chip
-                      size="small"
-                      label={s.action.toUpperCase()}
-                      variant="outlined"
-                      sx={actionChipSx(s.action, s.confidence, theme)}
-                    />
+                    <SignalActionChip action={s.action} confidence={s.confidence} />
                   </TableCell>
                   <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
                   <TableCell align="right">
@@ -654,7 +660,7 @@ function SignalTable({
                       color: theme.palette.text.secondary,
                     }}
                   >
-                    {s.confidence}
+                    {s.confidence_pct.toFixed(2)}%
                   </TableCell>
                   <TableCell align="center">
                     <Box
@@ -666,7 +672,7 @@ function SignalTable({
                         fontWeight: 600,
                       }}
                     >
-                      {s.regime_state === "calm" ? "·" : "●"}
+                      {s.regime_state === "calm" ? "·" : s.regime_state}
                     </Box>
                   </TableCell>
                   <TableCell
@@ -688,7 +694,7 @@ function SignalTable({
                       colSpan={11}
                       sx={{ p: 0, border: "none", bgcolor: "background.default" }}
                     >
-                      <SignalExpansion signal={s} />
+                      <SignalExpansion signal={s} group={group} />
                     </TableCell>
                   </TableRow>
                 )}
@@ -702,15 +708,25 @@ function SignalTable({
 }
 
 // ---------------------------------------------------------------------------
-//  Row expansion — the code's price trend (shared CodeTrendChart) with the
-//  FULL signal history drawn as buy/sell markers, above the code's
-//  history-signals table (live.live_signals, newest first).
+//  Row expansion — the tick's collapsed signals (multi-config ticks), above
+//  the code's price trend (shared CodeTrendChart) with the FULL signal
+//  history drawn as buy/sell markers, above the code's history-signals
+//  table (live.live_signals, newest first).
 // ---------------------------------------------------------------------------
 
 /** The sec_types CodeTrendChart knows how to fetch. */
 const TREND_SEC_TYPES: ReadonlySet<string> = new Set(["index", "etf", "stock"]);
 
-function SignalExpansion({ signal }: { signal: TradingSignal }) {
+function SignalExpansion({
+  signal,
+  group,
+}: {
+  signal: TradingSignal;
+  /** Every config that breached the parent row's (code, date, time) tick,
+   *  confidence DESC — the rows the parent table's PK grouping collapsed
+   *  into it. */
+  group: TradingSignal[];
+}) {
   const [history, setHistory] = useState<TradingSignal[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -741,7 +757,7 @@ function SignalExpansion({ signal }: { signal: TradingSignal }) {
         action: h.action,
         signal_type: h.signal_type,
         signal_sub_type: h.signal_sub_type,
-        confidence: h.confidence,
+        confidence: h.confidence_pct,
       })),
     [history],
   );
@@ -762,6 +778,7 @@ function SignalExpansion({ signal }: { signal: TradingSignal }) {
   }
   return (
     <Stack spacing={2} sx={{ p: 1.5 }}>
+      {group.length > 1 && <TickSignalsTable group={group} />}
       {TREND_SEC_TYPES.has(signal.sec_type) && (
         <CodeTrendChart
           secType={signal.sec_type as CodeTrendSecType}
@@ -773,6 +790,92 @@ function SignalExpansion({ signal }: { signal: TradingSignal }) {
       )}
       <HistorySignalsTable rows={history} />
     </Stack>
+  );
+}
+
+/** Every config that breached the expanded row's (code, date, time) tick —
+ *  the rows the parent table's PK grouping withheld, confidence DESC (the
+ *  first is the parent row itself). */
+function TickSignalsTable({ group }: { group: TradingSignal[] }) {
+  const theme = useTheme();
+  return (
+    <Paper variant="outlined" sx={{ p: 1.25 }}>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ display: "block", mb: 0.75, px: 0.5 }}
+      >
+        All signals at this tick · {group[0].date} {group[0].time} ·{" "}
+        {group.length} config{group.length === 1 ? "" : "s"}
+      </Typography>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell>Signal</TableCell>
+            <TableCell>Action</TableCell>
+            <TableCell align="right">Signal value</TableCell>
+            <TableCell align="right">Threshold</TableCell>
+            <TableCell align="right">Excess</TableCell>
+            <Tooltip
+              title={
+                "The strategy's expected favorable move (the chosen entry " +
+                "rung's sign-aligned dir_ave) as a % of price — the breach " +
+                "record's confidence in basis points / 100"
+              }
+              arrow
+            >
+              <TableCell align="right">Confidence</TableCell>
+            </Tooltip>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {group.map((s) => (
+            <TableRow key={rowKey(s)}>
+              <TableCell sx={{ whiteSpace: "nowrap" }}>
+                {s.signal_type} · {s.signal_sub_type}
+              </TableCell>
+              <TableCell>
+                <SignalActionChip action={s.action} confidence={s.confidence} />
+              </TableCell>
+              <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
+              <TableCell align="right">
+                {s.signal_threshold.toFixed(4)}
+              </TableCell>
+              <TableCell
+                align="right"
+                sx={{
+                  whiteSpace: "nowrap",
+                  color: s.action === "buy"
+                    ? theme.palette.success.main
+                    : theme.palette.error.main,
+                  fontWeight: 600,
+                }}
+              >
+                {s.signal_excess >= 0 ? "▲ " : "▼ "}
+                {s.signal_excess.toFixed(4)}
+                {s.signal_excess_pct !== null &&
+                  s.signal_excess_pct !== undefined && (
+                    <Box
+                      component="span"
+                      sx={{
+                        color: theme.palette.text.secondary,
+                        fontWeight: 400,
+                        ml: 0.5,
+                      }}
+                    >
+                      ({s.signal_excess_pct >= 0 ? "+" : ""}
+                      {s.signal_excess_pct.toFixed(2)}%)
+                    </Box>
+                  )}
+              </TableCell>
+              <TableCell align="right" sx={{ color: "text.secondary" }}>
+                {s.confidence_pct.toFixed(2)}%
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Paper>
   );
 }
 
@@ -804,8 +907,26 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
                 <TableCell align="right">Signal value</TableCell>
                 <TableCell align="right">Threshold</TableCell>
                 <TableCell align="right">Excess</TableCell>
-                <TableCell align="right">Confidence</TableCell>
-                <TableCell align="center">hyped</TableCell>
+                <Tooltip
+                  title={
+                    "The strategy's expected favorable move (the chosen " +
+                    "entry rung's sign-aligned dir_ave) as a % of price — " +
+                    "the breach record's confidence in basis points / 100"
+                  }
+                  arrow
+                >
+                  <TableCell align="right">Confidence</TableCell>
+                </Tooltip>
+                <Tooltip
+                  title={
+                    "The breach day's market regime (stats.market_regimes: " +
+                    "calm / hot / panic / quiet) — recorded context, never a " +
+                    "gate; the same split the strategy itself registered under"
+                  }
+                  arrow
+                >
+                  <TableCell align="center">regime</TableCell>
+                </Tooltip>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -837,12 +958,7 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
                     {s.signal_type} · {s.signal_sub_type}
                   </TableCell>
                   <TableCell>
-                    <Chip
-                      size="small"
-                      label={s.action.toUpperCase()}
-                      variant="outlined"
-                      sx={actionChipSx(s.action, s.confidence, theme)}
-                    />
+                    <SignalActionChip action={s.action} confidence={s.confidence} />
                   </TableCell>
                   <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
                   <TableCell align="right">
@@ -862,7 +978,7 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
                     {s.signal_excess.toFixed(4)}
                   </TableCell>
                   <TableCell align="right" sx={{ color: "text.secondary" }}>
-                    {s.confidence}
+                    {s.confidence_pct.toFixed(2)}%
                   </TableCell>
                   <TableCell align="center">
                     <Box
@@ -874,7 +990,7 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
                         fontWeight: 600,
                       }}
                     >
-                      {s.regime_state === "calm" ? "·" : "●"}
+                      {s.regime_state === "calm" ? "·" : s.regime_state}
                     </Box>
                   </TableCell>
                 </TableRow>

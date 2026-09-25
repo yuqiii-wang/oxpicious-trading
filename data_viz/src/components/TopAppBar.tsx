@@ -35,6 +35,7 @@ const APPS: Record<AppKey, AppConfig> = {
     tabs: [
       { label: "Market Movements", path: "/live/market-movements" },
       { label: "Trading Signals", path: "/live/trading-signals" },
+      { label: "Options", path: "/live/options" },
       { label: "Index", path: "/live/index" },
       { label: "ETF", path: "/live/etf" },
       { label: "Stock", path: "/live/stock" },

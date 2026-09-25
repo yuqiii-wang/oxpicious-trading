@@ -189,6 +189,27 @@ def compute_expiry_date(trade_date, expiry_month):
 
 
 # ============================================================================
+# Byte-level empty-CSV pre-check (shared by both source readers below)
+# ============================================================================
+def _csv_is_empty(path: str) -> bool:
+    """True for zero-byte or header-only snapshot CSVs (holiday exports).
+
+    cuDF raises EmptyDataError on such files and falls back to pandas per
+    read (two "[cudf fallback] pandas.read_csv" lines each) — callers skip
+    them before parsing. The ``fsize <= len(head)`` guard keeps files larger
+    than the 64KB head (data possibly beyond it) out of the skip.
+    """
+    try:
+        fsize = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            head = fh.read(65536).replace(b"\r\n", b"\n")
+    except OSError:
+        return True
+    nl = head.find(b"\n")
+    return nl == -1 or (head[nl + 1:].strip() == b"" and fsize <= len(head))
+
+
+# ============================================================================
 # Build options DataFrame from a given list of source files
 # ============================================================================
 _SZSE_OPT_RENAME = {
@@ -228,17 +249,7 @@ def build_options_df(files, verbose=True):
         if not ymd:
             continue
 
-        # Byte-level emptiness pre-check: cuDF raises EmptyDataError on
-        # header-only (or zero-byte) files and falls back to pandas per
-        # read (~28 lines per run). Skip them before parsing.
-        try:
-            _fsize = os.path.getsize(path)
-            with open(path, "rb") as _fh:
-                _head = _fh.read(65536).replace(b"\r\n", b"\n")
-        except OSError:
-            continue
-        _nl = _head.find(b"\n")
-        if _nl == -1 or (_head[_nl + 1:].strip() == b"" and _fsize <= len(_head)):
+        if _csv_is_empty(path):
             n_empty += 1
             continue
 
@@ -398,9 +409,13 @@ def load_etf_ohlcv(files, verbose=True):
         logger.info(f"    [ETF-OHLCV] reading {len(files)} szse_trend_etf_*.csv files")
 
     parts: list = []
+    n_empty = 0
     for path in files:
         ymd = ymd_from_filename(path, "szse_trend_etf_")
         if not ymd:
+            continue
+        if _csv_is_empty(path):
+            n_empty += 1
             continue
         try:
             df = read_csv_preferred(path, dtype={"证券代码": str, "证券简称": str})
@@ -439,7 +454,8 @@ def load_etf_ohlcv(files, verbose=True):
     out = out.dropna(subset=["date"]).sort_values(["etf_code", "date"]).reset_index(drop=True)
 
     if verbose:
-        logger.info(f"    → {len(out):,} ETF OHLCV rows  ·  {out['etf_code'].nunique()} ETFs")
+        logger.info(f"    → {len(out):,} ETF OHLCV rows  ·  {out['etf_code'].nunique()} ETFs"
+                    + (f"  ·  {n_empty} empty files skipped" if n_empty else ""))
 
     return out
 

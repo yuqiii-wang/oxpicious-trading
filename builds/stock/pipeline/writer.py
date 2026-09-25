@@ -9,7 +9,19 @@ from operator import itemgetter
 import numpy as np
 import pandas as pd
 
-from _common.build_commons import copy_or_upsert_split_async
+from _common.build_commons import copy_or_upsert_split_async, rec_cols
+from _common.db_commons import (
+    _chunk_keys_by_weight,
+    _wait_for_replica_lag_async,
+    chunked_dml_by_key_async,
+    DEFAULT_MAX_REPLICA_LAG_MB,
+)
+from _common.df_utils import epoch_col_to_dt64, host_array, to_dt64
+from builds._commons.eps import compute_eps_vec
+
+# Rows per COMMIT for the PE upsert (the shared commit-chunk target —
+# each chunk is one code set's rows inside one transaction).
+_PE_COMMIT_CHUNK_ROWS = 100_000
 from builds.stock._helpers import (
     _nan_to_none,
     _safe_columns,
@@ -200,10 +212,16 @@ async def write_basic_stats_ohlcv(
         select_list = ", ".join(
             f"t.{c}" for c in ["date", "code"] + cols)
         set_list = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
+        # Temp tables are unlogged — the fill generates no WAL; the
+        # upsert INTO the real table is the WAL writer and is CHUNKED BY
+        # PARTITION KEY (the bulk-write rule): per-code upsert chunks of
+        # ~100K rows, each chunk its own COMMIT (the ON CONFLICT upsert
+        # is idempotent, so a crash mid-write is rerun-safe), with the
+        # replica-lag cap paused between chunks.
+        await bs_conn.execute(
+            f"CREATE TEMP TABLE _bs_ov (date DATE, code TEXT, {tmp_cols_sql})"
+        )
         async with bs_conn.transaction():
-            await bs_conn.execute(
-                f"CREATE TEMP TABLE _bs_ov (date DATE, code TEXT, {tmp_cols_sql})"
-            )
             ins_q = (
                 "INSERT INTO _bs_ov (date, code, "
                 + ", ".join(cols) + ") VALUES ($1, $2, "
@@ -216,18 +234,25 @@ async def write_basic_stats_ohlcv(
                            ["date", "code"] + cols)
                      for r in ov_rows[i:i + 1000]],
                 )
-            result = await bs_conn.execute(
-                f"""
-                INSERT INTO stats.stock_basic_stats
-                    (date, code, {", ".join(cols)})
-                SELECT {select_list}
-                FROM _bs_ov t
-                ON CONFLICT (code, date) DO UPDATE SET {set_list}
-                """
+        upsert_sql = f"""
+            INSERT INTO stats.stock_basic_stats
+                (date, code, {", ".join(cols)})
+            SELECT {select_list}
+            FROM _bs_ov t
+            WHERE t.code = ANY($1::text[])
+            ON CONFLICT (code, date) DO UPDATE SET {set_list}
+        """
+        weight_rows = await bs_conn.fetch(
+            "SELECT code, count(*) AS n FROM _bs_ov GROUP BY code")
+        try:
+            inserted_count = await chunked_dml_by_key_async(
+                bs_conn,
+                statements=[(upsert_sql,
+                             " AND t.code = ANY(${ph}::text[])")],
+                weighted_keys=[(r["code"], r["n"]) for r in weight_rows],
             )
+        finally:
             await bs_conn.execute("DROP TABLE _bs_ov")
-        parts = result.split()
-        inserted_count = int(parts[-1]) if parts else 0
         logger.info(f"    [DB] Upserted {inserted_count:,} OHLCV rows into "
               f"stats.stock_basic_stats (column-scoped: no pe/eps touch)")
 
@@ -242,10 +267,11 @@ async def write_pe_only_conn(
     estimated PE).
 
     Touches ONLY pe / eps / is_pe_estimated on conflict; OHLCV columns are
-    never written here. eps is recomputed server-side from the stored close
-    (close / pe rounded to 6 — mirrors _compute_eps_vec semantics); NULL
-    when close is missing or pe <= 0. Self-seeds key-only identity rows so
-    PE-only dates that no OHLCV batch has touched still satisfy the FK.
+    never written here. eps is computed in pandas from the STORED close
+    via the shared builds._commons.eps.compute_eps_vec (close / pe rounded
+    to 6); NULL when close is missing or pe <= 0. Self-seeds key-only
+    identity rows so PE-only dates that no OHLCV batch has touched still
+    satisfy the FK.
     """
     if not pe_rows:
         return
@@ -273,27 +299,72 @@ async def write_pe_only_conn(
             "ON CONFLICT (date, code) DO NOTHING"
         )
         n_seeded = int(seed_result.split()[-1]) if seed_result else 0
-        result = await conn.execute(
-            """
-            INSERT INTO stats.stock_basic_stats
-                (date, code, pe, eps, is_pe_estimated)
-            SELECT t.date, t.code, t.pe,
-                   CASE WHEN bs.close IS NOT NULL AND t.pe IS NOT NULL
-                             AND t.pe > 0
-                        THEN round(bs.close / t.pe, 6) END,
-                   t.is_pe_estimated
-            FROM _pe_upsert t
-            LEFT JOIN stats.stock_basic_stats bs
-              ON bs.date = t.date AND bs.code = t.code
-            ON CONFLICT (code, date) DO UPDATE SET
-              pe = EXCLUDED.pe,
-              eps = EXCLUDED.eps,
-              is_pe_estimated = EXCLUDED.is_pe_estimated
-            """
-        )
+    # The temp-table fill is WAL-free (temp tables are unlogged); the
+    # final upsert INTO stats.stock_basic_stats is the WAL writer and is
+    # CHUNKED BY PARTITION KEY (the bulk-write rule): rows grouped by
+    # code into ~100K-row chunks, each chunk its own COMMIT (the
+    # ON CONFLICT upsert is idempotent — rerun-safe), replica-lag cap
+    # paused between chunks.
+    # Stored close per (date, code) pair — the eps numerator. The
+    # epoch-transport + epoch_col_to_dt64 read convention keeps the
+    # join keys datetime64 (object dates poison cudf frames).
+    close_df = pd.DataFrame(
+        rec_cols(await conn.fetch(
+            "SELECT extract(epoch from t.date)::float8 AS date, "
+            "t.code, bs.close::float8 AS close "
+            "FROM _pe_upsert t "
+            "LEFT JOIN stats.stock_basic_stats bs "
+            "  ON bs.date = t.date AND bs.code = t.code"
+        )),
+        columns=["date", "code", "close"],
+    )
+    close_df["date"] = epoch_col_to_dt64(
+        close_df["date"], index=close_df.index)
+    # Dedupe the join side: duplicate (date, code) input rows would
+    # fan the merge out and misalign the positional zip below (the
+    # former INSERT..SELECT joined the temp table against the bs PK,
+    # giving every duplicate row the same close — identical eps).
+    close_df = close_df.drop_duplicates(["date", "code"])
+    pe_df = pd.DataFrame({
+        "date": to_dt64(pd.Series(dates_c)),
+        "code": codes_c,
+        "pe": pes_c,
+    })
+    merged = pe_df.merge(close_df, on=["date", "code"], how="left")
+    eps_arr = host_array(
+        compute_eps_vec(merged["close"], merged["pe"]).to_numpy())
+    upsert_rows = [
+        (d, c, p, None if math.isnan(e) else float(e), bool(f))
+        for d, c, p, e, f in zip(
+            dates_c, codes_c, pes_c, eps_arr, flags_c)
+    ]
+    upsert_sql = (
+        "INSERT INTO stats.stock_basic_stats "
+        "    (date, code, pe, eps, is_pe_estimated) "
+        "VALUES ($1, $2, $3, $4, $5) "
+        "ON CONFLICT (code, date) DO UPDATE SET "
+        "  pe = EXCLUDED.pe, "
+        "  eps = EXCLUDED.eps, "
+        "  is_pe_estimated = EXCLUDED.is_pe_estimated"
+    )
+    rows_by_code: dict[str, list[tuple]] = {}
+    for r in upsert_rows:
+        rows_by_code.setdefault(r[1], []).append(r)
+    weighted = [(c, len(v)) for c, v in sorted(rows_by_code.items())]
+    try:
+        for chunk in _chunk_keys_by_weight(weighted, _PE_COMMIT_CHUNK_ROWS):
+            await _wait_for_replica_lag_async(
+                conn, DEFAULT_MAX_REPLICA_LAG_MB)
+            chunk_rows = [r for c in chunk for r in rows_by_code[c]]
+            async with conn.transaction():
+                for i in range(0, len(chunk_rows), 1000):
+                    await conn.executemany(
+                        upsert_sql, chunk_rows[i:i + 1000])
+    finally:
         await conn.execute("DROP TABLE _pe_upsert")
-    parts = result.split()
-    n_upserted = int(parts[-1]) if parts else 0
+    # Every upserted row is touched exactly once (insert or column-scoped
+    # update) — the former INSERT..SELECT status count, positionally.
+    n_upserted = len(upsert_rows)
     # Positional whole-column count (flags_c is the 4th extracted column)
     n_flagged = sum(map(bool, flags_c))
     msg = (f"    [DB] Upserted {n_upserted:,} PE rows into "

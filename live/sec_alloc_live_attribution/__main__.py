@@ -178,11 +178,11 @@ async def _prune_old_dates(conn) -> int:
         # Less history exists than the window — nothing can be outside it.
         return 0
     cutoff = keep[-1]
-    tick_status = await conn.execute(
-        f"DELETE FROM {TICK_TABLE} WHERE date < $1", cutoff
+    # Retention prune chunked by the partition key (the purge can span
+    # months of tick rows across the whole universe).
+    n_tick = await chunked_purge_async(
+        conn, TICK_TABLE, where_sql="date < $1", params=(cutoff,),
     )
-    # asyncpg execute() returns the command tag, e.g. "DELETE 12345".
-    n_tick = int(tick_status.split()[-1])
     if n_tick:
         logger.info(f"    -> retention prune (keep newest {RETENTION_DATES} "
               f"dates, cutoff < {cutoff}): deleted {n_tick:,} tick rows")

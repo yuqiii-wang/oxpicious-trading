@@ -4,13 +4,22 @@ services:
   db:
     image: supabase/postgres:17.6.1.150_amd64
     container_name: oxpicious-db
+    restart: unless-stopped
     shm_size: 256m
     ports:
       - "9876:5432"
     volumes:
-      - db_data:/var/lib/postgresql/data
+      # Primary data lives on E: disk as a bind mount (like the replica), so a
+      # Docker Desktop / WSL vhdx failure can never take the DB data with it.
+      # The old named volume db_data is retained below as a cold fallback copy.
+      - E:/docker-data/oxpicious-db-primary:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d
       - ./sql:/docker-entrypoint-sql.d
+      # This image runs postgres with -D-style config in /etc/postgresql, so
+      # $PGDATA/pg_hba.conf is IGNORED. Mount the repo copy (with the db-replica
+      # streaming rule) over it: a container recreated from the image otherwise
+      # loses the rule and the replica can no longer connect.
+      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
@@ -26,6 +35,7 @@ services:
   db-replica:
     image: supabase/postgres:17.6.1.150_amd64
     container_name: oxpicious-db-replica
+    restart: unless-stopped
     shm_size: 256m
     entrypoint: ["/replica-entrypoint.sh"]
     command: []
@@ -50,6 +60,9 @@ services:
     networks:
       - supabase_network
 
+# Kept as a cold fallback snapshot of the primary data as of 2026-09-23
+# (pre-migration). Safe to remove once the E: bind-mount primary has proven
+# itself stable for a while.
 volumes:
   db_data:
 

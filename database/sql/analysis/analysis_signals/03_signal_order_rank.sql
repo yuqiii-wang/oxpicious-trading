@@ -2,8 +2,9 @@
 --  Rank signal_order on analysis_signals.signal_strategies ($1 = sec_type).
 --
 --  1-based best-first rank WITHIN each (sec_type, end_date) pool by
---  confidence DESC (the gate's forecast confidence = the bucket's
---  mixed-row reverse_prob), PK tuple as the deterministic tiebreak.
+--  confidence DESC (the chosen rung's sign-aligned dir_ave — the
+--  expected favorable blended move), PK tuple as the deterministic
+--  tiebreak.
 --  Nothing is trimmed — every gate-passing strategy keeps its rank.
 --  Executed by python -m analyze.analysis_signals after EVERY run
 --  (over the whole sec_type: the refresh-month rewrites can change the
