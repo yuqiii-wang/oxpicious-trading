@@ -20,8 +20,9 @@ from ._helpers import (
 from ._async_ops import (
     copy_insert_async,
     bulk_upsert_async,
-    _wait_for_replica_lag_async,
+    _throttle_between_chunks_async,
     DEFAULT_MAX_REPLICA_LAG_MB,
+    DEFAULT_CHUNK_PAUSE_S,
 )
 
 
@@ -50,6 +51,7 @@ async def copy_or_upsert_split_async(
     commit_chunk_rows: int = DEFAULT_COMMIT_CHUNK_ROWS,
     partition_key: str | None = "auto",
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> tuple[int, int]:
     """Split rows by MAX(date) in the target table and write via COPY (new
     dates) or bulk upsert (existing dates with PK conflicts).
@@ -91,7 +93,10 @@ async def copy_or_upsert_split_async(
         max_replica_lag_mb: pause between commit chunks while the streaming
               standby's replay lag exceeds this (default 4096 MB — 1/16 of
               the primary's 64GB max_slot_wal_keep_size; None disables
-              the throttle).
+              the lag wait).
+        chunk_pause_s: fixed cool-down seconds before every commit chunk
+              (default 0.1 — a light gap between sustained write bursts;
+              None disables).
 
     Returns:
         (n_copied, n_upserted) tuple. n_copied is the number of rows
@@ -143,20 +148,22 @@ async def copy_or_upsert_split_async(
                 for lo in range(0, len(copy_batch), commit_chunk_rows)
             ]
         for chunk in copy_chunks:
-            # Between COPY commit chunks (no transaction open, no locks):
-            # wait out standby replay lag before generating more WAL.
-            if max_replica_lag_mb is not None:
-                await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+            # Before COPY commit chunks (no transaction open, no locks):
+            # cool-down pause, then wait out standby replay lag before
+            # generating more WAL.
+            await _throttle_between_chunks_async(
+                conn, max_replica_lag_mb, chunk_pause_s)
             n_copied += await copy_insert_async(conn, table_name, chunk)
 
     # Execute upsert for the gap/history batch (usually empty); it
-    # applies its own bounded commit chunks + lag throttle internally.
+    # applies its own bounded commit chunks + throttle internally.
     if upsert_batch:
         n_upserted = await bulk_upsert_async(
             conn, table_name, upsert_batch, key_columns,
             commit_chunk_rows=commit_chunk_rows,
             partition_key=partition_key,
             max_replica_lag_mb=max_replica_lag_mb,
+            chunk_pause_s=chunk_pause_s,
         )
 
     return (n_copied, n_upserted)
@@ -172,6 +179,7 @@ async def copy_or_upsert_split_pool_async(
     commit_chunk_rows: int = DEFAULT_COMMIT_CHUNK_ROWS,
     partition_key: str | None = "auto",
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> tuple[int, int]:
     """Pool-based variant of ``copy_or_upsert_split_async``.
 
@@ -189,7 +197,7 @@ async def copy_or_upsert_split_pool_async(
     Args:
         pool: asyncpg connection pool.
         table_name, rows, key_columns, date_column, commit_chunk_rows,
-        partition_key, max_replica_lag_mb: see
+        partition_key, max_replica_lag_mb, chunk_pause_s: see
             ``copy_or_upsert_split_async``.
 
     Returns:
@@ -201,6 +209,7 @@ async def copy_or_upsert_split_pool_async(
             commit_chunk_rows=commit_chunk_rows,
             partition_key=partition_key,
             max_replica_lag_mb=max_replica_lag_mb,
+            chunk_pause_s=chunk_pause_s,
         )
 
 

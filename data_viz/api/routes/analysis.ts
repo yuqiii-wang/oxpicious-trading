@@ -18,9 +18,13 @@ import { Router, type Request, type Response } from "express";
 import {
   listMovAveSpreadCodes,
   getMovAveSpreadChart,
+  getMovAveSpreadChartPairs,
+  getMovAveSpreadChartEma,
+  getMovAveSpreadChartShared,
   getMovAveSpreadChartExtras,
   getMarketRegimeSpans,
   getForecastTable,
+  getForecastLadders,
   getForecastTriggerDates,
   getForecastIdentity,
   listMovAveSpreadThemes,
@@ -47,12 +51,11 @@ import {
   getIndustryEtfPriceSeries,
   getIndustryEtfContributionBars,
   getIndustryHypesAndDrains,
-  listPeAndDividendCodes,
-  getPeAndDividendChart,
-  listPeAndDividendThemes,
-  listPeAndDividendStrategyThemes,
-  listPeAndDividendStats,
-  listPeAndDividendStreaks,
+  listValuationCodes,
+  getPeChart,
+  listValuationThemes,
+  listValuationStrategyThemes,
+  listPeStreaks,
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,
   getMarginIndustrySeries,
@@ -63,14 +66,62 @@ import {
   runPythonModule,
   getPythonProcessStatus,
 } from "../services/py-runner.service.js";
-import type { PerfAttrSecType } from "../../shared/types.js";
+import type { OhlcvPopulation, PerfAttrSecType } from "../../shared/types.js";
 
 const router = Router();
+
+/** The valid derived-population values (forecast_identities.
+ *  ohlcv_type) an endpoint may scope its read to. */
+const OHLCV_POPULATIONS: readonly OhlcvPopulation[] = [
+  "ohlcv_selection", "ohlcv_boost",
+];
+
+/** Parse the optional `population` query param — one of the two
+ *  derived-population verdicts (validated; anything else, including
+ *  the retired legacy spellings 'gap_selection' / 'gap_boost' /
+ *  'vol_selection' / 'vol_boost' and the pre-gap_-rename
+ *  'selection'/'boost', reads UNSCOPED but an INVALID value 400s so
+ *  typos surface). */
+function parsePopulation(req: Request): OhlcvPopulation | null {
+  const v = req.query.population;
+  if (typeof v !== "string" || v.length === 0) return null;
+  const p = v as OhlcvPopulation;
+  if (!OHLCV_POPULATIONS.includes(p)) {
+    throw new Error(
+      `Invalid 'population' parameter: ${v}. Expected one of ${OHLCV_POPULATIONS.join(", ")}.`,
+    );
+  }
+  return p;
+}
 
 /** Parse the `sec_type` query param — required on every endpoint. */
 function parseSecType(req: Request): string | undefined {
   const v = req.query.sec_type;
   return typeof v === "string" ? v : undefined;
+}
+
+/** Parse the optional `snapshot` query param — "latest" or an exact
+ *  stat_date (YYYY-MM-DD), scoping the forecast-table reads to ONE
+ *  snapshot (the UI's first load). Mutually exclusive with `date`
+ *  (a START date) — passing both 400s. */
+function parseSnapshot(req: Request, date: string | null): string | null {
+  const v = req.query.snapshot;
+  if (typeof v !== "string" || v.length === 0) return null;
+  if (v === "latest") {
+    if (date) {
+      throw new Error("Parameters 'snapshot' and 'date' are mutually exclusive.");
+    }
+    return v;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    throw new Error(
+      `Invalid 'snapshot' parameter: ${v}. Expected 'latest' or a YYYY-MM-DD stat_date.`,
+    );
+  }
+  if (date) {
+    throw new Error("Parameters 'snapshot' and 'date' are mutually exclusive.");
+  }
+  return v;
 }
 
 /** Parse the `code` query param — required on chart / summary endpoints. */
@@ -182,6 +233,55 @@ router.get("/mov-ave-spread/chart", async (req: Request, res: Response) => {
   }
 });
 
+// ---- MA-Spread chart BLOCKS (per-table async loads) ----
+// The panel fires all three in parallel and renders as soon as the REQUIRED
+// pairs block lands; ema populates the EMA chip grid and shared feeds the
+// tooltip metrics when they arrive (both best-effort).
+// GET /api/analysis/mov-ave-spread/chart/pairs?sec_type=stock&code=600256
+router.get("/mov-ave-spread/chart/pairs", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getMovAveSpreadChartPairs(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/chart/pairs] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// GET /api/analysis/mov-ave-spread/chart/ema?sec_type=stock&code=600256
+router.get("/mov-ave-spread/chart/ema", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getMovAveSpreadChartEma(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/chart/ema] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// GET /api/analysis/mov-ave-spread/chart/shared?sec_type=stock&code=600256
+router.get("/mov-ave-spread/chart/shared", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getMovAveSpreadChartShared(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/chart/shared] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ---- MA-Spread on-demand metric groups ----
 // GET /api/analysis/mov-ave-spread/extras?sec_type=etf&code=510050&metrics=amt,ohlc
 //   metrics = comma-separated subset of amt | ohlc | streaks | pxvol. Only
@@ -239,6 +339,10 @@ router.get("/market-regimes", async (req: Request, res: Response) => {
 //   returned (annual grid: one snapshot per completed year-end plus the
 //   running year); optional `date=YYYY-MM-DD` narrows to stat_dates >= date.
 //   The response's `stat_dates` lists every available stat_date.
+//   Optional `snapshot=latest|YYYY-MM-DD` narrows the ROWS to exactly
+//   one stat_date (the UI's first load — its end-month filter starts
+//   on the latest snapshot; older snapshots load on demand). The delay
+//   ladders ride /forecast-ladders (the progressive-load split).
 router.get("/mov-ave-spread/forecast", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);
@@ -248,9 +352,45 @@ router.get("/mov-ave-spread/forecast", async (req: Request, res: Response) => {
     }
     const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
     const date = typeof req.query.date === "string" ? req.query.date : null;
-    res.json(await getForecastTable(parseSecType(req), code, kind, date));
+    // Snapshot scope ("latest" or an exact stat_date); mutually
+    // exclusive with `date`.
+    const snapshot = parseSnapshot(req, date);
+    // Derived-population selector (mov_rsi): `population` as one of
+    // 'ohlcv_selection' | 'ohlcv_boost' scopes the read to ONE related
+    // child forecast's rows (the score-gated subset / the score-weighted
+    // re-measurement); the default is UNSCOPED
+    // — every population's rows, each carrying its own ohlcv_type
+    // verdict.
+    const population = parsePopulation(req);
+    res.json(await getForecastTable(parseSecType(req), code, kind, date, population, snapshot));
   } catch (err) {
     console.error("[analysis/mov-ave-spread/forecast] error:", err);
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+// ---- Forecast delay ladders (the split forecast-table second half) ----
+// GET /api/analysis/mov-ave-spread/forecast-ladders?sec_type=…&code=…&kind=…
+//   The delay ladders of the code's buckets for the SAME scope as the
+//   base forecast read (sec_type / code / kind / date / population /
+//   snapshot all identical), as a forecast_id-keyed array the UI merges
+//   into its base rows when they land — the table renders before this
+//   payload parses (the 2026-09-30 progressive-load split; the ladder
+//   payload was the bulk of the old single response).
+router.get("/mov-ave-spread/forecast-ladders", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
+    const date = typeof req.query.date === "string" ? req.query.date : null;
+    const snapshot = parseSnapshot(req, date);
+    const population = parsePopulation(req);
+    res.json(await getForecastLadders(parseSecType(req), code, kind, date, population, snapshot));
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/forecast-ladders] error:", err);
     res.status(400).json({ error: String(err) });
   }
 });
@@ -269,6 +409,7 @@ router.get("/mov-ave-spread/forecast-dates", async (req: Request, res: Response)
   try {
     const raw = typeof req.query.forecast_id === "string" ? req.query.forecast_id : "";
     const forecastId = Number(raw);
+    const population = parsePopulation(req);
     if (!Number.isInteger(forecastId) || forecastId <= 0) {
       res.status(400).json({ error: "Invalid or missing 'forecast_id' parameter" });
       return;
@@ -279,7 +420,7 @@ router.get("/mov-ave-spread/forecast-dates", async (req: Request, res: Response)
       res.status(400).json({ error: "Invalid 'delay' parameter (expected 0..5)" });
       return;
     }
-    res.json(await getForecastTriggerDates(forecastId, delay));
+    res.json(await getForecastTriggerDates(forecastId, delay, population));
   } catch (err) {
     console.error("[analysis/mov-ave-spread/forecast-dates] error:", err);
     res.status(400).json({ error: String(err) });
@@ -357,7 +498,7 @@ router.get("/perf-attr/codes", async (req: Request, res: Response) => {
 });
 
 // ---- Performance Attribution: themes tree (L1 sector → L2 industry → items)
-// Mirrors /api/etf-margin/themes and /api/index-baseline/themes but only
+// Mirrors /api/etf-margin/themes and /api/index/themes but only
 // includes codes that have rows in stats.cross_stats (sec_type='index').
 router.get("/perf-attr/themes", async (req: Request, res: Response) => {
   try {
@@ -914,108 +1055,98 @@ router.get("/industry-etf-contribution/etf-bars", async (req: Request, res: Resp
   }
 });
 
-// ---- PE & Dividend Yield (per-(sec_type, code, date) valuation analytics)
-//   analysis.pe / analysis.dividends   — daily raw pe / trailing-12m dividend_yield (split 2026-09)
-//   analysis.pe_and_dividend_stats     — annual 10y rolling stats snapshot
+// ---- PE & Dividend Yield (valuation) analytics
+//   analysis.pe / analysis.dividends   — daily raw pe / trailing-12m
+//                                        dividend_yield (split 2026-09)
 //
 //   Close price is NOT stored in the analysis tables
 //   (they live in stats); the chart endpoint JOINs stats live at request time.
 //
-//   GET /api/analysis/pe-and-dividend/codes?sec_type=index
-//     Returns PeAndDividendCodesResponse: list of codes with first/last date,
+//   The /valuation/* routes below are the SHARED universe endpoints — the
+//   code universe is the UNION of analysis.pe and analysis.dividends, and
+//   BOTH the PE page and the Dividends page (their shared SecCodesPageShell)
+//   consume them, so they are named for the universe rather than for one
+//   page (2026-09-29; formerly the pe-named /pe/codes|themes|strategy-themes).
+//   The PE-only chart / streaks reads stay under /pe/*.
+//
+//   GET /api/analysis/valuation/codes?sec_type=index
+//     Returns ValuationCodesResponse: list of codes with first/last date,
 //     n_dates, and latest pe + dividend_yield snapshot.
-//   GET /api/analysis/pe-and-dividend/chart?sec_type=index&code=000300
-//     Returns PeAndDividendChartResponse: daily (date, close, pe,
-//     dividend_yield) rows for one security. Close + pe are read live from
-//     stats so the UI always shows the freshest source values.
-//   GET /api/analysis/pe-and-dividend/themes?sec_type=index
+//   GET /api/analysis/valuation/themes?sec_type=index
 //     Returns the L1 sector → L2 industry → items tree for SecClassificationNav,
 //     filtered to codes that have rows in analysis.pe / analysis.dividends.
-//   GET /api/analysis/pe-and-dividend/strategy-themes?sec_type=index
+//   GET /api/analysis/valuation/strategy-themes?sec_type=index
 //     Parallel L1 strategy → L2 theme tree (RIGHT column).
-//   GET /api/analysis/pe-and-dividend/stats?sec_type=index&code=000300
-//     Returns PeAndDividendStatsResponse: ALL annual 10y rolling stats
-//     snapshots for one code (most recent first). is_active marks the latest.
-//   GET /api/analysis/pe-and-dividend/streaks?sec_type=index&code=000300
-//     Returns PeAndDividendStreaksResponse: band-BREAK excursion streaks of
-//     the code's pe / dividend_yield series
-//     (analysis.pe_and_dividend_pct_streaks, side derived from the end
-//     month's band), flat for ALL (metric, period, pct_type) combos.
-router.get("/pe-and-dividend/codes", async (req: Request, res: Response) => {
+//
+//   GET /api/analysis/pe/chart?sec_type=index&code=000300
+//     Returns PeChartResponse: daily (date, close, pe,
+//     dividend_yield) rows for one security. Close + pe are read live from
+//     stats so the UI always shows the freshest source values.
+//   GET /api/analysis/pe/streaks?sec_type=index&code=000300
+//     Returns PeStreaksResponse: band-BREAK excursion streaks of the
+//     code's pe series (analysis.pe_pct_streaks, side derived from the
+//     end month's band), flat for ALL (period, pct_type) combos.
+router.get("/valuation/codes", async (req: Request, res: Response) => {
   try {
-    res.json(await listPeAndDividendCodes(
+    res.json(await listValuationCodes(
       parseSecType(req),
       undefined, undefined, undefined, undefined,
       parseExchange(req),
     ));
   } catch (err) {
-    console.error("[analysis/pe-and-dividend/codes] error:", err);
+    console.error("[analysis/valuation/codes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.get("/pe-and-dividend/chart", async (req: Request, res: Response) => {
+router.get("/valuation/themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listValuationThemes(parseSecType(req), parseExchange(req)));
+  } catch (err) {
+    console.error("[analysis/valuation/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/valuation/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listValuationStrategyThemes(parseSecType(req), parseExchange(req)));
+  } catch (err) {
+    console.error("[analysis/valuation/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/pe/chart", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);
     if (!code) {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    res.json(await getPeAndDividendChart(code, parseSecType(req)));
+    res.json(await getPeChart(code, parseSecType(req)));
   } catch (err) {
-    console.error("[analysis/pe-and-dividend/chart] error:", err);
+    console.error("[analysis/pe/chart] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.get("/pe-and-dividend/themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listPeAndDividendThemes(parseSecType(req), parseExchange(req)));
-  } catch (err) {
-    console.error("[analysis/pe-and-dividend/themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-router.get("/pe-and-dividend/strategy-themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listPeAndDividendStrategyThemes(parseSecType(req), parseExchange(req)));
-  } catch (err) {
-    console.error("[analysis/pe-and-dividend/strategy-themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-router.get("/pe-and-dividend/stats", async (req: Request, res: Response) => {
+//   GET /api/analysis/pe/streaks?sec_type=index&code=000300
+//     Returns PeStreaksResponse: the band-BREAK excursion
+//     streaks of the code's pe series (from analysis.pe_pct_streaks,
+//     side derived at query time from the end month's band), shipped
+//     flat for ALL (period, pct_type) combos — the client filters by
+//     its nested selection.
+router.get("/pe/streaks", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);
     if (!code) {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    res.json(await listPeAndDividendStats(code, parseSecType(req)));
+    res.json(await listPeStreaks(code, parseSecType(req)));
   } catch (err) {
-    console.error("[analysis/pe-and-dividend/stats] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-//   GET /api/analysis/pe-and-dividend/streaks?sec_type=index&code=000300
-//     Returns PeAndDividendStreaksResponse: the band-BREAK excursion
-//     streaks of the code's pe / dividend_yield series (from
-//     analysis.pe_and_dividend_pct_streaks, side derived at query time
-//     from the end month's band), shipped flat for ALL (metric, period,
-//     pct_type) combos — the client filters by its nested selection.
-router.get("/pe-and-dividend/streaks", async (req: Request, res: Response) => {
-  try {
-    const code = parseCode(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    res.json(await listPeAndDividendStreaks(code, parseSecType(req)));
-  } catch (err) {
-    console.error("[analysis/pe-and-dividend/streaks] error:", err);
+    console.error("[analysis/pe/streaks] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

@@ -4,8 +4,7 @@ PE data and insert directly to the database (missing-data-only).
 NOTE: This script loads ONLY ETF data. Index composition (CSI + SZSE
 closeweight CSVs) is now loaded by `python -m builds.index.composition`
 which writes to the same stats.sec_composition table with
-source_type='index'. Run builds.index.composition BEFORE builds.index.baseline
-so that index shared weights are available for close-price estimation.
+source_type='index'.
 
 Reads the per-day SZSE/SSE CSV archives produced by download scripts:
   - SZSE: szse_archive/szse_etf_YYYYMMDD.csv        (2022-01 → 2025-06-30 legacy)
@@ -13,6 +12,8 @@ Reads the per-day SZSE/SSE CSV archives produced by download scripts:
   - SSE: sse_trend/sse_trend_etf_YYYYMMDD.csv       (today snapshot, ETF/fund tab)
   - SZSE/SSE margin detail CSVs                     (per-security margin)
   - SZSE: szse_etf_composition/szse_etf_comp_YYYYMMDD_<code>.csv (per-file)
+  - Huatai-PB fund site: huatai_etf_composition/huatai_etf_comp_YYYYMMDD_<code>.csv
+    (same COMBINED_COLS schema — downloads.etf.huatai_pb.composition)
 
 ETF PE: computed via HARMONIC weighting of constituent stock PE from
 stats.stock_basic_stats by the LATEST stats.sec_composition snapshot:
@@ -52,7 +53,7 @@ Usage:
   python -m builds.etf --start-date 2024-01-01 --end-date 2025-06-30
   python -m builds.etf --force
   python -m builds.etf --date 2025-06-27          (force-rebuild this one date)
-  python -m builds.etf --code 159919.SZ           (single-ETF test filter)
+  python -m builds.etf --code 159919              (single-ETF test filter, bare code)
 """
 
 from _common.data_build import DataBuild
@@ -70,14 +71,21 @@ class EtfBuild(DataBuild):
     def add_arguments(self, parser) -> None:
         self.add_date_range_args(parser)
         self.add_code_arg(parser)
+        parser.add_argument("--analyze", action="store_true",
+                            help="ANALYZE the ETF tables after the write passes — "
+                                 "refreshes planner statistics that bulk writes leave "
+                                 "stale (opt-in: the refresh costs ~10s on the full "
+                                 "tables; run it after a --force rebuild so the UI's "
+                                 "prepared-statement reads keep their index plans)")
 
     def apply_args(self) -> None:
         # --date: reject the --date + --force combo and validate the value
         # BEFORE any work starts (SystemExit 2 on misuse); the pipeline
         # consumes args.forced_date.
         self.apply_date_force_args()
-        # Resolve once so pipeline stages share the canonical suffixed code.
-        self.args.resolved_code = self.resolve_code_filter()
+        # Resolve once so pipeline stages share the canonical BARE code
+        # (ETF codes carry no exchange suffix — 2026-09-30 convention).
+        self.args.resolved_code = self.resolve_code_filter(strip_suffix=True)
 
     async def run(self) -> None:
         from builds.etf.pipeline.main import run

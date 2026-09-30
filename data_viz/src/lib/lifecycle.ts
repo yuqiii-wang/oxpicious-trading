@@ -1,12 +1,12 @@
 ﻿/**
  * PBoC outright repo / MLF lifecycle computation.
- * Ported from compute_outright_repo_lifecycle() in plot_debt_baseline.py.
+ * Ported from compute_outright_repo_lifecycle() in the builds/bond pipeline.
  *
  * Given the rows from debt_baseline.csv, compute the start/end injection legs
  * for each outright repo + MLF tender (using tenor_days), then group by date
  * and cumsum to get a cumulative balance curve.
  */
-import type { DebtBaselineRow } from "@shared/types";
+import type { DebtDailyRow } from "@shared/types";
 import { addDays } from "./series";
 
 export interface RepoLeg {
@@ -27,7 +27,7 @@ export interface LifecycleRow extends RepoLeg {
  * and should span the full history (not just the filtered range), otherwise the
  * cumulative will be wrong.
  */
-export function computeOutrightRepoLifecycle(rows: DebtBaselineRow[]): LifecycleRow[] {
+export function computeOutrightRepoLifecycle(rows: DebtDailyRow[]): LifecycleRow[] {
   const legs: RepoLeg[] = [];
 
   // Outright repo tenders
@@ -133,7 +133,7 @@ export interface MarkerEvent {
   type: "outright_repo" | "MLF";
 }
 
-export function getRepoMarkers(rows: DebtBaselineRow[]): MarkerEvent[] {
+export function getRepoMarkers(rows: DebtDailyRow[]): MarkerEvent[] {
   const out: MarkerEvent[] = [];
   for (const r of rows) {
     if (r.outright_repo_marker === 1) {

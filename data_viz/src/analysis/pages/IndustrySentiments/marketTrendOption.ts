@@ -10,7 +10,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { IndexBaselineRow } from "@shared/types";
+import type { IndexDailyRow } from "@shared/types";
 import {
   axisColors,
   commonLegend,
@@ -23,12 +23,12 @@ import React from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { MARKET_TREND_INDICES } from "./constants";
 
-/** One index's daily baseline rows prepared for plotting. */
+/** One index's daily rows prepared for plotting. */
 interface IndexSeriesData {
   code: string;
   name: string;
   color: string;
-  rows: IndexBaselineRow[];
+  rows: IndexDailyRow[];
 }
 
 /**
@@ -298,7 +298,7 @@ export function buildMarketTrendOption(
 /** Build the IndexSeriesData view used by the option builder. */
 export function toIndexSeriesData(
   code: string,
-  rows: IndexBaselineRow[],
+  rows: IndexDailyRow[],
 ): IndexSeriesData {
   const meta = MARKET_TREND_INDICES.find((m) => m.code === code);
   return {

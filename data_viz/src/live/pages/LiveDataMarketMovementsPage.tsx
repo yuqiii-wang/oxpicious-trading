@@ -56,13 +56,13 @@ import {
 import RefreshButton from "@/components/RefreshButton";
 import { DateSelector } from "@/shared/components/date-selector";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
-import IndexPanel from "@/dataviz/features/index-baseline/IndexPanel";
+import IndexPanel from "@/dataviz/features/index/IndexPanel";
 import {
   fetchIntradayMovements,
   fetchIntradayMovementsBenchmarks,
   fetchIntradayMovementsDates,
   fetchIntradayMovementsPrevDayOhlc,
-  fetchIndicesCombined,
+  fetchSecBaseline,
   fetchSecAllocLiveAttribution,
   fetchSecAllocLiveRunStatus,
   invalidateCacheForPrefix,
@@ -143,7 +143,7 @@ export default function LiveDataMarketMovementsPage() {
   const [attributionMode, setAttributionMode] = useState<"equal" | "amt">("equal");
   const [attribution, setAttribution] = useState<SecAllocLiveAttributionResponse | null>(null);
   // Clicked member index code (bottom plot bar click) → drives the IndexPanel
-  // history chart below. Fetched on demand via fetchIndicesCombined.
+  // history chart below. Fetched on demand via fetchSecBaseline.
   const [selectedMemberCode, setSelectedMemberCode] = useState<string | null>(null);
   const [memberIndex, setMemberIndex] = useState<IndexBundle | null>(null);
   const [memberIndexLoading, setMemberIndexLoading] = useState(false);
@@ -360,7 +360,7 @@ export default function LiveDataMarketMovementsPage() {
   //   1. downloads.index.csindex.quote --ensure-prev-trading-day —
   //      targeted: codes whose local CSVs already contain the prev
   //      trading day are skipped entirely; only laggards fetch.
-  //   2. builds.index.baseline --refresh-estimated-days 10 — rebuild
+  //   2. builds.index.daily --refresh-estimated-days 10 — rebuild
   //      recent ESTIMATED daily rows from the fresh CSVs so prev-day
   //      OHLC is real (own process-id-tag …:ref:base).
   //   3. live.sec_alloc_live_attribution --mode ref --rebuild-latest-date
@@ -492,7 +492,7 @@ export default function LiveDataMarketMovementsPage() {
 
   // Bottom plot: click a member bar → pick that index code → fetch its full
   // baseline (OHLC + MAs + trading_amount + PE) and render an IndexPanel
-  // history chart below (same plot as the /dataviz/index-baseline page).
+  // history chart below (same plot as the /dataviz/index page).
   // The industry selection is KEPT — the bottom plot needs it to stay
   // mounted; the prev-day bar / top-plot highlight already prefer the
   // clicked member over the industry when both are set.
@@ -502,10 +502,10 @@ export default function LiveDataMarketMovementsPage() {
     if (code) setSelectedMemberCode(code);
   }, []);
 
-  // Fetch the IndexBundle for the clicked member index code. The
-  // index-baseline combined endpoint returns the full IndexBundle (with
-  // rows: OHLC, MAs, trading_amount, PE, has_intraday_5mins) when called
-  // with a `code` filter — page_size=1 since we only need that one index.
+  // Fetch the IndexBundle for the clicked member index code through the
+  // shared per-code baseline endpoint (rows: OHLC, MAs, trading_amount, PE,
+  // has_intraday_5mins) — the same path every other code-trend consumer
+  // uses (useSecBaselineBundle, CodeTrendChart, MarketTrendChart).
   useEffect(() => {
     if (!selectedMemberCode) {
       setMemberIndex(null);
@@ -515,11 +515,10 @@ export default function LiveDataMarketMovementsPage() {
     let cancelled = false;
     setMemberIndexLoading(true);
     setMemberIndexError(null);
-    fetchIndicesCombined(null, null, null, null, 1, 1, selectedMemberCode, null)
+    fetchSecBaseline("index", selectedMemberCode)
       .then((resp) => {
         if (cancelled) return;
-        const bundle = resp.indices[0] ?? null;
-        setMemberIndex(bundle);
+        setMemberIndex(resp.bundle as IndexBundle | null);
         setMemberIndexLoading(false);
       })
       .catch((e: Error) => {
@@ -774,7 +773,7 @@ export default function LiveDataMarketMovementsPage() {
             startIcon={refRunning ? <CircularProgress size={12} /> : null}
             sx={{ height: 26, minWidth: 0, px: 1, fontSize: "0.7rem" }}
             title={isLatestView
-              ? "Runs the full yday-ref chain: (1) targeted downloads — only codes whose CSVs lack the prev trading day are fetched; (2) builds.index.baseline --refresh-estimated-days — rebuild estimated daily rows; (3) live.sec_alloc_live_attribution --mode ref — invalidate this date's ticks and rebuild daily-close-basis weighted tick rows. Deduped by process-id-tag. The 5-min equal-weight refresh runs independently."
+              ? "Runs the full yday-ref chain: (1) targeted downloads — only codes whose CSVs lack the prev trading day are fetched; (2) builds.index.daily --refresh-estimated-days — rebuild estimated daily rows; (3) live.sec_alloc_live_attribution --mode ref — invalidate this date's ticks and rebuild daily-close-basis weighted tick rows. Deduped by process-id-tag. The 5-min equal-weight refresh runs independently."
               : "Only available on the latest date — switch the date selector back to the newest entry."}
           >
             {refRunning ? "Building Yday Ref…" : "Build Yday Ref"}
@@ -836,7 +835,7 @@ export default function LiveDataMarketMovementsPage() {
       />
 
       {/* Index history chart for the clicked member index — same plot as
-          /dataviz/index-baseline (OHLC + MA5/MA20/MA60/MA120 + Trading Amt +
+          /dataviz/index (OHLC + MA5/MA20/MA60/MA120 + Trading Amt +
           PE, with dataZoom and intraday 5-min expansion on date click). */}
       {selectedMemberCode && (
         <>
@@ -850,7 +849,13 @@ export default function LiveDataMarketMovementsPage() {
               Failed to load index history for {selectedMemberCode}: {memberIndexError}
             </Alert>
           )}
-          {!memberIndexLoading && !memberIndexError && memberPanel}
+          {!memberIndexLoading && !memberIndexError &&
+            (memberPanel ?? (
+              <Alert severity="info" sx={{ py: 0.5 }}>
+                No daily history rows for index {selectedMemberCode} — nothing
+                to plot.
+              </Alert>
+            ))}
         </>
       )}
     </Stack>

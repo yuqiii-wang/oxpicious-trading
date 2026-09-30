@@ -1,7 +1,7 @@
 ﻿/**
  * CompositionPieChart — 2-layer pie chart for security holdings.
  *
- * Shared between the ETF + Margin page, the Index Baseline page and the ETF
+ * Shared between the ETF page, the Index page and the ETF
  * Holdings analysis page. Accepts any code (ETF code like "510050" or bare
  * index code like "000300" / "H30007") and fetches composition from
  * /api/sec-composition, which queries stats.sec_composition (ALL holdings
@@ -35,7 +35,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
 import { PieChart as PieChartIcon } from "@mui/icons-material";
-import EChart from "@/components/EChart";
+import EChart from "@/shared/charts/EChart";
 import RefreshButton from "@/components/RefreshButton";
 import StockOhlcExpansionChart from "@/components/StockOhlcExpansionChart";
 import { fetchSecComposition, invalidateCacheForUrl } from "@/lib/api-client";

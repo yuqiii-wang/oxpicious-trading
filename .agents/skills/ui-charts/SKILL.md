@@ -10,12 +10,12 @@ layer below already owns.
 
 ## The stack
 
-1. `EChart` — `data_viz/src/components/EChart.tsx`. The engine wrapper:
+1. `EChart` — `data_viz/src/shared/charts/EChart.tsx`. The engine wrapper:
    init/dispose, ResizeObserver auto-resize, dataZoom-viewport preservation
    across `notMerge` rebuilds, `group` connect, `onReady/onEvents/
    onCanvasClick`. Never call `echarts.init` directly and never edit this
    file casually — its zoom-preservation logic is load-bearing.
-2. `ChartCard` — `data_viz/src/components/ChartCard.tsx`. MUI card chrome
+2. `ChartCard` — `data_viz/src/shared/components/ChartCard.tsx`. MUI card chrome
    (title/subtitle/action, all optional — header hidden when all absent).
 3. **base-chart kit** — `data_viz/src/shared/charts/base-chart/`. The layer
    every chart component inherits:
@@ -99,11 +99,14 @@ layer below already owns.
 - Cross-chart sync: `echarts.connect` groups (pass `group` through
   BaseChart), `useDataZoomSync`, manual showTip/hideTip — keep whichever
   mechanism the page already uses.
-- `CodeTrendChart` (`src/components/CodeTrendChart.tsx`) is a class with a
+- `CodeTrendChart` (`src/ui/OhlcChart/CodeTrendChart.tsx`) is a
+  class with a
   documented protected-hook inheritance API (`fetchSource`,
   `renderChart`, `renderHeaderActions`, ...). Extend it through those
   hooks; do not convert it to a function component or force BaseChart into
-  it — it inherits base styles through StockOhlcChart.
+  it — it inherits base styles through OhlcChart. Both it and
+  OhlcChart live in `src/ui/OhlcChart/` (import through
+  its index.ts).
 - Financial semantics (indicator math, streak/signal/margin scoring) is
   sacred — chart plumbing changes only.
 
@@ -176,6 +179,14 @@ export function buildMyTrendOption(
   });
 }
 ```
+
+## Analysis/strategy study scope (MANDATORY)
+
+To do study in analysis and strategy, only check by industries and
+indices (no etf and stocks unless explicitly said), only these 10 indices
+(000001, 931743, 931160, 931071, 000015, 930708, 931994, 931594, 000683,
+000991), and only write the 10 indices to DB table, unless otherwise
+explicitly instructed then run all indices.
 
 ## Verify
 

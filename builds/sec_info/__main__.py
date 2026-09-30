@@ -143,14 +143,15 @@ def _gather_reports(reports_dir: str) -> tuple:
         report_rows.append(row)
 
         # top10_holdings → sec_composition snapshot (only when has_top10_holdings
-        # AND the CSV has content).
+        # AND the CSV has content). etf_code is BARE (2026-09-30) — joins
+        # sec_composition.code / sec_classification.code directly.
         if info.get("has_top10_holdings"):
             t10_path = ftypes.get("top10_holdings")
             if t10_path:
                 holdings = load_top10_holdings(t10_path)
                 if holdings:
                     top10_snapshots.append({
-                        "etf_code": f"{code}.SZ",
+                        "etf_code": code,
                         "snapshot_date": report_date,
                         "holdings": holdings,
                     })

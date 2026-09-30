@@ -15,12 +15,16 @@ import type {
   MovAveSpreadCodeRow,
   MovAveSpreadCodesResponse,
   MovAveSpreadChartResponse,
+  MovAveSpreadChartPairsResponse,
+  MovAveSpreadChartEmaResponse,
+  MovAveSpreadChartSharedResponse,
   MarketRegimeSpan,
   MarketRegimeSpansResponse,
   MovAveSpreadPairRow,
   MovAveSpreadSharedMetricsRow,
   MovAveSpreadAmtRow,
   MovAveSpreadMetric,
+  MovAveSpreadOhlcGapDay,
   MovAveSpreadExtrasResponse,
   MovAveSpreadHighLowStreak,
   MovAveSpreadOhlcRow,
@@ -38,7 +42,7 @@ import type {
 /** The extras metric groups in canonical order — the /extras route's
  *  `metrics` param is validated against this list. */
 const EXTRAS_METRICS: readonly MovAveSpreadMetric[] = [
-  "amt", "ohlc", "streaks", "pxvol",
+  "amt", "ohlc", "streaks", "pxvol", "gaps",
 ];
 
 /** Parse + normalize the /extras `metrics` query param (comma-separated).
@@ -571,77 +575,42 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
 // ----------------------------------------------------------------------------
 //  listMovAveSpreadCodes — one row per asset code with first/last date,
 //  n_dates, and the latest snapshot of all 9 gap_values (for sparkline /
-//  sort). Server-side: ONE full scan of the detail partition computes the
-//  per-code aggregates (code_dates + code_ranges merged into `agg`); the
-//  latest wide row and the latest name are then recovered with per-code
-//  LATERAL PK/index lookups (OFFSET 0 anti-flatten) instead of two more
-//  full scans (DISTINCT ON / 18-column MIN+MAX) — the original 3-scan
-//  version took 12.6s on stock.
-//
-//  Perf note: n_dates used to be COUNT(DISTINCT date). The PK
-//  (code, sec_type, date) already guarantees date uniqueness per code, so
-//  DISTINCT forced a per-group sort of every date for zero information —
-//  4.4s vs 1.1s on stock (6.8M rows), multiplied further on the read
-//  replica's small cache. COUNT(date) is exact.
+//  sort). Reads the PRECOMPUTED per-code summary table
+//  analysis.mov_ave_spreads_codes (maintained by analyze.mov_ave_spread's
+//  refresh_codes_summary after every detail write pass). The former live
+//  aggregate — GROUP BY code over 18 MIN/MAX columns of the detail table +
+//  per-code LATERAL latest-row and name lookups — took 7-14s on the stock
+//  universe (~6.8M rows) and gated the page's first open; this is the same
+//  result from a small indexed table (~10ms).
 // ----------------------------------------------------------------------------
-function buildCodesSql(secType: MaSpreadSecType): string {
-  const src = SEC_SOURCES[secType];
+function buildCodesSql(): string {
   return `
-    WITH agg AS (
-      SELECT
-        code,
-        MIN(date)  AS first_date,
-        MAX(date)  AS last_date,
-        COUNT(date) AS n_dates,
-        MAX(price_vs_ma5) AS mx_p5, MAX(price_vs_ma20) AS mx_p20,
-        MAX(price_vs_ma60) AS mx_p60, MAX(price_vs_ma120) AS mx_p120,
-        MAX(price_vs_ma255) AS mx_p255,
-        MAX(ma5_vs_ma20) AS mx_5_20, MAX(ma5_vs_ma60) AS mx_5_60,
-        MAX(ma5_vs_ma120) AS mx_5_120, MAX(ma5_vs_ma255) AS mx_5_255,
-        MIN(price_vs_ma5) AS mn_p5, MIN(price_vs_ma20) AS mn_p20,
-        MIN(price_vs_ma60) AS mn_p60, MIN(price_vs_ma120) AS mn_p120,
-        MIN(price_vs_ma255) AS mn_p255,
-        MIN(ma5_vs_ma20) AS mn_5_20, MIN(ma5_vs_ma60) AS mn_5_60,
-        MIN(ma5_vs_ma120) AS mn_5_120, MIN(ma5_vs_ma255) AS mn_5_255
-      FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-      GROUP BY code
-    )
     SELECT
-      a.code,
-      COALESCE(n.name, '')   AS name,
-      a.first_date,
-      a.last_date,
-      a.n_dates,
-      lr.price_vs_ma5, lr.price_vs_ma20, lr.price_vs_ma60,
-      lr.price_vs_ma120, lr.price_vs_ma255,
-      lr.ma5_vs_ma20, lr.ma5_vs_ma60, lr.ma5_vs_ma120, lr.ma5_vs_ma255,
-      GREATEST(a.mx_p5, a.mx_p20, a.mx_p60, a.mx_p120, a.mx_p255,
-               a.mx_5_20, a.mx_5_60, a.mx_5_120, a.mx_5_255) AS max_gain,
-      LEAST(a.mn_p5, a.mn_p20, a.mn_p60, a.mn_p120, a.mn_p255,
-            a.mn_5_20, a.mn_5_60, a.mn_5_120, a.mn_5_255)    AS max_loss,
-      (GREATEST(a.mx_p5, a.mx_p20, a.mx_p60, a.mx_p120, a.mx_p255,
-                a.mx_5_20, a.mx_5_60, a.mx_5_120, a.mx_5_255)
-       - LEAST(a.mn_p5, a.mn_p20, a.mn_p60, a.mn_p120, a.mn_p255,
-               a.mn_5_20, a.mn_5_60, a.mn_5_120, a.mn_5_255)) AS max_spread
-    FROM agg a
-    LEFT JOIN LATERAL (
-      SELECT d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
-             d.price_vs_ma120, d.price_vs_ma255,
-             d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255
-      FROM analysis.mov_ave_spreads_detail d
-      WHERE d.sec_type = $1 AND d.code = a.code AND d.date = a.last_date
-      OFFSET 0
-    ) lr ON TRUE
-    LEFT JOIN LATERAL (
-      SELECT x.name
-      FROM ${src.identityTable} x
-      WHERE x.code = a.code
-      ORDER BY x.date DESC
-      LIMIT 1
-      OFFSET 0
-    ) n ON TRUE
-    ORDER BY max_spread DESC NULLS LAST, a.code
+      c.code,
+      c.name,
+      c.first_date,
+      c.last_date,
+      c.n_dates,
+      c.latest_price_vs_ma5   AS price_vs_ma5,
+      c.latest_price_vs_ma20  AS price_vs_ma20,
+      c.latest_price_vs_ma60  AS price_vs_ma60,
+      c.latest_price_vs_ma120 AS price_vs_ma120,
+      c.latest_price_vs_ma255 AS price_vs_ma255,
+      c.latest_ma5_vs_ma20    AS ma5_vs_ma20,
+      c.latest_ma5_vs_ma60    AS ma5_vs_ma60,
+      c.latest_ma5_vs_ma120   AS ma5_vs_ma120,
+      c.latest_ma5_vs_ma255   AS ma5_vs_ma255,
+      GREATEST(c.max_p5, c.max_p20, c.max_p60, c.max_p120, c.max_p255,
+               c.max_5_20, c.max_5_60, c.max_5_120, c.max_5_255) AS max_gain,
+      LEAST(c.min_p5, c.min_p20, c.min_p60, c.min_p120, c.min_p255,
+            c.min_5_20, c.min_5_60, c.min_5_120, c.min_5_255)    AS max_loss,
+      (GREATEST(c.max_p5, c.max_p20, c.max_p60, c.max_p120, c.max_p255,
+                c.max_5_20, c.max_5_60, c.max_5_120, c.max_5_255)
+       - LEAST(c.min_p5, c.min_p20, c.min_p60, c.min_p120, c.min_p255,
+               c.min_5_20, c.min_5_60, c.min_5_120, c.min_5_255)) AS max_spread
+    FROM analysis.mov_ave_spreads_codes c
+    WHERE c.sec_type = $1
+    ORDER BY max_spread DESC NULLS LAST, c.code
   `;
 }
 
@@ -664,7 +633,7 @@ export async function listMovAveSpreadCodes(
   // filter is active — both need the sec_classification row to decide.
   const needMeta = hasClassFilter || !!exFilter;
 
-  const rows = await queryRows<DbCodeRow>(buildCodesSql(secType), [secType]);
+  const rows = await queryRows<DbCodeRow>(buildCodesSql(), [secType]);
 
   // When a classification filter is active, fetch the meta rows (same query as
   // listMovAveSpreadThemes) and build a code → classification map so
@@ -823,12 +792,90 @@ function chartJoinSql(tables: ChartSourceTable[]): string {
     .join("\n    ");
 }
 
-/** SQL for the DEFAULT chart response: the driving detail rows + the
- *  per-code prefetched source tables + a 4-window OHLC pivot for the
- *  shared tooltip metrics. */
-function buildChartSql(secType: MaSpreadSecType): string {
+// ----------------------------------------------------------------------------
+//  Chart BLOCK SQL builders — the same CTE-prefetch pattern as the old
+//  monolithic chart query, but scoped to ONE block's tables each, so a block
+//  request never reads, transfers, or serializes the columns the other
+//  blocks own (the monolithic /chart joined ~6 tables into ~90 columns; for
+//  a full stock history the Node-side fan-out + JSON of that single response
+//  dominated the latency).
+// ----------------------------------------------------------------------------
+
+/** REQUIRED pairs block: the stats price/MA tables joined to the detail
+ *  gaps/derivatives — everything the default Price/MA5 chart + the 9
+ *  Simple-MA chips need. No EMA detail, no RSI, no OHLC pivot. */
+function buildChartPairsSql(secType: MaSpreadSecType): string {
   const src = SEC_SOURCES[secType];
-  const tables = [...src.chartTables, ...CHART_ANALYSIS_TABLES];
+  const tables = src.chartTables;
+  return `
+    WITH d AS MATERIALIZED (
+      SELECT * FROM analysis.mov_ave_spreads_detail
+      WHERE sec_type = $1
+        AND code = ANY($2::text[])
+    ),
+    ${chartCtesSql(tables)}
+    SELECT
+      d.date,
+      ${src.priceExpr} AS price,
+      ${src.openExpr} AS open,
+      ${src.highExpr} AS high,
+      ${src.lowExpr} AS low,
+      ${src.tradingAmtExpr} AS trading_amount,
+      t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+      d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
+      d.price_vs_ma120, d.price_vs_ma255,
+      d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255,
+      d.price_slope, d.ma5_slope, d.ma20_slope, d.ma60_slope, d.ma120_slope, d.ma255_slope,
+      d.price_curvature, d.ma5_curvature, d.ma20_curvature, d.ma60_curvature,
+      d.ma120_curvature, d.ma255_curvature,
+      d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days
+    FROM d
+    ${chartJoinSql(tables)}
+    ORDER BY d.date ASC
+  `;
+}
+
+/** Best-effort EMA block: the EMA detail table (gaps/derivatives/σ) plus
+ *  the price columns the EMA pair rows carry. No RSI, no OHLC pivot. */
+function buildChartEmaSql(secType: MaSpreadSecType): string {
+  const src = SEC_SOURCES[secType];
+  const tables = [...src.chartTables, ...CHART_ANALYSIS_TABLES.filter((t) => t.alias === "ema")];
+  return `
+    WITH d AS MATERIALIZED (
+      SELECT * FROM analysis.mov_ave_spreads_detail
+      WHERE sec_type = $1
+        AND code = ANY($2::text[])
+    ),
+    ${chartCtesSql(tables)}
+    SELECT
+      d.date,
+      ${src.priceExpr} AS price,
+      ${src.openExpr} AS open,
+      ${src.highExpr} AS high,
+      ${src.lowExpr} AS low,
+      ${src.tradingAmtExpr} AS trading_amount,
+      t.ema6,
+      d.price_slope, d.price_curvature,
+      ema.price_vs_ema6, ema.price_vs_ema20, ema.price_vs_ema60,
+      ema.price_vs_ema120, ema.price_vs_ema255,
+      ema.ema6_vs_ema20, ema.ema6_vs_ema60, ema.ema6_vs_ema120, ema.ema6_vs_ema255,
+      ema.ema6_slope, ema.ema20_slope, ema.ema60_slope, ema.ema120_slope, ema.ema255_slope,
+      ema.ema6_curvature, ema.ema20_curvature, ema.ema60_curvature,
+      ema.ema120_curvature, ema.ema255_curvature,
+      ema.std_5days AS ema_std_5days, ema.std_20days AS ema_std_20days,
+      ema.std_60days AS ema_std_60days, ema.std_120days AS ema_std_120days,
+      ema.std_255days AS ema_std_255days
+    FROM d
+    ${chartJoinSql(tables)}
+    ORDER BY d.date ASC
+  `;
+}
+
+/** Best-effort shared block: the tooltip metrics — RSI table + OHLC pivot +
+ *  the detail table's amt slopes / market shares. No stats price tables
+ *  (sec_type binds through the $1 parameter at call time). */
+function buildChartSharedSql(): string {
+  const tables = CHART_ANALYSIS_TABLES.filter((t) => t.alias === "rsi");
   return `
     WITH d AS MATERIALIZED (
       SELECT * FROM analysis.mov_ave_spreads_detail
@@ -839,36 +886,12 @@ function buildChartSql(secType: MaSpreadSecType): string {
     ${ohlcPivotCteSql(OHLC_SHARED_PERIODS)}
     SELECT
       d.date,
-      ${src.priceExpr} AS price,
-      ${src.openExpr} AS open,
-      ${src.highExpr} AS high,
-      ${src.lowExpr} AS low,
-      ${src.tradingAmtExpr} AS trading_amount,
-      t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
-      t.ema6, t.ema20, t.ema60, t.ema120, t.ema255,
-      d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
-      d.price_vs_ma120, d.price_vs_ma255,
-      d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255,
-      d.price_slope, d.ma5_slope, d.ma20_slope, d.ma60_slope, d.ma120_slope, d.ma255_slope,
-      d.price_curvature, d.ma5_curvature, d.ma20_curvature, d.ma60_curvature,
-      d.ma120_curvature, d.ma255_curvature,
-      d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days,
-      ema.price_vs_ema6, ema.price_vs_ema20, ema.price_vs_ema60,
-      ema.price_vs_ema120, ema.price_vs_ema255,
-      ema.ema6_vs_ema20, ema.ema6_vs_ema60, ema.ema6_vs_ema120, ema.ema6_vs_ema255,
-      ema.ema6_slope, ema.ema20_slope, ema.ema60_slope, ema.ema120_slope, ema.ema255_slope,
-      ema.ema6_curvature, ema.ema20_curvature, ema.ema60_curvature,
-      ema.ema120_curvature, ema.ema255_curvature,
-      ema.std_5days AS ema_std_5days, ema.std_20days AS ema_std_20days,
-      ema.std_60days AS ema_std_60days, ema.std_120days AS ema_std_120days,
-      ema.std_255days AS ema_std_255days,
-      rsi.rsi_3days, rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days,
-      rsi.rsi_20days,
       d.trading_amt_ma5_slope, d.trading_amt_ma20_slope, d.trading_amt_ma60_slope,
       d.trading_amt_ma120_slope, d.trading_amt_ma255_slope,
       d.trading_amt_market_share_ma5, d.trading_amt_market_share_ma20,
       d.trading_amt_market_share_ma60, d.trading_amt_market_share_ma120,
       d.trading_amt_market_share_ma255,
+      rsi.rsi_3days, rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days,
       ${ohlcPivotSelectSql(OHLC_SHARED_PERIODS, "sh_")}
     FROM d
     ${chartJoinSql(tables)}
@@ -878,8 +901,9 @@ function buildChartSql(secType: MaSpreadSecType): string {
 }
 
 /** SQL for the "ohlc" extras group: the FULL 7-window extrema pivot driven
- *  off the detail rows' dates (index-aligned with the chart response). */
-function buildOhlcExtrasSql(secType: MaSpreadSecType): string {
+ *  off the detail rows' dates (index-aligned with the chart response;
+ *  sec_type binds through the $1 parameter at call time). */
+function buildOhlcExtrasSql(): string {
   return `
     WITH d AS MATERIALIZED (
       SELECT * FROM analysis.mov_ave_spreads_detail
@@ -951,6 +975,43 @@ function buildMarketRegimeSpansSql(): string {
  *  Every state-valid day joins exactly ONE of the 15
  *  px_speed × vol_state categories; the UI shades the matching dates
  *  per picked combo. */
+/** SQL for one (sec_type, code)'s daily OHLC gap anatomy + pattern
+ *  block (analysis.mov_ave_spreads_detail_ohlc_gaps — PK
+ *  (code, sec_type, date) on HASH(code) partitions; estimated rows are
+ *  excluded at build time). Serves the Top-10% OHLC Days group. */
+function buildOhlcGapsSql(): string {
+  return `
+    SELECT
+      g.date,
+      g.gap_open::float8  AS gap_open,
+      g.intra::float8     AS intra,
+      g.uw::float8        AS uw,
+      g.lw::float8        AS lw,
+      g.uw_top10,
+      g.lw_top10,
+      g.pattern
+    FROM analysis.mov_ave_spreads_detail_ohlc_gaps g
+    WHERE g.sec_type = $1
+      AND g.code = ANY($2::text[])
+    ORDER BY g.date
+  `;
+}
+
+/** DB row → API shape (fraction legs to num, booleans as-is, dates
+ *  ISO-formatted). */
+function toOhlcGapDay(r: DbOhlcGapRow): MovAveSpreadOhlcGapDay {
+  return {
+    date: formatDate(r.date),
+    gap_open: toNum(r.gap_open),
+    intra: toNum(r.intra),
+    uw: toNum(r.uw),
+    lw: toNum(r.lw),
+    uw_top10: r.uw_top10 === true,
+    lw_top10: r.lw_top10 === true,
+    pattern: r.pattern ?? null,
+  };
+}
+
 function buildPriceVsAmtSql(): string {
   return `
     SELECT
@@ -1010,11 +1071,21 @@ function buildStreaksSql(): string {
 
 function buildNameSql(secType: MaSpreadSecType): string {
   const src = SEC_SOURCES[secType];
+  // DISTINCT ON (code) + ORDER BY code, date DESC walks the (code, date) PK
+  // backwards PER CODE — one index probe per variant. The naive
+  // `ORDER BY date DESC LIMIT 1` form drove a date-index backward scan that
+  // filtered EVERY row of every touched partition before finding a match
+  // (~470k rows/partition, 4.4s measured 2026-09-29); the subselect wrapper
+  // then picks the overall-latest variant's row.
   return `
-    SELECT x.name
-    FROM ${src.identityTable} x
-    WHERE x.code = ANY($1::text[])
-    ORDER BY x.date DESC
+    SELECT name
+    FROM (
+      SELECT DISTINCT ON (code) code, name, date
+      FROM ${src.identityTable}
+      WHERE code = ANY($1::text[])
+      ORDER BY code, date DESC
+    ) latest
+    ORDER BY date DESC
     LIMIT 1
   `;
 }
@@ -1166,6 +1237,19 @@ function toPriceVsAmtDays(rows: DbPriceVsAmtRow[]): MovAveSpreadPriceVsAmtDay[] 
 /** One streak row from analysis.mov_ave_high_low_pct_streaks joined with
  *  its end-month band (see buildStreaksSql). side is NULL only if the
  *  end close fell exactly on a band boundary — never expected. */
+/** One analysis.mov_ave_spreads_detail_ohlc_gaps row as pg hands it
+ *  over (boolean flags arrive as real bools; int8/numeric through ::float8). */
+interface DbOhlcGapRow {
+  date: Date | string;
+  gap_open: number | null;
+  intra: number | null;
+  uw: number | null;
+  lw: number | null;
+  uw_top10: boolean | null;
+  lw_top10: boolean | null;
+  pattern: string | null;
+}
+
 interface DbStreakRow {
   period: number;
   pct_type: number;
@@ -1210,50 +1294,29 @@ function toStreaks(rows: DbStreakRow[]): MovAveSpreadHighLowStreak[] {
   return out;
 }
 
-export async function getMovAveSpreadChart(
-  rawCode: string,
-  rawSecType: string | undefined | null,
-): Promise<MovAveSpreadChartResponse> {
-  const secType = normalizeSecType(rawSecType);
-  const target = stripped(rawCode);
-  const variants = codeVariants(target);
-
-  const [chartRows, nameRows] = await Promise.all([
-    queryRows<DbChartRow>(buildChartSql(secType), [secType, variants]),
-    queryRows<{ name: string | null }>(buildNameSql(secType), [variants]),
-  ]);
-
-  const name = nameRows[0]?.name ?? "";
-
-  // Initialize the 18 pair series (9 Simple MA + 9 EMA) in canonical order.
-  // The 5 Amt/MA pairs are NOT part of the default load — they come from
-  // the "amt" extras group on demand.
+/** Initialize the 9 pair series of one family (Simple MA or EMA) in
+ *  canonical order — shared by the pairs/ema block mappers below. */
+function initPairSeries(
+  order: readonly (readonly [number, number, ...unknown[]])[],
+  kind: MovAveSpreadPairKind,
+  prefix: string,
+): Map<string, MovAveSpreadPairSeries> {
   const byPair = new Map<string, MovAveSpreadPairSeries>();
-  for (const [ms, ml] of PAIR_ORDER) {
-    byPair.set(`price-${ms}/${ml}`, {
+  for (const [ms, ml] of order) {
+    byPair.set(`${prefix}${ms}/${ml}`, {
       ma_short: ms,
       ma_long: ml,
-      pair_label: pairLabel(ms, ml),
-      kind: "price" as MovAveSpreadPairKind,
+      pair_label: pairLabel(ms, ml, kind),
+      kind,
       rows: [],
     });
   }
-  for (const [ms, ml] of EMA_PAIR_ORDER) {
-    byPair.set(`ema-${ms}/${ml}`, {
-      ma_short: ms,
-      ma_long: ml,
-      pair_label: pairLabel(ms, ml, "ema"),
-      kind: "ema" as MovAveSpreadPairKind,
-      rows: [],
-    });
-  }
+  return byPair;
+}
 
-  // One pass over the rows: fan each date out into 18 TRIMMED pair rows +
-  // ONE shared per-date tooltip-metrics row (RSI / trading-amt slope+share
-  // / rolling-window OHLC — values the old response duplicated into every
-  // pair's rows, tripling the payload).
-  const shared: MovAveSpreadSharedMetricsRow[] = [];
-
+/** Pairs-block mapper: fan each date out into the 9 Simple-MA pair rows. */
+function mapPricePairRows(chartRows: DbChartRow[]): MovAveSpreadPairSeries[] {
+  const byPair = initPairSeries(PAIR_ORDER, "price", "price-");
   for (const r of chartRows) {
     const dateStr = formatDate(r.date);
     const price = toNum(r.price);
@@ -1262,52 +1325,17 @@ export async function getMovAveSpreadChart(
     const high = toNum(r.high);
     const low = toNum(r.low);
     const tradingAmount = toNum(r.trading_amount);
-
-    shared.push({
-      date: dateStr,
-      rsi_3days: toNum(r.rsi_3days),
-      rsi_6days: toNum(r.rsi_6days),
-      rsi_10days: toNum(r.rsi_10days),
-      rsi_14days: toNum(r.rsi_14days),
-      rsi_20days: toNum(r.rsi_20days),
-      trading_amt_ma5_slope: toNum(r.trading_amt_ma5_slope),
-      trading_amt_ma20_slope: toNum(r.trading_amt_ma20_slope),
-      trading_amt_ma60_slope: toNum(r.trading_amt_ma60_slope),
-      trading_amt_ma120_slope: toNum(r.trading_amt_ma120_slope),
-      trading_amt_ma255_slope: toNum(r.trading_amt_ma255_slope),
-      trading_amt_market_share_ma5: toNum(r.trading_amt_market_share_ma5),
-      trading_amt_market_share_ma20: toNum(r.trading_amt_market_share_ma20),
-      trading_amt_market_share_ma60: toNum(r.trading_amt_market_share_ma60),
-      trading_amt_market_share_ma120: toNum(r.trading_amt_market_share_ma120),
-      trading_amt_market_share_ma255: toNum(r.trading_amt_market_share_ma255),
-      open_20d: toNum(r.sh_open_20d),
-      high_20d: toNum(r.sh_high_20d),
-      low_20d: toNum(r.sh_low_20d),
-      open_60d: toNum(r.sh_open_60d),
-      high_60d: toNum(r.sh_high_60d),
-      low_60d: toNum(r.sh_low_60d),
-      open_120d: toNum(r.sh_open_120d),
-      high_120d: toNum(r.sh_high_120d),
-      low_120d: toNum(r.sh_low_120d),
-      open_255d: toNum(r.sh_open_255d),
-      high_255d: toNum(r.sh_high_255d),
-      low_255d: toNum(r.sh_low_255d),
-    });
-
-    // ---- 9 Simple MA pairs ----
     for (const [maShort, maLong, gapCol] of PAIR_ORDER) {
       const series = byPair.get(`price-${maShort}/${maLong}`);
       if (!series) continue;
       const shortVal = maShort === 0 ? price : ma5;
-      const longVal = pickLong(r, maLong);
-      const gapVal = toNum(r[gapCol as keyof DbChartRow]);
       // slope/curvature: when ma_short = 0 the short series is price, so use
       // price_slope / price_curvature; otherwise use the short MA's derivatives.
       const row: MovAveSpreadPairRow = {
         date: dateStr,
         short_value: shortVal,
-        long_value: longVal,
-        gap_value: gapVal,
+        long_value: pickLong(r, maLong),
+        gap_value: toNum(r[gapCol as keyof DbChartRow]),
         short_slope: maShort === 0 ? toNum(r.price_slope) : pickSlope(r, maShort),
         short_curvature: maShort === 0 ? toNum(r.price_curvature) : pickCurvature(r, maShort),
         long_slope: pickSlope(r, maLong),
@@ -1320,23 +1348,32 @@ export async function getMovAveSpreadChart(
       };
       series.rows.push(row);
     }
+  }
+  return PAIR_ORDER.map(([ms, ml]) => byPair.get(`price-${ms}/${ml}`)!);
+}
 
-    // ---- 9 EMA (Exponential MA) pairs ----
-    // short = price (ma_short=0) or ema6 (ma_short=6); long = emaW.
-    // gap_value / slope / curvature come from the EMA detail table (alias
-    // `ema`); long_std is the rolling price σ for the long EMA's window.
+/** Ema-block mapper: fan each date out into the 9 EMA pair rows.
+ *  short = price (ma_short=0) or ema6 (ma_short=6); long = emaW.
+ *  gap_value / slope / curvature come from the EMA detail table (alias
+ *  `ema`); long_std is the rolling price σ for the long EMA's window. */
+function mapEmaPairRows(chartRows: DbChartRow[]): MovAveSpreadPairSeries[] {
+  const byPair = initPairSeries(EMA_PAIR_ORDER, "ema", "ema-");
+  for (const r of chartRows) {
+    const dateStr = formatDate(r.date);
+    const price = toNum(r.price);
     const ema6 = toNum(r.ema6);
+    const open = toNum(r.open);
+    const high = toNum(r.high);
+    const low = toNum(r.low);
+    const tradingAmount = toNum(r.trading_amount);
     for (const [maShort, maLong, gapCol] of EMA_PAIR_ORDER) {
       const series = byPair.get(`ema-${maShort}/${maLong}`);
       if (!series) continue;
-      const shortVal = maShort === 0 ? price : ema6;
-      const longVal = pickEmaLong(r, maLong);
-      const gapVal = toNum(r[gapCol as keyof DbChartRow]);
       const row: MovAveSpreadPairRow = {
         date: dateStr,
-        short_value: shortVal,
-        long_value: longVal,
-        gap_value: gapVal,
+        short_value: maShort === 0 ? price : ema6,
+        long_value: pickEmaLong(r, maLong),
+        gap_value: toNum(r[gapCol as keyof DbChartRow]),
         short_slope: maShort === 0 ? toNum(r.price_slope) : pickEmaSlope(r, maShort),
         short_curvature: maShort === 0 ? toNum(r.price_curvature) : pickEmaCurvature(r, maShort),
         long_slope: pickEmaSlope(r, maLong),
@@ -1350,15 +1387,110 @@ export async function getMovAveSpreadChart(
       series.rows.push(row);
     }
   }
+  return EMA_PAIR_ORDER.map(([ms, ml]) => byPair.get(`ema-${ms}/${ml}`)!);
+}
 
+/** Shared-block mapper: the per-date tooltip-metrics rows (RSI /
+ *  trading-amt slope+share / rolling-window OHLC). */
+function mapSharedRows(chartRows: DbChartRow[]): MovAveSpreadSharedMetricsRow[] {
+  return chartRows.map((r) => ({
+    date: formatDate(r.date),
+    rsi_3days: toNum(r.rsi_3days),
+    rsi_6days: toNum(r.rsi_6days),
+    rsi_10days: toNum(r.rsi_10days),
+    rsi_14days: toNum(r.rsi_14days),
+    rsi_20days: toNum(r.rsi_20days),
+    trading_amt_ma5_slope: toNum(r.trading_amt_ma5_slope),
+    trading_amt_ma20_slope: toNum(r.trading_amt_ma20_slope),
+    trading_amt_ma60_slope: toNum(r.trading_amt_ma60_slope),
+    trading_amt_ma120_slope: toNum(r.trading_amt_ma120_slope),
+    trading_amt_ma255_slope: toNum(r.trading_amt_ma255_slope),
+    trading_amt_market_share_ma5: toNum(r.trading_amt_market_share_ma5),
+    trading_amt_market_share_ma20: toNum(r.trading_amt_market_share_ma20),
+    trading_amt_market_share_ma60: toNum(r.trading_amt_market_share_ma60),
+    trading_amt_market_share_ma120: toNum(r.trading_amt_market_share_ma120),
+    trading_amt_market_share_ma255: toNum(r.trading_amt_market_share_ma255),
+    open_20d: toNum(r.sh_open_20d),
+    high_20d: toNum(r.sh_high_20d),
+    low_20d: toNum(r.sh_low_20d),
+    open_60d: toNum(r.sh_open_60d),
+    high_60d: toNum(r.sh_high_60d),
+    low_60d: toNum(r.sh_low_60d),
+    open_120d: toNum(r.sh_open_120d),
+    high_120d: toNum(r.sh_high_120d),
+    low_120d: toNum(r.sh_low_120d),
+    open_255d: toNum(r.sh_open_255d),
+    high_255d: toNum(r.sh_high_255d),
+    low_255d: toNum(r.sh_low_255d),
+  }));
+}
+
+/** REQUIRED chart block — the 9 Simple-MA pair series + the display name.
+ *  Drives the default Price/MA5 chart, the MA chip grid, and the shared
+ *  date axis; its landing unblocks the panel's first render. */
+export async function getMovAveSpreadChartPairs(
+  rawCode: string,
+  rawSecType: string | undefined | null,
+): Promise<MovAveSpreadChartPairsResponse> {
+  const secType = normalizeSecType(rawSecType);
+  const target = stripped(rawCode);
+  const variants = codeVariants(target);
+  const [chartRows, nameRows] = await Promise.all([
+    queryRows<DbChartRow>(buildChartPairsSql(secType), [secType, variants]),
+    queryRows<{ name: string | null }>(buildNameSql(secType), [variants]),
+  ]);
   return {
     code: target,
-    name,
-    pairs: [
-      ...PAIR_ORDER.map(([ms, ml]) => byPair.get(`price-${ms}/${ml}`)!),
-      ...EMA_PAIR_ORDER.map(([ms, ml]) => byPair.get(`ema-${ms}/${ml}`)!),
-    ],
-    shared,
+    name: nameRows[0]?.name ?? "",
+    pairs: mapPricePairRows(chartRows),
+  };
+}
+
+/** Best-effort chart block — the 9 EMA pair series (EMA detail table). The
+ *  EMA chip grid populates when this lands; a failure just leaves those
+ *  chips absent (the frontend guards on pair presence). */
+export async function getMovAveSpreadChartEma(
+  rawCode: string,
+  rawSecType: string | undefined | null,
+): Promise<MovAveSpreadChartEmaResponse> {
+  const secType = normalizeSecType(rawSecType);
+  const target = stripped(rawCode);
+  const variants = codeVariants(target);
+  const chartRows = await queryRows<DbChartRow>(buildChartEmaSql(secType), [secType, variants]);
+  return { code: target, pairs: mapEmaPairRows(chartRows) };
+}
+
+/** Best-effort chart block — the per-date tooltip metrics (RSI table +
+ *  OHLC pivot + detail amt slopes/market shares). The chart's tooltip
+ *  formatters already tolerate its absence. */
+export async function getMovAveSpreadChartShared(
+  rawCode: string,
+  rawSecType: string | undefined | null,
+): Promise<MovAveSpreadChartSharedResponse> {
+  const secType = normalizeSecType(rawSecType);
+  const target = stripped(rawCode);
+  const variants = codeVariants(target);
+  const chartRows = await queryRows<DbChartRow>(buildChartSharedSql(), [secType, variants]);
+  return { code: target, shared: mapSharedRows(chartRows) };
+}
+
+/** The DEFAULT full chart response — composition of the three blocks (kept
+ *  for the monolithic /chart endpoint and any non-panel consumer; the panel
+ *  itself fetches the blocks directly for progressive rendering). */
+export async function getMovAveSpreadChart(
+  rawCode: string,
+  rawSecType: string | undefined | null,
+): Promise<MovAveSpreadChartResponse> {
+  const [pairs, ema, shared] = await Promise.all([
+    getMovAveSpreadChartPairs(rawCode, rawSecType),
+    getMovAveSpreadChartEma(rawCode, rawSecType),
+    getMovAveSpreadChartShared(rawCode, rawSecType),
+  ]);
+  return {
+    code: pairs.code,
+    name: pairs.name,
+    pairs: [...pairs.pairs, ...ema.pairs],
+    shared: shared.shared,
   };
 }
 
@@ -1449,7 +1581,7 @@ export async function getMovAveSpreadChartExtras(
         }
         case "ohlc": {
           const rows = await queryRows<DbExtremaRow>(
-            buildOhlcExtrasSql(secType),
+            buildOhlcExtrasSql(),
             [secType, variants],
           );
           response.ohlc = rows.map(toOhlcExtremaRow);
@@ -1463,6 +1595,11 @@ export async function getMovAveSpreadChartExtras(
         case "pxvol": {
           const rows = await queryRows<DbPriceVsAmtRow>(buildPriceVsAmtSql(), [secType, variants]);
           response.priceVsAmt = toPriceVsAmtDays(rows);
+          break;
+        }
+        case "gaps": {
+          const rows = await queryRows<DbOhlcGapRow>(buildOhlcGapsSql(), [secType, variants]);
+          response.ohlcGaps = rows.map(toOhlcGapDay);
           break;
         }
       }
@@ -1534,15 +1671,16 @@ interface DbMaSpreadMetaRow extends QueryResultRow {
 }
 
 /** Meta SQL shared by listMovAveSpreadThemes() and
- *  listMovAveSpreadStrategyThemes(). Returns one row per code in
- *  analysis.mov_ave_spreads_detail (filtered by sec_type) with its
- *  precomputed L1/L2 classification from stats.sec_classification.
- *  is_industry_not_strategy distinguishes industry-primary (TRUE) from
- *  strategy-primary (FALSE) rows. */
+ *  listMovAveSpreadStrategyThemes(). Returns one row per code WITH analysis
+ *  rows (from the precomputed per-code summary table — the former
+ *  `SELECT DISTINCT code` over the detail table scanned all ~6.8M stock
+ *  rows per request) with its precomputed L1/L2 classification from
+ *  stats.sec_classification. is_industry_not_strategy distinguishes
+ *  industry-primary (TRUE) from strategy-primary (FALSE) rows. */
 const MA_SPREAD_META_SQL = `
   WITH spread_codes AS (
-    SELECT DISTINCT code
-    FROM analysis.mov_ave_spreads_detail
+    SELECT code
+    FROM analysis.mov_ave_spreads_codes
     WHERE sec_type = $1::text
   )
   SELECT

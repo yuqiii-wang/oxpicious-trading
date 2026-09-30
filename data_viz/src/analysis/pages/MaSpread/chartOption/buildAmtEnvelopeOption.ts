@@ -29,6 +29,7 @@ import type {
   MovAveSpreadPairSeries,
   MovAveSpreadAmtRow,
   MovAveSpreadSharedMetricsRow,
+  MovAveSpreadOhlcGapDay,
 } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
 import {
@@ -111,6 +112,12 @@ export interface BuildAmtEnvelopeOptionArgs {
     >;
     accent: string;
   }>;
+  /** Top-10% OHLC Days: the gaps store's per-day anatomy rows for this
+   *  code (null when the group is off/unloaded). With ``ohlcGapActive``
+   *  the hovered day's pattern + gap legs join the tooltip. */
+  ohlcGapRows?: MovAveSpreadOhlcGapDay[] | null;
+  /** A Top-10% OHLC Days toggle is on. */
+  ohlcGapActive?: boolean;
 }
 
 /** Build the ECharts option for the Amt Envelope chart. */
@@ -126,6 +133,8 @@ export function buildAmtEnvelopeOption({
   streakAnchorIdx = null,
   pxVolShade = null,
   regimeShades = null,
+  ohlcGapRows = null,
+  ohlcGapActive = false,
 }: BuildAmtEnvelopeOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -530,6 +539,26 @@ export function buildAmtEnvelopeOption({
     selectedWindow,
     AMT_MA_WINDOWS,
     fmtPrice,
+    // Top-10% OHLC Days tooltip info (active only when a toggle is on):
+    // the gaps store's anatomy aligned to the chart's date axis.
+    ohlcGapRows != null && ohlcGapActive
+      ? (() => {
+          const byDate = new Map(ohlcGapRows.map((d) => [d.date, d]));
+          const pick = (
+            pickFn: (d: MovAveSpreadOhlcGapDay) => number | null,
+          ) => dates.map((dt) => {
+            const d = byDate.get(dt);
+            return d == null ? null : pickFn(d);
+          });
+          return {
+            gap: pick((d) => d.gap_open),
+            intra: pick((d) => d.intra),
+            uw: pick((d) => d.uw),
+            lw: pick((d) => d.lw),
+            pattern: dates.map((dt) => byDate.get(dt)?.pattern ?? null),
+          };
+        })()
+      : null,
   );
 
   // Shared preamble (transparent bg, animations off, themed fragments) via

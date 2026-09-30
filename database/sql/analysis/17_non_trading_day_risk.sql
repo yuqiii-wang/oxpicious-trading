@@ -98,7 +98,7 @@ COMMENT ON TABLE  analysis.mov_ave_rsi_holiday IS
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.sec_type IS
     'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.code IS
-    'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+    'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.date IS
     'Business date (trading day) — the current day D. Previous-day flags refer to D-1 (calendar day).';
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.is_prev_day_trading IS

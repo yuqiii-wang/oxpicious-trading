@@ -30,6 +30,14 @@ fi
 # Ensure hot standby
 echo "hot_standby = on" >> "$PGDATA/postgresql.conf"
 
+# Feedback to the primary: the standby reports its oldest running xact so
+# the primary's vacuum keeps row versions replica queries still need —
+# removes most replay-conflict cancellations (SQLSTATE 40001) during WAL
+# replay. Cost: the primary may keep dead tuples a while longer (mild
+# bloat). Re-applied on every start because pg_basebackup overwrites
+# postgresql.conf on a re-seed.
+echo "hot_standby_feedback = on" >> "$PGDATA/postgresql.conf"
+
 # listen_addresses: the primary gets '*' from its container CMD flag, which
 # is NOT part of the basebackup-copied config (initdb default is localhost).
 # Without this, host port-forward connections are reset (ECONNRESET).

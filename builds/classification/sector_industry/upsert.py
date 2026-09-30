@@ -130,9 +130,9 @@ async def _update_is_primary_exchange(conn, verbose: bool = True) -> None:
               f"{row['cross_border']:,} cross-border, {row['null_ex']:,} NULL")
 
 
-# (sec_type, identity_table) pairs used to derive is_active.  index codes are
-# bare 6-digit; stock/etf codes carry the .SZ/.SS exchange suffix — in both
-# cases sec_classification.code matches the identity-table code directly.
+# (sec_type, identity_table) pairs used to derive is_active.  index and etf
+# codes are bare 6-digit; stock codes carry the .SZ/.SS exchange suffix — in
+# every case sec_classification.code matches the identity-table code directly.
 _IDENTITY_TABLES = (
     ("index", "stats.index_identity"),
     ("stock", "stats.stock_identity"),
@@ -147,7 +147,7 @@ async def _update_is_active(conn, verbose: bool = True) -> None:
     IS_ACTIVE_LOOKBACK_DAYS days in its identity table:
         index → stats.index_identity   (code = bare 6-digit)
         stock → stats.stock_identity   (code = with .SZ/.SS suffix)
-        etf   → stats.etf_identity     (code = with .SS/.SZ suffix)
+        etf   → stats.etf_identity     (code = bare 6-digit)
     Dummy indices (is_dummy=TRUE) are always active — they are synthetic
     parents for orphan ETFs and have no identity records of their own.
     Everything else (delisted ETFs, dead indices, old stocks with no recent

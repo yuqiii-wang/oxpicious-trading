@@ -5,13 +5,13 @@ families (one metric one file). The FORECAST path runs entirely on
 cudf.pandas DataFrames (the former numpy wide reference machinery went
 with the retired opp_pair legacy pipeline in 2026-09):
 
-  - the (code chunk × stat month) PARTITION lives here — the base owns
-    the month loop and the chunking that bounds every frame's device
+  - the (code chunk × snapshot) PARTITION lives here — the base owns
+    the snapshot loop and the chunking that bounds every frame's device
     footprint; subclasses never loop,
-  - ``month_rows(win, spec)`` — the default implementation runs the
+  - ``snapshot_rows(win, spec)`` — the default implementation runs the
     bucket pipeline over ``emit_signals(win)``; bucket-free families
     (base_rates) override it directly,
-  - ``emit_signals(win)`` — THE subclass hook: consumes one month
+  - ``emit_signals(win)`` — THE subclass hook: consumes one snapshot
     window's long frame and yields long-format TRIGGER-CELL frames
     (one row per qualifying signal: code / date / _t / regime / side
     / excess / run_len / streak spans + the family's BUCKET_COLS).
@@ -50,6 +50,11 @@ import pandas as pd
 from _common.df_utils import host_array
 from _common.df_utils._detector import is_gpu_available
 
+from analyze.analysis_forecasts import (
+    ohlcv_boost,
+    ohlcv_selection,
+)
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -63,7 +68,7 @@ from analyze.analysis_forecasts.config import (
 
 # ---- Memory-aware partition budgets (2026-09 regime refactor) ---------------
 #
-# One (month × code-chunk) partition's working-set budget, expressed in
+# One (snapshot × code-chunk) partition's working-set budget, expressed in
 # float64 CELLS of the partition's primary window slice. The in-flight
 # intermediates (the melted per-config long frames, the ×8 bar join,
 # the ragged-array host passes) hold a small multiple of the slice, so
@@ -87,7 +92,7 @@ from analyze.analysis_forecasts.config import (
 # single partition was already well inside budget).
 #
 # Semantics are UNCHANGED — the partitioning only bounds memory; the
-# month loop, live gate and aggregation are per-(chunk, month) worlds
+# snapshot loop, live gate and aggregation are per-(chunk, snapshot) worlds
 # exactly as before (the historic flat CODE_CHUNK = MAX_CODE_CHUNK =
 # 2048 remains the ceiling for small universes, which stay whole).
 GPU_PARTITION_CELL_BUDGET = 40_000_000   # ~320 MiB slice → ~1.3 GiB device working set
@@ -127,7 +132,7 @@ def _band_ordinal(
 
 
 class WideDfEngine(ABC):
-    """The (code chunk × stat month) partitioned DataFrame engine."""
+    """The (code chunk × snapshot) partitioned DataFrame engine."""
 
     # Family bucket-key columns riding on every trigger cell (besides
     # the standard cell columns). ``side`` is standard; regime_state is
@@ -139,6 +144,22 @@ class WideDfEngine(ABC):
     # 2026-09-21 streak semantics); False = every qualifying day is
     # its own 1-day signal (the cross-event / state families).
     MERGE: bool = True
+
+    # The family's DERIVED-POPULATION identities (the analyze.
+    # analysis_forecasts.ohlcv_boost / ohlcv_selection module keys) —
+    # None (default) = the family carries none: its result rows keep
+    # the historical single-population shape (ohlcv_type NULL
+    # everywhere). The 2026-09-27 OHLCV CONSOLIDATION: the four legacy
+    # siblings (ohlc_selection / ohlc_boost / vol_selection /
+    # vol_boost) were RETIRED — their day-0 axes (OHLC pattern, amount
+    # state, gap anatomy) live only inside the ohlcv score now. The two
+    # mechanisms are logically isolated siblings: the boost stamps its
+    # own weighted re-measurement (the parent's FULL population), the
+    # selection its own score-gated strict subset — none reads the
+    # other's flags; _cells_to_rows collapses them into the ONE
+    # ``ohlcv_type`` column the registry stores.
+    ohlcv_boost_bucket: str | None = None
+    ohlcv_selection_bucket: str | None = None
 
     def __init__(
         self,
@@ -167,19 +188,19 @@ class WideDfEngine(ABC):
 
     def run(self) -> Iterator[tuple[date, object]]:
         """Yield (stat_date, payload) per stat date — snapshot-major, so
-        __main__ writes one atomic transaction per month. The payload is
+        __main__ writes one atomic transaction per snapshot. The payload is
         a bucket-major result FRAME for the bucket families (the
         writer's fast path: CSV render + frame-firsts mov/identity
         rows) or a list of row dicts for the families that override
-        ``month_rows`` directly (base_rates). Frame payloads from the
-        month's code chunks are concatenated with the ``_bkt`` writer
-        tag offset so bucket groups stay unique across the month."""
+        ``snapshot_rows`` directly (base_rates). Frame payloads from the
+        snapshot's code chunks are concatenated with the ``_bkt`` writer
+        tag offset so bucket groups stay unique across the snapshot."""
         self._prepare()
         for spec in self.specs:
             items: list = []
             offset = 0
-            for win in self._month_chunks(spec):
-                chunk = self.month_rows(win, spec)
+            for win in self._snapshot_chunks(spec):
+                chunk = self.snapshot_rows(win, spec)
                 if chunk and isinstance(chunk[0], pd.DataFrame):
                     for f in chunk:
                         f["_bkt"] = f["_bkt"] + offset
@@ -194,20 +215,33 @@ class WideDfEngine(ABC):
             else:
                 yield spec.stat_date, items
 
-    def month_rows(self, win: pd.DataFrame, spec) -> list:
-        """One (month × code chunk) partition — the bucket pipeline:
-        detect (emit_signals) → aggregate → result frames (bucket-major,
-        ``_bkt``-tagged, shared constants stamped — the writer's fast
-        path). Bucket-free families override this directly and return
-        row dicts."""
+    def snapshot_rows(self, win: pd.DataFrame, spec) -> list:
+        """One (snapshot × code chunk) partition — the bucket pipeline:
+        detect (emit_signals) → the derived-population stamps (each
+        module's own isolated evaluation) → aggregate → result frames
+        (bucket-major, ``_bkt``-tagged, shared constants stamped — the
+        writer's fast path). Bucket-free families override this
+        directly and return row dicts."""
         frames: list[pd.DataFrame] = []
         for cells in self.emit_signals(win):
+            if self.ohlcv_boost_bucket is not None:
+                cells = ohlcv_boost.apply(
+                    self.ohlcv_boost_bucket, self.sec_type,
+                    cells, win,
+                    ["code", "regime", "side"] + list(self.BUCKET_COLS),
+                )
+            if self.ohlcv_selection_bucket is not None:
+                cells = ohlcv_selection.apply(
+                    self.ohlcv_selection_bucket, self.sec_type,
+                    cells, win,
+                    ["code", "regime", "side"] + list(self.BUCKET_COLS),
+                )
             frames.append(self._cells_to_rows(cells, win, spec))
         return frames
 
     @abstractmethod
     def emit_signals(self, win: pd.DataFrame) -> Iterable[pd.DataFrame]:
-        """The family's detection logic on one month-window frame —
+        """The family's detection logic on one snapshot-window frame —
         yields long-format trigger-cell frames (see the module
         docstring). Implementations hold ONLY their own metric logic."""
 
@@ -247,7 +281,7 @@ class WideDfEngine(ABC):
         df = df.sort_values(["code", "date"]).reset_index(drop=True)
         self._prepared = df
 
-    def _month_chunks(self, spec) -> Iterator[pd.DataFrame]:
+    def _snapshot_chunks(self, spec) -> Iterator[pd.DataFrame]:
         """Yield the (live code chunk × window dates) slices of the
         prepared frame. The live gate is DATE-space (a code joins from
         its own first-data date — a snapshot's stats span its ACTUAL
@@ -260,10 +294,10 @@ class WideDfEngine(ABC):
         codes_frame = self._codes_frame()
         # np.datetime64 scalars — the compare every backend accepts
         # (datetime64 columns vs python `date` objects raise).
-        # the month's partitions from the PRE-PARTITIONED ids; the live
+        # the snapshot's partitions from the PRE-PARTITIONED ids; the live
         # gate is a per-row compare against each code's own first-data
         # date (merged once in _prepare) — non-live codes sorting inside
-        # a partition stay out, no per-month isin hash joins
+        # a partition stay out, no per-snapshot isin hash joins
         lower, upper = np.datetime64(spec.lower), np.datetime64(spec.upper)
         fd_cut = np.datetime64(spec.upper)
         live_pcs = codes_frame.loc[
@@ -283,9 +317,18 @@ class WideDfEngine(ABC):
                 yield win
 
     def _window_cols(self) -> list[str]:
-        """The prepared frame's columns one month window needs: cell
-        identity + the family's extra columns + forward changes / closes."""
+        """The prepared frame's columns one snapshot window needs: cell
+        identity + the family's extra columns + the derived-population
+        modules' feature columns (the OHLC pair's anatomy / pattern and
+        the vol pair's px_vol registry states) + forward changes /
+        closes."""
         cols = ["code", "date", "_t", "regime"] + self._extra_window_cols()
+        cols += list(dict.fromkeys(
+            ohlcv_boost.window_columns(
+                self.ohlcv_boost_bucket or "", self.sec_type)
+            + ohlcv_selection.window_columns(
+                self.ohlcv_selection_bucket or "", self.sec_type),
+        ))
         for n in FORWARD_HORIZONS:
             cols.append(f"next_change_{n}d")
         for n in FORWARD_HORIZONS:
@@ -333,7 +376,7 @@ class WideDfEngine(ABC):
             })
             # PRE-PARTITION: the sorted universe's code-partition id —
             # assigned once here, merged onto the frame once in
-            # _prepare; _month_chunks never slices code lists inline.
+            # _prepare; _snapshot_chunks never slices code lists inline.
             cf["_pc"] = (
                 np.arange(len(cf), dtype="int64") // self._code_chunk
             )
@@ -441,7 +484,58 @@ class WideDfEngine(ABC):
         and the motivation fan-out — as the bucket-major shared-stamp
         FRAME the writer's fast path consumes."""
         ids = ["code", "regime", "side"] + list(self.BUCKET_COLS)
-        keys = ids + ["delay"]
+        # The derived-population fan-out (the 2026-09-27 OHLCV
+        # CONSOLIDATION): the PARENT rows carry the bucket's FULL
+        # trigger population and each derived module (ohlcv_boost /
+        # ohlcv_selection — logically isolated siblings) contributes
+        # its OWN child rows — the boost the same days re-weighted, the
+        # selection a strict score-gated subset — materialized as a
+        # RELATED forecast under its own forecast_id. Each module
+        # stamps its own INT64 0/1 flag (+ the boost its float64
+        # weight) on the cells (its isolated semantics); HERE the two
+        # collapse into ONE ``ohlcv_type`` TEXT column — '' the plain
+        # parent population, 'ohlcv_boost' / 'ohlcv_selection' the
+        # ohlcv children (the four legacy values gap_selection /
+        # gap_boost / vol_selection / vol_boost were retired with the
+        # consolidation) — the shape that lands in forecast_identities
+        # (via the writer's _identity_rows, '' → NULL) and groups +
+        # sorts each population's rows into its own _bkt span. Buckets
+        # without qualifying streaks simply have no child rows.
+        has_pop = (self.ohlcv_boost_bucket is not None
+                   or self.ohlcv_selection_bucket is not None)
+        pop_col = ["ohlcv_type"] if has_pop else []
+        keys = ids + pop_col + ["delay"]
+        if has_pop:
+            # The per-cell aggregation weight: 1.0 everywhere except
+            # the boost span, where each streak carries its measured-
+            # edge weight (ohlcv_boost apply — the boost child keeps
+            # the parent's FULL population and the weight shapes the
+            # measurement; the parent / selection spans stay plain).
+            cells_cols = set(cells.columns)  # one host transfer
+            boost_w = (cells["ohlcv_boost_weight"].to_numpy()
+                       if "ohlcv_boost_weight" in cells_cols
+                       else np.full(len(cells), 1.0))
+            core_cols = [
+                c for c in cells.columns
+                if c not in ("is_ohlcv_selection", "is_ohlcv_boosted")
+            ]
+            # The parent always; each child only when its module ran
+            # (its flag column exists — a family may wire any subset).
+            spans = [cells[core_cols].assign(
+                ohlcv_type="", _w=np.float64(1.0))]
+            if "is_ohlcv_boosted" in cells_cols:
+                m = (cells["is_ohlcv_boosted"] == 1).to_numpy()
+                spans.append(
+                    cells[m][core_cols].assign(
+                        ohlcv_type="ohlcv_boost", _w=boost_w[m]))
+            if "is_ohlcv_selection" in cells_cols:
+                spans.append(
+                    cells[cells["is_ohlcv_selection"] == 1][core_cols]
+                    .assign(ohlcv_type="ohlcv_selection",
+                            _w=np.float64(1.0)))
+            cells = pd.concat(spans, ignore_index=True)
+        else:
+            cells = cells.assign(_w=np.float64(1.0))
 
         # Forward changes ride each trigger's own row — one keyed join.
         # (Engines whose cells are a subset of the window frame —
@@ -460,19 +554,27 @@ class WideDfEngine(ABC):
 
         # Per-horizon helper columns (vectorized; invalid cells
         # contribute exact zeros so the all-cell sums are the valid-day
-        # sums — the NC0 semantics of the numpy pipeline).
+        # sums — the NC0 semantics of the numpy pipeline). Every
+        # numerator is WEIGHT-CARRIED (``_w`` — 1.0 on plain spans, the
+        # composite rank weight on the boost span): the per-bucket
+        # means / stds / closes below divide by Σw over the valid
+        # cells, which collapses to the plain count when weights are
+        # uniform — one algebra for both spans.
         agg: dict = {}
         for n in FORWARD_HORIZONS:
             col = c[f"next_change_{n}d"]
             fin = _finite_mask(col)
+            w = c["_w"]
             c[f"_fin{n}"] = fin
-            c[f"_c{n}"] = col.where(fin, 0.0)
-            c[f"_c2_{n}"] = c[f"_c{n}"] ** 2
+            c[f"_fw{n}"] = w.where(fin, 0.0)
+            c[f"_c{n}"] = (col * w).where(fin, 0.0)
+            c[f"_c2_{n}"] = (col * col * w).where(fin, 0.0)
             # PERIOD-END close sum (the ave_close numerator):
             # close[t+n] over the SAME finite-change cells — invalid
             # cells contribute exact zeros (the NC0 semantics).
-            c[f"_cl{n}"] = c[f"next_close_{n}"].where(fin, 0.0)
+            c[f"_cl{n}"] = (c[f"next_close_{n}"] * w).where(fin, 0.0)
             agg[f"cnt_{n}"] = (f"_fin{n}", "sum")
+            agg[f"fw_{n}"] = (f"_fw{n}", "sum")
             agg[f"s_{n}"] = (f"_c{n}", "sum")
             agg[f"sc_{n}"] = (f"_cl{n}", "sum")
             agg[f"s2_{n}"] = (f"_c2_{n}", "sum")
@@ -485,12 +587,13 @@ class WideDfEngine(ABC):
         # Bucket-major order: bucket groups contiguous, each bucket's
         # delays consecutive — the writer's _bkt grouping assumes it.
         a = a.sort_values(keys, kind="stable")
-        # The writer's bucket tag: ONE forecast_id per identity bucket,
-        # shared across its delay rows — factorized via group-boundary
-        # detection over the string-cast identity keys (the
-        # _ragged_arrays trick; the shifted first row carries nulls, a
-        # null-propagating compare would break cudf's row-wise any).
-        kid = a[ids].astype(str)
+        # The writer's bucket tag: ONE forecast_id per (identity,
+        # population) bucket, shared across its delay rows — factorized
+        # via group-boundary detection over the string-cast identity
+        # keys (the _ragged_arrays trick; the shifted first row carries
+        # nulls, a null-propagating compare would break cudf's
+        # row-wise any).
+        kid = a[ids + pop_col].astype(str)
         a["_bkt"] = (
             (kid.shift().fillna("") != kid).any(axis=1)
             .astype("int64").cumsum()
@@ -502,12 +605,18 @@ class WideDfEngine(ABC):
         a = a.merge(self._ragged_arrays(c, keys), on=keys, how="left")
 
         # ---- period rows (next/5d/20d) + the blended mixed row ----
+        # Weighted legs: means / closes divide by Σw over the valid
+        # cells (``fw``) and the std passes Σw as the denominator
+        # count (the same E[x²] − E[x]² algebra in weight space);
+        # occurrence stays the RAW valid count — days are population
+        # facts, not measurements, so the boost child's days equal the
+        # parent's exactly).
         legs = {
             n: {
-                "ave": (a[f"s_{n}"] / a[f"cnt_{n}"]).where(a[f"cnt_{n}"] > 0),
-                "close": (a[f"sc_{n}"] / a[f"cnt_{n}"]).where(
-                    a[f"cnt_{n}"] > 0),
-                "std": _std_col(a[f"s2_{n}"], a[f"s_{n}"], a[f"cnt_{n}"]),
+                "ave": (a[f"s_{n}"] / a[f"fw_{n}"]).where(a[f"fw_{n}"] > 0),
+                "close": (a[f"sc_{n}"] / a[f"fw_{n}"]).where(
+                    a[f"fw_{n}"] > 0),
+                "std": _std_col(a[f"s2_{n}"], a[f"s_{n}"], a[f"fw_{n}"]),
                 "occ": a[f"cnt_{n}"],
                 "max": a[f"max_{n}"] if n in MM_HORIZONS else None,
                 "min": a[f"min_{n}"] if n in MM_HORIZONS else None,
@@ -528,10 +637,22 @@ class WideDfEngine(ABC):
         )
         out = pd.concat(periods, ignore_index=True)
         # Bucket-major row order for the writer: consecutive equal-_bkt
-        # runs share one bucket; within a bucket the delays ascend and
-        # the 4 period rows keep their concat order (stable sort).
+        # runs share one bucket; within a bucket's identity the
+        # populations each own a contiguous delay-ascending block with
+        # the 4 period rows repeating (stable sort) — the string-sorted
+        # ohlcv_type puts the parent ('') first, then the children
+        # alphabetically ('ohlcv_boost' < 'ohlcv_selection') — and the
+        # writer's delay-ladder invariant
+        # reads exactly this shape (every span is ONE population's
+        # ladder under its own forecast_id). The population verdict
+        # rides the period frames through ``keys`` (``_bkt`` does not —
+        # it is tiled here).
         out["_bkt"] = np.tile(a["_bkt"].to_numpy(), len(periods))
-        out = out.sort_values(["_bkt", "delay"], kind="stable")
+        if pop_col:
+            out = out.sort_values(["_bkt", "ohlcv_type", "delay"],
+                                  kind="stable")
+        else:
+            out = out.sort_values(["_bkt", "delay"], kind="stable")
         out = out.round(6)
         out["regime_state"] = out["regime"]
 
@@ -539,31 +660,35 @@ class WideDfEngine(ABC):
         # length per MERGED SIGNAL (one row per run PER BUCKET — runs
         # span regime changes, so a multi-regime run must count toward
         # every bucket that owns one of its anchors; dedupe on
-        # (identity, run id) — the anchors otherwise multiply each run
-        # by up to TRIGGER_DELAY_MAX + 1) and the MEAN ANCHOR DELAY
-        # (the mean trading-day offset of the bucket's emitted triggers
-        # within their runs; 0 = the streak's first qualifying day).
+        # (identity, population, run id) — the anchors otherwise
+        # multiply each run by up to TRIGGER_DELAY_MAX + 1) and the
+        # MEAN ANCHOR DELAY (the mean trading-day offset of the
+        # population's emitted triggers within their runs; 0 = the
+        # streak's first qualifying day). Derived populations carry
+        # their own means — their trigger sets are strict subsets of
+        # the parent's.
         # Both registry columns are INTEGER whole trading days; the
         # fractional means round HALF-UP ((x + 0.5) truncated matches
         # Postgres ROUND's half-away-from-zero on these non-negative
         # means, keeping the SQL 01 backfill digit-consistent). The
         # delay mean stays under TRIGGER_DELAY_MAX by construction.
+        mot_keys = ids + pop_col
         per_run = (
             cells if not self.MERGE
-            else cells.drop_duplicates(subset=ids + ["_run"])
+            else cells.drop_duplicates(subset=mot_keys + ["_run"])
         )
-        streak = per_run.groupby(ids, sort=False).agg(
+        streak = per_run.groupby(mot_keys, sort=False).agg(
             streak_signal_days=("run_len", "mean"),
         ).reset_index()
-        anchor_delays = cells.groupby(ids, sort=False).agg(
+        anchor_delays = cells.groupby(mot_keys, sort=False).agg(
             delayed_signal_days=("delay", "mean"),
         ).reset_index()
-        streak = streak.merge(anchor_delays, on=ids, how="inner")
+        streak = streak.merge(anchor_delays, on=mot_keys, how="inner")
         for col in ("streak_signal_days", "delayed_signal_days"):
             streak[col] = (streak[col] + 0.5).astype("int64")
         streak["delayed_signal_days"] = streak["delayed_signal_days"].clip(
             upper=TRIGGER_DELAY_MAX)
-        out = out.merge(streak, on=ids, how="left")
+        out = out.merge(streak, on=mot_keys, how="left")
         return self._shared_frame(out.drop(columns=["regime"]), spec)
 
     def _shared_frame(self, out: pd.DataFrame, spec) -> pd.DataFrame:

@@ -7,10 +7,11 @@ and aggregates 5 one-minute samples into OHLCV bars for
 ``stats.etf_intraday_5min`` (FK parent ``stats.etf_identity``).
 
 ETF bars carry a per-bar ``trading_shares`` column (derived by subtracting
-cumulative volumes across samples) and store the code WITH exchange suffix
-(e.g. ``510050.SS``). Mirrors the stock flow; the only difference is that
-``etf_identity`` has no ``is_in_index_or_etf`` column, so that field is omitted
-from the identity rows (handled in ``_model.aggregate_bars``).
+cumulative volumes across samples) and store BARE 6-digit codes (e.g.
+``510050`` — 2026-09-30 convention; the exchange lives in its own column).
+Mirrors the stock flow; the only difference is that ``etf_identity`` has no
+``is_in_index_or_etf`` column, so that field is omitted from the identity
+rows (handled in ``_model.aggregate_bars``).
 """
 from __future__ import annotations
 

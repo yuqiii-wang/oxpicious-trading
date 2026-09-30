@@ -4,7 +4,7 @@ extreme-percentile engine.
 The valuation extreme-PERCENTILE buckets over the dividend-yield
 series of analysis.dividends (see
 database/sql/analysis/analysis_forecasts/12_dividend_state.sql): per
-stat month's trailing 5-year window [lo, hi) of the (T, C) wide grid,
+snapshot's trailing 5-year window [lo, hi) of the (T, C) wide grid,
 a (code, date) joins a bucket when its trailing-12m D/P (fractional)
 sits in the top pct% (bucket extreme 'top' — the
 linearly-interpolated quantile of the window's non-NULL yield values
@@ -21,7 +21,7 @@ extremes are bullish (side 'bottom'), the bottom-pct% (low-yield)
 extremes bearish (side 'top'). The mapping REVERSES the pe sibling's
 (compute_pe) — the engine flips the bucket extreme → family side map.
 
-Everything else — the (code chunk × stat month) partition, the
+Everything else — the (code chunk × snapshot) partition, the
 streak-merge (consecutive qualifying days → ONE signal with
 incremental anchor triggers at delays 0..TRIGGER_DELAY_MAX;
 the bucket's mean run length recorded on
@@ -54,7 +54,7 @@ class _DividendValPctEngine(ValPctEngine):
 def compute_dividend_results(
     *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_date, dividend_state bucket rows) per month."""
+    """Yield (stat_date, dividend_state bucket rows) per snapshot."""
     engine = _DividendValPctEngine(
         df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs,

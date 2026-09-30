@@ -1,4 +1,4 @@
-"""builds.bond.paths — Source file paths for the debt-market baseline build.
+"""builds.bond.paths — Source file paths for the debt-market daily build.
 
 Source data produced by the downloads side:
   - temp_data/analysis_output/pboc_repo_news/instruments_combined.csv

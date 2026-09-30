@@ -65,7 +65,6 @@ from downloads._common import (
     AntiBotProxy,
     AntiBotConfig,
     RunStats,
-    add_exchange_suffix,
     build_default_session,
     build_headers_with_referer,
     is_valid_file,
@@ -314,9 +313,9 @@ def _pcf_to_combined_rows(
 
         rows.append({
             "trade_date": trade_date,
-            # Canonical suffixed code ("NNNNNN.SS") so builds read the whole
-            # code without any suffix surgery.
-            "etf_code": add_exchange_suffix(etf_code, "上海"),
+            # BARE 6-digit ETF code (2026-09-30 convention — stock_code
+            # keeps its exchange suffix).
+            "etf_code": etf_code,
             "etf_name": etf_name,
             "fund_type": fund_type,
             "target_index": "",  # not published in the SSE PCF XML

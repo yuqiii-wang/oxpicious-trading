@@ -1,5 +1,5 @@
 /**
- * Futures service — queries stats.v_futures_baseline (futures_identity
+ * Futures service — queries stats.v_futures_daily (futures_identity
  * JOIN futures_basic_stats) for CFFEX futures products.
  *
  * Endpoints:
@@ -13,12 +13,25 @@
  * window.
  */
 import { queryRows, toNum } from "../lib/db.js";
+import type { QueryResultRow } from "pg";
 import type {
   FuturesProduct,
   FuturesContractMeta,
   FuturesRow,
   FuturesCombinedResponse,
 } from "../../shared/types.js";
+
+/** Raw v_futures_daily row as pg returns it (numeric columns arrive as
+ *  strings — coerced to FuturesRow once, right after the fetch). */
+interface DbFuturesDailyRow extends QueryResultRow {
+  date: string | Date;
+  code: string;
+  days_to_expiry: string | number | null;
+  settlement_price: string | number | null;
+  close: string | number | null;
+  trading_amount: string | number | null;
+  open_interest: string | number | null;
+}
 
 // ----------------------------------------------------------------------------
 //  Products list
@@ -65,8 +78,9 @@ export async function getCombined(
   // Year-month per contract (distributed column — cheap to fetch)
   const ymdMap = await getYearMonthMap(product);
 
-  // Fetch all rows
-  const rows = await queryRows(`
+  // Fetch all rows and coerce once into the FuturesRow payload shape
+  // (numeric-ish columns → number | null).
+  const dbRows = await queryRows<DbFuturesDailyRow>(`
     SELECT
       i.date,
       i.code,
@@ -81,6 +95,15 @@ export async function getCombined(
     WHERE i.product_code = $1
     ORDER BY i.date, i.code
   `, [product]);
+  const rows: FuturesRow[] = dbRows.map((r) => ({
+    date: String(r.date),
+    code: String(r.code),
+    settlement_price: toNum(r.settlement_price),
+    close: toNum(r.close),
+    trading_amount: toNum(r.trading_amount),
+    open_interest: toNum(r.open_interest),
+    days_to_expiry: toNum(r.days_to_expiry),
+  }));
 
   // Build product-level calendar + per-contract maps
   const datesSet = new Set<string>();
@@ -89,8 +112,8 @@ export async function getCombined(
   const codeRows: Map<string, FuturesRow[]> = new Map();
 
   for (const r of rows) {
-    const date = String(r.date);
-    const code = String(r.code);
+    const date = r.date;
+    const code = r.code;
     datesSet.add(date);
 
     if (!codeDates.has(code)) {
@@ -99,17 +122,9 @@ export async function getCombined(
       codeRows.set(code, []);
     }
     codeDates.get(code)!.add(date);
-    const amt = toNum(r.trading_amount) ?? 0;
+    const amt = r.trading_amount ?? 0;
     codeTradingAmt.get(code)!.set(date, amt);
-    codeRows.get(code)!.push({
-      date,
-      code,
-      settlement_price: toNum(r.settlement_price),
-      close: toNum(r.close),
-      trading_amount: amt,
-      open_interest: toNum(r.open_interest),
-      days_to_expiry: toNum(r.days_to_expiry),
-    });
+    codeRows.get(code)!.push(r);
   }
 
   const dates = Array.from(datesSet).sort();

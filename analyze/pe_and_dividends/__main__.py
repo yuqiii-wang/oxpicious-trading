@@ -15,37 +15,33 @@ Per sec_type (index / etf / stock):
        (etf_adjustment).
      - stock: close (stock_basic_stats) + dividends (stock_dividends).
   3. Compute pe (raw, invalid values masked) and dividend_yield
-     (trailing-12m D/P) on FULL history (trailing-12m DPS + 10y rolling
-     windows need it).
+     (trailing-12m D/P) on FULL history (trailing-12m DPS windows need
+     it).
   4. Write daily rows to analysis.pe + analysis.dividends (2026-09 split):
      - ``--force``: DELETE sec_type rows + COPY-insert.
      - default: upsert ONLY rows whose date is in the missing-dates set.
-  5. Compute annual 10y rolling stats. Write to
-     analysis.pe_and_dividend_stats:
-     - ``--force``: DELETE sec_type rows + COPY-insert.
-     - default: if new year-end dates are missing, DELETE sec_type rows
-       + recompute (is_active flag + 10y rolling windows require full
-       recompute when a new year appears). If no missing year-end
-       dates, skip stats entirely.
-  6. Compute monthly trailing percentile BANDS of pe / dividend_yield
-     (analysis.pe_and_dividend_pct — internal step pct_bands.py):
-     ``--force`` / ``--code`` DELETE the scope + rebuild; incremental
-     computes only missing (code, month, metric) triples (trailing
-     windows make completed months immutable).
-  7. Compute band-BREAK excursion streaks of pe / dividend_yield against
-     those bands (analysis.pe_and_dividend_pct_streaks — internal step
-     pct_streaks.py): episodes shift with new data, so the scope is
-     rebuilt WHOLESALE per sec_type (per code in --code mode) on every
-     run that processes it.
+  5. Compute monthly trailing percentile BANDS of the pe series
+     (analysis.pe_pct — internal step pe/pct_bands.py): ``--force`` /
+     ``--code`` DELETE the scope + rebuild; incremental computes only
+     missing (code, month) triples (trailing windows make completed
+     months immutable).
+  6. Compute band-BREAK excursion streaks of pe against those bands
+     (analysis.pe_pct_streaks — internal step pe/pct_streaks.py):
+     episodes shift with new data, so the scope is rebuilt WHOLESALE per
+     sec_type (per code in --code mode) on every run that processes it.
+  7. Refresh the per-code summary analysis.pe_codes (internal step
+     _common/codes_summary.py — the /api/analysis/pe/codes endpoint's
+     precomputed source) for every sec_type the run wrote.
   8. Upsert analysis_identity.
+
+(The former annual 10y rolling stats stage — analysis.pe_stats /
+analysis.dividends_stats — was removed 2026-09-28 with its only
+consumer, the UI's Dividend Stats card.)
 
 Incremental mode rationale
   The pe and dividend_yield for past dates don't change retroactively
   (PE and dividends are historical facts), so existing rows are valid.
-  New dates get appended via upsert. The annual stats table has an
-  is_active flag that flips when a new year-end appears, so stats is
-  recomputed per sec_type only when new year-end dates are detected
-  (otherwise skipped).
+  New dates get appended via upsert.
 """
 from __future__ import annotations
 
@@ -62,7 +58,6 @@ from _common.build_commons import (
 )
 from _common.db_commons import (
     copy_or_upsert_split_async,
-    copy_insert_async,
     copy_frame_chunked_async,
     chunked_purge_async,
 )
@@ -72,18 +67,15 @@ import pandas as pd
 from analyze._common.sanitize import sanitize_for_db_insert
 from _common.df_utils import to_dt64
 from _common.df_utils.sanitize import host_unique, safe_columns
-from analyze.pe_and_dividends.config import (
-    ANALYSIS_NAME_PE,
-    ANALYSIS_NAME_DIVIDENDS,
-    PE_TABLE,
-    DIVIDENDS_TABLE,
-    STATS_TABLE,
-    DESCRIPTION_PE,
-    DESCRIPTION_DIVIDENDS,
+from analyze.pe_and_dividends._common import build_detail_rows
+from analyze.pe_and_dividends._common.codes_summary import (
+    refresh_pe_codes_summary,
+)
+from analyze.pe_and_dividends._common.config import (
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
 )
-from analyze.pe_and_dividends.fetch import (
+from analyze.pe_and_dividends._common.fetch import (
     fetch_active_codes,
     fetch_index_pe_and_close,
     fetch_latest_index_composition,
@@ -93,17 +85,24 @@ from analyze.pe_and_dividends.fetch import (
     fetch_stock_close,
     fetch_trading_dates,
 )
-from analyze.pe_and_dividends.compute import (
-    clean_pe,
+from analyze.pe_and_dividends.dividends.compute import (
     compute_trailing_12m_dps,
     compute_index_dividend_yield,
     compute_simple_dividend_yield,
-    build_detail_rows,
-    compute_annual_stats,
-    find_year_end_dates,
 )
-from analyze.pe_and_dividends.pct_bands import run_pd_pct_bands
-from analyze.pe_and_dividends.pct_streaks import run_pd_pct_streaks
+from analyze.pe_and_dividends.dividends.config import (
+    ANALYSIS_NAME_DIVIDENDS,
+    DESCRIPTION_DIVIDENDS,
+    DIVIDENDS_TABLE,
+)
+from analyze.pe_and_dividends.pe.compute import clean_pe
+from analyze.pe_and_dividends.pe.config import (
+    ANALYSIS_NAME_PE,
+    DESCRIPTION_PE,
+    PE_TABLE,
+)
+from analyze.pe_and_dividends.pe.pct_bands import run_pe_pct_bands
+from analyze.pe_and_dividends.pe.pct_streaks import run_pe_pct_streaks
 
 from _common.log_setup import setup_logging
 from _common.data_analysis import DataAnalysis
@@ -124,7 +123,7 @@ def _normalize_stock_codes(df, col: str) -> None:
 
 async def _process_index(
     conn, pool, *, force: bool, target_dates_pe: set | None,
-    target_dates_dy: set | None, target_dates_stats: set | None,
+    target_dates_dy: set | None,
     code: str | None = None,
 ) -> int:
     """Process sec_type='index' end-to-end.
@@ -214,40 +213,21 @@ async def _process_index(
         target_dates_dy=target_dates_dy,
     )
 
-    # ---- Compute + insert annual stats ------------------------------------
-    # Stats always needs full recompute when new year-end dates appear
-    # (is_active flag flips). Skip entirely if no missing year-end dates.
-    # Single-code mode always recomputes the code's stats rows.
-    if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        logger.info(f"  [{st}] Computing annual 10y rolling stats...")
-        pe_df = (
-            close_df[["code", "date", "pe"]].copy()
-            if "pe" in safe_columns(close_df) else None
-        )
-
-        stats_rows = compute_annual_stats(
-            detail_df, pe_df, comp_df, div_df, trading_dates, st
-        )
-        logger.info(f"  [{st}]   {len(stats_rows):,} annual stats rows")
-        await _write_stats(conn, st, stats_rows, force=force, code=code)
-    else:
-        logger.info(f"  [{st}] Annual stats up to date; skipping stats step.")
-
     # ---- Percentile bands + band-break excursion streaks (internal
     # steps). Bands are incremental (trailing windows are immutable per
     # completed month); streaks shift with new data, so their scope is
     # rebuilt wholesale on every run that processes the sec_type.
-    await run_pd_pct_bands(
+    await run_pe_pct_bands(
         conn, detail_df, sec_type=st, force=force, code_filter=code,
     )
-    await run_pd_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
+    await run_pe_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
 
     return n_detail
 
 
 async def _process_etf(
     conn, pool, *, force: bool, target_dates_pe: set | None,
-    target_dates_dy: set | None, target_dates_stats: set | None,
+    target_dates_dy: set | None,
     code: str | None = None,
 ) -> int:
     """Process sec_type='etf' end-to-end.
@@ -308,30 +288,19 @@ async def _process_etf(
         target_dates_dy=target_dates_dy,
     )
 
-    # Annual stats
-    if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        logger.info(f"  [{st}] Computing annual 10y rolling stats...")
-        stats_rows = compute_annual_stats(
-            detail_df, pe_df, None, div_events, trading_dates, st
-        )
-        logger.info(f"  [{st}]   {len(stats_rows):,} annual stats rows")
-        await _write_stats(conn, st, stats_rows, force=force, code=code)
-    else:
-        logger.info(f"  [{st}] Annual stats up to date; skipping stats step.")
-
     # ---- Percentile bands + band-break excursion streaks (see the
     # index processor's comment).
-    await run_pd_pct_bands(
+    await run_pe_pct_bands(
         conn, detail_df, sec_type=st, force=force, code_filter=code,
     )
-    await run_pd_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
+    await run_pe_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
 
     return n_detail
 
 
 async def _process_stock(
     conn, pool, *, force: bool, target_dates_pe: set | None,
-    target_dates_dy: set | None, target_dates_stats: set | None,
+    target_dates_dy: set | None,
     code: str | None = None,
 ) -> int:
     """Process sec_type='stock' end-to-end.
@@ -393,23 +362,12 @@ async def _process_stock(
         target_dates_dy=target_dates_dy,
     )
 
-    # Annual stats
-    if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        logger.info(f"  [{st}] Computing annual 10y rolling stats...")
-        stats_rows = compute_annual_stats(
-            detail_df, pe_df, None, div_df, trading_dates, st
-        )
-        logger.info(f"  [{st}]   {len(stats_rows):,} annual stats rows")
-        await _write_stats(conn, st, stats_rows, force=force, code=code)
-    else:
-        logger.info(f"  [{st}] Annual stats up to date; skipping stats step.")
-
     # ---- Percentile bands + band-break excursion streaks (see the
     # index processor's comment).
-    await run_pd_pct_bands(
+    await run_pe_pct_bands(
         conn, detail_df, sec_type=st, force=force, code_filter=code,
     )
-    await run_pd_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
+    await run_pe_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
 
     return n_detail
 
@@ -530,46 +488,6 @@ async def _write_detail(
     return n_pe + n_dy
 
 
-async def _write_stats(
-    conn, sec_type: str, stats_rows: list[dict], *, force: bool,
-    code: str | None = None,
-) -> int:
-    """Write annual stats rows to analysis.pe_and_dividend_stats.
-
-    Always DELETE + COPY-insert. The is_active flag + 10y rolling
-    windows require full recompute when a new year-end date appears, so
-    there is no per-row upsert path for stats — the caller gates this call
-    on whether new year-end dates are actually missing.
-
-    Single-code mode (``code``): deletes only that code's rows first
-    (the recomputed stats_rows cover just that code) instead of the
-    whole sec_type.
-    """
-    if not stats_rows:
-        logger.info(f"  [{sec_type}]   no stats rows to write")
-        return 0
-
-    if code is not None:
-        logger.info(f"  [{sec_type}] Deleting existing rows for {code} from "
-              f"{STATS_TABLE}...")
-        await conn.execute(
-            f"DELETE FROM {STATS_TABLE} WHERE sec_type = $1 AND code = $2",
-            sec_type, code,
-        )
-    else:
-        logger.info(f"  [{sec_type}] Deleting existing {sec_type} rows from "
-              f"{STATS_TABLE}...")
-        await chunked_purge_async(
-            conn, STATS_TABLE, where_sql="sec_type = $1",
-            params=(sec_type,),
-        )
-    logger.info(f"  [{sec_type}] Inserting {len(stats_rows):,} stats rows "
-          f"(COPY)...")
-    n = await copy_insert_async(conn, STATS_TABLE, stats_rows)
-    logger.info(f"  [{sec_type}]   inserted {n:,} stats rows")
-    return n
-
-
 # ---------------------------------------------------------------------------
 #  Missing-date detection (incremental mode)
 # ---------------------------------------------------------------------------
@@ -577,31 +495,24 @@ async def _write_stats(
 async def _detect_missing_dates(
     conn, sec_types: list[str], force: bool,
 ) -> tuple[dict[str, set], dict[str, set]]:
-    """Detect missing dates per sec_type for the two metric tables and
-    the stats table.
+    """Detect missing dates per sec_type for the two metric tables.
 
-    Returns (target_dates_pe, target_dates_dy, target_dates_stats):
+    Returns (target_dates_pe, target_dates_dy):
       - target_dates_pe[st]: dates present in the identity table but NOT
         in analysis.pe for that sec_type.
       - target_dates_dy[st]: dates present in the identity table but NOT
         in analysis.dividends for that sec_type.
-      - target_dates_stats[st]: YEAR-END trading dates present in the
-        identity table but NOT in analysis.pe_and_dividend_stats for that
-        sec_type. Used to gate the stats recompute (is_active flips when a
-        new year-end appears).
 
-    In force mode all dicts map to None (meaning "all dates").
+    In force mode both dicts map to None (meaning "all dates").
     """
     if force:
         return (
-            {st: None for st in sec_types},
             {st: None for st in sec_types},
             {st: None for st in sec_types},
         )
 
     target_dates_pe: dict[str, set] = {}
     target_dates_dy: dict[str, set] = {}
-    target_dates_stats: dict[str, set] = {}
     for st in sec_types:
         identity_table = SEC_TYPE_IDENTITY_TABLE[st]
 
@@ -641,31 +552,7 @@ async def _detect_missing_dates(
         target_dates_dy[st] = set(missing_dy)
         logger.info(f"    -> dividends[{st}]: {len(missing_dy)} missing dates")
 
-        # ---- Stats table: missing YEAR-END dates ----
-        # The stats table only has year-end rows, so we need to compare
-        # year-end trading dates from the identity table against the
-        # stats table's dates for this sec_type.
-        all_identity_dates = await conn.fetch(
-            f'SELECT DISTINCT date FROM {identity_table}'
-        )
-        identity_dates = sorted(
-            {r["date"] for r in all_identity_dates if r["date"] is not None}
-        )
-        year_ends = set(find_year_end_dates(identity_dates))
-
-        existing_stats_rows = await conn.fetch(
-            f'SELECT DISTINCT date FROM {STATS_TABLE} WHERE sec_type = $1',
-            st,
-        )
-        existing_stats_dates = {
-            r["date"] for r in existing_stats_rows if r["date"] is not None
-        }
-        missing_stats = year_ends - existing_stats_dates
-        target_dates_stats[st] = missing_stats
-        logger.info(f"    -> stats[{st}]: {len(missing_stats)} missing year-end "
-              f"dates")
-
-    return target_dates_pe, target_dates_dy, target_dates_stats
+    return target_dates_pe, target_dates_dy
 
 
 class PeDividendsAnalysis(DataAnalysis):
@@ -694,7 +581,6 @@ class PeDividendsAnalysis(DataAnalysis):
         return {
             "pe_table": PE_TABLE,
             "div_table": DIVIDENDS_TABLE,
-            "stats_table": STATS_TABLE,
             "sec_types": ", ".join(self.resolve_sec_types()),
             "mode": (
                 f"SINGLE-CODE {self.args.code} (full recompute for this security)"
@@ -725,7 +611,6 @@ class PeDividendsAnalysis(DataAnalysis):
                     force=False,
                     target_dates_pe=None,
                     target_dates_dy=None,
-                    target_dates_stats=None,
                     code=args.code,
                 )
 
@@ -737,13 +622,17 @@ class PeDividendsAnalysis(DataAnalysis):
                 ANALYSIS_NAME_DIVIDENDS, "dividends", DESCRIPTION_DIVIDENDS,
             )
 
+            # Refresh the per-code summary the /codes endpoint reads
+            # (scoped to the one rebuilt code).
+            await refresh_pe_codes_summary(conn, sec_types, code=args.code)
+
             logger.info(f"\n  TOTAL: {total:,} detail rows inserted")
             return
 
         # ---- Detect missing dates (incremental mode) --------------------
         if not force:
             logger.info("\n  Detecting missing dates per sec_type (incremental mode)...")
-        target_dates_pe, target_dates_dy, target_dates_stats = (
+        target_dates_pe, target_dates_dy = (
             await _detect_missing_dates(conn, list(sec_types), force)
         )
 
@@ -752,22 +641,20 @@ class PeDividendsAnalysis(DataAnalysis):
             total_missing = (
                 sum(len(s) for s in target_dates_pe.values())
                 + sum(len(s) for s in target_dates_dy.values())
-                + sum(len(s) for s in target_dates_stats.values())
             )
             if total_missing == 0:
                 logger.info("    -> DB is up to date; nothing to do.")
                 return
 
         total = 0
+        processed_sec_types: list[str] = []
         for st in sec_types:
             td_pe = target_dates_pe.get(st)
             td_dy = target_dates_dy.get(st)
-            td_stats = target_dates_stats.get(st)
-            # Skip sec_type entirely if all three targets are up to date.
+            # Skip sec_type entirely if both targets are up to date.
             if (not force
                     and td_pe is not None and len(td_pe) == 0
-                    and td_dy is not None and len(td_dy) == 0
-                    and td_stats is not None and len(td_stats) == 0):
+                    and td_dy is not None and len(td_dy) == 0):
                 logger.info(f"\n  [{st}] up to date; skipping.")
                 continue
             processor = _PROCESSORS[st]
@@ -776,9 +663,9 @@ class PeDividendsAnalysis(DataAnalysis):
                 force=force,
                 target_dates_pe=td_pe,
                 target_dates_dy=td_dy,
-                target_dates_stats=td_stats,
             )
             total += n
+            processed_sec_types.append(st)
 
         # Upsert analysis_identity
         logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
@@ -788,6 +675,12 @@ class PeDividendsAnalysis(DataAnalysis):
         await self.upsert_identity(
             ANALYSIS_NAME_DIVIDENDS, "dividends", DESCRIPTION_DIVIDENDS,
         )
+
+        # Refresh the per-code summary the /codes endpoint reads — only for
+        # the sec_types this run actually wrote (a skipped sec_type's rows
+        # are unchanged, so its summary rows stay valid).
+        if processed_sec_types:
+            await refresh_pe_codes_summary(conn, processed_sec_types)
 
         logger.info(f"\n  TOTAL: {total:,} detail rows inserted")
 

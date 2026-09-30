@@ -6,7 +6,7 @@
  * at the top picks which trading day's bars to display (defaults to the most
  * recent available date).
  *
- * Mirrors the IndexBaselinePage layout (ThemeSelector + CodeSearchBar +
+ * Mirrors the IndexPage layout (ThemeSelector + CodeSearchBar +
  * RefreshButton + paginated card stack) but reads stats.index_intraday_5min
  * instead of the daily baseline view, and renders IntradayPanel (no volume
  * series — the SSE index endpoint does not publish per-bar volume).

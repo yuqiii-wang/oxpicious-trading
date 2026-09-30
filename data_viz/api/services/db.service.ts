@@ -17,12 +17,13 @@
  * WAL; queries needing row versions the primary already vacuumed are
  * cancelled with SQLSTATE 40001 after max_standby_streaming_delay, and
  * during catch-up the whole replica can refuse connections). Read-routed
- * queries therefore (1) consult a 10s-cached replica-lag probe and go
- * straight to the primary while the replica is > REPLICA_MAX_LAG_S
- * behind, and (2) always run with a 10s statement_timeout on the
- * replica — on a lag/timeout/connection error the query retries ONCE on
- * the primary. hot_standby_feedback=on on the primary (set via ALTER
- * SYSTEM 2026-09-21) removes most 40001s at the source; this failover
+ * queries therefore (1) consult a 10s-cached replica-backlog probe (WAL
+ * bytes received but not yet replayed) and go straight to the primary
+ * while the replica is > REPLICA_MAX_LAG_BYTES behind, and (2) always
+ * run with a 10s statement_timeout on the replica — on a
+ * lag/timeout/connection error the query retries ONCE on the primary.
+ * hot_standby_feedback=on on the replica (replica entrypoint + ALTER
+ * SYSTEM 2026-09-27) removes most 40001s at the source; this failover
  * is the belt-and-braces layer for rebuild windows.
  *
  * Reads connection parameters from `database/.env` (SUPABASE_* variables).
@@ -125,17 +126,17 @@ export function getReplicaDbConfig(): DbConfig {
 /** statement_timeout on every replica-pool connection — a busy replaying
  *  replica fails fast into the primary retry instead of hanging the API. */
 const REPLICA_STATEMENT_TIMEOUT_MS = 10_000;
-/** A replica whose last replayed commit is older than this is "busy" —
- *  reads skip it for the next probe window. Generous: an idle primary
- *  with no writes also shows a growing gap, so this must only trip on
- *  genuine backlog (rebuilds stream WAL continuously). */
-const REPLICA_MAX_LAG_S = 300;
+/** WAL byte backlog (received but not yet replayed) above which the
+ *  replica is "busy" — reads skip it for the next probe window. Grows
+ *  ONLY while the primary is writing faster than the replica replays
+ *  (a rebuild streaming WAL); an idle primary leaves it at 0 forever. */
+const REPLICA_MAX_LAG_BYTES = 64 * 1024 * 1024;
 /** How long a replica-lag probe result is cached. */
 const REPLICA_PROBE_TTL_MS = 10_000;
 /** The probe's own budget (connection + query). */
 const REPLICA_PROBE_TIMEOUT_MS = 3_000;
 
-/** Cached replica health: lag seconds (null = probe failed = unhealthy). */
+/** Cached replica health: backlog bytes (null = probe failed = unhealthy). */
 let _replicaLag: { value: number | null; checkedAt: number } | null = null;
 
 /**
@@ -153,26 +154,49 @@ function isReplicaUnavailableError(err: unknown): boolean {
 }
 
 /**
- * Probe the replica's replay lag once per TTL. Cheap on purpose: one
- * scalar SELECT against the replica's own WAL state with a 3s budget —
- * a replica stuck in recovery refuses/fails it fast. Never throws.
+ * Probe the replica's replay backlog once per TTL, in WAL BYTES: the
+ * difference between the last WAL position received from the primary
+ * and the last one replayed (pg_last_wal_receive_lsn() −
+ * pg_last_wal_replay_lsn()). Never throws.
+ *
+ * Byte backlog is the only lag measure that is idle-safe: the former
+ * probe used the wall-clock age of the last replayed transaction
+ * (pg_last_xact_replay_timestamp), which grows without bound whenever
+ * the primary simply has nothing to write — it read hours during every
+ * idle evening and misrouted ALL reads to the primary, where the
+ * planner seq-scans the 45M-row results table (the 2026-09-27
+ * forecast-table 30s regression). Backlog only grows while the primary
+ * is writing faster than the replica replays — a rebuild streaming
+ * WAL — which is exactly the condition worth failing over on.
+ *
+ * The CASE keeps the no-replica fallback healthy: when
+ * SUPABASE_REPLICA_* is unset the read pool points at the primary,
+ * which is not in recovery — pg_last_wal_replay_lsn() is NULL there,
+ * and the CASE turns that into 0 ("healthy") instead of NULL ("busy",
+ * which would pin every read to the pool it is already using). A probe
+ * ERROR (stuck replica, refused connection) still maps to null = busy.
  */
-async function replicaLagSeconds(): Promise<number | null> {
+const REPLICA_LAG_PROBE_SQL =
+  "SELECT CASE WHEN pg_is_in_recovery() THEN " +
+  "pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())::float8 " +
+  "ELSE 0 END::float8 AS lag_bytes";
+
+async function replicaLagBytes(): Promise<number | null> {
   const now = Date.now();
   if (_replicaLag && now - _replicaLag.checkedAt < REPLICA_PROBE_TTL_MS) {
     return _replicaLag.value;
   }
   let value: number | null = null;
   try {
-    const probe = getReadPool().query<{ lag_s: number | null }>(
-      "SELECT EXTRACT(EPOCH FROM (clock_timestamp() - pg_last_wal_replay_timestamp()))::float8 AS lag_s",
+    const probe = getReadPool().query<{ lag_bytes: number | null }>(
+      REPLICA_LAG_PROBE_SQL,
     );
     const raced = await Promise.race([
       probe,
       new Promise<null>((resolve) =>
         setTimeout(() => resolve(null), REPLICA_PROBE_TIMEOUT_MS)),
     ]);
-    value = raced ? (raced.rows[0]?.lag_s ?? null) : null;
+    value = raced ? (raced.rows[0]?.lag_bytes ?? null) : null;
   } catch {
     value = null;
   }
@@ -282,35 +306,26 @@ export function isReadQuery(text: string): boolean {
 }
 
 /**
- * Run a parameterized query and return the full QueryResult.
- * Uses a client from the pool for the duration of the call.
- *
- * Read-only queries go to the replica pool; everything else (and any
- * unclassifiable statement) goes to the primary pool — the same split
- * as execute() in _common/db_commons/_router.py. A read whose replica
- * is BUSY (replay lag over REPLICA_MAX_LAG_S, probe failure, recovery
- * conflict, statement timeout, connection loss) retries once on the
- * PRIMARY — writes never touch the replica path at all.
+ * Route a read through the replica/primary failover policy shared by
+ * query() and queryReadWithSession(): run on the replica unless the
+ * replay-backlog probe says it is busy; a replica-unavailable error
+ * retries once on the primary.
  */
-export async function query<T extends QueryResultRow = QueryResultRow>(
-  text: string,
-  params?: ReadonlyArray<unknown>,
+async function routeRead<T extends QueryResultRow = QueryResultRow>(
+  run: (pool: Pool) => Promise<QueryResult<T>>,
 ): Promise<QueryResult<T>> {
-  if (!isReadQuery(text)) {
-    return getPool().query<T>(text, params as unknown[]);
-  }
-  const lag = await replicaLagSeconds();
-  const replicaBusy = lag == null || lag > REPLICA_MAX_LAG_S;
+  const lag = await replicaLagBytes();
+  const replicaBusy = lag == null || lag > REPLICA_MAX_LAG_BYTES;
   if (replicaBusy) {
     if (lag != null) {
       console.warn(
-        `[db] replica lag ${Math.round(lag)}s > ${REPLICA_MAX_LAG_S}s — reading from primary for ${REPLICA_PROBE_TTL_MS / 1000}s`,
+        `[db] replica backlog ${Math.round(lag / 1048576)}MB > ${REPLICA_MAX_LAG_BYTES / 1048576}MB — reading from primary for ${REPLICA_PROBE_TTL_MS / 1000}s`,
       );
     }
-    return getPool().query<T>(text, params as unknown[]);
+    return run(getPool());
   }
   try {
-    return await getReadPool().query<T>(text, params as unknown[]);
+    return await run(getReadPool());
   } catch (err) {
     if (!isReplicaUnavailableError(err)) throw err;
     const code = (err as { code?: string }).code ?? "?";
@@ -319,8 +334,69 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
     );
     // Bust the probe cache so the next read re-probes.
     _replicaLag = null;
+    return run(getPool());
+  }
+}
+
+/**
+ * Run a parameterized query and return the full QueryResult.
+ * Uses a client from the pool for the duration of the call.
+ *
+ * Read-only queries go to the replica pool; everything else (and any
+ * unclassifiable statement) goes to the primary pool — the same split
+ * as execute() in _common/db_commons/_router.py. A read whose replica
+ * is BUSY (replay backlog over REPLICA_MAX_LAG_BYTES, probe failure,
+ * recovery conflict, statement timeout, connection loss) retries once
+ * on the PRIMARY — writes never touch the replica path at all.
+ */
+export async function query<T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: ReadonlyArray<unknown>,
+): Promise<QueryResult<T>> {
+  if (!isReadQuery(text)) {
     return getPool().query<T>(text, params as unknown[]);
   }
+  return routeRead((pool) => pool.query<T>(text, params as unknown[]));
+}
+
+/**
+ * Run a read-only query with per-connection session settings applied for
+ * its duration (e.g. `SET work_mem = '256MB'` so wide partitioned joins
+ * sort in RAM instead of spilling hundreds of MB of temp files — the
+ * CFFEX options combined endpoint was 3x slower on temp spill alone).
+ *
+ * The settings are SET on the checked-out client and RESET before it
+ * returns to the pool, so pooled connections never leak them to other
+ * consumers. Routing mirrors query(): replica-first with primary retry.
+ * Read-only by contract — writes go through query()/execute().
+ */
+export async function queryReadWithSession<T extends QueryResultRow = QueryResultRow>(
+  sessionSets: ReadonlyArray<string>,
+  text: string,
+  params?: ReadonlyArray<unknown>,
+): Promise<QueryResult<T>> {
+  if (!isReadQuery(text)) {
+    throw new Error("queryReadWithSession() only accepts read-only statements");
+  }
+  const resetStatements = sessionSets.map((s) => {
+    const variable = s.replace(/^SET\s+/i, "").split(/\s*=/)[0].trim();
+    return `RESET ${variable}`;
+  });
+  return routeRead(async (pool) => {
+    const client = await pool.connect();
+    try {
+      for (const s of sessionSets) await client.query(s);
+      const result = await client.query<T>(text, params as unknown[]);
+      return result;
+    } finally {
+      // Best-effort revert so the pooled connection is clean for its next
+      // consumer; the client is released either way.
+      for (const r of resetStatements) {
+        try { await client.query(r); } catch { /* connection is being released */ }
+      }
+      client.release();
+    }
+  });
 }
 
 /**

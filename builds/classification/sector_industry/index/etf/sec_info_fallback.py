@@ -58,10 +58,10 @@ async def fetch_sec_info_names(conn, others: "pd.DataFrame") -> Dict[str, str]:
     """
     if conn is None or others is None or len(others) == 0:
         return {}
-    # sec_info.code is BARE 6-digit; JOIN via code || '.SZ' = etf_code.
-    # Column-first extraction: zero out non-SZ rows on the single ``code``
-    # column via where(), drop them + dedupe, one host-list materialization
-    # at the SQL boundary.
+    # sec_info.code is BARE 6-digit and so are ETF codes (2026-09-30) —
+    # direct join, no suffix surgery. Column-first extraction: zero out
+    # non-SZ rows on the single ``code`` column via where(), drop them +
+    # dedupe, one host-list materialization at the SQL boundary.
     sz_codes = np.asarray(
         others["code"]
         .where(others["exchange"].eq("SZ"))
@@ -72,9 +72,9 @@ async def fetch_sec_info_names(conn, others: "pd.DataFrame") -> Dict[str, str]:
         return {}
     rows = await conn.fetch(
         """
-        SELECT s.code || '.SZ' AS etf_code, s.name
+        SELECT s.code AS etf_code, s.name
           FROM stats.sec_info s
-         WHERE s.code || '.SZ' = ANY($1::text[])
+         WHERE s.code = ANY($1::text[])
         """,
         sz_codes,
     )
@@ -94,7 +94,7 @@ def reclassify_other_etfs(
     is_industry_not_strategy for ETFs that gain a classification.
 
     Args:
-        etfs: ETF dict keyed by code (WITH exchange suffix).
+        etfs: ETF dict keyed by BARE code.
         sec_info_names: {etf_code: official_name} from fetch_sec_info_names.
         verbose: print a summary line when any ETF was re-checked.
 

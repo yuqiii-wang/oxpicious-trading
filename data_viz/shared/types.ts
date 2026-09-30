@@ -5,9 +5,9 @@
  */
 
 // ----------------------------------------------------------------------------
-// Debt Baseline (debt_baseline.csv)
+// Debt (debt_baseline.csv)
 // ----------------------------------------------------------------------------
-export interface DebtBaselineRow {
+export interface DebtDailyRow {
   date: string;
   omo_rate: number | null;
   omo_quantity: number | null;
@@ -41,9 +41,9 @@ export interface DebtBaselineRow {
   lpr_5y: number | null;
 }
 
-export interface DebtBaselineResponse {
+export interface DebtDailyResponse {
   dates: string[];
-  rows: DebtBaselineRow[];
+  rows: DebtDailyRow[];
   minDate: string;
   maxDate: string;
 }
@@ -52,7 +52,7 @@ export interface DebtBaselineResponse {
 // PBoC Open Market Announcements (stats.pboc_oma)
 //   High-level policy notices (公开市场业务公告) — NOT daily transaction
 //   announcements. Loaded from temps/pboc_oma_news/oma_combined.csv by
-//   build_debt_baseline.py. Composite PK (date, title); no FK to
+//   the builds/bond pipeline. Composite PK (date, title); no FK to
 //   debt_identity since announcements may occur on non-trading days.
 // ----------------------------------------------------------------------------
 export type PbocOmaType =
@@ -120,6 +120,109 @@ export interface OptionsCombinedResponse {
   dates: string[];
   underlying_code: string;
   rows: OptionsRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Per-plot responses — each Options Analysis plot fetches its own SQL
+//  aggregate instead of the full-history /combined blob (one plot, one
+//  query; CFFEX underlyings ship ~200MB through /combined).
+// ----------------------------------------------------------------------------
+
+/** Distinct trading dates + volume counters for one underlying/venue. */
+export interface OptionsDatesResponse {
+  underlying_code: string;
+  dates: string[];
+  /** Total quote rows (contract-days) across the whole history. */
+  row_count: number;
+  /** Distinct contract codes ever quoted. */
+  contract_count: number;
+}
+
+/** Single-date quote rows + history-wide display meta (unified strike /
+ *  expiry-month axes for the wall panel). */
+export interface OptionsSnapshotResponse {
+  underlying_code: string;
+  date: string;
+  rows: OptionsRow[];
+  /** Distinct strike_price values across the underlying's full history. */
+  strikes: number[];
+  /** Distinct expiry_month labels across the full history (e.g. "10月"). */
+  expiry_months: string[];
+}
+
+/** Per (date × expiry) call/put open interest + per-date spot close. */
+export interface OptionsOiDailyResponse {
+  underlying_code: string;
+  daily: Array<{
+    date: string;
+    expiry_date: string;
+    call_oi: number;
+    put_oi: number;
+  }>;
+  spot: Array<{ date: string; close: number | null }>;
+}
+
+/** Per (date × expiry × strike) call/put open interest cells for the OI
+ *  bands chart, restricted to the requested expiry dates. */
+export interface OptionsOiCellsResponse {
+  underlying_code: string;
+  cells: Array<{
+    date: string;
+    expiry_date: string;
+    strike_price: number;
+    call_oi: number;
+    put_oi: number;
+  }>;
+}
+
+/** Per-contract final open interest (last session ≤ its expiry) grouped
+ * by expiry, plus per-expiry lifetime OI totals (cohort list). */
+export interface OptionsExpiryMetaResponse {
+  underlying_code: string;
+  markers: Array<{
+    contract_code: string;
+    contract_name: string;
+    option_type: OptionType;
+    expiry_date: string;
+    last_date: string;
+    open_interest: number;
+  }>;
+  cohorts: Array<{ expiry_date: string; total_oi: number }>;
+}
+
+/**
+ * Server-computed oi_moneyness skew series — the exact semantics of the
+ * former in-browser computeDailySkewSeries (IV-valid filter 0<IV<5, OI
+ * weight floored at 1, real-expiry month groups with MIN(expiry_date)
+ * boundary, OTM shares over all active rows), aggregated in SQL.
+ * e_m = Σ(OI·K)/Σ(OI)/S (raw units — identical to the browser ratio);
+ * null when the date/group has <3 valid rows or no spot. `spot.close`
+ * carries the raw underlying close (null when the loader stored 0).
+ */
+export interface OptionsMoneynessSeriesResponse {
+  underlying_code: string;
+  spot: Array<{ date: string; close: number | null }>;
+  groups: Array<{
+    date: string;
+    /** Expiry month group (YYYY-MM-01). */
+    expiry_month: string;
+    /** Real expiry boundary of the group (MIN over its valid rows). */
+    expiry_date: string;
+    /** Count of IV-valid rows in the group on the date. */
+    n_valid: number;
+    /** OI-weighted mean moneyness E[M] (null when invalid). */
+    e_m: number | null;
+    /** Σ(w·K) over the group's valid rows (w = GREATEST(OI, 1), raw units) —
+     * with `wsum` reconstructs the date-level aggregate E[M]. */
+    wsum_k: number;
+    /** Σ(w) over the group's valid rows. */
+    wsum: number;
+    /** OTM OI shares over the group's ALL active rows (null side = no OI). */
+    call_oi: number;
+    put_oi: number;
+    call_otm_oi: number;
+    put_otm_oi: number;
+  }>;
 }
 
 /** Lifecycle state of a zone wall (analysis.options_walls.state). */
@@ -392,9 +495,9 @@ export interface EtfMarginCombinedResponse {
 }
 
 // ----------------------------------------------------------------------------
-// Index Baseline (v_index_baseline view)
+// Index (v_index_daily view)
 // ----------------------------------------------------------------------------
-export interface IndexBaselineRow {
+export interface IndexDailyRow {
   date: string;
   open: number | null;
   high: number | null;
@@ -422,11 +525,11 @@ export interface IndexInfo {
   last_date: string;
 }
 
-export interface IndexBaselineResponse {
+export interface IndexDailyResponse {
   code: string;
   name: string;
   dates: string[];
-  rows: IndexBaselineRow[];
+  rows: IndexDailyRow[];
 }
 
 /**
@@ -461,7 +564,7 @@ export interface IndexBundle {
   /** All classification tags for this index (primary first). Empty/absent
    *  when the index only carries the single (sector_id, industry_id) pair. */
   tags?: IndexTag[];
-  rows: IndexBaselineRow[];
+  rows: IndexDailyRow[];
 }
 
 /** Paginated response for the index two-level selector page. */
@@ -613,12 +716,12 @@ export interface IndustryWeightSeriesResponse {
 
 // ----------------------------------------------------------------------------
 // Linked ETFs (sec_classification type='etf', parent_index_code = index code)
-// Used by the Index Baseline page's "Linked ETFs" expansion beside the
+// Used by the Index page's "Linked ETFs" expansion beside the
 // Composition pie — shows the ETFs tracking the displayed index.
 // ----------------------------------------------------------------------------
 /** One ETF that tracks the requested index. */
 export interface LinkedEtfRow {
-  /** ETF code WITH exchange suffix (e.g. "510300.SZ"). */
+  /** ETF code, bare 6-digit (e.g. "510300"). */
   code: string;
   name: string;
   /** Exchange suffix: SS | SZ | BJ | HK ("" when unknown). */
@@ -637,11 +740,20 @@ export interface LinkedEtfRow {
   aum_yi: number | null;
   /** Number of trading-day rows in stats.v_etf_margin. */
   n_days: number;
+  /** Number of ETF联接基金 feeder funds targeting this ETF — from
+   *  stats.sec_etf_links (COUNT by target_etf_code). Drives the unified
+   *  table's expandable rows: > 0 rows expand their feeder sub-rows on
+   *  click; 0 rows keep the row-click trend-chart behavior. */
+  feeder_count: number;
 }
 
 export interface LinkedEtfsResponse {
   /** The requested index code (echoed back, suffix-stripped). */
   index_code: string;
+  /** Display name of the requested index from stats.sec_classification
+   *  (type='index'). "" when unknown — the unified table shows
+   *  "index_code index_name" in its Index column. */
+  index_name: string;
   etfs: LinkedEtfRow[];
   /** Aggregate ETF trading turnover (yuan) tracking this index on the latest
    *  date with an index_exts row — from stats.index_exts.total_etf_trading_amount.
@@ -653,6 +765,52 @@ export interface LinkedEtfsResponse {
   /** Latest date (YYYY-MM-DD) of the index_exts row used for total_etf_trading_amount.
    *  "" when the index has no index_exts row. */
   total_etf_trading_amount_date: string;
+}
+
+// ----------------------------------------------------------------------------
+// Linked Feeder Funds — ETF联接基金 (feeder funds) whose target (master) ETF
+// is the requested code. Market design: a feeder invests >=90% of NAV in ONE
+// listed target ETF (same manager, same tracking index) and bridges OTC
+// channels into the exchange product at NAV. Mirror of the index page's
+// LinkedEtfsList (retired — now the Feeder Fund group of the unified
+// LinkedEtfsFeedersTable), one hierarchy level further from the index:
+//   index ← parent_index_code ← ETF ← sec_etf_links.target_etf_code ← feeder.
+// Source: stats.sec_etf_links (built by builds.classification from the
+// csindex etf_feeder_map_*.csv — one row per feeder family, no A/C split).
+// Latest NAV + 日涨跌 come from stats.etf_basic_stats via v_etf_margin
+// (builds.etf.feeder_nav — the huatai-pb fund site publishes close-only
+// NAV, loaded with is_ohl_estimated=TRUE).
+// ----------------------------------------------------------------------------
+export interface LinkedFeederRow {
+  /** OTC feeder fund code, bare 6-digit (e.g. "012761"). */
+  feeder_code: string;
+  feeder_name: string;
+  /** TRUE when the feeder name carries 发起式 (initiator fund). */
+  is_initiator: boolean;
+  /** Target ETF Chinese name. */
+  target_etf_name: string;
+  /** Target ETF CSIndex type: "ETF" or "增强ETF". */
+  target_etf_type: string;
+  /** Tracked index code, bare (equals the ETF's parent_index_code). */
+  index_code: string;
+  index_name: string;
+  manager: string;
+  /** Feeder AUM in 亿元 (0 for young feeders). */
+  aum_yi: number | null;
+  /** Feeder inception date (YYYY-MM-DD, "" when unknown). */
+  inception_date: string;
+  /** Latest NAV date (YYYY-MM-DD, "" — feeder has no NAV series yet). */
+  latest_date: string;
+  /** Latest 单位净值 (close-only NAV series). */
+  latest_nav: number | null;
+  /** 日涨跌 in percent on latest_date. */
+  day_pct: number | null;
+}
+
+export interface LinkedFeedersResponse {
+  /** The requested ETF code, bare 6-digit (e.g. "510880"). */
+  etf_code: string;
+  feeders: LinkedFeederRow[];
 }
 
 // ----------------------------------------------------------------------------
@@ -692,10 +850,10 @@ export interface SimilarIndicesResponse {
 }
 
 // ----------------------------------------------------------------------------
-// Stock Baseline (v_stock_baseline view — stock_identity + stock_basic_stats)
+// Stock (v_stock_daily view — stock_identity + stock_basic_stats)
 // Used by the composition pie chart's per-stock OHLC expansion.
 // ----------------------------------------------------------------------------
-export interface StockBaselineRow {
+export interface StockDailyRow {
   date: string;
   open: number | null;
   high: number | null;
@@ -756,11 +914,10 @@ export interface StockDividend {
   open_price: number | null;
 }
 
-export interface StockBaselineResponse {
+export interface StockDailyResponse {
   code: string;
   name: string;
-  dates: string[];
-  rows: StockBaselineRow[];
+  rows: StockDailyRow[];
   /** Dividend events for this stock (all dates — not windowed). Empty when
    *  the stock has no dividend history (e.g. new listings, non-dividend-paying
    *  stocks). Sourced from stats.stock_dividends. */
@@ -768,8 +925,65 @@ export interface StockBaselineResponse {
 }
 
 // ----------------------------------------------------------------------------
-// Stock Combined (v_stock_baseline view + sec_classification)
-// Used by the Stock Baseline page — paginated stock list filtered by sector +
+// Stock granular blocks — per-table single-code reads backing the trend
+// chart's parallel block loads (core OHLC + margin overlays + dividends).
+// Each block is one base table with its own code predicate, so the planner
+// always has a PK-indexed path (no v_stock_daily LEFT-JOIN plan trap).
+// ----------------------------------------------------------------------------
+
+/** Core daily row — stock_identity ⋈ stock_basic_stats (OHLC + valuation).
+ *  `has_intraday_5mins` is deliberately absent: only the INDEX panel reads
+ *  it; stock-path consumers never do. */
+export interface StockCoreRow {
+  date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  prev_close: number | null;
+  pct_change: number | null;
+  pe: number | null;
+  eps: number | null;
+  is_pe_estimated: boolean;
+}
+
+/** GET /api/stock/core?code= — the required block; its rows define the
+ *  chart's x-axis. Margin/dividend blocks are joined onto these dates. */
+export interface StockCoreResponse {
+  code: string;
+  name: string;
+  rows: StockCoreRow[];
+}
+
+/** Margin + liquidity row — stats.stock_liquidity_margin only. Dates with
+ *  no margin activity are simply absent (the chart maps by date and treats
+ *  missing as null → line break). */
+export interface StockMarginRow {
+  date: string;
+  trading_shares: number | null;
+  trading_amount: number | null;
+  rz_balance: number | null;
+  rz_buy: number | null;
+  rq_balance_qty: number | null;
+  rq_balance_amt: number | null;
+  total_balance: number | null;
+}
+
+/** GET /api/stock/margin?code= — best-effort overlay block. */
+export interface StockMarginResponse {
+  code: string;
+  rows: StockMarginRow[];
+}
+
+/** GET /api/stock/dividends?code= — best-effort event-marker block. */
+export interface StockDividendsResponse {
+  code: string;
+  dividends: StockDividend[];
+}
+
+// ----------------------------------------------------------------------------
+// Stock Combined (v_stock_daily view + sec_classification)
+// Used by the Stock page — paginated stock list filtered by sector +
 // industry, mirroring IndexCombinedResponse.
 // ----------------------------------------------------------------------------
 /** One stock with its daily baseline rows (used in the combined response). */
@@ -780,7 +994,7 @@ export interface StockBundle {
   sector_label: string;
   industry_id: string;
   industry_label: string;
-  rows: StockBaselineRow[];
+  rows: StockDailyRow[];
   /** Dividend events for this stock (all dates — not windowed). Empty when
    *  the stock has no dividend history. Sourced from stats.stock_dividends. */
   dividends: StockDividend[];
@@ -803,18 +1017,18 @@ export interface StockCombinedResponse {
 // to decide whether cached UI data is stale (DB has newer rows).
 // ----------------------------------------------------------------------------
 export interface LatestDatesResponse {
-  /** MAX(date) from stats.v_debt_baseline */
+  /** MAX(date) from stats.v_debt_daily */
   debt: string;
   /** MAX(date) from stats.v_etf_margin */
   etf_margin: string;
-  /** MAX(date) from stats.v_index_baseline */
-  index_baseline: string;
+  /** MAX(date) from stats.v_index_daily */
+  index_daily: string;
   /** MAX(date) from stats.v_options_quote */
   options: string;
   /** MAX(snapshot_date) from stats.sec_composition */
   sec_composition: string;
-  /** MAX(date) from stats.v_stock_baseline */
-  stock_baseline: string;
+  /** MAX(date) from stats.v_stock_daily */
+  stock_daily: string;
   /** MAX(date) from live.sec_alloc_live_attribution or stats.index_intraday_5min (raw) */
   intraday_movements: string;
 }
@@ -1236,10 +1450,10 @@ export interface MovAveSpreadPriceVsAmtDay {
  *              envelope + roof/floor trendlines)
  *    streaks — band-break streaks (High/Low Streaks buttons' availability)
  *    pxvol   — per-date Price × Trading-Amount states (Px-Vol States shading) */
-export type MovAveSpreadMetric = "amt" | "ohlc" | "streaks" | "pxvol";
+export type MovAveSpreadMetric = "amt" | "ohlc" | "streaks" | "pxvol" | "gaps";
 
 /** All metric groups, in canonical order (used to normalize the query param). */
-export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "streaks", "pxvol"] as const;
+export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "streaks", "pxvol", "gaps"] as const;
 
 /**
  * Response for GET /chart — the DEFAULT load: the 18 Simple-MA + EMA pair
@@ -1256,6 +1470,40 @@ export interface MovAveSpreadChartResponse {
   /** Per-date tooltip metrics shared by every pair series — index-aligned
    *  with each pair's rows (all pairs share one date axis). ONE copy instead
    *  of duplicated into every pair's rows. */
+  shared: MovAveSpreadSharedMetricsRow[];
+}
+
+// ----------------------------------------------------------------------------
+// MA-Spread chart BLOCKS — per-table async loads. The default monolithic
+// /chart response joins ~6 tables into a ~90-column row and fans it out into
+// 18 pair series in ONE request; for a full stock history that is an ~8.5MB
+// JSON whose Node-side fan-out + serialization dominates the response time
+// (DB is <1s of it). The panel therefore fires three table-aligned blocks in
+// PARALLEL and renders as soon as the REQUIRED pairs block lands:
+//   • /chart/pairs  — stats price/MA tables + detail gaps → default chart +
+//     the 9 Simple-MA chips (REQUIRED; drives the date axis)
+//   • /chart/ema    — EMA detail table → the 9 EMA chips (best-effort)
+//   • /chart/shared — RSI table + OHLC pivot + amt metrics → tooltip
+//     metrics (best-effort; the option builder already tolerates null)
+// ----------------------------------------------------------------------------
+
+/** GET /chart/pairs — the REQUIRED block. */
+export interface MovAveSpreadChartPairsResponse {
+  code: string;
+  name: string;
+  /** 9 Simple-MA pair series (kind "price"). */
+  pairs: MovAveSpreadPairSeries[];
+}
+
+/** GET /chart/ema — best-effort block: the 9 EMA pair series. */
+export interface MovAveSpreadChartEmaResponse {
+  code: string;
+  pairs: MovAveSpreadPairSeries[];
+}
+
+/** GET /chart/shared — best-effort block: the per-date tooltip metrics. */
+export interface MovAveSpreadChartSharedResponse {
+  code: string;
   shared: MovAveSpreadSharedMetricsRow[];
 }
 
@@ -1277,6 +1525,27 @@ export interface MovAveSpreadExtrasResponse {
   /** Per-date Price × Trading-Amount state registry rows — drives the
    *  Px-Vol States shading. */
   priceVsAmt?: MovAveSpreadPriceVsAmtDay[];
+  /** Per-day OHLC gap anatomy + the top-decile wick flags + the
+   *  classified pattern (analysis.mov_ave_spreads_detail_ohlc_gaps) —
+   *  drives the Top-10% OHLC Days group. */
+  ohlcGaps?: MovAveSpreadOhlcGapDay[];
+}
+
+/** One day's OHLC gap anatomy row (the gaps store's wide row, trimmed
+ *  to what the chart group reads). Flags are the wick ≥ the code's
+ *  trailing-252d 90th percentile verdicts (NULL = window too short);
+ *  pattern ∈ gap_up_advance / gap_up_decline / gap_down_advance /
+ *  gap_down_decline / spike_fade / flush_recover / neutral (NULL =
+ *  unknown anatomy). */
+export interface MovAveSpreadOhlcGapDay {
+  date: string;
+  gap_open: number | null;
+  intra: number | null;
+  uw: number | null;
+  lw: number | null;
+  uw_top10: boolean | null;
+  lw_top10: boolean | null;
+  pattern: string | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -1405,6 +1674,18 @@ export interface ForecastResultCols {
   occurrence_count_20d: number | null;
 }
 
+/** A derived-population verdict value (analysis_forecasts
+ *  .forecast_identities.ohlcv_type): the TWO derived children of a
+ *  parent forecast — the 2026-09-27 OHLCV consolidation (the four
+ *  legacy gap/vol values retired): 'ohlcv_selection' the score-gated
+ *  strict subset and 'ohlcv_boost' the score-weighted same-days
+ *  re-measurement, both driven by the single three-axis day-0 score
+ *  (analyze.analysis_forecasts.ohlcv_boost / ohlcv_selection — the
+ *  UI's short labels selection / boost). */
+export type OhlcvPopulation =
+  | "ohlcv_selection"
+  | "ohlcv_boost";
+
 /** One mov_rsi bucket row (RSI extreme-percentile bucket) + its results.
  *  Bucket key: (stat_date, rsi_window, side, pct,
  *  regime_state). */
@@ -1414,6 +1695,41 @@ export interface MovRsiForecastRow extends ForecastResultCols {
   side: "top" | "bottom";
   pct: number;
   regime_state: MarketRegime;
+  /** The row's OWN population verdict (analysis_forecasts
+   *  .forecast_identities.ohlcv_type — moved from forecast_results
+   *  2026-09-26; the is_ohlc_selection / is_ohlc_boosted BOOLEAN pair
+   *  consolidated into this one nullable column 2026-09-27, renamed
+   *  with the vol×amt siblings the same day):
+   *  null = the parent's full-population row (and every other
+   *  family's), "gap_selection" = the rule-based selection child (the
+   *  hot-regime exhaustion-candle subset, top side / index only),
+   *  "gap_boost" = the pattern-weighted boost child (the parent's SAME
+   *  trigger days, each streak weighted by its day-0 OHLC pattern's
+   *  measured edge; bottom side / index only), "vol_selection" = the
+   *  vol×amt rule child (the capitulation-flush subset — heavy amount
+   *  level × sharp σ-standardized down move; bottom side / index
+   *  only) and "vol_boost" = the amount-state-weighted boost child
+   *  (the parent's SAME trigger days, each streak weighted by its
+   *  day-0 vol_state's measured edge; bottom side / index + etf).
+   *  Each derived population is its own forecast_id; the mechanisms
+   *  never co-occur on one forecast_id. */
+  ohlcv_type: OhlcvPopulation | null;
+  /** The row's OWN population IMPROV (derived children only — the
+   *  2026-09-27 rename of the boost column): the sign-aligned
+   *  improvement of this child's population over the same bucket
+   *  identity's parent (top → −ave, bottom → +ave — the dir_ave
+   *  convention — then child's delay-0 mean minus the parent's), so
+   *  POSITIVE always reads "the derived population beats the plain
+   *  bucket" at that horizon. Carried on the selection / boost
+   *  children's own rows separately; null (the UI's dash) on parent
+   *  "none" rows — the plain population has nothing to improve on.
+   *  improv_n_* is the CHILD's trigger-day count at the horizon. */
+  improv_ave_next?: number | null;
+  improv_ave_5d?: number | null;
+  improv_ave_20d?: number | null;
+  improv_n_next?: number | null;
+  improv_n_5d?: number | null;
+  improv_n_20d?: number | null;
   /** Per-code self-adaptive regime weight
    *  (analysis_forecasts.regime_weights) — evidence tier; null when
    *  no fit window exists. */
@@ -1749,6 +2065,28 @@ export interface ForecastTriggerDatesResponse {
   streaks: Record<ForecastPeriod, ForecastStreakSpan[] | null>;
 }
 
+/** One bucket's delay ladder — an entry of the split /forecast-ladders
+ *  response (the 2026-09-30 progressive-load split: the base table
+ *  renders first, the ladders merge into its rows when they land). */
+export interface ForecastLadderEntry {
+  forecast_id: number;
+  /** The delay 0..5 rungs, ASC (see DelayLadderRung). */
+  rungs: DelayLadderRung[];
+  decay_stop: number | null;
+  best_delay: number | null;
+}
+
+/** Response for GET /forecast-ladders — the delay ladders of the
+ *  code's buckets for the requested scope (the SAME scope params as
+ *  the base forecast table read, so the two payloads cover the same
+ *  rows). */
+export interface ForecastLaddersResponse {
+  kind: ForecastKind;
+  code: string;
+  sec_type: string;
+  ladders: ForecastLadderEntry[];
+}
+
 /** Motivation table names registered in
  *  analysis_forecasts.forecast_identities (identity.bucket values).
  *  (mov_gap and opp_pair_state — industry opposite-pair buckets — were
@@ -1795,21 +2133,22 @@ export interface ForecastIdentityResponse {
 }
 
 // ----------------------------------------------------------------------------
-//  Analysis Commons — PE & Dividend Yield (per-(sec_type, code, date) valuation)
+//  Analysis Commons — PE (per-(sec_type, code, date) valuation)
 //    analysis.pe / analysis.dividends   — daily raw pe / trailing-12m dividend_yield (split 2026-09)
-//    analysis.pe_and_dividend_stats     — annual 10y rolling stats snapshot
 //    PK (detail): (sec_type, code, date)
-//    PK (stats):  (sec_type, code, date, is_active)  [date = year-end]
+//
+//    (The former annual pe_stats / dividends_stats snapshot tables were
+//    removed 2026-09-28 with their only consumer, the Dividend Stats card.)
 //
 //    Close price is NOT stored in the analysis tables (it lives in
 //    stats: index_basic_stats.close, etf_basic_stats.close,
 //    stock_basic_stats.close). The chart endpoint JOINs stats live at
 //    request time so the UI always shows the freshest close.
 // ----------------------------------------------------------------------------
-export type PeAndDividendSecType = "etf" | "index" | "stock";
+export type PeSecType = "etf" | "index" | "stock";
 
 /** One daily row JOINed from analysis.pe / analysis.dividends + stats close. */
-export interface PeAndDividendChartRow {
+export interface PeChartRow {
   /** Trading date (YYYY-MM-DD). */
   date: string;
   /** Close price from stats (index_basic_stats.close / etf adj_close /
@@ -1822,65 +2161,36 @@ export interface PeAndDividendChartRow {
   dividend_yield: number | null;
 }
 
-/** Response for GET /api/analysis/pe-and-dividend/chart. */
-export interface PeAndDividendChartResponse {
+/** Response for GET /api/analysis/pe/chart. */
+export interface PeChartResponse {
   code: string;
   name: string;
-  rows: PeAndDividendChartRow[];
-}
-
-/** One annual snapshot row from analysis.pe_and_dividend_stats. */
-export interface PeAndDividendStatsRow {
-  /** Year-end trading date (YYYY-MM-DD). */
-  date: string;
-  /** TRUE for the most recent annual snapshot per (sec_type, code). */
-  is_active: boolean;
-  /** Rolling 10y min/max of PE (index-only; NULL for etf/stock). */
-  min_pe_10y: number | null;
-  max_pe_10y: number | null;
-  /** Rolling 10y population std (ddof=0) of dividend_yield, x100 as a
-   *  percentage (e.g. 0.5 = 0.5%). NULL when < 2 values in the window. */
-  dividend_var_10y: number | null;
-  /** Frequency-robust stability score (0-100) of per-share dividend AMOUNT
-   *  over trailing 10 calendar years (annualized per year so payment-frequency
-   *  changes don't create artificial gaps). 100 = perfectly stable. */
-  dividend_stability_10y: number | null;
-  /** Rolling record of the latest single dividend_per_share_pre_tax as of
-   *  the year-end date (stock/etf own events; NULL for index). */
-  last_dividend_per_share: number | null;
-  /** TRUE if at least one ex_dividend_date falls in the same calendar year
-   *  as the year-end date. Drives bold styling on the Last Div cell. */
-  dividend_issued_this_year: boolean;
-}
-
-/** Response for GET /api/analysis/pe-and-dividend/stats. */
-export interface PeAndDividendStatsResponse {
-  code: string;
-  name: string;
-  rows: PeAndDividendStatsRow[];
+  rows: PeChartRow[];
 }
 
 // ----------------------------------------------------------------------------
-//  PE & Dividend band-BREAK excursion streaks (analysis.pe_and_dividend_pct
-//  + analysis.pe_and_dividend_pct_streaks) — the high/low streaks pattern of
-//  analysis.mov_ave_high_low_pct[_streaks] applied to the pe /
-//  dividend_yield series. A day breaks out when its metric value is ABOVE
-//  its own month-band high_val (high — the metric is stretched vs its own
-//  trailing history) or BELOW low_val (low — compressed); a streak is the
-//  maximal run of same-side break days with up to 5 consecutive in-band
-//  trading days bridged (a 6-day gap or a side switch ends it).
+//  PE band-BREAK excursion streaks (analysis.pe_pct +
+//  analysis.pe_pct_streaks) — the high/low streaks pattern of
+//  analysis.mov_ave_high_low_pct[_streaks] applied to the pe series. A day
+//  breaks out when its pe value is ABOVE its own month-band high_val
+//  (high — PE is stretched vs its own trailing history) or BELOW low_val
+//  (low — compressed); a streak is the maximal run of same-side break days
+//  with up to 5 consecutive in-band trading days bridged (a 6-day gap or a
+//  side switch ends it). (2026-09-28: PE-only — the dividend_yield half,
+//  analysis.dividends_pct[_streaks], was dropped with its unused consumer
+//  path.)
 // ----------------------------------------------------------------------------
 
-/** The audited valuation series (`metric` column) — the two value columns
- *  of analysis.dividends. */
-export type PeAndDividendStreakMetric = "pe" | "dividend_yield";
+/** The audited series — always PE (the dividend_yield streak half was
+ *  removed 2026-09-28). */
+export type PeStreakMetric = "pe";
 
-/** One band-BREAK excursion streak from
- *  analysis.pe_and_dividend_pct_streaks. Shipped flat for ALL (metric,
- *  period, pctType) combos — the client filters by its nested selection. */
-export interface PeAndDividendStreak {
-  /** Which valuation series was audited. */
-  metric: PeAndDividendStreakMetric;
+/** One band-BREAK excursion streak from analysis.pe_pct_streaks. Shipped
+ *  flat for ALL (period, pctType) combos — the client filters by its
+ *  nested selection. */
+export interface PeStreak {
+  /** Which valuation series was audited — always "pe". */
+  metric: PeStreakMetric;
   /** Band lookback window in observations (255/500/750/1275). */
   period: number;
   /** Band tightness in percent (1/5/10) — the band's pct_type. */
@@ -1914,17 +2224,17 @@ export interface PeAndDividendStreak {
   stdDev: number;
 }
 
-/** Response for GET /api/analysis/pe-and-dividend/streaks. */
-export interface PeAndDividendStreaksResponse {
+/** Response for GET /api/analysis/pe/streaks. */
+export interface PeStreaksResponse {
   code: string;
   name: string;
   /** Flat per-streak array, ascending by metric, period, pctType,
    *  startDate. */
-  streaks: PeAndDividendStreak[];
+  streaks: PeStreak[];
 }
 
 /** One row in the codes list (UNION of analysis.pe / analysis.dividends, latest snapshot). */
-export interface PeAndDividendCodeRow {
+export interface ValuationCodeRow {
   code: string;
   name: string;
   first_date: string;
@@ -1936,9 +2246,25 @@ export interface PeAndDividendCodeRow {
   latest_dividend_yield: number | null;
 }
 
-/** Response for GET /api/analysis/pe-and-dividend/codes. */
-export interface PeAndDividendCodesResponse {
-  codes: PeAndDividendCodeRow[];
+/** Response for GET /api/analysis/valuation/codes — the SHARED PE ∪
+ *  Dividends universe (both analysis pages' SecCodesPageShell nav + codes). */
+export interface ValuationCodesResponse {
+  codes: ValuationCodeRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Security baseline bundle — GET /api/sec-baseline?sec_type=&code=
+//  The ONE shared endpoint behind the shared baseline-plot component
+//  (useSecBaselineBundle → IndexPanel / EtfMarginPanel / StockPanel). The
+//  bundle is whichever of the three shapes matches sec_type.
+// ----------------------------------------------------------------------------
+export interface SecBaselineResponse {
+  sec_type: "index" | "etf" | "stock";
+  /** Suffix-normalized code as requested. */
+  code: string;
+  /** The security's bundle — IndexBundle (index) | EtfBundle (etf) |
+   *  StockBundle (stock). NULL when the code has no rows. */
+  bundle: IndexBundle | EtfBundle | StockBundle | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -1962,7 +2288,7 @@ export type MarginAttributionType = "index" | "etf";
 
 /** One security (index or ETF code) available in an industry for plotting. */
 export interface MarginSecurity {
-  /** Bare 6-digit index code or ETF code with exchange suffix. */
+  /** Bare 6-digit index or ETF code. */
   code: string;
   /** Display name from stats.sec_classification.name. */
   label: string;
@@ -2147,7 +2473,7 @@ export interface PerfAttrChartResponse {
 /** Lightweight linked-ETF descriptor (code + name only) for the PerfAttr
  *  chart's "linked ETFs" button. */
 export interface LinkedEtfName {
-  /** ETF code WITH exchange suffix (e.g. "510300.SH"). */
+  /** ETF code, bare 6-digit (e.g. "510300"). */
   code: string;
   /** ETF display name (e.g. "沪深300ETF"). */
   name: string;
@@ -3411,7 +3737,7 @@ export interface StrategyRiskResponse {
 }
 
 // ----------------------------------------------------------------------------
-//  Futures Baseline — CFFEX futures curves (v_futures_baseline view)
+//  Futures Baseline — CFFEX futures curves (v_futures_daily view)
 //  One product at a time (IC/IF/IH/IM index or T/TF/TL/TS bond).
 //  Frontend plots one curve per contract code; blue gradient for active
 //  (farther maturity = lighter blue); grey for matured.
@@ -3442,7 +3768,7 @@ export interface FuturesContractMeta {
   is_continuous: boolean;
 }
 
-/** One daily row of a futures contract (from v_futures_baseline). */
+/** One daily row of a futures contract (from v_futures_daily). */
 export interface FuturesRow {
   date: string;
   code: string;

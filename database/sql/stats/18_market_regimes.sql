@@ -160,3 +160,18 @@ CREATE TABLE stats.market_regime_spans (
 SELECT public.create_hash_partitions('stats', 'market_regime_spans', 8);
 
 COMMENT ON TABLE stats.market_regime_spans IS 'One row per CONTIGUOUS run of same-regime days over stats.market_regimes: (start_date, end_date) inclusive span + span_days (trading-date count). The UI regime-shading source replacing the retired mov_ave_market_hypes episode rows — hot spans shade as the old "hyped" bands did; panic/quiet get their own colors. MATERIALIZED by builds.market_regimes (wholesale-rebuilt per scope alongside the registry; formerly a per-query view).';
+
+-- Idempotent migration (2026-09-30): strip the exchange suffix from ETF
+-- codes — ETF codes are BARE 6-digit everywhere now (stock rows keep
+-- their suffix; index codes were already bare). NOTE: this file is a
+-- destructive DROP+CREATE (fresh-init / 00_init.sql only) — against the
+-- live DB run these two UPDATEs standalone; the owning build also
+-- wholesale-rebuilds its scope every run, so a --force regen converges
+-- here as well.
+UPDATE stats.market_regimes
+   SET code = split_part(code, '.', 1)
+ WHERE sec_type = 'etf' AND code ~ '^\d{6}\.';
+
+UPDATE stats.market_regime_spans
+   SET code = split_part(code, '.', 1)
+ WHERE sec_type = 'etf' AND code ~ '^\d{6}\.';

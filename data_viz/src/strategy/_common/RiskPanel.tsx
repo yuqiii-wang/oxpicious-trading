@@ -31,7 +31,7 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import type { ECharts, EChartsOption } from "echarts";
-import EChart from "@/components/EChart";
+import EChart from "@/shared/charts/EChart";
 import {
   axisColors,
   commonLegend,

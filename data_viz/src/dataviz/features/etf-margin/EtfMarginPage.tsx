@@ -1,5 +1,5 @@
 ﻿/**
- * ETF + Margin page — interactive mirror of plot_szse_sse_etf_and_margin.py.
+ * ETF page — interactive mirror of plot_szse_sse_etf_and_margin.py.
  *
  *   • ThemeSelector — two-level cascade (L1 sector → L2 industry), loads from
  *     /api/etf-margin/themes which returns the precomputed taxonomy tree.
@@ -261,7 +261,7 @@ export default function EtfMarginPage() {
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 2, flexWrap: "wrap" }}>
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            ETF + Margin
+            ETF
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {headerLabel} — interactive mirror of plot_szse_sse_etf_and_margin.py

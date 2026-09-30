@@ -6,5 +6,6 @@ export {
   confBorderWidth,
   hexWithAlpha,
   actionColor,
+  actionDarkColor,
   actionChipSx,
 } from "./signalActionStyle";

@@ -18,7 +18,7 @@ from builds.stock._helpers.helpers import (
 from builds.stock._helpers.pe_processing import (
     PE_ESTIMATE_MAX_MONTHS,
     _read_sse_pe_files,
-    _read_sse_archive_trend_files,
+    _read_archive_trend_files,
     fetch_pe_estimate_candidates,
     estimate_missing_pe_async,
 )
@@ -37,7 +37,7 @@ __all__ = [
     "dates_as_date_list", "records_from_frame", "_nan_to_none",
     # pe_processing
     "PE_ESTIMATE_MAX_MONTHS",
-    "_read_sse_pe_files", "_read_sse_archive_trend_files",
+    "_read_sse_pe_files", "_read_archive_trend_files",
     "fetch_pe_estimate_candidates", "estimate_missing_pe_async",
     # etf_membership
     "ETF_WEIGHT_THRESHOLD", "compute_is_in_index_or_etf_async",

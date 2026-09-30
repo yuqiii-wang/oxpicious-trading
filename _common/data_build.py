@@ -106,9 +106,10 @@ class DataBuild(DataPipeline):
         return forced
 
     def resolve_code_filter(self, strip_suffix: bool = False) -> str | None:
-        """Normalize --code → suffixed code (000001.SZ); optionally strip
-        the exchange suffix for the bare-code tables (index/futures/
-        options: 000300, IF2606, 10008657)."""
+        """Normalize --code → suffixed STOCK code (000001.SZ); optionally
+        strip the exchange suffix for the bare-code tables (etf/fund/
+        index/futures/options: 510300, 012761, 000300, IF2606, 10008657).
+        ETF/fund prefixes already come back bare from normalize_code."""
         from builds._commons.code_filter import normalize_code
 
         code = normalize_code(getattr(self.args, "code", None))

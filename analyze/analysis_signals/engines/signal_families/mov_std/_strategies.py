@@ -113,6 +113,9 @@ def strategy_rows(
             "regime_state": rec["regime_state"],
             "lookback_period": LOOKBACK_PERIOD,
             "conf_period": "mixed",
+            # the claim profile the quality gate held the bucket to
+            # (every emitted window is a slow band-swing claim)
+            "required_periods": ["5d", "20d"],
             # NOT popped — the delay is ALSO a stored column
             "signal_delay_days": rec["signal_delay_days"],
             "dir_ave": rec.pop("dir_ave"),

@@ -97,7 +97,7 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True, code=None):
     prepare_features → apply_split_adjustment. The single-code pull keeps
     the code's FULL history (small) and returns adj_seeds=None.
 
-    When *code* is set (canonical "NNNNNN.SZ/.SS"), only that code's rows
+    When *code* is set (bare "NNNNNN"), only that code's rows
     are fetched — split adjustment and MAs are per-code, so a --code build
     never needs other ETFs' history.
     """

@@ -5,7 +5,7 @@ Consolidates two patterns that share the same ``groupby(keys)[col]
 
   - ``compute_moving_averages``: compute MULTIPLE MA windows (ma5,
     ma20, ma60, ma120, ma255) on a single value column in one pass.
-    Used by builds (stock_tech_stats, etf, index_baseline) on the
+    Used by builds (stock_tech_stats, etf, index_daily) on the
     6.8M / 971K / 649K row source tables.
 
   - ``grouped_rolling_agg``: compute ONE window x ONE column with a

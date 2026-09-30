@@ -1,7 +1,7 @@
 -- ============================================================================
 --  Industry Sentiments — derived tables built on top of
 --  analysis.industry_sentiments (whose DDL now lives in
---  database/sql/stats/13_industry_baseline.sql — migrated 2026-08-24).
+--  database/sql/stats/13_industry.sql — migrated 2026-08-24).
 --
 --  Contains:
 --    • analysis.industry_correlations  (rolling pairwise Pearson correlation
@@ -12,7 +12,7 @@
 --      aggregate ETF trading turnover)
 --
 --  POPULATION
---    builds/industry (baseline stats.industry_basic_stats: incremental /
+--    builds/industry (stats.industry_basic_stats: incremental /
 --    --force truncate-then-recompute) then analyze/industry_sentiments
 --    (downstream steps, truncate-then-recompute on every run).
 -- ============================================================================

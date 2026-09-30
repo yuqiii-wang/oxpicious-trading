@@ -123,6 +123,11 @@ export interface ExpandedTableProps<T> {
    *  keep it in filterScopeDeps so a new value re-seeds. Null/undefined
    *  = latest month. */
   defaultEndMonth?: string | null;
+  /** Fired when the user edits / clears the END-ONLY date filter
+   *  (the snapshot selector) — the selected "YYYY-MM", or null when
+   *  cleared. Passed through to the header-filters hook; see its
+   *  docstring. */
+  onEndMonthChange?: (month: string | null) => void;
   /** Rendered instead of the table when `rows` is empty. */
   emptyState?: ReactNode;
   /** Row-click handler (cursor turns pointer when set). */
@@ -240,6 +245,7 @@ export function ExpandedTableImpl<T>({
   enableFilters = false,
   filterScopeDeps = [],
   defaultEndMonth = null,
+  onEndMonthChange,
   emptyState,
   onRowClick,
   selectedRowKey,
@@ -286,6 +292,7 @@ export function ExpandedTableImpl<T>({
     rows,
     filterScopeDeps,
     defaultEndMonth,
+    onEndMonthChange,
   );
 
   if (rows.length === 0 && emptyState != null) {

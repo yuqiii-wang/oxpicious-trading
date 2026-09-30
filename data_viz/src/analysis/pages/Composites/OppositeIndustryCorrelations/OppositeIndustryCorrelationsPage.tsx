@@ -56,7 +56,7 @@ import {
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import EChart from "@/components/EChart";
+import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";

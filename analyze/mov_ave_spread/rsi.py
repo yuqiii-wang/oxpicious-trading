@@ -60,6 +60,11 @@ logger = logging.getLogger(__name__)
 # per chunk is log noise, not new information.
 _ewm_gpu_warned = False
 
+# Set after the first successful GPU-route log: the kernel is used once per
+# (column x sec_type-leg) call, so per-call INFO would be noise — the
+# one-shot line proves the fused ewm.cpp CUDA kernel is active for the run.
+_ewm_gpu_route_logged = False
+
 
 # ---------------------------------------------------------------------------
 #  Configuration
@@ -276,6 +281,16 @@ def _grouped_ewm_gpu(s, df, alpha, min_periods, group_bounds):
     ⇒ kernel output row order == df row order, same contract the pandas
     path's reset_index+reindex achieves).
     """
+    global _ewm_gpu_route_logged
+    if not _ewm_gpu_route_logged:
+        _ewm_gpu_route_logged = True
+        logger.info(
+            f"      [ewm kernel] fused CUDA grouped EWM active "
+            f"(ewm.cpp, adjust=False, ignore_na=True): "
+            f"{len(df):,} rows x {int(group_bounds[0].size):,} groups, "
+            f"alpha={alpha:.4f} — route logged once per run; later calls "
+            f"are silent"
+        )
     import cupy as cp
     from _common.df_utils import host_array
     from analyze.mov_ave_spread._kernels.ewm import grouped_ewm_mean

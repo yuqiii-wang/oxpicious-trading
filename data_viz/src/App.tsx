@@ -1,11 +1,11 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { Box } from "@mui/material";
 import TopAppBar from "@/components/TopAppBar";
-import DebtBaselinePage from "@/dataviz/pages/DebtBaselinePage";
-import SzseOptionsPage from "@/dataviz/pages/SzseOptionsPage";
+import DebtPage from "@/dataviz/pages/DebtPage";
+import OptionsPage from "@/dataviz/pages/OptionsPage";
 import EtfMarginPage from "@/dataviz/pages/EtfMarginPage";
-import IndexBaselinePage from "@/dataviz/pages/IndexBaselinePage";
-import StockBaselinePage from "@/dataviz/pages/StockBaselinePage";
+import IndexPage from "@/dataviz/pages/IndexPage";
+import StockPage from "@/dataviz/pages/StockPage";
 import FuturesPage from "@/dataviz/pages/FuturesPage";
 import NewsPage from "@/dataviz/pages/NewsPage";
 import AiPage from "@/dataviz/pages/AiPage";
@@ -22,7 +22,8 @@ import OppositeIndustryCorrelationsPage from "@/analysis/pages/Composites/Opposi
 import AiMarketSentimentsPage from "@/analysis/pages/Composites/AiMarketSentiments/AiMarketSentimentsPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
-import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
+import PePage from "@/analysis/pages/PePage";
+import DividendsPage from "@/analysis/pages/DividendsPage";
 import EtfHoldingsPage from "@/analysis/pages/EtfHoldingsPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
@@ -55,12 +56,12 @@ export default function App() {
           <Route path="/live/index" element={<LiveDataIndexPage />} />
           <Route path="/live/etf" element={<LiveDataEtfPage />} />
           <Route path="/live/stock" element={<LiveDataStockPage />} />
-          <Route path="/dataviz" element={<Navigate to="/dataviz/debt-baseline" replace />} />
-          <Route path="/dataviz/debt-baseline" element={<DebtBaselinePage />} />
-          <Route path="/dataviz/szse-options" element={<SzseOptionsPage />} />
+          <Route path="/dataviz" element={<Navigate to="/dataviz/debt" replace />} />
+          <Route path="/dataviz/debt" element={<DebtPage />} />
+          <Route path="/dataviz/szse-options" element={<OptionsPage />} />
           <Route path="/dataviz/etf-margin" element={<EtfMarginPage />} />
-          <Route path="/dataviz/index-baseline" element={<IndexBaselinePage />} />
-          <Route path="/dataviz/stock-baseline" element={<StockBaselinePage />} />
+          <Route path="/dataviz/index" element={<IndexPage />} />
+          <Route path="/dataviz/stock" element={<StockPage />} />
           <Route path="/dataviz/futures" element={<FuturesPage />} />
           <Route path="/dataviz/news" element={<NewsPage />} />
           <Route path="/dataviz/ai" element={<AiPage />} />
@@ -68,7 +69,8 @@ export default function App() {
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
           <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
-          <Route path="/analysis/commons/pe-dividend" element={<PeAndDividendPage />} />
+          <Route path="/analysis/commons/pe" element={<PePage />} />
+          <Route path="/analysis/commons/dividends" element={<DividendsPage />} />
           <Route path="/analysis/commons/etf-holdings" element={<EtfHoldingsPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />

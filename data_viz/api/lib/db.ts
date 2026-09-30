@@ -8,6 +8,7 @@ export {
   getPool,
   query,
   queryRows,
+  queryReadWithSession,
   getClient,
   closePool,
   toDateParam,

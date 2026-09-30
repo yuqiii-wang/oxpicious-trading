@@ -2,11 +2,11 @@
  * Sec Composition API routes.
  */
 import { Router, type Request, type Response } from "express";
-import { getSecComposition, getQuarterlyComposition, getLinkedEtfs, getSimilarIndices, getIndustryWeightSeries } from "../services/sec-composition.service.js";
+import { getSecComposition, getQuarterlyComposition, getLinkedEtfs, getLinkedFeeders, getSimilarIndices, getIndustryWeightSeries } from "../services/sec-composition.service.js";
 
 const router = Router();
 
-/** GET /api/sec-composition?code=159001.SZ[&date=2026-06-30]
+/** GET /api/sec-composition?code=159001[&date=2026-06-30]
  *  Without `date`: latest snapshot. With `date`: latest snapshot within the
  *  calendar quarter containing the date (the "by season" lookup). */
 router.get("/", async (req: Request, res: Response) => {
@@ -65,7 +65,9 @@ router.get("/industry-weight-series", async (req: Request, res: Response) => {
 
 /** GET /api/sec-composition/linked-etfs?code=000300
  *  Returns the ETFs tracking the given index (parent_index_code = code),
- *  enriched with latest close + n_days from stats.v_etf_margin. */
+ *  enriched with latest close + n_days from stats.v_etf_margin, per-ETF
+ *  feeder-fund counts from stats.sec_etf_links, and the index's display
+ *  name — the payload behind the unified Index→ETF→feeder table. */
 router.get("/linked-etfs", async (req: Request, res: Response) => {
   try {
     const code = typeof req.query.code === "string" ? req.query.code : "";
@@ -76,6 +78,23 @@ router.get("/linked-etfs", async (req: Request, res: Response) => {
     res.json(await getLinkedEtfs(code));
   } catch (err) {
     console.error("[sec-composition/linked-etfs] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/sec-composition/linked-feeders?code=510880
+ *  Returns the ETF联接基金 feeder funds whose target (master) ETF is the
+ *  given code, from stats.sec_etf_links. ETF-level mirror of /linked-etfs. */
+router.get("/linked-feeders", async (req: Request, res: Response) => {
+  try {
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getLinkedFeeders(code));
+  } catch (err) {
+    console.error("[sec-composition/linked-feeders] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

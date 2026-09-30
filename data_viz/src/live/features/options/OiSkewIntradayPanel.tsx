@@ -51,9 +51,21 @@ export default function OiSkewIntradayPanel({
   const date = resp?.date ?? "";
   const hasData = (resp?.bars.length ?? 0) > 0;
 
+  // Data-gap detection: the API resolves `date` from the underlying's spot
+  // table. An empty date means the underlying has NO intraday spot rows at
+  // all; a set date with zero bars means that day's spot rows are missing
+  // (streamer gap). Either way the skew series cannot exist — the on-demand
+  // compute requires spot bars and is never triggered — so say why the
+  // chart is empty instead of showing a bare "[No data]".
+  const spotGap = hasData
+    ? null
+    : date === ""
+      ? "No intraday spot rows for this underlying — spot table empty (streamer gap; run the streamer backfill)"
+      : `No intraday spot bars on ${date} — the skew series needs spot and was not computed (streamer gap)`;
+
   const subtitle = hasData
     ? `${date} · 5-min bars · OI base = ${resp?.snapshot_date ?? "—"} daily snapshot + day volume`
-    : "No data for this underlying / date";
+    : spotGap ?? "No data for this underlying / date";
 
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
@@ -100,7 +112,7 @@ export default function OiSkewIntradayPanel({
       height={380}
       loading={loading || freeze}
       error={error ? `Failed to load intraday OI skew: ${error}` : null}
-      emptyText="No data for this underlying / date"
+      emptyText={spotGap ?? "No data for this underlying / date"}
       option={freeze ? null : option}
     />
   );

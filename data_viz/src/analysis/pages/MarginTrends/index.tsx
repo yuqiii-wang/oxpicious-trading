@@ -75,6 +75,23 @@ export default function MarginTrendsPage() {
         if (cancelled) return;
         setSectors(t);
         setStrategies(st);
+        // Default start: 沪深300 (BROAD_CSI300). Only applied while the nav
+        // is pristine (no sector / industry / strategy chosen), so it never
+        // clobbers a user selection on attribution toggle or refresh.
+        if (!sectorId && !industrySlug && !strategyId) {
+          for (const sec of t) {
+            const hit = sec.industries.find(
+              (ind) =>
+                ind.industry_slug === "broad_csi300" ||
+                ind.industry_label === "沪深300",
+            );
+            if (hit) {
+              setSectorId(sec.sector_id);
+              setIndustrySlug(hit.industry_slug);
+              break;
+            }
+          }
+        }
         setLoading(false);
       })
       .catch((e: Error) => {

@@ -3,17 +3,16 @@
 Runs three sequential phases:
 
   1. Index composition (CSI + SZSE) → stats.sec_composition
-  2. Index baseline (CSIndex daily OHLCV + PE + MAs)
+  2. Index daily build (CSIndex daily OHLCV + PE + MAs)
   3. Index exts (stats.index_exts + stats.etf_trading_amt +
      stats.exchange_trading_amt + stats.sec_similars)
 
-Composition must run before baseline because baseline's close-price
-estimation relies on index composition shared weights. Exts must run
-after baseline: exchange_trading_amt is driven by stats.index_basic_stats
-dates (produced by baseline), and sec_similars is driven by
-sec_composition snapshot dates (produced by phase 1).
+Composition must run before exts: sec_similars is driven by
+sec_composition snapshot dates (produced by phase 1). Exts must run
+after daily build: exchange_trading_amt is driven by stats.index_basic_stats
+dates (produced by daily build).
 
-Phase 2 embeds the :class:`BaselineBuild` child pipeline directly
+Phase 2 embeds the :class:`DailyBuild` child pipeline directly
 (preset ``args`` + ``await child.amain()``) — no sys.argv mutation.
 
 Usage:
@@ -154,9 +153,9 @@ async def _run_composition(force: bool, code_filter: str | None = None,
 
 class IndexBuild(DataBuild):
     """``python -m builds.index`` — 3-phase orchestrator (composition →
-    baseline → exts)."""
+    daily build → exts)."""
 
-    title = ("BUILD INDEX  ·  composition (CSI+SZSE) → baseline (CSIndex daily) "
+    title = ("BUILD INDEX  ·  composition (CSI+SZSE) → daily build (CSIndex daily) "
              "→ exts (ETF/exchange amt + sec similars)")
     component = "index"
 
@@ -183,11 +182,12 @@ class IndexBuild(DataBuild):
             "Today":         TODAY_STR,
         }
 
-    def _child_baseline_args(self):
-        """Preset argparse.Namespace for the embedded BaselineBuild (phase 2).
+    def _child_daily_args(self):
+        """Preset argparse.Namespace for the embedded DailyBuild (phase 2).
 
         --refresh-estimated-days: nightly self-heal — rebuild recent daily
-        rows gap-filled as ESTIMATED by a build that raced ahead of the EOD
+        rows gap-filled with NULL OHLC by a build that raced ahead of the
+        EOD
         CSV publish; idempotent when the CSVs already agree. Skipped in
         --date mode: single-date scope only (the forced date is always
         rebuilt regardless of its row state).
@@ -231,20 +231,20 @@ class IndexBuild(DataBuild):
                                forced_date=forced)
         logger.info(f"\n  Composition phase done ({int(time.time() - t1)}s)")
 
-        # ---- Phase 2: Index baseline (CSIndex daily) ----------------------
+        # ---- Phase 2: Index daily build (CSIndex daily) ----------------------
         logger.info("\n" + "=" * 78)
         logger.info("  PHASE 2: INDEX BASELINE (CSIndex daily OHLCV + PE + MAs)")
         logger.info("=" * 78)
         t2 = time.time()
 
-        # Embed the BaselineBuild child pipeline directly: preset args,
+        # Embed the DailyBuild child pipeline directly: preset args,
         # derive the child's forced_date/code_filter via its apply_args()
         # hook, then await amain() in THIS event loop — no sys.argv mutation.
-        from builds.index.baseline import BaselineBuild
+        from builds.index.daily import DailyBuild
 
-        baseline = BaselineBuild(args=self._child_baseline_args())
-        baseline.apply_args()
-        await baseline.amain()
+        daily_build = DailyBuild(args=self._child_daily_args())
+        daily_build.apply_args()
+        await daily_build.amain()
 
         logger.info(f"\n  Baseline phase done ({int(time.time() - t2)}s)")
 

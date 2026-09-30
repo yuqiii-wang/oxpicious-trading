@@ -4,6 +4,9 @@ import type {
   StrategyNode,
   MovAveSpreadCodesResponse,
   MovAveSpreadChartResponse,
+  MovAveSpreadChartPairsResponse,
+  MovAveSpreadChartEmaResponse,
+  MovAveSpreadChartSharedResponse,
   MovAveSpreadExtrasResponse,
   MovAveSpreadMetric,
   MaSpreadSecType,
@@ -69,6 +72,51 @@ export function fetchMovAveSpreadChart(
   const qs = params.toString();
   return fetchJson<MovAveSpreadChartResponse>(
     `/api/analysis/mov-ave-spread/chart${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/**
+ * Chart BLOCKS — per-table async loads. The panel fires all three in
+ * parallel and renders as soon as the REQUIRED pairs block lands (the
+ * default Price/MA5 chart + MA chips); the ema block populates the EMA chip
+ * grid and the shared block feeds the tooltip metrics when they arrive.
+ */
+export function fetchMovAveSpreadChartPairs(
+  code: string,
+  secType: MaSpreadSecType,
+): Promise<MovAveSpreadChartPairsResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<MovAveSpreadChartPairsResponse>(
+    `/api/analysis/mov-ave-spread/chart/pairs${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchMovAveSpreadChartEma(
+  code: string,
+  secType: MaSpreadSecType,
+): Promise<MovAveSpreadChartEmaResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<MovAveSpreadChartEmaResponse>(
+    `/api/analysis/mov-ave-spread/chart/ema${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchMovAveSpreadChartShared(
+  code: string,
+  secType: MaSpreadSecType,
+): Promise<MovAveSpreadChartSharedResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<MovAveSpreadChartSharedResponse>(
+    `/api/analysis/mov-ave-spread/chart/shared${qs ? `?${qs}` : ""}`,
   );
 }
 

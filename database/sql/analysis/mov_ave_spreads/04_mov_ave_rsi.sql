@@ -74,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_mov_ave_rsi_sec_type_code_date
 
 COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (3/6/10/14/20/60 days). One row per (code, sec_type, date). sec_type ∈ {etf, index, stock}. analysis.mov_ave_rsi_holiday FK-references this table ON DELETE CASCADE.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
-COMMENT ON COLUMN analysis.mov_ave_rsi.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis.mov_ave_rsi.code        IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_rsi.date        IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_3days   IS 'Wilder RSI over 3 trading days (alpha=1/3, ewm adjust=False, min_periods=3) — an ultra-short momentum window. 0..100. NULL until 3 periods.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_6days   IS 'Wilder RSI over 6 trading days (alpha=1/6, ewm adjust=False, min_periods=6). 0..100. NULL until 6 consecutive gain/loss observations.';

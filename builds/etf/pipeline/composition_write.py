@@ -14,9 +14,10 @@ from builds._commons.row_emission import dates_as_date_list
 import logging
 logger = logging.getLogger(__name__)
 
-# Canonical suffixed ETF code ("NNNNNN.SZ"/"NNNNNN.SS") — composition CSVs
-# are written with whole suffixed etf_code by the download conversion.
-VALID_ETF_RE = r"^\d{6}\.(SS|SZ)$"
+# Canonical BARE ETF code ("NNNNNN") — the 2026-09-30 convention. Legacy
+# composition CSVs (written before 2026-09-30) carry a suffixed
+# etf_code; both forms validate, and the write path strips to bare.
+VALID_ETF_RE = r"^\d{6}(\.(SS|SZ))?$"
 # Canonical suffixed constituent code — stock_identity/stock_basic_stats all
 # use suffixed codes, so sec_composition.stock_code must carry the suffix too.
 VALID_STOCK_RE = r"^\d{6}\.(SS|SZ|BJ|HK|SH)$"
@@ -30,10 +31,11 @@ async def insert_composition(
 ) -> None:
     """Build ETF holdings rows from comp_long and upsert missing snapshots.
 
-    Codes arrive canonical and suffixed in the CSVs — read whole; rows
-    failing validation are dropped. ``forced_date`` (--date mode) keeps
-    that snapshot date's rows as write candidates even when already stored
-    (upsert overwrites; no deletes).
+    ETF codes arrive BARE in the CSVs (legacy files carry a suffix —
+    validated and stripped); stock codes arrive suffixed and are kept
+    whole. Rows failing validation are dropped. ``forced_date`` (--date
+    mode) keeps that snapshot date's rows as write candidates even when
+    already stored (upsert overwrites; no deletes).
     """
     logger.info("\n[7/7] Inserting ETF composition data (missing snapshots only) …")
 
@@ -76,11 +78,13 @@ async def insert_composition(
             # and dropped NaT) — to_datetime(errors="coerce") on a Series is
             # a cudf fallback (non-scalar arg)
             comp_eq = comp_eq[comp_eq["trade_date"].notna()]
-            # Codes arrive canonical + suffixed — validate whole, keep as-is.
+            # ETF codes arrive BARE (legacy files suffixed) — validate,
+            # then strip to the bare DB form.
             comp_eq = comp_eq[
                 comp_eq["etf_code"].astype(str).str.strip().str.match(VALID_ETF_RE)
             ]
-            comp_eq["code"] = comp_eq["etf_code"].astype(str).str.strip()
+            comp_eq["code"] = (comp_eq["etf_code"].astype(str).str.strip()
+                               .str.split(".").str[0])
             # Rank holdings within each (etf, snapshot) by weight desc
             comp_eq = comp_eq.sort_values(
                 gk + ["_w"], ascending=[True, True, False], kind="mergesort",

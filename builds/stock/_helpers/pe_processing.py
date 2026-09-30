@@ -2,7 +2,8 @@
 
 Contains:
 - _read_sse_pe_files: read SSE PE files ({code}_pe.csv) with DB-first filtering
-- _read_sse_archive_trend_files: read SSE per-stock {code}_trend.csv archive files
+- _read_archive_trend_files: read SSE/BSE per-stock {code}_trend.csv archive
+  files (incremental by file mtime + per-code DB max date)
 - fetch_pe_estimate_candidates: DB-driven estimation source of truth
 - _read_sse_pe_files: independent SSE PE pass (latest-missing-dates gated)
 - estimate_missing_pe_async: fill missing PE from last actual PE (constant-EPS)
@@ -242,8 +243,9 @@ async def fetch_pe_estimate_candidates(
                     rec_col(rows, "close")))
 
 
-async def _read_sse_archive_trend_files(
-    sse_pe_dir: str,
+async def _read_archive_trend_files(
+    archive_dir: str,
+    exchange: str,
     start_date: str | None = None,
     end_date: str | None = None,
     limit: int | None = None,
@@ -252,26 +254,32 @@ async def _read_sse_archive_trend_files(
     verbose: bool = True,
     code_filter: str | None = None,
 ) -> pd.DataFrame:
-    """Read SSE per-stock {code}_trend.csv archive files (historical OHLCV).
+    """Read per-stock {code}_trend.csv archive files (historical OHLCV).
+
+    Serves the SSE archive (temps/sse_archive, exchange="SS") and the BSE
+    archive (temps/bse_archive, exchange="BJ") — both downloaders write the
+    same canonical unified-schema CSV, so only directory + exchange differ.
 
     Incremental by file mtime + per-code DB max date (no full-archive load):
       1. the stock code comes from the FILENAME ({bare}_trend.csv →
-         {bare}.SS) — no file I/O needed to know which stock a file holds
-      2. ONE DB query returns MAX(date) per code from stats.stock_identity
+         {bare}.{exchange}) — no file I/O needed to know which stock a file holds
+      2. ONE DB query returns MAX(date) per code from stats.stock_basic_stats
+         (NOT stock_identity — intraday stream writers seed identity rows
+         independently of OHLCV ingestion, so identity can lead basic_stats
+         by weeks and would starve this gate)
       3. file mtime on/before the DB max date for that code → skip outright
          (the file cannot contain rows newer than what is already loaded)
       4. otherwise tail-peek the file's max date; read only when it holds
          data beyond the DB max
       5. rows read are filtered to date > DB max per code (vectorized,
-         after concat), so NO anti-join against stock_identity is needed
-         downstream
+         after concat), so NO anti-join is needed downstream
 
     force=True reads every file in full with no filtering. Interior
     per-code gaps at or below the DB max date are NOT backfilled by this
     path (they are normally trading suspensions); whole-market missing
     dates are covered by the daily-file gap detection in the pipeline.
     """
-    archive_files = glob_source_files(sse_pe_dir, "*_trend.csv")
+    archive_files = glob_source_files(archive_dir, "*_trend.csv")
     if code_filter:
         bare = code_filter.split(".")[0]
         archive_files = [
@@ -285,9 +293,10 @@ async def _read_sse_archive_trend_files(
             logger.info("    [ARCHIVE] No archive trend files found")
         return pd.DataFrame()
 
-    # {bare}_trend.csv → {bare}.SS (filenames carry zero-padded 6-digit codes)
+    # {bare}_trend.csv → {bare}.{exchange} (filenames carry zero-padded
+    # 6-digit codes)
     file_codes: dict[str, str] = {
-        path: os.path.basename(path)[: -len("_trend.csv")] + ".SS"
+        path: os.path.basename(path)[: -len("_trend.csv")] + f".{exchange}"
         for path in archive_files
     }
 
@@ -301,8 +310,8 @@ async def _read_sse_archive_trend_files(
             rows = await conn.fetch(
                 """
                 SELECT code, MAX(date) AS max_date
-                FROM stats.stock_identity
-                WHERE code = ANY($1) AND exchange = 'SS'
+                FROM stats.stock_basic_stats
+                WHERE code = ANY($1)
                 GROUP BY code
                 """,
                 codes_list,

@@ -32,7 +32,7 @@ N_YEARS = 10
 # nominal window emit over their ACTUAL window — min(actual period,
 # WINDOW_YEARS) — instead of being gated out: the universe gate only
 # drops snapshots before the universe's first data, and a code joins a
-# snapshot from its own first-data date (see _dfengine._month_chunks).
+# snapshot from its own first-data date (see _dfengine._snapshot_chunks).
 # Truncated-window rows are therefore expected; their occurrence
 # counts carry the actual coverage (the regime-weights shrink
 # N/(N+10) reads the same actual counts).

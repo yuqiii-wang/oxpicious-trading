@@ -52,6 +52,19 @@ export function actionColor(action: string, theme: Theme): string {
     : theme.palette.error.main;
 }
 
+/** The action's DARKER palette hue — the derived-population (ohlcv
+ *  boost / selection) MARKER shade for a cohort row that never
+ *  registered a strategy: the chip keeps the shared shape but reads as
+ *  population identity, not signal strength. A registered cohort wears
+ *  the main actionColor and ramps with its own confidence like every
+ *  other chip — strength must stay monotone in confidence across all
+ *  chips, which a fixed darker hue would break. */
+export function actionDarkColor(action: string, theme: Theme): string {
+  return action.toLowerCase() === "buy"
+    ? theme.palette.success.dark
+    : theme.palette.error.dark;
+}
+
 /** Chip sx overrides — NO fill (outlined by default), so text is never
  *  hidden. Border width + border/text alpha ramp with confidence.
  *  `colorOverride` swaps the success/error hue (e.g. the Singleton

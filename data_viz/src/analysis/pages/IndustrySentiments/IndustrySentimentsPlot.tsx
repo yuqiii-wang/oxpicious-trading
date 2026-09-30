@@ -13,8 +13,8 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
+import ChartCard from "@/shared/components/ChartCard";
+import EChart from "@/shared/charts/EChart";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";

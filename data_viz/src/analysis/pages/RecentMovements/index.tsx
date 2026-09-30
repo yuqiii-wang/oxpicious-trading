@@ -8,7 +8,7 @@
  *     security-level chips), fully wired from useSecNav
  *   • Content — once a security is picked (code search or L3 chip), the
  *     shared CodeTrendChart renders its daily price trend (OHLC + MAs via
- *     the shared StockOhlcChart, per sec_type baseline endpoint), and the
+ *     the shared OhlcChart, per sec_type baseline endpoint), and the
  *     Forecast section beneath it (migrated from the MA-Spread panel's 2nd
  *     plot) shows the code's analysis_forecasts extreme-day bucket table
  *     via ForecastTable — a card panel whose kind toggle group picks the
@@ -56,8 +56,8 @@
  *
  * Nav trees sources per sec_type (baseline registries):
  *   ETF   → /api/etf-margin/themes + /api/etf-margin/strategy-themes
- *   Index → /api/index-baseline/themes + /api/index-baseline/strategy-themes
- *   Stock → /api/stock-baseline/themes + /api/stock-baseline/strategy-themes
+ *   Index → /api/index/themes + /api/index/strategy-themes
+ *   Stock → /api/stock/themes + /api/stock/strategy-themes
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ECharts } from "echarts";
@@ -77,8 +77,10 @@ import {
 import { ArrowForward, Insights, Search } from "@mui/icons-material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import type { SecNavSecType, SecNavThemesSource } from "@/shared/components/sec-nav";
-import CodeTrendChart from "@/components/CodeTrendChart";
-import type { OhlcForecastAction } from "@/components/StockOhlcChart";
+import {
+  CodeTrendChart,
+  type OhlcForecastAction,
+} from "@/ui/OhlcChart";
 import { findCodeInStrategyThemes, findCodeInThemes } from "@/components/CodeSearchBar";
 import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
 import { ForecastTable } from "./ForecastTable";
@@ -128,8 +130,8 @@ const THEMES_SOURCES: Record<SecNavSecType, SecNavThemesSource> = {
 /** Cache prefixes invalidated on Refresh, per sec_type. */
 const CACHE_PREFIXES: Record<SecNavSecType, string[]> = {
   etf: ["/api/etf-margin/themes", "/api/etf-margin/strategy-themes"],
-  index: ["/api/index-baseline/themes", "/api/index-baseline/strategy-themes"],
-  stock: ["/api/stock-baseline/themes", "/api/stock-baseline/strategy-themes"],
+  index: ["/api/index/themes", "/api/index/strategy-themes"],
+  stock: ["/api/stock/themes", "/api/stock/strategy-themes"],
 };
 
 /** One ForecastTable bucket family — toggle label + full-name tooltip +
@@ -277,6 +279,12 @@ export default function RecentMovementsPage() {
   // count + span) in the axis tooltip. Cleared when the security or
   // bucket family changes; the chip in the chart header clears it
   // manually.
+  // The forecast table shows ALL of mov_rsi's populations at once (the
+  // parent + the OHLC selection / boost derived children, each its own
+  // forecast_id — the ✓ marker columns say which row is which). Row
+  // clicks pass the CLICKED ROW'S OWN population markers to the
+  // trigger-dates fetch so the chart shades the matching population's
+  // days.
   const [triggerDates, setTriggerDates] = useState<{
     dates: string[];
     streaks: Array<{ start: string; end: string; days: number | null }>;
@@ -407,8 +415,20 @@ export default function RecentMovementsPage() {
       if (triggerLoadingRef.current) return;
       triggerLoadingRef.current = true;
       const seq = ++triggerSeq.current;
+      // The clicked row's OWN population (mov_rsi derived children carry
+      // the ohlcv_type verdict; other families / synthetic rung rows
+      // inherit the spread parent row's value).
+      const rsi = row as MovRsiForecastRow;
+      const populationLabel: Record<string, string> = {
+        gap_selection: " · gap sel",
+        gap_boost: " · gap boost",
+        vol_selection: " · vol sel",
+        vol_boost: " · vol boost",
+      };
+      const populationSuffix = populationLabel[rsi.ohlcv_type ?? ""] ?? "";
       const base =
         describeBucket(forecastKind || "mov_rsi", row, period) +
+        populationSuffix +
         (delay > 0 ? ` · d${delay}` : "");
       // The bucket's registered signal action (the signal ✓ chip) — the
       // forecast signal the trend chart labels the trigger days with.
@@ -422,7 +442,10 @@ export default function RecentMovementsPage() {
       setSelectedForecastId(row.forecast_id);
       setPendingBase(base);
       setTriggerLoading(true);
-      fetchForecastTriggerDates(row.forecast_id, delay)
+      fetchForecastTriggerDates(
+        row.forecast_id, delay,
+        rsi.ohlcv_type ?? null,
+      )
         .then((d) => {
           if (seq !== triggerSeq.current) return;
           const dates = d.periods[period];
@@ -452,7 +475,7 @@ export default function RecentMovementsPage() {
   );
 
   /** Chart-side "overlay rendered" gate — unfreezes the table. Stable
-   *  identity so StockOhlcChart's overlay effect deps never churn. */
+   *  identity so OhlcChart's overlay effect deps never churn. */
   const handleHighlightSettled = useCallback(() => {
     triggerLoadingRef.current = false;
     setTriggerLoading(false);

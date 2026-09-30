@@ -44,9 +44,10 @@
 --
 --  Code convention:
 --    `code` is the BARE 6-digit report/folder code (e.g. 150009, 159001) —
---    these are SZSE-listed funds only (159xxx / 150xxx / 16xxxx). To JOIN to
---    stats.sec_classification or stats.sec_composition (which store ETF codes
---    WITH exchange suffix), append '.SZ':  sec_info.code || '.SZ'.
+--    these are SZSE-listed funds only (159xxx / 150xxx / 16xxxx). ETF codes
+--    in stats.sec_classification / stats.sec_composition are BARE too (since
+--    2026-09-30), so they JOIN directly:  sec_info.code = sec_composition.code
+--    (the former append-'.SZ' surgery is retired).
 --    `fund_main_code` captures 基金主代码 when it differs from the folder code
 --    (e.g. structured/分级 funds: folder 150009 → main code 161207).
 -- ============================================================================
@@ -79,7 +80,7 @@ CREATE TABLE IF NOT EXISTS stats.sec_info (
 SELECT public.create_hash_partitions('stats', 'sec_info', 8);
 
 COMMENT ON TABLE  stats.sec_info                              IS 'Static fund attributes for SZSE-listed ETFs, loaded from szse_etf_reports identify.csv. One row per fund code (latest-value snapshot). Source: temps/szse_etf_reports/<code>/<code>_<YYYYQn>_identify.csv.';
-COMMENT ON COLUMN stats.sec_info.code                         IS 'Report/folder code, BARE 6-digit (e.g. 150009, 159001). SZSE-listed funds only. JOIN to stats.sec_classification / stats.sec_composition via code || ''.SZ''.';
+COMMENT ON COLUMN stats.sec_info.code                         IS 'Report/folder code, BARE 6-digit (e.g. 150009, 159001). SZSE-listed funds only. JOINs stats.sec_classification / stats.sec_composition directly on code (ETF codes are bare there since 2026-09-30).';
 COMMENT ON COLUMN stats.sec_info.fund_main_code               IS '基金主代码 from identify.csv. Usually equals `code` but differs for structured/分级 funds (e.g. folder 150009 → main code 161207). NULL when same as code.';
 COMMENT ON COLUMN stats.sec_info.name                         IS '基金简称 (fund short name).';
 COMMENT ON COLUMN stats.sec_info.exchange_abbreviation        IS '场内简称 (exchange trading abbreviation). NULL when the report omits it (common for plain equity ETFs; present for money-market / 分级 funds).';
@@ -114,7 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_sec_info_fund_main_code
 --
 --    Detail row data is NOT stored here — it loads to other tables:
 --      top10_holdings → stats.sec_composition (source_type=''etf'',
---                        snapshot_date = report_date, code = sec_info.code||''.SZ'')
+--                        snapshot_date = report_date, code = sec_info.code, bare)
 --      industry_portfolio / bond_type_portfolio / top10_bonds /
 --        remaining_maturity → detail tables (loaded by build scripts)
 --    The has_* flags tell consumers whether to look those tables up.
@@ -176,7 +177,7 @@ CREATE TABLE IF NOT EXISTS stats.sec_reports (
 SELECT public.create_hash_partitions('stats', 'sec_reports', 8);
 
 COMMENT ON TABLE  stats.sec_reports                          IS 'Per-quarter SZSE ETF report registry. One row per (code, quarter-end). Holds the report header (period, total shares), the asset-allocation MIX (equity/fixed income/cash/derivatives/etc.), and content flags pointing to detail tables. Source: szse_etf_reports identify.csv + asset_portfolio.csv.';
-COMMENT ON COLUMN stats.sec_reports.code                     IS 'Report/folder code, BARE 6-digit (e.g. 150009). FK → sec_info.code. JOIN to sec_composition via code || ''.SZ''.';
+COMMENT ON COLUMN stats.sec_reports.code                     IS 'Report/folder code, BARE 6-digit (e.g. 150009). FK → sec_info.code. JOINs sec_composition directly on code.';
 COMMENT ON COLUMN stats.sec_reports.report_period            IS '报告期 original text, e.g. "2020年第1季度". Paired with report_year/report_quarter/report_date for sorting.';
 COMMENT ON COLUMN stats.sec_reports.report_year              IS 'Calendar year of the report period (e.g. 2020).';
 COMMENT ON COLUMN stats.sec_reports.report_quarter           IS 'Quarter number 1-4. CHECK-constrained.';
@@ -201,7 +202,7 @@ COMMENT ON COLUMN stats.sec_reports.total_assets_amt         IS '合计 amount (
 COMMENT ON COLUMN stats.sec_reports.total_assets_pct         IS '合计 % of total fund assets (normally 100.00).';
 COMMENT ON COLUMN stats.sec_reports.has_asset_portfolio      IS 'TRUE when identify.csv reports 投资组合报告-报告期末基金资产组合情况 "有内容". The MIX columns above are populated only when this is TRUE.';
 COMMENT ON COLUMN stats.sec_reports.has_industry_portfolio   IS 'TRUE when identify.csv reports 按行业分类的境内股票投资组合 "有内容". Detail rows load to a separate industry-portfolio table.';
-COMMENT ON COLUMN stats.sec_reports.has_top10_holdings       IS 'TRUE when identify.csv reports 前十名股票投资明细 "有内容". Detail rows load to stats.sec_composition (source_type=''etf'', snapshot_date=report_date, code=sec_info.code||''.SZ'').';
+COMMENT ON COLUMN stats.sec_reports.has_top10_holdings       IS 'TRUE when identify.csv reports 前十名股票投资明细 "有内容". Detail rows load to stats.sec_composition (source_type=''etf'', snapshot_date=report_date, code=sec_info.code, bare).';
 COMMENT ON COLUMN stats.sec_reports.has_bond_type_portfolio  IS 'TRUE when identify.csv reports 按债券品种分类的债券投资组合 "有内容". Detail rows load to a separate bond-type table.';
 COMMENT ON COLUMN stats.sec_reports.has_top10_bonds          IS 'TRUE when identify.csv reports 前十名债券投资明细 "有内容". Detail rows load to a separate bond-holdings table.';
 COMMENT ON COLUMN stats.sec_reports.has_remaining_maturity   IS 'TRUE when identify.csv reports 投资组合平均剩余期限分布比例 "有内容" (money-market / bond funds). Detail rows load to a separate remaining-maturity table.';

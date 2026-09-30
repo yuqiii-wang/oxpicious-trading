@@ -56,6 +56,7 @@ from builds.classification.sector_industry.json_io import load_json, save_json  
 from builds.classification.sector_industry.owners import load_owners  # noqa: E402
 from builds.classification.sector_industry.build import build_classification  # noqa: E402
 from builds.classification.sector_industry.upsert import upsert_to_db  # noqa: E402
+from builds.classification.sector_industry.feeder_links import rebuild_etf_links  # noqa: E402
 
 
 class ClassificationBuild(DataBuild):
@@ -139,6 +140,9 @@ class ClassificationBuild(DataBuild):
             if conn is not None:
                 logger.info("\n[DB] Upserting to database …")
                 await upsert_to_db(conn, state, verbose=True, force=self.args.force)
+
+                # --- ETF feeder links (联接基金 → target ETF, snapshot rebuild) ---
+                await rebuild_etf_links(conn, verbose=True)
         finally:
             if conn is not None:
                 await conn.close()

@@ -34,9 +34,10 @@ DECISION_TABLE = "strategy.trade_decision"
 DAILY_TABLE = "strategy.strategy_daily"
 
 # stats basic_stats table per sec_type — source of open/close for fill prices.
-# Indices use bare codes (e.g. "000970"); ETF/stock use suffixed codes
-# (e.g. "159007.SZ"). The analysis detail table uses the SAME code format per
-# sec_type, so the JOIN is on the raw code string.
+# Indices and ETFs use BARE codes (e.g. "000970", "159007" — ETF codes lost
+# their suffix 2026-09-30); stocks use suffixed codes (e.g. "000001.SZ").
+# The analysis detail table uses the SAME code format per sec_type, so the
+# JOIN is on the raw code string.
 SEC_TYPE_BASIC_STATS_TABLE: dict = {
     "index": "stats.index_basic_stats",
     "etf":   "stats.etf_basic_stats",

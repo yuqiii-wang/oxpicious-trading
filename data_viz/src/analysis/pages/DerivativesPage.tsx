@@ -25,7 +25,7 @@ const DERIVATIVES_ANALYSES: DerivativesAnalysis[] = [
     slug: "margin-trends",
     title: "Margin Trends",
     description:
-      "Per-security RONGZI (融资 / cash-borrow) margin flows: baseline price chart with daily margin balance + buy, ma5/ma20/ma60, and slope. ETF + Stock only (indices have no margin data).",
+      "Per-security RONGZI (融资 / cash-borrow) margin flows: price chart with daily margin balance + buy, ma5/ma20/ma60, and slope. ETF + Stock only (indices have no margin data).",
     tags: ["rongzi", "margin", "etf", "stock", "ma", "slope"],
   },
   {

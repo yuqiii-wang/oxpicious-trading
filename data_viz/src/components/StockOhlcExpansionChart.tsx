@@ -1,21 +1,16 @@
-﻿/**
+/**
  * StockOhlcExpansionChart — closeable daily OHLC expansion for a single
  * stock, rendered below the composition pie chart when the user clicks a
  * stock slice in Layer 2.
  *
- * Thin chrome wrapper over the shared `CodeTrendChart` base component: it
- * configures the stock source, adds the close button to the header and the
- * holding weight to the subtitle. The chart itself (OHLC bars + MAs + PE +
- * dividends, fetched from /api/stock-baseline) is CodeTrendChart's default
- * setup, identical to the Stock Baseline page's StockPanel and the Recent
- * Movements signal page.
+ * Thin STOCK config over the shared CodeTrendExpansionChart (the generic
+ * secType closeable expansion also used by the linked-ETF tables' row
+ * click) — passes the holding weight as the subtitle extra.
  *
  * The close (×) button calls `onClose`; the parent CompositionPieChart also
  * toggles the slice off when the same stock is clicked again.
  */
-import { Box, IconButton } from "@mui/material";
-import { Close } from "@mui/icons-material";
-import CodeTrendChart from "@/components/CodeTrendChart";
+import CodeTrendExpansionChart from "@/components/CodeTrendExpansionChart";
 
 interface Props {
   /** Stock code — suffixed ("000001.SZ") or bare ("000001"). */
@@ -34,19 +29,13 @@ export default function StockOhlcExpansionChart({
   onClose,
 }: Props) {
   return (
-    <Box sx={{ mt: 1 }}>
-      <CodeTrendChart
-        secType="stock"
-        code={code}
-        name={name}
-        height={310}
-        subtitleExtra={weightPct != null ? `${weightPct.toFixed(2)}% holding` : undefined}
-        headerAction={
-          <IconButton aria-label="close stock chart" onClick={onClose} size="small">
-            <Close fontSize="small" />
-          </IconButton>
-        }
-      />
-    </Box>
+    <CodeTrendExpansionChart
+      secType="stock"
+      code={code}
+      name={name}
+      onClose={onClose}
+      closeLabel="close stock chart"
+      subtitleExtra={weightPct != null ? `${weightPct.toFixed(2)}% holding` : undefined}
+    />
   );
 }

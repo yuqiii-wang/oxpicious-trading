@@ -15,7 +15,7 @@ Anti-bot: uses LONG_SLEEP_INTERVAL (90s) between HTTP requests as the
 SZSE disclosure endpoint blocks on request volume.
 
 ETF universe source: ``stats.etf_identity`` (exchange='SZ'). The DB
-stores codes as ``160812.SZ``; the bare 6-digit code is sent to the API.
+stores codes BARE (``160812``) — passed straight to the API.
 
 Output layout::
 
@@ -258,7 +258,7 @@ def fetch_sz_etf_codes(
                 # primary parent when available.
                 #
                 # When include_lof=True, additionally include all active
-                # LOFs (16xxxx.SZ codes) regardless of their sector_id —
+                # LOFs (16xxxx codes) regardless of their sector_id —
                 # LOF holdings are useful across all sectors, not just
                 # OTHER. Implemented as an OR inside the LATERAL WHERE so
                 # a single round-trip returns the merged universe.
@@ -271,7 +271,7 @@ def fetch_sz_etf_codes(
                         "    AND c.type = 'etf'"
                         "    AND c.is_active = TRUE"
                         "    AND (c.sector_id = 'OTHER'"
-                        "         OR i.code LIKE '16____.SZ')"
+                        "         OR i.code LIKE '16____')"
                         "  ORDER BY c.parent_index_is_primary DESC"
                         "  LIMIT 1"
                         ") sc ON TRUE "
@@ -314,6 +314,8 @@ def fetch_sz_etf_codes(
 
     seen: Dict[str, str] = {}
     for code, name in rows:
+        # Suffix-strip guard: codes are bare post-2026-09-30; the split is
+        # a no-op then but keeps pre-migration runs working.
         bare = code.split(".")[0] if "." in code else code
         if bare and bare not in seen and name:
             seen[bare] = name

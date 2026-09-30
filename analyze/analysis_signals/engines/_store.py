@@ -7,7 +7,10 @@ _common.db_commons): the records are grouped by ``code`` (both tables
 are PARTITION BY HASH (code)), codes accumulate into ~100K-row chunks
 (whole codes, never split), and each chunk commits ONE transaction —
 purge that code set's rows from BOTH tables, then COPY its records —
-with the replica-lag cap paused between chunks. A code is therefore
+with the replica-lag cap paused between chunks. The purge is
+POPULATION-SCOPED (per emitted cohort, ohlcv_type-filtered, the
+cohort's own codes only) so a partial cohort emission can never wipe
+its codes' other cohorts' rows. A code is therefore
 either fully old or fully new after every commit (atomicity per code;
 a crash mid-snapshot leaves whole-code prefixes, and a rerun rewrites
 the snapshot idempotently). Mutable-scope snapshots are deleted before
@@ -30,9 +33,12 @@ from _common.db_commons import (
 )
 from _common.db_commons._helpers import DEFAULT_COMMIT_CHUNK_ROWS
 
+from analyze.analysis_forecasts.config import TABLE_IDENTITIES
+
 from analyze.analysis_signals.config import (
     HISTORY_COLUMNS,
     STRATEGY_COLUMNS,
+    TABLE_EMISSIONS,
     TABLE_HISTORY,
     TABLE_STRATEGIES,
 )
@@ -60,6 +66,7 @@ class SignalStore:
         stat_date: date,
         strategies: list[dict],
         history: list[dict],
+        codes_by_population: dict[str | None, list[str] | None] | None = None,
     ) -> tuple[int, int]:
         """Write one snapshot's strategy + history rows — chunked by the
         partition key (see module docstring): each code chunk commits
@@ -69,9 +76,29 @@ class SignalStore:
         snapshot owns year Y; the ROLLING LATEST snapshot owns
         [Jan 1, its key] — the key IS the latest data date, so no
         trigger can exist beyond it and the year bound covers the
-        interval). Returns (n_strategies, n_history)."""
+        interval). Returns (n_strategies, n_history).
+
+        The purge is POPULATION-SCOPED: per emitted cohort (the scope's
+        non-empty populations — the cohorts emit_snapshot ran), only
+        that cohort's rows (ohlcv_type IS NOT DISTINCT FROM) for the
+        cohort's own codes (a partial scope's list; every chunk code
+        when the cohort reads unscoped) are deleted. A population-blind
+        delete would let a code-scoped cohort emission (the partial
+        backfill) wipe its code's OTHER cohorts' rows at the snapshot —
+        the boost backfill erasing parent strategies it never
+        re-emitted. Cohorts the scope marks covered (empty list) are
+        never touched."""
         if not strategies and not history:
             return 0, 0
+        emitted: list[tuple[str | None, set[str] | None]] = [
+            (population,
+             None if scope_codes is None else set(scope_codes))
+            for population, scope_codes in (
+                (p, (codes_by_population or {}).get(p))
+                for p in self.populations
+            )
+            if scope_codes is None or scope_codes
+        ]
         strat_by_code: dict[str, list[dict]] = {}
         for r in strategies:
             strat_by_code.setdefault(r["code"], []).append(r)
@@ -90,22 +117,35 @@ class SignalStore:
             await _wait_for_replica_lag_async(
                 conn, DEFAULT_MAX_REPLICA_LAG_MB,
             )
+            chunk_set = set(chunk)
             chunk_strats = [r for c in chunk for r in strat_by_code.get(c, ())]
             chunk_hist = [r for c in chunk for r in hist_by_code.get(c, ())]
             async with conn.transaction():
-                await conn.execute(
-                    f"DELETE FROM {TABLE_STRATEGIES} "
-                    f"WHERE sec_type = $1 AND signal_type = $2 "
-                    f"AND end_date = $3 AND code = ANY($4::text[])",
-                    sec_type, self.signal_type, stat_date, chunk,
-                )
-                await conn.execute(
-                    f"DELETE FROM {TABLE_HISTORY} "
-                    f"WHERE sec_type = $1 AND signal_type = $2 "
-                    f"AND date >= $3 AND date < $4 "
-                    f"AND code = ANY($5::text[])",
-                    sec_type, self.signal_type, first_day, next_year, chunk,
-                )
+                for offset, (population, scope_codes) in enumerate(emitted):
+                    codes = (
+                        chunk if scope_codes is None
+                        else sorted(chunk_set & scope_codes)
+                    )
+                    if not codes:
+                        continue
+                    await conn.execute(
+                        f"DELETE FROM {TABLE_STRATEGIES} "
+                        f"WHERE sec_type = $1 AND signal_type = $2 "
+                        f"AND end_date = $3 "
+                        f"AND ohlcv_type IS NOT DISTINCT FROM "
+                        f"$4::text AND code = ANY($5::text[])",
+                        sec_type, self.signal_type, stat_date,
+                        population, codes,
+                    )
+                    await conn.execute(
+                        f"DELETE FROM {TABLE_HISTORY} "
+                        f"WHERE sec_type = $1 AND signal_type = $2 "
+                        f"AND date >= $3 AND date < $4 "
+                        f"AND ohlcv_type IS NOT DISTINCT FROM "
+                        f"$5::text AND code = ANY($6::text[])",
+                        sec_type, self.signal_type, first_day, next_year,
+                        population, codes,
+                    )
                 # copy_insert_async opens a nested transaction (a
                 # savepoint inside this one) — the chunk still commits
                 # as ONE unit at the outer boundary.
@@ -143,6 +183,42 @@ class SignalStore:
         )
 
     # ---- private helpers --------------------------------------------------------
+
+    async def stamp_emissions(self, conn, sec_type: str, scope) -> None:
+        """Stamp the scope's (code, cohort, snapshot) triples as
+        attempted in the emissions registry (04_snapshot_emissions.sql
+        — the partial-backfill diff's ATTEMPTED leg): a full cohort
+        (codes None) stamps its WHOLE identity code set for the
+        (snapshot, cohort) — one set-based INSERT SELECT; a partial
+        cohort stamps its explicit code list; a covered cohort (empty
+        list — its emission pass was skipped) is never touched. The
+        registry's '' sentinel carries the NULL parent cohort. ON
+        CONFLICT DO NOTHING keeps re-emitted scopes idempotent."""
+        for population, codes in scope.codes_by_population.items():
+            if codes == []:
+                continue
+            if codes is None:
+                await conn.execute(
+                    f"INSERT INTO {TABLE_EMISSIONS} "
+                    f"(code, sec_type, signal_type, stat_date, ohlcv_type) "
+                    f"SELECT i.code, $1, $2, $3, COALESCE(i.ohlcv_type, '') "
+                    f"FROM {TABLE_IDENTITIES} i "
+                    f"WHERE i.sec_type = $1 AND i.bucket = $4 "
+                    f"AND i.stat_date = $3 "
+                    f"ON CONFLICT DO NOTHING",
+                    sec_type, self.signal_type, scope.stat_date,
+                    self.bucket,
+                )
+            else:
+                await conn.execute(
+                    f"INSERT INTO {TABLE_EMISSIONS} "
+                    f"(code, sec_type, signal_type, stat_date, ohlcv_type) "
+                    f"SELECT x.code, $1, $2, $3, COALESCE($4::text, '') "
+                    f"FROM unnest($5::text[]) AS x(code) "
+                    f"ON CONFLICT DO NOTHING",
+                    sec_type, self.signal_type, scope.stat_date,
+                    population, codes,
+                )
 
     def _year_bounds(self, stat_date: date) -> tuple[date, date]:
         """(first day of the snapshot's calendar year, first day of the

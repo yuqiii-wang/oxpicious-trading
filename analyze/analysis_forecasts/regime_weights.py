@@ -143,7 +143,10 @@ JOIN analysis_forecasts.forecast_results r
      ON r.forecast_id = f.forecast_id AND r.period = 'mixed'
     -- the delay-0 (fresh-signal) blended row — one per forecast_id
      AND r.delay = 0
+    -- the PARENT population only (the 2026-09-26 identity migration:
+    -- the derived-population markers live on forecast_identities)
 WHERE i.sec_type = $1::text
+  AND i.ohlcv_type IS NULL
   AND i.stat_date > $2::date AND i.stat_date <= $3::date
 """
 
@@ -157,7 +160,7 @@ _WEIGHTS_COLUMNS = ("stat_date", "sec_type", "code", "family", "regime",
 # code-aligned and the replica slot advances between chunks.
 _COPY_CHUNK_ROWS = 100_000
 
-_MISSING_MONTHS_SQL = """
+_MISSING_SNAPSHOTS_SQL = """
     SELECT DISTINCT i.stat_date
     FROM analysis_forecasts.forecast_identities i
     WHERE i.sec_type = $1::text
@@ -191,7 +194,7 @@ def _build_evidence_sql() -> str:
 
 
 def _weight_rows_from_evidence(
-    evidence, months: list[date], sec_type: str,
+    evidence, snapshots: list[date], sec_type: str,
 ) -> list[dict]:
     """The vectorized fit over the RAW evidence frame — the Phase-C
     algorithm, all math and rounding in Python (SQL never calculates):
@@ -221,7 +224,7 @@ def _weight_rows_from_evidence(
     # date setitem per slice trips a cudf.pandas fallback)
     parts = []
     lengths = []
-    for m in months:
+    for m in snapshots:
         sel = ev.loc[(ev["year"] >= m.year - WEIGHT_K_SNAPSHOTS)
                      & (ev["year"] <= m.year - 1),
                      ["family", "code", "regime", "occ_dir",
@@ -231,7 +234,7 @@ def _weight_rows_from_evidence(
     fit = parts[0] if len(parts) == 1 else pd.concat(parts,
                                                      ignore_index=True)
     fit["stat_date"] = np.repeat(
-        np.array([m for m in months], dtype="datetime64[D]"), lengths)
+        np.array([m for m in snapshots], dtype="datetime64[D]"), lengths)
 
     grp = fit.groupby(["stat_date", "family", "code", "regime"],
                       sort=False).agg(
@@ -313,22 +316,22 @@ async def run_regime_weights(conn, sec_type: str, *, force: bool = False,
 
     scope_clause = ("AND i.stat_date = ANY($3::date[])"
                     if stat_dates is not None and not force else "")
-    months = [r["stat_date"] for r in await conn.fetch(
-        _MISSING_MONTHS_SQL.format(scope_clause=scope_clause),
+    snapshots = [r["stat_date"] for r in await conn.fetch(
+        _MISSING_SNAPSHOTS_SQL.format(scope_clause=scope_clause),
         sec_type, list(WEIGHT_FAMILIES),
         *( (stat_dates,) if scope_clause else () ),
     )]
-    if not months:
+    if not snapshots:
         logger.info(f"  [{sec_type}]   up to date; nothing to compute.")
         return 0
-    logger.info(f"  [{sec_type}]   {len(months)} snapshots to compute "
-                f"({months[0]} .. {months[-1]})")
+    logger.info(f"  [{sec_type}]   {len(snapshots)} snapshots to compute "
+                f"({snapshots[0]} .. {snapshots[-1]})")
 
     # the read-out spans the pending windows' union range — the windows
     # of consecutive year-end snapshots tile contiguously, so one
     # (min lo, max hi] bound covers every snapshot's evidence
-    lo = _year_end_shift(months[0], WEIGHT_K_SNAPSHOTS + 1)
-    hi = _year_end_shift(months[-1], 1)
+    lo = _year_end_shift(snapshots[0], WEIGHT_K_SNAPSHOTS + 1)
+    hi = _year_end_shift(snapshots[-1], 1)
     # The bare 3-way hash join is parallel-eligible but the planner
     # serial-prices it once the SQL-side aggregation is gone (24.8s
     # parallel vs 49.3s serial, measured 2026-09-25) — the zeroed
@@ -342,7 +345,7 @@ async def run_regime_weights(conn, sec_type: str, *, force: bool = False,
         columns=["stat_date", "family", "code", "regime_state", "side",
                  "ave_change", "occurrence_count"],
     )
-    weight_rows = _weight_rows_from_evidence(evidence, months, sec_type)
+    weight_rows = _weight_rows_from_evidence(evidence, snapshots, sec_type)
     weight_rows.sort(key=lambda r: (r["code"], r["stat_date"],
                                     r["family"], r["regime"]))
     n_total = 0

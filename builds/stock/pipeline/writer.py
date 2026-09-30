@@ -135,15 +135,13 @@ def build_insert_rows(
     """
     # --- OHLCV-scoped basic_stats rows (never touch pe/eps/is_pe_estimated)
     _ov_cols = ["prev_close", "open", "high", "low", "close", "pct_change"]
-    _ov_df = combined_db[["date", "code"] + _ov_cols + ["is_close_estimated"]].copy()
+    _ov_df = combined_db[["date", "code"] + _ov_cols].copy()
     _ov_df["code"] = _ov_df["code"].astype(str)
     for _c in _ov_cols:
         _ov_df[_c] = _to_db_series(_ov_df[_c])
-    _ov_df["is_close_estimated"] = \
-        _ov_df["is_close_estimated"].fillna(False).astype(bool)
     date_vals = dates_as_date_list(_ov_df["date"])
     ov_rows = records_from_frame(
-        _ov_df.drop(columns=["date"]), ["code"] + _ov_cols + ["is_close_estimated"])
+        _ov_df.drop(columns=["date"]), ["code"] + _ov_cols)
     for d, r in zip(date_vals, ov_rows):
         r["date"] = d
 
@@ -194,7 +192,7 @@ async def write_basic_stats_ohlcv(
 ) -> None:
     """Column-scoped OHLCV upsert into stats.stock_basic_stats.
 
-    Touches ONLY prev_close/open/high/low/close/pct_change/is_close_estimated
+    Touches ONLY prev_close/open/high/low/close/pct_change
     on conflict (pe/eps/is_pe_estimated owned by the PE passes are never
     clobbered). Brand-new (code, date) keys insert cleanly; existing rows get
     a subset update. Must run AFTER write_identity (FK to stock_identity).
@@ -203,12 +201,8 @@ async def write_basic_stats_ohlcv(
         if not ov_rows:
             logger.info(f"    [DB] No OHLCV rows to upsert into stats.stock_basic_stats")
             return
-        cols = ["prev_close", "open", "high", "low", "close", "pct_change",
-                "is_close_estimated"]
-        tmp_cols_sql = ", ".join(
-            f"{c} {'BOOLEAN' if c == 'is_close_estimated' else 'NUMERIC(18,4)'}"
-            for c in cols
-        )
+        cols = ["prev_close", "open", "high", "low", "close", "pct_change"]
+        tmp_cols_sql = ", ".join(f"{c} NUMERIC(18,4)" for c in cols)
         select_list = ", ".join(
             f"t.{c}" for c in ["date", "code"] + cols)
         set_list = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
@@ -239,7 +233,7 @@ async def write_basic_stats_ohlcv(
                 (date, code, {", ".join(cols)})
             SELECT {select_list}
             FROM _bs_ov t
-            WHERE t.code = ANY($1::text[])
+            WHERE true {{key_clause}}
             ON CONFLICT (code, date) DO UPDATE SET {set_list}
         """
         weight_rows = await bs_conn.fetch(

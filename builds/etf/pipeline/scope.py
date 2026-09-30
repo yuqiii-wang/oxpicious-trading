@@ -7,6 +7,7 @@ from typing import Set, Tuple
 import pandas as pd
 
 from _common.build_commons import get_existing_keys_async, rec_cols, truncate_table_async
+from _common.db_commons import chunked_purge_async
 from _common.df_utils import epoch_col_to_dt64
 
 import logging

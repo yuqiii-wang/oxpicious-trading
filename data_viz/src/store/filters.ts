@@ -38,11 +38,11 @@ interface AppState {
   setSnapshotDate: (idx: number, date: string) => void;
   setSnapshotDates: (dates: SnapshotDate[]) => void;
 
-  /** ETF + Margin — currently selected L1 sector id (e.g. "FIN", "TECH", "BROAD"). */
+  /** ETF — currently selected L1 sector id (e.g. "FIN", "TECH", "BROAD"). */
   sectorId: string | null;
   setSectorId: (id: string | null) => void;
 
-  /** ETF + Margin — currently selected L2 industry slug (e.g. "banks", "semi"). */
+  /** ETF — currently selected L2 industry slug (e.g. "banks", "semi"). */
   industrySlug: string | null;
   setIndustrySlug: (slug: string | null) => void;
 

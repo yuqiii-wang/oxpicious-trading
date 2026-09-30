@@ -2,8 +2,8 @@
  * Barrel re-export for the analysis service modules.
  * Extracted from the former analysis.service.ts.
  */
-export { listMovAveSpreadCodes, getMovAveSpreadChart, getMovAveSpreadChartExtras, getMarketRegimeSpans, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads.js";
-export { getForecastTable, getForecastTriggerDates, getForecastIdentity } from "./analysis-forecasts.js";
+export { listMovAveSpreadCodes, getMovAveSpreadChart, getMovAveSpreadChartPairs, getMovAveSpreadChartEma, getMovAveSpreadChartShared, getMovAveSpreadChartExtras, getMarketRegimeSpans, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads.js";
+export { getForecastTable, getForecastLadders, getForecastTriggerDates, getForecastIdentity } from "./analysis-forecasts.js";
 export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution.js";
 export { listIndustrySentimentsThemes, listIndustrySentimentsStrategyThemes, getIndustrySentimentsChart, getIndustrySentimentsChartByCode } from "./industry-sentiments.js";
 export { getIndustryCorrelations } from "./industry-correlations.js";
@@ -16,13 +16,12 @@ export { getIndustryHypesAndDrains } from "./industry-hypes-and-drains.js";
 export { getIntradayMovements, listIntradayMovementsBenchmarks, listIntradayMovementsDates } from "./intraday-movements.js";
 export { getIntradayMovementsPrevDayOhlc } from "./intraday-movements-prev-day-ohlc.js";
 export {
-  listPeAndDividendCodes,
-  getPeAndDividendChart,
-  listPeAndDividendThemes,
-  listPeAndDividendStrategyThemes,
-  listPeAndDividendStats,
-  listPeAndDividendStreaks,
-} from "./pe-and-dividends.js";
+  listValuationCodes,
+  getPeChart,
+  listValuationThemes,
+  listValuationStrategyThemes,
+  listPeStreaks,
+} from "./pe.js";
 export {
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,

@@ -106,13 +106,9 @@ async def write_split_tables(conn, merged_missing: pd.DataFrame, force: bool) ->
     cols = safe_columns(src)
     basic_cols = ["prev_close", "open", "high", "low", "close", "pct_change"]
     src["eps"] = compute_eps_vec(src["close"], src["pe"].astype(float))
-    if "is_close_estimated" in cols:
-        src["is_close_estimated"] = src["is_close_estimated"].fillna(False).astype(bool)
-    else:
-        src["is_close_estimated"] = False
     basic_rows = _emit_rows(
         ["date", "code"] + [c for c in basic_cols if c in cols]
-        + ["pe", "eps", "is_close_estimated"])
+        + ["pe", "eps"])
 
     tech_cols = ["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
                  "ema6", "ema10", "ema20", "ema60", "ema120", "ema255",

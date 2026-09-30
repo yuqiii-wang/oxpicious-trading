@@ -12,7 +12,7 @@
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix, matchesExchange, codeVariants } from "../lib/classify-etf.js";
+import { stripExchangeSuffix, matchesExchange } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
 import { cachedRows } from "./classification-cache.js";
 import type {
@@ -29,7 +29,7 @@ export interface EtfMarginQuery {
   sector?: string;
   /** L2 industry slug (e.g. "banks", "semi", "broad_csi300"). */
   industry?: string;
-  /** Exact ETF code (6-digit, suffix-stripped). When set, sector/industry
+  /** Exact ETF code (bare 6-digit). When set, sector/industry
    *  filters and pagination are bypassed — only the matching ETF is returned. */
   code?: string;
   /** Exchange filter: 'SS' (SSE+STAR), 'SZ' (SZSE+GEM), 'BJ' (BSE). */
@@ -103,10 +103,14 @@ interface DbEtfMarginRow extends QueryResultRow {
 function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
   return {
     date: formatDate(r.date),
-    prev_close: toNum(r.prev_close) ?? 0,
-    open: toNum(r.open) ?? 0,
-    high: toNum(r.high) ?? 0,
-    low: toNum(r.low) ?? 0,
+    // prev_close/OHLC preserve NULL (no data) — close-only series (feeder
+    // NAV via builds.etf.feeder_nav) leave the FIRST row's open/prev_close
+    // NULL by design; coercing to 0 dragged the rebased y-axis to -100%
+    // for that bar. Only close keeps the defensive 0 (core series).
+    prev_close: toNum(r.prev_close),
+    open: toNum(r.open),
+    high: toNum(r.high),
+    low: toNum(r.low),
     close: toNum(r.close) ?? 0,
     eps: toNum(r.eps),
     adj_open: toNum(r.adj_open),
@@ -129,13 +133,9 @@ function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
   };
 }
 
-const ETF_MARGIN_COLUMNS = `
-  date, prev_close, open, high, low, close, eps,
-  adj_open, adj_high, adj_low, adj_close, adj_prev_close,
-  is_split_event_day, action_type, implied_dividend_per_share, cum_split_factor,
-  trading_shares, trading_amount,
-  rz_balance, rq_balance_qty, rq_balance_amt, total_balance
-`;
+// (The row-fetch column list lives inline in getEtfMarginCombined's
+// base-tables SQL — see step 5 there for why it no longer selects through
+// stats.v_etf_margin.)
 
 // ----------------------------------------------------------------------------
 //  Meta query — fetch all ETFs with precomputed L1/L2 classification from
@@ -338,7 +338,7 @@ export async function getEtfMarginCombined(
   //    browse-list threshold remains in place for listThemes() to keep the
   //    dropdown free of one-day / delisted entries.
   const metaRows = codeFilter
-    ? await queryRows<DbEtfMetaRow>(META_SQL_FOR_CODE, [codeVariants(codeFilter)])
+    ? await queryRows<DbEtfMetaRow>(META_SQL_FOR_CODE, [[codeFilter]])
     : await getEtfMetaRows();
 
   // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
@@ -417,31 +417,51 @@ export async function getEtfMarginCombined(
   }
 
   // 5. Fetch row data for the wanted ETFs (with date filtering)
-  // Expand stripped page codes to all DB-side suffix variants so
-  // code = ANY(...) drives the (code, date) index instead of a
+  // ETF codes are BARE in the DB (2026-09-30) — pageCodes pass through
+  // as-is so code = ANY(...) drives the (code, date) index instead of a
   // REGEXP_REPLACE full scan.
-  const pageCodeVariants = pageCodes.flatMap((c) => codeVariants(c));
-  const params: unknown[] = [];
-  let paramIdx = 1;
-
-  params.push(pageCodeVariants);
-  const whereParts: string[] = [`code = ANY($${paramIdx++}::text[])`];
+  //
+  // BASE TABLES + per-table code predicates, NOT stats.v_etf_margin: the
+  // view's LEFT JOIN chain defeats ANY-array pushdown — the planner
+  // hash-joins FULL seq scans of the 1M-row etf_adjustment /
+  // etf_liquidity_margin partitions to return one code's ~5k rows (measured
+  // 2.4-3.8s per exact-code fetch, 2026-09-29). Putting the code predicate
+  // on EVERY table makes each side an index probe (~5ms). Same rationale as
+  // getStocksCombined / getStockDaily; INNER JOIN basic_stats + close IS
+  // NOT NULL also skips bogus identity-only entries (incomplete same-day
+  // rows), matching the stock service. etf_tech_stats columns are not
+  // selected by the row list, so that table needs no join.
+  const params: unknown[] = [pageCodes]; // $1 = the code array
+  let paramIdx = 2; // date bounds start at $2
+  const codePred = `= ANY($1::text[])`;
+  const whereParts: string[] = [`i.code ${codePred}`, "o.close IS NOT NULL"];
   const startDate = toDateParam(q.start_date);
   const endDate = toDateParam(q.end_date);
   if (startDate) {
-    whereParts.push(`date >= $${paramIdx++}::date`);
+    whereParts.push(`i.date >= $${paramIdx++}::date`);
     params.push(startDate);
   }
   if (endDate) {
-    whereParts.push(`date <= $${paramIdx++}::date`);
+    whereParts.push(`i.date <= $${paramIdx++}::date`);
     params.push(endDate);
   }
 
   const sql = `
-    SELECT code, name, ${ETF_MARGIN_COLUMNS}
-    FROM stats.v_etf_margin
-    WHERE ${whereParts.join(" AND ")}
-    ORDER BY code, date ASC
+    SELECT i.code, i.name, i.date,
+           o.prev_close, o.open, o.high, o.low, o.close, o.eps,
+           a.adj_open, a.adj_high, a.adj_low, a.adj_close, a.adj_prev_close,
+           a.is_split_event_day, a.action_type, a.implied_dividend_per_share, a.cum_split_factor,
+           lm.trading_shares, lm.trading_amount,
+           lm.rz_balance, lm.rq_balance_qty, lm.rq_balance_amt, lm.total_balance
+      FROM stats.etf_identity i
+      JOIN stats.etf_basic_stats o
+        ON o.date = i.date AND o.code = i.code AND o.code ${codePred}
+      LEFT JOIN stats.etf_adjustment a
+        ON a.date = i.date AND a.code = i.code AND a.code ${codePred}
+      LEFT JOIN stats.etf_liquidity_margin lm
+        ON lm.date = i.date AND lm.code = i.code AND lm.code ${codePred}
+     WHERE ${whereParts.join(" AND ")}
+     ORDER BY i.code, i.date ASC
   `;
   const dbRows = await queryRows<DbEtfMarginRow & { code: string; name: string }>(sql, params);
 

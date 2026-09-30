@@ -6,6 +6,7 @@ import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import { stripExchangeSuffix, matchesExchange } from "../../lib/classify-etf.js";
+import { cachedRows } from "../classification-cache.js";
 import type {
   SectorNode,
   IndustryNode,
@@ -69,10 +70,7 @@ export async function listIndustrySentimentsThemes(
   // tree respects the selected exchange — e.g. HK indices are excluded when
   // "All (primary)" is selected, mirroring the index-baseline themes endpoint.
   const exFilter = (exchange ?? "").trim() || null;
-  const rows = await queryRows<DbIndustrySentimentsMetaRow>(
-    INDUSTRY_SENTIMENTS_META_SQL,
-    [],
-  );
+  const rows = await listIndustrySentimentsMetaRows();
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -166,6 +164,16 @@ const INDUSTRY_SENTIMENTS_META_SQL = `
      )
 `;
 
+/** The meta rows behind both themes trees, cached in-process for the shared
+ *  10-min TTL (the EXISTS-over-sec_composition join costs ~0.4s; both the
+ *  themes and strategy-themes nav fetches of the Industry Sentiments page
+ *  paid it on every load). Exchange filters are applied client-side, so the
+ *  rows are safely cacheable under one key. */
+async function listIndustrySentimentsMetaRows(): Promise<DbIndustrySentimentsMetaRow[]> {
+  return cachedRows("industry_sentiments:meta", () =>
+    queryRows<DbIndustrySentimentsMetaRow>(INDUSTRY_SENTIMENTS_META_SQL, []));
+}
+
 // ----------------------------------------------------------------------------
 //  listIndustrySentimentsStrategyThemes — parallel L1 strategy → L2 theme →
 //  items tree built from INDUSTRY_SENTIMENTS_META_SQL but using the
@@ -179,7 +187,7 @@ export async function listIndustrySentimentsStrategyThemes(
   exchange?: string | null,
 ): Promise<StrategyNode[]> {
   const exFilter = (exchange ?? "").trim() || null;
-  const rows = await queryRows<DbIndustrySentimentsMetaRow>(INDUSTRY_SENTIMENTS_META_SQL, []);
+  const rows = await listIndustrySentimentsMetaRows();
 
   const mappedRows = rows
     .filter((r) => {
@@ -404,7 +412,7 @@ export async function getIndustrySentimentsChart(
   // codes are already bare, so they map directly to the meta rows.
   let indices = Array.from(byCode.values());
   if (hasClassFilter) {
-    const metaRows = await queryRows<DbIndustrySentimentsMetaRow>(INDUSTRY_SENTIMENTS_META_SQL, []);
+    const metaRows = await listIndustrySentimentsMetaRows();
     const classMap = new Map<string, DbIndustrySentimentsMetaRow>();
     for (const m of metaRows) {
       classMap.set(m.code, m);

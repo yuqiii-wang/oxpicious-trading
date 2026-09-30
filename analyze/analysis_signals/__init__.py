@@ -5,7 +5,7 @@ A forecast bucket (code × stat_date snapshot M × config, trailing
 5-year window (M - 5y, M]) whose MIXED forecast_results row passes the
 plain gate IS a signal strategy for that forecast period
 (analysis_signals.signal_strategies); the bucket's trigger days inside
-the snapshot month M are its history signals
+the snapshot M are its history signals
 (analysis_signals.history_signals). The live tier
 (live.live_signals) breaches the strategies' stored bars — it never
 re-detects anything.

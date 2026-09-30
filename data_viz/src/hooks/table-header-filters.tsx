@@ -123,6 +123,12 @@ export function useTableHeaderFilters<T>(
    *  older bucket's rows are shown instead of being hidden behind the
    *  latest-month seed. */
   defaultEnd: string | null = null,
+  /** Fired when the user EDITS or CLEARS an END-ONLY date filter (the
+   *  snapshot selector): the newly selected "YYYY-MM", or null when
+   *  cleared to unbounded. NOT fired on the scope-reset seed. The
+   *  ForecastTable uses it to lazily load the full snapshot grid the
+   *  first time the selection leaves the loaded snapshot. */
+  onEndMonthChange?: (month: string | null) => void,
 ) {
   const [state, setState] = useState<Record<string, ColFilterState>>({});
   const [order, setOrder] = useState<OrderState>(() => defaultOrder(defs));
@@ -302,7 +308,12 @@ export function useTableHeaderFilters<T>(
           frozenFromYears={d.frozenFromYears}
           sortDir={sortDir}
           onToggleSort={onToggleSort}
-          onChange={(next) => setFilter(d.key, { kind: "date", ...next })}
+          onChange={(next) => {
+            setFilter(d.key, { kind: "date", ...next });
+            if (d.frozenFromYears != null) {
+              onEndMonthChange?.(next.from ?? null);
+            }
+          }}
         />
       );
     }

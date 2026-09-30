@@ -45,8 +45,9 @@ def classify_etfs(
 ) -> Dict[str, Any]:
     """Map ETFs to their tracking index and inherit its classification.
 
-    Returns the ``etfs`` dict keyed by ETF code (``{bare}.{exchange}``).
-    Always recomputed from the CSV + index inheritance each run.
+    Returns the ``etfs`` dict keyed by BARE ETF code ("510880" — the
+    2026-09-30 convention; no exchange suffix). Always recomputed from
+    the CSV + index inheritance each run.
     """
     # When the parent index is unclassified (OTHER) or missing, fall back to
     # name-based classification via classify_etf_by_name().  ETF names
@@ -75,11 +76,10 @@ def classify_etfs(
     n_overwritten = 0
     n_overseas_reclassified = 0
     for r in etf_rows:
-        bare_code = r["etf_code"]
+        etf_code = r["etf_code"]
         exchange = r["exchange"]
         if exchange is None:
             continue  # skip ETFs with unknown exchange
-        etf_code = f"{bare_code}.{exchange}"
         etf_name = r["etf_name"]
         index_code = r["index_code"]
         idx = indices.get(index_code)
@@ -150,8 +150,8 @@ def classify_etfs(
         # tracks HK or non-Greater-China markets.  Detected via ETF name or
         # parent index name (HK keywords: 港股通/恒生/沪港深/SHS; overseas
         # keywords: 标普/纳斯达克/日经/德国/...) OR sector_id OVERSEAS.
-        # Applies even when the ETF itself is listed on SH/SZ (e.g. 513050.SS
-        # tracking 港股通互联, 159612.SZ 标普500ETF, 159502.SZ 标普生物科技).
+        # Applies even when the ETF itself is listed on SH/SZ (e.g. 513050
+        # tracking 港股通互联, 159612 标普500ETF, 159502 标普生物科技).
         # Runs AFTER the OVERWRITE RULE so the final parent is used.
         idx_name = idx["name"] if idx is not None else r.get("index_name", "")
         if exchange != "HK" and (_is_hk_name(etf_name) or _is_hk_name(idx_name)):

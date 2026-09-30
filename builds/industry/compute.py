@@ -66,7 +66,7 @@ def rebase_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     scale factor ``100 / first_close`` so the composite OHLC preserves each
     member's intraday shape on a common close-anchored scale. Indices listed
     later start at 100 on their own first date — this is the scale-invariant
-    rebase convention documented in stats/13_industry_baseline.sql.
+    rebase convention documented in stats/13_industry.sql.
 
     Input columns: code, date (datetime64), open, high, low, close
     (+ others); rows are pre-filtered to close > 0. NULL open/high/low stay

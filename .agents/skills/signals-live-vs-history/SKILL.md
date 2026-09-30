@@ -8,7 +8,7 @@ description: >
   forecast_results.reverse_prob) turns gate-passing buckets into
   SIGNAL STRATEGIES
   (analysis_signals.signal_strategies — one row per bucket over its
-  forecast period, with the live breach bar) whose month-owned trigger
+  forecast period, with the live breach bar) whose snapshot-owned trigger
   days are the HISTORY signals (analysis_signals.history_signals); live
   signals are ONLY breaches of the strategies' active bars recorded in
   live.live_signals. Use for ANY work touching analysis_signals,
@@ -23,6 +23,14 @@ description: >
 The repo has TWO signal tiers with a strict one-way dependency. Never blur
 them: the live tier NEVER re-detects or re-computes anything — it only
 breaches the bars the strategy tier already wrote.
+
+## Study scope for analysis & strategy (MANDATORY)
+
+To do study in analysis and strategy, only check by industries and
+indices (no etf and stocks unless explicitly said), only these 10 indices
+(000001, 931743, 931160, 931071, 000015, 930708, 931994, 931594, 000683,
+000991), and only write the 10 indices to DB table, unless otherwise
+explicitly instructed then run all indices.
 
 ```
 analysis_forecasts (HISTORY study)
@@ -54,28 +62,42 @@ analyze.analysis_signals (THE SIGNALS TIER — python -m analyze.analysis_signal
     signal_strategies ← one row per bucket whose mixed-row DELAY LADDER
     (rung d = conditioned on the signal having persisted d days,
     0..TRIGGER_DELAY_MAX=5) has a rung passing THE GATE (the plain
-    forecast-results rule, EVERY RUNG, every family):
+    forecast-results rule, EVERY RUNG, every family) AT THE ROBUSTNESS
+    FLOORS (2026-09 quality-v2, docs/signal_quality_v2_proposal.md):
       dir_ave > 0.75%  (sign-aligned blended mean forward change:
                      top/upper → −ave_change, bottom/lower → +;
                      the sign flip happens in the engine)
+      & occurrence_count >= 4 buys / 3 sells (BUY/SELL_SAMPLE_FLOOR
+                     — a thinner rung measures selection noise; sells
+                     get the looser bar, their evidence is structurally
+                     thinner under positive drift)
+      & ladder stability on streak families (>= 2 buys / 1 sell of
+                     rungs 0-2 sign-aligned positive — direction
+                     before magnitude; one-day pair-cross families
+                     exempt)
     The registered rung is the OPTIMAL ENTRY DELAY — the balance rule's
-    argmax occurrence_count × sign-aligned dir_ave over the gate-passing
-    rungs (the opportunity cost of waiting — occurrence_count decays
-    with the rung — against the persistence-conditioned return
-    deepening; ties → the smallest delay; value-based groupby-agg
-    argmax in detect(), never frame order) — stored as
-    signal_delay_days. confidence = the CHOSEN rung's sign-aligned
-    dir_ave (the expected favorable blended move; FLOAT on
-    strategies, INTEGER ROUND(10000 x dir_ave) basis points on
+    argmax occurrence_count × sign-aligned dir_ave over the
+    floor-passing rungs (the opportunity cost of waiting —
+    occurrence_count decays with the rung — against the
+    persistence-conditioned return deepening; ties → the smallest
+    delay; value-based groupby-agg argmax in detect(), never frame
+    order) — stored as signal_delay_days. confidence = the CHOSEN
+    rung's sign-aligned dir_ave (the expected favorable blended move;
+    FLOAT on strategies, INTEGER ROUND(10000 x dir_ave) basis points on
     history/live rows);
     signal_threshold in the VALUE'S OWN space (mov_rsi: the window's
-    top/bottom-1% RSI percentile bar, recovered as rsi(d*) −
+    top/bottom-pct% RSI percentile bar, recovered as rsi(d*) −
     trigger_excess(d*) at the CHOSEN rung's window-end anchor; mov_std:
     the band level, price(d*) − trigger_excess(d*), price space). side
     stored (top/bottom/upper/lower), action sell/buy. PK includes side
-    AND regime_state; the SignalQuality gate (engines/_quality) still
-    reads the DELAY-0 forward profiles (5d/20d/next) — it decides
-    whether the bucket registers at all.
+    AND regime_state; the final claim-profile SignalQuality gate
+    (engines/_quality) reads the DELAY-0 forward profiles — breach
+    coherence + 5d forward-mean alignment on EVERY bucket + 20d
+    alignment on the family's SLOW claims (engine `slow_claim`:
+    mov_rsi W >= 20, mov_std all, the pair-cross families none) + the
+    0.75 risk cap as ONE weight-blended verdict (5d 0.65 / 20d 0.10,
+    bar 0.50) — it decides whether the bucket registers at all;
+    required_periods rides the strategy's params jsonb.
     history_signals ← the CHOSEN RUNG's anchor days INSIDE the snapshot
     key's CALENDAR YEAR (the 1-year-stride ownership rule: a year-end
     snapshot owns year Y; the rolling latest snapshot owns [Jan 1, its
@@ -86,17 +108,24 @@ analyze.analysis_signals (THE SIGNALS TIER — python -m analyze.analysis_signal
     live.live_signals; time 15:00:00, is_day_close_trigger = TRUE,
     confidence = ROUND(10000 x dir_ave) integer basis points,
     signal_delay_days denormalized on both tables.
-  Emission slices (current build): mov_rsi pct = 1 (top/bottom),
-  mov_std MA/σ windows >= 20d at k >= 2.0σ (upper/lower), and the two
+  Emission slices (current build): mov_rsi pct in {1, 2, 3} (top/bottom —
+  widened from 1-only, 2026-09 quality-v2: the 2/3% tails carry the
+  sample the floors demand),
+  mov_std MA/σ windows >= 60d at k >= 2.0σ (upper/lower — the 20d
+  window REMOVED from the signals tier 2026-09-30, the OOS study
+  temp_scripts/study_std20_oos.py: sell side sign-flipped OOS,
+  events vanish for whole years; 20d buckets STAY in
+  analysis_forecasts), and the two
   pair-cross families mov_pairs / mov_pairs_ema (both fast legs, slow
   legs >= 60d, BOTH cross sides — bottom cross-down → buy AND top
   cross-up → sell, so every sign flip of the daily spread flags
   exactly once; widened from bottom-only 2026-09) — one-day signals,
   rung 0 only. The strategy parameter rides IN the sub_type as a
   literal suffix —
-  rsi{W}_{pct}pct ("1pct") and std{W}_{k}std (k %g-formatted — "2",
-  "2.5" — matching the API tick join's float8::text, plus the "std"
-  literal) — so each (window, parameter, side) is its own strategy.
+  rsi{W}_{pct}pct ("1pct"/"2pct"/"3pct") and std{W}_{k}std (k
+  %g-formatted — "2", "2.5" — matching the API tick join's
+  float8::text, plus the "std" literal) — so each (window, parameter,
+  side) is its own strategy.
   Incremental (the mutable-scope rule, config.mutable_dates — shared
   with analysis_forecasts): snapshots present in analysis_forecasts'
   identities minus snapshots already in signal_strategies, PLUS the
@@ -104,8 +133,28 @@ analyze.analysis_signals (THE SIGNALS TIER — python -m analyze.analysis_signal
   (always; its long-horizon mixed legs complete late) and the newest
   completed year-end while its 20-trading-day forward windows are
   unrealized (~5 weeks after New Year; then it freezes). Retired keys
-  (yesterday's rolling-latest date) are SWEPT from both tables before
-  the resolution (SnapshotSelection.sweep_stale_snapshots).
+  (yesterday's rolling-latest date) are SWEPT from both tables (and
+  the attempts registry) before the resolution
+  (SnapshotSelection.sweep_stale_snapshots).
+  PARTIAL BACKFILL (the coverage-completeness leg, 2026-09-28): `have`
+  is snapshot-granular (the first registered code marks the key
+  written), so identity rows joining the forecast registry LATER — a
+  newly listed index, or a newly configured derived population (the
+  2026-09-27 ohlcv-boost backfill) — never see their frozen snapshot
+  emitted. The resolution therefore also diffs (code, cohort, snapshot)
+  identity triples against signal_strategies coverage AND the
+  snapshot_emissions ATTEMPTS registry (04_snapshot_emissions.sql —
+  one row per attempted triple, stamped after every scope's write,
+  '' sentinel = the NULL parent cohort): uncovered AND unattempted
+  triples re-emit their cohort for exactly the missing codes
+  (code-scoped bucket reads, $5 code filter in every family's buckets
+  SQL). The attempts leg is what keeps legitimately-empty triples
+  (every bucket failed the gates — routine for the thin
+  ohlcv-selection subset) from re-scoping as no-ops every run. The
+  snapshot write is POPULATION-SCOPED per emitted cohort
+  (ohlcv_type-filtered deletes, the cohort's own codes only) so a
+  partial cohort emission can never wipe its codes' other cohorts'
+  rows.
   --force purges the sec_type's family rows first; --metrics rsi,std,
   pairs,epairs scopes the families. Post-run: 02_is_active.sql
   (is_active = each (code, sec_type, type, sub_type)'s LATEST end_date
@@ -127,7 +176,15 @@ live.live_signals (LIVE signals = breaches)
   close / cross / margin_z). Missing current value ⇒ skipped, never
   invented. (The old day-close mirror --live writer is RETIRED —
   history_signals is the historical record; is_day_close_trigger =
-  TRUE rows in live.live_signals are legacy.)
+  TRUE rows in live.live_signals are legacy.) Each mov_rsi breach
+  record ALSO denormalizes the same bucket's derived-cohort add-on
+  confidences confidence_boost / confidence_selection (the @boost /
+  @selection children fetched by _active.py's LEFT JOIN LATERAL over
+  the FULL parent identity — SQL-side bp-scaled like confidence;
+  children stay is_active = FALSE, never breached, never a gate —
+  display-only context; the live UI shows them parenthesized next to
+  the confidence, e.g. "(boost 2.80% / sel 3.21%)"; schema
+  05_live_signals_cohort_confidence.sql).
 ```
 
 ## The invariants (break none of them)
@@ -136,8 +193,8 @@ live.live_signals (LIVE signals = breaches)
    the stored ones.** Bollinger bands and cross legs move daily — the
    live tier derives mov_std's bar (ma_{W} ± k·std_{W}) and the cross
    families' bar (the day's SLOW-LEG value ma_{W} / ema_{W}; the
-   compared signal is the day's FAST leg — the price for pxpair/
-   pxemapair, ma5 for pair, ema6 for emapair — so the breach record
+   compared signal is the day's FAST leg — the price for pxmapair/
+   pxemapair, ma5 for mapair, ema6 for emapair — so the breach record
    carries the day's values in ABSOLUTE value space, not spread
    space) per check (fetch.resolve_threshold) and the breach record
    pins the bar it compared against. The strategies' stored
@@ -153,26 +210,26 @@ live.live_signals (LIVE signals = breaches)
    bucket reads fan triggers out via LATERAL unnest with OFFSET 0 to
    keep the planner on the per-bucket pkey probe — without it the
    planner hash-scans all 16 forecast_results partitions, ~100s per
-   month). Values are fetched ONLY at the window-end + month-owned
+   snapshot). Values are fetched ONLY at the window-end + snapshot-owned
    dates (value_points), never whole windows.
-2. **A signal exists only where its forecast bucket exists.** Months
-   are month-gated to analysis_forecasts' identities registry; a
+2. **A signal exists only where its forecast bucket exists.** Snapshots
+   are snapshot-gated to analysis_forecasts' identities registry; a
    strategy covers exactly its bucket's forecast period
-   (start_date .. end_date = stat_month). No strategy row → no history
+   (start_date .. end_date = stat_date). No strategy row → no history
    events → no tick → no live breaches for that config.
 4. **Thresholds are denormalized into the breach record** so each
    live.live_signals row is self-contained; the source of truth stays
    analysis_signals.signal_strategies. confidence rides the row:
    strategies store the fractional dir_ave; live rows ROUND(10000 x).
-5. **Months are write-once per run.** A month's strategy + history
-   rows are written in ONE transaction (delete month scope + COPY both
-   tables), only when the month is missing or inside the refresh
+5. **Snapshots are write-once per run.** A snapshot's strategy + history
+   rows are written in ONE transaction (delete snapshot scope + COPY both
+   tables), only when the snapshot is missing or inside the refresh
    window (or after --force).
 6. **After every run:** refresh is_active + re-rank signal_order
    (02/03 SQL, executed by the pipeline with $1 = sec_type).
 7. **No UI component changes for signals.** The Recent Movements
    forecast table's ✓ tick is the API's in_signals EXISTS into
-   signal_strategies (side = side, end_date = stat_month,
+   signal_strategies (side = side, end_date = stat_date,
    regime_state matched to the forecast row's own regime split —
    a ● row ticks iff that regime split's strategy registered)
    — see data_viz/api/services/analysis/analysis-forecasts.ts
@@ -185,7 +242,7 @@ live.live_signals (LIVE signals = breaches)
   (weights: `config/horizons.py` — also the reverse_prob removal
   note).
 - Strategy/history pipeline: `analyze/analysis_signals/` —
-  `__main__.py` (cudf activate, --sec-type/--metrics/--months/--force),
+  `__main__.py` (cudf activate, --sec-type/--metrics/--snapshots/--force),
   `config/` (tables, gate constant 0.0075, the delay-ladder
   SIGNAL_DELAY_MAX + balance rule, per-family slice packages
   mov_rsi/mov_std/mov_pairs, STRATEGY/HISTORY column layouts),
@@ -196,7 +253,7 @@ live.live_signals (LIVE signals = breaches)
   value_points / regime_label), `engines/_quality.py` (the final
   SignalQuality gate), `engines/_store.py` (snapshot write —
   partition-key-chunked transactions, calendar-year history ownership —
-  + chunked force purge), `engines/_months.py` (SnapshotSelection:
+  + chunked force purge), `engines/_snapshots.py` (SnapshotSelection:
   incremental snapshot resolution via config.mutable_dates +
   chunked stale-key sweep),
   `engines/_primitives.py` (action_of / frame_records),
@@ -208,15 +265,18 @@ live.live_signals (LIVE signals = breaches)
   `run/pipeline.py` (per-sec_type pipeline + post-run 02/03 SQL).
 - Tables: `database/sql/analysis/analysis_signals/00_schema.sql`
   (schema), `01_signals.sql` (signal_strategies + history_signals,
-  16 hash partitions each), `02_is_active.sql`, `03_signal_order_rank.sql`.
+  16 hash partitions each), `02_is_active.sql`, `03_signal_order_rank.sql`,
+  `04_snapshot_emissions.sql` (the partial-backfill attempts registry).
 - Live tier: `live/live_signals/` — `analysis/evaluator.py` (the ONE
   generic breach check), `analysis/fetch/` (`_values.py`
   SIGNAL_VALUE_SOURCE map + resolve_value/resolve_threshold,
   `_sources.py` current-value fetchers, `_bars.py` as-of bar
-  resolution, `_active.py` active-set fetchers on signal_strategies),
+  resolution, `_active.py` active-set fetchers on signal_strategies
+  + the cohort add-on confidence LATERAL probes),
   `config/` (`tables.py` SIGNALS_TABLE, `runtime.py` intraday/daily
   sources, `breach.py` scales). Schema
-  `database/sql/live/03_live_signals.sql`.
+  `database/sql/live/03_live_signals.sql` + `05_live_signals_cohort_confidence.sql`
+  (the confidence_boost / confidence_selection add-on columns).
 
 ## Conventions for this area
 
@@ -234,8 +294,10 @@ live.live_signals (LIVE signals = breaches)
   constants + a SIGNAL_VALUE_SOURCE entry (if live-wired). Dispatch
   through the ENGINES registry — no if/else ladders. A family without
   strategies naturally has no ticks and no breaches.
-- Testing: `--sec-type index` first (margin families: etf), then etf /
-  stock. Verify by row counts per signal_type/side, the API tick
+- Testing: `--sec-type index` first, scoped to the 10 study indices
+  (the study-scope rule above — etf/stock only when explicitly
+  requested; margin families: etf). Verify by row counts per
+  signal_type/side, the API tick
   (`/api/analysis/mov-ave-spread/forecast` in_signals) and the UI, not
   just by reading code.
 - Verification: analysis_signals row counts per signal_type +

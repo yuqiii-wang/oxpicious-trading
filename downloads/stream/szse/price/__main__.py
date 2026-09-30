@@ -66,8 +66,8 @@ exits cleanly after reaping them; the finally block closes the DB and session.
 Note: CSV backfill (recovering missed data from archived CSV files) is
 handled by the download/archive modules, NOT by this streaming module.
 
-Requires tables from database/sql/05_index_baseline.sql (index_identity +
-index_intraday_5min) and database/sql/06_stock_baseline.sql (stock_identity +
+Requires tables from database/sql/05_index.sql (index_identity +
+index_intraday_5min) and database/sql/06_stock.sql (stock_identity +
 stock_intraday_5min) and database/sql/03_sec_composition.sql (sec_composition).
 
 Usage:

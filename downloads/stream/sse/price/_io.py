@@ -92,6 +92,27 @@ def _ensure_conn(conn):
     return conn
 
 
+def _recover_conn(conn):
+    """Return a writable connection after a failed write, rolling back or
+    reconnecting as needed.
+
+    bulk_upsert rolls back its own chunk transaction, but a failed
+    executemany can still leave the session holding an aborted transaction
+    or a broken connection; without this cleanup one asset's rejected write
+    would fail every later asset's write on the same session.
+    """
+    try:
+        conn.rollback()
+        return conn
+    except Exception:  # noqa: BLE001
+        logger.warning("DB session unusable after failed write; reconnecting …")
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return get_db_connection()
+
+
 def _prepopulate_finished_codes(
     conn,
     trade_date,
@@ -119,7 +140,8 @@ def _prepopulate_finished_codes(
             cur.execute(query, tuple(params))
             for r in cur.fetchall():
                 full_code = r[0]
-                # Strip the exchange suffix to get bare code (no-op for indices).
+                # Strip the exchange suffix to get bare code (no-op for
+                # indices and ETFs — already bare).
                 bare = full_code.split(".")[0]
                 finished_codes.add(bare)
     except Exception as e:  # noqa: BLE001

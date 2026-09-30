@@ -81,6 +81,20 @@ async def get_db_connection_async():
             user=conn_params["user"],
             password=conn_params["password"],
             timeout=30,
+            # Server-side TCP keepalives: the PG backend probes its side
+            # of the socket every 60s. Long analysis builds spend minutes
+            # in GPU compute between writes with the connection fully
+            # idle, and the WSL2→Windows NAT silently drops such sockets
+            # — the next transaction then fails with asyncpg
+            # ConnectionDoesNotExistError (the 2026-09-30 forecast
+            # rebuild died 30 minutes in exactly there). Backend
+            # keepalives keep the mapping alive in both directions.
+            # PGC_USERSET GUCs — no server config change needed.
+            server_settings={
+                "tcp_keepalives_idle": "60",
+                "tcp_keepalives_interval": "10",
+                "tcp_keepalives_count": "6",
+            },
         )
         return conn
     except Exception as e:
@@ -153,6 +167,14 @@ async def get_db_pool_async(
         max_size=max_size,
         max_queries=max_queries,
         command_timeout=300,  # 5 min per query — upserts of 100K rows can take >60s under WAL pressure
+        # Server-side TCP keepalives — see get_db_connection_async: long
+        # idle stretches (GPU compute between writes) get the socket
+        # dropped by the WSL2 NAT otherwise.
+        server_settings={
+            "tcp_keepalives_idle": "60",
+            "tcp_keepalives_interval": "10",
+            "tcp_keepalives_count": "6",
+        },
     )
     return pool
 
@@ -255,6 +277,12 @@ async def get_read_db_pool_async(
         max_size=max_size,
         max_queries=max_queries,
         command_timeout=300,
+        # Server-side TCP keepalives — see get_db_connection_async.
+        server_settings={
+            "tcp_keepalives_idle": "60",
+            "tcp_keepalives_interval": "10",
+            "tcp_keepalives_count": "6",
+        },
         init=_setup_readonly,
     )
     return pool

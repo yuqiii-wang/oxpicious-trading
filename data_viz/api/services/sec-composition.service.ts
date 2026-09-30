@@ -34,6 +34,8 @@ import type {
   SecCompositionHolding,
   LinkedEtfsResponse,
   LinkedEtfRow,
+  LinkedFeedersResponse,
+  LinkedFeederRow,
   SimilarIndicesResponse,
   SimilarIndexRow,
   QuarterlyCompositionResponse,
@@ -188,7 +190,7 @@ async function fetchTrackingIndex(
  *   3. If neither ETF holdings nor a tracking index is found, try a direct
  *      index lookup (source_type='index') with the bare code. This lets
  *      callers pass a bare index code (e.g. "000300" or "H30007") directly
- *      — used by the Index Baseline page, which has no sec_classification entry.
+ *      — used by the Index page, which has no sec_classification entry.
  *
  * When `date` is provided, every step is constrained to the calendar quarter
  * containing that date (latest snapshot within the quarter) — the "by season"
@@ -243,7 +245,7 @@ export async function getSecComposition(
   }
 
   // 3. Direct index lookup — caller passed a bare index code with no
-  //    associated sec_classification entry (e.g. the Index Baseline page).
+  //    associated sec_classification entry (e.g. the Index page).
   const directIdxRows = await fetchHoldings(stripped, "index", date);
   if (directIdxRows.length > 0) {
     const holdings = directIdxRows.map(toHolding);
@@ -567,7 +569,7 @@ export async function getIndustryWeightSeries(
 //  type='etf' WHERE parent_index_code = $1), enriched with the latest close
 //  price + trading-day count from stats.v_etf_margin.
 //
-//  Used by the Index Baseline page's "Linked ETFs" expansion shown beside
+//  Used by the Index page's "Linked ETFs" expansion shown beside
 //  the Composition pie. The input is a bare index code (e.g. "000300") as
 //  stored on sec_classification.code for type='index' rows.
 // ----------------------------------------------------------------------------
@@ -582,6 +584,7 @@ interface DbLinkedEtfRow extends QueryResultRow {
   latest_trading_amount: number | null;
   aum_yi: number | null;
   n_days: number | null;
+  feeder_count: number | null;
 }
 
 export async function getLinkedEtfs(
@@ -591,6 +594,7 @@ export async function getLinkedEtfs(
   if (!indexCode) {
     return {
       index_code: indexCodeParam,
+      index_name: "",
       etfs: [],
       total_etf_trading_amount: null,
       total_etf_trading_amount_ma5: null,
@@ -598,15 +602,19 @@ export async function getLinkedEtfs(
     };
   }
 
-  // Three CTEs:
-  //   linked_etfs — ETF sec_classification rows whose parent_index_code = $1.
-  //                 Also pulls aum_yi (net asset value in 亿元) which is
-  //                 populated from the etf_index_map_all_*.csv by
-  //                 build_classification.py.  Available for ALL ETFs (SSE +
-  //                 SZSE), unlike v_etf_margin.trading_amount (SZSE only).
-  //   latest      — DISTINCT ON (code) picks the most-recent v_etf_margin row
-  //                 per ETF (gives latest_date + latest_close).
-  //   counts      — per-ETF trading-day count from v_etf_margin.
+  // Four CTEs:
+  //   linked_etfs   — ETF sec_classification rows whose parent_index_code = $1.
+  //                   Also pulls aum_yi (net asset value in 亿元) which is
+  //                   populated from the etf_index_map_all_*.csv by
+  //                   build_classification.py.  Available for ALL ETFs (SSE +
+  //                   SZSE), unlike v_etf_margin.trading_amount (SZSE only).
+  //   latest        — DISTINCT ON (code) picks the most-recent v_etf_margin row
+  //                   per ETF (gives latest_date + latest_close).
+  //   counts        — per-ETF trading-day count from v_etf_margin.
+  //   feeder_counts — per-ETF COUNT of feeder funds (联接基金) from
+  //                   sec_etf_links by target_etf_code. Lets the unified
+  //                   ETF→feeder table know which rows are expandable
+  //                   WITHOUT fetching every ETF's feeder list.
   const sql = `
     WITH linked_etfs AS (
       SELECT sc.code, sc.name, sc.exchange, sc.sector_label, sc.industry_label, sc.aum_yi
@@ -625,6 +633,12 @@ export async function getLinkedEtfs(
         FROM stats.v_etf_margin
        WHERE code IN (SELECT code FROM linked_etfs)
        GROUP BY code
+    ),
+    feeder_counts AS (
+      SELECT l.target_etf_code, COUNT(*) AS feeder_count
+        FROM stats.sec_etf_links l
+       WHERE l.target_etf_code IN (SELECT code FROM linked_etfs)
+       GROUP BY l.target_etf_code
     )
     SELECT le.code,
            le.name,
@@ -635,13 +649,15 @@ export async function getLinkedEtfs(
            la.latest_close,
            la.latest_trading_amount,
            le.aum_yi,
-           COALESCE(co.n_days, 0)                AS n_days
+           COALESCE(co.n_days, 0)                AS n_days,
+           COALESCE(fc.feeder_count, 0)          AS feeder_count
       FROM linked_etfs le
-      LEFT JOIN latest  la ON la.code = le.code
-      LEFT JOIN counts  co ON co.code = le.code
+      LEFT JOIN latest        la ON la.code = le.code
+      LEFT JOIN counts        co ON co.code = le.code
+      LEFT JOIN feeder_counts fc ON fc.target_etf_code = le.code
      ORDER BY le.aum_yi DESC NULLS LAST, n_days DESC, le.code
   `;
-  const [rows, extRows] = await Promise.all([
+  const [rows, extRows, nameRows] = await Promise.all([
     queryRows<DbLinkedEtfRow>(sql, [indexCode]),
     // Fetch the latest index_exts row for this index — gives the precomputed
     // total_etf_trading_amount (Σ ETF turnover tracking the index, yuan) and its 5-day
@@ -659,10 +675,17 @@ export async function getLinkedEtfs(
         LIMIT 1`,
       [indexCode],
     ),
+    // Display name of the index itself — the unified ETF→feeder table's
+    // Index column shows "index_code index_name".
+    queryRows<{ name: string | null }>(
+      `SELECT name FROM stats.sec_classification WHERE code = $1 AND type = 'index' LIMIT 1`,
+      [indexCode],
+    ),
   ]);
   const ext = extRows[0];
   return {
     index_code: indexCode,
+    index_name: nameRows[0]?.name ?? "",
     etfs: rows.map<LinkedEtfRow>((r) => ({
       code: r.code,
       name: r.name ?? "",
@@ -675,6 +698,7 @@ export async function getLinkedEtfs(
       latest_trading_amount: toNum(r.latest_trading_amount),
       aum_yi: toNum(r.aum_yi),
       n_days: parseInt(String(r.n_days ?? 0), 10) || 0,
+      feeder_count: parseInt(String(r.feeder_count ?? 0), 10) || 0,
     })),
     total_etf_trading_amount: toNum(ext?.total_etf_trading_amount),
     total_etf_trading_amount_ma5: toNum(ext?.total_etf_trading_amount_ma5),
@@ -826,4 +850,84 @@ export async function getSimilarIndices(
     similar_industries,
     dissimilar_industries,
   };
+}
+
+// ----------------------------------------------------------------------------
+// Linked Feeder Funds — ETF联接基金 whose target (master) ETF is the code.
+// Walks stats.sec_etf_links by target_etf_code (the ETF-level mirror of the
+// linked-etfs parent_index_code lookup). ETF codes are BARE (a suffixed
+// param is stripped).
+// ----------------------------------------------------------------------------
+export async function getLinkedFeeders(
+  etfCodeParam: string,
+): Promise<LinkedFeedersResponse> {
+  const bare = etfCodeParam.replace(SUFFIX_RE, "").trim();
+  if (!bare) {
+    return { etf_code: etfCodeParam, feeders: [] };
+  }
+  // target_etf_code is stored BARE ("510880") — direct equality. latest —
+  // most-recent v_etf_margin row per BARE feeder code (the NAV series
+  // builds.etf.feeder_nav loads; feeders are close-only, loaded with
+  // is_ohl_estimated=TRUE). Distinct-on mirrors getLinkedEtfs.
+  const sql = `
+    WITH latest AS (
+      SELECT DISTINCT ON (code) code,
+             date AS latest_date, close AS latest_nav, pct_change AS day_pct
+        FROM stats.v_etf_margin
+       WHERE code IN (SELECT feeder_code FROM stats.sec_etf_links
+                      WHERE target_etf_code = $1)
+       ORDER BY code, date DESC
+    )
+    SELECT l.feeder_code,
+           l.feeder_name,
+           l.is_initiator,
+           l.target_etf_code,
+           l.target_etf_name,
+           l.target_etf_type,
+           l.index_code,
+           l.index_name,
+           l.manager,
+           l.aum_yi,
+           l.inception_date::text AS inception_date,
+           COALESCE(n.latest_date::text, '') AS latest_date,
+           n.latest_nav,
+           n.day_pct
+      FROM stats.sec_etf_links l
+      LEFT JOIN latest n ON n.code = l.feeder_code
+     WHERE l.target_etf_code = $1
+     ORDER BY l.feeder_code
+  `;
+  const rows = await queryRows<{
+    feeder_code: string;
+    feeder_name: string;
+    is_initiator: boolean;
+    target_etf_code: string;
+    target_etf_name: string;
+    target_etf_type: string;
+    index_code: string;
+    index_name: string;
+    manager: string;
+    aum_yi: string | number | null;
+    inception_date: string | null;
+    latest_date: string | null;
+    latest_nav: string | number | null;
+    day_pct: string | number | null;
+  }>(sql, [bare]);
+
+  const feeders: LinkedFeederRow[] = rows.map((r) => ({
+    feeder_code: r.feeder_code,
+    feeder_name: r.feeder_name ?? "",
+    is_initiator: r.is_initiator === true,
+    target_etf_name: r.target_etf_name ?? "",
+    target_etf_type: r.target_etf_type ?? "",
+    index_code: r.index_code ?? "",
+    index_name: r.index_name ?? "",
+    manager: r.manager ?? "",
+    aum_yi: toNum(r.aum_yi),
+    inception_date: r.inception_date ?? "",
+    latest_date: r.latest_date ?? "",
+    latest_nav: toNum(r.latest_nav),
+    day_pct: toNum(r.day_pct),
+  }));
+  return { etf_code: rows[0]?.target_etf_code ?? etfCodeParam, feeders };
 }

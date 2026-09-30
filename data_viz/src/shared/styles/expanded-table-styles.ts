@@ -1,7 +1,7 @@
 /**
  * Shared "expanded table" styles — the visual baseline used by tables that
- * render inside an expanded card section (e.g. LinkedEtfsList on the Index
- * Baseline page, Monthly PE & Dividend Stats on the PE & Dividend page).
+ * render inside an expanded card section (e.g. LinkedEtfsFeedersTable on the
+ * Baseline page, the Valuation Streaks table on the PE page).
  *
  * Visual contract:
  *   • TableContainer — thin divider border, rounded corners, scrollable,

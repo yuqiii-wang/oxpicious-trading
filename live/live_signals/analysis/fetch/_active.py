@@ -55,16 +55,57 @@ async def fetch_active_signals(
     exact NUMERIC rounding — do NOT re-scale in Python, float math
     would round ties differently). is_triggered_once rides the row for
     the evaluator's episode gate (TRUE = the pair-cross families —
-    flag the breach once per episode, not on every bar)."""
+    flag the breach once per episode, not on every bar).
+
+    Each row ALSO carries the same bucket's derived-cohort add-on
+    confidences (confidence_boost / confidence_selection — the mov_rsi
+    @boost / @selection children, the SAME identity plus the sub_type
+    suffix and ohlcv_type set). The children are permanently
+    is_active = FALSE (02_is_active — decision/ranking records, never
+    the threshold set), so they can never appear in the active rows
+    themselves; the LEFT JOIN LATERAL probes fetch them by the FULL
+    parent identity (a PK-leading probe per cohort), scaling the
+    confidence identically SQL-side. None when the cohort never
+    registered for the bucket or the family carries no ohlcv children
+    (mov_std / the pair-cross families) — display-only context, never
+    a gate."""
     rows = await conn.fetch(
-        f"SELECT code, sec_type, signal_type, signal_sub_type, "
-        f"       start_date, end_date, side, "
-        f"       action, signal_threshold::float8 AS signal_threshold, "
-        f"       ROUND(COALESCE(confidence, 0) * 10000)::int AS confidence, "
-        f"       is_triggered_once, params "
-        f"FROM {SIGNALS_TABLE} "
-        f"WHERE sec_type = $1 AND code = $2 AND is_active "
-        f"ORDER BY signal_type, signal_sub_type",
+        f"SELECT s.code, s.sec_type, s.signal_type, s.signal_sub_type, "
+        f"       s.start_date, s.end_date, s.side, "
+        f"       s.action, s.signal_threshold::float8 AS signal_threshold, "
+        f"       ROUND(COALESCE(s.confidence, 0) * 10000)::int AS confidence, "
+        f"       b.confidence_boost, "
+        f"       x.confidence_selection, "
+        f"       s.is_triggered_once, s.params "
+        f"FROM {SIGNALS_TABLE} s "
+        f"LEFT JOIN LATERAL ( "
+        f"    SELECT ROUND(COALESCE(c.confidence, 0) * 10000)::int "
+        f"               AS confidence_boost "
+        f"    FROM {SIGNALS_TABLE} c "
+        f"    WHERE c.code = s.code AND c.sec_type = s.sec_type "
+        f"      AND c.signal_type = s.signal_type "
+        f"      AND c.signal_sub_type = s.signal_sub_type || '@boost' "
+        f"      AND c.side = s.side AND c.regime_state = s.regime_state "
+        f"      AND c.start_date = s.start_date "
+        f"      AND c.end_date = s.end_date "
+        f"      AND c.ohlcv_type = 'ohlcv_boost' "
+        f"    LIMIT 1 "
+        f") b ON TRUE "
+        f"LEFT JOIN LATERAL ( "
+        f"    SELECT ROUND(COALESCE(c.confidence, 0) * 10000)::int "
+        f"               AS confidence_selection "
+        f"    FROM {SIGNALS_TABLE} c "
+        f"    WHERE c.code = s.code AND c.sec_type = s.sec_type "
+        f"      AND c.signal_type = s.signal_type "
+        f"      AND c.signal_sub_type = s.signal_sub_type || '@selection' "
+        f"      AND c.side = s.side AND c.regime_state = s.regime_state "
+        f"      AND c.start_date = s.start_date "
+        f"      AND c.end_date = s.end_date "
+        f"      AND c.ohlcv_type = 'ohlcv_selection' "
+        f"    LIMIT 1 "
+        f") x ON TRUE "
+        f"WHERE s.sec_type = $1 AND s.code = $2 AND s.is_active "
+        f"ORDER BY s.signal_type, s.signal_sub_type",
         sec_type, code,
     )
     return [dict(r) for r in rows]

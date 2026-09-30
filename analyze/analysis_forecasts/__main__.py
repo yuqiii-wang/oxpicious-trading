@@ -66,7 +66,11 @@ Pipeline per sec_type (index / etf / stock):
      ROLLING LATEST snapshot (keyed at the sec_type's latest available
      data date, NOT the year-end; always refreshed — its forward data
      grows daily) and the newest completed year-end while its
-     20-trading-day forward windows are still unrealized. Stale keys
+     20-trading-day forward windows are still unrealized — plus the
+     POPULATION BACKFILL: present snapshots missing an expected
+     derived-population BOOST child (a boost mechanism configured
+     after the snapshot was written) are deleted and recomputed the
+     same way. Stale keys
      (yesterday's rolling-latest date; legacy pre-rolling keys) are
      SWEPT before the target resolution.
      ``--force`` deletes the sec_type's mov_* rows AND their linked
@@ -142,6 +146,7 @@ from _common._holidays_and_weekdays import (  # noqa: E402
     recent_trading_day_cutoff,
 )
 from _common.db_commons import (  # noqa: E402
+    analyze_tables_async,
     copy_insert_async,
 )
 
@@ -207,6 +212,9 @@ from analyze.analysis_forecasts.fetch import (  # noqa: E402
     fetch_high_low_streaks,
     add_forward_changes,
     add_margin_ratio_features,
+)
+from analyze.analysis_forecasts.ohlc_features import (  # noqa: E402
+    attach_day_anatomy,
 )
 from analyze.analysis_forecasts.wide import (  # noqa: E402
     build_stat_specs,
@@ -463,6 +471,24 @@ async def _process_sec_type(
 
     # ---- Long-frame feature adds (every family's shared input) -----------
     df = add_forward_changes(df)
+    df = attach_day_anatomy(df)
+    # The gaps store's gap_open is authoritative (estimated rows
+    # excluded in that suite); the derived column above is the
+    # FALLBACK for rows the store does not have (build lagging).
+    if "src_gap_open" in set(df.columns):
+        df["gap_open"] = df["gap_open"].fillna(df["src_gap_open"])
+    if "src_pattern" in set(df.columns):
+        # the boost module's window slice reads the stored label as
+        # ``pattern`` (NULL rows degrade to the fallback classifier)
+        df["pattern"] = df["src_pattern"]
+    if "src_vol_state" in set(df.columns):
+        # the vol×amt modules' window slice reads the px_vol registry
+        # state as ``vol_state`` / ``px_speed`` (NULL rows — the
+        # registry build lagging — degrade to neutral / never-qualify;
+        # the state logic is single-source in mov_ave_spread, never
+        # re-derived here)
+        df["vol_state"] = df["src_vol_state"]
+        df["px_speed"] = df["src_px_speed"]
     if "mratio" in metrics:
         df = add_margin_ratio_features(df)
 
@@ -474,7 +500,7 @@ async def _process_sec_type(
     if compute_rsi:
         logger.info(f"  [{sec_type}] Computing RSI extreme buckets "
               f"(windows={list(RSI_WINDOWS)}) for {len(compute_rsi)} "
-              f"months...")
+              f"snapshots...")
         for stat_date, rows in compute_rsi_results(
             df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_rsi,
@@ -490,7 +516,7 @@ async def _process_sec_type(
     if compute_std:
         logger.info(f"  [{sec_type}] Computing Bollinger-breach buckets "
               f"(ma_windows={list(MA_WINDOWS)}) for {len(compute_std)} "
-              f"months...")
+              f"snapshots...")
         for stat_date, rows in compute_std_results(
             df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_std,
@@ -579,7 +605,7 @@ async def _process_sec_type(
     if compute_mratio:
         logger.info(f"  [{sec_type}] Computing margin_ratio state buckets "
               f"(融资买入额/成交额 z states) for {len(compute_mratio)} "
-              f"months...")
+              f"snapshots...")
         for stat_date, rows in compute_margin_ratio_results(
             df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_mratio,
@@ -596,7 +622,7 @@ async def _process_sec_type(
     if compute_pe:
         logger.info(f"  [{sec_type}] Computing pe extreme-percentile "
               f"buckets (pcts={list(VAL_PCTS)}) for {len(compute_pe)} "
-              f"months...")
+              f"snapshots...")
         for stat_date, rows in compute_pe_results(
             df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_pe,
@@ -612,7 +638,7 @@ async def _process_sec_type(
     if compute_div:
         logger.info(f"  [{sec_type}] Computing dividend extreme-percentile "
               f"buckets (pcts={list(VAL_PCTS)}) for {len(compute_div)} "
-              f"months...")
+              f"snapshots...")
         for stat_date, rows in compute_dividend_results(
             df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_div,
@@ -675,7 +701,7 @@ async def _search_forecast_identity(conn, forecast_id: int) -> None:
 
 async def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Analysis Forecasts (ETF + Index + Stock). Monthly "
+        description="Analysis Forecasts (ETF + Index + Stock). Annual-grid "
                     "per-security forecast analysis over a trailing "
                     "5-year window: analysis_forecasts.mov_rsi (RSI "
                     "extreme-percentile buckets), mov_std (Bollinger-"
@@ -749,6 +775,15 @@ async def main() -> None:
              "other code's data is untouched (perf smoke-testing; "
              "default: the whole active universe).",
     )
+    ap.add_argument(
+        "--analyze", action="store_true",
+        help="ANALYZE the written tables after the build (planner-"
+             "statistics refresh; debugging / performance testing only "
+             "— default OFF: bulk builds skip it and leave the tables "
+             "to autovacuum, so a rebuild finishes ~90s faster. Run "
+             "temp_scripts/analyze_forecast_tables.py to refresh "
+             "on demand.)",
+    )
     add_force_arg(ap)
     args = ap.parse_args()
     force = args.force
@@ -785,7 +820,7 @@ async def main() -> None:
                f"{TABLE_MARGIN_RATIO}, "
                f"{TABLE_PE}, {TABLE_DIVIDEND}, {TABLE_BASE_RATE}",
         sec_types=", ".join(sec_types),
-        months=f"{args.years} annual snapshots + the rolling latest "
+        snapshots=f"{args.years} annual snapshots + the rolling latest "
                f"(window {header_specs[0].lower} .. "
                f"{header_specs[-1].stat_date})",
         mode="FORCE (delete + recompute all target snapshots)" if force
@@ -913,6 +948,37 @@ async def main() -> None:
               f"{total_div:,} dividend "
               f"written (with linked forecast_results rows) + "
               f"{total_base:,} base_rates rows")
+
+        # ---- post-build ANALYZE (planner-statistics refresh) ---------
+        # A bulk rewrite leaves the primary's column statistics stale
+        # until autovacuum gets to them (hours on forecast_results),
+        # and every value-blind prepared-statement reader (node-pg —
+        # plans arrive BEFORE bind values) then misestimates into
+        # whole-table seq scans (the 2026-09-27 UI 30s+ regression).
+        # OPT-IN (--analyze): the refresh costs ~90s per full build,
+        # so routine builds skip it and only debugging / performance-
+        # testing runs pay it. temp_scripts/analyze_forecast_tables.py
+        # refreshes on demand.
+        if args.analyze:
+            await analyze_tables_async(conn, (
+                "analysis_forecasts.forecast_results",
+                "analysis_forecasts.forecast_identities",
+                "analysis_forecasts.mov_rsi",
+                "analysis_forecasts.mov_std",
+                "analysis_forecasts.mov_pairs",
+                "analysis_forecasts.mov_pairs_ema",
+                "analysis_forecasts.high_low_streaks",
+                "analysis_forecasts.margin_ratio_state",
+                "analysis_forecasts.pe_state",
+                "analysis_forecasts.dividend_state",
+                "analysis_forecasts.base_rates",
+                "analysis_forecasts.regime_weights",
+            ))
+        else:
+            logger.info(
+                "  skipping post-build ANALYZE (--analyze to refresh "
+                "planner statistics — debugging / performance testing "
+                "only)")
         print_wall_time(t0)
     finally:
         try:

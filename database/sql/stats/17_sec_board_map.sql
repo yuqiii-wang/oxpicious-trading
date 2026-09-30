@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS stats.sec_board_map (
 SELECT public.create_hash_partitions('stats', 'sec_board_map', 8);
 
 COMMENT ON TABLE  stats.sec_board_map               IS 'Listing-board identity/mix per security: stocks carry exactly ONE row (pct=100, own listing board); ETFs/indices carry one row per board present in their LATEST composition snapshot, pct = composition-weight share. Populated by builds.board_map; consumed by the code-trend header board tag.';
-COMMENT ON COLUMN stats.sec_board_map.code          IS 'Security code — stock/ETF WITH exchange suffix (000001.SZ, 510050.SS), index bare 6-digit (000300). Matches sec_classification.code / sec_composition.code conventions.';
+COMMENT ON COLUMN stats.sec_board_map.code          IS 'Security code — stock WITH exchange suffix (000001.SZ), ETF bare 6-digit (510050), index bare 6-digit (000300). Matches sec_classification.code / sec_composition.code conventions.';
 COMMENT ON COLUMN stats.sec_board_map.sec_type      IS 'Security type discriminator: stock, etf, or index. Carried so the API can filter without a classification join.';
 COMMENT ON COLUMN stats.sec_board_map.board         IS 'Listing board: MAIN (SSE/SZSE main board), STAR (科创板 688/689.SS), GEM (创业板 30xxxx.SZ), BSE (Beijing).';
 COMMENT ON COLUMN stats.sec_board_map.pct           IS 'Board share, percent. Stock rows: always 100. ETF/index rows: SUM(weight_pct of the board''s constituents) / SUM(weight_pct of ALL constituents with a known board) * 100 — the denominator EXCLUDES constituents whose board is unknown, so rows sum to ~100. Rounded to 2dp.';
@@ -65,3 +65,10 @@ COMMENT ON COLUMN stats.sec_board_map.snapshot_date IS 'Composition snapshot_dat
 
 CREATE INDEX IF NOT EXISTS idx_sec_board_map_sec_type
     ON stats.sec_board_map (sec_type);
+
+-- Idempotent migration (2026-09-30): strip the exchange suffix from ETF
+-- codes — ETF codes are BARE 6-digit everywhere now (stock rows keep
+-- their suffix; index codes were already bare).
+UPDATE stats.sec_board_map
+   SET code = split_part(code, '.', 1)
+ WHERE sec_type = 'etf' AND code ~ '^\d{6}\.';

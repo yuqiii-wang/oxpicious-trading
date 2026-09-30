@@ -34,7 +34,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Chip, Stack, Typography } from "@mui/material";
 import { BarChart as BarChartIcon } from "@mui/icons-material";
-import ChartCard from "@/components/ChartCard";
+import ChartCard from "@/shared/components/ChartCard";
 import RefreshButton from "@/components/RefreshButton";
 import CompositionPieChart from "@/components/CompositionPieChart";
 import QuarterlyChangesTable from "./QuarterlyChangesTable";

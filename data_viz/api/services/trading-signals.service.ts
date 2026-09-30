@@ -15,9 +15,14 @@
 //  • computeEligible(sec_type, date) — can the on-demand as-of evaluation
 //    run for the date? (ACTIVE strategies exist AND the date has daily
 //    closes.)
-//  • history(sec_type, code) — EVERY live_signals row of one code (newest
-//    first) behind the row-expansion panel: the history-signals table +
-//    the buy/sell markers on the code-trend chart.
+//  • history(sec_type, code[, date]) — EVERY signal event of one code
+//    (newest first) behind the row-expansion panel. Two source roles:
+//    analysis_signals.history_signals carries the PLOT (the multi-year
+//    record, every year); live.live_signals contributes ONLY the anchor's
+//    last 20 trading days (the recent slice, its ticks preferred there).
+//    The response also carries the window boundary so the UI can scope
+//    its history TABLE to the recent window while the PLOT keeps every
+//    marker.
 // ---------------------------------------------------------------------------
 import { queryRows, formatDate } from "./db.service.js";
 import type { QueryResultRow } from "pg";
@@ -57,6 +62,23 @@ export interface TradingSignalRow {
   /** The same confidence as the EXPECTED-MOVE PERCENT (confidence / 100,
    *  e.g. 0.87 = 0.87%) — the display number (text cells + tooltips). */
   confidence_pct: number;
+  /** The SAME bucket's ohlcv_boost cohort confidence (bp, ROUND(10000 ×
+   *  the @boost child row's confidence) — the ohlcv-score-trust-weighted
+   *  measurement of the same trigger days). ADD-ON context, never a
+   *  gate; null = the cohort never registered or the family carries no
+   *  ohlcv children (mov_std / the pair-cross families). Live rows
+   *  only — null on history arm rows. */
+  confidence_boost: number | null;
+  /** confidence_boost / 100 as the expected-move PERCENT — the
+   *  parenthetical add-on's display number. */
+  confidence_boost_pct: number | null;
+  /** The SAME bucket's ohlcv_selection cohort confidence (bp — the
+   *  favorable-anatomy subset's own dir_ave; bottom side only, the top
+   *  side carries no selection child). Same add-on rule as
+   *  confidence_boost. */
+  confidence_selection: number | null;
+  /** confidence_selection / 100 as the expected-move PERCENT. */
+  confidence_selection_pct: number | null;
   is_day_close_trigger: boolean;
   /** The breach bar's DATE market regime — the stats.market_regimes
    *  day label (calm/hot/panic/quiet). Context, not a gate: the breach
@@ -156,6 +178,10 @@ export async function fetchTriggeredSignals(
             s.signal_threshold::float8     AS signal_threshold,
             s.confidence,
             (s.confidence::float8 / 100.0) AS confidence_pct,
+            s.confidence_boost,
+            (s.confidence_boost::float8 / 100.0) AS confidence_boost_pct,
+            s.confidence_selection,
+            (s.confidence_selection::float8 / 100.0) AS confidence_selection_pct,
             s.is_day_close_trigger,
             s.regime_state,
             (SELECT count(DISTINCT ls.date)::int
@@ -224,58 +250,192 @@ export async function isTradingSignalComputeEligible(
   return rows[0]?.eligible === true;
 }
 
-/** Every live_signals row of ONE code (newest first, confidence DESC within
+/** The history endpoint's result: every signal event of the code PLUS the
+ *  recent-window boundary the UI scopes its history TABLE to (the PLOT
+ *  renders all rows as markers). */
+export interface TradingSignalHistoryResult {
+  signals: TradingSignalRow[];
+  /** 'YYYY-MM-DD' — the 20th-most-recent distinct close date BEFORE the
+   *  anchor's window: signal rows with date > recent_window_start (and
+   *  <= the anchor) are the anchor's last 20 trading days — the same
+   *  window the main table's count_20d counts over. null when the
+   *  sec_type has fewer than 20 baseline closes (the table then shows
+   *  everything there is). */
+  recent_window_start: string | null;
+}
+
+/** Every signal event of ONE code (newest first, confidence DESC within
  *  a day) — the row-expansion panel's history table + trend-chart markers.
- *  Optional signal_type / signal_sub_type narrow the history to one signal
- *  family; omitted = all of the code's signals. */
+ *  Two source roles, joined per (config, day) with the live tick winning:
+ *    • analysis_signals.history_signals — the PLOT BULK: the multi-year
+ *      event record (a year-end snapshot owns its calendar year, the
+ *      rolling latest owns [Jan 1, its key]; 15:00 day-close anchors),
+ *    • live.live_signals — the RECENT 20-TRADING-DAY SLICE ONLY: the
+ *      recorded breaches inside (win_start, anchor]. Older days belong to
+ *      the history record — the union never re-scans them.
+ *  Optional signal_type / signal_sub_type narrow both sources to one
+ *  signal family. `date` ('YYYY-MM-DD', the viewed day) anchors the
+ *  window; omitted = the newest baseline close. */
 export async function fetchTradingSignalHistory(
   secType: string | null | undefined,
   code: string,
   signalType?: string | null,
   signalSubType?: string | null,
-): Promise<TradingSignalRow[]> {
+  date?: string | null,
+): Promise<TradingSignalHistoryResult> {
   const st = assertSecType(secType);
   const c = (code ?? "").trim();
   if (!c) {
     throw Object.assign(new Error("code is required"), { status: 400 });
   }
-  const conditions = ["s.sec_type = $1", "s.code = $2"];
+  // Shared predicate — applied inside BOTH scans so the optional family
+  // filters prune rows before the union/dedup.
+  const predicates = ["s.sec_type = $1", "s.code = $2"];
   const params: unknown[] = [st, c];
   if (signalType) {
     params.push(signalType.trim());
-    conditions.push(`s.signal_type = $${params.length}`);
+    predicates.push(`s.signal_type = $${params.length}`);
   }
   if (signalSubType) {
     params.push(signalSubType.trim());
-    conditions.push(`s.signal_sub_type = $${params.length}`);
+    predicates.push(`s.signal_sub_type = $${params.length}`);
   }
+  const where = predicates.join(" AND ");
+  // The window anchor: the viewed day when given (ISO-guarded), else the
+  // newest baseline close ('infinity' upper bound). The win CTE walks back
+  // 20 DISTINCT close dates from it — the count_20d window, verbatim.
+  const anchor = date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())
+    ? date.trim() : null;
+  if (anchor) params.push(anchor);
+  const anchorExpr = anchor
+    ? `$${params.length}::date`
+    : `'infinity'::date`;
   const rows = await queryRows<TradingSignalRow & QueryResultRow>(
-    `SELECT s.code,
+    `WITH win AS (
+        -- 20th-most-recent DISTINCT close date before the anchor:
+        -- (win_start, anchor] spans exactly the last 20 trading days.
+        SELECT win_start
+        FROM (
+            SELECT DISTINCT date AS win_start
+            FROM ${BASIC_STATS_TABLE[st]!}
+            WHERE date <= ${anchorExpr} AND close IS NOT NULL
+            ORDER BY win_start DESC
+            OFFSET 19 LIMIT 1
+        ) w
+     ),
+     recent AS (
+        -- THE 20d SLICE — live tier ONLY: recorded breaches inside the
+        -- anchor's last 20 trading days (the count_20d window). The live
+        -- table contributes nothing outside this window — older days
+        -- belong to the history record below, so the union never
+        -- re-scans live's back catalog.
+        SELECT s.code,
+               s.sec_type,
+               s.signal_type,
+               s.signal_sub_type,
+               s.date,
+               s.time,
+               s.action,
+               s.signal_excess::float8        AS signal_excess,
+               s.signal_excess_pct::float8    AS signal_excess_pct,
+               s.signal::float8               AS signal,
+               s.signal_threshold::float8     AS signal_threshold,
+               s.confidence,
+               (s.confidence::float8 / 100.0) AS confidence_pct,
+               s.confidence_boost,
+               (s.confidence_boost::float8 / 100.0) AS confidence_boost_pct,
+               s.confidence_selection,
+               (s.confidence_selection::float8 / 100.0) AS confidence_selection_pct,
+               s.is_day_close_trigger,
+               s.regime_state
+        FROM live.live_signals s
+        WHERE ${where}
+          AND s.date > (SELECT win_start FROM win)
+          AND s.date <= ${anchorExpr}
+     ),
+     history AS (
+        -- THE PLOT BULK — the multi-year record, every year the strategy
+        -- tier registered (15:00 day-close anchors). The cohort add-on
+        -- confidences exist only on live rows — NULL placeholders keep
+        -- the union's column lists aligned (the @boost/@selection
+        -- children appear here as their own config rows instead).
+        SELECT s.code,
+               s.sec_type,
+               s.signal_type,
+               s.signal_sub_type,
+               s.date,
+               s.time,
+               s.action,
+               s.signal_excess::float8        AS signal_excess,
+               s.signal_excess_pct::float8    AS signal_excess_pct,
+               s.signal::float8               AS signal,
+               s.signal_threshold::float8     AS signal_threshold,
+               s.confidence,
+               (s.confidence::float8 / 100.0) AS confidence_pct,
+               NULL::int                      AS confidence_boost,
+               NULL::float8                   AS confidence_boost_pct,
+               NULL::int                      AS confidence_selection,
+               NULL::float8                   AS confidence_selection_pct,
+               s.is_day_close_trigger,
+               s.regime_state
+        FROM analysis_signals.history_signals s
+        WHERE ${where}
+     ),
+     combined AS (
+        SELECT h.* FROM history h
+        UNION ALL
+        SELECT r.* FROM recent r
+     ),
+     deduped AS (
+        -- One record per (config, day). Inside the window a live tick
+        -- wins over the history anchor (earliest first — state families
+        -- re-flag on every qualifying tick while the breach persists);
+        -- outside it history stands alone. A stronger confidence breaks
+        -- remaining ties (the retired day-close mirror rows).
+        SELECT d.*,
+               row_number() OVER (
+                   PARTITION BY d.signal_type, d.signal_sub_type, d.date
+                   ORDER BY d.is_day_close_trigger, d.time,
+                            d.confidence DESC
+               ) AS rn
+        FROM combined d
+     ),
+     name AS (
+        SELECT i.name FROM ${IDENTITY_TABLE[st]!} i
+        WHERE i.code = $2
+        ORDER BY i.date DESC LIMIT 1
+     )
+     SELECT r.code,
             n.name                       AS code_name,
-            s.sec_type,
-            s.signal_type,
-            s.signal_sub_type,
-            to_char(s.date, 'YYYY-MM-DD') AS date,
-            to_char(s.time, 'HH24:MI')    AS time,
-            s.action,
-            s.signal_excess::float8       AS signal_excess,
-            s.signal_excess_pct::float8    AS signal_excess_pct,
-            s.signal::float8              AS signal,
-            s.signal_threshold::float8     AS signal_threshold,
-            s.confidence,
-            (s.confidence::float8 / 100.0) AS confidence_pct,
-            s.is_day_close_trigger,
-            s.regime_state
-     FROM live.live_signals s
-     LEFT JOIN LATERAL (
-       SELECT i.name FROM ${IDENTITY_TABLE[st]!} i
-       WHERE i.code = s.code
-       ORDER BY i.date DESC LIMIT 1
-     ) n ON TRUE
-     WHERE ${conditions.join(" AND ")}
-     ORDER BY s.date DESC, s.time DESC, s.confidence DESC
-     LIMIT 1000`,
+            r.sec_type,
+            r.signal_type,
+            r.signal_sub_type,
+            to_char(r.date, 'YYYY-MM-DD') AS date,
+            to_char(r.time, 'HH24:MI')    AS time,
+            r.action,
+            r.signal_excess,
+            r.signal_excess_pct,
+            r.signal,
+            r.signal_threshold,
+            r.confidence,
+            r.confidence_pct,
+            r.is_day_close_trigger,
+            r.regime_state,
+            (SELECT to_char(win_start, 'YYYY-MM-DD') FROM win)
+                AS recent_window_start
+     FROM deduped r
+     LEFT JOIN name n ON TRUE
+     WHERE r.rn = 1
+     ORDER BY r.date DESC, r.time DESC, r.confidence DESC
+     LIMIT 2000`,
     params,
   );
-  return rows;
+  // The window boundary rides every row (one scalar subquery) — peel it
+  // off the first row and strip it so `signals` stays pure event rows.
+  const recent_window_start = rows[0]?.recent_window_start ?? null;
+  const signals = rows.map((r) => {
+    const { recent_window_start: _win, ...rest } = r;
+    return rest;
+  });
+  return { signals, recent_window_start };
 }

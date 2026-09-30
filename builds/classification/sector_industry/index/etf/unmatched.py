@@ -3,9 +3,9 @@
 The ETF→index CSV (etf_index_map_*.csv) contains only actual ETFs.  However,
 ``stats.v_etf_margin`` tracks ALL exchange-traded funds — including:
 
-  * Structured/leveraged split-share funds (分级基金, 150xxx.SZ) — A/B shares
+  * Structured/leveraged split-share funds (分级基金, 150xxx) — A/B shares
     of leveraged funds, mostly delisted after the 2020 regulatory ban.
-  * LOF (Listed Open-End Funds, 16xxxx.SZ) — regular open-end funds traded
+  * LOF (Listed Open-End Funds, 16xxxx) — regular open-end funds traded
     on exchanges (e.g. 南方500, 国泰医药, 恒生H股).
   * Other active/主题 funds with exchange codes.
 
@@ -74,7 +74,7 @@ def _classify_fund_by_name(clean_name: str):
 async def fetch_unmatched_funds(conn) -> list[dict]:
     """Fetch exchange-traded funds from v_etf_margin not yet classified.
 
-    Returns rows with 'code' (e.g. '150008.SZ') and 'name'.
+    Returns rows with 'code' (bare, e.g. '150008') and 'name'.
     Only includes codes with >= 40 trading days (matching the UI threshold).
     """
     if conn is None:

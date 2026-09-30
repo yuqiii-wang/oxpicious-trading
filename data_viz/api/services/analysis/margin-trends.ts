@@ -104,19 +104,27 @@ const META_SQL = `
 //  Returns (industry_id, code, name) for populating the L3 items[] in each
 //  IndustryNode, so SecClassificationNav shows non-zero counts + clickable
 //  security chips when an industry is selected.
+//
+//  The DISTINCT runs BEFORE the sec_classification LATERAL name lookup:
+//  deduping first gives ~200 lateral probes instead of one per raw series
+//  row (~325k), which made the themes endpoint take 370-670ms (2026-09-29).
 // ----------------------------------------------------------------------------
 const INDEX_ITEMS_SQL = `
-  SELECT DISTINCT s.industry_id,
-         s.index_code AS code,
-         COALESCE(NULLIF(sc.name, ''), s.index_code) AS name
-  FROM analysis.margin_index_series s
+  WITH distinct_codes AS (
+    SELECT DISTINCT industry_id, index_code
+    FROM analysis.margin_index_series
+    WHERE industry_id IS NOT NULL AND industry_id <> ''
+  )
+  SELECT d.industry_id,
+         d.index_code AS code,
+         COALESCE(NULLIF(sc.name, ''), d.index_code) AS name
+  FROM distinct_codes d
   LEFT JOIN LATERAL (
     SELECT name FROM stats.sec_classification
-    WHERE code = s.index_code AND type = 'index' AND is_active = TRUE
+    WHERE code = d.index_code AND type = 'index' AND is_active = TRUE
     LIMIT 1
   ) sc ON TRUE
-  WHERE s.industry_id IS NOT NULL AND s.industry_id <> ''
-  ORDER BY s.index_code
+  ORDER BY d.index_code
 `;
 
 const ETF_ITEMS_SQL = `
@@ -246,12 +254,20 @@ export async function listMarginTrendStrategyThemes(): Promise<StrategyNode[]> {
 //    ETFs (via sec_classification parent_index_is_primary). Securities =
 //    the industry's ETF codes with their name labels.
 // ----------------------------------------------------------------------------
+//  The close join is a LEFT JOIN LATERAL per-row PK probe on
+//  index_basic_stats/etf_basic_stats: a plain JOIN made the planner
+//  hash-join and seq-scan the whole basic-stats table (~830k index /
+//  all etf rows) per request — the ETF branch took 2.6-3.1s (2026-09-29).
+// ----------------------------------------------------------------------------
 const INDEX_SERIES_SQL = `
   SELECT s.index_code, s.date, s.index_margin_balance, s.index_margin_buy,
          ib.close
   FROM analysis.margin_index_series s
-  LEFT JOIN stats.index_basic_stats ib
-    ON ib.code = s.index_code AND ib.date = s.date
+  LEFT JOIN LATERAL (
+    SELECT close FROM stats.index_basic_stats b
+    WHERE b.code = s.index_code AND b.date = s.date
+    LIMIT 1
+  ) ib ON TRUE
   WHERE s.industry_id = $1::text
   ORDER BY s.index_code, s.date
 `;
@@ -282,8 +298,11 @@ const ETF_SECURITIES_SQL = `
 const ETF_SERIES_SQL = `
   SELECT e.code, e.date, e.rz_balance, e.rz_buy, eb.close
   FROM stats.etf_liquidity_margin e
-  LEFT JOIN stats.etf_basic_stats eb
-    ON eb.code = e.code AND eb.date = e.date
+  LEFT JOIN LATERAL (
+    SELECT close FROM stats.etf_basic_stats b
+    WHERE b.code = e.code AND b.date = e.date
+    LIMIT 1
+  ) eb ON TRUE
   WHERE e.code IN (
     SELECT sc.code FROM stats.sec_classification sc
     WHERE sc.type = 'etf'
@@ -310,10 +329,13 @@ export async function getMarginIndustrySeries(
   let industryLabel = industryId;
 
   if (attribution === "index") {
-    const secRows = await queryRows<DbSecurityRow>(INDEX_SECURITIES_SQL, [industryId]);
+    // Securities + series in parallel (the label probe needs securities).
+    const [secRows, rows] = await Promise.all([
+      queryRows<DbSecurityRow>(INDEX_SECURITIES_SQL, [industryId]),
+      queryRows<DbIndexSeriesRow>(INDEX_SERIES_SQL, [industryId]),
+    ]);
     securities = secRows.map((r) => ({ code: r.code, label: r.name }));
 
-    const rows = await queryRows<DbIndexSeriesRow>(INDEX_SERIES_SQL, [industryId]);
     seriesRows = rows.map((r) => ({
       code: r.index_code,
       date: formatDate(r.date),
@@ -334,10 +356,12 @@ export async function getMarginIndustrySeries(
       }
     }
   } else {
-    const secRows = await queryRows<DbSecurityRow>(ETF_SECURITIES_SQL, [industryId]);
+    const [secRows, rows] = await Promise.all([
+      queryRows<DbSecurityRow>(ETF_SECURITIES_SQL, [industryId]),
+      queryRows<DbEtfSeriesRow>(ETF_SERIES_SQL, [industryId]),
+    ]);
     securities = secRows.map((r) => ({ code: r.code, label: r.name }));
 
-    const rows = await queryRows<DbEtfSeriesRow>(ETF_SERIES_SQL, [industryId]);
     seriesRows = rows.map((r) => ({
       code: r.code,
       date: formatDate(r.date),

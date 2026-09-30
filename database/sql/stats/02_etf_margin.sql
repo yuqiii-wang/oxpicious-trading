@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS stats.etf_identity (
 
     CONSTRAINT pk_etf_identity PRIMARY KEY (code, date),
     CONSTRAINT chk_etf_identity_code_format
-        CHECK (code ~ '^\d{6}\.(SZ|SS|SH)$')
+        CHECK (code ~ '^\d{6}$')
 ) PARTITION BY HASH (code);
 
 -- Native hash partitions (8) keyed by code — created via the shared util
@@ -26,13 +26,16 @@ SELECT public.create_hash_partitions('stats', 'etf_identity', 8);
 
 -- Idempotent migration: replace the legacy code_suffix column with the
 -- canonical exchange column (mirroring the canonical source-CSV schema).
+-- Suffix-guarded: bare codes (post-2026-09-30 convention, OTC feeders)
+-- never enter — split_part on them would write '' into exchange.
 UPDATE stats.etf_identity
    SET exchange = split_part(code, '.', 2)
- WHERE exchange IS NULL OR exchange = '';
+ WHERE (exchange IS NULL OR exchange = '')
+   AND code ~ '^\d{6}\.';
 
 COMMENT ON TABLE  stats.etf_identity                 IS 'ETF identity: one row per (date, etf_code). PK (code, date) shared by all ETF sub-tables. Native HASH partitioned by code.';
-COMMENT ON COLUMN stats.etf_identity.code           IS 'ETF ticker with exchange suffix, e.g. "159007.SZ" (SZSE) or "510050.SS" (SSE).';
-COMMENT ON COLUMN stats.etf_identity.exchange       IS 'Exchange of the code suffix: "SZ" or "SS". Carried from the canonical source-CSV exchange column; replaces the legacy code_suffix column.';
+COMMENT ON COLUMN stats.etf_identity.code           IS 'ETF/fund code, BARE 6-digit (e.g. "159007" SZSE, "510050" SSE) — the exchange suffix was removed 2026-09-30 (stocks keep theirs). OTC ETF feeder funds (联接基金, stats.sec_etf_links.feeder_code, loaded by builds.etf.feeder_nav) live here bare as well.';
+COMMENT ON COLUMN stats.etf_identity.exchange       IS 'Listing venue: "SS" or "SZ" for exchange-listed ETFs, carried from the canonical source-CSV exchange column; NULL for OTC feeder funds (no listing). Authoritative listed-vs-OTC discriminator — never derive it from the code (the code is bare).';
 
 -- ----------------------------------------------------------------------------
 -- Table: etf_ohlcv
@@ -49,7 +52,6 @@ CREATE TABLE IF NOT EXISTS stats.etf_basic_stats (
     pct_change                NUMERIC(10,4),
     pe                        NUMERIC(18,4),
     eps                       NUMERIC(18,6),
-    is_close_estimated        BOOLEAN       NOT NULL DEFAULT FALSE,
     is_ohl_estimated          BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins        BOOLEAN       NOT NULL DEFAULT FALSE,
 
@@ -62,7 +64,6 @@ CREATE TABLE IF NOT EXISTS stats.etf_basic_stats (
 SELECT public.create_hash_partitions('stats', 'etf_basic_stats', 8);
 
 COMMENT ON TABLE  stats.etf_basic_stats                    IS 'ETF raw basic_stats (yuan) + pe (harmonic-weighted constituent PE).';
-COMMENT ON COLUMN stats.etf_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index/ETF (highest composition shared weight > 60%). If no proxy qualifies, prev_close is carried forward.';
 COMMENT ON COLUMN stats.etf_basic_stats.is_ohl_estimated  IS 'TRUE when open/high/low were synthesized (not from source CSV) because the source row carries close-only data. Synthesis: open = previous close of the same code (NULL when no predecessor exists), high = low = close. FALSE when any real OHLC component came from the source.';
 COMMENT ON COLUMN stats.etf_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future ETF intraday support).';
 COMMENT ON COLUMN stats.etf_basic_stats.pe                 IS 'Price-to-earnings ratio (PE). Computed by builds.etf via HARMONIC weighting of constituent stock PE from stats.stock_basic_stats by the LATEST stats.sec_composition snapshot (source_type=etf, temporal extrapolation): PE_etf = SUM(w_i) / SUM(w_i / PE_i). Loss-making constituents (NULL PE) excluded from both numerator and denominator. NULL when no composition or no constituent has positive PE.';
@@ -196,15 +197,24 @@ CREATE TABLE IF NOT EXISTS stats.etf_intraday_5min (
     change                    NUMERIC(18,4),
     change_pct                NUMERIC(10,4),
 
-    CONSTRAINT pk_etf_intraday_5min PRIMARY KEY (code, date, time),
-    CONSTRAINT fk_etf_intraday_5min_date_code FOREIGN KEY (code, date) REFERENCES stats.etf_identity(code, date)
+    CONSTRAINT pk_etf_intraday_5min PRIMARY KEY (code, date, time)
 ) PARTITION BY HASH (code);
 
+-- Idempotent migration: no FK to etf_identity on the streamer-owned bar
+-- table. The streamer upserts identity rows before bars itself, and an FK
+-- here made TRUNCATE stats.etf_identity CASCADE (builds.etf --force) wipe
+-- the WHOLE bar history as collateral — streamer-owned data no build
+-- restores. Same migration applied to index/stock/options intraday tables.
+ALTER TABLE stats.etf_intraday_5min
+    DROP CONSTRAINT IF EXISTS fk_etf_intraday_5min_date_code;
+
 -- Idempotent migration: replace the legacy code_suffix column with exchange.
+-- Suffix-guarded so bare codes never write '' into exchange.
 UPDATE stats.etf_intraday_5min
    SET exchange = split_part(code, '.', 2)
- WHERE exchange IS NULL OR exchange = '';
-COMMENT ON COLUMN stats.etf_intraday_5min.exchange IS 'Exchange of the code suffix: "SZ" or "SS". Set by the streaming loaders; replaces the legacy code_suffix column.';
+ WHERE (exchange IS NULL OR exchange = '')
+   AND code ~ '^\d{6}\.';
+COMMENT ON COLUMN stats.etf_intraday_5min.exchange IS 'Listing venue: "SZ" or "SS", set by the streaming loaders; NULL should not occur (streamer covers listed funds only).';
 
 -- Native hash partitions (16) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
@@ -262,3 +272,83 @@ CREATE INDEX IF NOT EXISTS idx_etf_margin_split_events
 
 CREATE INDEX IF NOT EXISTS idx_etf_intraday_5min_date
     ON stats.etf_intraday_5min (date);
+
+-- ----------------------------------------------------------------------------
+-- Idempotent migration (2026-09-30): strip the exchange suffix from ETF
+-- codes — ETF/fund codes are BARE 6-digit everywhere now (stocks keep
+-- their .SS/.SZ/.BJ/.HK suffix). Listed-vs-OTC is discriminated by the
+-- exchange column (SS/SZ = listed, NULL = OTC feeder), never by the code.
+--
+-- Atomic DO block (single statement → single transaction): collision
+-- pre-check → drop the 4 identity FKs → strip code on all 6 tables
+-- (hash-partition row movement: expect a one-time WAL burst; see
+-- REPLICA_SYNC.md) → re-add FKs (plain ADD CONSTRAINT — NOT VALID is
+-- unsupported on partitioned tables in PG17; validation of the ~1M-row
+-- tables completes in seconds inside the same transaction).
+-- Re-running is a no-op: the strip is guarded on suffix presence.
+-- ----------------------------------------------------------------------------
+DO $$
+DECLARE
+    def        text;
+    n_suffixed bigint;
+    n_collide  bigint;
+BEGIN
+    -- A stripped code must not already exist as a bare row (prefix
+    -- families are disjoint by design — this is a belt-and-braces guard).
+    SELECT count(*) INTO n_collide
+      FROM stats.etf_identity i
+     WHERE i.code ~ '^\d{6}\.'
+       AND EXISTS (SELECT 1 FROM stats.etf_identity b
+                    WHERE b.code = split_part(i.code, '.', 1));
+    IF n_collide > 0 THEN
+        RAISE EXCEPTION
+            'stats.etf_identity: % suffixed codes would collide with existing bare codes',
+            n_collide;
+    END IF;
+
+    SELECT count(*) INTO n_suffixed
+      FROM stats.etf_identity WHERE code ~ '^\d{6}\.';
+    IF n_suffixed > 0 THEN
+        ALTER TABLE stats.etf_basic_stats      DROP CONSTRAINT fk_etf_basic_stats_date_code;
+        ALTER TABLE stats.etf_tech_stats       DROP CONSTRAINT fk_etf_tech_stats_date_code;
+        ALTER TABLE stats.etf_adjustment       DROP CONSTRAINT fk_etf_adjustment_date_code;
+        ALTER TABLE stats.etf_liquidity_margin DROP CONSTRAINT fk_etf_liquidity_margin_date_code;
+
+        UPDATE stats.etf_identity         SET code = split_part(code, '.', 1) WHERE code ~ '^\d{6}\.';
+        UPDATE stats.etf_basic_stats      SET code = split_part(code, '.', 1) WHERE code ~ '^\d{6}\.';
+        UPDATE stats.etf_tech_stats       SET code = split_part(code, '.', 1) WHERE code ~ '^\d{6}\.';
+        UPDATE stats.etf_adjustment       SET code = split_part(code, '.', 1) WHERE code ~ '^\d{6}\.';
+        UPDATE stats.etf_liquidity_margin SET code = split_part(code, '.', 1) WHERE code ~ '^\d{6}\.';
+        UPDATE stats.etf_intraday_5min    SET code = split_part(code, '.', 1) WHERE code ~ '^\d{6}\.';
+
+        ALTER TABLE stats.etf_basic_stats
+            ADD CONSTRAINT fk_etf_basic_stats_date_code
+            FOREIGN KEY (code, date) REFERENCES stats.etf_identity(code, date);
+        ALTER TABLE stats.etf_tech_stats
+            ADD CONSTRAINT fk_etf_tech_stats_date_code
+            FOREIGN KEY (code, date) REFERENCES stats.etf_identity(code, date);
+        ALTER TABLE stats.etf_adjustment
+            ADD CONSTRAINT fk_etf_adjustment_date_code
+            FOREIGN KEY (code, date) REFERENCES stats.etf_identity(code, date);
+        ALTER TABLE stats.etf_liquidity_margin
+            ADD CONSTRAINT fk_etf_liquidity_margin_date_code
+            FOREIGN KEY (code, date) REFERENCES stats.etf_identity(code, date);
+    END IF;
+
+    -- Bare-only CHECK from any starting state (strict-suffixed, optional-
+    -- suffix relaxed, or already bare). Catches any missed suffixed writer.
+    -- (Probe is backslash-free: LIKE '\d' is an escaped 'd', not a literal
+    -- backslash-d — '{6}$' only occurs in the bare-only definition.)
+    SELECT pg_get_constraintdef(oid) INTO def
+      FROM pg_constraint
+     WHERE conname = 'chk_etf_identity_code_format'
+       AND conrelid = 'stats.etf_identity'::regclass
+     LIMIT 1;
+    IF def IS NULL OR def NOT LIKE '%{6}$%' THEN
+        ALTER TABLE stats.etf_identity
+            DROP CONSTRAINT IF EXISTS chk_etf_identity_code_format;
+        ALTER TABLE stats.etf_identity
+            ADD CONSTRAINT chk_etf_identity_code_format
+            CHECK (code ~ '^\d{6}$');
+    END IF;
+END $$;

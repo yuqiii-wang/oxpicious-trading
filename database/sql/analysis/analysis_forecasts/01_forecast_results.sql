@@ -9,8 +9,8 @@
 --  first qualifying day, the moment the signal becomes observable) ×
 --  4 periods (the three forward horizons period ∈ {'next', '5d',
 --  '20d'} plus the weight-blended 'mixed' row — the FIXED-weight blend
---  of the three horizons at 5d 0.65 / next 0.25 / 20d 0.10 — see the
---  backfill below; the analysis_signals gate reads the delay-0 row so
+--  of the three horizons at 5d 0.65 / next 0.25 / 20d 0.10; the
+--  analysis_signals gate reads the delay-0 row so
 --  every forecast horizon of the same fresh signal trigger contributes
 --  to the signal). A persistent streak emits one trigger per day
 --  0..min(run_len - 1, 5), so each delay row's forward stats are
@@ -165,7 +165,18 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_results (
     -- row-local per period like trigger_dates.
     trigger_excess      NUMERIC(10,6)[],
 
-    CONSTRAINT pk_forecast_results PRIMARY KEY (forecast_id, period)
+    -- (The OHLC derived-population markers is_ohlc_boosted /
+    -- is_ohlc_selection lived here on 2026-09-26 and MOVED to
+    -- analysis_forecasts.forecast_identities — since 2026-09-27 as the
+    -- single nullable TEXT column, RENAMED ohlcv_type on 2026-09-27 when
+    -- the vol×amt siblings joined (a registry that carries amount-state
+    -- populations is no longer OHLC-only). They are identity-level
+    -- attributes (one verdict per bucket-identity population, each
+    -- population its own forecast_id), not per-result-row state. See
+    -- the identities table below.)
+
+    CONSTRAINT pk_forecast_results
+        PRIMARY KEY (forecast_id, delay, period)
 ) PARTITION BY HASH (forecast_id);
 
 -- Native hash partitions (16) keyed on forecast_id — all 4 periods of
@@ -173,36 +184,6 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_results (
 -- still works fine on forecast_id filters. Created via the shared util
 -- (database/sql/00_partition_utils.sql); children named _p00.._p15
 SELECT public.create_hash_partitions('analysis_forecasts', 'forecast_results', 16);
-
--- 2026-09 ratio removal: max_low_change_ratio (the within-window close
--- swing amplitude) is retired — dropped here so existing installations
--- lose the column; fresh installs never create it. The UI's Recent
--- Movements forecast table no longer surfaces it.
-ALTER TABLE analysis_forecasts.forecast_results
-    DROP COLUMN IF EXISTS max_low_change_ratio;
-
--- 2026-09-22 period-end close: ave_close (the mean n-day period-end
--- close over the row's valid trigger days) added — idempotent ADD for
--- existing installations; fresh installs create it above. Existing
--- rows stay NULL until their snapshot's refresh-window rewrite or a
--- --force rebuild.
-ALTER TABLE analysis_forecasts.forecast_results
-    ADD COLUMN IF NOT EXISTS ave_close NUMERIC(14,6);
-
--- 2026-09-25 reversal-probability removal: reverse_prob (the swing-
--- aware favorable-touch probability) and threshold (its bar) are
--- retired — dropped here so existing installations lose the columns;
--- fresh installs never create them. The signals gate reads the
--- sign-aligned dir_ave alone and confidence re-sources to it (see
--- analysis_signals); the touching CHECKs go with the columns.
-ALTER TABLE analysis_forecasts.forecast_results
-    DROP COLUMN IF EXISTS reverse_prob;
-ALTER TABLE analysis_forecasts.forecast_results
-    DROP COLUMN IF EXISTS threshold;
-ALTER TABLE analysis_forecasts.forecast_results
-    DROP CONSTRAINT IF EXISTS chk_forecast_results_reverse_prob;
-ALTER TABLE analysis_forecasts.forecast_results
-    DROP CONSTRAINT IF EXISTS chk_forecast_results_threshold;
 
 -- 2026-09-25 delay-0 mixed-row index: the analysis_signals emit gate and
 -- the regime-weights evidence (analyze/analysis_forecasts/regime_weights.py)
@@ -302,15 +283,7 @@ COMMENT ON COLUMN analysis_forecasts.forecast_results.lookback_period IS 'Traili
 --    - writer: python -m analyze.analysis_forecasts COPYs one identity
 --      row per bucket alongside the motivation + result rows, and
 --      deletes the registry rows of every deleted forecast_id
---      (refresh / --force);
---    - backfill below: idempotent INSERT ... ON CONFLICT DO NOTHING
---      from every existing motivation table (guarded per table — fresh
---      installs apply 01_ before the motivation tables exist, in which
---      case the backfill is a no-op and the writer populates the
---      registry from its first run). Pre-existing rows keep the column
---      default streak_signal_days = 1; the per-bucket mean streak
---      lengths arrive with the --force rebuild (the migration precedent
---      of a retired result column).
+--      (refresh / --force).
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_identities (
@@ -321,6 +294,41 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_identities (
     bucket          TEXT           NOT NULL,  -- motivation table name refining this identity
     streak_signal_days INTEGER      NOT NULL DEFAULT 1,  -- mean run length per merged signal (whole days)
     delayed_signal_days INTEGER     NOT NULL DEFAULT 0,  -- mean ANCHOR DELAY of the bucket's emitted triggers (cap 5)
+
+    -- OHLCV derived-population marker (ohlcv_type — the 2026-09-27
+    -- OHLCV CONSOLIDATION: the 2026-09-26 BOOLEAN pair is_ohlc_boosted
+    -- / is_ohlc_selection, the ohlc_type → ohlcv_type rename and the
+    -- four legacy TEXT values gap_selection / gap_boost /
+    -- vol_selection / vol_boost are all retired — their day-0 axes
+    -- (the OHLC pattern, the amount state, the gap anatomy) live only
+    -- inside the ohlcv score now):
+    -- NULL on every PLAIN population — the parent forecasts (the
+    -- historical single-population rows every consumer read) and every
+    -- family / sec_type without derivations.
+    -- 'ohlcv_boost' marks the registry row of the OHLCV SCORE BOOST
+    -- child forecast — a related forecast (its own forecast_id)
+    -- derived from an already-computed mov_rsi forecast by weighting
+    -- each streak's day-0 ohlcv score: ONE trust-weighted number
+    -- fusing all three observable-at-day-0 axes (analyze.
+    -- analysis_forecasts.ohlcv_boost — score_bp = β_ohlc·ê_ohlc
+    -- [the stored OHLC pattern ladder] + β_vol·ê_vol [the vol_state ×
+    -- px_speed CELL ladder] + β_rsi·ê_rsi [the RSI tail depth past the
+    -- bucket's own percentile bar] + γ·ê_ohlc·ê_vol/100, translated to
+    -- weight w = max(1 + score/K, floor)) — the same-days formulation:
+    -- the child keeps the parent's FULL trigger population, only the
+    -- measurement is re-weighted. Bottom side, index + etf sec_types.
+    -- 'ohlcv_selection' marks the OHLCV SCORE SELECTION child — a
+    -- strict subset of the parent's triggers: the streaks whose day-0
+    -- ohlcv score clears the selection bar (score >= 0 bp — the
+    -- score-positive half; analyze.analysis_forecasts.ohlcv_selection).
+    -- Every selection population must read a POSITIVE sign-aligned
+    -- forward edge; one that does not means the bar or a ladder is
+    -- wrong — re-measure and fix, never ship a negative selection.
+    -- The derived populations are logically isolated mechanisms that
+    -- never co-occur on one forecast_id (each its own forecast_id),
+    -- so one column carries the verdict. Parent-population reads
+    -- filter ohlcv_type IS NULL.
+    ohlcv_type       TEXT,
 
     -- recorded build parameter (NOT a key member), as on every table
     lookback_period TEXT           NOT NULL DEFAULT '10y',
@@ -361,15 +369,16 @@ CREATE INDEX IF NOT EXISTS idx_forecast_identities_forecast_id
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.forecast_identities IS 'Identity registry of every forecast bucket: one row per forecast_id holding the shared identity (sec_type, code, stat_date) — the motivation tables store code alone as their partition key, so this is the ONLY table with the full identity — plus the bucket family (the motivation table name — join it on forecast_id for the family-specific axes), the bucket''s mean streak length per merged signal (streak_signal_days), the mean anchor delay (delayed_signal_days) and the recorded lookback_period. 1:1 with each motivation row and its forecast_results period × delay rows; forecast_ids come from the same sequence (forecast_results_forecast_id_seq). code = the forecast subject (security ticker). PK (code, forecast_id) on HASH (code) partitions — per-security searches prune to one partition; id-only lookups use idx_forecast_identities_forecast_id. Powers search by forecast_id (API / UI / python -m analyze.analysis_forecasts --search-forecast-id). Populated by the writer (same transaction as the motivation + result rows) and by the idempotent backfill in this file; base_rates is NOT in the registry (no forecast_id).';
+COMMENT ON TABLE analysis_forecasts.forecast_identities IS 'Identity registry of every forecast bucket: one row per forecast_id holding the shared identity (sec_type, code, stat_date) — the motivation tables store code alone as their partition key, so this is the ONLY table with the full identity — plus the bucket family (the motivation table name — join it on forecast_id for the family-specific axes), the bucket''s mean streak length per merged signal (streak_signal_days), the mean anchor delay (delayed_signal_days) and the recorded lookback_period. 1:1 with each motivation row and its forecast_results period × delay rows; forecast_ids come from the same sequence (forecast_results_forecast_id_seq). code = the forecast subject (security ticker). PK (code, forecast_id) on HASH (code) partitions — per-security searches prune to one partition; id-only lookups use idx_forecast_identities_forecast_id. Powers search by forecast_id (API / UI / python -m analyze.analysis_forecasts --search-forecast-id). Populated by the writer (same transaction as the motivation + result rows); base_rates is NOT in the registry (no forecast_id).';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.forecast_id IS 'Surrogate PK, allocated from the shared sequence analysis_forecasts.forecast_results_forecast_id_seq by the writer — the same id as the bucket''s motivation-table row and its forecast_results period × delay rows.';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
-COMMENT ON COLUMN analysis_forecasts.forecast_identities.code IS 'The forecast SUBJECT: the security ticker for the mov_* / margin_ratio_state / high_low_streaks families (ETF suffix e.g. "510050.SS"; index bare e.g. "000300").';
+COMMENT ON COLUMN analysis_forecasts.forecast_identities.code IS 'The forecast SUBJECT: the security ticker for the mov_* / margin_ratio_state / high_low_streaks families (ETF bare e.g. "510050"; index bare e.g. "000300"; stock suffixed e.g. "600008.SS").';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.stat_date IS 'Snapshot DATE on the ANNUAL grid (completed year-end; the running year is keyed at its year-end while its window ends at the latest available data date). The bucket was computed over the trailing 10-year window (stat_date - 10 years, stat_date] of the code''s own trading days.';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.bucket IS 'The motivation TABLE name whose axes refine this identity: mov_rsi / mov_std / mov_pairs / mov_pairs_ema / margin_ratio_state / high_low_streaks / pe_state / dividend_state. Join analysis_forecasts.<bucket> ON forecast_id for the family-specific bucket config (window / side / pct / k / states / streak band).';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.streak_signal_days IS 'The bucket''s mean streak length per SIGNAL — the number of days a signal is ACTIVE: the 2026-09 streak-merge groups runs of continuously-qualifying days into ONE forecast signal (emitting incremental anchors per the delay axis), so the event families (mov_rsi / mov_std / mov_pairs / mov_pairs_ema) record the MEAN run length over the bucket''s merged signals; the state families (margin_ratio_state) admit every qualifying day — a 1-day signal — and record 1; high_low_streaks records its config mean_day_count. INTEGER whole trading days (the fractional mean rounds half-up). Column default 1 (pre-streak backfill rows).';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.delayed_signal_days IS 'The bucket''s MEAN ANCHOR DELAY — the mean trading-day offset of the bucket''s emitted trigger anchors within their streaks (0 = the streak''s first qualifying day, when the signal becomes observable; a run of length d emits anchors at offsets 0..min(d - 1, 5), per-run mean (LEAST(d, 6) - 1) / 2.0), CAPPED at 5. 0 for 1-day signals (the state families / cross days — a single delay-0 trigger). INTEGER; column default 0 (pre-migration backfill rows; real means arrive with the refresh / --force rebuild).';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.lookback_period IS 'Recorded build parameter (NOT a key member): the trailing calendar window the bucket was computed over — ''10y'' = (stat_date - 10 years, stat_date]. Mirrors the same column on the motivation and result tables.';
+COMMENT ON COLUMN analysis_forecasts.forecast_identities.ohlcv_type IS 'The OHLCV derived-population verdict of this forecast_id — NULL on every plain population (the parent forecasts and every family / sec_type without derivations), ''ohlcv_boost'' on the OHLCV SCORE BOOST child forecast (a related forecast derived from an already-computed mov_rsi forecast by weighting each streak''s day-0 ohlcv score — ONE trust-weighted number fusing the three observable-at-day-0 axes: the stored OHLC pattern ladder + the vol_state × px_speed CELL ladder + the RSI tail depth past the bucket''s own percentile bar, score_bp = β_ohlc·ê_ohlc + β_vol·ê_vol + β_rsi·ê_rsi + γ·ê_ohlc·ê_vol/100 translated to weight w = max(1 + score/K, floor); analyze.analysis_forecasts.ohlcv_boost — the child keeps the parent''s FULL trigger population with score-weighted stats; bottom side, index + etf sec_types), and ''ohlcv_selection'' on the OHLCV SCORE SELECTION child forecast (a strict subset of the parent''s triggers: the streaks whose day-0 ohlcv score clears the selection bar, score >= 0 bp — analyze.analysis_forecasts.ohlcv_selection; every selection population must read a POSITIVE sign-aligned forward edge — a negative one means the bar or a ladder is wrong: re-measure and fix, never ship a negative selection). The 2026-09-27 OHLCV CONSOLIDATION retired the four legacy values gap_selection / gap_boost / vol_selection / vol_boost (and before them the BOOLEAN pair is_ohlc_selection / is_ohlc_boosted) — their day-0 axes live only inside the ohlcv score now. Each derived population is its own forecast_id; the selection child is a strict subset of the parent''s triggers, the boost child the same population re-weighted; the mechanisms never co-occur on one forecast_id. Parent-population reads filter ohlcv_type IS NULL.';
 
 -- ----------------------------------------------------------------------------
 --  Data-quality gates (CHECK constraints) — garbage-in protection for the
@@ -382,39 +391,10 @@ COMMENT ON COLUMN analysis_forecasts.forecast_identities.lookback_period IS 'Rec
 --  columns are gated without touching their NULL semantics. A validation
 --  failure surfaces REAL data bugs — fix the data, never the gate.
 -- ----------------------------------------------------------------------------
--- The period vocabulary narrowed with the 2026-09-20 horizon-60d
--- removal — drop the retired gate first (ensure_check_constraint
--- skips a same-named constraint regardless of its definition), then
--- re-add over the surviving periods. The '60d' rows are already gone
--- (purged by the migration above), so the validation scan passes.
--- 2026-09-25 replay gate: the drop is a MIGRATION step, but re-running it
--- unconditionally on every apply forced a NOT VALID re-add + a full-store
--- re-VALIDATE (a 34 GB scan across all 16 partitions) for a definition
--- that no longer changes. Skip when the surviving definition is already
--- in place (detected by the ABSENCE of the retired '60d' leg); fresh
--- installs (no constraint yet) and stores still carrying '60d' take the
--- drop + ensure path.
-DO $chk_period_gate$
-DECLARE
-    v_def text;
-BEGIN
-    SELECT pg_get_constraintdef(c.oid) INTO v_def
-    FROM pg_constraint c
-    WHERE c.conname = 'chk_forecast_results_period'
-      AND c.conrelid = 'analysis_forecasts.forecast_results'::regclass
-      AND c.contype = 'c';
-    IF v_def IS NOT NULL AND v_def NOT LIKE '%60d%' THEN
-        RAISE NOTICE '01_forecast_results.sql: chk_forecast_results_period already narrowed — skipping drop + re-validate';
-    ELSE
-        ALTER TABLE analysis_forecasts.forecast_results
-            DROP CONSTRAINT IF EXISTS chk_forecast_results_period;
-        SELECT public.ensure_check_constraint(
-            'analysis_forecasts.forecast_results',
-            'chk_forecast_results_period',
-            $chk$period IN ('next', '5d', '20d', 'mixed')$chk$);
-    END IF;
-END
-$chk_period_gate$;
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.forecast_results',
+    'chk_forecast_results_period',
+    $chk$period IN ('next', '5d', '20d', 'mixed')$chk$);
 SELECT public.ensure_check_constraint(
     'analysis_forecasts.forecast_results',
     'chk_forecast_results_occurrence_count',
@@ -422,37 +402,12 @@ SELECT public.ensure_check_constraint(
 
 -- forecast_identities: the family registry vocabulary, the sec_type
 -- domain, positive mean streak lengths, trigger delays in [0, 5].
--- The vocabulary drops the retired opp_pair_state (removed 2026-09
--- with its table) — DROP the same-named constraint first
--- (ensure_check_constraint skips a same-named constraint regardless of
--- its definition; the retirement purge in 00_schema.sql has already
--- deleted every opp_pair_state registry row, so the validation scan
--- passes). 2026-09-25 replay gate: skip the drop + NOT VALID re-add +
--- full-store re-VALIDATE when the surviving definition (no
--- opp_pair_state leg) is already in place — see the period gate above.
-DO $chk_bucket_gate$
-DECLARE
-    v_def text;
-BEGIN
-    SELECT pg_get_constraintdef(c.oid) INTO v_def
-    FROM pg_constraint c
-    WHERE c.conname = 'chk_forecast_identities_bucket'
-      AND c.conrelid = 'analysis_forecasts.forecast_identities'::regclass
-      AND c.contype = 'c';
-    IF v_def IS NOT NULL AND v_def NOT LIKE '%opp_pair_state%' THEN
-        RAISE NOTICE '01_forecast_results.sql: chk_forecast_identities_bucket already narrowed — skipping drop + re-validate';
-    ELSE
-        ALTER TABLE analysis_forecasts.forecast_identities
-            DROP CONSTRAINT IF EXISTS chk_forecast_identities_bucket;
-        SELECT public.ensure_check_constraint(
-            'analysis_forecasts.forecast_identities',
-            'chk_forecast_identities_bucket',
-            $chk$bucket IN ('mov_rsi', 'mov_std', 'mov_pairs', 'mov_pairs_ema',
-                            'margin_ratio_state',
-                            'high_low_streaks', 'pe_state', 'dividend_state')$chk$);
-    END IF;
-END
-$chk_bucket_gate$;
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.forecast_identities',
+    'chk_forecast_identities_bucket',
+    $chk$bucket IN ('mov_rsi', 'mov_std', 'mov_pairs', 'mov_pairs_ema',
+                    'margin_ratio_state',
+                    'high_low_streaks', 'pe_state', 'dividend_state')$chk$);
 SELECT public.ensure_check_constraint(
     'analysis_forecasts.forecast_identities',
     'chk_forecast_identities_sec_type',
@@ -461,34 +416,16 @@ SELECT public.ensure_check_constraint(
     'analysis_forecasts.forecast_identities',
     'chk_forecast_identities_streak_signal_days',
     $chk$streak_signal_days > 0$chk$);
--- The delay gate narrowed to the [0, 5] cap — drop the retired >= 0
--- form first (ensure_check_constraint skips a same-named constraint
--- regardless of its definition); the capped backfill above has already
--- brought every row inside the range, so the validation scan passes.
--- 2026-09-25 replay gate: skip when the capped definition is already in
--- place (detected by the presence of the '<=' upper bound — the retired
--- form was a bare >= 0) — see the period gate above.
-DO $chk_delay_gate$
-DECLARE
-    v_def text;
-BEGIN
-    SELECT pg_get_constraintdef(c.oid) INTO v_def
-    FROM pg_constraint c
-    WHERE c.conname = 'chk_forecast_identities_delayed_signal_days'
-      AND c.conrelid = 'analysis_forecasts.forecast_identities'::regclass
-      AND c.contype = 'c';
-    IF v_def IS NOT NULL AND v_def LIKE '%<=%' THEN
-        RAISE NOTICE '01_forecast_results.sql: chk_forecast_identities_delayed_signal_days already capped — skipping drop + re-validate';
-    ELSE
-        ALTER TABLE analysis_forecasts.forecast_identities
-            DROP CONSTRAINT IF EXISTS chk_forecast_identities_delayed_signal_days;
-        SELECT public.ensure_check_constraint(
-            'analysis_forecasts.forecast_identities',
-            'chk_forecast_identities_delayed_signal_days',
-            $chk$delayed_signal_days BETWEEN 0 AND 5$chk$);
-    END IF;
-END
-$chk_delay_gate$;
+-- The OHLCV derived-population verdict vocabulary — NULL (the plain
+-- parent population) passes: CHECKs pass on NULL.
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.forecast_identities',
+    'chk_forecast_identities_ohlcv_type',
+    $chk$ohlcv_type IN ('ohlcv_boost', 'ohlcv_selection')$chk$);
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.forecast_identities',
+    'chk_forecast_identities_delayed_signal_days',
+    $chk$delayed_signal_days BETWEEN 0 AND 5$chk$);
 
 SELECT public.validate_pending_checks('analysis_forecasts');
 

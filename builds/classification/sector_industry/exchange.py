@@ -10,7 +10,7 @@ The classification carries an ``exchange`` on every row.  Derivation rules:
     - code prefix 899 (北证)                             -> BJ
     - code prefix 000/930/931/932/950/990 (上证/中证)    -> SS
 
-  ETFs (code WITH .SS/.SZ/.BJ suffix):
+  ETFs (code BARE 6-digit — no exchange suffix since 2026-09-30):
     - listing venue from CSV 上市地 or the DB exchange column
     - override to HK when ETF/parent name matches HK keywords
       (港股通/恒生/沪港深/SHS/港美/沪深港/恒生科技/恒生互联网/...)

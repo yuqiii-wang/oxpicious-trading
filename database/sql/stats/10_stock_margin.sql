@@ -4,7 +4,7 @@
 --  to STOCK codes — ETF prefixes are excluded; loaded by builds.etf).
 --
 --  Split into: stock_adjustment (corp-action adj OHLC) + stock_margin (RZ/RQ)
---  Reconstruct via: v_stock_baseline view (see 99_reconstruct_views.sql —
+--  Reconstruct via: v_stock_daily view (see 99_reconstruct_views.sql —
 --  extended here to LEFT JOIN the two new tables).
 --
 --  Schema mirrors the ETF family (02_etf_margin.sql) for symmetry:
@@ -92,7 +92,7 @@ COMMENT ON COLUMN stats.stock_margin.total_balance IS 'rz_balance + rq_balance_a
 CREATE INDEX IF NOT EXISTS idx_stock_margin_date
     ON stats.stock_margin (date);
 
--- v_stock_baseline: authoritative definition lives in 99_reconstruct_views.sql
+-- v_stock_daily: authoritative definition lives in 99_reconstruct_views.sql
 -- (JOIN of stock_identity + stock_basic_stats + stock_tech_stats +
 -- stock_liquidity_margin). The earlier draft view block here was removed —
 -- it referenced stock_basic_stats.trading_shares, which actually lives in

@@ -39,7 +39,7 @@ async def fetch_price_vs_amt_source(
     """Fetch the REGISTRY build's source frame — price + trading_amount
     per (code, date) with the shared per-sec_type price conventions
     (PRICE_SOURCE / AMT_SOURCE — ETF = COALESCE(adj_close, close);
-    estimated closes excluded for etf/index).
+    close-less rows excluded via close IS NOT NULL).
 
     Returns an unbounded FULL-history frame (the trailing σ/z windows
     need the code's whole past) with columns [sec_type, code, date,

@@ -58,8 +58,8 @@ Note: CSV backfill (recovering missed data from archived CSV files) is
 handled by the download/archive modules, NOT by this streaming module.
 
 Requires tables from database/sql/stats/02_etf_margin.sql (etf_identity +
-etf_intraday_5min), 05_index_baseline.sql (index_identity + index_intraday_5min)
-and 06_stock_baseline.sql (stock_identity + stock_intraday_5min). Run those
+etf_intraday_5min), 05_index.sql (index_identity + index_intraday_5min)
+and 06_stock.sql (stock_identity + stock_intraday_5min). Run those
 SQL first.
 
 Usage:
@@ -99,6 +99,7 @@ from ._csv_backfill import BACKFILL_INTERVAL_SEC, backfill_all_csvs
 from ._fetch import fetch_snapshot
 from ._io import (
     _ensure_conn,
+    _recover_conn,
     get_intraday_progress,
     is_intraday_complete,
     load_bars,
@@ -107,6 +108,7 @@ from ._io import (
 from ._model import (
     DEFAULT_BAR_WINDOW,
     DEFAULT_POLL_INTERVAL_SEC,
+    AssetStream,
     aggregate_bars,
     in_trading_hours,
     next_trading_moment,
@@ -173,7 +175,51 @@ def _emit_options_bars(conn, asset: OptionsStream, trade_date: date, verb: str):
         logger.error(
             "options bar emission failed for %s: %s: %s",
             trade_date, type(e).__name__, e,
+            exc_info=True,
         )
+        conn = _recover_conn(conn)
+    return conn
+
+
+def _emit_asset_bars(
+    conn, asset: AssetStream, trade_date: date, verb: str, etf_member_codes: set,
+):
+    """Aggregate + upsert one 5-min bar window for stock/etf/index, isolated
+    from the other assets.
+
+    Same isolation contract as _emit_options_bars: a bad payload or a
+    rejected write on one asset (e.g. a CheckViolation on its identity
+    rows) must not kill the streamer or starve the other assets — the
+    window is dropped (the periodic CSV backfill recovers it) and the DB
+    session is rolled back / reconnected so the next asset writes on a
+    clean connection. Returns the (possibly reconnected) connection.
+    """
+    try:
+        identity_rows, bar_rows, bar_time = aggregate_bars(
+            asset, trade_date, etf_member_codes=etf_member_codes,
+        )
+        if bar_rows:
+            conn = _ensure_conn(conn)
+            load_bars(conn, asset, identity_rows, bar_rows)
+            logger.info(
+                "%s %d %s bars for %s %s (vol baseline=%d codes)",
+                verb, len(bar_rows), asset.name, trade_date, bar_time,
+                len(asset.prev_bar_cumvol),
+            )
+            # Index bars landed: sync the has_intraday_5mins flag on
+            # index_basic_stats for this date so the frontend knows
+            # intraday data is available.
+            if asset.name == "index":
+                n = sync_index_has_intraday_flag(conn, trade_date)
+                if n:
+                    logger.info("synced has_intraday_5mins=TRUE for %d index rows", n)
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "%s bar emission failed for %s: %s: %s",
+            asset.name, trade_date, type(e).__name__, e,
+            exc_info=True,
+        )
+        conn = _recover_conn(conn)
     return conn
 
 
@@ -322,16 +368,9 @@ def stream(
                     if asset.name == "options":
                         conn = _emit_options_bars(conn, asset, trade_date, "flushed")
                     else:
-                        identity_rows, bar_rows, bar_time = aggregate_bars(
-                            asset, trade_date, etf_member_codes=etf_member_codes,
+                        conn = _emit_asset_bars(
+                            conn, asset, trade_date, "flushed", etf_member_codes,
                         )
-                        if bar_rows:
-                            conn = _ensure_conn(conn)
-                            load_bars(conn, asset, identity_rows, bar_rows)
-                            logger.info(
-                                "flushed %d %s bars for %s %s",
-                                len(bar_rows), asset.name, trade_date, bar_time,
-                            )
                     asset.buffer.clear()
                 if once:
                     logger.info("--once set and outside trading hours; exiting.")
@@ -425,33 +464,45 @@ def stream(
             cycle_start = _time.time()
             once_done = False  # set when --once emits a bar this cycle
             for asset in assets:
-                if asset.name == "options":
-                    update_dt, snapshot = fetch_options_snapshot(
-                        session, asset.months, host_tracker=host_tracker,
-                    )
-                else:
-                    update_dt, snapshot = fetch_snapshot(
-                        session,
-                        list_url=asset.list_url,
-                        host_tracker=host_tracker,
-                        allowed_codes=asset.allowed_codes,
-                    )
+                # Per-asset isolation: a fetch or CSV-write failure on one
+                # asset skips only that asset's sample this cycle; the
+                # other assets keep streaming.
+                try:
+                    if asset.name == "options":
+                        update_dt, snapshot = fetch_options_snapshot(
+                            session, asset.months, host_tracker=host_tracker,
+                        )
+                    else:
+                        update_dt, snapshot = fetch_snapshot(
+                            session,
+                            list_url=asset.list_url,
+                            host_tracker=host_tracker,
+                            allowed_codes=asset.allowed_codes,
+                        )
 
-                if update_dt is None or not snapshot:
-                    logger.warning("Poll returned no %s data; skipping cycle.", asset.name)
+                    if update_dt is None or not snapshot:
+                        logger.warning("Poll returned no %s data; skipping cycle.", asset.name)
+                        continue
+
+                    asset.buffer.append((update_dt, snapshot))
+                    if asset.name == "options":
+                        csv_path = write_options_snapshot_csv(
+                            update_dt, snapshot, asset.contract_map,
+                            csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
+                        )
+                    else:
+                        csv_path = write_snapshot_csv(
+                            update_dt, snapshot,
+                            csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
+                        )
+                except Exception as e:  # noqa: BLE001
+                    logger.error(
+                        "%s sample cycle failed: %s: %s",
+                        asset.name, type(e).__name__, e,
+                        exc_info=True,
+                    )
                     continue
 
-                asset.buffer.append((update_dt, snapshot))
-                if asset.name == "options":
-                    csv_path = write_options_snapshot_csv(
-                        update_dt, snapshot, asset.contract_map,
-                        csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
-                    )
-                else:
-                    csv_path = write_snapshot_csv(
-                        update_dt, snapshot,
-                        csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
-                    )
                 logger.info(
                     "sample %d/%d @ %s: %d %ss -> %s",
                     len(asset.buffer), bar_window,
@@ -464,25 +515,13 @@ def stream(
                     if asset.name == "options":
                         conn = _emit_options_bars(conn, asset, trade_date, "emitted")
                     else:
-                        identity_rows, bar_rows, bar_time = aggregate_bars(
-                            asset, trade_date, etf_member_codes=etf_member_codes,
+                        conn = _emit_asset_bars(
+                            conn, asset, trade_date, "emitted", etf_member_codes,
                         )
-                        if bar_rows:
-                            conn = _ensure_conn(conn)
-                            load_bars(conn, asset, identity_rows, bar_rows)
-                            logger.info(
-                                "emitted %d %s bars for %s %s (vol baseline=%d codes)",
-                                len(bar_rows), asset.name, trade_date, bar_time,
-                                len(asset.prev_bar_cumvol),
-                            )
-                            # Index bars landed: sync the has_intraday_5mins flag
-                            # on index_basic_stats for this date so the frontend
-                            # knows intraday data is available (replaces the former
-                            # csindex.sync_has_intraday_flag post-build step).
-                            if asset.name == "index":
-                                n = sync_index_has_intraday_flag(conn, trade_date)
-                                if n:
-                                    logger.info("synced has_intraday_5mins=TRUE for %d index rows", n)
+                    # Buffer cleared even on emission failure: the window
+                    # is dropped (recovered later by the CSV backfill);
+                    # keeping it would grow the buffer unboundedly while a
+                    # persistent failure retries every cycle.
                     asset.buffer.clear()
                     if once:
                         logger.info("--once set; exiting after first bar.")

@@ -1,6 +1,6 @@
 /**
  * Market-regime shading helpers — shared across every chart that can
- * draw REGIME span shading (the shared StockOhlcChart used by
+ * draw REGIME span shading (the shared OhlcChart used by
  * CodeTrendChart, the MA-Spread charts, …).
  *
  * Source: GET /api/analysis/market-regimes — contiguous same-regime

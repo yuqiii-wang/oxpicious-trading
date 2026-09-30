@@ -11,7 +11,7 @@
  * drilling, no stale non-reactive reads).
  */
 import type { ReactNode } from "react";
-import type { EChartProps } from "@/components/EChart";
+import type { EChartProps } from "@/shared/charts/EChart";
 import type { AiAskSpec } from "@/shared/ai-ask";
 
 export interface BaseChartProps

@@ -27,7 +27,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
-import EChart from "@/components/EChart";
+import EChart from "@/shared/charts/EChart";
 import {
   baseChartOption,
   commonTooltip,

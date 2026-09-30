@@ -8,7 +8,7 @@
  * so the pages cannot drift. Consumers:
  *   - MaSpread (price + amt-envelope charts) — value = adjusted close,
  *     bands of daily high/low prices (analysis.mov_ave_high_low_pct).
- *   - PE & Dividend (valuation streak chart) — value = pe /
+ *   - PE (valuation streak chart) — value = pe /
  *     dividend_yield, both band legs folded onto the same series.
  *
  * Two layers, both price-bounded horizontal bands over date ranges:
@@ -38,7 +38,7 @@
  *    non-break stretch beyond the bridge, so no band appears where the
  *    value line is not inside the zone.
  *
- * A single-series metric (the PE & Dividend fold) participates through
+ * A single-series metric (the PE fold) participates through
  * the same code path by passing the value as BOTH the high and the low
  * leg — the percentile windows and the close-based breakout then reduce
  * exactly to the single-series semantics.
@@ -300,7 +300,7 @@ export function longStreakToMarkArea(
  *  the light anchor-window zone rectangle followed by one darker band per
  *  detected streak. This is the canonical purple/yellow assembly — every
  *  consumer renders its markArea through this helper (MaSpread pair +
- *  amt-envelope charts and the PE & Dividend streak chart pass the same
+ *  amt-envelope charts and the PE streak chart pass the same
  *  window + client-detected streaks they computed via
  *  computeStreakBandWindow / computeBreakStreaks above), so the two
  *  pages' streak styling cannot drift. */

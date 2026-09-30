@@ -7,10 +7,19 @@
 --  python -m analyze.analysis_signals after EVERY run (the live tier
 --  and the UI config menu read the active rows as the current
 --  threshold set).
+--
+--  The derived-population cohorts (2026-09-28: ohlcv_boost /
+--  ohlcv_selection — 03_signal_order_rank ranks them in their OWN
+--  pools) are decision/ranking records, NEVER the live tier's
+--  threshold set: the ohlcv_type IS NULL term holds them FALSE (their
+--  sub_type suffixes would not parse for a live bar, and their
+--  confidences are cohort views of the same bucket).
+--  SINGLE statement — the pipeline runs this file as ONE prepared
+--  command.
 -- ============================================================================
 
 UPDATE analysis_signals.signal_strategies s
-SET is_active = (s.end_date = latest.max_end)
+SET is_active = (s.ohlcv_type IS NULL AND s.end_date = latest.max_end)
 FROM (
     SELECT code, signal_type, signal_sub_type, MAX(end_date) AS max_end
     FROM analysis_signals.signal_strategies

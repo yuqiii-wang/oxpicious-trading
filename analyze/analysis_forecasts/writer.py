@@ -18,6 +18,7 @@ from _common.db_commons import (
 )
 from _common.df_utils import host_array
 
+from analyze.analysis_forecasts import ohlcv_boost
 from analyze.analysis_forecasts.config import (
     LOOKBACK_PERIOD,
     REGIME_WEIGHTS_TABLE,
@@ -65,10 +66,20 @@ def _identity_rows(bucket_rows: list[dict], mov_table: str) -> list[dict]:
     pe_state / dividend_state record the MEAN run length of their merged
     incremental-anchor signals, mov_pairs / mov_pairs_ema the 1-day constant,
     margin_ratio a constant 1, high_low_streaks its config
-    mean_day_count) and the mean trigger delay (delayed_signal_days —
+    mean_day_count), the mean trigger delay (delayed_signal_days —
     the mean trading-day offset of the bucket's emitted trigger anchors
     within their streaks, capped at 5; 0 for
-    1-day signals). Both INTEGER whole days. Reads the UNFILTERED bucket
+    1-day signals) and the OHLCV derived-population verdict
+    (ohlcv_type — the 2026-09-27 OHLCV CONSOLIDATION: NULL = the plain
+    parent / no-derivation population, 'ohlcv_boost' = the ohlcv-score
+    weighted child (the parent's FULL bottom-side population
+    re-weighted by the three-axis day-0 score), 'ohlcv_selection' =
+    the ohlcv-score strict subset (the score-positive streaks); the
+    four legacy values gap_selection / gap_boost / vol_selection /
+    vol_boost were retired with the consolidation; the bucket span
+    these dicts came from IS one population,
+    and the frame's ohlcv_type column arrives as '' for the plain
+    population → NULL here). Reads the UNFILTERED bucket
     payload dicts (the mov-table projection drops the identity +
     streak_signal_days / delayed_signal_days fields)."""
     bucket = mov_table.split(".")[-1]
@@ -81,6 +92,7 @@ def _identity_rows(bucket_rows: list[dict], mov_table: str) -> list[dict]:
             "bucket": bucket,
             "streak_signal_days": m.get("streak_signal_days"),
             "delayed_signal_days": m.get("delayed_signal_days", 0),
+            "ohlcv_type": m.get("ohlcv_type") or None,
             "lookback_period": m.get("lookback_period", LOOKBACK_PERIOD),
         }
         for m in bucket_rows
@@ -90,6 +102,63 @@ def _identity_rows(bucket_rows: list[dict], mov_table: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 #  Incremental snapshot detection + refresh-window deletion
 # ---------------------------------------------------------------------------
+
+def _expected_boost_populations(table: str, sec_type: str) -> tuple[str, ...]:
+    """The derived-population children ``table``'s family must be
+    carrying for ``sec_type`` — derived from the ohlcv module's config
+    table (the single source; a family / sec_type without an entry
+    expects none). The 2026-09-27 OHLCV CONSOLIDATION: the four legacy
+    children (gap_selection / gap_boost / vol_selection / vol_boost)
+    are retired — the ohlcv pair is the only derived population. ONLY
+    the BOOST child participates in the completeness check: its
+    min_anchors=1 same-days semantics emit whenever the parent's
+    in-scope side emits, so a PRESENT snapshot missing it is stale by
+    construction (the mechanism was configured after the snapshot was
+    written). The SELECTION child may legitimately be empty (a
+    snapshot whose every anchor scores below the bar) and is excluded
+    so the check can never re-flag a healthy snapshot forever."""
+    family = table.split(".")[-1]
+    if sec_type in ohlcv_boost.OHLCV_BOOST_CONFIGS.get(family, {}):
+        return ("ohlcv_boost",)
+    return ()
+
+
+async def _incomplete_population_dates(
+    conn,
+    table: str,
+    sec_type: str,
+    present_in_specs: list[date],
+    expected: tuple[str, ...],
+) -> set[date]:
+    """Present snapshots missing ANY expected BOOST child (the
+    population-backfill leg of _compute_dates): a parent population
+    (ohlcv_type IS NULL) exists for the (sec_type, bucket, stat_date)
+    but at least one of ``expected`` does not — a snapshot carrying
+    gap_boost but not ohlcv_boost is just as stale as one carrying
+    neither. ONE (stat_date, ohlcv_type) aggregation pass over the
+    bucket slice (the correlated NOT-EXISTS form was pathological on
+    the code-hash-partitioned registry — no code predicate to prune
+    with, 16 partitions re-scanned per leg); the per-date expectation
+    check itself is Python. Snapshots outside the run's spec grid are
+    never flagged (retired keys are the sweep's business)."""
+    if not present_in_specs:
+        return set()
+    rows = await conn.fetch(
+        f"SELECT i.stat_date, i.ohlcv_type FROM {TABLE_IDENTITIES} i "
+        f"WHERE i.sec_type = $1 AND i.bucket = $2 "
+        f"AND i.stat_date = ANY($3::date[]) "
+        f"GROUP BY 1, 2",
+        sec_type, table.split(".")[-1], present_in_specs,
+    )
+    have: dict[date, set[str | None]] = {}
+    for r in rows:
+        have.setdefault(r["stat_date"], set()).add(r["ohlcv_type"])
+    return {
+        d for d, types in have.items()
+        if None in types                       # a parent population exists
+        and any(t not in types for t in expected)
+    }
+
 
 async def _compute_dates(
     conn,
@@ -112,6 +181,14 @@ async def _compute_dates(
     mutable scope are ALL-HISTORY: present ones are never recomputed
     (the --force path rebuilds them explicitly).
 
+    POPULATION BACKFILL (2026-09-27, with the ohlcv_boost child): a
+    present snapshot whose expected derived-population BOOST children
+    are missing is treated exactly like the mutable scope — deleted and
+    recomputed — so a newly configured boost mechanism backfills the
+    history it applies to on the next incremental run, with no --force
+    and no one-off script. The expectation is derived per (family,
+    sec_type) from the boost configs (see _expected_boost_populations).
+
     Present snapshots are read from the forecast_identities registry
     (bucket-filtered) — the motivation tables carry no identity
     columns anymore; base_rates is not registered there (no
@@ -133,13 +210,26 @@ async def _compute_dates(
         )
     present: set[date] = {r["stat_date"] for r in rows}
     refresh_set = mutable_dates(present, date.today())
+    expected = (() if table == TABLE_BASE_RATE
+                else _expected_boost_populations(table, sec_type))
+    incomplete = (await _incomplete_population_dates(
+        conn, table, sec_type,
+        [s.stat_date for s in specs if s.stat_date in present],
+        expected) if expected else set())
+    if incomplete:
+        logger.info(f"  population backfill ({sec_type} {table}): "
+                    f"{len(incomplete)} present snapshot(s) missing "
+                    f"expected boost children {list(expected)} — "
+                    f"deleting + recomputing")
     refreshed = [
         s.stat_date for s in specs
-        if s.stat_date in present and s.stat_date in refresh_set
+        if s.stat_date in present
+        and (s.stat_date in refresh_set or s.stat_date in incomplete)
     ]
     compute = [
         s for s in specs
         if s.stat_date not in present or s.stat_date in refresh_set
+        or s.stat_date in incomplete
     ]
     return compute, refreshed
 
@@ -235,7 +325,7 @@ async def _delete_dates(
     conn,
     table: str,
     sec_type: str,
-    months: list[date],  # snapshot stat_dates
+    stat_dates: list[date],  # the snapshot grid's stat_dates
     *,
     linked_results: bool,
     codes: list[str] | None = None,
@@ -250,11 +340,11 @@ async def _delete_dates(
     sec_type scope, so the recompute that follows must cover every
     active code. See _delete_linked_buckets for the chunking contract
     (partition-key chunks, ~100K result rows per COMMIT)."""
-    if not months:
+    if not stat_dates:
         return
     if linked_results:
         await _delete_linked_buckets(
-            conn, table, sec_type, months, codes=codes,
+            conn, table, sec_type, stat_dates, codes=codes,
         )
     else:
         # base_rates: per-code doomed-row counts -> code chunks (the
@@ -264,7 +354,7 @@ async def _delete_dates(
             f"SELECT code, count(*) AS n FROM {table} "
             f"WHERE sec_type = $1 AND stat_date = ANY($2::date[])"
         )
-        params: list = [sec_type, months]
+        params: list = [sec_type, stat_dates]
         if codes is not None:
             weight_sql += " AND code = ANY($3::text[])"
             params.append(codes)
@@ -424,7 +514,7 @@ async def _delete_sec_type(conn, sec_type: str, metrics: set[str] | None = None,
         else:
             weight_sql = (
                 f"SELECT code, count(*) AS n FROM {table} "
-                f"WHERE sec_type = $1"
+                f"WHERE sec_type = $1 GROUP BY code"
             )
             params: list = [sec_type]
             if codes is not None:
@@ -443,7 +533,7 @@ async def _delete_sec_type(conn, sec_type: str, metrics: set[str] | None = None,
 
 
 # ---------------------------------------------------------------------------
-#  Month-batch writes (COPY both tables with allocated forecast_ids)
+#  Snapshot-batch writes (COPY both tables with allocated forecast_ids)
 # ---------------------------------------------------------------------------
 
 # The float result columns (the CSV NULL-sweep targets — see
@@ -499,6 +589,15 @@ async def _write_snapshot(
     if payload is None or len(payload) == 0:
         return 0
     frame = payload
+    # The OHLCV derived-population verdict rides the frame as the TEXT
+    # column ``ohlcv_type`` ('' = the plain population, 'ohlcv_boost' /
+    # 'ohlcv_selection' the ohlcv children — no
+    # nullable strings on the frame; _identity_rows maps '' → NULL at
+    # the COPY boundary). It groups + sorts the population spans via
+    # the engine's ``_bkt`` tagging and lands in the registry rows via
+    # _identity_rows. Families without derived populations carry no
+    # such column at all (NULL in the registry — the historical
+    # single-population identity).
 
     bkt = np.asarray(
         host_array(frame["_bkt"].to_numpy()), dtype="int64",
@@ -515,7 +614,10 @@ async def _write_snapshot(
     # regression guard): within every bucket span the delay column is
     # contiguous 0..max and capped at TRIGGER_DELAY_MAX — delay d
     # exists iff the run reached day d, so a gap or a missing 0 means
-    # the run detection broke.
+    # the run detection broke. Every span is ONE population's ladder
+    # under its own forecast_id (the 2026-09-26 derived-population
+    # refinement: the parent + the selection / boost related children
+    # are separate buckets, not doubled rows of one forecast).
     delays = np.asarray(
         host_array(frame["delay"].to_numpy()), dtype="int64",
     )
@@ -525,9 +627,9 @@ async def _write_snapshot(
     prev_delay[0] = -1
     prev_delay[1:] = delays[:-1]
     # Rows arrive bucket-major, delay-ascending with the 4 period rows
-    # (next/5d/20d/mixed) repeating each delay — so WITHIN a bucket a
-    # delay change must step exactly +1 (repeats are the period
-    # fan-out), each bucket must open at delay 0, and no rung exceeds
+    # (next/5d/20d/mixed) repeating each delay — so a delay change
+    # inside a bucket must step exactly +1 (repeats are the period
+    # fan-out), every bucket must open at delay 0, and no rung exceeds
     # the cap. Bucket starts are exempt from the +1 step (their
     # predecessor row is another bucket's last row).
     new_delay_run = (~at_bucket_start) & (delays != prev_delay)

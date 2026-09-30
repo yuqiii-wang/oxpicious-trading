@@ -9,9 +9,9 @@
 --    detail_name      — optional suffix of the per-date detail result table
 --                       (e.g. 'mov_ave_spreads_detail'). NULL when the analysis
 --                       has no detail table.
---    summary_name     — optional suffix of the aggregated summary result table
---                       (e.g. 'pe_and_dividend_stats'). NULL when the
---                       analysis has no summary table.
+--    summary_name     — optional suffix of the aggregated summary result
+--                       table. NULL when the analysis has no summary table
+--                       (all current registrations are detail-only).
 --    last_run_datetime — timestamp of the most recent run that recomputed
 --                       this analysis (UTC).
 --    description      — free-form description of what the analysis computes.
@@ -19,7 +19,7 @@
 --  Example: the mov_ave_spread analysis registers
 --    name          = 'mov_ave_spread'
 --    detail_name   = 'mov_ave_spreads_detail'   → analysis.mov_ave_spreads_detail
---    summary_name  = 'pe_and_dividend_stats'    → analysis.pe_and_dividend_stats
+--    summary_name  = NULL (no aggregated summary table)
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analysis.analysis_identity (

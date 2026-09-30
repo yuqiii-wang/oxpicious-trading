@@ -30,6 +30,7 @@ from _common.build_commons import (
 )
 from builds._commons.board_map import stage_stock_boards, upsert_stock_board_rows
 from builds._commons.paths import (
+    BSE_ARCHIVE_DIR,
     BSE_TREND_DIR,
     SSE_TREND_DIR,
     SSE_MARGIN_DIR,
@@ -49,7 +50,11 @@ from builds.stock._helpers import (
     ETF_WEIGHT_THRESHOLD,
 )
 from builds.stock.margin import build_stock_margin_df
-from builds.stock.pipeline.archive import load_sse_archive, load_sse_pe
+from builds.stock.pipeline.archive import (
+    load_bse_archive,
+    load_sse_archive,
+    load_sse_pe,
+)
 from builds.stock.pipeline.cli import normalize_code, parse_args
 from builds.stock.pipeline.discovery import (
     SourceDiscovery,
@@ -182,6 +187,7 @@ async def main() -> None:
             "SZSE Trend dir":   SZSE_TREND_DIR,
             "SSE Trend dir":    SSE_TREND_DIR,
             "BSE Trend dir":    BSE_TREND_DIR,
+            "BSE Archive dir":  BSE_ARCHIVE_DIR,
             "Date range":       f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
             "Code filter":      code_filter or "(none — all stocks)",
             "Today":            TODAY_STR,
@@ -273,27 +279,28 @@ async def main() -> None:
             combined = build_missing_rows(missing_file_pairs, verbose=True, code=code_filter)
 
         # ------------------------------------------------------------------
-        # 3b. Load SSE archive historical OHLCV (per-stock {code}_trend.csv)
-        #     — incremental: file mtime + per-code DB max date
+        # 3b. Load SSE + BSE archive historical OHLCV (per-stock
+        #     {code}_trend.csv) — incremental: file mtime + per-code DB max
         # ------------------------------------------------------------------
-        # --date: pass force=True so the loader's mtime/per-code DB-max
+        # --date: pass force=True so the loaders' mtime/per-code DB-max
         # gating cannot skip the forced date's rows. The load stays
         # restricted to the single date via start/end (rows are filtered
         # to that day inside the loader) — pure upsert refresh downstream,
         # no truncation.
-        archive_df = await load_sse_archive(
-            conn, args.start_date, args.end_date, args.limit,
-            args.force or forced is not None, code_filter,
-        )
-        if len(archive_df) > 0:
-            if len(combined) > 0:
-                combined = pd.concat([combined, archive_df], ignore_index=True)
-            else:
-                combined = archive_df
-            combined = combined.sort_values(["date", "code"]).reset_index(drop=True)
-            combined = combined.drop_duplicates(
-                subset=["date", "code"], keep="last"
-            ).reset_index(drop=True)
+        for _loader, _label in ((load_sse_archive, "SSE"), (load_bse_archive, "BSE")):
+            archive_df = await _loader(
+                conn, args.start_date, args.end_date, args.limit,
+                args.force or forced is not None, code_filter,
+            )
+            if len(archive_df) > 0:
+                if len(combined) > 0:
+                    combined = pd.concat([combined, archive_df], ignore_index=True)
+                else:
+                    combined = archive_df
+                combined = combined.sort_values(["date", "code"]).reset_index(drop=True)
+                combined = combined.drop_duplicates(
+                    subset=["date", "code"], keep="last"
+                ).reset_index(drop=True)
 
         history_start, history_end = _update_history_range(combined, history_start, history_end)
 
@@ -422,11 +429,6 @@ async def main() -> None:
         if code_filter and margin_df is not None and len(margin_df) > 0:
             margin_df = margin_df[margin_df["code"] == code_filter]
 
-        # Stock source loaders never estimate close — default the flag to
-        # False when no loader produced it (mirrors builds/etf pattern).
-        if len(combined) > 0 and "is_close_estimated" not in _safe_columns(combined):
-            combined["is_close_estimated"] = False
-
         # ------------------------------------------------------------------
         # 4. Insert into database
         # ------------------------------------------------------------------
@@ -546,6 +548,26 @@ async def main() -> None:
         await stage_stock_boards(conn)
         n_board_rows = await upsert_stock_board_rows(conn, force=args.force)
         logger.info(f"    [BOARD-MAP] stock board rows written: {n_board_rows:,}")
+
+        # ------------------------------------------------------------------
+        # 7. OPT-IN (--analyze): refresh planner statistics. Bulk writes
+        # leave column stats stale until autovacuum catches up (hours on
+        # these tables), and value-blind prepared-statement readers
+        # (node-pg plans before bind values) then misestimate into whole-
+        # table seq scans (the 2026-09-29 v_stock_daily ANY-array 35s UI
+        # regression). Same convention as analysis_forecasts --analyze.
+        # ------------------------------------------------------------------
+        if getattr(args, "analyze", False):
+            from _common.db_commons import analyze_tables_async
+            durations = await analyze_tables_async(conn, (
+                "stats.stock_identity",
+                "stats.stock_basic_stats",
+                "stats.stock_liquidity_margin",
+                "stats.stock_tech_stats",
+            ))
+            if durations:
+                logger.info("    [ANALYZE] refreshed: "
+                      + ", ".join(f"{t} ({d:.1f}s)" for t, d in durations.items()))
 
     finally:
         await conn.close()

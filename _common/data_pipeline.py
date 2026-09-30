@@ -36,7 +36,7 @@ first import. Two equivalent layouts satisfy this; pick per file:
   flag, so parents importing child entry modules don't double-run it).
 
 Programmatic composition (parent pipelines embedding child pipelines,
-e.g. builds.index → builds.index.baseline) no longer mutates ``sys.argv``:
+e.g. builds.index → builds.index.daily) no longer mutates ``sys.argv``:
 construct the child class with a preset ``args`` namespace and
 ``await child.amain()``.
 """

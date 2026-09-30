@@ -52,27 +52,6 @@
 --  (see 02_mov_rsi_mov_std.sql).
 -- ============================================================================
 
--- ----------------------------------------------------------------------------
---  Shape migration (2026-09 pct refactor): the z-state bucket shape is
---  retired — the val_state column and the recorded z bars (z_window /
---  z_min_periods / vlow_bar / low_bar / high_bar / vhigh_bar) are gone,
---  the buckets are extreme-percentile cells (side, pct) keyed exactly
---  like mov_rsi. Purge the linked result + registry rows FIRST (the
---  result delete resolves (sec_type, bucket) through the registry),
---  then DROP the table with its 16 hash partitions (CASCADE — the
---  mov_gap retirement precedent, 02_mov_rsi_mov_std.sql). Idempotent:
---  no-ops once the table is gone; the pipeline repopulates.
--- ----------------------------------------------------------------------------
-
-DELETE FROM analysis_forecasts.forecast_results f
-USING analysis_forecasts.forecast_identities i
-WHERE i.forecast_id = f.forecast_id AND i.bucket = 'dividend_state';
-
-DELETE FROM analysis_forecasts.forecast_identities
-WHERE bucket = 'dividend_state';
-
-DROP TABLE IF EXISTS analysis_forecasts.dividend_state CASCADE;
-
 CREATE TABLE IF NOT EXISTS analysis_forecasts.dividend_state (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_date live in forecast_identities
     forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_dividend_state_forecast_id

@@ -10,6 +10,14 @@ Layout: `builds/` and `analyze/` are Python pipelines run as `python -m <pkg>`;
 `database/sql/` holds SQL; `data_viz/` is the React UI; `temp_scripts/` holds
 throwaway scripts and their outputs.
 
+## Study scope for analysis & strategy (MANDATORY)
+
+To do study in analysis and strategy, only check by industries and
+indices (no etf and stocks unless explicitly said), only these 10 indices
+(000001, 931743, 931160, 931071, 000015, 930708, 931994, 931594, 000683,
+000991), and only write the 10 indices to DB table, unless otherwise
+explicitly instructed then run all indices.
+
 ## Financial semantics gate
 
 Before implementing a statement involving finance or trading semantics
@@ -56,6 +64,8 @@ vectorized string ops, etc.). Loop only when no vectorized form exists.
 
 - Before writing ANY DB write code, check `_common/db_commons/` for an
   existing helper (connections, upsert/copy, sync/async ops) and use it.
+  Helper choice, write-size discipline (no bulk machinery for simple
+  study), and the <10-sample study budget follow the `db-sql-write` skill.
 - For DB schema/query changes, implement SQL first (files under
   `database/sql/`), then bridge to Python only if needed.
 - Reads for incremental work filter on the table's primary key

@@ -62,10 +62,16 @@ __all__ = [
     # Partition-key chunked DML (the bulk-write rule for DELETEs)
     "chunked_dml_by_key_async",
     "chunked_purge_async",
+    # Post-bulk-write planner-statistics refresh
+    "analyze_tables_async",
     # Replica replay-lag throttle (pause bulk writers while the standby
     # falls behind — shared by the chunked writers in analyze/_common)
     "DEFAULT_MAX_REPLICA_LAG_MB",
     "_wait_for_replica_lag_async",
+    # Fixed between-chunk cool-down (disk duty-cycle relief + replica
+    # replay headroom) — the always-on half of the bulk-write throttle
+    "DEFAULT_CHUNK_PAUSE_S",
+    "_throttle_between_chunks_async",
 ]
 
 # -- Internal helpers (exported for sibling modules) --
@@ -127,8 +133,11 @@ from ._async_ops import (
     truncate_table_async,
     chunked_dml_by_key_async,
     chunked_purge_async,
+    analyze_tables_async,
     DEFAULT_MAX_REPLICA_LAG_MB,
     _wait_for_replica_lag_async,
+    DEFAULT_CHUNK_PAUSE_S,
+    _throttle_between_chunks_async,
 )
 
 # -- Copy-or-upsert split --

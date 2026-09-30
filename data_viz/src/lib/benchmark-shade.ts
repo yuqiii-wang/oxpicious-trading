@@ -29,7 +29,7 @@
  *   - If the optional visible[i] mask is FALSE → no shade at that tick
  *     (used by the Hypes & Drains ACTIVE/FADING/HIDDEN state machine).
  */
-import type { EChartsOption } from "echarts";
+import type { SeriesOption } from "echarts";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
 
 /** One industry's curve to be shaded relative to the benchmark. */
@@ -61,7 +61,7 @@ export interface BenchmarkShadeOptions {
 
 export interface BenchmarkShadeResult {
   /** ECharts series entries to spread into the option's `series` array. */
-  series: NonNullable<EChartsOption["series"]>;
+  series: SeriesOption[];
   /** Legend labels (one per industry, in input order). */
   legendLabels: string[];
 }
@@ -87,7 +87,7 @@ export function buildBenchmarkCenteredShadeSeries(
   } = options;
 
   const n = benchmarkValues.length;
-  const series: NonNullable<EChartsOption["series"]> = [];
+  const series: SeriesOption[] = [];
   const legendLabels: string[] = [];
 
   for (const ind of industries) {

@@ -45,8 +45,9 @@ import pandas as pd
 from ._async_ops import (
     copy_insert_async,
     csv_copy_from_frame_async,
-    _wait_for_replica_lag_async,
+    _throttle_between_chunks_async,
     DEFAULT_MAX_REPLICA_LAG_MB,
+    DEFAULT_CHUNK_PAUSE_S,
 )
 from ._helpers import (
     _group_rows_by_key,
@@ -55,6 +56,7 @@ from ._helpers import (
     PARTITION_KEY_AUTO,
 )
 from ..df_utils import host_array
+from ..df_utils import column_subset
 from ..df_utils.sanitize import sanitize_for_db_insert
 
 import logging
@@ -77,6 +79,7 @@ async def batched_copy_by_key_async(
     chunk_target_rows: int = DEFAULT_CHUNK_TARGET_ROWS,
     label: str = "",
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """Bulk-insert rows via chunked PostgreSQL COPY, grouped by ``key``.
 
@@ -93,9 +96,12 @@ async def batched_copy_by_key_async(
         max_replica_lag_mb: pause between chunks while a streaming
             standby's replay lag exceeds this (default 4096 MB — 1/16 of
             the primary's 64GB max_slot_wal_keep_size; None disables the
-            throttle). Each chunk is its own COMMIT, so the
+            lag wait). Each chunk is its own COMMIT, so the
             replica (and the slot's retained-WAL bound) advances between
             chunks while the primary keeps receiving data.
+        chunk_pause_s: fixed cool-down seconds before every chunk
+            (default 0.1 — a light gap between sustained write bursts;
+            None disables).
 
     Returns:
         Total rows COPY-inserted.
@@ -107,8 +113,8 @@ async def batched_copy_by_key_async(
     prefix = f"      {label} " if label else "      "
     total = 0
     for i, chunk in enumerate(chunks, start=1):
-        if max_replica_lag_mb is not None:
-            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+        await _throttle_between_chunks_async(
+            conn, max_replica_lag_mb, chunk_pause_s)
         total += await copy_insert_async(conn, table_name, chunk)
         logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {len(chunk):,} rows "
               f"(cumulative {total:,})")
@@ -173,6 +179,7 @@ async def copy_frame_chunked_async(
     chunk_target_rows: int = DEFAULT_CHUNK_TARGET_ROWS,
     label: str = "",
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
     partition_key: str | None = PARTITION_KEY_AUTO,
 ) -> int:
     """COPY-insert a DataFrame in partition-key-aligned chunks, sanitizing
@@ -202,7 +209,9 @@ async def copy_frame_chunked_async(
         max_replica_lag_mb: pause between chunks while a streaming
             standby's replay lag exceeds this (default 4096 MB — 1/16 of
             the primary's 64GB max_slot_wal_keep_size; None disables
-            the throttle).
+            the lag wait).
+        chunk_pause_s: fixed cool-down seconds before every chunk
+            (default 0.1; None disables).
         partition_key: column whose rows are never split across COPY
             chunks (bulk-write rule, frame flavor). Default "auto":
             "date" when the frame carries one, else flat row-count
@@ -218,7 +227,9 @@ async def copy_frame_chunked_async(
 
     auto = partition_key == PARTITION_KEY_AUTO
     if auto:
-        partition_key = "date" if "date" in df.columns else None
+        # Host-pure membership — `col in df.columns` is a proxied
+        # Index.__contains__ fallback on EVERY bulk write.
+        partition_key = "date" if column_subset(df, ["date"]) else None
 
     order = None
     if partition_key is not None:
@@ -240,8 +251,8 @@ async def copy_frame_chunked_async(
     prefix = f"      {label} " if label else "      "
     total = 0
     for i, (lo, hi) in enumerate(bounds, start=1):
-        if max_replica_lag_mb is not None:
-            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+        await _throttle_between_chunks_async(
+            conn, max_replica_lag_mb, chunk_pause_s)
         chunk_df = df.take(order[lo:hi]) if order is not None else df.iloc[lo:hi]
         rows = sanitize_for_db_insert(
             chunk_df, numeric_cols=list(numeric_cols), round_to=round_to,
@@ -263,6 +274,7 @@ async def csv_copy_frame_chunked_async(
     chunk_target_rows: int = DEFAULT_CHUNK_TARGET_ROWS,
     label: str = "",
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """CSV-COPY a DataFrame in partition-key-aligned chunks — the
     DataFrame-COPY flavor of the bulk-write rule (the frame flavor of
@@ -274,7 +286,7 @@ async def csv_copy_frame_chunked_async(
 
     Chunks never split a key (``_partition_key_frame_order`` — stable
     key-sorted bounds); each chunk commits its own transaction with the
-    replica-lag cap paused before it.
+    cool-down pause + replica-lag cap applied before it.
 
     SAFE ONLY when the target is conflict-free (truncated /
     PK-filtered-missing scope) — same contract as
@@ -289,8 +301,8 @@ async def csv_copy_frame_chunked_async(
     prefix = f"      {label} " if label else "      "
     total = 0
     for i, (lo, hi) in enumerate(bounds, start=1):
-        if max_replica_lag_mb is not None:
-            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+        await _throttle_between_chunks_async(
+            conn, max_replica_lag_mb, chunk_pause_s)
         chunk_df = df.take(order[lo:hi]) if order is not None else df.iloc[lo:hi]
         total += await csv_copy_from_frame_async(conn, table_name, chunk_df)
         logger.info(f"{prefix}chunk {i}/{n_chunks}: CSV COPY {hi - lo:,} rows "

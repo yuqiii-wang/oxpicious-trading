@@ -189,7 +189,7 @@ class _HlStreaksEngine(WideDfEngine):
 def compute_high_low_streaks_results(
     *, df, first_dates, regimes, codes, sec_type, specs, streaks_df,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_date, high_low_streaks bucket rows) per month."""
+    """Yield (stat_date, high_low_streaks bucket rows) per snapshot."""
     engine = _HlStreaksEngine(
         df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs, streaks_df=streaks_df,

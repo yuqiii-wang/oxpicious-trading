@@ -45,15 +45,17 @@ from live.live_signals.analysis.fetch._values import (
 # audits against).
 _SPREAD_TABLE = "analysis.mov_ave_spreads_detail"
 
-# margin-ratio source table + the estimated-close row filter per
-# sec_type (the frame-row space the detection z windows were computed
-# on).
+# margin-ratio source table per sec_type (the frame-row space the
+# detection z windows were computed on). The fetch's WHERE already
+# carries b.close IS NOT NULL, which excludes close-less rows (the
+# former estimated-close rows nulled by the 2026-09-30
+# is_close_estimated retirement).
 _MARGIN_SOURCE: dict[str, tuple[str, str]] = {
     "etf": (
         "stats.etf_basic_stats b "
         "LEFT JOIN stats.etf_liquidity_margin m "
         "ON m.code = b.code AND m.date = b.date",
-        "AND COALESCE(b.is_close_estimated, FALSE) = FALSE",
+        "",
     ),
     "stock": (
         "stats.stock_basic_stats b "

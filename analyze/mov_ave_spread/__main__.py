@@ -29,6 +29,13 @@ Pipeline
      20/60/120/255/500/750/1275 trading days)
      from the SAME source data -> analysis.mov_ave_spreads_detail_ohlc
      (see ohlc.py). Reuses the same DB connection + source DataFrame.
+  8b. INTERNAL STEP: compute daily intraday OHLC gap metrics (gap_open /
+      intra / uw / lw / rng / up_gap / dn_gap / close_pos — the
+      高开低走/低开高走/冲高回落/探底回升 feature set), from the SAME
+      source data with estimated rows (is_ohl_estimated) excluded ->
+      analysis.mov_ave_spreads_detail_
+      ohlc_gaps (see ohlc_gaps.py). Reuses the same DB connection +
+      source DataFrame.
   9. INTERNAL STEP: compute trading-amount liquidity-impact ratios
      (6 slope ratios + range ratio + overnight-gap ratio + MA5 versions)
      from the SAME source data -> analysis.mov_ave_trading_amt_ratios
@@ -93,14 +100,17 @@ from analyze._common import (
     build_and_insert_chunked_df,
 )
 from _common.pre_check_and_load import find_missing_analysis_dates
+from _common.db_commons import chunked_purge_async
 from analyze.mov_ave_spread.config import (
     ANALYSIS_NAME,
+    CODES_SUMMARY_TABLE,
     DETAIL_TABLE,
     DESCRIPTION,
     EMA_DETAIL_TABLE,
     HIGH_LOW_PCT_STREAKS_TABLE,
     HIGH_LOW_PCT_TABLE,
     HOLIDAY_TABLE,
+    OHLC_GAPS_TABLE,
     OHLC_TABLE,
     PAIRS,
     PRICE_VS_AMT_TABLE,
@@ -115,6 +125,7 @@ from analyze.mov_ave_spread.compute import build_detail_frame
 from analyze.mov_ave_spread.rsi import run_rsi, RSI_TABLE
 from analyze.mov_ave_spread.ema import run_ema
 from analyze.mov_ave_spread.ohlc import run_ohlc, find_ohlc_repair_dates
+from analyze.mov_ave_spread.ohlc_gaps import run_ohlc_gaps
 from analyze.mov_ave_spread.trading_amt import run_trading_amt
 from analyze.mov_ave_spread.trading_amt_ratios import run_trading_amt_ratios
 from analyze.mov_ave_spread.price_vs_amt import run_price_vs_amt
@@ -140,8 +151,8 @@ async def _process_one_sec_type(
 
     Fetches the FULL per-code history for ``st``, builds + inserts
     detail rows (filtered to ``target_dates_st`` in incremental
-    mode), then runs the RSI/holiday/EMA/OHLC/trading-amt/ratios
-    steps on the same source data. The source DataFrame is freed
+    mode), then runs the RSI/holiday/EMA/OHLC/OHLC-gaps/trading-amt/
+    ratios steps on the same source data. The source DataFrame is freed
     before returning so the caller can process the next sec_type
     without cumulative memory growth.
 
@@ -229,6 +240,10 @@ async def _process_one_sec_type(
     await run_ohlc(conn, df, force=force, pool=pool,
                    max_concurrent=max_concurrent, sec_type=st)
 
+    # ---- OHLC-gaps step (reuses same source DataFrame) ----------------
+    await run_ohlc_gaps(conn, df, force=force, pool=pool,
+                        max_concurrent=max_concurrent, sec_type=st)
+
     # ---- Trading-amount detail step (reuses same source DataFrame) ---
     await run_trading_amt(conn, df, force=force, pool=pool,
                           max_concurrent=max_concurrent, sec_type=st)
@@ -256,6 +271,98 @@ async def _process_one_sec_type(
     del df
 
     return n_detail
+
+
+# Gap column → summary-table alias (price_vs_ma5 → p5, ma5_vs_ma20 → 5_20,
+# ...). Mirrors the column names in 10_mov_ave_spreads_codes.sql.
+_GAP_SUMMARY_ALIASES = [
+    ("price_vs_ma5", "p5"),
+    ("price_vs_ma20", "p20"),
+    ("price_vs_ma60", "p60"),
+    ("price_vs_ma120", "p120"),
+    ("price_vs_ma255", "p255"),
+    ("ma5_vs_ma20", "5_20"),
+    ("ma5_vs_ma60", "5_60"),
+    ("ma5_vs_ma120", "5_120"),
+    ("ma5_vs_ma255", "5_255"),
+]
+
+
+async def refresh_codes_summary(
+    conn, sec_types, code: str | None = None,
+) -> None:
+    """Rebuild analysis.mov_ave_spreads_codes for the affected sec_types.
+
+    DELETE + INSERT per sec_type (optionally scoped to ONE code for
+    ``--code`` runs): aggregates the detail table's per-code date coverage,
+    the 9 gap columns' all-time extremes, the latest gap snapshot, and the
+    latest identity name. This is the offline counterpart of what the
+    /mov-ave-spread/codes + /themes endpoints used to compute per request
+    (7-14s on the stock universe); after the refresh those endpoints are a
+    small indexed table read.
+    """
+    # All 9 gap column names from PAIRS, in canonical order.
+    gaps = [gap_col for _, _, gap_col in PAIRS]
+    extremes = ",\n                       ".join(
+        f"MAX({g}) AS max_{alias}, MIN({g}) AS min_{alias}"
+        for g, alias in _GAP_SUMMARY_ALIASES
+    )
+    max_cols = ", ".join(f"max_{alias}" for _, alias in _GAP_SUMMARY_ALIASES)
+    min_cols = ", ".join(f"min_{alias}" for _, alias in _GAP_SUMMARY_ALIASES)
+    latest_cols = ", ".join(f"latest_{g}" for g in gaps)
+    a_max_cols = ", ".join(f"a.max_{alias}" for _, alias in _GAP_SUMMARY_ALIASES)
+    a_min_cols = ", ".join(f"a.min_{alias}" for _, alias in _GAP_SUMMARY_ALIASES)
+    l_cols = ", ".join(f"l.{g}" for g in gaps)
+
+    for st in sec_types:
+        t0 = time.time()
+        identity = SEC_TYPE_IDENTITY_TABLE[st]
+        if code:
+            where, params = "sec_type = $1 AND code = $2", (st, code)
+        else:
+            where, params = "sec_type = $1", (st,)
+        await conn.execute(
+            f"DELETE FROM {CODES_SUMMARY_TABLE} WHERE {where}", *params,
+        )
+        status = await conn.execute(f"""
+            WITH agg AS (
+                SELECT code,
+                       MIN(date) AS first_date, MAX(date) AS last_date,
+                       COUNT(date) AS n_dates,
+                       {extremes}
+                  FROM {DETAIL_TABLE}
+                 WHERE {where}
+                 GROUP BY code
+            ),
+            latest AS (
+                SELECT DISTINCT ON (code) code,
+                       {", ".join(gaps)}
+                  FROM {DETAIL_TABLE}
+                 WHERE {where}
+                 ORDER BY code, date DESC
+            )
+            INSERT INTO {CODES_SUMMARY_TABLE} (
+                sec_type, code, name, first_date, last_date, n_dates,
+                {max_cols},
+                {min_cols},
+                {latest_cols}
+            )
+            SELECT $1, a.code, COALESCE(n.name, ''),
+                   a.first_date, a.last_date, a.n_dates,
+                   {a_max_cols},
+                   {a_min_cols},
+                   {l_cols}
+              FROM agg a
+              JOIN latest l ON l.code = a.code
+              LEFT JOIN LATERAL (
+                  SELECT x.name FROM {identity} x
+                   WHERE x.code = a.code
+                   ORDER BY x.date DESC LIMIT 1 OFFSET 0
+              ) n ON TRUE
+        """, *params)
+        n = int(status.rsplit(" ", 1)[-1]) if status else 0
+        logger.info(f"  [{st}] codes summary refreshed: {n:,} codes "
+              f"({time.time() - t0:.1f}s)")
 
 
 async def _process_single_code(
@@ -286,7 +393,8 @@ async def _process_single_code(
     # mov_ave_rsi_holiday has a FK to mov_ave_rsi → delete holiday first.
     for table in (
         HOLIDAY_TABLE, RSI_TABLE, DETAIL_TABLE, EMA_DETAIL_TABLE,
-        OHLC_TABLE, TRADING_AMT_TABLE, TRADING_AMT_RATIOS_TABLE,
+        OHLC_TABLE, OHLC_GAPS_TABLE, TRADING_AMT_TABLE,
+        TRADING_AMT_RATIOS_TABLE,
         PRICE_VS_AMT_TABLE, HIGH_LOW_PCT_TABLE,
         HIGH_LOW_PCT_STREAKS_TABLE,
     ):
@@ -332,6 +440,9 @@ async def _process_single_code(
     await run_ohlc(conn, df, force=False, pool=pool,
                    max_concurrent=max_concurrent, sec_type=st,
                    code_filter=code)
+    await run_ohlc_gaps(conn, df, force=False, pool=pool,
+                        max_concurrent=max_concurrent, sec_type=st,
+                        code_filter=code)
     await run_trading_amt(conn, df, force=False, pool=pool,
                           max_concurrent=max_concurrent, sec_type=st,
                           code_filter=code)
@@ -401,6 +512,8 @@ class MovAveSpreadAnalysis(DataAnalysis):
                 total_detail += await _process_single_code(
                     conn, pool, st, args.code, max_concurrent,
                 )
+            # Per-code summary refresh (scoped to the rebuilt code).
+            await refresh_codes_summary(conn, sec_types, code=args.code)
             logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
             await self.upsert_identity(
                 ANALYSIS_NAME, "mov_ave_spreads_detail", DESCRIPTION,
@@ -419,6 +532,7 @@ class MovAveSpreadAnalysis(DataAnalysis):
                     DETAIL_TABLE, TRADING_AMT_TABLE,
                     TRADING_AMT_RATIOS_TABLE, HOLIDAY_TABLE,
                     PRICE_VS_AMT_TABLE, HIGH_LOW_PCT_TABLE,
+                    OHLC_GAPS_TABLE,
                 ))
                 logger.info("    -> truncated; will recompute all rows")
             else:
@@ -432,7 +546,8 @@ class MovAveSpreadAnalysis(DataAnalysis):
                               TRADING_AMT_RATIOS_TABLE, HOLIDAY_TABLE,
                               PRICE_VS_AMT_TABLE,
                               HIGH_LOW_PCT_TABLE,
-                              HIGH_LOW_PCT_STREAKS_TABLE):
+                              HIGH_LOW_PCT_STREAKS_TABLE,
+                              OHLC_GAPS_TABLE):
                     await chunked_purge_async(
                         conn, table,
                         where_sql="sec_type = ANY($1::text[])",
@@ -591,6 +706,9 @@ class MovAveSpreadAnalysis(DataAnalysis):
             n_detail = await _process_one_sec_type(
                 conn, pool, st, td_st, args.force, max_concurrent, t0,
             )
+            # Refresh this sec_type's per-code summary (DELETE + INSERT —
+            # vanished codes never linger as stale rows).
+            await refresh_codes_summary(conn, [st])
             total_detail += n_detail
 
         # ---- Upsert analysis_identity ------------------------------------

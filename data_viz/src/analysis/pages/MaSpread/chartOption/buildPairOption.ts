@@ -10,12 +10,16 @@
  *     - Long MA line  (z=5, no stack)
  *     - Gap fill stack (3 series: _base, _pos, _neg)
  *     - Bollinger envelope (optional)
- *     - Trading amount bars on secondary y-axis
+ *     - Trading amount bars on secondary y-axis — REPLACED, while
+ *       rsiTrendMode is on, by the shared block's Wilder-RSI window lines
+ *       (3/6/10/14/20d) on the SAME plot: the right axis is range-offset
+ *       (0-400) so the RSI 0-100 readings hug the bottom quarter of the
+ *       plot, away from the price trend as much as one grid allows
  *
  *   For MA/MA pairs (ma_short === 5):
  *     - Short MA line + Long MA line
  *     - Gap fill stack (3 series: _base, _pos, _neg)
- *     - Trading amount bars on secondary y-axis
+ *     - Trading amount bars on secondary y-axis (same RSI replacement)
  */
 import { fmtNum, fmtPct } from "@/lib/series";
 import { ohlcSeries, type OhlcMode } from "@/lib/ohlc";
@@ -27,6 +31,7 @@ import {
   SPOT_COLOR,
   BOLL_BAND_COLOR,
   BOLL_BAND_FILL,
+  MUTED_PALETTE,
   axisColors,
   commonLegend,
   commonGrid,
@@ -36,6 +41,7 @@ import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
 import type {
   MovAveSpreadOhlcRow,
+  MovAveSpreadOhlcGapDay,
   MovAveSpreadPairSeries,
   MovAveSpreadSharedMetricsRow,
 } from "@shared/types";
@@ -95,6 +101,11 @@ export interface BuildPairOptionArgs {
   bollingerK?: number;
   /** Trading amount display mode. Defaults to "lowkey". */
   tradingAmtMode?: TradingAmtMode;
+  /** RSI-trend replacement: swap the trading-amt bars for the shared
+   *  block's Wilder-RSI window lines (3/6/10/14/20d) on the SAME plot —
+   *  the right axis is offset (0-400) so the RSI 0-100 lines hug the
+   *  bottom quarter. Defaults to false. */
+  rsiTrendMode?: boolean;
   /** Display mode for price-derived series. */
   ohlcMode?: OhlcMode;
   /** Enabled rolling-OHLC window (trading days) — null/undefined = off.
@@ -132,6 +143,12 @@ export interface BuildPairOptionArgs {
    *  regime's contiguous spans): same markArea shape, one per picked
    *  regime. Rendered identically to pxVolShade. */
   regimeShades?: Array<ShadeOverlay>;
+  /** Top-10% OHLC Days: the gaps store's per-day anatomy rows for this
+   *  code (null when the group is off/unloaded). With ``ohlcGapActive``
+   *  the hovered day's pattern + gap legs join the tooltip. */
+  ohlcGapRows?: MovAveSpreadOhlcGapDay[] | null;
+  /** A Top-10% OHLC Days toggle is on. */
+  ohlcGapActive?: boolean;
 }
 
 /** Per-window OHLC extrema fields picked from a MovAveSpreadOhlcRow. */
@@ -303,6 +320,7 @@ export function buildPairOption({
   themeMode,
   bollingerK = 2,
   tradingAmtMode = "lowkey",
+  rsiTrendMode = false,
   ohlcMode = "absolute",
   ohlcWindow = null,
   ohlcClickIdx = null,
@@ -313,6 +331,8 @@ export function buildPairOption({
   streakAnchorIdx = null,
   pxVolShade = null,
   regimeShades = null,
+  ohlcGapRows = null,
+  ohlcGapActive = false,
 }: BuildPairOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -358,6 +378,20 @@ export function buildPairOption({
   const rsi10 = rows.map((_, i) => sharedNum(i, "rsi_10days"));
   const rsi14 = rows.map((_, i) => sharedNum(i, "rsi_14days"));
   const rsi20 = rows.map((_, i) => sharedNum(i, "rsi_20days"));
+
+  // RSI trend lines (rsiTrendMode): legend name → the window array above,
+  // colored from the muted multi-series palette short (blue) → long (teal).
+  const rsiTrendSpecs: Array<{
+    name: string;
+    data: Array<number | null>;
+    color: string;
+  }> = [
+    { name: "RSI3", data: rsi3, color: MUTED_PALETTE[0] },
+    { name: "RSI6", data: rsi6, color: MUTED_PALETTE[1] },
+    { name: "RSI10", data: rsi10, color: MUTED_PALETTE[2] },
+    { name: "RSI14", data: rsi14, color: MUTED_PALETTE[3] },
+    { name: "RSI20", data: rsi20, color: MUTED_PALETTE[4] },
+  ];
 
   const amtMaSlopeOfLong = rows.map((_, i) =>
     sharedNum(i, SHARED_SLOPE_KEYS[pair.ma_long] ?? "trading_amt_ma255_slope"),
@@ -595,7 +629,9 @@ export function buildPairOption({
     if (roofSeg != null) legendData.push(`Roof(${ohlcW}d)`);
     if (floorSeg != null) legendData.push(`Floor(${ohlcW}d)`);
   }
-  if (tradingAmtMode !== "off") {
+  if (rsiTrendMode) {
+    legendData.push(...rsiTrendSpecs.map((s) => s.name));
+  } else if (tradingAmtMode !== "off") {
     legendData.push("Amt Up", "Amt Down");
   }
   if (streakData != null) {
@@ -840,7 +876,41 @@ export function buildPairOption({
   }
 
 
-  if (tradingAmtMode !== "off") {
+
+  if (rsiTrendMode) {
+    // RSI trend lines replace the amt bars on the SAME plot: each line
+    // rides the offset right axis (0-400 → RSI 0-100 = bottom quarter of
+    // the grid), plus dashed 70/30 overbought/oversold guides on the first
+    // series (the tooltip's RSI row uses the same thresholds).
+    rsiTrendSpecs.forEach((s, si) => {
+      echartsSeries.push({
+        type: "line",
+        name: s.name,
+        data: s.data,
+        symbol: "none",
+        yAxisIndex: 1,
+        lineStyle: { color: s.color, width: 1.2, opacity: 0.85 },
+        z: 3,
+        clip: true,
+        ...(si === 0
+          ? {
+              markLine: {
+                silent: true as const,
+                symbol: ["none", "none"] as [string, string],
+                label: { show: false },
+                lineStyle: {
+                  type: "dashed" as const,
+                  color: c.axisLineColor,
+                  width: 1,
+                  opacity: 0.55,
+                },
+                data: [{ yAxis: 70 }, { yAxis: 30 }],
+              },
+            }
+          : {}),
+      });
+    });
+  } else if (tradingAmtMode !== "off") {
     const barOpacity = 0.15;
     const barWidth = "50%";
 
@@ -892,6 +962,26 @@ export function buildPairOption({
   const grid = commonGrid({ left: 55, right: 55, bottom: 50 });
 
   // ---- Build tooltip context -------------------------------------------
+  // Top-10% OHLC Days tooltip info: the gaps store's anatomy aligned to
+  // pair.rows dates (null unless a toggle is on and the rows landed).
+  const gapByDate = ohlcGapRows != null && ohlcGapActive
+    ? new Map(ohlcGapRows.map((d) => [d.date, d]))
+    : null;
+  const gapPick = (pick: (d: MovAveSpreadOhlcGapDay) => number | null) =>
+    dates.map((dt) => {
+      const d = gapByDate?.get(dt);
+      return d == null ? null : pick(d);
+    });
+  const ohlcGapInfo = gapByDate == null
+    ? null
+    : {
+        gap: gapPick((d) => d.gap_open),
+        intra: gapPick((d) => d.intra),
+        uw: gapPick((d) => d.uw),
+        lw: gapPick((d) => d.lw),
+        pattern: dates.map((dt) => gapByDate.get(dt)?.pattern ?? null),
+      };
+
   const tooltipContext: TooltipContext = {
     dates,
     shorts,
@@ -917,6 +1007,7 @@ export function buildPairOption({
     ohlcLows,
     ohlcWindow: ohlcAligned ? ohlcW : null,
     ohlcWinArrays,
+    ohlcGapInfo,
     trendBands,
     hasTrendBands,
     hasBase,
@@ -970,19 +1061,39 @@ export function buildPairOption({
         },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
-      {
-        type: "value" as const,
-        scale: true,
-        name: "Amt (亿)",
-        nameTextStyle: { color: c.textColor, fontSize: 9 },
-        axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: {
-          color: c.textColor,
-          fontSize: 9,
-          formatter: (v: number) => fmtNum(v / 1e8, 1),
-        },
-        splitLine: { show: false },
-      },
+      rsiTrendMode
+        ? {
+            // Band-offset RSI axis: 0-400 so the meaningful 0-100 range
+            // hugs the bottom quarter of the shared grid. Labels above
+            // 100 stay blank (the 150-400 stretch is reserved headroom,
+            // not data); 0/50/100 read like a normal RSI scale.
+            type: "value" as const,
+            min: 0,
+            max: 400,
+            interval: 50,
+            name: "RSI",
+            nameTextStyle: { color: c.textColor, fontSize: 9 },
+            axisLine: { lineStyle: { color: c.axisLineColor } },
+            axisLabel: {
+              color: c.textColor,
+              fontSize: 9,
+              formatter: (v: number) => (v <= 100 ? String(v) : ""),
+            },
+            splitLine: { show: false },
+          }
+        : {
+            type: "value" as const,
+            scale: true,
+            name: "Amt (亿)",
+            nameTextStyle: { color: c.textColor, fontSize: 9 },
+            axisLine: { lineStyle: { color: c.axisLineColor } },
+            axisLabel: {
+              color: c.textColor,
+              fontSize: 9,
+              formatter: (v: number) => fmtNum(v / 1e8, 1),
+            },
+            splitLine: { show: false },
+          },
     ],
     series: echartsSeries,
   });

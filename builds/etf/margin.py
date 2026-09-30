@@ -4,7 +4,8 @@ Reads SZSE + SSE margin detail CSVs and returns a long DataFrame with
 per-(date, code) margin balances (rz_*, rq_*, total_balance).
 
 Source CSVs carry the canonical code schema written by downloads
-(证券代码 = "NNNNNN.XX" + exchange/board/sec_type columns), so per-file
+(证券代码 = bare "NNNNNN" for ETF rows + exchange/board/sec_type
+columns; legacy files carry "NNNNNN.XX" — stripped on read), so per-file
 work is minimal (read + sec_type filter + date tag); all row-level
 transforms run once on the concatenated frame. SZSE detail CSVs publish
 all six margin columns; SSE detail CSVs lack 融券余额(元) and
@@ -54,8 +55,8 @@ _MARGIN_DTYPES = {
 def _scan_margin_dir(scan_dir, file_prefix, label, verbose=True, files=None, code=None):
     """Read canonical per-date margin CSVs; return (frames, n_ok, n_empty).
 
-    When *code* is set (canonical "NNNNNN.SZ"), each CSV is byte-prefiltered
-    to that code's lines BEFORE parsing (see read_csv_preferred)."""
+    When *code* is set (bare "NNNNNN"), each CSV is byte-prefiltered to
+    that code's lines BEFORE parsing (see read_csv_preferred)."""
     if files is None:
         files = sorted(glob.glob(os.path.join(scan_dir, f"{file_prefix}*.csv")))
     else:
@@ -84,11 +85,13 @@ def _scan_margin_dir(scan_dir, file_prefix, label, verbose=True, files=None, cod
         if "sec_type" not in safe_columns(df):
             n_empty += 1
             continue
-        # canonical CSV: sec_type == "etf" by plain column equality;
-        # 证券代码 already carries the .SS/.SZ suffix. When *code* is set,
-        # apply the exact equality filter too — the byte prefilter is a
-        # deliberate superset (substring match).
-        df = df[df["sec_type"] == "etf"]
+        # canonical CSV: sec_type == "etf" by plain column equality. ETF
+        # codes are BARE (2026-09-30) — LEGACY canonical CSVs still carry
+        # the .SS/.SZ suffix, so strip on read; when *code* is set (bare),
+        # apply the exact equality filter after the strip — the byte
+        # prefilter is a deliberate superset (substring match).
+        df = df[df["sec_type"] == "etf"].copy()
+        df["证券代码"] = df["证券代码"].astype(str).str.split(".").str[0]
         if code is not None:
             df = df[df["证券代码"] == code]
         if len(df) == 0:

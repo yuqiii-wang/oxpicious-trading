@@ -1,4 +1,4 @@
-"""builds/bond/__main__.py — Build debt-market baseline and insert directly to
+"""builds/bond/__main__.py — Build debt-market daily and insert directly to
 the database (no intermediate CSV).
 
 Aggregates daily-frequency data sources into the 8 debt_* tables:

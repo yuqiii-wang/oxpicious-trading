@@ -17,7 +17,10 @@ from datetime import date
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from ._async_ops import DEFAULT_MAX_REPLICA_LAG_MB
+from ._async_ops import (
+    DEFAULT_MAX_REPLICA_LAG_MB,
+    DEFAULT_CHUNK_PAUSE_S,
+)
 from ._helpers import (
     _parse_table_name,
     _build_commit_chunks,
@@ -66,6 +69,20 @@ def _wait_for_replica_lag(conn, max_lag_mb: float, poll_s: float = 2.0) -> None:
                 f"chunks until it drains")
             warned = True
         time.sleep(poll_s)
+
+
+def _throttle_between_chunks(
+    conn, max_lag_mb: float | None, pause_s: float | None,
+) -> None:
+    """Sync twin of ``_async_ops._throttle_between_chunks_async``: the
+    bulk-write rule's between-chunk throttle — a fixed cool-down pause
+    (``DEFAULT_CHUNK_PAUSE_S``) followed by the reactive replica-lag
+    wait. ``pause_s=None`` / ``max_lag_mb=None`` skip either leg.
+    """
+    if pause_s:
+        time.sleep(pause_s)
+    if max_lag_mb is not None:
+        _wait_for_replica_lag(conn, max_lag_mb)
 
 
 def check_stock_intraday_exists(conn, code: str, check_date: date) -> bool:
@@ -135,6 +152,7 @@ def bulk_upsert(
     commit_chunk_rows: int = DEFAULT_COMMIT_CHUNK_ROWS,
     partition_key: str | None = PARTITION_KEY_AUTO,
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """Perform bulk upsert (INSERT ... ON CONFLICT DO UPDATE/NOTHING) (sync).
 
@@ -150,7 +168,8 @@ def bulk_upsert(
     re-upserts whatever did not commit).
 
     THE BULK-WRITE RULE (chunk by partition key → one COMMIT per chunk →
-    replica-lag throttle between chunks) is the DEFAULT: ``partition_key``
+    throttle between chunks: fixed cool-down pause + replica-lag wait)
+    is the DEFAULT: ``partition_key``
     "auto" aligns commit boundaries so one key's rows are never split
     across commits ("date" when the rows carry one, else the first usable
     key column; explicit name wins; None opts out to flat chunks), and
@@ -169,6 +188,9 @@ def bulk_upsert(
         max_replica_lag_mb: pause between commit chunks while the streaming
             standby's replay lag exceeds this (default 4096 MB — 1/16 of
             the primary's 64GB max_slot_wal_keep_size; None disables).
+        chunk_pause_s: fixed cool-down seconds before every commit chunk
+            (default 0.1 — a light gap between sustained write bursts;
+            None disables).
 
     Returns:
         Number of rows processed (len(rows)).
@@ -219,11 +241,11 @@ def bulk_upsert(
 
     try:
         for chunk in commit_chunks:
-            # Between commit chunks (no transaction open, no locks held):
-            # wait out standby replay lag so the primary does not pile WAL
-            # up faster than the replica can replay it.
-            if max_replica_lag_mb is not None:
-                _wait_for_replica_lag(conn, max_replica_lag_mb)
+            # Before each commit chunk (no transaction open, no locks
+            # held): cool-down pause, then wait out standby replay lag so
+            # the primary does not pile WAL up faster than the replica
+            # can replay it.
+            _throttle_between_chunks(conn, max_replica_lag_mb, chunk_pause_s)
             # Dedup by PK within the chunk (last occurrence wins) — rows
             # sharing a PK inside one executemany batch would abort the
             # chunk ("cannot affect row a second time"); keeps every

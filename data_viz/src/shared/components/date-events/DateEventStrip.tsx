@@ -1,7 +1,7 @@
 /**
  * DateEventStrip — shared horizontal date-event marker strip (ECharts).
  *
- * Extracted from the Debt Baseline page's PBoC OMA panel so any page can show
+ * Extracted from the Debt page's PBoC OMA panel so any page can show
  * "what happened on which date" as one dot per event on a time axis:
  *
  *   • one scatter series per event TYPE (legend toggle + per-type color via
@@ -21,7 +21,7 @@
 import { useCallback, useMemo } from "react";
 import { Box, Chip, Stack, Typography } from "@mui/material";
 import React from "react";
-import EChart from "@/components/EChart";
+import EChart from "@/shared/charts/EChart";
 import {
   MUTED_PALETTE,
   axisColors,

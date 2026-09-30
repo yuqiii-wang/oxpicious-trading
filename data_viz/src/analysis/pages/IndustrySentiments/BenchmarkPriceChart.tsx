@@ -273,7 +273,7 @@ export function BenchmarkPriceChart({
   const chartRef = useRef<ECharts | null>(null);
 
   // ---- Visible-window reporter (onVisibleRangeChange) ---------------------
-  // Same idiom as StockOhlcChart: maps the dataZoom's live start/end % back
+  // Same idiom as OhlcChart: maps the dataZoom's live start/end % back
   // onto the category-axis dates and reports the visible range. Fired on
   // ECharts 'datazoom' events AND on every data rebuild (which re-anchors
   // the window). The callback lives in a ref so the chart.on binding (made

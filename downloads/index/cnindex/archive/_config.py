@@ -2,7 +2,7 @@
 
 Restores the removed ``downloads.index.cnindex.archive`` module: refreshes
 ``{code}_history.csv`` under ``temps/cnindex_archive`` (the CSIndex-schema
-daily records ``builds.index.baseline.loaders.load_cnindex_history`` reads)
+daily records ``builds.index.daily.loaders.load_cnindex_history`` reads)
 for CNINDEX-published indices that NO other source covers — csindex.com.cn
 returns empty exports for them (verified 2026-09-25: header-only 1m and
 from2020 files) and the SZSE trend export does not carry them.

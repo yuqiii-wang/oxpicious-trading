@@ -25,6 +25,8 @@ SZSE_ARCHIVE_DIR   = os.path.join(PROJECT_ROOT, "temps", "szse_archive")
 SZSE_TREND_DIR     = os.path.join(PROJECT_ROOT, "temps", "szse_trend")
 SSE_TREND_DIR      = os.path.join(PROJECT_ROOT, "temps", "sse_trend")
 BSE_TREND_DIR      = os.path.join(PROJECT_ROOT, "temps", "bse_trend")
+BSE_ARCHIVE_DIR    = os.path.join(PROJECT_ROOT, "temps", "bse_archive")
+BSE_INDEX_ARCHIVE_DIR = os.path.join(PROJECT_ROOT, "temps", "bse_index_archive")
 
 # SSE PE files are per-stock ({code}_pe.csv) in the sse_archive dir
 SSE_PE_DIR         = os.path.join(PROJECT_ROOT, "temps", "sse_archive")
@@ -35,6 +37,14 @@ SSE_MARGIN_DIR     = os.path.join(PROJECT_ROOT, "temps", "sse_margin")
 
 # ETF composition CSVs (per-ETF holdings snapshots)
 COMP_DIR           = os.path.join(PROJECT_ROOT, "temps", "szse_etf_composition")
+# Huatai-PB (华泰柏瑞) fund-site PCF composition CSVs — same COMBINED_COLS
+# schema as the szse files (downloads.etf.huatai_pb.composition)
+HUATAI_COMP_DIR    = os.path.join(PROJECT_ROOT, "temps", "huatai_etf_composition")
+# Huatai-PB fund-site NAV CSVs — full-history archives
+# (huatai_pb_nav_archive_<code>.csv) + daily all-funds snapshots
+# (huatai_pb_nav_trend_<date>.csv); consumed by builds.etf.feeder_nav
+# (downloads.etf.huatai_pb.archive/trend)
+HUATAI_NAV_DIR     = os.path.join(PROJECT_ROOT, "temps", "huatai_pb_nav")
 
 # Index composition CSVs
 INDEX_COMP_DIR      = os.path.join(PROJECT_ROOT, "temps", "csi_index_composition")

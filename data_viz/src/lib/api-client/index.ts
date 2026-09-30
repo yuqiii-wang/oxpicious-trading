@@ -22,7 +22,7 @@ export {
 } from "./_retry";
 
 export {
-  fetchDebtBaseline,
+  fetchDebtDaily,
   fetchPbocOmaAnnouncements,
 } from "./debt";
 
@@ -61,6 +61,12 @@ export {
   fetchOptionsCombined,
   fetchOptionsWalls,
   fetchEtfOhlcv,
+  fetchOptionsDates,
+  fetchOptionsSnapshot,
+  fetchOptionsOiDaily,
+  fetchOptionsOiCells,
+  fetchOptionsExpiryMeta,
+  fetchOptionsMoneynessSeries,
   venueToTargetType,
   type OptionsTargetType,
   type OptionsVenue,
@@ -78,24 +84,25 @@ export {
   fetchIndexStrategyThemes,
   fetchIndicesCombined,
   fetchIndexIntraday5min,
-} from "./index-baseline";
+} from "./index-daily";
 
 export {
   fetchSecComposition,
   fetchQuarterlyComposition,
   fetchIndustryWeightSeries,
   fetchLinkedEtfs,
+  fetchLinkedFeeders,
   fetchSimilarIndices,
 } from "./sec-composition";
 
 export { fetchSecBoardMap } from "./sec-board";
 
 export {
-  fetchStockBaseline,
+  fetchStockDaily,
   fetchStockThemes,
   fetchStockStrategyThemes,
   fetchStocksCombined,
-} from "./stock-baseline";
+} from "./stock-daily";
 
 export {
   fetchFuturesProducts,
@@ -107,21 +114,28 @@ export {
   fetchMovAveSpreadThemes,
   fetchMovAveSpreadStrategyThemes,
   fetchMovAveSpreadChart,
+  fetchMovAveSpreadChartPairs,
+  fetchMovAveSpreadChartEma,
+  fetchMovAveSpreadChartShared,
   fetchMovAveSpreadExtras,
 } from "./analysis-ma-spread";
 
-export { fetchAnalysisForecast, fetchForecastTriggerDates, fetchForecastIdentity } from "./analysis-forecasts";
+export { fetchAnalysisForecast, fetchForecastLadders, fetchForecastTriggerDates, fetchForecastIdentity } from "./analysis-forecasts";
 
 export { fetchMarketRegimeSpans } from "./analysis-market-regimes";
 
 export {
-  fetchPeAndDividendCodes,
-  fetchPeAndDividendThemes,
-  fetchPeAndDividendStrategyThemes,
-  fetchPeAndDividendChart,
-  fetchPeAndDividendStats,
-  fetchPeAndDividendStreaks,
-} from "./analysis-pe-and-dividend";
+  fetchPeChart,
+  fetchPeStreaks,
+} from "./analysis-pe";
+
+export {
+  fetchValuationCodes,
+  fetchValuationThemes,
+  fetchValuationStrategyThemes,
+} from "./analysis-valuation";
+
+export { fetchSecBaseline } from "./sec-baseline";
 
 export {
   fetchMarginTrendThemes,

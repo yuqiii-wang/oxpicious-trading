@@ -17,9 +17,13 @@
 //  signal_type / signal_sub_type combos — the page's signal menu
 //  (default = all).
 //
-//  GET /api/live-data/trading-signals/history returns EVERY live_signals
-//  row of one code (newest first) — the row-expansion panel's history
-//  table + the buy/sell markers on the code-trend chart.
+//  GET /api/live-data/trading-signals/history returns EVERY signal event
+//  of one code (newest first): analysis_signals.history_signals carries
+//  the multi-year plot bulk, live_signals contributes ONLY the viewed
+//  day's last 20 trading days (its ticks preferred in that window), one
+//  record per config-day — plus the window boundary: the row-expansion
+//  panel scopes its history TABLE to the recent window while the
+//  code-trend chart draws every row as a buy/sell marker.
 // ---------------------------------------------------------------------------
 import { fetchJson } from "./_cache";
 
@@ -45,7 +49,8 @@ export interface TradingSignalConfigsResponse {
   configs: TradingSignalConfig[];
 }
 
-/** One triggered breach record (live.live_signals row). */
+/** One signal event record (analysis_signals.history_signals ∪
+ *  live.live_signals, deduped to one per config-day). */
 export interface TradingSignal {
   code: string;
   /** Display name from stats.<sec>_identity (latest row per code);
@@ -73,6 +78,20 @@ export interface TradingSignal {
   /** The same confidence as the EXPECTED-MOVE PERCENT (confidence / 100,
    *  e.g. 0.87 = 0.87%) — the display number (text cells + tooltips). */
   confidence_pct: number;
+  /** The SAME bucket's ohlcv_boost cohort confidence (bp) — the
+   *  score-trust-weighted measurement of the same trigger days. Add-on
+   *  context shown parenthesized next to the confidence; null when the
+   *  cohort never registered / non-mov_rsi family / history arm row. */
+  confidence_boost: number | null;
+  /** confidence_boost / 100 as the expected-move percent (the
+   *  parenthetical add-on's display number). */
+  confidence_boost_pct: number | null;
+  /** The SAME bucket's ohlcv_selection cohort confidence (bp) — the
+   *  favorable-anatomy subset's own dir_ave (bottom side only, the top
+   *  side carries no selection child). */
+  confidence_selection: number | null;
+  /** confidence_selection / 100 as the expected-move percent. */
+  confidence_selection_pct: number | null;
   /** TRUE = day-close mirror row (analysis run, time 15:00);
    *  FALSE = intraday live-monitor breach. */
   is_day_close_trigger: boolean;
@@ -181,22 +200,35 @@ export interface TradingSignalHistoryResponse {
   /** Echoed filters (null = not narrowed). */
   signal_type: string | null;
   signal_sub_type: string | null;
-  /** EVERY live_signals row of the code, newest first. */
+  /** Echoed window anchor (null = the server anchored on the newest
+   *  baseline close). */
+  date: string | null;
+  /** 'YYYY-MM-DD' — the 20th-most-recent close date before the anchor:
+   *  signal rows with date > this are the anchor's last 20 trading days
+   *  (the history TABLE's scope; the chart plots every row). null when
+   *  the sec_type has fewer than 20 baseline closes. */
+  recent_window_start: string | null;
+  /** EVERY signal event of the code, newest first (history_signals ∪
+   *  live_signals, one per config-day). */
   signals: TradingSignal[];
 }
 
 /** One code's FULL signal history (all dates) — drives the expanded row's
- *  history table + the buy/sell markers on its code-trend chart. Optional
- *  signalType / signalSubType narrow the history to one signal family. */
+ *  history table (scoped to the last 20 trading days ending on `date`,
+ *  the viewed day) + the buy/sell markers on its code-trend chart (every
+ *  row). Optional signalType / signalSubType narrow the history to one
+ *  signal family. */
 export function fetchTradingSignalHistory(
   secType: string,
   code: string,
   signalType?: string | null,
   signalSubType?: string | null,
+  date?: string | null,
 ): Promise<TradingSignalHistoryResponse> {
   const params = new URLSearchParams({ sec_type: secType, code });
   if (signalType) params.set("signal_type", signalType);
   if (signalSubType) params.set("signal_sub_type", signalSubType);
+  if (date) params.set("date", date);
   return fetchJson<TradingSignalHistoryResponse>(
     `/api/live-data/trading-signals/history?${params.toString()}`,
   );

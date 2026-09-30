@@ -1,6 +1,6 @@
 """History-CSV conversion and incremental merge for the CNINDEX daily archive.
 
-Output contract (consumed by builds.index.baseline.loaders.load_cnindex_history):
+Output contract (consumed by builds.index.daily.loaders.load_cnindex_history):
 ``{code}_history.csv`` under temps/cnindex_archive with the CSIndex history
 schema — ISO dates, trading_amount in YUAN, trading_shares in SHARES,
 chronological order, utf-8-sig.

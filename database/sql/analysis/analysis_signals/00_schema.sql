@@ -13,14 +13,14 @@
 --      gate-passing rungs (opportunity cost vs return; ties → the
 --      smallest delay) — stored as signal_delay_days. The strategy
 --      covers the bucket's
---      forecast period (start_date .. end_date = the snapshot month; the
+--      forecast period (start_date .. end_date = the snapshot stat_date; the
 --      trailing 5-year window (M - 5y, M]) and stores the breach bar in
 --      the underlying value's own space — the live tier's threshold set.
 --      side is a STORED column (top/bottom/upper/lower) so no consumer
 --      ever derives it.
 --    - history_signals: one row per qualifying trigger day INSIDE the
---      strategy's own snapshot month M (one snapshot owns each date →
---      no cross-month PK conflicts) — the event record (value, bar,
+--      strategy's own snapshot M (one snapshot owns each date →
+--      no cross-snapshot PK conflicts) — the event record (value, bar,
 --      excess), a structural clone of live.live_signals.
 --
 --  Emission slices (current build): mov_rsi pct = 1 (top → sell /
@@ -30,19 +30,21 @@
 --  Cooperation contract with analysis_forecasts:
 --    strategies are produced ONLY for the stat_dates that
 --    analysis_forecasts already has rows for — the forecasts' start
---    month sets the first strategy period. Each month's emission uses
---    the forecasts' own buckets and trigger days (never re-detects).
+--    snapshot sets the first strategy period. Each snapshot's emission
+--    uses the forecasts' own buckets and trigger days (never re-detects).
 --
 --  Population convention:
 --    - `python -m analyze.analysis_signals` runs incrementally at
---      month granularity (only stat_dates missing from
---      signal_strategies are emitted, plus the newest REFRESH_MONTHS
---      months re-emitted every run; each month's strategy + history
---      rows are written atomically in one transaction).
+--      snapshot granularity (only stat_dates missing from
+--      signal_strategies are emitted, plus the MUTABLE SCOPE — the
+--      rolling-latest snapshot and the newest year-end whose forward
+--      windows realize — re-emitted every run; each snapshot's
+--      strategy + history rows are written atomically in one
+--      transaction).
 --    - `--force` deletes the sec_type's rows in both tables and
 --      re-emits every stat_date present in analysis_forecasts.
 -- ============================================================================
 
 CREATE SCHEMA IF NOT EXISTS analysis_signals;
 
-COMMENT ON SCHEMA analysis_signals IS 'Signal strategy tier over analysis_forecasts: signal_strategies (one row per gate-passing forecast bucket — the fixed setup over its forecast period, with the live breach bar) and history_signals (one row per qualifying trigger day inside the bucket''s own snapshot month — the event record). Populated incrementally by python -m analyze.analysis_signals, month-gated to the stat_dates present in analysis_forecasts; mov_rsi pct = 1 and mov_std (>= 60d windows, k >= 2.0) only.';
+COMMENT ON SCHEMA analysis_signals IS 'Signal strategy tier over analysis_forecasts: signal_strategies (one row per gate-passing forecast bucket — the fixed setup over its forecast period, with the live breach bar) and history_signals (one row per qualifying trigger day inside the bucket''s own snapshot — the event record). Populated incrementally by python -m analyze.analysis_signals, snapshot-gated to the stat_dates present in analysis_forecasts; mov_rsi pct = 1 and mov_std (>= 60d windows, k >= 2.0) only.';

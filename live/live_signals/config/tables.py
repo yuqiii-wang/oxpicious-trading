@@ -23,10 +23,16 @@ RSI_TABLE = "analysis.mov_ave_rsi"
 # regime_state: the breach bar's DATE market regime — the
 # stats.market_regimes day label (calm/hot/panic/quiet) — recorded
 # regime context, never a gate.
+# confidence_boost / confidence_selection: the same bucket's derived-
+# cohort add-on confidences (@boost / @selection children, integer bp,
+# SQL-side scaled like confidence) — display-only context, never a
+# gate; None when the cohort never registered or the family carries no
+# ohlcv children (mov_std / the pair-cross families).
 LIVE_SIGNAL_COLUMNS = [
     "code", "sec_type", "signal_type", "signal_sub_type", "date", "time",
     "action", "signal_excess", "signal_excess_pct", "signal",
-    "signal_threshold", "confidence", "is_day_close_trigger",
+    "signal_threshold", "confidence", "confidence_boost",
+    "confidence_selection", "is_day_close_trigger",
     "regime_state",
 ]
 

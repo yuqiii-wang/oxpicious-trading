@@ -10,11 +10,11 @@ This sums earnings (linear, correct) rather than PE ratios. Loss-making
 constituents (NULL PE in stock_basic_stats) are excluded from both
 numerator and denominator.
 
-CODE ALIGNMENT: every code in this module is kept WITH its exchange
-suffix ("000001.SZ"). Canonical composition CSVs (download conversion)
-and stock_basic_stats both carry suffixed codes, so all joins read the
-whole code — no stripping, no suffix resolution, no prefix inference.
-Rows failing the canonical-code validation regexes are dropped.
+CODE ALIGNMENT: ETF codes are BARE ("510050" — 2026-09-30 convention;
+legacy composition CSVs carry a suffix, validated then stripped); stock
+codes are kept WITH their exchange suffix ("000001.SZ") —
+stock_basic_stats carries suffixed codes, so stock joins read the whole
+code. Rows failing the canonical-code validation regexes are dropped.
 
 Uses the cuDF router (should_use_gpu) for the merge + groupby-agg
 steps, which operate on ~20M+ rows (constituents × dates) — well above
@@ -31,10 +31,11 @@ from _common.df_utils import epoch_col_to_dt64, should_use_gpu
 import logging
 logger = logging.getLogger(__name__)
 
-# Valid (suffixed) canonical code forms: constituent stocks (A-share +
-# cross-border holdings) and composition-source ETFs (SSE/SZSE listings)
+# Valid canonical code forms: constituent stocks are SUFFIXED (A-share +
+# cross-border holdings); ETF codes are BARE (legacy CSVs suffixed — both
+# forms validate, the write path strips to bare)
 VALID_STOCK_RE = r"^\d{6}\.(SS|SZ|BJ|HK|SH)$"
-VALID_ETF_RE = r"^\d{6}\.(SS|SZ)$"
+VALID_ETF_RE = r"^\d{6}(\.(SS|SZ))?$"
 
 
 async def fetch_stock_pe(conn, stock_codes=None, dates=None):
@@ -99,9 +100,9 @@ def compute_etf_pe_harmonic(
     snapshot for all dates, mirroring the index dividend_yield pattern).
 
     Args:
-        etf_dates_df: DataFrame with columns code (etf code WITH suffix),
+        etf_dates_df: DataFrame with columns code (etf code, bare),
             date. Defines the (etf, date) pairs to compute PE for.
-        composition_df: DataFrame with columns etf_code (WITH suffix),
+        composition_df: DataFrame with columns etf_code (bare),
             stock_code (WITH suffix), weight_fraction. Latest snapshot
             per ETF.
         stock_pe_df: DataFrame with columns date, code (suffixed),
@@ -109,7 +110,7 @@ def compute_etf_pe_harmonic(
         verbose: print progress + cuDF router decisions.
 
     Returns:
-        DataFrame with columns: code (etf code with suffix), date, pe.
+        DataFrame with columns: code (etf code, bare), date, pe.
     """
     if etf_dates_df.empty or composition_df.empty or stock_pe_df.empty:
         if verbose:
@@ -196,7 +197,7 @@ def extract_latest_composition(comp_long: pd.DataFrame) -> pd.DataFrame:
             etf_code and stock_code both already suffixed — the download
             conversion guarantees it; rows failing validation are dropped).
 
-    Returns DataFrame with columns: etf_code (WITH suffix), stock_code
+    Returns DataFrame with columns: etf_code (bare), stock_code
     (WITH suffix), weight_fraction.
     """
     if comp_long is None or comp_long.empty:
@@ -231,9 +232,10 @@ def extract_latest_composition(comp_long: pd.DataFrame) -> pd.DataFrame:
         0.0,
     )
 
-    # Canonical composition CSVs carry SUFFIXED etf_code and stock_code —
-    # read them whole and validate (no splitting, no mapping).
-    comp_latest["etf_code"] = comp_latest["etf_code"].astype(str).str.strip()
+    # Composition CSVs carry BARE etf_code (legacy files suffixed) and
+    # SUFFIXED stock_code — validate both, strip the ETF code to bare.
+    comp_latest["etf_code"] = (comp_latest["etf_code"].astype(str).str.strip()
+                               .str.split(".").str[0])
     comp_latest = comp_latest[
         comp_latest["etf_code"].str.match(VALID_ETF_RE)
     ]

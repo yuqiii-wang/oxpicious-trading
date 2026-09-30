@@ -114,8 +114,8 @@ SEC_TYPE_IDENTITY_TABLE = {
 # else (no std columns — the vol leg is computed from returns). Same
 # JOIN structure / price semantics as the forecast engines'
 # fetch_analysis_inputs (etf uses adjustment-adjusted close; index /
-# stock close from basic_stats; estimated closes excluded — synthetic
-# flat closes would zero ret_1d and poison the vol leg).
+# stock close from basic_stats; close-less rows excluded — a NULL close
+# would zero ret_1d and poison the vol leg).
 SEC_TYPE_SOURCE_SQL = {
     "etf": """
         SELECT
@@ -128,7 +128,7 @@ SEC_TYPE_SOURCE_SQL = {
         LEFT JOIN stats.etf_adjustment a ON a.date = i.date AND a.code = i.code
         JOIN stats.etf_liquidity_margin m ON m.date = i.date AND m.code = i.code
         WHERE i.code = ANY($1::text[])
-          AND COALESCE(b.is_close_estimated, FALSE) = FALSE
+          AND b.close IS NOT NULL
           AND m.trading_amount IS NOT NULL AND m.trading_amount > 0
         ORDER BY i.code, i.date ASC
     """,
@@ -142,7 +142,6 @@ SEC_TYPE_SOURCE_SQL = {
         JOIN stats.index_basic_stats b ON b.date = i.date AND b.code = i.code
         WHERE i.code = ANY($1::text[])
           AND b.close IS NOT NULL
-          AND COALESCE(b.is_close_estimated, FALSE) = FALSE
           AND b.trading_amount IS NOT NULL AND b.trading_amount > 0
         ORDER BY i.code, i.date ASC
     """,

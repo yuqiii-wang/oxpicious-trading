@@ -38,7 +38,8 @@ from _common.build_commons import copy_insert_async, copy_or_upsert_split_async
 from _common.db_commons import (
     csv_copy_from_frame_async,
     DEFAULT_MAX_REPLICA_LAG_MB,
-    _wait_for_replica_lag_async,
+    _throttle_between_chunks_async,
+    DEFAULT_CHUNK_PAUSE_S,
     _group_rows_by_key,
     _build_chunks,
 )
@@ -78,16 +79,19 @@ async def _upsert_chunk_sequential(
     conn, table_name, chunk, key_columns, batch_size,
     chunk_idx, n_chunks, label, total_counter,
     *, max_replica_lag_mb: float | None = None,
+    chunk_pause_s: float | None = None,
 ) -> int:
     """Upsert one chunk using the shared connection (sequential).
 
     Uses copy_or_upsert_split_async: splits at MAX(date) boundary so
     new-date rows use COPY (fast path) and gap/history rows use upsert.
+    The between-chunk throttle (cool-down pause + replica-lag wait) is
+    applied INSIDE the split, before each of its commit chunks.
     """
-    if max_replica_lag_mb is not None:
-        await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
     n_copied, n_upserted = await copy_or_upsert_split_async(
         conn, table_name, chunk, key_columns,
+        max_replica_lag_mb=max_replica_lag_mb,
+        chunk_pause_s=chunk_pause_s,
     )
     n = n_copied + n_upserted
     total_counter[0] += n
@@ -104,16 +108,18 @@ async def _upsert_chunk_parallel(
     pool, table_name, chunk, key_columns, batch_size,
     chunk_idx, n_chunks, label, total_counter, lock,
     *, max_replica_lag_mb: float | None = None,
+    chunk_pause_s: float | None = None,
 ) -> int:
     """Upsert one chunk using a connection borrowed from the pool.
 
-    Uses copy_or_upsert_split_async for the COPY-fast-path optimization.
+    Uses copy_or_upsert_split_async for the COPY-fast-path optimization;
+    the between-chunk throttle runs inside the split.
     """
     async with pool.acquire() as conn:
-        if max_replica_lag_mb is not None:
-            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
         n_copied, n_upserted = await copy_or_upsert_split_async(
             conn, table_name, chunk, key_columns,
+            max_replica_lag_mb=max_replica_lag_mb,
+            chunk_pause_s=chunk_pause_s,
         )
         n = n_copied + n_upserted
     async with lock:
@@ -140,6 +146,7 @@ async def batched_upsert_by_date(
     pool=None,
     max_concurrent: int = DEFAULT_MAX_CONCURRENT,
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """Upsert rows in date-bounded chunks to bound memory.
 
@@ -165,9 +172,12 @@ async def batched_upsert_by_date(
             the pool, so this MUST be ≤ the pool's ``max_size``.
         max_replica_lag_mb: pause before each chunk while a streaming
             standby's replay lag exceeds this (default 4096 MB; None
-            disables the throttle). Each chunk is its own COMMIT, so the
+            disables the lag wait). Each chunk is its own COMMIT, so the
             replica (and the slot's retained-WAL bound) advances between
             chunks while the primary keeps receiving data.
+        chunk_pause_s: fixed cool-down seconds before every chunk
+            (default 0.1 — a light gap between sustained write bursts;
+            None disables).
 
     Returns:
         Total rows upserted.
@@ -196,6 +206,7 @@ async def batched_upsert_by_date(
                 conn, table_name, chunk, key_columns, batch_size,
                 i, n_chunks, label, total_counter,
                 max_replica_lag_mb=max_replica_lag_mb,
+                chunk_pause_s=chunk_pause_s,
             )
         return total_counter[0]
 
@@ -217,6 +228,7 @@ async def batched_upsert_by_date(
                 pool, table_name, chunk, key_columns, batch_size,
                 chunk_idx, n_chunks, label, total_counter, lock,
                 max_replica_lag_mb=max_replica_lag_mb,
+                chunk_pause_s=chunk_pause_s,
             )
 
     tasks = [
@@ -233,10 +245,10 @@ async def batched_upsert_by_date(
 async def _copy_chunk_sequential(
     conn, table_name, chunk, chunk_idx, n_chunks, label, total_counter,
     *, max_replica_lag_mb: float | None = None,
+    chunk_pause_s: float | None = None,
 ) -> int:
     """COPY one chunk using the shared connection (sequential)."""
-    if max_replica_lag_mb is not None:
-        await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+    await _throttle_between_chunks_async(conn, max_replica_lag_mb, chunk_pause_s)
     n = await copy_insert_async(conn, table_name, chunk)
     total_counter[0] += n
     prefix = f"      {label} " if label else "      "
@@ -248,6 +260,7 @@ async def _copy_chunk_sequential(
 async def _copy_chunk_parallel(
     pool, table_name, chunk, chunk_idx, n_chunks, label, total_counter, lock,
     *, max_replica_lag_mb: float | None = None,
+    chunk_pause_s: float | None = None,
 ) -> int:
     """COPY one chunk using a connection borrowed from the pool.
 
@@ -255,8 +268,8 @@ async def _copy_chunk_parallel(
     ``copy_insert_async``). The pool guarantees connection isolation.
     """
     async with pool.acquire() as conn:
-        if max_replica_lag_mb is not None:
-            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+        await _throttle_between_chunks_async(
+            conn, max_replica_lag_mb, chunk_pause_s)
         n = await copy_insert_async(conn, table_name, chunk)
     async with lock:
         total_counter[0] += n
@@ -277,6 +290,7 @@ async def batched_copy_by_date(
     pool=None,
     max_concurrent: int = DEFAULT_MAX_CONCURRENT,
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """Bulk-insert rows via PostgreSQL COPY, chunked by date.
 
@@ -315,7 +329,9 @@ async def batched_copy_by_date(
             ``pool`` is provided). MUST be ≤ the pool's ``max_size``.
         max_replica_lag_mb: pause before each chunk while a streaming
             standby's replay lag exceeds this (default 4096 MB; None
-            disables the throttle).
+            disables the lag wait).
+        chunk_pause_s: fixed cool-down seconds before every chunk
+            (default 0.1; None disables).
 
     Returns:
         Total rows COPY-inserted.
@@ -335,6 +351,7 @@ async def batched_copy_by_date(
             await _copy_chunk_sequential(
                 conn, table_name, chunk, i, n_chunks, label, total_counter,
                 max_replica_lag_mb=max_replica_lag_mb,
+                chunk_pause_s=chunk_pause_s,
             )
         return total_counter[0]
 
@@ -353,6 +370,7 @@ async def batched_copy_by_date(
                 pool, table_name, chunk, chunk_idx, n_chunks,
                 label, total_counter, lock,
                 max_replica_lag_mb=max_replica_lag_mb,
+                chunk_pause_s=chunk_pause_s,
             )
 
     tasks = [_task(i, chunk) for i, chunk in enumerate(chunks, start=1)]
@@ -475,6 +493,7 @@ async def build_and_insert_chunked(
     max_concurrent: int = DEFAULT_MAX_CONCURRENT,
     label: str = "",
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ):
     """Build row dicts per date-chunk and insert each chunk immediately.
 
@@ -524,7 +543,9 @@ async def build_and_insert_chunked(
         label: progress-message prefix.
         max_replica_lag_mb: pause before each chunk COPY while a streaming
             standby's replay lag exceeds this (default 4096 MB; None
-            disables the throttle).
+            disables the lag wait).
+        chunk_pause_s: fixed cool-down seconds before every chunk COPY
+            (default 0.1; None disables).
 
     Returns:
         Total rows inserted.
@@ -556,6 +577,7 @@ async def build_and_insert_chunked(
             conn, pool, sub_frames, build_fn, table_name,
             sec_types_set, concurrency, n_chunks, prefix, force,
             max_replica_lag_mb=max_replica_lag_mb,
+            chunk_pause_s=chunk_pause_s,
         )
     else:
         logger.info(f"{prefix}build+insert: {n_chunks} date-chunks "
@@ -564,6 +586,7 @@ async def build_and_insert_chunked(
             conn, sub_frames, build_fn, table_name,
             sec_types_set, n_chunks, prefix, force,
             max_replica_lag_mb=max_replica_lag_mb,
+            chunk_pause_s=chunk_pause_s,
         )
 
 
@@ -571,6 +594,7 @@ async def _build_and_insert_sequential(
     conn, sub_frames, build_fn, table_name,
     sec_types_set, n_chunks, prefix, force,
     *, max_replica_lag_mb: float | None = None,
+    chunk_pause_s: float | None = None,
 ):
     """Sequential build + COPY on a single connection."""
     total = 0
@@ -588,8 +612,7 @@ async def _build_and_insert_sequential(
             )
         if not rows:
             continue
-        if max_replica_lag_mb is not None:
-            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+        await _throttle_between_chunks_async(conn, max_replica_lag_mb, chunk_pause_s)
         n = await copy_insert_async(conn, table_name, rows)
         total += n
         logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "
@@ -601,6 +624,7 @@ async def _build_and_insert_parallel(
     conn, pool, sub_frames, build_fn, table_name,
     sec_types_set, concurrency, n_chunks, prefix, force,
     *, max_replica_lag_mb: float | None = None,
+    chunk_pause_s: float | None = None,
 ):
     """Parallel build + COPY: build sequentially, COPY in parallel.
 
@@ -620,9 +644,8 @@ async def _build_and_insert_parallel(
     async def _copy_worker(chunk_idx, rows):
         async with sem:
             async with pool.acquire() as pool_conn:
-                if max_replica_lag_mb is not None:
-                    await _wait_for_replica_lag_async(
-                        pool_conn, max_replica_lag_mb)
+                await _throttle_between_chunks_async(
+                    pool_conn, max_replica_lag_mb, chunk_pause_s)
                 n = await copy_insert_async(pool_conn, table_name, rows)
             async with lock:
                 total_counter[0] += n
@@ -723,6 +746,7 @@ async def build_and_insert_chunked_df(
     max_concurrent: int = DEFAULT_DF_MAX_CONCURRENT,
     label: str = "",
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """Build a long-format DataFrame per date-chunk and CSV-COPY it.
 
@@ -752,7 +776,9 @@ async def build_and_insert_chunked_df(
         label: progress-message prefix.
         max_replica_lag_mb: pause before each chunk COPY while a streaming
             standby's replay lag exceeds this (default 4096 MB; None
-            disables the throttle).
+            disables the lag wait).
+        chunk_pause_s: fixed cool-down seconds before every chunk COPY
+            (default 0.1; None disables).
 
     Returns:
         Total rows inserted (long rows).
@@ -781,9 +807,8 @@ async def build_and_insert_chunked_df(
         async def _copy_worker(chunk_idx, long_df):
             async with sem:
                 async with pool.acquire() as pool_conn:
-                    if max_replica_lag_mb is not None:
-                        await _wait_for_replica_lag_async(
-                            pool_conn, max_replica_lag_mb)
+                    await _throttle_between_chunks_async(
+                        pool_conn, max_replica_lag_mb, chunk_pause_s)
                     n = await csv_copy_from_frame_async(
                         pool_conn, table_name, long_df,
                     )
@@ -829,8 +854,8 @@ async def build_and_insert_chunked_df(
                 )
             if long_df is None or len(long_df) == 0:
                 continue
-            if max_replica_lag_mb is not None:
-                await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+            await _throttle_between_chunks_async(
+                conn, max_replica_lag_mb, chunk_pause_s)
             n = await csv_copy_from_frame_async(conn, table_name, long_df)
             total += n
             logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "

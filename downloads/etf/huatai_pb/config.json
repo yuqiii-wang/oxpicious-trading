@@ -1,0 +1,25 @@
+{
+  "checkin_funds": [
+    {
+      "code": "018173",
+      "name": "华泰柏瑞中证全指电力ETF发起式联接C",
+      "note": "OTC feeder share class (bare code, no exchange suffix)"
+    },
+    {
+      "code": "510300",
+      "name": "沪深300ETF华泰柏瑞"
+    },
+    {
+      "code": "510880",
+      "name": "红利ETF华泰柏瑞"
+    },
+    {
+      "code": "512890",
+      "name": "红利低波ETF华泰柏瑞"
+    },
+    {
+      "code": "561630",
+      "name": "红利质量ETF华泰柏瑞"
+    }
+  ]
+}

@@ -10,7 +10,7 @@ from _common.build_commons import (
 
 from builds.etf.paths import (
     SZSE_ARCHIVE_DIR, SZSE_TREND_DIR,
-    SZSE_MARGIN_DIR, COMP_DIR,
+    SZSE_MARGIN_DIR, COMP_DIR, HUATAI_COMP_DIR,
 )
 from builds.etf.pipeline.discover import discover_source_files
 from builds.etf.pipeline.scope import (
@@ -54,6 +54,7 @@ async def run(args) -> None:
         "SZSE Trend dir":   SZSE_TREND_DIR,
         "Margin dir":       SZSE_MARGIN_DIR,
         "Composition dir":  COMP_DIR,
+        "Huatai comp dir":  HUATAI_COMP_DIR,
         "Date range":       f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
         "Code filter":      code_filter or "(none — all ETFs)",
         "Today":            TODAY_STR,
@@ -150,6 +151,27 @@ async def run(args) -> None:
         # latest snapshots this build may have just added.
         await stage_stock_boards(conn)
         await refresh_board_mix(conn, "etf", force=args.force)
+
+        # (8) OPT-IN (--analyze): refresh planner statistics. Bulk writes
+        # leave column stats stale until autovacuum catches up (hours on
+        # these tables), and value-blind prepared-statement readers
+        # (node-pg plans before bind values) then misestimate into whole-
+        # table merge/seq scans — the 2026-09-29 v_etf_margin exact-code
+        # 3.5s UI regression (the planner scanned the full 1M-row
+        # etf_liquidity_margin / etf_adjustment partitions to return 42
+        # rows). Same convention as builds.stock --analyze.
+        if getattr(args, "analyze", False):
+            from _common.db_commons import analyze_tables_async
+            durations = await analyze_tables_async(conn, (
+                "stats.etf_identity",
+                "stats.etf_basic_stats",
+                "stats.etf_tech_stats",
+                "stats.etf_adjustment",
+                "stats.etf_liquidity_margin",
+            ))
+            if durations:
+                logger.info("    [ANALYZE] refreshed: "
+                      + ", ".join(f"{t} ({d:.1f}s)" for t, d in durations.items()))
     finally:
         await conn.close()
 

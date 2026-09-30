@@ -1,7 +1,9 @@
 """ETF composition CSV reader.
 
 Reads per-file composition CSVs produced by download_szse_etf_composition.py
-and returns (comp_long, comp_universe).
+(SZSE exchange PCF) and downloads.etf.huatai_pb.composition (huatai-pb.com
+fund-site PCF — same COMBINED_COLS schema) and returns
+(comp_long, comp_universe).
 
 GPU-native reads: NO ``encoding`` kwarg (it forces a CPU fallback on EVERY
 file — 16K files here); the UTF-8 BOM is stripped from the first column
@@ -15,7 +17,7 @@ from collections import Counter
 import pandas as pd
 
 from _common.df_utils import safe_columns
-from builds.etf.paths import COMP_DIR
+from builds.etf.paths import COMP_DIR, HUATAI_COMP_DIR
 
 import logging
 logger = logging.getLogger(__name__)
@@ -24,6 +26,15 @@ COMBINED_COLS = [
     "trade_date", "etf_code", "etf_name", "fund_type", "target_index",
     "nav_per_unit", "min_unit_nav",
     "stock_code", "stock_name", "shares", "cash_sub_flag", "market",
+]
+
+# Composition sources — (directory, filename prefix). Same per-file CSV
+# schema across sources; files are read in list order, so when two sources
+# carry the SAME (code, snapshot_date) snapshot the earlier (exchange
+# canonical) source wins the in-run dedup.
+COMPOSITION_SOURCES = [
+    (COMP_DIR, "szse_etf_comp_"),
+    (HUATAI_COMP_DIR, "huatai_etf_comp_"),
 ]
 
 # Column dtypes: one-pass dtype contract — final dtypes assigned AT PARSE
@@ -58,11 +69,8 @@ def _read_one(path: str) -> pd.DataFrame | None:
     return df
 
 
-_FILENAME_PREFIX = "szse_etf_comp_"
-
-
-def _filename_comp_key(path: str) -> str | None:
-    """'szse_etf_comp_YYYYMMDD_<bare6>.csv' → '<bare6>|<YYYYMMDD>'.
+def _filename_comp_key(path: str, prefix: str) -> str | None:
+    """'<prefix>YYYYMMDD_<bare6>.csv' → '<bare6>|<YYYYMMDD>'.
 
     The DB gate keys are built the same way from stats.sec_composition
     (code stripped to its bare 6-digit part + snapshot_date), so a file
@@ -70,9 +78,9 @@ def _filename_comp_key(path: str) -> str | None:
     being opened.
     """
     base = os.path.basename(path)
-    if not base.startswith(_FILENAME_PREFIX) or not base.endswith(".csv"):
+    if not base.startswith(prefix) or not base.endswith(".csv"):
         return None
-    parts = base[len(_FILENAME_PREFIX):-len(".csv")].split("_")
+    parts = base[len(prefix):-len(".csv")].split("_")
     if len(parts) != 2 or len(parts[0]) != 8 or len(parts[1]) != 6:
         return None
     return parts[1] + "|" + parts[0]
@@ -81,10 +89,10 @@ def _filename_comp_key(path: str) -> str | None:
 def build_composition(verbose=True, code=None, existing_ymd_keys=None):
     """Read per-file composition CSVs and return (comp_long, comp_universe).
 
-    When *code* is set (canonical "NNNNNN.SZ/.SS" or bare 6-digit), only that
+    When *code* is set (bare "NNNNNN"; a suffixed value is stripped), only that
     ETF's per-file CSVs are read: filenames end with the bare code
-    (``szse_etf_comp_YYYYMMDD_<code>.csv``), so a --code build never parses
-    other ETFs' holdings.
+    (``{prefix}_etf_comp_YYYYMMDD_<code>.csv``), so a --code build never
+    parses other ETFs' holdings.
 
     When *existing_ymd_keys* is a set of ``"<bare6>|<YYYYMMDD>"`` strings
     (the (code, snapshot_date) pairs already in stats.sec_composition),
@@ -96,24 +104,44 @@ def build_composition(verbose=True, code=None, existing_ymd_keys=None):
     """
     if code is not None:
         bare = str(code).split(".")[0].strip().zfill(6)
-        files = sorted(glob.glob(
-            os.path.join(COMP_DIR, f"szse_etf_comp_*_{bare}.csv")))
+        patterns = [f"{prefix}*_{bare}.csv" for _, prefix in COMPOSITION_SOURCES]
     else:
-        files = sorted(glob.glob(os.path.join(COMP_DIR, "szse_etf_comp_*.csv")))
+        patterns = [f"{prefix}*.csv" for _, prefix in COMPOSITION_SOURCES]
+    files_by_source = [
+        sorted(glob.glob(os.path.join(src_dir, pattern)))
+        for (src_dir, _), pattern in zip(COMPOSITION_SOURCES, patterns)
+    ]
+
+    # Cross-source in-run dedup on the (code, snapshot) key: earlier sources
+    # (exchange canonical) shadow later ones for the same snapshot.
+    file_pairs: list[tuple[str, str]] = []  # (path, prefix)
+    seen_keys: set[str] = set()
+    for (src_dir, prefix), src_files in zip(COMPOSITION_SOURCES, files_by_source):
+        for f in src_files:
+            key = _filename_comp_key(f, prefix)
+            if key is not None:
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+            file_pairs.append((f, prefix))
+        if verbose and src_files:
+            logger.info(f"    [COMP] {len(src_files)} {prefix}* files in {src_dir}")
+
     if existing_ymd_keys is not None:
-        n_all = len(files)
-        files = [f for f in files
-                 if (k := _filename_comp_key(f)) is None
-                 or k not in existing_ymd_keys]
-        if verbose and n_all - len(files):
-            logger.info(f"    [COMP] DB gate: skipped {n_all - len(files)} of "
+        n_all = len(file_pairs)
+        file_pairs = [(f, p) for f, p in file_pairs
+                      if (k := _filename_comp_key(f, p)) is None
+                      or k not in existing_ymd_keys]
+        if verbose and n_all - len(file_pairs):
+            logger.info(f"    [COMP] DB gate: skipped {n_all - len(file_pairs)} of "
                   f"{n_all} per-file CSVs (snapshots already in DB)")
     if verbose:
-        logger.info(f"    [COMP] {len(files)} per-file CSVs to read in {COMP_DIR}")
+        logger.info(f"    [COMP] {len(file_pairs)} per-file CSVs to read "
+              f"({len(COMPOSITION_SOURCES)} sources)")
 
     counts = Counter()
     dfs = []
-    for path in files:
+    for path, _prefix in file_pairs:
         df = _read_one(path)
         if df is None:
             counts["failed"] += 1
@@ -124,7 +152,8 @@ def build_composition(verbose=True, code=None, existing_ymd_keys=None):
 
     if not dfs:
         logger.warning("    [WARN] No holdings read from any per-file CSV "
-              "(run download_szse_etf_composition.py to generate them)")
+              "(run downloads.etf.szse.composition / "
+              "downloads.etf.huatai_pb.composition to generate them)")
         return pd.DataFrame(columns=COMBINED_COLS), pd.DataFrame()
 
     combined = pd.concat(dfs, ignore_index=True)

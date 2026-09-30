@@ -48,14 +48,14 @@ async def resolve_spot_code(
     conn, target_type: str, underlying: str, trade_date: _dt.date
 ) -> Optional[str]:
     """Map the options tables' bare underlying code onto the spot table's
-    code format: ETF spot rows carry exchange suffixes (510050.SS /
-    159915.SZ), index spot rows are bare 6-digit codes."""
+    code format: ETF spot rows (etf_intraday_5min) and index spot rows are
+    BOTH bare 6-digit codes — a direct equality match."""
     tbl = _spot_table(target_type)
     row = await conn.fetchrow(
         f"""
         SELECT code FROM {tbl}
         WHERE date = $1
-          AND code IN ($2, $2 || '.SS', $2 || '.SZ')
+          AND code = $2
         ORDER BY code
         LIMIT 1
         """,

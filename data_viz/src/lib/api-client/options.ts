@@ -4,6 +4,12 @@ import type {
   OptionsUnderlying,
   OptionsWallsResponse,
   OptionsOiStatsResponse,
+  OptionsDatesResponse,
+  OptionsSnapshotResponse,
+  OptionsOiDailyResponse,
+  OptionsOiCellsResponse,
+  OptionsExpiryMetaResponse,
+  OptionsMoneynessSeriesResponse,
   EtfOhlcvResponse,
   SkewnessSeriesResponse,
   IvSkewResponse,
@@ -48,6 +54,100 @@ export function fetchOptionsCombined(
   if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<OptionsCombinedResponse>(`/api/szse-options/combined${qs ? `?${qs}` : ""}`);
+}
+
+// ----------------------------------------------------------------------------
+//  Per-plot fetchers — one SQL per plot (see api/services/options.service.ts
+//  "Per-plot queries"). Each Options Analysis panel loads its own aggregate
+//  instead of the full-history /combined blob.
+// ----------------------------------------------------------------------------
+
+/** Shared query-string builder for the per-plot endpoints. */
+function plotQs(
+  underlying: string,
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+  extra?: Record<string, string>,
+): string {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (targetType) params.set("target_type", targetType);
+  if (exchange) params.set("exchange", exchange);
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) params.set(k, v);
+  }
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** Distinct trading dates + counters (date picker, page caption). */
+export function fetchOptionsDates(
+  underlying: string,
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+): Promise<OptionsDatesResponse> {
+  return fetchJson<OptionsDatesResponse>(
+    `/api/szse-options/dates${plotQs(underlying, targetType, exchange)}`,
+  );
+}
+
+/** One date's quote rows + history-wide strike/expiry-month meta. */
+export function fetchOptionsSnapshot(
+  underlying: string,
+  date: string,
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+): Promise<OptionsSnapshotResponse> {
+  return fetchJson<OptionsSnapshotResponse>(
+    `/api/szse-options/snapshot${plotQs(underlying, targetType, exchange, { start_date: date })}`,
+  );
+}
+
+/** Per (date × expiry) call/put OI + per-date spot (trend charts). */
+export function fetchOptionsOiDaily(
+  underlying: string,
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+): Promise<OptionsOiDailyResponse> {
+  return fetchJson<OptionsOiDailyResponse>(
+    `/api/szse-options/oi-daily${plotQs(underlying, targetType, exchange)}`,
+  );
+}
+
+/** Per (date × expiry × strike) OI cells for the selected expiry cohorts. */
+export function fetchOptionsOiCells(
+  underlying: string,
+  expiries: string[],
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+): Promise<OptionsOiCellsResponse> {
+  return fetchJson<OptionsOiCellsResponse>(
+    `/api/szse-options/oi-cells${plotQs(underlying, targetType, exchange, {
+      expiries: expiries.join(","),
+    })}`,
+  );
+}
+
+/** Per-contract final-OI expiry markers + cohort totals. */
+export function fetchOptionsExpiryMeta(
+  underlying: string,
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+): Promise<OptionsExpiryMetaResponse> {
+  return fetchJson<OptionsExpiryMetaResponse>(
+    `/api/szse-options/expiry-meta${plotQs(underlying, targetType, exchange)}`,
+  );
+}
+
+/** Server-computed oi_moneyness skew series (spot + per-group aggregates). */
+export function fetchOptionsMoneynessSeries(
+  underlying: string,
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+): Promise<OptionsMoneynessSeriesResponse> {
+  return fetchJson<OptionsMoneynessSeriesResponse>(
+    `/api/szse-options/oi-moneyness-series${plotQs(underlying, targetType, exchange)}`,
+  );
 }
 
 /** Zone walls from analysis.options_walls (wall_type='zone' — the backend

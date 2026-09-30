@@ -2,9 +2,11 @@ import { fetchJson } from "./_cache";
 import type {
   ForecastIdentityResponse,
   ForecastKind,
+  ForecastLaddersResponse,
   ForecastResponse,
   ForecastTriggerDatesResponse,
   MaSpreadSecType,
+  OhlcvPopulation,
 } from "@shared/types";
 
 // ---------------------------------------------------------------------------
@@ -28,14 +30,50 @@ export function fetchAnalysisForecast(
   secType: MaSpreadSecType,
   kind: ForecastKind,
   date?: string | null,
+  population?: OhlcvPopulation | null,
+  snapshot?: string | null,
 ): Promise<ForecastResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   if (secType) params.set("sec_type", secType);
   params.set("kind", kind);
   if (date) params.set("date", date);
+  // Derived-population selector (mov_rsi): one of the four children
+  // ('gap_selection' / 'gap_boost' / 'vol_selection' / 'vol_boost')
+  // reads that child's rows; the default reads every population's rows
+  // (each carrying its own ohlcv_type verdict).
+  if (population) params.set("population", population);
+  // Snapshot scope ("latest" | an exact stat_date): the FIRST load
+  // reads only the snapshot the end-month filter starts on — the table
+  // paints over ~1/7 of the rows; the full set loads on demand when
+  // the filter moves off it (see fetchForecastLadders' sibling call).
+  if (snapshot) params.set("snapshot", snapshot);
   return fetchJson<ForecastResponse>(
     `/api/analysis/mov-ave-spread/forecast?${params.toString()}`,
+  );
+}
+
+/** The code's delay ladders for the SAME scope as the base forecast
+ *  read — the second half of the split response (2026-09-30): the
+ *  table renders from the base payload first, then merges these
+ *  forecast_id-keyed ladders into its rows when they land. */
+export function fetchForecastLadders(
+  code: string,
+  secType: MaSpreadSecType,
+  kind: ForecastKind,
+  date?: string | null,
+  population?: OhlcvPopulation | null,
+  snapshot?: string | null,
+): Promise<ForecastLaddersResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  params.set("kind", kind);
+  if (date) params.set("date", date);
+  if (population) params.set("population", population);
+  if (snapshot) params.set("snapshot", snapshot);
+  return fetchJson<ForecastLaddersResponse>(
+    `/api/analysis/mov-ave-spread/forecast-ladders?${params.toString()}`,
   );
 }
 
@@ -49,10 +87,12 @@ export function fetchAnalysisForecast(
 export function fetchForecastTriggerDates(
   forecastId: number,
   delay = 0,
+  population: OhlcvPopulation | null = null,
 ): Promise<ForecastTriggerDatesResponse> {
   const delayQs = delay > 0 ? `&delay=${delay}` : "";
+  const popQs = population ? `&population=${population}` : "";
   return fetchJson<ForecastTriggerDatesResponse>(
-    `/api/analysis/mov-ave-spread/forecast-dates?forecast_id=${forecastId}${delayQs}`,
+    `/api/analysis/mov-ave-spread/forecast-dates?forecast_id=${forecastId}${delayQs}${popQs}`,
   );
 }
 

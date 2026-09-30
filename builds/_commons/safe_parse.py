@@ -5,7 +5,7 @@ other build modules stop calling scalar ``parse_num``/``parse_date`` via
 ``Series.apply`` — under cudf.pandas every apply() attempt is a Numba JIT
 compilation of the host ufunc; when it fails (it does, per element), each
 element becomes one slow-path fallback (~9,206 lines/run in
-builds.index.baseline before this fix).
+builds.index.daily before this fix).
 
 Fast paths:
 * ``safe_to_numeric``  — direct ``astype(float)`` (downloads conversion

@@ -1,6 +1,6 @@
 """Configuration for analyze.analysis_forecasts.
 
-Monthly per-security forecast analysis stored in the
+Annual-grid per-security forecast analysis stored in the
 ``analysis_forecasts`` schema, split into MOTIVATION (bucket-defining)
 and RESULT tables:
 

@@ -19,7 +19,7 @@ bottom-pct% (cheap) days bullish (side 'bottom'); the bucket extreme
 maps to the family side IDENTITY (the dividend-yield sibling,
 compute_dividend, REVERSES the mapping).
 
-Everything else — the (code chunk × stat month) partition, the
+Everything else — the (code chunk × snapshot) partition, the
 streak-merge (consecutive qualifying days → ONE signal with
 incremental anchor triggers at delays 0..TRIGGER_DELAY_MAX;
 the bucket's mean run length recorded on
@@ -127,7 +127,7 @@ class ValPctEngine(WideDfEngine):
             return
 
         # Streak-merge + the forward aggregation / row building are the
-        # base's — month_rows consumes what this yields. regime is in
+        # base's — snapshot_rows consumes what this yields. regime is in
         # the run group so each regime bucket's anchor ladder stays
         # contiguous 0..max (a regime flip starts a fresh signal).
         yield self._streak_merge(
@@ -145,7 +145,7 @@ class _PeValPctEngine(ValPctEngine):
 def compute_pe_results(
     *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_date, pe_state bucket rows) per month."""
+    """Yield (stat_date, pe_state bucket rows) per snapshot."""
     engine = _PeValPctEngine(
         df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs,

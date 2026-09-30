@@ -13,7 +13,7 @@ HOW a config's value / bar resolve in that space:
                        entry has no current value ⇒ its configs are
                        skipped as not comparable (never invented).
   sub_type parsers   — the window + the fast-leg fragment ride IN the
-                       sub_type (rsi14 / pair60 / pxpair255 /
+                       sub_type (rsi14 / mapair60 / pxmapair255 /
                        emapair60 / pxemapair255 / std60_2std).
   resolve_value      — one config's current value in its threshold's
                        space.
@@ -47,22 +47,23 @@ SIGNAL_VALUE_SOURCE: dict[str, str] = {
     "mov_rsi": "rsi",               # latest rsi_{W}days (sub_type rsi{W}_{pct}pct)
     "mov_std": "close",             # intraday close vs the DAY'S band (derived in resolve_threshold: ma_{W} ± k·std_{W})
     "high_low_streaks": "close",    # close vs the band edge
-    "mov_pairs": "cross",           # the DAY'S fast leg (ma5 / price) vs the DAY'S slow leg ma_{W} (sub_type pair{W} / pxpair{W})
+    "mov_pairs": "cross",           # the DAY'S fast leg (ma5 / price) vs the DAY'S slow leg ma_{W} (sub_type mapair{W} / pxmapair{W})
     "mov_pairs_ema": "cross",       # the DAY'S fast leg (ema6 / price) vs the DAY'S slow leg ema_{W} (emapair{W} / pxemapair{W})
     "margin_ratio": "margin_z",     # ratio z vs the signed z-bar
 }
 
 # The cross families' legs: the fast leg rides the sub_type's LEADING
-# fragment, the slow-leg window rides the integer ("pair60" → ma5 vs
-# ma60, "pxpair255" → the price vs ma255, "emapair60" → ema6 vs ema60,
+# fragment, the slow-leg window rides the integer ("mapair60" → ma5 vs
+# ma60, "pxmapair255" → the price vs ma255, "emapair60" → ema6 vs ema60,
 # "pxemapair255" → the price vs ema255).
 _PAIR_FAST_MA = 5
 _PAIR_FAST_EMA = 6
 
 # The price-leg fragments (current value = the bar's own close, not an
 # indicator leg) and the EMA-cross fragments (slow leg = ema_{W};
-# every other cross fragment — "pair" / "pxpair" — crosses a ma_{W}):
-_PAIR_PRICE_FRAGMENTS = ("pxpair", "pxemapair")
+# every other cross fragment — "mapair" / "pxmapair" — crosses a
+# ma_{W}):
+_PAIR_PRICE_FRAGMENTS = ("pxmapair", "pxemapair")
 _PAIR_EMA_FRAGMENTS = ("emapair", "pxemapair")
 
 # Source kinds served by the shared RSI-row fetch (fetch_current_values)
@@ -107,9 +108,9 @@ def sub_type_k(sub_type: str) -> float | None:
 
 def sub_type_window(sub_type: str) -> int | None:
     """The window rides in the sub_type for the indicator / cross
-    kinds (rsi14 / pair60 / pxpair255 / emapair60 / pxemapair255): the
-    FIRST integer run. None when the sub_type carries no window (price
-    / state kinds)."""
+    kinds (rsi14 / mapair60 / pxmapair255 / emapair60 / pxemapair255):
+    the FIRST integer run. None when the sub_type carries no window
+    (price / state kinds)."""
     digits = ""
     for ch in sub_type:
         if ch.isdigit():
@@ -121,7 +122,7 @@ def sub_type_window(sub_type: str) -> int | None:
 
 def sub_type_fragment(sub_type: str) -> str | None:
     """The sub_type's LEADING alphabetic fragment — the fast-leg
-    naming of the cross kinds ("pair" / "pxpair" / "emapair" /
+    naming of the cross kinds ("mapair" / "pxmapair" / "emapair" /
     "pxemapair"). None when the sub_type starts with a digit."""
     frag = ""
     for ch in sub_type:
@@ -192,7 +193,7 @@ def resolve_value(sig: dict, values: LiveValues) -> float | None:
         frag = sub_type_fragment(sig["signal_sub_type"])
         if frag in _PAIR_PRICE_FRAGMENTS:
             return values.close                     # the day's price
-        if frag == "pair":
+        if frag == "mapair":
             return values.ma.get(_PAIR_FAST_MA)     # the day's ma5
         if frag == "emapair":
             return values.ema.get(_PAIR_FAST_EMA)   # the day's ema6

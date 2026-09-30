@@ -7,7 +7,7 @@ import "dayjs/locale/en";
 import App from "./App";
 import { useStore } from "@/store/filters";
 import { buildTheme } from "@/theme/mui-theme";
-import { connectChartsByGroup } from "@/components/EChart";
+import { connectChartsByGroup } from "@/shared/charts/EChart";
 import "./theme/colors.css";
 import "./index.css";
 
@@ -25,7 +25,7 @@ function ThemedApp() {
 }
 
 // Wire up ECharts cross-chart tooltip sync once.
-connectChartsByGroup("debt-baseline");
+connectChartsByGroup("debt");
 connectChartsByGroup("annual-sentiment");
 connectChartsByGroup("industry-sentiments");
 connectChartsByGroup("options-trend");

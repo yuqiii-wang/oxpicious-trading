@@ -13,19 +13,25 @@ builders, distinguished by exchange='SSE':
      认购/认沽, 行权价, 到期日 — authoritative, no name-regex parsing needed)
   3. Underlying close — temps/sse_trend/sse_trend_etf_YYYYMMDD.csv (今收 of
      the 5 underlying ETFs → moneyness / IV)
+  4. Risk indicators — temps/sse_options_risk/sse_options_risk_YYYYMMDD.csv
+     (the exchange's 期权风险指标 table, downloadRisk.do; supplies
+     Delta/Theta/Gamma/Vega/Rho DIRECTLY per contract — never recomputed.
+     Dates without a risk file fall back to the shared BS pipeline;
+     implied_vol has no published SSE source and stays model-computed
+     off close.)
 
 SSE-specific gaps vs the SZSE source (by design, documented):
   * settle — SSE publishes the daily settlement price with a lag; rows are
-    written with settle = NULL and the IV/Greeks calibration prices off
+    written with settle = NULL and the IV calibration prices off
     ``close`` (settle coalesced to close). Backfilling settle from the t+1
     snapshot's prev_settle is a future refinement (re-run with --date).
   * open_interest — no per-contract OI source exists for SSE (tstyle
     ``position`` returns null); OI columns are NULL and the OI aggregate
     ratios degenerate to 0. Per-underlying OI totals exist on the exchange's
     每日统计 endpoint (future: downloads → options_aggregate refresh).
-  * Greeks — Black-Scholes via the shared _common.df_utils pipeline (same as
-    SZSE/CFFEX). The exchange-published risk CSV (temps/sse_options_risk/)
-    is a possible future override source.
+  * Greeks — loaded directly from the exchange risk table
+    (temps/sse_options_risk/, scheduled in downloads_daily.sh); the BS
+    pipeline is the fallback only.
 
 Missing-data detection: dates available = EOD-quote CSVs whose last sample is
 >= 15:00 (final) AND a same-day contract listing exists; missing = those not
@@ -83,6 +89,7 @@ _EPOCH = datetime.date(1970, 1, 1)
 # ============================================================================
 SSE_OPTIONS_INTRADAY_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_options_intraday")
 SSE_OPTIONS_PRICE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_options_price")
+SSE_OPTIONS_RISK_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_options_risk")
 SSE_TREND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_trend")
 
 logger = setup_logging("sse_options")
@@ -94,6 +101,7 @@ def _resolve(path: str) -> str:
 
 SSE_OPTIONS_INTRADAY_DIR = _resolve(SSE_OPTIONS_INTRADAY_DIR)
 SSE_OPTIONS_PRICE_DIR = _resolve(SSE_OPTIONS_PRICE_DIR)
+SSE_OPTIONS_RISK_DIR = _resolve(SSE_OPTIONS_RISK_DIR)
 SSE_TREND_DIR = _resolve(SSE_TREND_DIR)
 
 
@@ -215,8 +223,14 @@ def build_contract_meta_df(files, verbose=True):
         tc = part["trade_code"]
         part["has_a_suffix"] = tc.str.slice(11, 12).eq("A").astype(int)
         # 到期日 YYYYMMDD → datetime64 (authoritative expiry; no weekday math)
-        part["expiry_date"] = pd.to_datetime(
-            df["到期日"].astype(str).str.strip(), format="%Y%m%d", errors="coerce")
+        # Clean-data fast path — to_datetime(errors="coerce") on a Series
+        # is a cudf fallback per call (non-scalar arg); coerce only on junk.
+        expiry_str = df["到期日"].astype(str).str.strip()
+        try:
+            part["expiry_date"] = pd.to_datetime(expiry_str, format="%Y%m%d")
+        except (ValueError, TypeError):
+            part["expiry_date"] = pd.to_datetime(
+                expiry_str, format="%Y%m%d", errors="coerce")
         frames.append(part)
 
     if not frames:
@@ -275,13 +289,78 @@ def load_etf_close(files, verbose=True):
 
 
 # ============================================================================
+# Exchange risk-indicator table (期权风险指标) — published greeks loaded
+# DIRECTLY, never recomputed (see add_derived_columns)
+# ============================================================================
+# downloadRisk.do emits comma-separated fields padded with tabs/spaces and a
+# trailing separator per row — read positional, then strip every field.
+_RISK_SOURCE_COLS = ["日期", "合约编码", "交易代码", "合约简称",
+                     "Delta", "Theta", "Gamma", "Vega", "Rho"]
+_RISK_COLS = ["日期", "合约编码", "Delta", "Theta", "Gamma", "Vega", "Rho"]
+
+
+def load_risk_indicators(files, verbose=True):
+    """Per-contract published greeks from sse_options_risk_*.csv.
+
+    Returns [date, contract_code, r_delta, r_theta, r_gamma, r_vega, r_rho]
+    keyed by the CSV's own 日期/合约编码 (authoritative; the numeric
+    合约编码 matches options_identity.contract_code).
+    """
+    if verbose:
+        logger.info(f"    [RISK] reading {len(files)} sse_options_risk_*.csv files")
+
+    frames: list[pd.DataFrame] = []
+    n_empty = 0
+    for path in files:
+        try:
+            df = read_csv_preferred(
+                path,
+                header=None, skiprows=1,
+                names=_RISK_SOURCE_COLS + ["_pad"], usecols=_RISK_COLS,
+                dtype={"合约编码": str},
+            )
+        except Exception:
+            n_empty += 1
+            continue
+        if df is None or len(df) == 0:
+            n_empty += 1
+            continue
+
+        date_s = df["日期"].astype(str).str.strip().str.replace("-", "", regex=False)
+        code_s = df["合约编码"].astype(str).str.strip()
+        keep = code_s.str.fullmatch(r"\d+")
+        part = pd.DataFrame({
+            "date": pd.to_datetime(date_s[keep], format="%Y%m%d", errors="coerce"),
+            "contract_code": code_s[keep],
+        })
+        # normalize to the [ns] unit the options frame's date column uses —
+        # datetime-key merges across [us]/[ns] units do not match
+        part["date"] = part["date"].astype("datetime64[ns]")
+        for col in ("Delta", "Theta", "Gamma", "Vega", "Rho"):
+            part["r_" + col.lower()] = safe_to_numeric(df[col].astype(str).str.strip())
+        part = part.dropna(subset=["date"])
+        frames.append(part)
+
+    if not frames:
+        if verbose:
+            logger.info(f"    [RISK] 0 usable files ({n_empty} empty) — greeks fall back to BS pipeline")
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True)
+    out = out.drop_duplicates(subset=["date", "contract_code"], keep="last")
+    if verbose:
+        logger.info(f"    [RISK] {len(frames)} files with data, {n_empty} empty, {len(out):,} published greek rows")
+    return out
+
+
+# ============================================================================
 # Derived columns (mirrors builds.options.szse.add_derived_columns; SSE gaps:
 # settle NULL → IV priced off close; no per-contract OI → OI aggregates 0)
 # ============================================================================
 from _common.df_utils import compute_iv_and_greeks  # noqa: E402
 
 
-def add_derived_columns(df, etf_close=None, verbose=True):
+def add_derived_columns(df, etf_close=None, risk_df=None, verbose=True):
     """Add normalized prices, moneyness, per-underlying aggregates, IV, Greeks."""
     if df is None or len(df) == 0:
         return df
@@ -380,6 +459,23 @@ def add_derived_columns(df, etf_close=None, verbose=True):
     df["gamma"] = gamma
     df["vega"] = vega
     df["rho"] = rho
+
+    # Exchange-published risk indicators WIN over the model values — loaded
+    # from the 期权风险指标 table directly, never recomputed. The BS values
+    # above stay only as the fallback for dates/contracts the table lacks
+    # (implied_vol has no published SSE source and stays model-computed).
+    if risk_df is not None and len(risk_df) > 0:
+        df = df.merge(risk_df, on=["date", "contract_code"], how="left")
+        n_published = int(df["r_delta"].notna().sum())
+        for pub, col in (
+            ("r_delta", "delta"), ("r_theta", "theta"), ("r_gamma", "gamma"),
+            ("r_vega", "vega"), ("r_rho", "rho"),
+        ):
+            df[col] = df[pub].fillna(df[col])
+        df = df.drop(columns=["r_delta", "r_theta", "r_gamma", "r_vega", "r_rho"])
+        if verbose:
+            logger.info(f"    [RISK] published greeks loaded for {n_published:,}/{len(df):,} rows "
+                        f"(rest: BS fallback / NULL)")
 
     df = df.round({
         "prev_settle_norm": 4, "close_norm": 4, "settle_norm": 4,
@@ -641,7 +737,17 @@ class SseOptionsBuild(DataBuild):
             logger.info(f"    → date range: {min(_d_range)} → {max(_d_range)}")
 
             etf_close = load_etf_close(missing_etf_files)
-            options_df = add_derived_columns(options_df, etf_close)
+
+            # Exchange risk-indicator table (published greeks) for the same
+            # missing dates — missing/empty files fall back to the BS pipeline.
+            risk_files_all = glob_source_files(SSE_OPTIONS_RISK_DIR, "sse_options_risk_*.csv")
+            missing_risk_files = [
+                f for f in risk_files_all
+                if ymd_from_filename(f, "sse_options_risk_") in missing_ymd
+            ]
+            risk_df = load_risk_indicators(missing_risk_files)
+
+            options_df = add_derived_columns(options_df, etf_close, risk_df=risk_df)
 
             # Host boundary: cuDF → host pandas ONCE at the DB boundary
             # (asyncpg codecs need host types; mirrors the SZSE builder)

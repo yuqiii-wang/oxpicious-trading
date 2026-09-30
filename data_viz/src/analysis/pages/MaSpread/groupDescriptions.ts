@@ -28,6 +28,7 @@ export type MaSpreadGroupId =
   | "ohlcWindow"
   | "highLowStreaks"
   | "pxVolStates"
+  | "ohlcGaps"
   | "marketRegimes";
 
 export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
@@ -87,6 +88,29 @@ export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
       "flat, depth = combo strength. Indication: sharp × heavy (darkest) = " +
       "conviction growth; rises on fading amount lack sponsorship; sharp " +
       "drop + heavy = panic that marks capitulation lows.",
+  },
+  ohlcGaps: {
+    title: "Top-10% OHLC Days",
+    description:
+      "The day-shape extremes of the code's own OHLC history — the two " +
+      "shapes the 2026-09 studies measured on the index universe:\n" +
+      "spike fade (冲高回落) — the day's UPPER wick " +
+      "(high − max(open, close), prev-close normalized) lands in its " +
+      "trailing-252d TOP DECILE: the spike that failed to hold.\n" +
+      "flush recover (探底回升) — the LOWER wick " +
+      "(min(open, close) − low) lands in its trailing-252d top " +
+      "decile: the flush that was bought back.\n" +
+      "Flags need ≥120 trailing observations; data comes from " +
+      "analysis.mov_ave_spreads_detail_ohlc_gaps (estimated rows are " +
+      "excluded at build time).\n" +
+      "Toggles are independent and a day can carry both shapes; the " +
+      "chart shades spike-fade days light red and flush-recover days " +
+      "light green, and the tooltip shows the day's gap / intra / wick legs.\n" +
+      "Indication: on the index sample the spike-fade day carried the " +
+      "strongest 5d drift of any pattern (+53bp vs the +9bp base) and " +
+      "the flush-recover day a short next-day dip — both feed the " +
+      "forecasts OHLC-boost weights, so shaded days are the ones the " +
+      "boost actually re-weights.",
   },
   marketRegimes: {
     title: "Market Regimes (vol × amt)",

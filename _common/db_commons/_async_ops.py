@@ -9,10 +9,12 @@ Provides:
     (vectorized client encoding — no per-row dicts)
   - ensure_table_exists_async() — create table if not exists (async)
   - truncate_table_async() — clear all data from table (async)
+  - analyze_tables_async() — refresh planner statistics after bulk writes
 """
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 from ._helpers import (
     _parse_table_name,
@@ -38,6 +40,19 @@ logger = logging.getLogger(__name__)
 # invalidation. No-op when no standby is streaming (or on permission
 # errors).
 DEFAULT_MAX_REPLICA_LAG_MB = 4096.0
+
+# Fixed cool-down pause before every commit chunk of the bulk-write
+# helpers, ON by default. The reactive lag cap above only engages once
+# the standby is 4 GB behind — back-to-back 100K-row chunks otherwise
+# run the primary's disk fsync-bound at max duty cycle for the whole
+# load, and frequent small bulk writes (daily incrementals, streaming
+# upserts) never trip the cap at all. A short 0.1s gap before each chunk
+# breaks up sustained write bursts (a light duty-cycle relief; the
+# reactive lag cap above remains the hard bound that halts writers when
+# replay actually falls behind). Cheap by design: a 70-chunk force
+# rebuild pays ~7s extra; a single-chunk daily write pays 0.1s. None
+# disables (hot paths opt out explicitly).
+DEFAULT_CHUNK_PAUSE_S = 0.1
 
 
 async def _wait_for_replica_lag_async(
@@ -85,6 +100,24 @@ async def _wait_for_replica_lag_async(
                 f"chunks until it drains")
             warned = True
         await asyncio.sleep(poll_s)
+
+
+async def _throttle_between_chunks_async(
+    conn, max_lag_mb: float | None, pause_s: float | None,
+) -> None:
+    """The bulk-write rule's between-chunk throttle: a fixed cool-down
+    pause (``DEFAULT_CHUNK_PAUSE_S`` — disk duty-cycle relief + replica
+    replay headroom) followed by the reactive replica-lag wait.
+
+    Called before each commit chunk (never inside a transaction), so
+    pausing holds no locks. ``pause_s=None`` skips the fixed pause;
+    ``max_lag_mb=None`` skips the lag wait (which is a no-op without a
+    streaming standby anyway).
+    """
+    if pause_s:
+        await asyncio.sleep(pause_s)
+    if max_lag_mb is not None:
+        await _wait_for_replica_lag_async(conn, max_lag_mb)
 
 
 def _copy_clean_value(v):
@@ -181,6 +214,7 @@ async def bulk_upsert_async(
     commit_chunk_rows: int = DEFAULT_COMMIT_CHUNK_ROWS,
     partition_key: str | None = PARTITION_KEY_AUTO,
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """Perform bulk upsert (INSERT ... ON CONFLICT DO UPDATE/NOTHING) (async).
 
@@ -189,7 +223,8 @@ async def bulk_upsert_async(
     committed in bounded chunks of ~``commit_chunk_rows`` rows.
 
     THE BULK-WRITE RULE (chunk by partition key → one COMMIT per chunk →
-    replica-lag throttle between chunks) is the DEFAULT here:
+    throttle between chunks: fixed cool-down pause + replica-lag wait)
+    is the DEFAULT here:
 
     WHY BOUNDED COMMITS (not one transaction for everything): a
     replication slot cannot advance past a transaction until it commits,
@@ -228,7 +263,10 @@ async def bulk_upsert_async(
         max_replica_lag_mb: pause between commit chunks while the streaming
                     standby's replay lag exceeds this (default 4096 MB —
                     1/16 of the primary's 64GB max_slot_wal_keep_size;
-                    None disables the throttle).
+                    None disables the lag wait).
+        chunk_pause_s: fixed cool-down seconds before every commit chunk
+                    (default 0.1 — a light gap between sustained write
+                    bursts; None disables).
 
     Returns:
         Number of rows processed (len(rows)).
@@ -284,11 +322,12 @@ async def bulk_upsert_async(
 
     try:
         for chunk in commit_chunks:
-            # Between commit chunks (no transaction open, no locks held):
-            # wait out standby replay lag so the primary does not pile WAL
-            # up faster than the replica can replay it.
-            if max_replica_lag_mb is not None:
-                await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+            # Before each commit chunk (no transaction open, no locks
+            # held): cool-down pause, then wait out standby replay lag so
+            # the primary does not pile WAL up faster than the replica
+            # can replay it.
+            await _throttle_between_chunks_async(
+                conn, max_replica_lag_mb, chunk_pause_s)
             # Dedup by PK within the chunk (last occurrence wins). Rows
             # sharing a PK inside one executemany batch would otherwise
             # abort the whole chunk with "ON CONFLICT DO UPDATE command
@@ -513,6 +552,7 @@ async def chunked_dml_by_key_async(
     weighted_keys: list,
     weight_target: int = DEFAULT_COMMIT_CHUNK_ROWS,
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """Run DML statements once per partition-key chunk — the bulk-write
     rule applied to DELETEs.
@@ -536,6 +576,10 @@ async def chunked_dml_by_key_async(
             ``{ph}`` placeholder for the parameter index — e.g.
             ``" AND i.code = ANY({ph}::text[])"`` (aliased joins) or
             ``" AND code = ANY({ph}::text[])"`` (plain deletes).
+            WHERE-final statements only — UNLESS ``sql`` embeds the
+            literal token ``{key_clause}`` (e.g. an INSERT ... SELECT ...
+            ON CONFLICT upsert, whose WHERE sits mid-statement), in which
+            case the rendered clause is substituted there instead.
         params: the statements' DEFAULT positional parameters ($1..$N;
             each key clause's placeholder is appended after them). A
             statement carrying its own ``stmt_params`` (different
@@ -552,6 +596,8 @@ async def chunked_dml_by_key_async(
         max_replica_lag_mb: pause between chunks while the streaming
             standby's replay lag exceeds this (no-op without a
             replica).
+        chunk_pause_s: fixed cool-down seconds before every chunk
+            (default 0.1; None disables).
 
     Returns the total affected rows across all statements and chunks
     (parsed from the status tags).
@@ -561,14 +607,23 @@ async def chunked_dml_by_key_async(
     chunks = _chunk_keys_by_weight(weighted_keys, weight_target)
     total = 0
     for chunk in chunks:
-        if max_replica_lag_mb is not None:
-            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+        await _throttle_between_chunks_async(
+            conn, max_replica_lag_mb, chunk_pause_s)
         async with conn.transaction():
             for entry in statements:
                 sql, key_clause = entry[0], entry[1]
                 stmt_params = entry[2] if len(entry) > 2 else params
+                rendered = key_clause.format(ph=len(stmt_params) + 1)
+                # Embed where the caller marked "{key_clause}" (an INSERT
+                # ... SELECT ... ON CONFLICT cannot take the clause appended
+                # at the end — it would land inside the DO UPDATE SET list);
+                # append otherwise (DELETE ... WHERE-final statements).
+                if "{key_clause}" in sql:
+                    sql = sql.replace("{key_clause}", rendered)
+                else:
+                    sql = sql + rendered
                 status = await conn.execute(
-                    sql + key_clause.format(ph=len(stmt_params) + 1),
+                    sql,
                     *stmt_params, chunk,
                 )
                 # asyncpg's status tag: "DELETE 12345" / "DELETE 0"
@@ -588,6 +643,7 @@ async def chunked_purge_async(
     key_column: str = "code",
     weight_target: int = DEFAULT_COMMIT_CHUNK_ROWS,
     max_replica_lag_mb: float | None = DEFAULT_MAX_REPLICA_LAG_MB,
+    chunk_pause_s: float | None = DEFAULT_CHUNK_PAUSE_S,
 ) -> int:
     """Delete rows matching ``where_sql`` in partition-key chunks — the
     ONE-CALL form of the bulk-write rule for the repo's recurring purge
@@ -623,13 +679,22 @@ async def chunked_purge_async(
         max_replica_lag_mb: pause between chunks while the streaming
             standby's replay lag exceeds this (no-op without a
             replica).
+        chunk_pause_s: fixed cool-down seconds before every chunk
+            (default 0.1; None disables).
 
     Returns the total deleted rows (parsed from the status tags).
     """
     schema, table = _parse_table_name(table_name)
     from_clause = f'"{schema}"."{table}"' if schema else f'"{table}"'
+    # where_sql may reference a table alias (docstring contract) — derive
+    # it from key_column ("t.code" -> alias "t") and declare it in the FROM
+    # so the weight query and the chunk DELETEs both resolve the alias.
+    alias = ""
+    if "." in key_column:
+        alias = f' AS "{key_column.split(".", 1)[0]}"'
     weight_rows = await conn.fetch(
-        f"SELECT {key_column} AS k, count(*) AS n FROM {from_clause} "
+        f"SELECT {key_column} AS k, count(*) AS n "
+        f"FROM {from_clause}{alias} "
         f"WHERE {where_sql} GROUP BY {key_column}",
         *params,
     )
@@ -638,10 +703,10 @@ async def chunked_purge_async(
     weighted = [(r["k"], r["n"]) for r in weight_rows]
     total = 0
     for chunk in _chunk_keys_by_weight(weighted, weight_target):
-        if max_replica_lag_mb is not None:
-            await _wait_for_replica_lag_async(conn, max_replica_lag_mb)
+        await _throttle_between_chunks_async(
+            conn, max_replica_lag_mb, chunk_pause_s)
         status = await conn.execute(
-            f"DELETE FROM {from_clause} WHERE {where_sql} "
+            f"DELETE FROM {from_clause}{alias} WHERE {where_sql} "
             f"AND {key_column} = ANY(${len(params) + 1}::text[])",
             *params, chunk,
         )
@@ -697,3 +762,46 @@ async def truncate_table_async(conn, table_name: str) -> None:
     else:
         await conn.execute(f'TRUNCATE TABLE "{table}" CASCADE')
     logger.info(f"    [INFO] Truncated table {table_name}")
+
+
+async def analyze_tables_async(
+    conn,
+    tables: Sequence[str],
+) -> "dict[str, float]":
+    """ANALYZE each table — the post-bulk-write planner-statistics
+    refresh. A pipeline that just rewrote millions of rows leaves the
+    primary's column statistics stale until autovacuum gets to them
+    (hours on a big table), and every value-blind prepared-statement
+    reader (node-pg / pgjdbc — plans arrive BEFORE bind values) then
+    misestimates into seq scans of the whole table (the 2026-09-27
+    forecast-table regression: 30s+ API reads after a --force rebuild).
+
+    Args:
+        conn: asyncpg connection (ANALYZE runs per-statement — no
+            explicit transaction needed).
+        tables: schema-qualified table names, in ascending cost order
+            if the caller cares (each ANALYZE commits on its own).
+
+    Returns per-table durations in seconds (skipped/failed tables
+    absent). A per-table failure is logged at WARNING and never
+    aborts the remaining tables — statistics refresh is maintenance,
+    not correctness (Postgres's own autovacuum heals any table we
+    skip).
+    """
+    import time as _time
+
+    durations: dict[str, float] = {}
+    for table_name in tables:
+        schema, table = _parse_table_name(table_name)
+        qualified = f'"{schema}"."{table}"' if schema else f'"{table}"'
+        t0 = _time.perf_counter()
+        try:
+            await conn.execute(f"ANALYZE {qualified}")
+            durations[table_name] = _time.perf_counter() - t0
+            logger.info(f"    ANALYZE {table_name}: "
+                        f"{durations[table_name]:.1f}s")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"    [WARN] ANALYZE {table_name} failed "
+                f"({_time.perf_counter() - t0:.1f}s): {exc}")
+    return durations

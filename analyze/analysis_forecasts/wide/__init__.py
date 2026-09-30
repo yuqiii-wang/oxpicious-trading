@@ -18,7 +18,7 @@ the snapshot-grid spec alone:
 """
 from __future__ import annotations
 
-from .months import (
+from .snapshots import (
     StatSpec,
     _shift_years,
     build_stat_specs,

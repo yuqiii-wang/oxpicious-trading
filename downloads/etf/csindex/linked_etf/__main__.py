@@ -1,5 +1,7 @@
 """Download CSI index-linked ETF list from csindex.com.cn and filter by AUM > 1亿.
 
+Also downloads the market-wide ETF FEEDER map (联接基金 → target ETF).
+
 Studies ``https://www.csindex.com.cn/#/indices/indexProduct`` whose
 "导出列表" (export list) button triggers two POST requests:
 
@@ -31,9 +33,22 @@ property (discovered in chunk-30627aa2.3c6a6aef.js):
 The ``aum`` field in the response is in 亿元 (hundred millions of CNY),
 so ``aum > 1`` means > 1亿 (100 million CNY).
 
+ETF feeder map (联接基金 → target ETF):
+  A second unfiltered call (``fundType=null``) returns ALL 2.9k fund products
+  including the 联接基金 rows (fundType "联接基金" — ETF feeder funds, ~700).
+  In the China market design a feeder invests ≥90% of NAV in ONE target ETF
+  (its "master"), and feeder + target are ALWAYS the same manager tracking
+  the same index — so the target resolves via the unique (fundManager,
+  indexCode) ETF. Ambiguous cases (manager runs several ETFs on one index,
+  e.g. plain + enhanced) are broken by: plain ETF preferred over 增强ETF,
+  then longest common name prefix with the feeder, then AUM desc.
+  CSIndex lists ONE row per feeder family (no A/C share-class split — the
+  share-class codes live on the fund-company sites).
+
 Output:
   ``temps/csindex_linked_etf/etf_index_map_all_<today>.csv`` — all ETFs (unfiltered)
   ``temps/csindex_linked_etf/etf_index_map_<today>.csv``     — ETFs with AUM > 1亿 (the deliverable)
+  ``temps/csindex_linked_etf/etf_feeder_map_<today>.csv``    — feeder→target-ETF map (all 联接基金)
   ``temps/csindex_linked_etf/etf_raw.xls``                   — raw Excel from the export endpoint
 
 ``<today>`` is the run date in ``YYYY-MM-DD`` format (e.g. ``2026-07-30``).
@@ -321,6 +336,90 @@ def filter_by_aum(df: pd.DataFrame, min_aum: float) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# ETF feeder map (联接基金 → target ETF)
+# ---------------------------------------------------------------------------
+
+FEEDER_OUTPUT_COLUMNS: List[str] = [
+    "联接基金代码", "联接基金名称", "发起式",
+    "目标ETF代码", "目标ETF名称", "目标ETF类型",
+    "标的指数代码", "标的指数", "管理人",
+    "资产净值（亿元）", "成立日期",
+]
+
+
+def _parse_aum(record: Dict[str, Any]) -> Optional[float]:
+    try:
+        return float(str(record.get("aum", "")).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    n = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        n += 1
+    return n
+
+
+def build_feeder_map(all_records: List[Dict[str, Any]]) -> pd.DataFrame:
+    """Resolve every 联接基金 (feeder) row to its target (master) ETF.
+
+    Market design: a feeder invests ≥90% of NAV in ONE target ETF, always
+    same manager + same tracked index — so candidates = the manager's ETFs
+    (fundType ETF / 增强ETF) on the feeder's index. Tie-break order for
+    ambiguous families: plain ETF first, longest common name prefix with
+    the feeder name, AUM desc, then code (deterministic).
+    """
+    etf_by_manager_index: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for r in all_records:
+        if r.get("fundType") in ("ETF", "增强ETF"):
+            key = (str(r.get("fundManager", "")), str(r.get("indexCode", "")))
+            etf_by_manager_index.setdefault(key, []).append(r)
+
+    rows: List[Dict[str, Any]] = []
+    n_unresolved = 0
+    for r in all_records:
+        if r.get("fundType") != "联接基金":
+            continue
+        feeder_name = str(r.get("fundName", "")).strip()
+        candidates = etf_by_manager_index.get(
+            (str(r.get("fundManager", "")), str(r.get("indexCode", ""))), [])
+        if not candidates:
+            n_unresolved += 1
+            continue
+        target = sorted(
+            candidates,
+            key=lambda c: (
+                0 if c.get("fundType") == "ETF" else 1,          # plain ETF first
+                -_common_prefix_len(feeder_name, str(c.get("fundName", ""))),
+                -(_parse_aum(c) or 0.0),
+                str(c.get("productCode", "")),
+            ),
+        )[0]
+        target_code = str(target.get("productCode", "")).strip()
+        rows.append({
+            "联接基金代码": str(r.get("productCode", "")).strip(),
+            "联接基金名称": feeder_name,
+            "发起式": "发起式" in feeder_name,
+            "目标ETF代码": target_code,
+            "目标ETF名称": str(target.get("fundName", "")).strip(),
+            "目标ETF类型": str(target.get("fundType", "")),
+            "标的指数代码": str(r.get("indexCode", "")).strip(),
+            "标的指数": str(r.get("indexNameCn", "")).strip(),
+            "管理人": str(r.get("fundManager", "")).strip(),
+            "资产净值（亿元）": _parse_aum(r),
+            "成立日期": str(r.get("inceptionDate", "")).strip(),
+        })
+
+    df = pd.DataFrame(rows, columns=FEEDER_OUTPUT_COLUMNS)
+    logger.info("[feeder-map] %d 联接基金 rows (%d unresolved, no target ETF on index)",
+                len(df), n_unresolved)
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
 
@@ -353,7 +452,8 @@ def download_csindex_linked_etf(
     # Cache check (non-month-start): reuse today's CSV if it already exists.
     if not month_start:
         cached_csv = out_dir / f"etf_index_map_{today}.csv"
-        if is_valid_file(cached_csv, min_bytes=100):
+        cached_feeder = out_dir / f"etf_feeder_map_{today}.csv"
+        if is_valid_file(cached_csv, min_bytes=100) and is_valid_file(cached_feeder, min_bytes=100):
             cached_all = out_dir / f"etf_index_map_all_{today}.csv"
             logger.info(
                 "[cache] today's ETF list already downloaded: %s (use --force-month-start to re-download)",
@@ -366,6 +466,7 @@ def download_csindex_linked_etf(
                 "cached": True,
                 "cached_file": str(cached_csv),
                 "cached_all_file": str(cached_all) if is_valid_file(cached_all, min_bytes=100) else None,
+                "cached_feeder_file": str(cached_feeder),
             }
 
     if month_start:
@@ -426,12 +527,29 @@ def download_csindex_linked_etf(
     logger.info("[save] %s (%d ETFs with AUM > %s亿)", etf_csv_path.name, len(df_filtered), min_aum)
     stats.files.append(str(etf_csv_path))
 
+    # --- Step 5: Feeder map (联接基金 → target ETF, unfiltered fund list) ---
+    feeder_csv_path = out_dir / f"etf_feeder_map_{today}.csv"
+    n_feeders: Optional[int] = None
+    all_records = fetch_funds_list(session, proxy, fund_type=None, search_input=None)
+    if all_records:
+        df_feeder = build_feeder_map(all_records)
+        df_feeder.to_csv(feeder_csv_path, index=False, encoding="utf-8-sig")
+        logger.info("[save] %s (%d feeders)", feeder_csv_path.name, len(df_feeder))
+        stats.files.append(str(feeder_csv_path))
+        stats.downloaded += 1
+        n_feeders = len(df_feeder)
+    else:
+        logger.warning("[feeder-map] unfiltered fund list fetch failed — %s not written",
+                       feeder_csv_path.name)
+
     summary = stats.to_dict(
         out_dir=str(out_dir),
         total_etfs=len(df_all),
         filtered_etfs=len(df_filtered),
         min_aum=min_aum,
     )
+    if n_feeders is not None:
+        summary["feeders"] = n_feeders
     logger.info(
         "Done. total=%d filtered=%d (AUM > %s亿) out=%s",
         len(df_all), len(df_filtered), min_aum, out_dir,

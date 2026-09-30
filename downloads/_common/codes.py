@@ -1,8 +1,10 @@
 """Security-code canonicalization & classification helpers.
 
-Canonical code schema is "NNNNNN.XX" (+ .SS/.SZ/.BJ exchange suffix) with
-derived ``exchange``/``board``/``sec_type`` columns. Also hosts the
-exchange-suffix inference helpers and the sec_classification.json loader.
+Canonical code schema: STOCK/INDEX rows are "NNNNNN.XX" (+ .SS/.SZ/.BJ
+exchange suffix); ETF/fund rows are BARE "NNNNNN" (no exchange suffix —
+2026-09-30 convention; the ``exchange`` column carries the venue). Also
+hosts the exchange-suffix inference helpers and the sec_classification.json
+loader.
 """
 from __future__ import annotations
 
@@ -144,14 +146,18 @@ def canonicalize_code_column(
     Produces the canonical schema loaders rely on (no per-row string ops
     downstream):
 
-    * ``证券代码``  -> "NNNNNN.XX" (6 digits + .SS/.SZ/.BJ); invalid /
-      placeholder / empty rows become ""
+    * ``证券代码``  -> "NNNNNN.XX" (6 digits + .SS/.SZ/.BJ) for STOCK and
+      INDEX rows; BARE "NNNNNN" for ETF/fund rows (2026-09-30 convention —
+      ETF/fund codes carry no exchange suffix anywhere; the ``exchange``
+      column records the venue). Invalid / placeholder / empty rows become ""
     * ``exchange``  -> "SS"/"SZ"/"BJ" for valid rows, "" otherwise
     * ``board``     -> STAR/GEM/MAIN/BSE for stock rows, "" otherwise
     * ``sec_type``  -> "stock"/"etf"/"index" for valid rows, "" otherwise
 
-    A row's exchange is its existing suffix when present (e.g. SSE margin
-    exports "510050.SS"), otherwise the file-level *exchange* context.
+    A row's exchange is its existing suffix when present (legacy ETF rows
+    still carrying one, e.g. "510050.SS"), otherwise the file-level
+    *exchange* context. ETF rows are re-canonicalized to bare (passing a
+    suffixed ETF code through again strips it).
     *sec_type* is per-row inferred from the code prefix by default
     ("auto"); pass an explicit "stock"/"etf"/"index" to broadcast a
     single-type file context (e.g. SSE fund-tab exports). Returns the
@@ -181,13 +187,15 @@ def canonicalize_code_column(
     row_exchange = row_exchange.where(row_exchange != "", exchange)
     valid = is_valid_base & (row_exchange != "")
 
-    result[code_col] = (base6 + "." + row_exchange).where(valid, "")
     result["exchange"] = row_exchange.where(valid, "")
     if sec_type == "auto":
         row_sec_type = classify_sec_type(base6, row_exchange)
     else:
         row_sec_type = pd.Series(sec_type, index=base6.index, dtype=object)
     result["sec_type"] = row_sec_type.where(valid, "")
+    result[code_col] = base6.where(
+        row_sec_type.eq("etf"), base6 + "." + row_exchange
+    ).where(valid, "")
     result["board"] = classify_board(base6, row_exchange).where(valid, "")
 
     # Fund-name share-class cleanup: applied at CSV-conversion time so
@@ -285,8 +293,10 @@ def filter_by_code(df: pd.DataFrame, code_filter: List[str]) -> pd.DataFrame:
 # ETF Codes (NO overlap between exchanges):
 #   Shanghai (SSE):   510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 516xxx, 518xxx, 56xxx
 #   Shenzhen (SZSE):  150xxx, 159xxx, 16xxx
-#   Unlike stock codes, ETF prefixes are completely non-overlapping between exchanges,
-#   so no suffix disambiguation is needed for ETFs.
+#   Unlike stock codes, ETF prefixes are completely non-overlapping between
+#   exchanges, so no suffix disambiguation is needed for ETFs — ETF codes
+#   are stored BARE (see canonicalize_code_column) and the exchange column
+#   carries the venue.
 # ---------------------------------------------------------------------------
 
 SHANGHAI_EXCLUSIVE_PREFIXES = ("600", "601", "603", "605", "688")

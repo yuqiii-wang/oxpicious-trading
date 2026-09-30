@@ -31,7 +31,7 @@ from analyze.analysis_forecasts.config import (
     RSI_WINDOWS,
 )
 
-from ._sources import AMT_SOURCE, PRICE_SOURCE
+from ._sources import AMT_SOURCE, OHL_EST_FILTER, PRICE_SOURCE
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,16 @@ _PAIR_COLUMNS = tuple(
     for w in windows
 )
 
-# Output column order (matches the SELECT list below).
+# Output column order (matches the SELECT list below). ``day_open``
+# rides the base block (attach_day_anatomy's FALLBACK gap_open /
+# bearish_body derivation). The authoritative pattern column
+# (``src_pattern`` — analysis.mov_ave_spreads_detail_ohlc_gaps,
+# estimated rows already excluded there) and the vol×amt state columns
+# (``src_vol_state`` / ``src_px_speed`` — analysis.mov_ave_price_vs_amt)
+# join for the rsi stage only (the ohlcv boost + selection consumers).
 _COLUMNS = (
-    ["code", "date", "price"]
+    ["code", "date", "price", "day_open", "src_gap_open", "src_pattern",
+     "src_vol_state", "src_px_speed"]
     + [f"ma_{w}days" for w in MA_WINDOWS]
     + [f"rsi_{w}days" for w in RSI_WINDOWS]
     + [f"std_{w}days" for w in MA_WINDOWS]
@@ -63,7 +70,8 @@ _COLUMNS = (
 _FAMILY_COLUMNS: dict[str, tuple[str, ...]] = {
     "std": tuple(f"ma_{w}days" for w in MA_WINDOWS)
     + tuple(f"std_{w}days" for w in MA_WINDOWS),
-    "rsi": tuple(f"rsi_{w}days" for w in RSI_WINDOWS),
+    "rsi": tuple(f"rsi_{w}days" for w in RSI_WINDOWS)
+    + ("src_gap_open", "src_pattern", "src_vol_state", "src_px_speed"),
     "pairs": tuple(
         f"{p}_{w}" for p in dict(MOV_PAIRS_LEGS).values()
         for w in MOV_PAIRS_WINDOWS
@@ -85,7 +93,8 @@ def _columns(families) -> list[str]:
     fams = ALL_FAMILIES if families is None else set(families)
     extra = {c for f, cols in _FAMILY_COLUMNS.items() if f in fams
              for c in cols}
-    return [c for c in _COLUMNS if c in ("code", "date", "price")
+    return [c for c in _COLUMNS
+            if c in ("code", "date", "price", "day_open")
             or c in extra]
 
 
@@ -101,7 +110,7 @@ async def fetch_analysis_inputs(
     One row per (code, date) with columns ``_COLUMNS``. Rows are bounded
     to date >= ``since`` (the earliest trailing-window start across the
     target stat dates); there is NO upper date bound — forward changes
-    for the last bucket days of the newest month need post-month-end
+    for the last bucket days of the newest snapshot need post-snapshot-end
     prices.
 
     Args:
@@ -118,6 +127,7 @@ async def fetch_analysis_inputs(
 
     base, price_expr = PRICE_SOURCE[sec_type]
     amt_join, amt_expr, rz_expr, est_filter = AMT_SOURCE[sec_type]
+    ohl_est_filter = OHL_EST_FILTER[sec_type]
     fams = ALL_FAMILIES if families is None else set(families)
     sel, joins = [], []
 
@@ -127,6 +137,29 @@ async def fetch_analysis_inputs(
             joins.append(join_frag)
 
     add(f"{price_expr}::float8 AS price")
+    add("b.open::float8 AS day_open")
+    if "rsi" in fams:
+        # the OHLC pattern source (analysis.mov_ave_spreads_detail_ohlc_gaps
+        # — estimated rows excluded there): the boost module's stored
+        # pattern label + the fallback gap_open. LEFT join — a missing
+        # row (the gaps build behind) degrades to the derived anatomy.
+        add("g.gap_open::float8 AS src_gap_open")
+        add("g.pattern AS src_pattern")
+        joins.append(f"""LEFT JOIN analysis.mov_ave_spreads_detail_ohlc_gaps g
+               ON g.sec_type = '{sec_type}'
+              AND g.code = b.code AND g.date = b.date""")
+        # the vol×amt state source (analysis.mov_ave_price_vs_amt — the
+        # mq-spread px_vol registry, rebuilt wholesale per sec_type): the
+        # day's vol_state (z-scored log trading-amount LEVEL) + px_speed
+        # (σ-standardized 1d price change) for the ohlcv boost /
+        # selection modules. LEFT join — a missing row (registry
+        # build lagging) degrades to neutral / never-qualifies; NOTHING
+        # vol-related is re-derived here (the registry is single-source).
+        add("p.vol_state AS src_vol_state")
+        add("p.px_speed AS src_px_speed")
+        joins.append(f"""LEFT JOIN analysis.mov_ave_price_vs_amt p
+               ON p.sec_type = '{sec_type}'
+              AND p.code = b.code AND p.date = b.date""")
     if "std" in fams or "pairs" in fams:
         joins.append(f"""LEFT JOIN stats.{sec_type}_tech_stats t
                ON t.code = b.code AND t.date = b.date""")
@@ -185,7 +218,7 @@ async def fetch_analysis_inputs(
         WHERE b.code = ANY($1::text[])
           AND b.close IS NOT NULL
           AND b.date >= $2
-          {est_filter}
+          {est_filter}{ohl_est_filter}
         ORDER BY b.code, b.date ASC
     """
 

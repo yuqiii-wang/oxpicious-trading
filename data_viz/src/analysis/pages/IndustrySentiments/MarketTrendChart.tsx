@@ -8,9 +8,10 @@
  *
  * A shared date-range slider at the bottom windows the chart.
  *
- * Data is fetched in parallel via the index-baseline combined endpoint (one
- * request per index), which returns full OHLC + MAs + trading_amount from
- * stats.v_index_baseline.
+ * Data is fetched in parallel via the shared per-code baseline endpoint
+ * (one request per index — fetchSecBaseline), which returns full OHLC +
+ * MAs + trading_amount; the same path every other code-trend consumer
+ * uses.
  *
  * SUB-VIEW TOGGLE: "Overview" (default) vs "Hypes & Drains". The latter
  * shows the pre-computed top-5 HYPE / bottom-5 DRAIN industries against a
@@ -27,17 +28,18 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
+import ChartCard from "@/shared/components/ChartCard";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts } from "echarts";
 import {
-  fetchIndicesCombined,
+  fetchSecBaseline,
   fetchIndustryAttributionBenchmarks,
 } from "@/lib/api-client";
 import type {
-  IndexBaselineRow,
+  IndexBundle,
+  IndexDailyRow,
   IndustryAttributionBenchmarkEntry,
 } from "@shared/types";
 import { MARKET_TREND_INDICES } from "./constants";
@@ -54,7 +56,7 @@ interface IndexData {
   code: string;
   name: string;
   color: string;
-  rows: IndexBaselineRow[];
+  rows: IndexDailyRow[];
 }
 
 export function MarketTrendChart() {
@@ -94,9 +96,9 @@ export function MarketTrendChart() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subView]);
 
-  // Fetch all four indices' OHLC series in parallel via the index-baseline
-  // combined endpoint (one request per index, returns full OHLC + MAs +
-  // trading_amount). Keyed on the joined code string so it only fires once.
+  // Fetch all four indices' OHLC series in parallel via the shared
+  // per-code baseline endpoint (one request per index, returns full OHLC +
+  // MAs + trading_amount). Keyed on the joined code string so it only fires once.
   const codesKey = MARKET_TREND_INDICES.map((m) => m.code).join(",");
   useEffect(() => {
     let cancelled = false;
@@ -104,16 +106,11 @@ export function MarketTrendChart() {
     setError(null);
     Promise.all(
       MARKET_TREND_INDICES.map((m) =>
-        fetchIndicesCombined(
-          null, null, null, null,
-          1, 1,
-          m.code,
-          null,
-        ).then((resp) => ({
+        fetchSecBaseline("index", m.code).then((resp) => ({
           code: m.code,
           name: m.name,
           color: m.color,
-          rows: resp.indices[0]?.rows ?? [],
+          rows: (resp.bundle as IndexBundle | null)?.rows ?? [],
         })),
       ),
     )

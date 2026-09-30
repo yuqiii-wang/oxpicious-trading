@@ -77,13 +77,15 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 t.ma120::float8, t.ma255::float8,
                 t.ema6::float8, t.ema20::float8, t.ema60::float8,
                 t.ema120::float8, t.ema255::float8,
-                m.trading_amount::float8
+                m.trading_amount::float8,
+                b.is_ohl_estimated
             FROM stats.etf_identity i
             JOIN stats.etf_basic_stats b ON b.date = i.date AND b.code = i.code
             LEFT JOIN stats.etf_adjustment a ON a.date = i.date AND a.code = i.code
             JOIN stats.etf_tech_stats t   ON t.date = i.date AND t.code = i.code
             JOIN stats.etf_liquidity_margin m ON m.date = i.date AND m.code = i.code
             WHERE i.code = ANY($1::text[])
+              AND b.close IS NOT NULL
             ORDER BY i.code, i.date ASC
         """
     if sec_type == "index":
@@ -99,11 +101,13 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 t.ma120::float8, t.ma255::float8,
                 t.ema6::float8, t.ema20::float8, t.ema60::float8,
                 t.ema120::float8, t.ema255::float8,
-                b.trading_amount::float8
+                b.trading_amount::float8,
+                b.is_ohl_estimated
             FROM stats.index_identity i
             JOIN stats.index_basic_stats b ON b.date = i.date AND b.code = i.code
             JOIN stats.index_tech_stats  t ON t.date = i.date AND t.code = i.code
             WHERE i.code = ANY($1::text[])
+              AND b.close IS NOT NULL
             ORDER BY i.code, i.date ASC
         """
     if sec_type == "stock":
@@ -119,7 +123,8 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 t.ma120::float8, t.ma255::float8,
                 t.ema6::float8, t.ema20::float8, t.ema60::float8,
                 t.ema120::float8, t.ema255::float8,
-                m.trading_amount::float8
+                m.trading_amount::float8,
+                b.is_ohl_estimated
             FROM stats.stock_identity i
             JOIN stats.stock_basic_stats b ON b.date = i.date AND b.code = i.code
             JOIN stats.stock_tech_stats  t ON t.date = i.date AND t.code = i.code
@@ -211,6 +216,7 @@ async def fetch_source_data(
         sec_type, code, date, price, ma5, ma20, ma60, ma120, ma255,
         ema6, ema20, ema60, ema120, ema255,
         trading_amount,
+        is_ohl_estimated,
         price_slope, price_curvature,
         ma5_slope, ma20_slope, ma60_slope, ma120_slope, ma255_slope,
         ma5_curvature, ma20_curvature, ma60_curvature, ma120_curvature,
@@ -253,6 +259,7 @@ async def fetch_source_data(
                                      "ma5", "ma20", "ma60", "ma120", "ma255",
                                      "ema6", "ema20", "ema60", "ema120", "ema255",
                                      "trading_amount",
+                                     "is_ohl_estimated",
                                      "price_slope", "price_curvature",
                                      "ma5_slope", "ma20_slope", "ma60_slope",
                                      "ma120_slope", "ma255_slope",
@@ -298,6 +305,7 @@ async def fetch_source_data(
                                      "ma5", "ma20", "ma60", "ma120", "ma255",
                                      "ema6", "ema20", "ema60", "ema120", "ema255",
                                      "trading_amount",
+                                     "is_ohl_estimated",
                                      "price_slope", "price_curvature",
                                      "ma5_slope", "ma20_slope", "ma60_slope",
                                      "ma120_slope", "ma255_slope",
@@ -336,6 +344,7 @@ async def fetch_source_data(
         "ma5", "ma20", "ma60", "ma120", "ma255",
         "ema6", "ema20", "ema60", "ema120", "ema255",
         "trading_amount",
+        "is_ohl_estimated",
     ])
     # df is always constructed with the explicit column list above, so
     # "code" exists even when rows is empty (avoids the proxied
@@ -419,6 +428,7 @@ async def fetch_source_data(
              "ma5", "ma20", "ma60", "ma120", "ma255",
              "ema6", "ema20", "ema60", "ema120", "ema255",
              "trading_amount",
+             "is_ohl_estimated",
              "price_slope", "price_curvature",
              "ma5_slope", "ma20_slope", "ma60_slope", "ma120_slope", "ma255_slope",
              "ma5_curvature", "ma20_curvature", "ma60_curvature",

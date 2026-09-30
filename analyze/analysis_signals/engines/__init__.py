@@ -2,7 +2,7 @@
 package under engines/signal_families/, dispatched through this
 registry — never if/else'd over). The SignalEngine base (engines._base)
 owns each family's complete lifecycle across its single-purpose mixin
-layers (_months / _store / _frame / _primitives)."""
+layers (_snapshots / _store / _frame / _primitives)."""
 from __future__ import annotations
 
 from analyze.analysis_signals.engines._base import RunStats, SignalEngine

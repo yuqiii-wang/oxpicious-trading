@@ -1,4 +1,4 @@
-"""builds.bond.pipeline — Build debt-market baseline and insert to database.
+"""builds.bond.pipeline — Build debt-market daily and insert to database.
 
 Aggregates daily-frequency data sources into the 8 debt_* tables:
 

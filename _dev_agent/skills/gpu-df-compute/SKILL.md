@@ -52,6 +52,11 @@ Rule: **one wide batched op beats N small ops**. Every cudf.pandas fallback pays
 
 ## 3. NaN and dtype compatibility
 
+Full scenario→dtype decision table (datetime64 units, nullable Int64/boolean,
+object-dtype poison, proxy-ndarray unwrapping) lives in the dedicated skill
+`.agents/skills/cudf-dtypes/SKILL.md`, derived from the production
+`[cudf fallback]` log studies — consult it before choosing a dtype.
+
 ### Object dtype is the #1 GPU poisoner
 - cuDF raises `MixedTypeError: Cannot convert a date of object type` / `ValueError: Unsupported dtype object` / `RuntimeError: Fast-to-slow transfer is blocked` on object columns. Each occurrence = a forced CPU fallback + transfer.
 - **Keep dates as `datetime64` through ALL compute** (`pd.to_datetime` right after DB fetch). Convert to python `date` objects ONLY in the emitted rows (asyncpg boundary: `wide.index.date`).
@@ -111,3 +116,11 @@ Validated: 15,444,338 rows, 4 pools, byte-identical to the original per-pair loo
 2. Hard invariants: |corr| ≤ 1 + 1e-9; NaN on degenerate windows; counts/sums match per pool.
 3. Production-scale force run + row-level diff against a backup table (`CREATE TABLE ... AS SELECT`), max |diff| ≤ last-digit-flip bound (0.0005 after round(4)).
 4. Timing comparison at realistic scale (T×N) to confirm the GPU path actually wins.
+
+## Study scope for analysis & strategy (MANDATORY)
+
+To do study in analysis and strategy, only check by industries and
+indices (no etf and stocks unless explicitly said), only these 10 indices
+(000001, 931743, 931160, 931071, 000015, 930708, 931994, 931594, 000683,
+000991), and only write the 10 indices to DB table, unless otherwise
+explicitly instructed then run all indices.

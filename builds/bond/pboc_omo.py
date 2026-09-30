@@ -180,7 +180,12 @@ def build_pboc_outright_repo_df(start_date=None, end_date=None, verbose=True):
             "outright_repo_tenor_days", "outright_repo_tenor_label",
             "outright_repo_serial"]
     df = inst[keep].copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").astype("datetime64[ns]")
+    # Clean-data fast path — pd.to_datetime(errors="coerce") on a Series
+    # is a cudf fallback per call (non-scalar arg); coerce only on junk.
+    try:
+        df["date"] = pd.to_datetime(df["date"]).astype("datetime64[ns]")
+    except (ValueError, TypeError):
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").astype("datetime64[ns]")
     # no sort/reset here — groupby(as_index=False) re-sorts by date and
     # returns a fresh index
     df = df.dropna(subset=["date"])
@@ -238,7 +243,12 @@ def build_pboc_mlf_df(start_date=None, end_date=None, verbose=True):
     keep = ["date", "mlf_marker", "mlf_quantity",
             "mlf_tenor_days", "mlf_tenor_label", "mlf_serial"]
     df = inst[keep].copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").astype("datetime64[ns]")
+    # Clean-data fast path — pd.to_datetime(errors="coerce") on a Series
+    # is a cudf fallback per call (non-scalar arg); coerce only on junk.
+    try:
+        df["date"] = pd.to_datetime(df["date"]).astype("datetime64[ns]")
+    except (ValueError, TypeError):
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").astype("datetime64[ns]")
     # no sort/reset here — groupby(as_index=False) re-sorts by date and
     # returns a fresh index
     df = df.dropna(subset=["date"])

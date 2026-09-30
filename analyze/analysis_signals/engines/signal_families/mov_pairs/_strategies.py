@@ -9,7 +9,7 @@ WINDOW-END trigger, and the compared signal the day's FAST leg (ma5 /
 ema6 / the close) — the live tier's "cross" value space (fast leg vs
 the day's slow leg, never the zero line). The spread survives as the
 strategy's params context; the trigger excess IS fast − slow. The fast
-leg + slow-leg window ride IN the sub_type (pair{W} / pxpair{W} /
+leg + slow-leg window ride IN the sub_type (mapair{W} / pxmapair{W} /
 emapair{W} / pxemapair{W} — the live tier's spread-key parsing), so
 each (fast leg, window, side) is its own strategy.
 
@@ -125,6 +125,9 @@ def strategy_rows(
             "regime_state": rec["regime_state"],
             "lookback_period": LOOKBACK_PERIOD,
             "conf_period": "mixed",
+            # the claim profile the quality gate held the bucket to
+            # (one-day cross events claim the 5d reversal only)
+            "required_periods": ["5d"],
             # NOT popped — the delay is ALSO a stored column
             "signal_delay_days": rec["signal_delay_days"],
             "fast_value": rec.pop("fast_value"),

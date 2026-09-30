@@ -56,7 +56,7 @@ SELECT public.create_hash_partitions('analysis', 'margin_tech_stats', 16);
 
 COMMENT ON TABLE  analysis.margin_tech_stats IS 'Per-(code, sec_type, date) regime-detection input for analysis.margin_changes trend episode detection. REDUCED to the two columns consumed by detect_trend_episodes: margin_balance_slope_ma5 (5d smoothed rz_balance slope; sign = UP/DOWN segmentation signal) and margin_balance_slope_zscore_20d (slope z-score vs 20d window; magnitude significance filter). sec_type ∈ {etf, stock, index} — ''index'' rows aggregated from the analysis.margin_index_series TABLE. RONGZI (融资) only. Built by analyze.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.margin_tech_stats.sec_type IS 'Subject security type: etf, stock, or index.';
-COMMENT ON COLUMN analysis.margin_tech_stats.code IS 'Security ticker with exchange suffix, e.g. "159001.SZ" (ETF) or "600008.SS" (stock).';
+COMMENT ON COLUMN analysis.margin_tech_stats.code IS 'Security ticker: ETF bare e.g. "159001"; stock with exchange suffix e.g. "600008.SS".';
 COMMENT ON COLUMN analysis.margin_tech_stats.date IS 'Trading date.';
 COMMENT ON COLUMN analysis.margin_tech_stats.margin_balance_slope_ma5 IS '5-trading-day rolling mean of the daily rz_balance slope ((X[t]-X[t-1])/X[t-1]) per (sec_type, code). Sign = direction of the smoothed balance move — the segmentation signal for margin_changes trend episodes.';
 COMMENT ON COLUMN analysis.margin_tech_stats.margin_balance_slope_zscore_20d IS '(slope - slope_ma20) / slope_std20 per (sec_type, code). NULL when the rolling std is NaN or <= 0. Magnitude-only significance filter: a margin_changes trend is kept when a MAJORITY of its days have |zscore| > 0.';

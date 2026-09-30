@@ -11,19 +11,24 @@ import express, {
 import cors from "cors";
 // gzip responses — the MA-Spread chart JSON alone is ~64 MB uncompressed;
 // compression cuts the transfer through the vite proxy chain by ~5-10x.
+// Level 1 over level 6 (default): the big payloads (MA-Spread, CFFEX
+// options combined ~170MB) are served over localhost where bandwidth is
+// free but CPU is not — level 1 halves the gzip CPU for ~30% larger
+// bodies that the loopback absorbs instantly.
 import compression from "compression";
 
-import debtBaselineRoutes from "./routes/debt-baseline.js";
-import szseOptionsRoutes from "./routes/szse-options.js";
+import debtRoutes from "./routes/debt.js";
+import optionsRoutes from "./routes/options.js";
 import etfMarginRoutes from "./routes/etf-margin.js";
-import indexBaselineRoutes from "./routes/index-baseline.js";
+import indexRoutes from "./routes/index.js";
 import secCompositionRoutes from "./routes/sec-composition.js";
-import stockBaselineRoutes from "./routes/stock-baseline.js";
+import stockRoutes from "./routes/stock.js";
 import secBoardRoutes from "./routes/sec-board.js";
 import { router as futuresRoutes } from "./routes/futures.js";
 import liveDataRoutes from "./routes/live-data.js";
 import liveOptionsRoutes from "./routes/live-options.js";
 import analysisRoutes from "./routes/analysis.js";
+import secBaselineRoutes from "./routes/sec-baseline.js";
 import strategyRoutes from "./routes/strategy.js";
 import newsRoutes from "./routes/news.js";
 import aiRoutes from "./routes/ai.js";
@@ -32,24 +37,25 @@ import cacheRoutes from "./routes/cache.js";
 const app: express.Application = express();
 
 app.use(cors());
-app.use(compression());
+app.use(compression({ level: 1 }));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 /**
  * API Routes
  */
-app.use("/api/debt-baseline", debtBaselineRoutes);
-app.use("/api/szse-options", szseOptionsRoutes);
+app.use("/api/debt", debtRoutes);
+app.use("/api/szse-options", optionsRoutes);
 app.use("/api/etf-margin", etfMarginRoutes);
-app.use("/api/index-baseline", indexBaselineRoutes);
+app.use("/api/index", indexRoutes);
 app.use("/api/sec-composition", secCompositionRoutes);
 app.use("/api/sec-board", secBoardRoutes);
-app.use("/api/stock-baseline", stockBaselineRoutes);
+app.use("/api/stock", stockRoutes);
 app.use("/api/futures", futuresRoutes);
 app.use("/api/live-data", liveDataRoutes);
 app.use("/api/live-options", liveOptionsRoutes);
 app.use("/api/analysis", analysisRoutes);
+app.use("/api/sec-baseline", secBaselineRoutes);
 app.use("/api/strategy", strategyRoutes);
 app.use("/api/news", newsRoutes);
 app.use("/api/ai", aiRoutes);

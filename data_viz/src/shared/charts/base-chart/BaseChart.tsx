@@ -25,8 +25,8 @@
 import { useCallback, useMemo, useRef } from "react";
 import type { ECharts } from "echarts";
 import { Alert, Box, CircularProgress, Typography } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
+import ChartCard from "@/shared/components/ChartCard";
+import EChart from "@/shared/charts/EChart";
 import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
 import type { BaseChartProps } from "./types";
 

@@ -229,7 +229,7 @@ router.get("/sec-alloc-live/attribution", async (req: Request, res: Response) =>
 //               for codes whose local CSVs already contain the prev
 //               trading day; only laggards fetch the 1m window (PE /
 //               intraday stay nightly-owned). Failure is non-fatal.
-//            2. builds.index.baseline --refresh-estimated-days 10 (tag
+//            2. builds.index.daily --refresh-estimated-days 10 (tag
 //               "…:ref:base") — rebuild recent ESTIMATED daily rows from
 //               the fresh CSVs so prev-day OHLC is real, not gap-filled.
 //               Failure is non-fatal (logged, chain continues).
@@ -339,7 +339,7 @@ router.post("/sec-alloc-live/run", async (req: Request, res: Response) => {
       // so prev-day OHLC is real. Non-fatal on failure — the ref pass
       // works with whatever stats.index_basic_stats already has.
       const base = await runPythonModule(
-        "builds.index.baseline",
+        "builds.index.daily",
         ["--refresh-estimated-days", "10"],
         { processIdTag: `${tag}:base` },
       );
@@ -531,11 +531,15 @@ router.get("/trading-signals/configs", async (req: Request, res: Response) => {
 });
 
 /** GET /api/live-data/trading-signals/history?sec_type=index&code=000300
- *  &signal_type=&signal_sub_type=
- *  → { sec_type, code, signals: [...] } — EVERY live_signals row of the
- *  code (newest first): the row-expansion panel's history-signals table +
- *  buy/sell markers on the code-trend chart. signal_type / signal_sub_type
- *  optionally narrow the history to one signal family. */
+ *  &signal_type=&signal_sub_type=&date=YYYY-MM-DD
+ *  → { sec_type, code, date (echoed window anchor; null = newest close),
+ *      recent_window_start, signals: [...] } — EVERY signal event of the
+ *  code (newest first): analysis_signals.history_signals (the multi-year
+ *  record) UNION live.live_signals (this year's recorded breaches), one
+ *  record per config-day — plus the last-20-trading-days boundary anchored
+ *  on `date`: the UI scopes its history TABLE to rows after it while the
+ *  code-trend chart draws every row as a buy/sell marker. signal_type /
+ *  signal_sub_type optionally narrow the history to one signal family. */
 router.get("/trading-signals/history", async (req: Request, res: Response) => {
   try {
     const secType = typeof req.query.sec_type === "string"
@@ -552,14 +556,19 @@ router.get("/trading-signals/history", async (req: Request, res: Response) => {
     const signalSubType = typeof req.query.signal_sub_type === "string"
       && req.query.signal_sub_type.trim()
       ? req.query.signal_sub_type.trim() : null;
-    const signals = await fetchTradingSignalHistory(
-      secType, code, signalType, signalSubType,
+    const date = typeof req.query.date === "string"
+      && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+      ? req.query.date : null;
+    const { signals, recent_window_start } = await fetchTradingSignalHistory(
+      secType, code, signalType, signalSubType, date,
     );
     res.json({
       sec_type: sec_type_valid(secType),
       code,
       signal_type: signalType,
       signal_sub_type: signalSubType,
+      date,
+      recent_window_start,
       signals,
     });
   } catch (err) {

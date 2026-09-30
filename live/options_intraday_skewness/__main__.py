@@ -82,6 +82,7 @@ from _common.build_commons import (  # noqa: E402
     setup_utf8_stdout,
     truncate_table_async,
 )
+from _common.db_commons import chunked_purge_async  # noqa: E402
 from _common.log_setup import setup_logging  # noqa: E402
 
 from live.options_intraday_skewness.compute import compute_skewness_frame  # noqa: E402

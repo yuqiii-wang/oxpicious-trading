@@ -8,6 +8,18 @@ column arrives as a plain scalar (arrays never cross into the frames);
 the indicator-value read is a WIDE literal-column SELECT (the
 window→column mapping happens in the engine's vectorized melt).
 
+The read is POPULATION-PARAMETERIZED ($4 = the
+forecast_identities.ohlcv_type verdict — NULL the plain parent,
+'ohlcv_boost' / 'ohlcv_selection' the derived children): each
+population runs the COMPLETE emission as its OWN cohort (the
+2026-09-28 separate-cohort registration — boost the same trigger days
+score-weighted, selection the favorable-anatomy subset, bottom side
+only; each cohort's confidence is its own chosen-rung mean and ranks
+separately in signal_order, per
+temp_scripts/study_ohlcv_signal_confidence.py — folding the children's
+means INTO the parent confidence was measured to degrade the OOS
+rank).
+
 Numeric columns are cast ``::float8`` at the SQL source and dates
 leave as ``extract(epoch ...)::float8`` (the repo's asyncpg/cudf.pandas
 contract — no Decimal objects, no object date columns downstream).
@@ -27,7 +39,7 @@ from analyze.analysis_signals.config import SIGNAL_DELAY_MAX
 # ---------------------------------------------------------------------------
 
 MOV_RSI_BUCKET_COLUMNS = [
-    "code", "stat_date", "rsi_window", "side", "regime_state",
+    "code", "stat_date", "rsi_window", "pct", "side", "regime_state",
     "delay",
     "ave_change", "occurrence_count",
     "ave_next",
@@ -41,6 +53,7 @@ MOV_RSI_BUCKETS_SQL = f"""
     SELECT i.code,
            extract(epoch from i.stat_date)::float8 AS stat_date,
            m.rsi_window::int                        AS rsi_window,
+           m.pct::int                               AS pct,
            m.side,
            m.regime_state,
            fmx.delay::int                           AS delay,
@@ -59,13 +72,18 @@ MOV_RSI_BUCKETS_SQL = f"""
     JOIN {TABLE_MOV_RSI} m
       ON m.forecast_id = i.forecast_id
     CROSS JOIN LATERAL (
-        -- the bucket's mixed DELAY LADDER (one row per rung
+        -- the POPULATION's own mixed DELAY LADDER (one row per rung
         -- 0..{SIGNAL_DELAY_MAX}: rung d's stats are conditioned on the
         -- signal having lasted d days) — the plain gate + the
-        -- occurrence × edge balance rule run PER RUNG in the engine
+        -- occurrence × edge balance rule run PER RUNG in the engine.
+        -- $4 is the cohort's ohlcv_type verdict (NULL = the parent)
         SELECT f.delay, f.ave_change, f.occurrence_count
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'mixed'
+        -- the derived-population markers live on the identities registry
+        -- (the 2026-09-26 identity migration)
+        WHERE f.forecast_id = i.forecast_id
+          AND i.ohlcv_type IS NOT DISTINCT FROM $4::text
+          AND f.period = 'mixed'
           AND f.delay BETWEEN 0 AND {SIGNAL_DELAY_MAX}
         OFFSET 0
     ) fmx
@@ -75,7 +93,9 @@ MOV_RSI_BUCKETS_SQL = f"""
         -- rows are its CHOSEN rung's anchors)
         SELECT f.delay, f.trigger_dates, f.trigger_excess
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'next'
+        WHERE f.forecast_id = i.forecast_id
+          AND i.ohlcv_type IS NOT DISTINCT FROM $4::text
+          AND f.period = 'next'
           AND f.delay BETWEEN 0 AND {SIGNAL_DELAY_MAX}
         OFFSET 0
     ) fnx ON fnx.delay = fmx.delay
@@ -87,7 +107,9 @@ MOV_RSI_BUCKETS_SQL = f"""
         -- close-based max/min — its max/min check is not applicable)
         SELECT f.ave_change::float8 AS ave_next
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'next' AND f.delay = 0
+        WHERE f.forecast_id = i.forecast_id
+          AND i.ohlcv_type IS NOT DISTINCT FROM $4::text
+          AND f.period = 'next' AND f.delay = 0
         OFFSET 0
     ) qn ON TRUE
     LEFT JOIN LATERAL (
@@ -95,7 +117,9 @@ MOV_RSI_BUCKETS_SQL = f"""
                f.max_change::float8 AS max_5d,
                f.min_change::float8 AS min_5d
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = '5d' AND f.delay = 0
+        WHERE f.forecast_id = i.forecast_id
+          AND i.ohlcv_type IS NOT DISTINCT FROM $4::text
+          AND f.period = '5d' AND f.delay = 0
         OFFSET 0
     ) q5 ON TRUE
     LEFT JOIN LATERAL (
@@ -103,14 +127,17 @@ MOV_RSI_BUCKETS_SQL = f"""
                f.max_change::float8 AS max_20d,
                f.min_change::float8 AS min_20d
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = '20d' AND f.delay = 0
+        WHERE f.forecast_id = i.forecast_id
+          AND i.ohlcv_type IS NOT DISTINCT FROM $4::text
+          AND f.period = '20d' AND f.delay = 0
         OFFSET 0
     ) q20 ON TRUE
     WHERE i.sec_type = $1
       AND i.bucket = 'mov_rsi'
       AND i.stat_date = $2
-      AND m.pct = $3::int
-    ORDER BY i.code, m.rsi_window, m.side, fmx.delay, u.trig_date
+      AND i.ohlcv_type IS NOT DISTINCT FROM $4::text
+      AND m.pct = ANY($3::int[])
+    ORDER BY i.code, m.rsi_window, m.pct, m.side, fmx.delay, u.trig_date
 """
 
 # ---------------------------------------------------------------------------

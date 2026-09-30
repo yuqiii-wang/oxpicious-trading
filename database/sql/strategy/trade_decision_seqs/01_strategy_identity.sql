@@ -68,7 +68,7 @@ COMMENT ON COLUMN strategy.strategy_identity.seq_id       IS 'Surrogate primary 
 COMMENT ON COLUMN strategy.strategy_identity.strategy_name IS 'Strategy identifier, e.g. "singleton_trading".';
 COMMENT ON COLUMN strategy.strategy_identity.seq_no       IS 'Run/sequence number within a strategy_name (1, 2, 3, ...). Multiple codes can share a seq_no within one --all run; they get distinct seq_ids but the same seq_no.';
 COMMENT ON COLUMN strategy.strategy_identity.sec_type     IS 'Security universe: index / etf / stock.';
-COMMENT ON COLUMN strategy.strategy_identity.code         IS 'Security code this run backtested (e.g. "000970", "159007.SZ"). One seq = one code.';
+COMMENT ON COLUMN strategy.strategy_identity.code         IS 'Security code this run backtested (e.g. "000970", "159007"). One seq = one code.';
 COMMENT ON COLUMN strategy.strategy_identity.params       IS 'Strategy parameters as JSONB (e.g. {"ma_short":5,"ma_long":60,"buy_notional":100000,"min_holding_period":7}).';
 COMMENT ON COLUMN strategy.strategy_identity.status       IS 'Run lifecycle: running / completed / stopped / error.';
 COMMENT ON COLUMN strategy.strategy_identity.created_at   IS 'Row creation timestamp (UTC).';

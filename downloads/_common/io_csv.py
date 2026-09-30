@@ -500,7 +500,11 @@ def read_csv_code_filtered_bytes(
         # Scanned the whole file: this snapshot genuinely has no row for
         # the code — an empty frame short-circuits the caller cleanly.
         return pd.DataFrame()
-    return b"\n".join([header] + kept)
+    # Strip the CR of CRLF endings: cudf's buffer-path CSV parser treats a
+    # '\r' before the '\n' we join with as field content (the last column
+    # then carries '\r' — e.g. board 'BSE\r' violating DB CHECKs), while
+    # the identical bytes read by path parse cleanly.
+    return b"\n".join([header.rstrip(b"\r")] + [ln.rstrip(b"\r") for ln in kept])
 
 
 def read_csv_preferred(

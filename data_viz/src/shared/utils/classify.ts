@@ -28,6 +28,11 @@ export function stripExchangeSuffix(code: string): string {
  */
 export function codeVariants(strippedCode: string): string[] {
   const s = String(strippedCode || "").trim();
+  // Already suffixed ("600256.SS") — the input IS the canonical form; the
+  // bare + re-suffixed variants would be phantom values ("600256.SS.SS")
+  // that can never match but DO inflate the planner's `= ANY(array)`
+  // row estimates ~6x on every table the array is pushed into.
+  if (/\.(SS|SZ|SH|BJ|HK)$/i.test(s)) return [s];
   return [s, `${s}.SS`, `${s}.SZ`, `${s}.BJ`, `${s}.HK`, `${s}.SH`];
 }
 

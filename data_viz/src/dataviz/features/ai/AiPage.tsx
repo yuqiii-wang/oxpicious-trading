@@ -49,8 +49,8 @@
  *
  * Nav trees sources per sec_type (baseline registries — no ETF on this
  * page, the toggle is Index vs Stock only):
- *   Index → /api/index-baseline/themes + /api/index-baseline/strategy-themes
- *   Stock → /api/stock-baseline/themes + /api/stock-baseline/strategy-themes
+ *   Index → /api/index/themes + /api/index/strategy-themes
+ *   Stock → /api/stock/themes + /api/stock/strategy-themes
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -75,7 +75,7 @@ import type { SecNavThemesSource } from "@/shared/components/sec-nav";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import DateEventStrip, { type DateEvent } from "@/shared/components/date-events/DateEventStrip";
 import PostFeed from "@/shared/components/post-feed/PostFeed";
-import CodeTrendChart from "@/components/CodeTrendChart";
+import { CodeTrendChart } from "@/ui/OhlcChart";
 import AiQaCard from "./AiQaCard";
 import AskQaCard from "./AskQaCard";
 import {
@@ -111,8 +111,8 @@ const THEMES_SOURCES: Partial<Record<"index" | "stock", SecNavThemesSource>> = {
 
 /** Cache prefixes invalidated on Refresh, per sec_type. */
 const CACHE_PREFIXES: Record<"index" | "stock", string[]> = {
-  index: ["/api/index-baseline/themes", "/api/index-baseline/strategy-themes"],
-  stock: ["/api/stock-baseline/themes", "/api/stock-baseline/strategy-themes"],
+  index: ["/api/index/themes", "/api/index/strategy-themes"],
+  stock: ["/api/stock/themes", "/api/stock/strategy-themes"],
 };
 
 /** Feed page size (server caps at 100). */
@@ -159,7 +159,7 @@ export default function AiPage() {
   // ---- Trend ↔ date-strip sync ---------------------------------------------
   // The strip has NO slider of its own and — while the trend is live — its
   // VISIBLE date window IS the code trend's visible window (same start,
-  // end, and length): StockOhlcChart reports its visible [start, end] via
+  // end, and length): OhlcChart reports its visible [start, end] via
   // onVisibleRangeChange and the strip pins its axis to exactly that range,
   // so dragging the trend's slider re-windows the dots in lockstep. (The
   // full row span — trendSpan from onLoaded — only bridges the moment

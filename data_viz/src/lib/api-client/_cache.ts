@@ -18,8 +18,13 @@ import { LruCache } from "@/lib/lru-cache";
 import { fetchJsonWithRetry, type FetchRetryOptions } from "./_retry";
 import type {
   LatestDatesResponse,
-  DebtBaselineResponse,
+  DebtDailyResponse,
   OptionsCombinedResponse,
+  OptionsSnapshotResponse,
+  OptionsOiDailyResponse,
+  OptionsOiCellsResponse,
+  OptionsExpiryMetaResponse,
+  OptionsMoneynessSeriesResponse,
   EtfOhlcvResponse,
   EtfMarginCombinedResponse,
   IndexInfo,
@@ -27,11 +32,14 @@ import type {
   SecCompositionResponse,
   LinkedEtfsResponse,
   StockCombinedResponse,
+  SecBaselineResponse,
   IntradayMovementsResponse,
 } from "@shared/types";
 
-// Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
-const apiCache = new LruCache<unknown>(100, 10 * 60 * 1000);
+// Module-level cache singleton: 200 entries, 10-minute TTL (safety net).
+// 200 (up from 100): the per-plot options endpoints add many URLs
+// (snapshot per date, oi-cells per expiry-cohort selection).
+const apiCache = new LruCache<unknown>(200, 10 * 60 * 1000);
 
 // ---------------------------------------------------------------------------
 //  Version cache — /api/cache/latest-dates is fetched at most once per 30s.
@@ -51,7 +59,7 @@ let _versionCache: { value: LatestDatesResponse; expiresAt: number } | null = nu
  *                                     for page-level refresh where one logical
  *                                     "page" maps to multiple endpoints that
  *                                     share a common route prefix, e.g.
- *                                     "/api/debt-baseline").
+ *                                     "/api/debt").
  *
  * All three also clear the version cache so the next fetch re-checks the
  * DB's latest date instead of trusting the stale 30s snapshot.
@@ -85,19 +93,35 @@ async function fetchJsonUncached<T>(url: string, opts?: FetchRetryOptions): Prom
 //  underlyings list, intraday-5min) — these rely on the TTL cache only.
 // ---------------------------------------------------------------------------
 function mapUrlToSource(url: string): keyof LatestDatesResponse | null {
-  if (url.startsWith("/api/debt-baseline"))               return "debt";
+  if (url.startsWith("/api/debt"))               return "debt";
   if (url.startsWith("/api/sec-composition"))             return "sec_composition";
-  if (url.startsWith("/api/index-baseline/list"))         return "index_baseline";
-  if (url.startsWith("/api/index-baseline/combined"))     return "index_baseline";
+  if (url.startsWith("/api/index/list"))         return "index_daily";
+  if (url.startsWith("/api/index/combined"))     return "index_daily";
   if (url.startsWith("/api/etf-margin/combined"))         return "etf_margin";
   if (url.startsWith("/api/szse-options/combined"))       return "options";
   if (url.startsWith("/api/szse-options/etf-ohlcv"))      return "etf_margin";
-  if (url.startsWith("/api/stock-baseline/combined"))     return "stock_baseline";
+  // per-plot options endpoints — same "options" data source for version checks
+  if (url.startsWith("/api/szse-options/dates"))             return "options";
+  if (url.startsWith("/api/szse-options/snapshot"))          return "options";
+  if (url.startsWith("/api/szse-options/oi-daily"))          return "options";
+  if (url.startsWith("/api/szse-options/oi-cells"))          return "options";
+  if (url.startsWith("/api/szse-options/expiry-meta"))       return "options";
+  if (url.startsWith("/api/szse-options/oi-moneyness-series")) return "options";
+  if (url.startsWith("/api/stock/combined"))     return "stock_daily";
+  // Shared baseline bundle — version-checks against the sec_type's own
+  // source (the sec_type query param picks the row tables underneath).
+  if (url.startsWith("/api/sec-baseline")) {
+    const m = /[?&]sec_type=(index|etf|stock)\b/.exec(url);
+    if (!m) return null;
+    return m[1] === "index" ? "index_daily" : m[1] === "etf" ? "etf_margin" : "stock_daily";
+  }
   if (url.startsWith("/api/live-data/intraday-movements")) return "intraday_movements";
   // No date in response — TTL only:
   // /api/etf-margin/themes, /api/szse-options/underlyings,
-  // /api/index-baseline/themes, /api/index-baseline/strategy-themes,
-  // /api/index-baseline/intraday-5min, /api/stock-baseline/themes
+  // /api/index/themes, /api/index/strategy-themes,
+  // /api/index/intraday-5min, /api/stock/themes,
+  // /api/stock/dividends (rarely-changing lifetime events),
+  // /api/analysis/** (offline-recomputed analysis schema)
   return null;
 }
 
@@ -108,8 +132,8 @@ function mapUrlToSource(url: string): keyof LatestDatesResponse | null {
  */
 function extractLatestDate(url: string, data: unknown): string {
   try {
-    if (url.startsWith("/api/debt-baseline")) {
-      return (data as DebtBaselineResponse)?.maxDate ?? "";
+    if (url.startsWith("/api/debt")) {
+      return (data as DebtDailyResponse)?.maxDate ?? "";
     }
     // Order matters: the linked-etfs sub-route must be checked BEFORE the
     // broader /api/sec-composition prefix (linked-etfs returns etfs[].latest_date,
@@ -121,11 +145,11 @@ function extractLatestDate(url: string, data: unknown): string {
     if (url.startsWith("/api/sec-composition")) {
       return (data as SecCompositionResponse)?.snapshot_date ?? "";
     }
-    if (url.startsWith("/api/index-baseline/list")) {
+    if (url.startsWith("/api/index/list")) {
       const indices = (data as IndexInfo[]) ?? [];
       return indices.reduce((max, i) => (i.last_date > max ? i.last_date : max), "");
     }
-    if (url.startsWith("/api/index-baseline/combined")) {
+    if (url.startsWith("/api/index/combined")) {
       const dates = (data as IndexCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
     }
@@ -137,13 +161,42 @@ function extractLatestDate(url: string, data: unknown): string {
       const dates = (data as OptionsCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
     }
+    if (url.startsWith("/api/szse-options/dates")) {
+      const dates = (data as { dates?: string[] })?.dates ?? [];
+      return dates.length ? dates[dates.length - 1] : "";
+    }
+    if (url.startsWith("/api/szse-options/snapshot")) {
+      return (data as OptionsSnapshotResponse)?.date ?? "";
+    }
+    if (url.startsWith("/api/szse-options/oi-daily")) {
+      const spot = (data as OptionsOiDailyResponse)?.spot ?? [];
+      return spot.length ? spot[spot.length - 1].date : "";
+    }
+    if (url.startsWith("/api/szse-options/oi-cells")) {
+      const cells = (data as OptionsOiCellsResponse)?.cells ?? [];
+      return cells.length ? cells[cells.length - 1].date : "";
+    }
+    if (url.startsWith("/api/szse-options/expiry-meta")) {
+      const markers = (data as OptionsExpiryMetaResponse)?.markers ?? [];
+      return markers.reduce((max, m) => (m.last_date > max ? m.last_date : max), "");
+    }
+    if (url.startsWith("/api/szse-options/oi-moneyness-series")) {
+      const spot = (data as OptionsMoneynessSeriesResponse)?.spot ?? [];
+      return spot.length ? spot[spot.length - 1].date : "";
+    }
     if (url.startsWith("/api/szse-options/etf-ohlcv")) {
       const dates = (data as EtfOhlcvResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
     }
-    if (url.startsWith("/api/stock-baseline/combined")) {
+    if (url.startsWith("/api/stock/combined")) {
       const dates = (data as StockCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
+    }
+    if (url.startsWith("/api/sec-baseline")) {
+      // Shared baseline bundle — the sec_type-matching bundle's last row
+      // (all three bundle shapes carry rows[].date).
+      const rows = (data as SecBaselineResponse | null)?.bundle?.rows ?? [];
+      return rows.length ? rows[rows.length - 1].date : "";
     }
     if (url.startsWith("/api/live-data/intraday-movements")) {
       return (data as IntradayMovementsResponse)?.date ?? "";

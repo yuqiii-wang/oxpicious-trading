@@ -69,7 +69,10 @@ MOV_STD_BUCKETS_SQL = f"""
         -- occurrence × edge balance rule run PER RUNG in the engine
         SELECT f.delay, f.ave_change, f.occurrence_count
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'mixed'
+        -- the derived-population markers live on the identities registry
+        -- (the 2026-09-26 identity migration) — the PARENT population only
+        WHERE f.forecast_id = i.forecast_id AND i.ohlcv_type IS NULL
+          AND f.period = 'mixed'
           AND f.delay BETWEEN 0 AND {SIGNAL_DELAY_MAX}
         OFFSET 0
     ) fmx
@@ -79,7 +82,10 @@ MOV_STD_BUCKETS_SQL = f"""
         -- rows are its CHOSEN rung's anchors)
         SELECT f.delay, f.trigger_dates, f.trigger_excess
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'next'
+        -- the derived-population markers live on the identities registry
+        -- (the 2026-09-26 identity migration) — the PARENT population only
+        WHERE f.forecast_id = i.forecast_id AND i.ohlcv_type IS NULL
+          AND f.period = 'next'
           AND f.delay BETWEEN 0 AND {SIGNAL_DELAY_MAX}
         OFFSET 0
     ) fnx ON fnx.delay = fmx.delay
@@ -91,7 +97,10 @@ MOV_STD_BUCKETS_SQL = f"""
         -- close-based max/min — its max/min check is not applicable)
         SELECT f.ave_change::float8 AS ave_next
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'next' AND f.delay = 0
+        -- the derived-population markers live on the identities registry
+        -- (the 2026-09-26 identity migration) — the PARENT population only
+        WHERE f.forecast_id = i.forecast_id AND i.ohlcv_type IS NULL
+          AND f.period = 'next' AND f.delay = 0
         OFFSET 0
     ) qn ON TRUE
     LEFT JOIN LATERAL (
@@ -99,7 +108,10 @@ MOV_STD_BUCKETS_SQL = f"""
                f.max_change::float8 AS max_5d,
                f.min_change::float8 AS min_5d
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = '5d' AND f.delay = 0
+        -- the derived-population markers live on the identities registry
+        -- (the 2026-09-26 identity migration) — the PARENT population only
+        WHERE f.forecast_id = i.forecast_id AND i.ohlcv_type IS NULL
+          AND f.period = '5d' AND f.delay = 0
         OFFSET 0
     ) q5 ON TRUE
     LEFT JOIN LATERAL (
@@ -107,7 +119,10 @@ MOV_STD_BUCKETS_SQL = f"""
                f.max_change::float8 AS max_20d,
                f.min_change::float8 AS min_20d
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = '20d' AND f.delay = 0
+        -- the derived-population markers live on the identities registry
+        -- (the 2026-09-26 identity migration) — the PARENT population only
+        WHERE f.forecast_id = i.forecast_id AND i.ohlcv_type IS NULL
+          AND f.period = '20d' AND f.delay = 0
         OFFSET 0
     ) q20 ON TRUE
     WHERE i.sec_type = $1

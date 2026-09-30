@@ -2,6 +2,7 @@ import { fetchJson } from "./_cache";
 import type {
   SecCompositionResponse,
   LinkedEtfsResponse,
+  LinkedFeedersResponse,
   SimilarIndicesResponse,
   QuarterlyCompositionResponse,
   IndustryWeightSeriesResponse,
@@ -51,8 +52,9 @@ export function fetchIndustryWeightSeries(
   );
 }
 
-/** Fetch ETFs tracking the given index (parent_index_code = code).
- *  Used by the Index Baseline page's "Linked ETFs" expansion. */
+/** Fetch ETFs tracking the given index (parent_index_code = code), with
+ *  per-ETF feeder-fund counts + the index display name. Used by the unified
+ *  LinkedEtfsFeedersTable (Index page + ETF trend panel). */
 export function fetchLinkedEtfs(code: string): Promise<LinkedEtfsResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
@@ -68,4 +70,14 @@ export function fetchSimilarIndices(code: string): Promise<SimilarIndicesRespons
   if (code) params.set("code", code);
   const qs = params.toString();
   return fetchJson<SimilarIndicesResponse>(`/api/sec-composition/similar-indices${qs ? `?${qs}` : ""}`);
+}
+
+/** Fetch the ETF联接基金 feeder funds whose target (master) ETF is the given
+ *  code. Used by the unified LinkedEtfsFeedersTable — lazily loaded when an
+ *  ETF row with feeders is expanded. */
+export function fetchLinkedFeeders(code: string): Promise<LinkedFeedersResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  const qs = params.toString();
+  return fetchJson<LinkedFeedersResponse>(`/api/sec-composition/linked-feeders${qs ? `?${qs}` : ""}`);
 }

@@ -5,7 +5,7 @@
  * endpoints publish daily OHLCV (stored in stats.etf_basic_stats), not
  * intraday bars. Rather than rendering an empty placeholder, this page
  * surfaces the per-ETF Composition pie chart (same shared component used
- * by the Index Baseline and ETF + Margin pages) so users can still
+ * by the Index and ETF pages) so users can still
  * inspect ETF holdings from the Live Data section.
  *
  * Layout mirrors IndexPage (ThemeSelector + CodeSearchBar + RefreshButton +
@@ -22,7 +22,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
+import ChartCard from "@/shared/components/ChartCard";
 import CodeSearchBar, { findCodeInThemes, findCodeInStrategyThemes } from "@/components/CodeSearchBar";
 import CompositionPieChart from "@/components/CompositionPieChart";
 import RefreshButton from "@/components/RefreshButton";
@@ -74,7 +74,7 @@ export default function EtfPage() {
         setSectors(list);
         setStrategies(strategyList);
         // No page-level default — SecClassificationNav handles auto-selecting
-        // the default (BROAD / broad_csi300 / 159673.SZ) via its DEFAULTS_BY_KIND map.
+        // the default (BROAD / broad_csi300 / 159673) via its DEFAULTS_BY_KIND map.
         setNavLoading(false);
       })
       .catch((e: Error) => {

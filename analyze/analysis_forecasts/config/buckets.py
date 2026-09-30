@@ -6,8 +6,12 @@ from __future__ import annotations
 # RSI windows — mirrors analysis.mov_ave_rsi (Wilder RSI columns).
 RSI_WINDOWS = (3, 6, 10, 14, 20, 60)
 
-# Percentile widths for the RSI extreme buckets (percent).
-RSI_PCTS = (1, 5, 10, 25)
+# Percentile widths for the RSI extreme buckets (percent). The 2026-09
+# quality-v2 calibration: the 2%/3% tails are the robustness sweet spot
+# (dir_ave ≈ 0.9–1.2% at 6–9 occurrences — docs/signal_quality_v2_proposal.md);
+# 25% was dropped (a Q3 band, mean edge +0.21% — half the family's
+# compute for a tail the emission slice never emits).
+RSI_PCTS = (1, 2, 3, 5, 10)
 
 # Bucket sides: top = overbought (highest-pct% RSI days),
 #               bottom = oversold (lowest-pct% RSI days).
@@ -224,7 +228,7 @@ HIGH_LOW_STREAKS_SIDES = ("top", "bottom")
 # analysis.pe / analysis.dividends, ONE FAMILY PER METRIC (each table
 # carries one series and no metric column) — the mov_rsi pct
 # convention (2026-09 refactor of the former z-STATE buckets): per
-# stat month's trailing 5-year window, a day joins a bucket when its
+# snapshot's trailing 5-year window, a day joins a bucket when its
 # series value sits in the top pct% (bucket extreme 'top', the
 # window's linearly-interpolated quantile bar at q = 1 - pct/100) or
 # bottom pct% (extreme 'bottom', q = pct/100) of the window's non-NULL

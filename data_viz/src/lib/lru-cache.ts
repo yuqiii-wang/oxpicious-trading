@@ -57,7 +57,7 @@ export class LruCache<T> {
 
   /** Remove every entry whose key starts with `prefix`. Used by the
    *  page-level refresh to invalidate all URLs that share a route prefix
-   *  (e.g. all "/api/debt-baseline*" entries). */
+   *  (e.g. all "/api/debt*" entries). */
   deletePrefix(prefix: string): void {
     if (!prefix) return;
     for (const key of Array.from(this.map.keys())) {

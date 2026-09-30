@@ -20,7 +20,14 @@ import pandas as pd
 
 from _common.df_utils import host_array
 
-from analyze.analysis_signals.config import GATE_DIR_AVE_MIN
+from analyze.analysis_signals.config import (
+    BUY_SAMPLE_FLOOR,
+    BUY_STABILITY_MIN,
+    GATE_DIR_AVE_MIN,
+    SELL_SAMPLE_FLOOR,
+    SELL_STABILITY_MIN,
+    SIGNAL_STABILITY_RUNGS,
+)
 from analyze.analysis_signals.engines._primitives import SELL_SIDES
 
 
@@ -43,8 +50,10 @@ class FrameMachinery:
         The ladder machinery: the bucket read fans the mixed ladder out
         per rung (bucket × delay × trigger day), so the (bucket, delay)
         groupby yields ONE RUNG ROW per (bucket, rung-with-anchors).
-        Every rung row faces the plain gate; among the gate-passing
-        rungs the OPTIMAL ENTRY DELAY is the balance rule's argmax
+        Every rung row faces the plain gate AT THE PER-SIDE ROBUSTNESS
+        FLOORS (the sample floor always; ladder stability on streak
+        families — config BUY/SELL_SAMPLE_FLOOR, BUY/SELL_STABILITY_MIN);
+        among the surviving rungs the OPTIMAL ENTRY DELAY is the balance rule's argmax
 
             score(d) = sign-aligned dir_ave(d) × occurrence_count(d)
 
@@ -71,8 +80,39 @@ class FrameMachinery:
             how="inner",
         )
         # rung candidacy: THE gate (the rung's own mixed row) on a
-        # rung that actually has anchors
+        # rung that actually has anchors, at the per-SIDE ROBUSTNESS
+        # FLOORS (config 2026-09 quality-v2/v2.1): the sample floor (a
+        # rung without enough window streaks behind it measures
+        # selection noise, not edge) and — streak families only —
+        # ladder stability (the sign-aligned edge positive on enough
+        # early rungs: direction must show before the gate's
+        # magnitude; one-day cross families have no persistence axis
+        # and skip it). Sells carry the looser bars (3 / 1): their
+        # persistence evidence is structurally thinner in positive-
+        # drift markets — measured, not assumed
+        # (temp_scripts/study_sell_floors.py).
+        sell = rung["side"].isin(SELL_SIDES)
+        sample_floor = pd.Series(BUY_SAMPLE_FLOOR, index=rung.index)
+        sample_floor = sample_floor.mask(sell, SELL_SAMPLE_FLOOR)
         cand = self._gate_mask(rung) & rung["trig_date"].notna()
+        cand = cand & (
+            rung["occurrence_count"].astype("float64") >= sample_floor
+        )
+        drop_cols = ["_score", "_best", "_first"]
+        if self.streak_signals:
+            stab_min = pd.Series(BUY_STABILITY_MIN, index=rung.index)
+            stab_min = stab_min.mask(sell, SELL_STABILITY_MIN)
+            dir_all = pd.Series(1.0, index=rung.index)
+            dir_all = dir_all.mask(sell, -1.0)
+            # the early rungs' sign-aligned positives, summed per bucket
+            # (transform keeps the rung frame's own row alignment)
+            stab = rung.assign(
+                _stab_pos=(
+                    (dir_all * rung["ave_change"] > 0)
+                    & rung["delay"].isin(SIGNAL_STABILITY_RUNGS)
+                ).astype("int64"),
+            ).groupby(keys, sort=False)["_stab_pos"].transform("sum")
+            cand = cand & (stab >= stab_min)
         # the balance score — NaN on non-candidates so an all-NaN
         # bucket (no gate-passing rung) drops out at the argmax
         dir_sign = pd.Series(1.0, index=rung.index)
@@ -99,9 +139,7 @@ class FrameMachinery:
             on=keys, how="inner",
         )
         best = best[best["delay"] == best["_first"]]
-        return best.drop(columns=["_score", "_best", "_first"]).reset_index(
-            drop=True,
-        )
+        return best.drop(columns=drop_cols).reset_index(drop=True)
 
     def snapshot_triggers(
         self,
@@ -137,14 +175,14 @@ class FrameMachinery:
         return rows.reset_index(drop=True)
 
     def value_points(
-        self, passing: pd.DataFrame, month_trig: pd.DataFrame,
+        self, passing: pd.DataFrame, snapshot_trig: pd.DataFrame,
     ) -> tuple[list[str], list[date]]:
         """The distinct (codes, dates) the emits need values at: the
         strategies' window-end triggers (the bars) + the snapshot-owned
         trigger days (the history signals) — a bounded point set
         (SANCTIONED scalar materialization: the SQL layer takes python
         lists; dates cross as ISO strings via the native strftime)."""
-        frames = [f for f in (passing, month_trig) if not f.empty]
+        frames = [f for f in (passing, snapshot_trig) if not f.empty]
         if not frames:
             return [], []
         # host_array unwraps the cudf.pandas proxy ONCE at the
@@ -165,7 +203,7 @@ class FrameMachinery:
         return codes, sorted({date.fromisoformat(str(v)) for v in iso})
 
     def regime_label(
-        self, month_trig: pd.DataFrame, regimes: pd.DataFrame,
+        self, snapshot_trig: pd.DataFrame, regimes: pd.DataFrame,
     ) -> pd.DataFrame:
         """The snapshot-owned trigger days' market regimes: the
         stats.market_regimes DAY label (calm/hot/panic/quiet) joined by
@@ -174,7 +212,7 @@ class FrameMachinery:
         state row default to 'calm' (the retired boolean's never-hyped
         semantics). Regime rows of codes not in the trigger set simply
         never join."""
-        out = month_trig.copy()
+        out = snapshot_trig.copy()
         if out.empty or regimes.empty:
             out["regime"] = "calm"
             return out

@@ -175,6 +175,19 @@ IDENTITY_COLUMNS: list[str] = [
     "bucket",
     "streak_signal_days",
     "delayed_signal_days",
+    # The OHLCV derived-population verdict (the 2026-09-27 OHLCV
+    # CONSOLIDATION — the 2026-09-26 BOOLEAN pair is_ohlc_selection /
+    # is_ohlc_boosted and the four legacy TEXT values gap_selection /
+    # gap_boost / vol_selection / vol_boost are all retired): NULL =
+    # the plain parent population, 'ohlcv_boost' = the ohlcv-score
+    # weighted child (mov_rsi bottom side, index+etf — the parent's
+    # FULL population re-weighted by the three-axis day-0 score: OHLC
+    # pattern + vol_state × px_speed cell + RSI tail depth),
+    # 'ohlcv_selection' = the ohlcv-score strict subset (the
+    # score-positive streaks of the same population). The mechanisms
+    # never co-occur on one forecast_id. Families without derived
+    # populations write NULL.
+    "ohlcv_type",
     "lookback_period",
 ]
 

@@ -43,7 +43,7 @@
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS live.live_signals (
-    code            TEXT          NOT NULL,  -- ticker (etf "510050.SS" / index "000300" / stock)
+    code            TEXT          NOT NULL,  -- ticker (etf "510050" / index "000300" / stock)
     sec_type        TEXT          NOT NULL,  -- 'etf' | 'index' | 'stock'
     signal_type     TEXT          NOT NULL,  -- 'mov_rsi' | 'mov_std' — breached config's detection family
     signal_sub_type TEXT          NOT NULL,  -- 'rsi6'..'rsi60' / 'std5_2'..'std60_2' — breached config
@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS live.live_signals (
     signal          NUMERIC(16,4) NOT NULL,  -- the breaching value at this tick (for mov_rsi rows: the RSI value that breached its threshold)
     signal_threshold NUMERIC(14,6) NOT NULL, -- the threshold breached (denormalized from analysis_signals.signal_strategies)
     confidence      INTEGER       NOT NULL DEFAULT 100,  -- the strategy's expected-move confidence in basis points (ROUND(10000 × strategies.confidence); DEFAULT is the legacy pre-2026-09-25 fill)
+    confidence_boost INTEGER,     -- the same bucket's @boost cohort confidence (bp) — add-on context, never a gate; NULL = no child / non-mov_rsi (see 05_live_signals_cohort_confidence.sql)
+    confidence_selection INTEGER, -- the same bucket's @selection cohort confidence (bp) — add-on context, never a gate; NULL = no child / bottom-only / non-mov_rsi
     is_day_close_trigger BOOLEAN  NOT NULL DEFAULT FALSE,  -- TRUE = legacy day-close mirror row (time 15:00:00); FALSE = intraday live-monitor breach
     regime_state    TEXT          NOT NULL DEFAULT 'calm',  -- the breach bar's DATE regime (stats.market_regimes day label: calm/hot/panic/quiet)
 
@@ -83,7 +85,7 @@ ALTER TABLE live.live_signals
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE live.live_signals IS 'Append-only breach RECORDS for the analysis_signals threshold set: one row per (code, sec_type, signal_type, signal_sub_type, date, time) intraday tick at which the monitored value crossed the config''s signal_threshold — price vs band level for mov_std configs, current RSI vs its top/bottom-1% threshold for mov_rsi configs (indicator space; the signal column holds the compared value). Pure record of breach observations — thresholds are denormalized so each row is self-contained; the current threshold set is the is_active rows of analysis_signals.signal_strategies. Populated by python -m live.live_signals (intraday, is_day_close_trigger = FALSE).';
 COMMENT ON COLUMN live.live_signals.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
-COMMENT ON COLUMN live.live_signals.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN live.live_signals.code IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN live.live_signals.signal_type IS 'Breached config''s detection family: mov_rsi (RSI extreme-percentile threshold) or mov_std (Bollinger band level) — mirrors analysis_signals.signal_strategies.signal_type.';
 COMMENT ON COLUMN live.live_signals.signal_sub_type IS 'Breached config''s indicator + window: rsi{W} for mov_rsi, std{W}_{k} for mov_std — mirrors analysis_signals.signal_strategies.signal_sub_type.';
 COMMENT ON COLUMN live.live_signals.date IS 'The live date on which the breach was observed.';

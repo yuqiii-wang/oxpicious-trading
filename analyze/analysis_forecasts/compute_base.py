@@ -1,6 +1,6 @@
 """Base-rate annual-snapshot aggregation (analysis_forecasts) — the metric file.
 
-Per stat month's trailing 5-year window and horizon n, the UNCONDITIONAL
+Per snapshot's trailing 5-year window and horizon n, the UNCONDITIONAL
 forward stats over ALL of each live code's window days with a valid
 n-day forward change (vs the buckets' trigger-day subsets): valid-day
 count and mean change — the unconditional reference the bucket
@@ -45,13 +45,13 @@ _PERIODS = [PERIOD_FOR_HORIZON[n] for n in FORWARD_HORIZONS] + [PERIOD_MIXED]
 
 
 class _BaseRateEngine(WideDfEngine):
-    """Base rates — no buckets: ``month_rows`` is overridden directly
+    """Base rates — no buckets: ``snapshot_rows`` is overridden directly
     (the emit_signals hook stays unused)."""
 
     def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
         return iter(())   # unused — the base-rate family has no buckets
 
-    def month_rows(self, win: pd.DataFrame, spec) -> list[dict]:
+    def snapshot_rows(self, win: pd.DataFrame, spec) -> list[dict]:
         w = win
 
         # Per-horizon window-day helpers (vectorized; the invalid days

@@ -357,7 +357,7 @@ export async function getPerfAttrAttribution(
 // ----------------------------------------------------------------------------
 //  listPerfAttrThemes — two-level L1 sector → L2 industry → items tree for the
 //  Perf Attribution page's ThemeSelector. Mirrors listThemes() in
-//  etf-margin.service.ts and listIndexThemes() in index-baseline.service.ts,
+//  etf-margin.service.ts and listIndexThemes() in index.service.ts,
 //  but only includes codes that have rows in stats.cross_stats
 //  (sec_type='index') for the requested sec_type.
 // ----------------------------------------------------------------------------

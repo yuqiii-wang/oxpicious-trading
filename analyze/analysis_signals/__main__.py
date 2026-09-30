@@ -9,8 +9,12 @@ database/sql/analysis/analysis_signals/00_schema.sql and
   - A forecast bucket (code × stat_date snapshot M × config, trailing
     5-year window (M - 5y, M]) whose mixed forecast_results DELAY
     LADDER (rung d 0..5 is conditioned on the signal having persisted
-    d days) has a gate-passing rung — the plain rule: the sign-aligned
-    blended mean forward change (dir_ave) > 0.75% — IS a signal
+    d days) has a rung passing the plain rule at the PER-SIDE
+    ROBUSTNESS FLOORS
+    — the sign-aligned blended mean forward change (dir_ave) > 0.75%
+    on a rung carrying >= 4 (buy) / 3 (sell) window streaks that shows
+    ladder stability (>= 2 (buy) / 1 (sell) of rungs 0-2 sign-aligned
+    positive; streak families only) — IS a signal
     strategy: ONE
     analysis_signals.signal_strategies row over the bucket's forecast
     period (start_date .. end_date = the snapshot key — the
@@ -36,14 +40,17 @@ database/sql/analysis/analysis_signals/00_schema.sql and
     history days are its streaks' day-d anchors (signal_delay_days
     rides both tables).
 
-  - Emission slices (current build): mov_rsi pct = 1 (top → sell /
-    bottom → buy), mov_std MA/σ windows >= 20d at k >= 2.0σ
-    (upper → sell / lower → buy), and the two pair-cross families —
-    mov_pairs / mov_pairs_ema, each covering BOTH its fast legs
-    (ma5/ema6 and the close price) — at slow-leg windows >= 60d,
-    cross-down (bottom → buy) side only. All slices cover every regime
-    splits. Other forecast families get strategies as their engines
-    land.
+  - Emission slices (current build): mov_rsi pct in {1, 2, 3}
+    (top → sell / bottom → buy), mov_std MA/σ windows >= 60d at
+    k >= 2.0σ (upper → sell / lower → buy; the 20d window was removed
+    2026-09-30 — its sell side sign-flipped out-of-sample, the OOS
+    study temp_scripts/study_std20_oos.py; the 20d buckets stay in
+    analysis_forecasts), and the two pair-cross
+    families — mov_pairs / mov_pairs_ema, each covering BOTH its fast
+    legs (ma5/ema6 and the close price) — at slow-leg windows >= 60d,
+    both cross sides (bottom cross-down → buy, top cross-up →
+    sell). All slices cover every regime split. Other forecast
+    families get strategies as their engines land.
 
   - NO CASE/WHEN anywhere in the SQL: side is stored, and every other
     conditional lives in this package's vectorized cudf.pandas engines
@@ -65,9 +72,11 @@ see engines/_base):
      the sec_type's family rows and re-emits every present snapshot.
   2. Per snapshot: fetch the buckets (long, carrying the quality
      periods' forward profiles) + the indicator values at exactly the
-     trigger points (wide) → vectorized plain gate → the FINAL
-     SignalQuality gate (engines/_quality — breach coherence +
-     sign-aligned per-period forward means on every period, plus the
+     trigger points (wide) → vectorized plain gate at the robustness
+     floors → the FINAL claim-profile SignalQuality gate
+     (engines/_quality — breach coherence + 5d forward-mean
+     alignment on every bucket + 20d alignment on the family's slow
+     claims (engine slow_claim), plus the
      0.75 risk cap as ONE weight-blended verdict over the quality
      periods 65% 5d / 10% 20d at bar 0.50 (the 5d bar
      carries the decision — long-horizon failures alone can't kill);
@@ -100,6 +109,7 @@ from _common.build_commons import (
     print_wall_time,
     setup_utf8_stdout,
 )
+from _common.db_commons import analyze_tables_async  # noqa: E402
 
 setup_utf8_stdout()
 
@@ -133,10 +143,11 @@ async def main() -> None:
                     "snapshot key), plus the chosen rung's trigger "
                     "days inside its own snapshot year as "
                     "history_signals rows. Emission slices: mov_rsi "
-                    "pct = 1; mov_std >= 20d windows at k >= 2.0σ; "
+                    "pct in {1, 2, 3}; mov_std >= 60d windows at "
+                    "k >= 2.0σ; "
                     "the two pair-cross families (mov_pairs / "
                     "mov_pairs_ema, both fast legs) at >= 60d slow "
-                    "legs, cross-down side; every regime split.",
+                    "legs, both cross sides; every regime split.",
     )
     ap.add_argument(
         "--sec-type", choices=SEC_TYPES, default=None,
@@ -148,9 +159,16 @@ async def main() -> None:
              f"{', '.join(STAGE_NAMES)}). Default: all.",
     )
     ap.add_argument(
-        "--months", type=int, default=None, metavar="N",
+        "--snapshots", type=int, default=None, metavar="N",
         help="Cap the target stat_dates to the newest N present in "
              "analysis_forecasts (default: all present snapshots).",
+    )
+    ap.add_argument(
+        "--analyze", action="store_true",
+        help="ANALYZE the written tables after the build (planner-"
+             "statistics refresh; debugging / performance testing only "
+             "— default OFF: bulk builds skip it and leave the tables "
+             "to autovacuum.)",
     )
     add_force_arg(ap)
     args = ap.parse_args()
@@ -188,7 +206,7 @@ async def main() -> None:
         totals = {"strategies": 0, "history": 0}
         for st in sec_types:
             stats = await process_sec_type(
-                conn, st, force=force, metrics=metrics, months=args.months,
+                conn, st, force=force, metrics=metrics, snapshots=args.snapshots,
             )
             for engine in engines_for(metrics):
                 run = stats.get(engine.stage_key, RunStats(0, 0, 0))
@@ -206,6 +224,22 @@ async def main() -> None:
             f"{totals['history']:,} history_signals rows written "
             f"(is_active + signal_order refreshed per sec_type)",
         )
+        # Post-bulk-write ANALYZE — same rationale as the forecasts
+        # build: stale primary statistics after a rewrite turn every
+        # value-blind prepared-statement read (node-pg) into whole-
+        # table seq scans until autovacuum gets to the table.
+        # OPT-IN (--analyze): debugging / performance testing only —
+        # routine builds skip it.
+        if args.analyze:
+            await analyze_tables_async(conn, (
+                "analysis_signals.signal_strategies",
+                "analysis_signals.history_signals",
+            ))
+        else:
+            logger.info(
+                "  skipping post-build ANALYZE (--analyze to refresh "
+                "planner statistics — debugging / performance testing "
+                "only)")
         print_wall_time(t0)
     finally:
         await conn.close()

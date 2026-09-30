@@ -21,7 +21,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import EChart from "@/components/EChart";
+import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";

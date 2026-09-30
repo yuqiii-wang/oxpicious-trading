@@ -49,23 +49,32 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
     tags: ["Index", "industry sentiment", "rebased to 100", "multi-line", "pool size", "mean/var overlay"],
   },
   {
-    slug: "pe-dividend",
-    title: "PE & Dividend",
+    slug: "pe",
+    title: "PE",
     description:
       "Per-security valuation: close price (left y-axis) vs PE + " +
       "trailing-12m dividend yield (right y-axis). Index securities show " +
-      "all four series; ETF/Stock show close + dividend_yield only (no PE " +
-      "source). A PE / Dividends header toggle switches the analysis card " +
-      "beneath each chart: PE mode shows band-break valuation streaks; " +
-      "Dividends mode shows an annual 10-year rolling stats table " +
-      "(min/max PE 10y, dividend_var_10y, dividend_stability_10y, " +
-      "last_dividend_per_share) with an is_active flag on the latest snapshot. " +
-      "Click any date on the chart to highlight the matching year-end row in " +
-      "the table. Backed by " +
-      "analysis.pe / analysis.dividends + analysis.pe_and_dividend_stats; close + " +
+      "all series; ETF/Stock show close + dividend_yield only (no PE " +
+      "source). Beneath each chart: the band-break valuation streaks card " +
+      "(PE breaks of its trailing percentile band, with archive streak " +
+      "tables). Backed by " +
+      "analysis.pe / analysis.dividends; close + " +
       "raw PE are JOINed live from stats so the UI always shows the freshest " +
       "source values.",
-    tags: ["ETF", "Index", "Stock", "PE", "dividend yield", "valuation", "10y stats"],
+    tags: ["ETF", "Index", "Stock", "PE", "dividend yield", "valuation"],
+  },
+  {
+    slug: "dividends",
+    title: "Dividends",
+    description:
+      "Per-security dividends view: the PE page's baseline plot alone " +
+      "(no band-break streaks card — the dividend_yield streak tables were " +
+      "removed). ETF/Stock securities mark ex-dividend dates as gold " +
+      "diamonds on the price chart; Index securities show the standard " +
+      "OHLC + MAs + Amt + PE twin-axis baseline. Backed by analysis.pe / " +
+      "analysis.dividends (same security universe as the PE page — both " +
+      "tables are built together by analyze.pe_and_dividends).",
+    tags: ["ETF", "Index", "Stock", "dividend yield", "valuation"],
   },
   {
     slug: "etf-holdings",

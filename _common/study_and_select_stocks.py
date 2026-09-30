@@ -136,7 +136,7 @@ def load_yesterday_top_traded_stocks(
     streaming may insert into ``stock_liquidity_margin`` ahead of the next
     OHLCV build). The trading amount itself is read from
     ``stats.stock_liquidity_margin`` (where trading_shares/trading_amount
-    were migrated from stock_basic_stats — see 06_stock_baseline.sql).
+    were migrated from stock_basic_stats — see 06_stock.sql).
 
     Used by stream_szse_price.py hourly mode: during trading hours the
     streamer samples the top-300 most-traded SZSE stocks each hour instead

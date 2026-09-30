@@ -27,9 +27,12 @@
  *     several configs breached the same tick), (2) the code's daily price
  *     trend (shared CodeTrendChart over the sec_type's baseline endpoint)
  *     carrying the code's FULL signal history as buy (green ▲ below the
- *     low) / sell (red ▼ above the high) markers, and (3) the code's
- *     history-signals table (GET /api/live-data/trading-signals/history —
- *     every live.live_signals row of the code, newest first). One row
+ *     low) / sell (red ▼ above the high) markers — every recorded event —
+ *     and (3) the code's history-signals table (GET
+ *     /api/live-data/trading-signals/history — analysis_signals
+ *     .history_signals UNION live.live_signals, one record per config-day)
+ *     scoped to the LAST 20 TRADING DAYS ending on the viewed day: the
+ *     chart plots all of it, the table only the recent window. One row
  *     expanded at a time; re-expanding a code reuses the cached history
  *     fetch.
  *   • Refresh button — force-triggers `python -m live.live_signals
@@ -78,13 +81,15 @@ import {
   invalidateCacheForPrefix,
   type TradingSignal,
   type TradingSignalConfig,
+  type TradingSignalHistoryResponse,
   type TradingSignalsResponse,
 } from "@/lib/api-client";
 import RefreshButton from "@/components/RefreshButton";
-import CodeTrendChart, {
+import {
+  CodeTrendChart,
   type CodeTrendSecType,
-} from "@/components/CodeTrendChart";
-import type { OhlcTradeSignal } from "@/components/StockOhlcChart";
+  type OhlcTradeSignal,
+} from "@/ui/OhlcChart";
 import { DateSelector } from "@/shared/components/date-selector";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
 
@@ -657,10 +662,12 @@ function SignalTable({
                   <TableCell
                     align="right"
                     sx={{
+                      whiteSpace: "nowrap",
                       color: theme.palette.text.secondary,
                     }}
                   >
                     {s.confidence_pct.toFixed(2)}%
+                    <CohortConfidenceAddOn s={s} />
                   </TableCell>
                   <TableCell align="center">
                     <Box
@@ -711,7 +718,8 @@ function SignalTable({
 //  Row expansion — the tick's collapsed signals (multi-config ticks), above
 //  the code's price trend (shared CodeTrendChart) with the FULL signal
 //  history drawn as buy/sell markers, above the code's history-signals
-//  table (live.live_signals, newest first).
+//  table (history_signals ∪ live_signals, one per config-day) scoped to
+//  the LAST 20 TRADING DAYS ending on the viewed day.
 // ---------------------------------------------------------------------------
 
 /** The sec_types CodeTrendChart knows how to fetch. */
@@ -727,19 +735,23 @@ function SignalExpansion({
    *  into it. */
   group: TradingSignal[];
 }) {
-  const [history, setHistory] = useState<TradingSignal[] | null>(null);
+  const [history, setHistory] =
+    useState<TradingSignalHistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // The code's FULL signal history (every date) — drives both the trend
-  // chart's buy/sell markers and the history table. fetchJson's cache makes
-  // re-expansions of the same code instant.
+  // The code's FULL signal history (every date), anchored on the viewed
+  // day — drives both the trend chart's buy/sell markers (ALL of it) and
+  // the history table (scoped to the last 20 trading days). fetchJson's
+  // cache makes re-expansions of the same (code, day) instant.
   useEffect(() => {
     let cancelled = false;
     setHistory(null);
     setError(null);
-    fetchTradingSignalHistory(signal.sec_type, signal.code)
+    fetchTradingSignalHistory(
+      signal.sec_type, signal.code, null, null, signal.date,
+    )
       .then((resp) => {
-        if (!cancelled) setHistory(resp.signals);
+        if (!cancelled) setHistory(resp);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(String(e));
@@ -747,12 +759,12 @@ function SignalExpansion({
     return () => {
       cancelled = true;
     };
-  }, [signal.sec_type, signal.code]);
+  }, [signal.sec_type, signal.code, signal.date]);
 
-  // live_signals rows → chart markers (one marker per buy/sell day).
+  // Chart markers: EVERY history row (all years — the full record).
   const markers: OhlcTradeSignal[] = useMemo(
     () =>
-      (history ?? []).map((h) => ({
+      (history?.signals ?? []).map((h) => ({
         date: h.date,
         action: h.action,
         signal_type: h.signal_type,
@@ -761,6 +773,20 @@ function SignalExpansion({
       })),
     [history],
   );
+
+  // Table rows: only the last 20 trading days ending on the viewed day —
+  // (windowStart, anchor], the count_20d window. The anchor is ALSO the
+  // upper bound: an old-date view must not leak later rows into the table
+  // (the chart plots through today). Falls back to everything when the
+  // boundary is missing (fewer than 20 baseline closes).
+  const recentRows: TradingSignal[] = useMemo(() => {
+    const all = history?.signals ?? [];
+    const windowStart = history?.recent_window_start;
+    if (!windowStart) return all;
+    return all.filter(
+      (h) => h.date > windowStart && h.date <= signal.date,
+    );
+  }, [history, signal.date]);
 
   if (error) {
     return (
@@ -788,7 +814,10 @@ function SignalExpansion({
           chartOptions={{ tradeSignals: markers }}
         />
       )}
-      <HistorySignalsTable rows={history} />
+      <HistorySignalsTable
+        rows={recentRows}
+        windowed={history.recent_window_start !== null}
+      />
     </Stack>
   );
 }
@@ -796,6 +825,36 @@ function SignalExpansion({
 /** Every config that breached the expanded row's (code, date, time) tick —
  *  the rows the parent table's PK grouping withheld, confidence DESC (the
  *  first is the parent row itself). */
+/** The same bucket's ohlcv cohort add-on confidences, parenthesized
+ *  next to the confidence (the Excess column's muted paren pattern;
+ *  the forecast table's population-marker convention): e.g.
+ *  "(boost 2.80% / sel 3.21%)". Renders only the parts that exist —
+ *  mov_rsi-only, and each cohort registers independently. */
+function CohortConfidenceAddOn({ s }: { s: TradingSignal }) {
+  const theme = useTheme();
+  const parts: string[] = [];
+  if (s.confidence_boost_pct != null) {
+    parts.push(`boost ${s.confidence_boost_pct.toFixed(2)}%`);
+  }
+  if (s.confidence_selection_pct != null) {
+    parts.push(`sel ${s.confidence_selection_pct.toFixed(2)}%`);
+  }
+  if (parts.length === 0) return null;
+  return (
+    <Box
+      component="span"
+      sx={{
+        color: theme.palette.text.secondary,
+        fontWeight: 400,
+        ml: 0.5,
+        whiteSpace: "nowrap",
+      }}
+    >
+      ({parts.join(" / ")})
+    </Box>
+  );
+}
+
 function TickSignalsTable({ group }: { group: TradingSignal[] }) {
   const theme = useTheme();
   return (
@@ -868,8 +927,9 @@ function TickSignalsTable({ group }: { group: TradingSignal[] }) {
                     </Box>
                   )}
               </TableCell>
-              <TableCell align="right" sx={{ color: "text.secondary" }}>
+              <TableCell align="right" sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
                 {s.confidence_pct.toFixed(2)}%
+                <CohortConfidenceAddOn s={s} />
               </TableCell>
             </TableRow>
           ))}
@@ -879,8 +939,16 @@ function TickSignalsTable({ group }: { group: TradingSignal[] }) {
   );
 }
 
-/** The code's full live_signals history, newest first (server-ordered). */
-function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
+/** The code's history signals scoped to the recent window (last 20 trading
+ *  days when `windowed`, the count_20d window), newest first
+ *  (server-ordered). */
+function HistorySignalsTable({
+  rows,
+  windowed,
+}: {
+  rows: TradingSignal[];
+  windowed: boolean;
+}) {
   const theme = useTheme();
   return (
     <Paper variant="outlined" sx={{ p: 1.25 }}>
@@ -889,7 +957,8 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
         color="text.secondary"
         sx={{ display: "block", mb: 0.75, px: 0.5 }}
       >
-        History signals · {rows.length} record{rows.length === 1 ? "" : "s"}
+        {windowed ? "Last 20 trading days" : "History signals"} ·{" "}
+        {rows.length} record{rows.length === 1 ? "" : "s"}
       </Typography>
       {rows.length === 0 ? (
         <Typography variant="body2" color="text.secondary" sx={{ px: 0.5, pb: 1 }}>
@@ -977,8 +1046,9 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
                     {s.signal_excess >= 0 ? "▲ " : "▼ "}
                     {s.signal_excess.toFixed(4)}
                   </TableCell>
-                  <TableCell align="right" sx={{ color: "text.secondary" }}>
+                  <TableCell align="right" sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
                     {s.confidence_pct.toFixed(2)}%
+                    <CohortConfidenceAddOn s={s} />
                   </TableCell>
                   <TableCell align="center">
                     <Box

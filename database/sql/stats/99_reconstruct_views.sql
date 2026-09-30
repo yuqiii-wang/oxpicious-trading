@@ -5,14 +5,15 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- View: v_debt_baseline
---   Reconstructs original debt_baseline table via JOIN on date
+-- View: v_debt_daily
+--   Reconstructs the legacy debt table via JOIN on date
 --   DROP first because CREATE OR REPLACE VIEW cannot insert columns in the
 --   middle of an existing column list (only append). This is a leaf view —
 --   nothing else depends on it.
 -- ----------------------------------------------------------------------------
-DROP VIEW IF EXISTS stats.v_debt_baseline;
-CREATE OR REPLACE VIEW stats.v_debt_baseline AS
+DROP VIEW IF EXISTS stats.v_debt_daily;
+ALTER VIEW IF EXISTS stats.v_debt_baseline RENAME TO v_debt_daily; -- legacy name migration (2026-09)
+CREATE OR REPLACE VIEW stats.v_debt_daily AS
 SELECT
     i.date,
     -- PBoC OMO
@@ -80,7 +81,7 @@ LEFT JOIN stats.debt_shibor s ON i.date = s.date
 LEFT JOIN stats.debt_treasury t ON i.date = t.date
 LEFT JOIN stats.debt_lpr l ON i.date = l.date;
 
-COMMENT ON VIEW stats.v_debt_baseline IS 'Reconstructed debt_baseline view: JOIN of debt_identity + all debt sub-tables.';
+COMMENT ON VIEW stats.v_debt_daily IS 'Reconstructed debt daily view: JOIN of debt_identity + all debt sub-tables.';
 
 -- ----------------------------------------------------------------------------
 -- View: v_etf_margin
@@ -217,12 +218,13 @@ LEFT JOIN stats.options_aggregate a ON i.date = a.date AND i.contract_code = a.c
 COMMENT ON VIEW stats.v_options_quote IS 'Reconstructed options_quote view: JOIN of options_identity + all options sub-tables.';
 
 -- ----------------------------------------------------------------------------
--- View: v_index_baseline
+-- View: v_index_daily
 --   Reconstructs daily index data via JOIN on (date, code)
 --   DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
-DROP VIEW IF EXISTS stats.v_index_baseline;
-CREATE OR REPLACE VIEW stats.v_index_baseline AS
+DROP VIEW IF EXISTS stats.v_index_daily;
+ALTER VIEW IF EXISTS stats.v_index_baseline RENAME TO v_index_daily; -- legacy name migration (2026-09)
+CREATE OR REPLACE VIEW stats.v_index_daily AS
 SELECT
     i.date,
     i.code,
@@ -260,16 +262,17 @@ LEFT JOIN stats.index_basic_stats bs ON i.date = bs.date AND i.code = bs.code
 LEFT JOIN stats.index_valuation v ON i.date = v.date AND i.code = v.code
 LEFT JOIN stats.index_tech_stats t ON i.date = t.date AND i.code = t.code;
 
-COMMENT ON VIEW stats.v_index_baseline IS 'Reconstructed index_baseline view: JOIN of index_identity + all index sub-tables.';
+COMMENT ON VIEW stats.v_index_daily IS 'Reconstructed index daily view: JOIN of index_identity + all index sub-tables.';
 
 -- ----------------------------------------------------------------------------
--- View: v_stock_baseline
+-- View: v_stock_daily
 --   Reconstructs stock daily data via JOIN on (date, code)
 --   Mirrors v_etf_margin structure (identity + basic_stats + tech_stats +
 --   liquidity_margin). DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
-DROP VIEW IF EXISTS stats.v_stock_baseline;
-CREATE OR REPLACE VIEW stats.v_stock_baseline AS
+DROP VIEW IF EXISTS stats.v_stock_daily;
+ALTER VIEW IF EXISTS stats.v_stock_baseline RENAME TO v_stock_daily; -- legacy name migration (2026-09)
+CREATE OR REPLACE VIEW stats.v_stock_daily AS
 SELECT
     i.date,
     i.code,
@@ -315,15 +318,16 @@ LEFT JOIN stats.stock_basic_stats b ON i.date = b.date AND i.code = b.code
 LEFT JOIN stats.stock_tech_stats t ON i.date = t.date AND i.code = t.code
 LEFT JOIN stats.stock_liquidity_margin lm ON i.date = lm.date AND i.code = lm.code;
 
-COMMENT ON VIEW stats.v_stock_baseline IS 'Reconstructed stock_baseline view: JOIN of stock_identity + stock_basic_stats + stock_tech_stats + stock_liquidity_margin. Mirrors v_etf_margin structure.';
+COMMENT ON VIEW stats.v_stock_daily IS 'Reconstructed stock daily view: JOIN of stock_identity + stock_basic_stats + stock_tech_stats + stock_liquidity_margin. Mirrors v_etf_margin structure.';
 
 -- ----------------------------------------------------------------------------
--- View: v_futures_baseline
---   Reconstructs futures baseline via JOIN on (date, code)
+-- View: v_futures_daily
+--   Reconstructs the futures daily view via JOIN on (date, code)
 --   DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
-DROP VIEW IF EXISTS stats.v_futures_baseline;
-CREATE OR REPLACE VIEW stats.v_futures_baseline AS
+DROP VIEW IF EXISTS stats.v_futures_daily;
+ALTER VIEW IF EXISTS stats.v_futures_baseline RENAME TO v_futures_daily; -- legacy name migration (2026-09)
+CREATE OR REPLACE VIEW stats.v_futures_daily AS
 SELECT
     i.date,
     i.code,
@@ -353,7 +357,7 @@ SELECT
 FROM stats.futures_identity i
 LEFT JOIN stats.futures_basic_stats b ON i.date = b.date AND i.code = b.code;
 
-COMMENT ON VIEW stats.v_futures_baseline IS 'Reconstructed futures_baseline view: JOIN of futures_identity + futures_basic_stats. Includes underlying_code/underlying_name for cross-asset mapping (e.g. IF→000300 for CSI300).';
+COMMENT ON VIEW stats.v_futures_daily IS 'Reconstructed futures daily view: JOIN of futures_identity + futures_basic_stats. Includes underlying_code/underlying_name for cross-asset mapping (e.g. IF→000300 for CSI300).';
 
 
 -- ============================================================================
@@ -361,12 +365,12 @@ COMMENT ON VIEW stats.v_futures_baseline IS 'Reconstructed futures_baseline view
 --  Using reconstructed views for backward compatibility
 -- ============================================================================
 
--- (A) Debt-baseline: filter by date range, sorted ascending
+-- (A) Debt daily: filter by date range, sorted ascending
 -- SELECT date, omo_rate, omo_quantity, repo_cumulative,
 --        outright_repo_marker, mlf_marker,
 --        shibor_o_n, shibor_1y,
 --        cb_1y, cb_10y, cb_30y
---   FROM stats.v_debt_baseline
+--   FROM stats.v_debt_daily
 --  WHERE date >= :start_date AND date <= :end_date
 --  ORDER BY date ASC;
 

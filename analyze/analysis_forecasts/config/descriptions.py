@@ -33,7 +33,7 @@ DESCRIPTION_RSI = (
     "snapshot keyed at the latest data date + the newest year-end "
     "while its 20d forward windows realize); --force "
     "deletes the sec_type's rows (mov_rsi "
-    "+ linked forecast_results) and recomputes every target month."
+    "+ linked forecast_results) and recomputes every target snapshot."
 )
 
 DESCRIPTION_STD = (
@@ -74,7 +74,7 @@ DESCRIPTION_STD = (
     "while its 20d forward windows may not have been complete at "
     "first write); --force "
     "deletes the sec_type's rows (mov_std + linked forecast_results) "
-    "and recomputes every target month."
+    "and recomputes every target snapshot."
 )
 
 DESCRIPTION_BASE_RATE = (
@@ -99,7 +99,7 @@ DESCRIPTION_BASE_RATE = (
     "scope (the rolling latest snapshot keyed at the latest data "
     "date + the newest year-end while its 20d forward windows "
     "realize); --force "
-    "deletes the sec_type's rows and recomputes every target month."
+    "deletes the sec_type's rows and recomputes every target snapshot."
 )
 
 DESCRIPTION_MARGIN_RATIO = (
@@ -162,7 +162,7 @@ DESCRIPTION_MOV_PAIRS = (
     "snapshot keyed at the latest data date + the newest year-end "
     "while its 20d forward windows realize); --force deletes the "
     "sec_type's rows (mov_pairs + linked forecast_results) and "
-    "recomputes every target month."
+    "recomputes every target snapshot."
 )
 
 DESCRIPTION_HIGH_LOW_STREAKS = (
@@ -199,7 +199,7 @@ DESCRIPTION_HIGH_LOW_STREAKS = (
     "snapshot keyed at the latest data date + the newest year-end "
     "while its 20d forward windows realize); --force deletes the sec_type's "
     "rows (high_low_streaks + linked forecast_results) and recomputes "
-    "every target month."
+    "every target snapshot."
 )
 
 DESCRIPTION_MOV_PAIRS_EMA = (
@@ -241,7 +241,7 @@ DESCRIPTION_MOV_PAIRS_EMA = (
     "snapshot keyed at the latest data date + the newest year-end "
     "while its 20d forward windows realize); --force deletes the "
     "sec_type's rows (mov_pairs_ema + linked forecast_results) and "
-    "recomputes every target month."
+    "recomputes every target snapshot."
 )
 
 DESCRIPTION_PE = (

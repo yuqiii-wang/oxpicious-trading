@@ -16,11 +16,15 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
-import { Alert, Box, Chip, Stack } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
+import { Alert, Box, Button, Chip, Stack } from "@mui/material";
+import { PieChart as PieChartIcon, Link as LinkIcon } from "@mui/icons-material";
+import ChartCard from "@/shared/components/ChartCard";
+import RefreshButton from "@/components/RefreshButton";
 import CompositionPieChart from "@/components/CompositionPieChart";
-import EChart from "@/components/EChart";
-import OhlcModeToggle from "@/components/OhlcModeToggle";
+import LinkedEtfsFeedersTable from "@/components/LinkedEtfsFeedersTable";
+import { invalidateCacheForPrefix, invalidateCacheForUrl } from "@/lib/api-client";
+import EChart from "@/shared/charts/EChart";
+import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
@@ -60,9 +64,7 @@ interface Props {
    *  to the shortest common time range. */
   defaultStartDate?: string;
   defaultEndDate?: string;
-  /** Optional callback fired when the user clicks any date on the chart.
-   *  Used by the PE & Dividend analysis page to highlight the matching
-   *  month-end row in the stats table. */
+  /** Optional callback fired when the user clicks any date on the chart. */
   onDateClick?: (date: string) => void;
 }
 
@@ -101,10 +103,6 @@ function buildOption(
   const ma60 = safeMa(closePct, 60);
   const ma120 = safeMa(closePct, 120);
 
-  // SZSE ETF trend CSVs report prices in 0.001元 (milliyuan); divide stored
-  // price-derived amounts by 1000 to obtain yuan.
-  const PRICE_SCALE = 1000;
-
   // Corporate-action event markers (dividends / splits) — markers only, no
   // text labels (full detail is shown in the axis tooltip). Gold diamond =
   // dividend, teal diamond = split/conversion. coord uses the date category.
@@ -126,8 +124,10 @@ function buildOption(
       const y = closePct[i];
       if (y != null && Number.isFinite(y)) {
         if (at === "dividend") {
-          const divStored = Math.abs(r.implied_dividend_per_share ?? 0);
-          const perShare = divStored / PRICE_SCALE;
+          // stats.etf_adjustment.implied_dividend_per_share is already in
+          // yuan (the ohlcv unit check enforces yuan close/prev_close), and
+          // ETF dividends are one-tick small (min 0.001 yuan) — 3 decimals.
+          const perShare = Math.abs(r.implied_dividend_per_share ?? 0);
           markPointData.push({
             name: "Dividend",
             coord: [r.date, y],
@@ -551,6 +551,30 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
   // Per-stock OHLC expansion open state — when true the card grows
   // further to fit the stock chart below the pie charts.
   const [stockOhlcOpen, setStockOhlcOpen] = useState(false);
+  // Linked feeder funds (ETF联接基金) table open state — lifted so the card
+  // grows to fit the expanded table (mirrors the composition panel pattern).
+  // The section now renders the unified index→ETF→feeder table scoped to
+  // this ETF's tracking index, with this ETF highlighted.
+  const [feedersOpen, setFeedersOpen] = useState(false);
+  // Shared button row (Composition + Linked Feeder ETFs): parent-owned
+  // refresh keys + loading spinners — both child panels run in hideButton
+  // mode and render only their content (same contract as IndexPanel).
+  const [compositionRefreshKey, setCompositionRefreshKey] = useState(0);
+  const [compositionLoading, setCompositionLoading] = useState(false);
+  const [feederRefreshKey, setFeederRefreshKey] = useState(0);
+  const [feederLoading, setFeederLoading] = useState(false);
+
+  const handleCompositionRefresh = () => {
+    invalidateCacheForUrl(`/api/sec-composition?code=${etf.code}`);
+    setCompositionRefreshKey((k) => k + 1);
+  };
+  const handleFeederRefresh = () => {
+    if (etf.index_code) {
+      invalidateCacheForUrl(`/api/sec-composition/linked-etfs?code=${etf.index_code}`);
+    }
+    invalidateCacheForPrefix("/api/sec-composition/linked-feeders");
+    setFeederRefreshKey((k) => k + 1);
+  };
 
   // Initial dataZoom window. When defaultStartDate/defaultEndDate are
   // provided (aligned to the shortest common time range across sibling
@@ -583,11 +607,12 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
     };
   }, [allRows, defaultStartDate, defaultEndDate]);
 
-  // Collapse the composition / stock-OHLC expansion panels when the data
-  // changes (e.g., ETF switch or page change).
+  // Collapse the composition / stock-OHLC / feeder-funds expansion panels
+  // when the data changes (e.g., ETF switch or page change).
   useEffect(() => {
     setCompositionOpen(false);
     setStockOhlcOpen(false);
+    setFeedersOpen(false);
   }, [etf.code, allRows.length, defaultStartDate, defaultEndDate]);
 
   const option = useMemo(
@@ -651,10 +676,14 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
 
   // Dynamic card height: expand when composition panel is open so the pie
   // chart fits inside the parent box; expand further when the per-stock
-  // OHLC expansion is open.
+  // OHLC expansion is open; expand when the feeder-ETFs table is open
+  // (combined with whichever composition state is active).
+  const feederTableGrow = feedersOpen ? 500 : 0;
   const cardHeight = compositionOpen
-    ? (stockOhlcOpen ? 1060 : 720)
-    : 360;
+    ? (stockOhlcOpen ? 1060 : 720) + feederTableGrow
+    : feedersOpen
+      ? 830
+      : 360;
 
   return (
     <ChartCard
@@ -681,11 +710,66 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
             if (date) onDateClick(date);
           } : undefined}
         />
+        {/* Shared button row — Composition and Linked Feeder Funds toggles
+         * sit on the same horizontal line (same pattern as IndexPanel's
+         * Composition + Linked-ETFs row). Both panels render only their
+         * content; the buttons + refresh spinners are owned here via
+         * hideButton + lifted refresh/loading state. */}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap" }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<PieChartIcon />}
+            onClick={() => setCompositionOpen(!compositionOpen)}
+            sx={{ fontSize: "0.7rem", textTransform: "none", mt: 0.5 }}
+          >
+            {compositionOpen ? "Hide Composition" : "Composition"}
+          </Button>
+          {compositionOpen && (
+            <RefreshButton
+              onClick={handleCompositionRefresh}
+              loading={compositionLoading}
+              size="tiny"
+              tooltip={`Refresh composition for ${etf.code}`}
+            />
+          )}
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<LinkIcon />}
+            onClick={() => setFeedersOpen(!feedersOpen)}
+            sx={{ fontSize: "0.7rem", textTransform: "none", mt: 0.5 }}
+          >
+            {feedersOpen ? "Hide Index → ETF → Feeder Fund" : "Index → ETF → Feeder Fund"}
+          </Button>
+          {feedersOpen && (
+            <RefreshButton
+              onClick={handleFeederRefresh}
+              loading={feederLoading}
+              size="tiny"
+              tooltip={`Refresh the tracking index → ETF → feeder fund chain for ${etf.code}`}
+            />
+          )}
+        </Box>
+
         <CompositionPieChart
           code={etf.code}
           open={compositionOpen}
           onToggle={() => setCompositionOpen(!compositionOpen)}
           onStockOhlcOpenChange={setStockOhlcOpen}
+          hideButton
+          refreshKey={compositionRefreshKey}
+          onLoadingChange={setCompositionLoading}
+        />
+
+        <LinkedEtfsFeedersTable
+          code={etf.index_code}
+          focusCode={etf.code}
+          open={feedersOpen}
+          onToggle={() => setFeedersOpen(!feedersOpen)}
+          hideButton
+          refreshKey={feederRefreshKey}
+          onLoadingChange={setFeederLoading}
         />
         {allRows.length < 40 && (
           <Alert severity="info" sx={{ mt: 0.5, py: 0.25 }} icon={false}>

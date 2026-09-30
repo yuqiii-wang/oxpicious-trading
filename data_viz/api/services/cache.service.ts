@@ -4,7 +4,7 @@
  * data is stale (DB has newer rows than what the UI currently holds).
  *
  * A single round-trip fetches MAX(date) for all 6 sources:
- *   debt, etf_margin, index_baseline, options, sec_composition, stock_baseline
+ *   debt, etf_margin, index_daily, options, sec_composition, stock_daily
  */
 import { queryRows, formatDate } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
@@ -13,10 +13,10 @@ import type { LatestDatesResponse } from "../../shared/types.js";
 interface DbLatestDatesRow extends QueryResultRow {
   debt: Date | string | null;
   etf_margin: Date | string | null;
-  index_baseline: Date | string | null;
+  index_daily: Date | string | null;
   options: Date | string | null;
   sec_composition: Date | string | null;
-  stock_baseline: Date | string | null;
+  stock_daily: Date | string | null;
   intraday_movements: Date | string | null;
 }
 
@@ -25,14 +25,19 @@ interface DbLatestDatesRow extends QueryResultRow {
  * Returns "" for any source that is empty or has no rows.
  */
 export async function getLatestDates(): Promise<LatestDatesResponse> {
+  // MAX(date) is taken from each family's IDENTITY table, not the
+  // reconstructed *_daily views: every one of those views is a LEFT-JOIN
+  // fan-out whose date column comes from the identity table anyway, so
+  // this is row-for-row the same MAX at a fraction of the cost (the view
+  // variant joined+sorted ~30M rows across families, ~1.8s per probe).
   const sql = `
     SELECT
-      (SELECT MAX(date)          FROM stats.v_debt_baseline)  AS debt,
-      (SELECT MAX(date)          FROM stats.v_etf_margin)     AS etf_margin,
-      (SELECT MAX(date)          FROM stats.v_index_baseline) AS index_baseline,
-      (SELECT MAX(date)          FROM stats.v_options_quote)  AS options,
+      (SELECT MAX(date)          FROM stats.debt_identity)    AS debt,
+      (SELECT MAX(date)          FROM stats.etf_identity)     AS etf_margin,
+      (SELECT MAX(date)          FROM stats.index_identity)   AS index_daily,
+      (SELECT MAX(date)          FROM stats.options_identity) AS options,
       (SELECT MAX(snapshot_date) FROM stats.sec_composition)  AS sec_composition,
-      (SELECT MAX(date)          FROM stats.v_stock_baseline) AS stock_baseline,
+      (SELECT MAX(date)          FROM stats.stock_identity)   AS stock_daily,
       (SELECT MAX(date) FROM stats.index_intraday_5min WHERE close IS NOT NULL) AS intraday_movements
   `;
   const rows = await queryRows<DbLatestDatesRow>(sql);
@@ -40,10 +45,10 @@ export async function getLatestDates(): Promise<LatestDatesResponse> {
   return {
     debt:           formatDate(r?.debt),
     etf_margin:     formatDate(r?.etf_margin),
-    index_baseline: formatDate(r?.index_baseline),
+    index_daily: formatDate(r?.index_daily),
     options:        formatDate(r?.options),
     sec_composition: formatDate(r?.sec_composition),
-    stock_baseline: formatDate(r?.stock_baseline),
+    stock_daily: formatDate(r?.stock_daily),
     intraday_movements: formatDate(r?.intraday_movements),
   };
 }

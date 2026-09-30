@@ -14,6 +14,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--limit", type=int, default=None, help="Dev: first N files only")
     ap.add_argument("--code", default=None,
                     help="Filter to a single stock code (e.g. 000001.SZ) for testing")
+    ap.add_argument("--analyze", action="store_true",
+                    help="ANALYZE the stock tables after the write passes — "
+                         "refreshes planner statistics that bulk writes leave "
+                         "stale (opt-in: the refresh costs ~1min on the full "
+                         "tables; run it after a --force rebuild so the UI's "
+                         "prepared-statement reads keep their index plans)")
     add_common_build_args(ap)
     return ap.parse_args()
 

@@ -32,7 +32,6 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from downloads._common import strip_exchange_suffix
 from _common.db_commons import get_db_connection
 
 # ---------------------------------------------------------------------------
@@ -46,13 +45,6 @@ with _CLASSIFICATION_JSON.open("r", encoding="utf-8") as _f:
     _CLASSIFICATION = _json.load(_f)
 
 _CATALOG = _CLASSIFICATION.get("catalog", {})
-_ETFS_JSON = _CLASSIFICATION.get("etfs", {})
-
-# Build bare-code → {sector_id, industry_id, name} lookup from the JSON etfs section.
-_BARE_CODE_TO_ETF: dict = {}
-for _full_code, _info in _ETFS_JSON.items():
-    _bare = _full_code.rsplit(".", 1)[0] if "." in _full_code else _full_code
-    _BARE_CODE_TO_ETF[_bare] = _info
 
 # Build industry_id → (sector_id, sector_label, industry_id, industry_label, slug) lookup
 # and industry_id → [keywords] lookup from the catalog + build_classification.INDEX_RULES.
@@ -99,19 +91,12 @@ ETF_THEMES["OTHER"] = {
 
 
 def classify_etf(code: str, name: str = ""):
-    """Classify an ETF by code (JSON lookup) with keyword fallback by name.
+    """Classify an ETF by name keywords (the legacy JSON code-lookup section
+    is retired — classification lives in stats.sec_classification now).
 
     Returns (theme_id, theme_label, slug) — same tuple shape as the former
     _classification.classify_etf for backward compatibility.
     """
-    info = _BARE_CODE_TO_ETF.get(code)
-    if info is not None:
-        iid = info.get("industry_id", "OTHER")
-        lookup = _INDUSTRY_LOOKUP.get(iid)
-        if lookup:
-            _, _, _, label, slug = lookup
-            return (iid, label, slug)
-    # Fallback: keyword matching using INDEX_RULES keywords.
     s = str(name or "")
     if not s:
         return ("OTHER", "其他｜未分类  Unclassified", "other")
@@ -220,11 +205,14 @@ def load_combined():
         sys.exit(1)
 
     df = pd.DataFrame(rows, columns=col_names)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    # Clean-data fast path — to_datetime(errors="coerce") on a Series is a
+    # cudf fallback per call (non-scalar arg); DB dates are clean anyway.
+    try:
+        df["date"] = pd.to_datetime(df["date"])
+    except (ValueError, TypeError):
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values(["code", "date"]).reset_index(drop=True)
-    # etf_identity.code is stored WITH exchange suffix (e.g. "159530.SZ");
-    # strip it so downstream code sees bare 6-digit codes.
-    df["code"] = df["code"].astype(str).apply(strip_exchange_suffix)
+    # etf_identity.code is stored BARE (2026-09-30) — no suffix surgery.
     _combined_cache = df
     logger.info(f"    → {len(df):,} rows · {df['code'].nunique()} ETFs · "
           f"{df['date'].min().date()} → {df['date'].max().date()}")

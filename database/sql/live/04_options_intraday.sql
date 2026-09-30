@@ -65,10 +65,15 @@ CREATE TABLE IF NOT EXISTS live.options_intraday_oi (
     created_at         TIMESTAMP     NOT NULL DEFAULT NOW(),  -- row insertion time
 
     CONSTRAINT pk_options_intraday_oi PRIMARY KEY (contract_code, date, time),
-    CONSTRAINT chk_options_intraday_oi_exchange CHECK (exchange IN ('SSE', 'SZSE', 'CFFEX')),
-    CONSTRAINT fk_options_intraday_oi_identity FOREIGN KEY (contract_code, date)
-        REFERENCES stats.options_identity (contract_code, date)
+    CONSTRAINT chk_options_intraday_oi_exchange CHECK (exchange IN ('SSE', 'SZSE', 'CFFEX'))
 ) PARTITION BY HASH (contract_code);
+
+-- Idempotent migration: no FK to options_identity on the streamer-owned
+-- OI store — see stats/02_etf_margin.sql (TRUNCATE CASCADE collateral
+-- hazard; builds.options --force truncates options_identity while this
+-- rolling store is pruned by live.options_intraday_skewness).
+ALTER TABLE live.options_intraday_oi
+    DROP CONSTRAINT IF EXISTS fk_options_intraday_oi_identity;
 
 SELECT public.create_hash_partitions('live', 'options_intraday_oi', 8);
 

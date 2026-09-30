@@ -563,9 +563,9 @@ def convert_md_to_csv(md_path: Path, csv_path: Optional[Path] = None) -> bool:
     for h in rec["holdings"]:
         rows.append({
             "trade_date": rec["trade_date"],
-            # Canonical suffixed code ("NNNNNN.SZ") so builds read the whole
-            # code without any suffix surgery.
-            "etf_code": add_exchange_suffix(rec["etf_code"], "深圳"),
+            # BARE 6-digit ETF code (2026-09-30 convention — stock_code
+            # keeps its exchange suffix).
+            "etf_code": rec["etf_code"],
             "etf_name": rec["etf_name"],
             "fund_type": rec["fund_type"],
             "target_index": rec["target_index"],
@@ -629,7 +629,7 @@ def build_composition_csv(md_dir: Path, output_dir: Optional[Path] = None) -> Di
             for h in rec["holdings"]:
                 long_rows.append({
                     "trade_date": rec["trade_date"],
-                    "etf_code": add_exchange_suffix(rec["etf_code"], "深圳"),
+                    "etf_code": rec["etf_code"],
                     "etf_name": rec["etf_name"],
                     "fund_type": rec["fund_type"],
                     "target_index": rec["target_index"],

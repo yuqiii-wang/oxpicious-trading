@@ -80,23 +80,6 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
---  Retired family: analysis_forecasts.mov_gap (former 03_mov_gap.sql).
---  Purge the linked result + registry rows FIRST (the result delete
---  resolves (sec_type, bucket) through the registry), then DROP the
---  table with its 16 hash partitions (CASCADE, like the retired
---  analysis_signals.signals).
--- ----------------------------------------------------------------------------
-
-DELETE FROM analysis_forecasts.forecast_results f
-USING analysis_forecasts.forecast_identities i
-WHERE i.forecast_id = f.forecast_id AND i.bucket = 'mov_gap';
-
-DELETE FROM analysis_forecasts.forecast_identities
-WHERE bucket = 'mov_gap';
-
-DROP TABLE IF EXISTS analysis_forecasts.mov_gap CASCADE;
-
--- ----------------------------------------------------------------------------
 --  Table: analysis_forecasts.mov_rsi
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis_forecasts.mov_rsi (

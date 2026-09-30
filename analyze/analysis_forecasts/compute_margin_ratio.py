@@ -118,7 +118,7 @@ class _MarginRatioEngine(WideDfEngine):
 def compute_margin_ratio_results(
     *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_date, margin_ratio_state bucket rows) per month."""
+    """Yield (stat_date, margin_ratio_state bucket rows) per snapshot."""
     engine = _MarginRatioEngine(
         df=df,
         first_dates=first_dates,

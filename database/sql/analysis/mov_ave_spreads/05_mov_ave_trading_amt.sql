@@ -103,7 +103,7 @@ SELECT public.create_hash_partitions('analysis', 'mov_ave_trading_amt', 16);
 
 COMMENT ON TABLE  analysis.mov_ave_trading_amt              IS 'Trading-amount analysis (WIDE format): one row per (code, sec_type, date) with 5 trading-amount MA columns + 5 trading-amount Bollinger band σ columns (rolling population std of trading_amt_maW over W days) + 5 market-share MA columns + 6 slope columns (raw trading_amt_slope + 5 fractional MA slopes) + 5 market-share-vs-MA gap columns. sec_type ∈ {etf, index, stock}. Liquidity-impact ratio columns live in the companion table analysis.mov_ave_trading_amt_ratios.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt.code         IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.date         IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma5    IS '5-trading-day moving average of trading_amount (yuan) per (sec_type, code). NUMERIC(24,4). NULL until 5 rows. NULL trading_amount values are treated as 0 (zero turnover) in the rolling sum but still counted in the W-row denominator.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma20   IS '20-trading-day moving average of trading_amount (yuan). NULL until 20 rows.';

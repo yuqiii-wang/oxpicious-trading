@@ -1,21 +1,21 @@
 ﻿import { fetchJson } from "./_cache";
 import type {
-  DebtBaselineResponse,
+  DebtDailyResponse,
   PbocOmaResponse,
 } from "@shared/types";
 
-export function fetchDebtBaseline(
+export function fetchDebtDaily(
   startDate?: string | null,
   endDate?: string | null,
-): Promise<DebtBaselineResponse> {
+): Promise<DebtDailyResponse> {
   const params = new URLSearchParams();
   if (startDate) params.set("start_date", startDate);
   if (endDate) params.set("end_date", endDate);
   const qs = params.toString();
-  return fetchJson<DebtBaselineResponse>(`/api/debt-baseline${qs ? `?${qs}` : ""}`);
+  return fetchJson<DebtDailyResponse>(`/api/debt${qs ? `?${qs}` : ""}`);
 }
 
 /** PBoC Open Market Announcements — small dataset, no date filter (TTL-only cache). */
 export function fetchPbocOmaAnnouncements(): Promise<PbocOmaResponse> {
-  return fetchJson<PbocOmaResponse>(`/api/debt-baseline/oma`);
+  return fetchJson<PbocOmaResponse>(`/api/debt/oma`);
 }

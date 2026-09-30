@@ -64,7 +64,7 @@ export const SEC_ALLOC_LIVE_LIVE_TAG = "sec-alloc-live:live";
  *           (tag …:ref:dl) — TARGETED CSV refresh: codes whose local
  *           CSVs already contain the prev trading day are skipped
  *           entirely; only laggards fetch the 1m window.
- *        2. builds.index.baseline --refresh-estimated-days 10 (tag
+ *        2. builds.index.daily --refresh-estimated-days 10 (tag
  *           …:ref:base) — rebuild recent ESTIMATED daily rows from the
  *           fresh CSVs so prev-day OHLC is real.
  *        3. live.sec_alloc_live_attribution --mode ref

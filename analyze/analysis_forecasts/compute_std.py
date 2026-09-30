@@ -1,7 +1,7 @@
 """Bollinger-breach annual-snapshot aggregation (analysis_forecasts) — sparse
 tensor engine.
 
-For each stat month's trailing 5-year window [lo, hi) of the (T, C) wide
+For each snapshot's trailing 5-year window [lo, hi) of the (T, C) wide
 grid, each MA window W and each sigma multiple k:
 
   upper breach: price > ma_{W} + k·std_{W}days

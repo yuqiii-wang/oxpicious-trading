@@ -22,8 +22,10 @@ def apply_split_adjustment(
 
     Detects corp-action events by comparing raw close-to-close returns
     against the SZSE/SSE-published pct_change. Dividend-like events
-    (small factor deviation) produce implied_dividend_per_share; larger
-    deviations are split/conversion events.
+    (small factor deviation AND a reference-price DROP vs the last
+    close) produce implied_dividend_per_share; larger deviations and
+    reference-price raises (share consolidation/conversion) are
+    split/conversion events.
 
     Adds columns: cum_split_factor, is_split_event_day, action_type,
     implied_dividend_per_share, cum_dividend_per_share,
@@ -92,8 +94,6 @@ def apply_split_adjustment(
     DIV_FACTOR_TOL = 0.15
     evt_mask = is_split.astype(bool)
     abs_dev = np.abs(daily_factors - 1.0)
-    is_div_like = evt_mask & (abs_dev < DIV_FACTOR_TOL)
-    is_split_like = evt_mask & ~is_div_like
 
     prev_close_arr = np.asarray(df["prev_close"], dtype="float64")
     D_from_szse = np.where(
@@ -101,6 +101,15 @@ def apply_split_adjustment(
         close_prevs - prev_close_arr,
         0.0,
     )
+    # A cash dividend LOWERS the ex-day reference price, so D is strictly
+    # positive. A negative deviation — published prev_close ABOVE the last
+    # close — is a reference-price raise (fund share consolidation /
+    # conversion), never a dividend: classify it split_or_conv so the
+    # negative amount never enters implied/cum dividend sums (which would
+    # poison trailing-12m yield math downstream).
+    is_div_like = evt_mask & (abs_dev < DIV_FACTOR_TOL) & (D_from_szse > 0)
+    is_split_like = evt_mask & ~is_div_like
+
     df["implied_dividend_per_share"] = np.where(is_div_like, np.round(D_from_szse, 6), 0.0)
 
     df["cum_dividend_per_share"] = df.groupby("code", sort=False)["implied_dividend_per_share"].cumsum().round(6)

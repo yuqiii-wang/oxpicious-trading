@@ -32,4 +32,6 @@ For DB changes, always implement sql unless explcitly told not to, and bridge to
 
 For new feature change, if test is required, add `--sec-type index` in python execution so that only index is used; if margin is involved, use `--sec-type etf` in python execution; unless full data rebuild is required.
 
+To do study in analysis and strategy, only check by industries and indices (no etf and stocks unless explicitly said), only these 10 indices (000001, 931743, 931160, 931071, 000015, 930708, 931994, 931594, 000683, 000991), and only write the 10 indices to DB table, unless otherwise explicitly instructed then run all indices.
+
 Be constrained from using for loop and if/else conds in python code and dataframe operations, but try to implement pandas native vectorization methods.

@@ -1,7 +1,7 @@
 -- ============================================================================
 --  Index Extensions - supplementary per-(date, index) metrics
 --  Table: index_exts
---    Extends the index baseline tables with derived metrics that are not part
+--    Extends the index daily tables with derived metrics that are not part
 --    of the raw CSIndex/SZSE daily OHLCV feed. Currently stores:
 --      etf_num         = number of ETFs tracking this index on this date
 --                        (identified via stats.sec_classification.

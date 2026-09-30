@@ -4,7 +4,8 @@ Reads SZSE archive/trend + SSE trend canonical CSVs and returns a long
 DataFrame with raw OHLCV + trading volume/amount (converted to shares/yuan).
 
 Source CSVs carry the canonical code schema written by downloads
-(证券代码 = "NNNNNN.XX" + exchange/board/sec_type columns — see
+(证券代码 = bare "NNNNNN" for ETF rows + exchange/board/sec_type
+(columns — legacy files carry "NNNNNN.XX"; stripped on read — see
 downloads._common.ensure_canonical_csv), so per-file work is minimal
 (read + sec_type filter + date tag); all row-level transforms run once on
 the concatenated frame using vectorized ops only. Numeric columns come back
@@ -66,9 +67,9 @@ def _scan_ohlcv_dir(scan_dir, file_prefix, volume_col, files=None, code=None):
 
     volume_col is the source volume column name ("成交量（万份）" for SZSE
     ETF exports, "成交量(万股)" for SSE); it is renamed to ``volume_wan``.
-    When *code* is set (canonical "NNNNNN.SZ/.SS"), each CSV is
-    byte-prefiltered to that code's lines BEFORE parsing so --code builds
-    never parse whole-market snapshots.
+    When *code* is set (bare "NNNNNN"), each CSV is byte-prefiltered to
+    that code's lines BEFORE parsing so --code builds never parse
+    whole-market snapshots.
     """
     if files is None:
         files = sorted(glob.glob(os.path.join(scan_dir, f"{file_prefix}*.csv")))
@@ -97,11 +98,13 @@ def _scan_ohlcv_dir(scan_dir, file_prefix, volume_col, files=None, code=None):
         if "sec_type" not in safe_columns(df):
             n_empty += 1
             continue
-        # canonical CSV: sec_type == "etf" by plain column equality;
-        # 证券代码 already carries the .SS/.SZ suffix. When *code* is set,
-        # apply the exact equality filter too — the byte prefilter is a
-        # deliberate superset (substring match).
-        df = df[df["sec_type"] == "etf"]
+        # canonical CSV: sec_type == "etf" by plain column equality. ETF
+        # codes are BARE (2026-09-30) — LEGACY canonical CSVs still carry
+        # the .SS/.SZ suffix, so strip on read; when *code* is set (bare),
+        # apply the exact equality filter after the strip — the byte
+        # prefilter is a deliberate superset (substring match).
+        df = df[df["sec_type"] == "etf"].copy()
+        df["证券代码"] = df["证券代码"].astype(str).str.split(".").str[0]
         if code is not None:
             df = df[df["证券代码"] == code]
         if len(df) == 0:
@@ -122,7 +125,7 @@ def build_ohlcv_df(verbose=True, ohlcv_files=None, code=None):
                      files are read (incremental mode — caller already filtered
                      to missing dates via DB query). If None, glob all files
                      in the source directories (--force mode).
-        code: optional single-ETF filter (canonical "NNNNNN.SZ"/".SS") —
+        code: optional single-ETF filter (bare "NNNNNN") —
               enables byte-prefiltered reads (see read_csv_preferred).
 
     Split adjustment and MA computation require the full per-code chronological
@@ -209,6 +212,6 @@ def build_ohlcv_df(verbose=True, ohlcv_files=None, code=None):
         d1 = str(host_array(out["date"].max()).astype("datetime64[D]"))
         logger.info(f"    [OHLCV] final rows: {len(out):,}  "
               f"unique codes: {out['code'].nunique()}  "
-              f"SZSE (.SZ): {n_szse:,}  SSE (.SS): {n_sse:,}  "
+              f"SZSE: {n_szse:,}  SSE: {n_sse:,}  "
               f"date range: {d0} → {d1}")
     return out

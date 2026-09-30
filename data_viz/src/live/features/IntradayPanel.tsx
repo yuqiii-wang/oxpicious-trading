@@ -12,16 +12,16 @@
  *
  * When `showComposition` is true, a Composition button + CompositionPieChart
  * are rendered below the intraday chart — same shared component used by the
- * Index Baseline and ETF + Margin pages.
+ * Index and ETF pages.
  */
 import React, { useMemo, useRef, useState } from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { Box, Button, Stack } from "@mui/material";
 import { PieChart as PieChartIcon } from "@mui/icons-material";
-import ChartCard from "@/components/ChartCard";
+import ChartCard from "@/shared/components/ChartCard";
 import CompositionPieChart from "@/components/CompositionPieChart";
-import EChart from "@/components/EChart";
-import OhlcModeToggle from "@/components/OhlcModeToggle";
+import EChart from "@/shared/charts/EChart";
+import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import RefreshButton from "@/components/RefreshButton";
 import { fmtNum } from "@/lib/series";
 import {

@@ -22,13 +22,21 @@ def add_code_arg(parser: argparse.ArgumentParser) -> None:
 
 def normalize_code(code: str | None) -> str | None:
     """Normalize --code: strip whitespace and append an exchange suffix to
-    bare 6-digit codes (inferred from the leading digit).
+    bare 6-digit STOCK codes (inferred from the leading digit).
+
+    ETF/fund codes (leading "5" — SSE 5x fund families incl. OTC 519xxx;
+    "15"/"16"/"18" — SZSE fund families) are BARE: returned unchanged,
+    any suffix stripped (2026-09-30 convention — ETF/fund codes carry no
+    exchange suffix; stocks keep theirs).
 
     Options codes (e.g. 10008657) are 8+ digits and are returned unchanged.
     """
     if not code:
         return None
     c = code.strip()
+    base = c.partition(".")[0]
+    if base.startswith(("5", "15", "16", "18")):
+        return base
     if "." not in c:
         if c.startswith("6"):
             c += ".SS"

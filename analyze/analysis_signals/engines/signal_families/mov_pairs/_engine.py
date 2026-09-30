@@ -22,11 +22,11 @@ day's FAST leg (ma5 / ema6 / the close) — the live tier's "cross"
 value space; the stored spread survives only as the strategy's params
 context (the excess IS fast − slow).
 
-The sub_type encodes fast leg + slow window (pair{W} = ma5 /
-emapair{W} = ema6 / pxpair{W} = the close-price MA leg / pxemapair{W} =
-the close-price EMA leg — the live tier's spread-key parsing reads the
-leading letters + the window), so each (fast leg, window, side) is its
-own strategy.
+The sub_type encodes fast leg + slow window (mapair{W} = ma5 /
+emapair{W} = ema6 / pxmapair{W} = the close-price MA leg / pxemapair{W}
+= the close-price EMA leg — the live tier's spread-key parsing reads
+the leading letters + the window), so each (fast leg, window, side) is
+its own strategy.
 
 The wide spread-value frame (one ``{prefix}_{W}`` column per fast leg ×
 window, plus the absolute leg levels ``close`` / ``ma5`` / ``ema6`` /
@@ -70,9 +70,13 @@ logger = logging.getLogger(__name__)
 _IDENTITY_DESCRIPTION = (
     "{family} signal strategies over analysis_forecasts: the pair-cross "
     "buckets ({label}) whose MIXED forecast row passes the plain gate "
-    "(sign-aligned blended mean reversal > 0.75%) "
-    "AND the final SignalQuality gate (breach coherence and sign-"
-    "aligned per-period forward means on every quality period, plus "
+    "(sign-aligned blended mean reversal > 0.75%) at the robustness "
+    "floors (per-side sample floor: 4 buys / 3 sells; one-day events "
+    "have no "
+    "persistence axis, so no ladder-stability leg) "
+    "AND the final claim-profile SignalQuality gate (breach coherence "
+    "and sign-aligned 5d forward-mean alignment — cross events carry "
+    "no slow claim — plus "
     "the 0.75 risk cap as ONE weight-blended verdict over 5d/20d — "
     "bar 0.50, the 5d bar carries the decision), one strategy per "
     "bucket over its forecast period + the strategy's trigger days "
@@ -94,6 +98,12 @@ class _PairsEngineBase(SignalEngine):
     bucket_keys = ("code", "fast_leg", "pair_window", "side",
                    "regime_state")
 
+    # One-day cross events: no persistence axis (the ladder-stability
+    # floor does not apply) and no slow claim (the gate holds the
+    # family to the 5d alignment only).
+    streak_signals = False
+    slow_claim = None
+
     # fast_leg → the sub_type's literal prefix ("pair" / "pxpair" ...)
     # and the spread-column stem for the reason string.
     sub_type_prefixes: dict[str, str]
@@ -106,10 +116,12 @@ class _PairsEngineBase(SignalEngine):
 
     async def fetch_buckets(
         self, conn, sec_type: str, stat_date: date,
+        population: str | None = None,
+        codes: list[str] | None = None,
     ) -> pd.DataFrame:
         return await fetch_mov_pairs_buckets(
             conn, sec_type, stat_date, self.signal_type,
-            PAIRS_SIGNAL_WINDOW_MIN, PAIRS_SIGNAL_SIDES,
+            PAIRS_SIGNAL_WINDOW_MIN, PAIRS_SIGNAL_SIDES, codes,
         )
 
     async def fetch_values(
@@ -126,6 +138,7 @@ class _PairsEngineBase(SignalEngine):
         passing: pd.DataFrame,
         snap_trig: pd.DataFrame,
         values: pd.DataFrame,
+        population: str | None = None,
     ) -> tuple[list[dict], list[dict]]:
         # No value points (no strategies passed the gates) → no merge
         # material at all (the empty values frame carries object-dtype
@@ -159,13 +172,13 @@ class _PairsEngineBase(SignalEngine):
 
 class MovPairsEngine(_PairsEngineBase):
     """mov_pairs: MA cross (golden / death cross) strategies — fast
-    legs ma5 (pair{W}) and the close price (pxpair{W})."""
+    legs ma5 (mapair{W}) and the close price (pxmapair{W})."""
 
     signal_type = "mov_pairs"
     bucket = "mov_pairs"
     stage_key = "pairs"
     identity_name = "signals_mov_pairs"
-    sub_type_prefixes = {"ma5": "pair", "price": "pxpair"}
+    sub_type_prefixes = {"ma5": "mapair", "price": "pxmapair"}
     spread_labels = {"ma5": "ma5_vs_ma", "price": "price_vs_ma"}
     legs = (("ma5", "pair"), ("price", "px_pair"))
     windows = MOV_PAIRS_WINDOWS

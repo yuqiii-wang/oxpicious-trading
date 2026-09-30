@@ -44,7 +44,13 @@
  *     — mean / max / min forward endpoint changes (ranges, percent
  *     points), close (range, raw price units — the horizon's mean
  *     PERIOD-END close, 5d/20d only), std (range, percent points),
- *     days (range, raw).
+ *     days (range, raw); Improv (mov_rsi only — the derived child's
+ *     sign-aligned improvement over its parent at the selected
+ *     horizon: the child's delay-0 mean minus the parent's, top → − /
+ *     bottom → + so positive always reads "the derived subset beats
+ *     the plain bucket"; shown on the selection / boost children's OWN
+ *     rows separately — parent (none) rows show the muted dash; hover
+ *     for the child's trigger-day count).
  *     The group follows the toolbar's horizon toggle;
  *   • signal (standalone, last) — the registered strategy's OWN action
  *     (the SHARED outlined buy/sell chip — SignalActionChip, the same
@@ -57,7 +63,13 @@
  *     the expected favorable move; the higher, the more solid the
  *     chip); hover for the exact value; muted dot when the bucket
  *     never registered (ticks
- *     filter buy/sell/none).
+ *     filter buy/sell/none). The mov_rsi ohlcv CHILD cohorts (boost /
+ *     selection) gate and register independently too (02_is_active
+ *     keeps them out of the live tier only): a registered child wears
+ *     ITS OWN cohort chip at its own confidence — the same shared
+ *     ramp, so chip strength stays monotone in confidence across
+ *     populations; a never-registered child keeps the darker-hue
+ *     population marker chip, hover for the cohort's description.
  *
  * The snapshot filter doubles as the snapshot selector: all available
  * stat_dates (annual grid — year-ends) arrive in one fetch and the
@@ -86,7 +98,7 @@
  * (forecast_results.trigger_dates) to mark them on the trend chart
  * above; the clicked row stays tinted (selectedRowKey).
  */
-import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Alert,
   Box,
@@ -95,10 +107,11 @@ import {
   ToggleButtonGroup,
   Tooltip,
   Typography,
+  useTheme,
 } from "@mui/material";
 import { UP_COLOR, DOWN_COLOR, TRIGGER_DATE_COLOR } from "@/theme/chart-palette";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
-import { SignalActionChip } from "@/shared/components/signal-action";
+import { SignalActionChip, actionDarkColor } from "@/shared/components/signal-action";
 
 /** Regime ticks-menu item — the regime's colored dot (the shared
  *  regimeBands palette: hot purple / panic red / quiet blue / calm grey,
@@ -116,10 +129,11 @@ function regimeTickItem(v: string): ReactNode {
     </Box>
   );
 }
-import { fetchAnalysisForecast } from "@/lib/api-client";
+import { fetchAnalysisForecast, fetchForecastLadders } from "@/lib/api-client";
 import ExpandedTable, { type ExpandedTableColumn } from "@/shared/components/ExpandedTable";
 import type {
   ForecastKind,
+  ForecastLadderEntry,
   ForecastPeriod,
   ForecastResponse,
   HighLowStreaksForecastRow,
@@ -163,26 +177,64 @@ function ChangeCell({ v }: { v: number | null }) {
  *  the expected favorable blended move, fraction → bp on the chip's
  *  1–100 ramp) driving the border/text intensity. Tooltip carries the
  *  exact expected move. Muted dash when the bucket never registered as
- *  a signal strategy. */
+ *  a signal strategy.
+ *
+ *  ONE chip path for every cohort (the 2026-09-28 separate-cohort
+ *  registration): the mov_rsi ohlcv children (boost / selection) gate,
+ *  register and rank INDEPENDENTLY — is_active=false keeps them out of
+ *  the live tier only — and the API joins each row to its OWN cohort's
+ *  strategy, so a registered child wears the SAME chip at ITS OWN
+ *  confidence and strength stays monotone in confidence across parent
+ *  and child chips (a fixed darker hue would render a higher-confidence
+ *  boost weaker than its parent). A child that never registered keeps
+ *  the darker-hue population marker chip (actionDarkColor — identity,
+ *  not strength). Hover for the exact expected move / the child
+ *  population's description. */
 function SignalActionCell({ r }: { r: ForecastRow }) {
+  const theme = useTheme();
   const action = r.signal_action;
-  if (action == null) {
-    return <Typography component="span" variant="inherit" color="text.disabled">·</Typography>;
-  }
-  const conf = r.signal_confidence;
+  const m = r as MovRsiForecastRow;
+  const isChild = m.ohlcv_type != null;
+  const popAction: "buy" | "sell" = m.side === "top" ? "sell" : "buy";
+  const popLabel = m.ohlcv_type === "ohlcv_selection" ? "selection" : "boost";
+  const popInfo =
+    m.ohlcv_type === "ohlcv_selection"
+      ? "ohlcv selection child — the strict score-positive subset of the same bottom-side population (day-0 ohlcv score >= 0 bp)"
+      : m.ohlcv_type === "ohlcv_boost"
+        ? "ohlcv boost child — the parent's same trigger days, each streak weighted by its day-0 ohlcv score (bottom: pattern + vol cell + RSI depth; top: pattern-only)"
+        : null;
   return (
     <Tooltip
-      title={conf == null ? action : `${action} · expected move ${(conf * 100).toFixed(2)}%`}
+      title={
+        popInfo != null
+          ? action == null
+            ? `${popLabel} ${popAction} · ${popInfo}`
+            : `${action}${confPart(r)} · ${popInfo}`
+          : action == null ? action : `${action}${confPart(r)}`
+      }
       arrow
     >
-      <Box component="span" sx={{ display: "inline-flex", verticalAlign: "middle" }}>
-        <SignalActionChip
-          action={action}
-          confidence={conf == null ? null : conf * 10000}
-        />
+      <Box component="span" sx={{ display: "inline-flex", verticalAlign: "middle", whiteSpace: "nowrap" }}>
+        {action != null
+          ? <SignalActionChip
+              action={action}
+              confidence={r.signal_confidence == null ? null : r.signal_confidence * 10000}
+            />
+          : isChild
+            ? <SignalActionChip action={popAction} color={actionDarkColor(popAction, theme)} />
+            : <Typography component="span" variant="inherit" color="text.disabled">·</Typography>}
       </Box>
     </Tooltip>
   );
+}
+
+/** The chip tooltip's confidence part (" · expected move X%") — empty
+ *  when the action is present but carries no confidence. */
+function confPart(r: ForecastRow): string {
+  const conf = r.signal_confidence;
+  return conf == null || r.signal_action == null
+    ? ""
+    : ` · expected move ${(conf * 100).toFixed(2)}%`;
 }
 
 /** The delay ladder's header info-mark description — what a rung is, the
@@ -799,6 +851,10 @@ interface Props {
 
 function ForecastTableImpl({ code, secType, kind, horizon, onHorizonChange, onRowClick, selectedRowKey, focusStatDate = null, frozen = false }: Props) {
   const [data, setData] = useState<ForecastResponse | null>(null);
+  // The delay ladders — the SECOND half of the split response (fetched
+  // in parallel with the base rows; null while in flight, when the
+  // ladder column falls back to the identities' mean trigger delay).
+  const [ladders, setLadders] = useState<Map<number, ForecastLadderEntry> | null>(null);
   // Starts TRUE so the spinner shows on first mount (before the first
   // effect tick) instead of flashing the empty-state message.
   const [loading, setLoading] = useState(true);
@@ -807,30 +863,102 @@ function ForecastTableImpl({ code, secType, kind, horizon, onHorizonChange, onRo
   // null = none. Toggled by row click — the second click on the expanded
   // row collapses it — and reset when the scope's data refetches.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // The "YYYY-MM" whose rows the current data covers (null = the FULL
+  // grid is loaded) + the full-load sequence guard.
+  const loadedMonthRef = useRef<string | null>(null);
+  const fullSeq = useRef(0);
+  const [fullScope, setFullScope] = useState(false);
 
-  // One fetch for ALL stat_dates of the code — the snapshot header's
-  // end-period filter (see columns' year entry) then picks which
-  // snapshots to show.
+  // PROGRESSIVE FIRST LOAD (2026-09-30): the base rows arrive for ONE
+  // snapshot — the end-month filter's seed (the forecast-id focus
+  // snapshot when set, else the LATEST) — so the table paints over a
+  // fraction of the payload; the delay ladders ride a PARALLEL request
+  // and merge in when they land. Moving the snapshot selector off the
+  // loaded month (handleEndMonthChange) loads the FULL grid on demand.
+  // The header filters reset on the same deps (filterScopeDeps), so the
+  // seed and the fetched snapshot can never disagree.
   useEffect(() => {
     let cancelled = false;
+    const snap = focusStatDate ?? "latest";
     setLoading(true);
     setError(null);
     setExpandedId(null);
-    fetchAnalysisForecast(code, secType, kind)
+    setLadders(null);
+    setFullScope(false);
+    fetchAnalysisForecast(code, secType, kind, null, null, snap)
       .then((d) => {
         if (cancelled) return;
         setData(d);
         setLoading(false);
+        loadedMonthRef.current = snap === "latest"
+          ? (d.stat_dates[0]?.slice(0, 7) ?? null)
+          : snap.slice(0, 7);
       })
       .catch((e: Error) => {
         if (cancelled) return;
         setError(e.message);
         setLoading(false);
       });
+    fetchForecastLadders(code, secType, kind, null, null, snap)
+      .then((l) => {
+        if (cancelled) return;
+        setLadders(new Map(l.ladders.map((e) => [e.forecast_id, e])));
+      })
+      .catch(() => {
+        // Ladders are an enhancement — a failed read leaves the
+        // mean-delay fallback, never a broken table.
+        if (cancelled) return;
+        setLadders(new Map());
+      });
     return () => {
       cancelled = true;
     };
-  }, [code, secType, kind]);
+  }, [code, secType, kind, focusStatDate]);
+
+  // The view rows — the base rows with their ladders attached once the
+  // ladder payload lands (one deliberate extra render, fresh row
+  // identities; until then delay_ladder stays undefined and the ladder
+  // column renders its fallback).
+  const rows = useMemo(() => {
+    const base = (data?.rows ?? []) as ForecastRow[];
+    if (ladders == null) return base;
+    return base.map((r) => {
+      const l = ladders.get(r.forecast_id);
+      return l == null
+        ? r
+        : { ...r, delay_ladder: l.rungs, decay_stop: l.decay_stop, best_delay: l.best_delay };
+    });
+  }, [data, ladders]);
+
+  // The snapshot selector moved OFF the loaded snapshot (another month
+  // picked, or cleared to all months): the FULL grid's rows + ladders
+  // load in the background while the loaded snapshot's rows stay
+  // visible — the filter keeps the user's selection and applies as
+  // soon as the full rows land.
+  const handleEndMonthChange = useCallback(
+    (month: string | null) => {
+      if (fullScope || loading) return;
+      if (month != null && month === loadedMonthRef.current) return;
+      setFullScope(true);
+      const seq = ++fullSeq.current;
+      fetchAnalysisForecast(code, secType, kind)
+        .then((d) => {
+          if (seq !== fullSeq.current) return;
+          setData(d);
+          loadedMonthRef.current = null;
+        })
+        .catch(() => {
+          // keep the snapshot-scoped rows on failure
+        });
+      fetchForecastLadders(code, secType, kind)
+        .then((l) => {
+          if (seq !== fullSeq.current) return;
+          setLadders(new Map(l.ladders.map((e) => [e.forecast_id, e])));
+        })
+        .catch(() => {});
+    },
+    [fullScope, loading, code, secType, kind],
+  );
 
   // ---- Memoized table args ------------------------------------------------
   // Every argument ExpandedTable receives keeps a STABLE identity across
@@ -1023,6 +1151,12 @@ function ForecastTableImpl({ code, secType, kind, horizon, onHorizonChange, onRo
               : `mean ${r.delayed_signal_days}`,
       },
     },
+    // (mov_rsi's derived-population verdict lives INLINE in the signal
+    // column — each cohort's own chip, the darker-hue marker
+    // (actionDarkColor) only when that cohort never registered (see
+    // SignalActionCell) — not as its own column: the populations
+    // ride the same bucket keys, so a dedicated column was pure
+    // duplication of the side column's information.)
     ...(isMarginRatio
       ? [
           {
@@ -1110,13 +1244,34 @@ function ForecastTableImpl({ code, secType, kind, horizon, onHorizonChange, onRo
         numVal(r, h.occCol) == null ? dash() : <>{r[h.occCol] as number}</>,
       filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, h.occCol) },
     },
+    // (the derived child's IMPROV column was removed 2026-09-28: the
+    // ohlcv populations are signal-tier diagnostics now — carried on
+    // the strategy rows' params as dir_ave_boost / dir_ave_selection —
+    // and the study_ohlcv_signal_confidence verdict keeps the stored
+    // confidence the PARENT mean, so the child-vs-parent delta has no
+    // decision surface here. The API still computes the improv fields.)
     {
       key: "signal_action",
       label: "signal",
       align: "center" as const,
-      width: 50,
+      width: 124,
       render: (r: ForecastRow) => <SignalActionCell r={r} />,
-      filter: { type: "ticks" as const, value: (r: ForecastRow) => r.signal_action ?? "none" },
+      filter: {
+        type: "ticks" as const,
+        // The action with the row's derived population folded in, so
+        // the ticks can still isolate one population-side ("buy
+        // (boost)", "sell (boost)", "buy (selection)") after the
+        // dedicated ohlcv column's removal.
+        value: (r: ForecastRow) => {
+          const m = r as MovRsiForecastRow;
+          const act = r.signal_action ?? "none";
+          if (m.ohlcv_type == null) return act;
+          const pop = m.ohlcv_type === "ohlcv_selection"
+            ? "selection"
+            : "boost";
+          return `${act} (${pop})`;
+        },
+      },
     },
     ];
     },
@@ -1134,7 +1289,6 @@ function ForecastTableImpl({ code, secType, kind, horizon, onHorizonChange, onRo
     return <Alert severity="error" variant="outlined">{error}</Alert>;
   }
 
-  const rows = (data?.rows ?? []) as ForecastRow[];
 
   return (
     <Box sx={{ position: "relative" }}>
@@ -1174,6 +1328,7 @@ function ForecastTableImpl({ code, secType, kind, horizon, onHorizonChange, onRo
           // when active (a jumped-to older bucket's rows must show), else
           // the data's latest snapshot.
           defaultEndMonth={focusStatDate != null ? focusStatDate.slice(0, 7) : null}
+          onEndMonthChange={handleEndMonthChange}
           onRowClick={handleRowClick}
           zebra={false}
           expandedRows={expandedDelayRows}

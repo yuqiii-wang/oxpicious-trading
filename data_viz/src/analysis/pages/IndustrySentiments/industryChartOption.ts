@@ -345,7 +345,7 @@ export function buildIndustryChartOption(
         if (!dateStr) return "";
         // Build per-index rows: name, actual close, rebased %, stock_num.
         const rowElements = arr
-          .map((p) => {
+          .map((p): React.ReactElement | null => {
             const sIdx = data.indices.findIndex(
               (idx) => (idx.name || idx.code) === p.seriesName,
             );

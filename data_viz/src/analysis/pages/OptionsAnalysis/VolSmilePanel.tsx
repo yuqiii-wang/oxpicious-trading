@@ -9,9 +9,9 @@
  *   • VolIndexPanel — 30d model-free vol index (VIX-style) for the
  *     selected underlying (store-driven, single curve).
  */
-import VolSmilePanel from "@/dataviz/features/szse-options/VolSmilePanel";
-import SpotSkewTrendPanel from "@/dataviz/features/szse-options/spot-skew/SpotSkewTrendPanel";
-import VolIndexPanel from "@/dataviz/features/szse-options/vol-index/VolIndexPanel";
+import VolSmilePanel from "@/dataviz/features/options/VolSmilePanel";
+import SpotSkewTrendPanel from "@/dataviz/features/options/spot-skew/SpotSkewTrendPanel";
+import VolIndexPanel from "@/dataviz/features/options/vol-index/VolIndexPanel";
 import type { OptionsRow } from "@shared/types";
 
 interface Props {

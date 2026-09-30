@@ -19,12 +19,14 @@ from analyze.analysis_signals.config import (
     EXCESS_PCT_SCALE,
     EXCESS_SCALE,
     HISTORY_TIME,
-    RSI_PCT,
     SIGNAL_SCALE,
     THRESHOLD_SCALE,
 )
 from analyze.analysis_signals.engines._base import SignalEngine
 from analyze.analysis_signals.engines._primitives import SELL_SIDES
+from analyze.analysis_signals.engines.signal_families.mov_rsi._strategies import (
+    SUB_TYPE_SUFFIX,
+)
 
 
 def history_rows(
@@ -33,11 +35,15 @@ def history_rows(
     stat_date: date,
     snap_trig: pd.DataFrame,
     long: pd.DataFrame,
+    population: str | None = None,
 ) -> list[dict]:
     """The COPY-boundary history records for the strategies'
     snapshot-owned trigger days (``long`` = the melted (code, date, window,
     value) RSI frame; ``snap_trig`` is already semi-joined to the
-    strategies + snapshot-owned by the ABC)."""
+    strategies + snapshot-owned by the ABC). ``population`` is the
+    cohort the records belong to (children suffix their sub_type and
+    carry the ohlcv_type verdict — each cohort's events carry its own
+    confidence)."""
     # The RSI value AT each trigger day.
     rows = snap_trig.merge(
         long,
@@ -62,7 +68,7 @@ def history_rows(
         .where(threshold != 0)
     )
 
-    # confidence = the strategy's chosen rung's sign-aligned dir_ave
+    # confidence = the cohort's own chosen rung's sign-aligned dir_ave
     # scaled to integer basis points of expected move
     # (ROUND(10000 x dir_ave); the strategies row keeps the float).
     dir_sign = pd.Series(1.0, index=rows.index)
@@ -74,8 +80,11 @@ def history_rows(
         "code": rows["code"],
         "signal_sub_type": (
             "rsi" + rows["rsi_window"].astype(str)
-            + "_" + str(RSI_PCT) + "pct"
+            + "_" + rows["pct"].astype(str) + "pct"
+            + SUB_TYPE_SUFFIX.get(population, "")
         ),
+        # the cohort verdict — STORED (mirrors the strategy row)
+        "ohlcv_type": population,
         "action": engine.action_of(rows["side"]),
         "signal_excess": excess,
         "signal_excess_pct": excess_pct,

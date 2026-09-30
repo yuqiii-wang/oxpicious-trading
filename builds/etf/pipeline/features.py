@@ -118,10 +118,11 @@ async def load_composition(
     date: its CSVs are re-read and its snapshots re-upserted by
     insert_composition (no deletes).
 
-    Composition CSVs carry whole suffixed ``etf_code`` — the data filter
-    compares codes directly.  Filenames end with the BARE code
-    (``szse_etf_comp_YYYYMMDD_<code>.csv``); only that file-glob needs the
-    suffix stripped (filename convention, not data).
+    Composition CSVs carry whole ``etf_code`` (BARE — legacy files carry
+    a suffix; comparisons strip it) — the data filter compares codes
+    directly.  Filenames end with the BARE code
+    (``szse_etf_comp_/huatai_etf_comp_YYYYMMDD_<code>.csv``); the
+    file-glob strips the code too (filename convention, not data).
 
     Returns: (comp_long, comp_universe).
     """
@@ -163,8 +164,10 @@ async def load_composition(
         verbose=True, code=code_filter, existing_ymd_keys=existing_ymd_keys)
 
     if code_filter and comp_long is not None and len(comp_long) > 0:
+        # strip guard: legacy composition CSVs carry a suffixed etf_code
         comp_long = comp_long[
-            comp_long["etf_code"].astype(str).str.strip().eq(code_filter)
+            comp_long["etf_code"].astype(str).str.strip()
+            .str.split(".").str[0].eq(code_filter)
         ].reset_index(drop=True)
         logger.info(f"    [CODE FILTER] Composition rows restricted to {code_filter}: {len(comp_long):,}")
     return comp_long, comp_universe

@@ -274,6 +274,15 @@ class AnalysisEvaluator:
                 "signal": signal_val,
                 "signal_threshold": threshold,
                 "confidence": sig["confidence"],
+                # the same bucket's derived-cohort add-on confidences
+                # (@boost / @selection children — permanently inactive
+                # rows fetched as context by fetch_active_signals;
+                # None when the cohort never registered or the family
+                # carries no ohlcv children). Already on the live
+                # INTEGER basis-point scale, SQL-side like confidence;
+                # display-only context, never a gate.
+                "confidence_boost": sig["confidence_boost"],
+                "confidence_selection": sig["confidence_selection"],
                 # TRUE only on the on-demand mode's daily-close fallback
                 # rows (time 15:00); FALSE on every intraday-bar
                 # observation (live monitor AND as-of replay).

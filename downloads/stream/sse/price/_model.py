@@ -159,13 +159,14 @@ def aggregate_bars(
 ) -> Tuple[List[dict], List[dict], Optional[time]]:
     """Aggregate 5 one-minute samples into per-security OHLCV bars.
 
-    Drives off the ``asset`` context (AssetStream): stock / ETF bars carry a
-    per-bar volume + exchange and land in stats.stock_intraday_5min /
-    stats.etf_intraday_5min (code WITH exchange suffix, e.g. "600000.SS");
-    index bars carry NO volume / exchange and land in
-    stats.index_intraday_5min (bare 6-digit code). The ``asset.buffer`` /
-    ``prev_bar_cumvol`` / ``finished_codes`` mutable state is read and updated
-    in place.
+    Drives off the ``asset`` context (AssetStream): stock bars carry a
+    per-bar volume + exchange and land in stats.stock_intraday_5min
+    (code WITH exchange suffix, e.g. "600000.SS"); ETF bars land in
+    stats.etf_intraday_5min (BARE 6-digit code — 2026-09-30 convention,
+    exchange carried in its own column); index bars carry NO volume /
+    exchange and land in stats.index_intraday_5min (bare 6-digit code).
+    The ``asset.buffer`` / ``prev_bar_cumvol`` / ``finished_codes``
+    mutable state is read and updated in place.
 
     Args:
         asset: AssetStream whose buffer holds the samples to aggregate.
@@ -196,11 +197,13 @@ def aggregate_bars(
     for _, snap in buffer:
         all_codes.update(snap.keys())
 
-    # Stocks AND ETFs share the same row layout (code WITH exchange suffix,
-    # per-bar trading_shares derived from cumulative volume delta). Indices
-    # use bare 6-digit codes with no volume / exchange columns.
+    # Stocks AND ETFs share the same row layout (per-bar trading_shares
+    # derived from cumulative volume delta). Stocks store code WITH
+    # exchange suffix; ETFs store BARE 6-digit codes (2026-09-30
+    # convention); indices use bare codes with no volume / exchange.
     is_suffixed = asset.exchange is not None
     is_stock = asset.name == "stock"  # only stock_identity has is_in_index_or_etf
+    is_etf = asset.name == "etf"      # etf_identity codes are BARE
     identity_rows: List[dict] = []
     bar_rows: List[dict] = []
     n_skipped = 0
@@ -242,8 +245,9 @@ def aggregate_bars(
         change_pct = round((c - o) / o * 100, 4) if o else None
 
         if is_suffixed:
-            # Stocks / ETFs: derive per-bar volume from cumulative volume delta,
-            # and store code WITH exchange suffix (e.g. "600000.SS" / "510050.SS").
+            # Stocks / ETFs: derive per-bar volume from cumulative volume
+            # delta. Stock codes carry the exchange suffix ("600000.SS");
+            # ETF codes stay BARE ("510050").
             end_cumvol = cumvols[-1] if cumvols else 0.0
             prev_cumvol = asset.prev_bar_cumvol.get(code, 0.0)
             vol = end_cumvol - prev_cumvol
@@ -254,7 +258,8 @@ def aggregate_bars(
                 vol = end_cumvol
             asset.prev_bar_cumvol[code] = end_cumvol
 
-            full_code = add_exchange_suffix(code, "上海")
+            full_code = (code if is_etf
+                         else add_exchange_suffix(code, "上海"))
             # Canonical exchange from the asset context (SS for SSE streams).
             exchange = asset.exchange
             identity_row = {"date": trade_date, "code": full_code, "exchange": exchange, "name": name}

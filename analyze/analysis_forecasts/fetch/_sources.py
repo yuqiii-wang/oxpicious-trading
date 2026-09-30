@@ -32,30 +32,40 @@ PRICE_SOURCE = {
     ),
 }
 
-# Trading-amount + margin-buy source + estimated-close filter per
-# sec_type (the margin_ratio family's inputs; the mov_*
-# engines ignore the extra columns). Index turnover lives on the base
-# table and indices have NO margin data (NULL rz_buy — the
-# margin_ratio family never fires for 'index'); ETF / stock turnover
-# and rz_buy live on their *_liquidity_margin tables (LEFT JOIN — a
-# missing margin row NULLs trading_amount / rz_buy, which simply keeps
-# that day out of the margin_ratio buckets). Estimated closes
-# (synthetic flat closes on non-traded days) would pollute ret_1d /
-# σ_ret — etf/index carry the is_close_estimated flag and those rows
-# are filtered in SQL; stock basic stats have no such flag.
+# Trading-amount + margin-buy source per sec_type (the margin_ratio
+# family's inputs; the mov_* engines ignore the extra columns). Index
+# turnover lives on the base table and indices have NO margin data
+# (NULL rz_buy — the margin_ratio family never fires for 'index'); ETF /
+# stock turnover and rz_buy live on their *_liquidity_margin tables (LEFT
+# JOIN — a missing margin row NULLs trading_amount / rz_buy, which simply
+# keeps that day out of the margin_ratio buckets). Close-less rows (the
+# former estimated-close rows, nulled by the 2026-09-30 is_close_estimated
+# retirement) are excluded by the fetchers' close IS NOT NULL predicate.
+# The OHLC-estimated exclusion (2026-09-26, with the forecast OHLC
+# boost): rows whose open/high/low are SYNTHETIC (is_ohl_estimated —
+# the index/ETF OHLC estimated from constituents on non-traded days)
+# must never feed an OHLC-boost rule — the day's gap_open would be a
+# construction artifact. The forecast inputs fetch drops those rows
+# outright. All three base tables carry the flag.
+OHL_EST_FILTER = {
+    "index": " AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
+    "etf": " AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
+    "stock": " AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
+}
+
 AMT_SOURCE = {
     "index": (
         "",
         "b.trading_amount",
         "NULL::float8",
-        "AND COALESCE(b.is_close_estimated, FALSE) = FALSE",
+        "",
     ),
     "etf": (
         "LEFT JOIN stats.etf_liquidity_margin m "
         "ON m.code = b.code AND m.date = b.date",
         "m.trading_amount",
         "m.rz_buy",
-        "AND COALESCE(b.is_close_estimated, FALSE) = FALSE",
+        "",
     ),
     "stock": (
         "LEFT JOIN stats.stock_liquidity_margin m "

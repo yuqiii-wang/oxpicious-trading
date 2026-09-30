@@ -73,6 +73,15 @@ export interface TooltipContext {
     low2ndDate: Array<string | null>;
     lowSlope: Array<number | null>;
   } | null;
+  /** Top-10% OHLC Days: the gaps store's per-date anatomy, index-aligned
+   *  with dates — null when the group is off or not loaded. */
+  ohlcGapInfo: {
+    gap: Array<number | null>;
+    intra: Array<number | null>;
+    uw: Array<number | null>;
+    lw: Array<number | null>;
+    pattern: Array<string | null>;
+  } | null;
   trendBands: TrendBand[];
   hasTrendBands: boolean;
   hasBase: boolean;
@@ -146,6 +155,7 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     ohlcLows,
     ohlcWindow,
     ohlcWinArrays,
+    ohlcGapInfo,
     trendBands,
     hasTrendBands,
     hasBase,
@@ -429,6 +439,45 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
       }
     }
 
+    // Top-10% OHLC Days: the day's classified pattern + raw gap legs
+    // (analysis.mov_ave_spreads_detail_ohlc_gaps) — shown when the
+    // group's toggles are on.
+    if (ohlcGapInfo != null) {
+      const pat = ohlcGapInfo.pattern[idx];
+      const g = ohlcGapInfo.gap[idx];
+      const it = ohlcGapInfo.intra[idx];
+      const uw = ohlcGapInfo.uw[idx];
+      const lw = ohlcGapInfo.lw[idx];
+      const cn: Record<string, string> = {
+        spike_fade: "冲高回落",
+        flush_recover: "探底回升",
+        gap_up_advance: "高开高走",
+        gap_up_decline: "高开低走",
+        gap_down_advance: "低开高走",
+        gap_down_decline: "低开低走",
+      };
+      if (pat != null) {
+        const gloss = cn[pat] ? ` (${cn[pat]})` : "";
+        const pc = pat === "spike_fade" ? "#E53935" : pat === "flush_recover" ? "#43A047" : undefined;
+        children.push(
+          React.createElement(Row, {
+            key: "gapPattern",
+            style: { marginTop: "2px", fontWeight: 600, ...(pc ? { color: pc } : {}) },
+          }, `Pattern: ${pat}${gloss}`),
+        );
+      }
+      if (g != null || it != null || uw != null || lw != null) {
+        const f = (v: number | null): string =>
+          v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
+        children.push(
+          React.createElement(Row, {
+            key: "gapLegs",
+            style: { opacity: 0.85 },
+          }, `Gap legs: gap ${f(g)} · intra ${f(it)} · uw ${f(uw)} · lw ${f(lw)}`),
+        );
+      }
+    }
+
     return renderReactElement(React.createElement(React.Fragment, null, children));
   };
 }
@@ -449,6 +498,13 @@ export function buildAmtTooltipFormatter(
   selectedWindow: number,
   amtMaWindows: readonly number[],
   fmtPrice: (v: number | null | undefined) => string,
+  gapInfo?: {
+    gap: Array<number | null>;
+    intra: Array<number | null>;
+    uw: Array<number | null>;
+    lw: Array<number | null>;
+    pattern: Array<string | null>;
+  } | null,
 ) {
   return (params: unknown): string => {
     const arr = (Array.isArray(params) ? params : [params]) as Array<{
@@ -520,6 +576,42 @@ export function buildAmtTooltipFormatter(
         style: { marginTop: "2px", opacity: 0.5 },
       }, `H: ${fmtPrice(h)} · L: ${fmtPrice(l)}`),
     );
+
+    if (gapInfo != null) {
+      const pat = gapInfo.pattern[idx];
+      const g = gapInfo.gap[idx];
+      const it = gapInfo.intra[idx];
+      const uw = gapInfo.uw[idx];
+      const lw = gapInfo.lw[idx];
+      const cn: Record<string, string> = {
+        spike_fade: "冲高回落",
+        flush_recover: "探底回升",
+        gap_up_advance: "高开高走",
+        gap_up_decline: "高开低走",
+        gap_down_advance: "低开高走",
+        gap_down_decline: "低开低走",
+      };
+      if (pat != null) {
+        const gloss = cn[pat] ? ` (${cn[pat]})` : "";
+        const pc = pat === "spike_fade" ? "#E53935" : pat === "flush_recover" ? "#43A047" : undefined;
+        children.push(
+          React.createElement(Row, {
+            key: "gapPattern",
+            style: { marginTop: "2px", fontWeight: 600, ...(pc ? { color: pc } : {}) },
+          }, `Pattern: ${pat}${gloss}`),
+        );
+      }
+      if (g != null || it != null || uw != null || lw != null) {
+        const f = (v: number | null): string =>
+          v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
+        children.push(
+          React.createElement(Row, {
+            key: "gapLegs",
+            style: { opacity: 0.85 },
+          }, `Gap legs: gap ${f(g)} · intra ${f(it)} · uw ${f(uw)} · lw ${f(lw)}`),
+        );
+      }
+    }
 
     return renderReactElement(React.createElement(React.Fragment, null, children));
   };
