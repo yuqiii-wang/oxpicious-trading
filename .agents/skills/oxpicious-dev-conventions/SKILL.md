@@ -1,6 +1,6 @@
 ---
 name: oxpicious-dev-conventions
-description: Repo conventions for the oxpicious-trading quant trading repo — Python analysis/build pipelines, incremental --force DB regeneration, SQL-first DB changes, vectorized pandas, and the data_viz React UI. Use for ANY code change, DB work, script execution, verification, or UI work in this repo, even when the user does not ask for conventions explicitly.
+description: Repo conventions for the oxpicious-trading quant trading repo — Python analysis/build pipelines, incremental --force DB regeneration, SQL-first DB changes, cudf GPU-first pandas layout, and the data_viz React UI. Use for ANY code change, DB work, script execution, verification, or UI work in this repo, even when the user does not ask for conventions explicitly.
 ---
 
 # oxpicious-trading dev conventions
@@ -9,6 +9,15 @@ Layout: `builds/` and `analyze/` are Python pipelines run as `python -m <pkg>`;
 `_common/` is the shared library (never duplicate its helpers);
 `database/sql/` holds SQL; `data_viz/` is the React UI; `temp_scripts/` holds
 throwaway scripts and their outputs.
+
+## Skill routing (load the matching skill BEFORE that kind of work)
+
+- ANY dataframe / pandas / numpy / cudf code → `cudf-dtypes` (layout + dtypes)
+- ANY DB write / insert / upsert / purge / DDL apply → `db-sql-write`
+- ANY chart component / option builder / tooltip under `data_viz/src` →
+  `ui-charts`; ANY verification of `data_viz/` work → `ui-test`
+- analysis_forecasts signal semantics (history vs live) →
+  `signals-live-vs-history`
 
 ## Study scope for analysis & strategy (MANDATORY)
 
@@ -46,11 +55,29 @@ Every `__main__` accepts `--force`:
   these pipelines run daily over large histories.
 - With `--force`: purge the old rows for the scope, then regenerate.
 
-### Dataframes
+### Dataframes — cudf GPU-first preference
 
-Avoid Python `for` loops and `if/else` branches in dataframe code. Use
-vectorized pandas/cudf operations (`where`, `mask`, `np.select`, `cut`,
-vectorized string ops, etc.). Loop only when no vectorized form exists.
+cudf.pandas is active in every pipeline (`activate()` above), so the
+LAYOUT decides what runs on GPU. Load the `cudf-dtypes` skill BEFORE
+writing or refactoring any dataframe code — its compute-layout table
+and dtype rules are mandatory, not advisory. Short form:
+
+- Whole-frame pandas is the default: grouped rolling / shift / diff via
+  the shared `_common.df_utils` helpers (`grouped_rolling_agg`,
+  `grouped_shift`) and elementwise `where`-chains run on GPU; prefer ONE
+  whole-frame grouped pass over per-group compute loops.
+- Plain host numpy is allowed ONLY as one per-group boundary core for
+  gather/index algorithms (positional gathers, sparse tables, 2D grids,
+  DB array-literal building) — unwrap once via `host_array`, materialize
+  via the REAL DataFrame ctor, and document the boundary.
+- NEVER build mid-flow hybrids (`pd.Series(host_ndarray, index=...)`,
+  `Series.take(host_positions)` between GPU ops) — cudf.pandas returns
+  garbage-length Series for that pattern (2026-10-02 probes).
+- Avoid Python `for` loops and `if/else` branches in dataframe code. Use
+  vectorized pandas/cudf operations (`where`, `mask`, `np.select`, `cut`,
+  vectorized string ops, etc.). Loop only when no vectorized form exists.
+- A dataframe refactor must A/B-verify: identical per-code md5 of the
+  output tables AND no new `[cudf fallback]` signatures.
 
 ### Typing and naming
 

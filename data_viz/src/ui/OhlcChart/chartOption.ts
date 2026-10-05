@@ -44,6 +44,7 @@ import {
 import type {
   ForecastActionByDateRef,
   OhlcTradeSignal,
+  MarkPointDataRef,
   StreakInfoByDateRef,
   TriggerAnchorRef,
 } from "./types";
@@ -51,6 +52,13 @@ import { TRIGGER_ACTION_SERIES_ID, TRIGGER_SERIES_ID } from "./types";
 import type { OhlcMode } from "@/lib/ohlc";
 import type { ThemeMode } from "@/store/filters";
 import type { MarketRegimeSpans } from "@shared/types";
+import { signalMarkerSpec } from "@/shared/charts/signalMarker";
+import type { SignalMarkPointData } from "@/shared/charts/signalMarker";
+
+/** Stable id of the MA20 series that hosts the dividend + trade-signal
+ *  markPoints — the selected-signal-date emphasis effect merge-updates
+ *  this series' markPoint in place (no full notMerge rebuild). */
+export const MARKPOINT_HOST_SERIES_ID = "ohlc-markpoint-host";
 
 /** Index of the raw trading-amount array inside the breakArraysAtGaps
  *  call below (rides along so the Amount bars stay aligned with the
@@ -66,19 +74,26 @@ export interface OhlcOptionArgs {
   dividends: StockDividend[];
   regimeSpans?: Partial<MarketRegimeSpans>;
   tradeSignals: OhlcTradeSignal[];
+  /** FALSE suppresses the PE twin-axis overlay even when the rows
+   *  carry PE (the Recent Movements code-trend: the signal overlays
+   *  replace the valuation context there). Default true. */
+  showPe?: boolean;
   /** Anchor stash — assigned on every build, read by buildTriggerOverlay. */
   triggerAnchorRef: TriggerAnchorRef;
+  /** Trade-signal markPoint data stash — assigned on every build, read
+   *  by the selected-signal-date emphasis effect (OhlcChart). */
+  markPointDataRef: MarkPointDataRef;
   /** Date → streak context of the overlay's dark spans, read by the axis
    *  tooltip formatter at hover time (refreshed by buildTriggerOverlay). */
   streakInfoByDateRef: StreakInfoByDateRef;
-  /** Date → the overlay's forecast-action labels, read the same way. */
+  /** Date → the forecast-action labels, read the same way. */
   forecastActionByDateRef: ForecastActionByDateRef;
 }
 
 export function buildOhlcOption({
   rows, ohlcMode, themeMode, dataZoomStart, dataZoomEnd,
-  dividends, regimeSpans, tradeSignals,
-  triggerAnchorRef, streakInfoByDateRef, forecastActionByDateRef,
+  dividends, regimeSpans, tradeSignals, showPe,
+  triggerAnchorRef, markPointDataRef, streakInfoByDateRef, forecastActionByDateRef,
 }: OhlcOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const enableDataZoom = dataZoomStart !== undefined;
@@ -109,8 +124,9 @@ export function buildOhlcOption({
   })();
 
   // PE is rendered only when at least one non-null, non-zero sample exists
-  // (0 is treated as a placeholder, not a real PE).
-  const hasPe = rows.some((r) => r.pe != null && r.pe !== 0);
+  // (0 is treated as a placeholder, not a real PE) — and the caller has
+  // not suppressed the overlay (showPe: false).
+  const hasPe = showPe !== false && rows.some((r) => r.pe != null && r.pe !== 0);
 
   // Margin availability — any row with non-null, non-zero rz_balance.
   const hasMargin = rows.some(
@@ -201,15 +217,7 @@ export function buildOhlcOption({
   // ex_dividend_date falls inside the visible window are drawn.
   const dateToCloseIdx = new Map<string, number>();
   broken.dates.forEach((d, i) => dateToCloseIdx.set(d, i));
-  const markPointData: Array<{
-    name: string;
-    coord: [string, number];
-    itemStyle: { color: string };
-    symbol: string;
-    symbolRotate?: number;
-    symbolSize: number | [number, number];
-    symbolOffset?: [number, number];
-  }> = [];
+  const markPointData: SignalMarkPointData[] = [];
   const dividendByDate = new Map<string, StockDividend>();
   for (const d of dividends) {
     const idx = dateToCloseIdx.get(d.ex_dividend_date);
@@ -221,7 +229,8 @@ export function buildOhlcOption({
       coord: [d.ex_dividend_date, y],
       itemStyle: { color: DIVIDEND_COLOR },
       symbol: "diamond",
-      symbolSize: 11,
+      symbolSize: [11, 11],
+      symbolOffset: [0, 0],
     });
     dividendByDate.set(d.ex_dividend_date, d);
   }
@@ -230,7 +239,8 @@ export function buildOhlcOption({
   // Same markPoint host as the dividends. Anchors use the rebased low /
   // high so the markers hug the bar in both OHLC modes, falling back to
   // the close when the row has no low/high. Same-(date, action) signals
-  // share ONE marker — the axis tooltip lists each day's signals.
+  // share ONE marker — the axis tooltip lists each day's signals. The
+  // symbol geometry is THE shared buy/sell triangle (signalMarker.ts).
   const signalsByDate = new Map<string, OhlcTradeSignal[]>();
   if (tradeSignals.length > 0) {
     const byDateAction = new Map<string, OhlcTradeSignal>();
@@ -249,13 +259,7 @@ export function buildOhlcOption({
         markPointData.push({
           name: buy ? "Buy" : "Sell",
           coord: [s.date, anchor],
-          itemStyle: { color: buy ? UP_COLOR : DOWN_COLOR },
-          // Up-triangle below the bar for buys, down-triangle above for
-          // sells (symbolOffset px: +y down, -y up).
-          symbol: "triangle",
-          symbolRotate: buy ? 0 : 180,
-          symbolSize: [11, 10],
-          symbolOffset: buy ? [0, 12] : [0, -12],
+          ...signalMarkerSpec(s.action),
         });
       }
       const list = signalsByDate.get(s.date) ?? [];
@@ -263,6 +267,9 @@ export function buildOhlcOption({
       signalsByDate.set(s.date, list);
     }
   }
+  // Stash for the selected-signal-date emphasis effect (assigned inside
+  // the option memo — the documented idempotent side-effect pattern).
+  markPointDataRef.current = markPointData;
   const markPoint = markPointData.length
     ? { data: markPointData, label: { show: false } }
     : undefined;
@@ -374,10 +381,12 @@ export function buildOhlcOption({
     // MA20 carries the dividend + trade-signal markPoints — the custom
     // OHLC series cannot host markPoint, so a standard line series must
     // carry it. MA20 is a good visual anchor (always present, sits near
-    // the price).
+    // the price). MARKPOINT_HOST_SERIES_ID lets the emphasis effect
+    // merge-update the markPoint in place.
     {
       type: "line",
       name: "MA20",
+      id: MARKPOINT_HOST_SERIES_ID,
       yAxisIndex: 0,
       data: broken.arrays[5],
       smooth: false,

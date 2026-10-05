@@ -19,3 +19,5 @@ bash "$SCRIPT_DIR/scripts/builds_once.sh"
 # Analysis consumes the daily build outputs; strategy runs after analysis.
 bash "$SCRIPT_DIR/scripts/analysis_daily.sh"
 bash "$SCRIPT_DIR/scripts/strategy_once.sh"
+
+cd data_viz && npm run dev

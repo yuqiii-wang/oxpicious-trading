@@ -1,6 +1,6 @@
 ---
 name: "cudf-dtypes"
-description: "Which dtype to use in which scenario for cudf.pandas pipelines in this repo — datetime64 units ([ns] vs [us] vs [s]/[D]), float64 vs Decimal, nullable Int64/boolean vs plain int64/bool, object-dtype poison, proxy-ndarray unwrapping — derived from the production [cudf fallback] log studies. Invoke when writing or refactoring any DB fetch / dataframe compute / bulk-write path in builds.*/analyze.*, when choosing dtypes for a new column or SQL cast, or when a run logs [cudf fallback] / MixedTypeError / 'Unsupported dtype' / 'transfer is blocked' lines or runs suspiciously slow on the GPU."
+description: "cudf.pandas COMPUTE-LAYOUT preference + dtype rules for this repo. Use BEFORE writing or refactoring ANY dataframe / pandas / numpy / cudf code in builds.*/analyze.* — rolling, groupby, shift/diff, gathers, dtype choices, DB fetch/write paths — and whenever a run logs [cudf fallback] lines or is slow on GPU. Covers the GPU-first layout (whole-frame pandas via shared grouped helpers; host numpy only as a per-group boundary core; NEVER mid-flow hybrids), datetime64 units ([ns]/[us], never [s]/[D]), float64 vs Decimal, NaN-not-nullable, proxy-ndarray unwrapping, and the fallback-log verification workflow."
 ---
 
 # cuDF-safe dtype selection — what dtype in what scenario
@@ -26,6 +26,37 @@ The bar (already stated in signals-live-vs-history): **zero `[cudf fallback]`
 lines outside the sanctioned boundary helpers.** The scenario table below is
 how you get there.
 
+## Compute-layout preference (GPU-first) — fixed 2026-10-02
+
+Established by the roof/floor refactor (bit-identical A/B, bands step
+440s → 363s, fallback count 2742 → 2714). Pick the layer BEFORE writing
+the compute:
+
+| Layer | Form | Verdict |
+|---|---|---|
+| Whole-frame pandas | grouped rolling / shift / diff via the shared helpers (`grouped_rolling_agg`, `grouped_shift`, `groupby().diff()`), elementwise `where`-chains on frame columns | GPU — the DEFAULT for every new compute; prefer ONE whole-frame grouped pass over per-group loops |
+| Sanctioned host core | ONE per-group numpy block for gather/index algorithms — positional gathers, doubling/sparse tables, row×day 2D grids, PostgreSQL array-literal building; unwrap once via `host_array` at entry, materialize via the REAL DataFrame ctor (`pd.DataFrame._fsproxy_slow`) at exit | host — allowed ONLY where no cuDF-native formulation exists; document the boundary in the module docstring |
+| Mid-flow hybrid | `pd.Series(host_ndarray, index=...)`, `Series.take(host_positions)`, host-built masks between GPU ops | BANNED — cudf.pandas 26.08 returns garbage-length Series in this flow (probes: temp_scripts/probe_take.py + dbg_len3.py, 2026-10-02); the ctor class banned in the table below |
+
+Hard rules from the same refactor:
+
+- `np.searchsorted(positions, x)` → rank arithmetic on the cumulative
+  valid-count prefix: `searchsorted(V, x, 'left') == pref[x]` and
+  `searchsorted(V, x, 'right') - 1 == pref[x + 1] - 1` (see
+  `ohlc_vector._select_anchor_positions`).
+- Scalar-`pd.NaT` setitem infers a **str** column under cudf — init date
+  columns with a host `np.full(n, NaT, 'datetime64[ns]')` buffer
+  (`ohlc._init_date_columns`).
+- Batched writes stay: one REAL concat + one `.loc` write per column
+  (B-A3), host arrays in, never proxy objects.
+- A dataframe refactor is DONE only when the A/B verification passes:
+  identical per-code md5 fold of the output tables
+  (temp_scripts/checksum_code.py pattern) AND the `[cudf fallback]`
+  count/signature mix does not increase.
+- Reference implementations: `analyze/mov_ave_spread/steps/roof_floor_bands.py`
+  (whole-frame phases A–C + host event grid D) and
+  `analyze/mov_ave_spread/_common/ohlc_vector.py` (host core + rank bounds).
+
 ## Scenario → dtype table
 
 | Scenario | Use | Never |
@@ -40,6 +71,8 @@ how you get there.
 | Bool values in arithmetic (`flag * price`, `mask + 1`) | cast first: `mask.astype("float64")` or `astype("int64")` | direct bool×numeric ops — cuDF raises `Common type of bool with numeric dtypes is not supported` |
 | Nullable ints at the emit/writer boundary only | `astype("Int64")` (or `to_numpy(dtype="object", na_value=None)`) just before row materialization | `Int64` in the long compute frame (Kleene `<NA>` semantics poison grouped ops) |
 | Ids / codes (`code`, `sec_type`, `industry_id`) | string columns as groupby/merge/sort keys only (hash ops are cuDF-native) | numeric arithmetic on them (`NumericalColumn * StringColumn`); `series.unique().tolist()` → use `host_unique`; cupy has no str support — unwrap to host numpy first |
+| Closed-vocab labels (`regime`, `side`, `action`, `weighting`, `rank_side`, `pool_size`) | the DB column is SMALLINT (its `stats.label_dim` code, mirrored by `_common.labels` + `data_viz/api/services/label-codes.ts`); frames carry the int16 code end-to-end, TS decodes at the API boundary (`labelDecodeSql`) | label STRINGS inside any cudf frame — they are the cuDF 26.08 string host-transfer fault class (cudaErrorIllegalAddress after sort/merge/concat); log lines decode via the `*_LABEL` maps |
+| Frame-only label passengers (`sec_type` attached per loop, `industry_id` in margins) | attach as int16 frame code (`np.int16(SEC_TYPE_CODE[st])` / `_industry_code_frame` factorize), compute on the code, re-materialize the TEXT at the write boundary from the loop constant or the small code frame (`materialize_sec_type_text` in mov_ave_spread steps) | a constant string column riding a big frame through sort/merge/concat then `host_array` transfer (the `rsi.py` `_host_group_bounds` crash site pre-2026-10-05) |
 | Python dates for asyncpg DATE / row dicts | `to_py_dates(df, cols)` or `sanitize_for_db_insert(date_cols=…)` at the FINAL step | object-date columns anywhere upstream — one such column makes every later frame op (even unrelated numeric access) pay MixedTypeError |
 | Iteration / membership / dtype probes | `safe_columns`, `column_subset`, `host_dtypes`, `host_isna`, `host_unique`, `host_array` (all in `_common.df_utils`) | `c in df.columns`, `len(df)` in loops, per-column `pd.api.types.is_*_dtype`, `pd.isna(ndarray)`, `.tolist()` on proxied values |
 

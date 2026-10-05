@@ -118,10 +118,10 @@ export function useTableHeaderFilters<T>(
   rows: T[],
   scopeDeps: unknown[] = [],
   /** END-ONLY date filters seed their end bound at this period on every
-   *  scope reset, falling back to the data's latest month — the
-   *  ForecastTable's forecast-id search focus month, so a jumped-to
-   *  older bucket's rows are shown instead of being hidden behind the
-   *  latest-month seed. */
+   *  scope reset, falling back to the data's latest month — older
+   *  rows are shown instead of being hidden behind the latest-month
+   *  seed. (The former ForecastTable forecast-id focus-month jump went
+   *  with the forecast layer, 2026-10-05.) */
   defaultEnd: string | null = null,
   /** Fired when the user EDITS or CLEARS an END-ONLY date filter (the
    *  snapshot selector): the newly selected "YYYY-MM", or null when

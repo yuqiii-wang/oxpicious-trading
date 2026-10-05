@@ -36,6 +36,17 @@ Pipeline:
      index (CBOE VIX methodology off raw settlement prices) into
      analysis.options_vol_index (PK (underlying_code, date), no FK —
      date-granular, not expiry-granular).
+  7. Compute the per-(underlying, date) options-implied bands into
+     analysis.options_bands (nearest-to-spot eligible wall zone per
+     side across all expiries, same-day INSIDE/APPROACH/BREACH/CROSSED
+     states, prior-session-zone APPROACH/BREACH events, 5-session IV
+     expected-move context; PK (underlying_code, date), no FK).
+  8. Compute the materialized oi_moneyness series (per (underlying,
+     date, expiry-month) OI-weighted moneyness aggregates) into
+     analysis.options_moneyness_series and the per (underlying, date)
+     spot close into analysis.options_spot_daily — the precomputed read
+     model behind /api/szse-options/oi-moneyness-series (exact parity
+     with the former live 5-way-join SQL; both no FK).
 """
 from __future__ import annotations
 
@@ -49,6 +60,7 @@ bootstrap_runtime()
 from _common.db_commons import (
     copy_or_upsert_split_async,
     copy_insert_async,
+    chunked_purge_async,
     _wait_for_replica_lag_async,
     DEFAULT_MAX_REPLICA_LAG_MB,
 )
@@ -94,6 +106,24 @@ from analyze.options.config import (  # noqa: E402
     VOL_INDEX_NUMERIC_COLS,
     VOL_INDEX_PK_COLUMNS,
     VOL_INDEX_RESULT_COLUMNS,
+    BANDS_TABLE_NAME,
+    BANDS_ANALYSIS_NAME,
+    BANDS_DESCRIPTION,
+    BANDS_NUMERIC_COLS,
+    BANDS_PK_COLUMNS,
+    BANDS_RESULT_COLUMNS,
+    MONEYNESS_TABLE_NAME,
+    MONEYNESS_ANALYSIS_NAME,
+    MONEYNESS_DESCRIPTION,
+    MONEYNESS_NUMERIC_COLS,
+    MONEYNESS_PK_COLUMNS,
+    MONEYNESS_RESULT_COLUMNS,
+    SPOT_TABLE_NAME,
+    SPOT_ANALYSIS_NAME,
+    SPOT_DESCRIPTION,
+    SPOT_NUMERIC_COLS,
+    SPOT_PK_COLUMNS,
+    SPOT_RESULT_COLUMNS,
 )
 from analyze.options.fetch import (  # noqa: E402
     fetch_options_skewness_rows,
@@ -105,13 +135,19 @@ from analyze.options.fetch import (  # noqa: E402
     fetch_missing_iv_skew_groups,
     fetch_vol_index_rows,
     fetch_missing_vol_index_dates,
+    fetch_missing_bands_dates,
+    fetch_moneyness_rows,
+    fetch_missing_moneyness_groups,
+    fetch_missing_spot_dates,
 )
 from analyze.options.compute import (  # noqa: E402
     compute_options_skewness_stats,
     compute_options_walls,
+    compute_options_bands,
     compute_options_iv_skew_stats,
     compute_options_iv_smile_corr_stats,
     compute_options_vol_index,
+    compute_options_moneyness_series,
     GREEK_SKEW_COMPUTERS,
 )
 
@@ -219,8 +255,12 @@ async def _write_rows(
     # per-REAL-expiry table — its open-group rows carry the real expiry
     # dates, which the collapsed identity intentionally does not contain
     # (see 16_options.sql).
+    # options_moneyness_series / options_spot_daily are exempt too:
+    # month-group and date-granular keys (no FK — see
+    # 25_options_moneyness.sql).
     if table_name not in (
         EXPIRY_IDENTITY_TABLE, VOL_INDEX_TABLE_NAME, OI_TABLE_NAME,
+        BANDS_TABLE_NAME, MONEYNESS_TABLE_NAME, SPOT_TABLE_NAME,
     ):
         result_df = await _fk_filter(conn, result_df)
 
@@ -323,6 +363,9 @@ async def _run_expiry_identity_pipeline(
         # Not FK-dependent, but --force means a full rebuild of every
         # options analysis table.
         await conn.execute("DELETE FROM analysis.options_vol_index")
+        await conn.execute("DELETE FROM analysis.options_bands")
+        await conn.execute("DELETE FROM analysis.options_moneyness_series")
+        await conn.execute("DELETE FROM analysis.options_spot_daily")
 
     rows = await fetch_expiry_identity_rows(conn, sec_type)
     logger.info(f"    {len(rows):,} distinct expiry groups")
@@ -751,14 +794,160 @@ async def _run_vol_index_pipeline(
     return n
 
 
+async def _run_bands_pipeline(
+    conn,
+    force: bool,
+    sec_type: str | None = None,
+) -> int:
+    """Run the options_bands pipeline.
+
+    Computes the per-(underlying_code, date) options-implied bands:
+    nearest-to-spot eligible wall zone per side (recomputed via the
+    walls compute), same-day INSIDE/APPROACH/BREACH/CROSSED states,
+    prior-session-zone APPROACH/BREACH events, and the 5-session IV
+    expected-move context (em5_pct / ret5_pct / exhausted_5d).
+    Returns number of rows written.
+    """
+    target_pairs: set | None = None
+    if not force:
+        logger.info("\n  Detecting missing (underlying, date) pairs for "
+              "bands...")
+        missing_list = await fetch_missing_bands_dates(conn, sec_type)
+        target_pairs = set(missing_list)
+        logger.info(f"    -> {len(target_pairs):,} missing pairs")
+        if len(target_pairs) == 0:
+            logger.info("    -> DB is up to date; nothing to do.")
+            return 0
+
+    logger.info("\n  [1/4] Fetching option contract rows for bands "
+          "(walls source)...")
+    walls_df = await fetch_options_walls_rows(conn, sec_type)
+    logger.info(f"    {len(walls_df):,} contract-date rows")
+    if walls_df.empty:
+        logger.info("    no data; skipping.")
+        return 0
+
+    logger.info("\n  [2/4] Fetching option contract rows for bands "
+          "(IV source)...")
+    iv_df = await fetch_iv_skew_rows(conn, sec_type)
+    logger.info(f"    {len(iv_df):,} contract-date rows")
+
+    logger.info("\n  [3/4] Computing options bands...")
+    result_df = compute_options_bands(walls_df, iv_df)
+    logger.info(f"    {len(result_df):,} (underlying, date) result rows")
+
+    logger.info("\n  [4/4] Writing bands to DB...")
+    n = await _write_rows(
+        conn, result_df,
+        table_name=BANDS_TABLE_NAME,
+        numeric_cols=BANDS_NUMERIC_COLS,
+        force=force,
+        target_pairs=target_pairs,
+        pk_columns=BANDS_PK_COLUMNS,
+        round_to=4,
+    )
+
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
+    await upsert_analysis_identity(
+        conn,
+        name=BANDS_ANALYSIS_NAME,
+        detail_name="options_bands",
+        description=BANDS_DESCRIPTION,
+    )
+
+    return n
+
+
+async def _run_moneyness_pipeline(
+    conn,
+    force: bool,
+    sec_type: str | None = None,
+) -> int:
+    """Run the materialized moneyness series pipeline.
+
+    Computes the per (underlying_code, date, expiry_month) oi_moneyness
+    aggregates (analysis.options_moneyness_series — exact parity with the
+    former live /oi-moneyness-series SQL) AND the per (underlying_code,
+    date) spot close (analysis.options_spot_daily — the endpoint's spot
+    axis). Returns total number of rows written across both tables.
+    """
+    target_pairs: set | None = None
+    spot_target_pairs: set | None = None
+    if not force:
+        logger.info("\n  Detecting missing (underlying, date, month) "
+              "groups for the moneyness series...")
+        missing_list = await fetch_missing_moneyness_groups(conn, sec_type)
+        target_pairs = set(missing_list)
+        logger.info(f"    -> {len(target_pairs):,} missing month groups")
+
+        logger.info("  Detecting missing (underlying, date) pairs for "
+              "spot daily...")
+        spot_missing = await fetch_missing_spot_dates(conn, sec_type)
+        spot_target_pairs = set(spot_missing)
+        logger.info(f"    -> {len(spot_target_pairs):,} missing dates")
+
+        if len(target_pairs) == 0 and len(spot_target_pairs) == 0:
+            logger.info("    -> DB is up to date; nothing to do.")
+            return 0
+
+    logger.info("\n  [1/3] Fetching option contract rows for the "
+          "moneyness series (LEFT-join basis)...")
+    df = await fetch_moneyness_rows(conn, sec_type)
+    logger.info(f"    {len(df):,} contract-date rows")
+    if df.empty:
+        logger.info("    no data; skipping.")
+        return 0
+
+    logger.info("\n  [2/3] Computing moneyness series aggregates...")
+    groups_df, spot_df = compute_options_moneyness_series(df)
+    logger.info(f"    {len(groups_df):,} month-group rows, "
+          f"{len(spot_df):,} spot rows")
+
+    logger.info("\n  [3/3] Writing to DB...")
+    n_groups = await _write_rows(
+        conn, groups_df,
+        table_name=MONEYNESS_TABLE_NAME,
+        numeric_cols=MONEYNESS_NUMERIC_COLS,
+        force=force,
+        target_pairs=target_pairs,
+        pk_columns=MONEYNESS_PK_COLUMNS,
+        round_to=8,  # e_m at full NUMERIC(12,8) precision (sums stay 4dp)
+    )
+    n_spot = await _write_rows(
+        conn, spot_df,
+        table_name=SPOT_TABLE_NAME,
+        numeric_cols=SPOT_NUMERIC_COLS,
+        force=force,
+        target_pairs=spot_target_pairs,
+        pk_columns=SPOT_PK_COLUMNS,
+        round_to=4,  # the settlement source column's exact precision
+    )
+
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
+    await upsert_analysis_identity(
+        conn,
+        name=MONEYNESS_ANALYSIS_NAME,
+        detail_name="options_moneyness_series",
+        description=MONEYNESS_DESCRIPTION,
+    )
+    await upsert_analysis_identity(
+        conn,
+        name=SPOT_ANALYSIS_NAME,
+        detail_name="options_spot_daily",
+        description=SPOT_DESCRIPTION,
+    )
+
+    return n_groups + n_spot
+
+
 class OptionsAnalysis(DataAnalysis):
-    """``python -m analyze.options`` — six sequential sub-pipelines.
+    """``python -m analyze.options`` — eight sequential sub-pipelines.
 
     There is no per-sec_type loop here: the single --sec-type filter
     (or None = all) is threaded into every sub-pipeline.
     """
 
-    title = "ANALYZE OPTIONS (expiry-group skewness + OI stats + walls + IV skew)"
+    title = "ANALYZE OPTIONS (expiry-group skewness + OI stats + walls + IV skew + bands + moneyness series)"
     component = "options"
 
     def add_arguments(self, parser) -> None:
@@ -773,7 +962,9 @@ class OptionsAnalysis(DataAnalysis):
     def header_fields(self) -> dict:
         return {
             "tables": (f"{EXPIRY_IDENTITY_TABLE}, {SKEWNESS_TABLE_NAME}, "
-                       f"{OI_TABLE_NAME}, {WALLS_TABLE_NAME}, {IV_SKEW_TABLE_NAME}"),
+                       f"{OI_TABLE_NAME}, {WALLS_TABLE_NAME}, "
+                       f"{IV_SKEW_TABLE_NAME}, {BANDS_TABLE_NAME}, "
+                       f"{MONEYNESS_TABLE_NAME}, {SPOT_TABLE_NAME}"),
             "sec_type": self.args.sec_type or "all",
             "mode": "FORCE (full recompute)" if self.args.force
                     else "incremental (missing groups only)",
@@ -826,11 +1017,24 @@ class OptionsAnalysis(DataAnalysis):
         logger.info("=" * 60)
         n6 = await _run_vol_index_pipeline(conn, force, sec_type)
 
-        total = n_id + n1 + n2 + n3 + n4 + n5 + n6
+        # ---- Pipeline 7: options_bands -----------------------------------
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 7: options_bands (options-implied bands)")
+        logger.info("=" * 60)
+        n7 = await _run_bands_pipeline(conn, force, sec_type)
+
+        # ---- Pipeline 8: moneyness series + spot daily ------------------
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 8: options_moneyness_series + options_spot_daily")
+        logger.info("=" * 60)
+        n8 = await _run_moneyness_pipeline(conn, force, sec_type)
+
+        total = n_id + n1 + n2 + n3 + n4 + n5 + n6 + n7 + n8
         logger.info(f"\n  TOTAL: {total:,} rows written "
               f"(expiry_identity={n_id:,}, "
               f"skewness={n1:,}, oi={n2:,}, walls={n3:,}, "
-              f"iv_skew={n4:,}, greek_skew={n5:,}, vol_index={n6:,})")
+              f"iv_skew={n4:,}, greek_skew={n5:,}, vol_index={n6:,}, "
+              f"bands={n7:,}, moneyness={n8:,})")
 
 
 if __name__ == "__main__":

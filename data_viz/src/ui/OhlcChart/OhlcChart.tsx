@@ -39,7 +39,7 @@ import type { CodeTrendStreakInfo } from "@/shared/charts/CodeTrendTooltip";
 import { useStore } from "@/store/filters";
 import { breakArraysAtGaps } from "@/lib/series";
 import type { ECharts, EChartsOption } from "echarts";
-import { buildOhlcOption } from "./chartOption";
+import { buildOhlcOption, MARKPOINT_HOST_SERIES_ID } from "./chartOption";
 import { buildTriggerOverlay } from "./triggerOverlay";
 import { useVisibleRangeReporter } from "./useVisibleRange";
 import { useFocusDateJump } from "./useFocusDate";
@@ -56,8 +56,12 @@ import type {
   OhlcChartProps,
   TriggerAnchor,
 } from "./types";
+import type { SignalMarkPointData } from "@/shared/charts/signalMarker";
+import {
+  emphasizeSignalMarker,
+} from "@/shared/charts/signalMarker";
 
-function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, regimeSpans, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, highlightAction = null, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: OhlcChartProps) {
+function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, regimeSpans, tradeSignals = NO_TRADE_SIGNALS, selectedSignalDate = null, showPe, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, highlightAction = null, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: OhlcChartProps) {
   const themeMode = useStore((s) => s.themeMode);
 
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -71,6 +75,10 @@ function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dat
   // Anchor stash for the trigger overlay effect (assigned inside the
   // option build) — see TriggerAnchor in types.ts.
   const triggerAnchorRef = useRef<TriggerAnchor | null>(null);
+
+  // Trade-signal markPoint stash (assigned inside the option build) —
+  // read by the selected-signal-date emphasis effect below.
+  const markPointDataRef = useRef<SignalMarkPointData[] | null>(null);
 
   // Date → streak context of the trigger overlay's DARK spans, read by
   // the axis tooltip formatter at hover time (declared here so the
@@ -93,11 +101,13 @@ function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dat
       dividends,
       regimeSpans,
       tradeSignals,
+      showPe,
       triggerAnchorRef,
+      markPointDataRef,
       streakInfoByDateRef,
       forecastActionByDateRef,
     }),
-    [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, regimeSpans, tradeSignals],
+    [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, regimeSpans, tradeSignals, showPe],
   );
 
   // ---- Forecast trigger-day overlay (imperative incremental update) -----
@@ -168,6 +178,31 @@ function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dat
       onHighlightSettled?.();
     }
   }, [triggerOverlay, onHighlightSettled]);
+
+  // ---- Selected-signal-date emphasis (markPoint-only merge) ------------
+  // Enlarge + glow the selected date's trade-signal marker(s) — the
+  // Recent Movements marker-click feedback. A markPoint-only merge on
+  // the host series: a click costs one small setOption instead of a
+  // full notMerge rebuild of the 1700-candle chart. Re-applied after
+  // every base rebuild (`option` dep) since notMerge wiped the
+  // emphasis; when nothing is selected the plain built data stands.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const data = markPointDataRef.current;
+    if (!chart || !data || data.length === 0) return;
+    const merged =
+      selectedSignalDate == null
+        ? data
+        : data.map((mp) =>
+            mp.name !== "Dividend" && mp.coord[0] === selectedSignalDate
+              ? emphasizeSignalMarker(mp)
+              : mp,
+          );
+    chart.setOption(
+      { series: [{ id: MARKPOINT_HOST_SERIES_ID, markPoint: { data: merged, label: { show: false } } }] } as unknown as EChartsOption,
+      { notMerge: false },
+    );
+  }, [selectedSignalDate, option]);
 
   return (
     <EChart

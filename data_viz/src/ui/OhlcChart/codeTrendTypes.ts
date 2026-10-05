@@ -7,6 +7,7 @@
 import type React from "react";
 import type { OhlcMode } from "@/lib/ohlc";
 import type {
+  IndustrySentimentsIndex,
   MarketRegimeSpans,
   SecBoardTag,
   StockDailyRow,
@@ -20,6 +21,18 @@ export type CodeTrendSecType = "etf" | "index" | "stock";
 /** Normalized per-day row shape the base chart consumes (StockDailyRow). */
 export type CodeTrendRow = StockDailyRow;
 
+/** Industry-mode payload (`industryId` prop): the industry's member-index
+ *  close series — mapped from GET /api/analysis/industry-sentiments/chart.
+ *  Closes stay RAW (no rebasing); the chart plots one close-price line per
+ *  member index on the union date axis. */
+export interface CodeTrendIndustryData {
+  industry_id: string;
+  industry_label: string;
+  /** One entry per member index with index_basic_stats rows (the API omits
+   *  indices with no close data). */
+  indices: IndustrySentimentsIndex[];
+}
+
 /** Result of one code-trend fetch, already mapped to CodeTrendRow[]. */
 export interface CodeTrendData {
   rows: CodeTrendRow[];
@@ -27,6 +40,10 @@ export interface CodeTrendData {
   name: string | null;
   /** Dividend events (stock only) — drawn as ex-div date markers. */
   dividends: StockDividend[];
+  /** Industry mode only (`industryId` prop): member-index close series.
+   *  `rows` is empty in that mode — the industry lines render instead of
+   *  the OHLC chart. */
+  industry?: CodeTrendIndustryData | null;
 }
 
 /** One sec_type's data source: fetch a code's daily rows + map them. */
@@ -47,8 +64,15 @@ export type CodeTrendChartOptions = Partial<
 export interface CodeTrendChartProps {
   /** Security type — selects the baseline endpoint + row mapping. */
   secType: CodeTrendSecType;
-  /** Security code — suffixed ("000001.SZ") or bare ("000001"). */
+  /** Security code — suffixed ("000001.SZ") or bare ("000001"). Ignored
+   *  when `industryId` is set (industry mode). */
   code: string;
+  /** INDUSTRY MODE — when set, plot the industry instead of one security:
+   *  one RAW close-price line per member index of this industry (fetched
+   *  from /api/analysis/industry-sentiments/chart). The OHLC mode toggle,
+   *  market-regime shading, board tags and the AI Ask button are
+   *  suppressed; windowing is the in-chart dataZoom slider. */
+  industryId?: string | null;
   /** Display name (e.g. from a nav tree); falls back to the API's name. */
   name?: string;
   /** Content height in px (chart gets height − 60, slider fits below). */

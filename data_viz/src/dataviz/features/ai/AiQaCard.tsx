@@ -85,6 +85,7 @@ export default function AiQaCard({ item }: { item: AiQaItem }) {
       }}
       chips={
         <>
+          {item.is_big_fluctuation && <PostChip label="On Big Fluctuations" color="warning" />}
           {!item.industry_id && item.sector_id && (
             <PostChip label={item.sector_id} color="secondary" />
           )}

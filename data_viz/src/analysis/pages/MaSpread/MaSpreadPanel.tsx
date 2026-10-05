@@ -16,18 +16,50 @@
  *      dropdown in the card's top-right corner (0 = hidden, 2 = standard
  *      Bollinger, max 3, step 0.5). MA5/MA pairs do not show the envelope
  *      (σ is of price, not of an MA-of-MA) and the dropdown is hidden.
- *   4. OHLC Window section beneath the Trading Amt/MA section — an
- *      "OHLC Window" row label (same style as the Trading Amt/MA label)
- *      on its own full-width row, with the window buttons (20 … 1275d)
- *      on a new row below it. The buttons keep the period-column
- *      alignment of the pair chips — 20d sits under the MA20 column, …,
- *      1275d in the last column. Clicking one enables that rolling
- *      window's High/Low envelope on the chart and arms the roof/floor
- *      interaction — clicking a date on the chart draws the trendline
- *      through the window's top + 2nd highs (the roof) and top + 2nd
- *      lows (the floor) from history, converging and stopping at the
- *      clicked date (two points determining a line).
- *   5. High/Low Streaks section beneath the OHLC Window row — NESTED
+ *   4. Roof/Floor Trendlines section beneath the RSI Trends section — a
+ *      "Roof/Floor Trendlines" row label (same style as the Trading Amt/MA
+ *      label) on its own full-width row, with the window buttons (60 …
+ *      1275d — the 20d is not a roof/floor window) plus a "shade" toggle
+ *      in the row's first column on a new row below it. The buttons keep
+ *      the period-column alignment of the pair chips — 60d sits under the
+ *      MA60 column, …, 1275d in the last column. Clicking one enables that rolling window's High/Low
+ *      envelope on the chart and arms the roof/floor interaction —
+ *      clicking a date on the chart draws the trendline through the
+ *      window's top + 2nd highs (the roof) and top + 2nd lows (the floor)
+ *      from history, converging and stopping at the clicked date (two
+ *      points determining a line). The "shade" toggle is INDEPENDENT of
+ *      the period buttons: it shades EVERY window's extreme↔2nd-extreme
+ *      band at once — light purple 2nd high → high (top), light blue low →
+ *      2nd low (bottom), each drawn over its own trailing span — and
+ *      overlapping windows stack, so zones where several windows agree
+ *      read darker (strength by confluence). The shades react to the
+ *      chosen date: they anchor to the clicked chart date's windows
+ *      (latest date by default), like the trendlines and streak windows.
+ *      The anchor's trailing-20-row CLOSE extremes (max / min close of
+ *      the last 20 chart rows) provide two CUT lines — roof bottoms are
+ *      raised to the 20d max close, floor tops lowered to the 20d min
+ *      close — so no band crosses into the last 20 days' closing range;
+ *      close-based on purpose so an intraday wick cannot wipe a band,
+ *      and at fresh-high anchors the roofs compress to a narrow strip
+ *      above the top close. GUARD: a side that still ends with ZERO
+ *      bands draws one from the trailing-60-row extremes (roof = 60d max
+ *      close → 60d max high, floor = 60d min low → 60d min close).
+ *      Breach markers (nail pins, tip pointing in the break's
+ *      direction) mark days the close entered a drawn band
+ *      from OUTSIDE, in the break's direction (roof: up through the
+ *      roof bottom edge; floor: down through the floor top edge) —
+ *      crossings of the anchor-date band edges, not the table's
+ *      rolling prior-day-band events. Clicking a window button is
+ *      EXCLUSIVE: every other section's picks clear (RSI Trends, High/
+ *      Low Streaks, Px-Vol States, Top-10% OHLC Days, Market Regimes),
+ *      the header overlay returns to Amt, an Amt/MA envelope view
+ *      falls back to Price/MA5 — and the trading-amt bars yield the
+ *      right axis to the window's change-since-last-anchor plot (one
+ *      plot, dashed zero central line: Δ Low(Wd) = close − last low
+ *      anchor above it as positive, Δ High(Wd) = close − last high
+ *      anchor below it as negative).
+ *   5. High/Low Streaks section beneath the Roof/Floor Trendlines row —
+ *      NESTED
  *      buttons: the first layer holds the band lookback periods
  *      (60/120/255/500/750/1275, period-column aligned with the OHLC
  *      row);
@@ -57,16 +89,30 @@
  *      matching dates — green rise / red drop / gray flat, shade depth by
  *      combo strength (sharp × heavy = darkest, e.g. rising price +
  *      increasing amount = strong growth).
+ *   8. RSI Trends section beneath the Trading Amt/MA section — the
+ *      right-axis RSI overlay's own row (moved out of the header
+ *      Amt/Slopes/Curvatures toggle), resting fully OFF: the days row
+ *      multi-picks the Wilder-RSI window lines (3/6/10/14/20/60d — any
+ *      pick replaces the amt bars while the header toggle sits at Amt;
+ *      Slopes/Curvatures keep precedence) AND scopes the pct row's
+ *      ranks; the first day pick AUTO-arms the 1% shade, the last day
+ *      un-picked takes it off. The pct row single-picks the Top-%
+ *      history-rank shade (analysis.mov_ave_rsi_ranks) — split evenly
+ *      across the rank axis treated as signed: green where the RSI
+ *      ranked within the top pct/2 of the picked windows' own history
+ *      (rises), red where within the bottom pct/2 (drops); one
+ *      qualifying window draws the base fill, several overlapping on a
+ *      date stack it darker.
  *
  * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType)
  * — the DEFAULT load carries just the 18 Simple-MA + EMA pair series and the
  * shared per-date tooltip metrics. The other metric groups load ON DEMAND:
- * the first pick of an Amt/MA chip, an OHLC Window button, a High/Low
- * Streaks period, or a Px-Vol state fetches that group via
- * fetchMovAveSpreadExtras (a regime button's first pick fetches the spans
- * via fetchMarketRegimeSpans); while any group is in flight every control
- * in the panel is disabled and the plot freezes under a translucent
- * spinner backdrop (BaseChart freezeOnLoading).
+ * the first pick of an Amt/MA chip, a Roof/Floor Trendlines button, a
+ * High/Low Streaks period, a Px-Vol state, or an RSI Trends pct fetches
+ * that group via fetchMovAveSpreadExtras (a regime button's first pick
+ * fetches the spans via fetchMarketRegimeSpans); while any group is in
+ * flight every control in the panel is disabled and the plot freezes under
+ * a translucent spinner backdrop (BaseChart freezeOnLoading).
  *
  * Every button-group title carries a small info mark (SectionLabel) that
  * opens a popover with the group's description — the texts live in
@@ -91,7 +137,7 @@ import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts } from "echarts";
-import { UP_COLOR } from "@/theme/chart-palette";
+import { UP_COLOR, DOWN_COLOR, MUTED_PALETTE } from "@/theme/chart-palette";
 import {
   REGIME_ACCENT_COLORS,
   REGIME_LABELS,
@@ -103,6 +149,7 @@ import type {
   MarketRegime,
   MarketRegimeSpans,
   MovAveSpreadOhlcGapDay,
+  MovAveSpreadRsiRankDay,
 } from "@shared/types";
 import { fmtNum, fmtPct } from "@/lib/series";
 import {
@@ -121,6 +168,7 @@ import type {
   MovAveSpreadSharedMetricsRow,
   MovAveSpreadAmtRow,
   MovAveSpreadOhlcRow,
+  MovAveSpreadBandsRow,
   MovAveSpreadHighLowStreak,
   MovAveSpreadPriceVsAmtDay,
   MovAveSpreadMetric,
@@ -128,11 +176,13 @@ import type {
 import type { PanelProps } from "./types";
 import { SectionLabel } from "./SectionLabel";
 import {
-  OHLC_WINDOWS,
+  ROOF_FLOOR_WINDOWS,
   HIGH_LOW_STREAK_PERIODS,
   HIGH_LOW_STREAK_PCTS,
+  RSI_WINDOWS,
+  RSI_TOP_PCTS,
 } from "./constants";
-import { buildPairOption, buildAmtEnvelopeOption, shortLabel } from "./chartOption";
+import { buildPairOption, buildAmtEnvelopeOption, shortLabel, type DerivTrendSpec, type ShadeOverlay } from "./chartOption";
 import {
   computePxVolStates,
   pxVolMatchRuns,
@@ -155,33 +205,59 @@ import {
  *  0.0 = band hidden; 2.0 = standard Bollinger. */
 const BOLL_K_OPTIONS = [0, 0.5, 1, 1.5, 2, 2.5, 3];
 
-/** The pair chart's lower overlay, switched by the single Amt | RSI Trends
- *  group in the card header: "amt" shows the lowkey trading-amount bars,
- *  "rsi" swaps them for the shared block's Wilder-RSI window lines. */
-type ChartOverlay = "amt" | "rsi";
+/** The RSI Top-% shade overlays' accents — the shared price up/down
+ *  tokens (rise = UP_COLOR green, drop = DOWN_COLOR red; distinct from
+ *  the RSI window lines' blue→teal MUTED_PALETTE[0..5] and the regime
+ *  hues). Every markArea rect fill reuses its token — one qualifying
+ *  window draws the flat base opacity, each additional window stacking
+ *  on the same date multiplies it (capped; the cssVar tokens cannot
+ *  spell their own rgba). */
+const RSI_SHADE_BASE_OPACITY = 0.18;
+
+/** The pair chart's right-axis overlay, switched by the Amt | Slopes |
+ *  Curvatures group in the card header: "amt" shows the lowkey
+ *  trading-amount bars; slope/curv swap them for the DB-stored direct
+ *  derivative lines of the price and the 5/20-day MA (or 6/20-day EMA
+ *  while an EMA pair chip is selected): value[t] − value[t−1] for the
+ *  slope, its diff for the curvature — no averaging. The RSI Trends
+ *  overlay left the toggle (it has its own button row beneath the
+ *  chart): while its days row holds a pick AND the toggle sits at
+ *  "amt", the shared block's Wilder-RSI window lines replace the amt
+ *  bars; Slopes/Curvatures keep precedence over it. While a Roof/Floor
+ *  Trendlines window button is enabled, its change-since-last-anchor
+ *  plot owns the amt slot instead (the click clears the other sections
+ *  and this toggle back to Amt) — RSI/derivatives picks made afterwards
+ *  take the slot back. */
+type ChartOverlay = "amt" | "slope" | "curv";
 
 /**
  * The on-demand metric groups (MovAveSpreadMetric) → the ExtrasState key
  * they populate. Each group feeds one control section and is fetched the
  * first time one of its buttons is picked:
- *   amt → the 5 Amt/MA chips · ohlc → the OHLC Window row ·
- *   streaks → the High/Low Streaks row · pxvol → the Px-Vol States row.
+ *   amt → the 5 Amt/MA chips · ohlc → the Roof/Floor
+ *   bands → the "shade" toggle's band table · streaks → the High/Low
+ *   Streaks row · pxvol → the Px-Vol States row ·
+ *   rsiranks → the RSI Trends section's pct row.
  */
-const METRIC_STATE_KEY: Record<MovAveSpreadMetric, "amtPairs" | "ohlc" | "highLowStreaks" | "priceVsAmt" | "ohlcGaps"> = {
+const METRIC_STATE_KEY: Record<MovAveSpreadMetric, "amtPairs" | "ohlc" | "roofFloorBands" | "highLowStreaks" | "priceVsAmt" | "ohlcGaps" | "rsiRanks"> = {
   amt: "amtPairs",
   ohlc: "ohlc",
+  bands: "roofFloorBands",
   streaks: "highLowStreaks",
   pxvol: "priceVsAmt",
   gaps: "ohlcGaps",
+  rsiranks: "rsiRanks",
 };
 
 /** On-demand metric groups loaded so far (per code + refresh). */
 interface ExtrasState {
   amtPairs?: MovAveSpreadPairSeries[];
   ohlc?: MovAveSpreadOhlcRow[];
+  roofFloorBands?: MovAveSpreadBandsRow[];
   highLowStreaks?: MovAveSpreadHighLowStreak[];
   priceVsAmt?: MovAveSpreadPriceVsAmtDay[];
   ohlcGaps?: MovAveSpreadOhlcGapDay[];
+  rsiRanks?: MovAveSpreadRsiRankDay[];
 }
 
 /**
@@ -202,8 +278,8 @@ const LONG_EMA_ORDER = [6, 20, 60, 120, 255] as const;
  * Shared period-column grid — one column per period (5, 20, 60, 120, 255,
  * 500, 750, 1275) so every button row aligns vertically by period. Pair
  * rows only fill the first 5 columns (their long MAs stop at 255); the
- * OHLC Window row spans the full width (its 20d … 1275d buttons continue
- * into the extra columns under their matching periods).
+ * Roof/Floor Trendlines row spans the full width (its 60d … 1275d buttons
+ * continue into the extra columns under their matching periods).
  */
 const PERIOD_GRID_SX: CSSProperties = {
   display: "grid",
@@ -213,7 +289,7 @@ const PERIOD_GRID_SX: CSSProperties = {
 };
 
 /**
- * Shared Chip sx for every period button (pair chips + OHLC-window
+ * Shared Chip sx for every period button (pair chips + roof/floor-window
  * buttons): fill its grid cell with a centered label, compact size.
  */
 const PERIOD_CHIP_SX: CSSProperties = {
@@ -300,25 +376,43 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // Fetch ONE on-demand metric group (no-op when already loaded or in
   // flight). Resolves after the group lands — callers chain their button's
   // state change onto it so the pick applies the moment the spinner stops.
-  const ensureMetric = useCallback(
-    (metric: MovAveSpreadMetric): Promise<void> => {
-      if (extras[METRIC_STATE_KEY[metric]] != null) return Promise.resolve();
-      setLoadingMetrics((prev) =>
-        prev.includes(metric) ? prev : [...prev, metric],
-      );
+  // Fetch the not-yet-loaded subset of metric groups in ONE /extras call;
+  // resolves after they land so callers chain their button's state change
+  // onto it. (The shade toggle loads "ohlc" + "bands" together.)
+  const ensureMetrics = useCallback(
+    (metrics: MovAveSpreadMetric[]): Promise<void> => {
+      const missing = metrics.filter((m) => extras[METRIC_STATE_KEY[m]] == null);
+      if (missing.length === 0) return Promise.resolve();
+      setLoadingMetrics((prev) => [
+        ...prev,
+        ...missing.filter((m) => !prev.includes(m)),
+      ]);
       setMetricError(null);
-      return fetchMovAveSpreadExtras(code, secType, [metric])
+      return fetchMovAveSpreadExtras(code, secType, missing)
         .then((d) => {
-          setExtras((prev) => ({ ...prev, [METRIC_STATE_KEY[metric]]: d[METRIC_STATE_KEY[metric]] }));
+          setExtras((prev) => {
+            const next: ExtrasState = { ...prev };
+            const src = d as unknown as Record<string, unknown>;
+            const dst = next as unknown as Record<string, unknown>;
+            for (const m of missing) {
+              dst[METRIC_STATE_KEY[m]] = src[METRIC_STATE_KEY[m]];
+            }
+            return next;
+          });
         })
         .catch((e: Error) => {
           setMetricError(e.message);
         })
         .finally(() => {
-          setLoadingMetrics((prev) => prev.filter((m) => m !== metric));
+          setLoadingMetrics((prev) => prev.filter((m) => !missing.includes(m)));
         });
     },
     [extras, code, secType],
+  );
+
+  const ensureMetric = useCallback(
+    (metric: MovAveSpreadMetric): Promise<void> => ensureMetrics([metric]),
+    [ensureMetrics],
   );
 
   // Bollinger multiplier k in MA ± k×σ. Default 2 (standard Bollinger).
@@ -327,25 +421,37 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // Options: 0, 0.5, 1, 1.5, 2, 2.5, 3 (step 0.5).
   const [bollingerK, setBollingerK] = useState(2);
 
-  // The chart's lower overlay switch (the single Amt | RSI Trends group in
-  // the header): "amt" shows the lowkey trading-amount bars + Amt secondary
-  // axis, "rsi" swaps them for the shared block's Wilder-RSI window lines
-  // (3/6/10/14/20d, 0-100 axis). The shared block is part of the default
-  // chart load, so no extra fetch is needed.
+  // The chart's right-axis overlay switch (the Amt | Slopes | Curvatures
+  // group in the header): "amt" shows the lowkey trading-amount bars + Amt
+  // secondary axis, "slope"/"curv" the family's derivative lines (see the
+  // derivTrend memo below — no extra fetch, the pair rows already carry
+  // the values). The RSI Trends overlay left the toggle: it is driven by
+  // the RSI Trends section's days row beneath the chart and rides the
+  // "amt" slot (rsiLinesActive below).
   const [chartOverlay, setChartOverlay] = useState<ChartOverlay>("amt");
 
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
-  // Enabled rolling-OHLC window (trading days) — null = off. Selected via
-  // the OHLC-window button row beneath the Trading Amt/MA section.
-  const [ohlcWindow, setOhlcWindow] = useState<number | null>(null);
+  // Enabled roof/floor window (trading days) — null = off. Selected via
+  // the Roof/Floor Trendlines row beneath the Trading Amt/MA section
+  // (ROOF_FLOOR_WINDOWS holds the clickable windows).
+  const [roofFloorWindow, setRoofFloorWindow] = useState<number | null>(null);
+
+  // The row's "shade" toggle — independent of the period buttons: when on,
+  // EVERY roof/floor window (60…1275d at once, regardless of the selected
+  // roofFloorWindow) shades the flat band between the EXTREME and 2ND EXTREME
+  // of the window ending at the anchor date — light purple top (2nd high →
+  // high), light blue bottom (low → 2nd low) — over each window's own
+  // trailing span; overlapping windows stack, deepening where they agree.
+  // Reacts to the chosen date (anchorIdx; latest date by default).
+  const [roofFloorShade, setOhlcShade] = useState(false);
 
   // Clicked chart date index (into the full rows — shared date axis). The
   // roof/floor trendlines of the enabled window are drawn to (and stop at)
   // this date. Clicking the same date again clears it.
-  const [ohlcClickIdx, setOhlcClickIdx] = useState<number | null>(null);
+  const [anchorIdx, setAnchorIdx] = useState<number | null>(null);
 
   // High/Low Streaks nested buttons: layer 1 = band lookback period
   // (trading rows, null = row off), layer 2 = band tightness pct (percent,
@@ -420,6 +526,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     setRegimePicks(new Set());
     setRegimeSpans(null);
     setRegimesLoading(false);
+    setRsiTopPct(null);
   }, [code, secType]);
 
   const toggleStreakPeriod = useCallback((w: number) => {
@@ -440,18 +547,15 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // loads its metric group first and applies the pick as soon as the fetch
   // resolves; later picks toggle directly. While the fetch is in flight
   // the freeze disables every control, so at most one load runs at a time.
-  const handleOhlcWindowClick = useCallback(
-    (w: number) => {
-      if (extras.ohlc == null) {
-        void ensureMetric("ohlc").then(() =>
-          setOhlcWindow((prev) => (prev === w ? null : w)),
-        );
-      } else {
-        setOhlcWindow((prev) => (prev === w ? null : w));
-      }
-    },
-    [ensureMetric, extras.ohlc],
-  );
+
+  // The "shade" toggle loads the "bands" group (the precomputed band
+  // edges + breach flags) together with the "ohlc" group (the trendline
+  // anchors) on its first pick.
+  const handleRoofFloorShadeClick = useCallback(() => {
+    void ensureMetrics(["ohlc", "bands"]).then(() =>
+      setOhlcShade((prev) => !prev),
+    );
+  }, [ensureMetrics]);
 
   const handleStreakPeriodClick = useCallback(
     (w: number) => {
@@ -506,6 +610,68 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     [ensureMetric, extras.ohlcGaps],
   );
 
+  // RSI Trends section state (the button row beneath the chart — the
+  // overlay left the header toggle). The section rests fully OFF: no day
+  // picked, no pct. Clicking a day turns the overlay on and AUTO-selects
+  // the 1% shade; un-picking the last day returns to off.
+  //   rsiDays — the days row's multi-pick of Wilder-RSI window lines
+  //     (while non-empty AND the header toggle sits at "amt", the picked
+  //     RSI lines replace the trading-amt bars) AND the shade's rank
+  //     scope.
+  //   rsiTopPct — the pct row's Top-% history-rank shade
+  //     (analysis.mov_ave_rsi_ranks), split evenly green top-half rises /
+  //     red bottom-half drops; null = off. A fresh pick loads the
+  //     "rsiranks" extras group; the pick applies when it resolves.
+  const [rsiDays, setRsiDays] = useState<number[]>([]);
+  const [rsiTopPct, setRsiTopPct] = useState<number | null>(null);
+  // Pure toggle (functional update — rapid clicks can't race the closure);
+  // the arm/clear side effects live in the effect below.
+  const toggleRsiDay = useCallback((w: number) => {
+    setRsiDays((prev) =>
+      prev.includes(w) ? prev.filter((d) => d !== w) : [...prev, w],
+    );
+  }, []);
+  // The section's lifecycle: the FIRST day pick (empty → non-empty)
+  // auto-arms the 1% shade — fetching the rsiranks group first when
+  // needed — while a manual pct pick/clear afterwards sticks; the resting
+  // state (no day picked) always takes the shade off.
+  const prevDaysLenRef = useRef(0);
+  useEffect(() => {
+    const wasEmpty = prevDaysLenRef.current === 0;
+    prevDaysLenRef.current = rsiDays.length;
+    if (rsiDays.length === 0) {
+      setRsiTopPct(null);
+      return;
+    }
+    if (wasEmpty && rsiTopPct == null) {
+      if (extras.rsiRanks == null) {
+        void ensureMetric("rsiranks").then(() =>
+          setRsiTopPct((p) => p ?? 0.01),
+        );
+      } else {
+        setRsiTopPct(0.01);
+      }
+    }
+  }, [rsiDays, rsiTopPct, ensureMetric, extras.rsiRanks]);
+  const handleRsiTopPctSelect = useCallback(
+    (pct: number) => {
+      if (pct === 0) {
+        setRsiTopPct(null);
+        return;
+      }
+      if (extras.rsiRanks == null) {
+        void ensureMetric("rsiranks").then(() => setRsiTopPct(pct));
+      } else {
+        setRsiTopPct(pct);
+      }
+    },
+    [ensureMetric, extras.rsiRanks],
+  );
+  // The RSI lines ride the toggle's "amt" slot (Slopes/Curvatures keep
+  // precedence): active while the days row holds a pick and no derivative
+  // overlay is toggled on. The pct shades are independent of the toggle.
+  const rsiLinesActive = chartOverlay === "amt" && rsiDays.length > 0;
+
   // Fetch the chart blocks on mount and whenever the code/sec_type changes.
   // All three blocks fire AT ONCE (parallel-then-render): the panel renders
   // as soon as the REQUIRED pairs block lands, while the EMA chips and the
@@ -526,7 +692,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         if (cancelled) return;
         setPairsBlock(d);
         setSelectedPairIdx(0);
-        setOhlcClickIdx(null);
+        setAnchorIdx(null);
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -553,16 +719,18 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     };
   }, [code, secType, refreshKey]);
 
-  // Canvas-level chart click: sets the anchor date. Only armed while an
-  // OHLC window or the High/Low Streaks row is enabled; clicking the
-  // already-selected date clears the anchor (toggle, back to the latest
-  // date's window), clicking another date moves it.
+  // Canvas-level chart click: sets the anchor date. Armed while an OHLC
+  // window, the High/Low Streaks row, or the shade toggle is enabled; the
+  // roof/floor trendlines, the streak window, and every shade window all
+  // re-anchor to the clicked date. Clicking the already-selected date
+  // clears the anchor (toggle, back to the latest date's window), clicking
+  // another date moves it.
   const handleCanvasClick = useCallback(
     (dataIdx: number) => {
-      if (ohlcWindow == null && streakPeriod == null) return;
-      setOhlcClickIdx((prev) => (prev === dataIdx ? null : dataIdx));
+      if (roofFloorWindow == null && streakPeriod == null && !roofFloorShade) return;
+      setAnchorIdx((prev) => (prev === dataIdx ? null : dataIdx));
     },
-    [ohlcWindow, streakPeriod],
+    [roofFloorWindow, streakPeriod, roofFloorShade],
   );
 
   // The full pairs list — the 18 default series plus the 5 Amt/MA series
@@ -609,9 +777,9 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       firstPairRows,
       streakPeriod,
       streakPct,
-      ohlcClickIdx,
+      anchorIdx,
     );
-  }, [firstPairRows, streakPeriod, streakPct, ohlcClickIdx]);
+  }, [firstPairRows, streakPeriod, streakPct, anchorIdx]);
 
   // The BREAK STREAKS for the selected (period, pct) combo — detected
   // CLIENT-SIDE against the anchor window's own static band edges (the
@@ -703,6 +871,91 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // True when an Amt/MA pair is selected — price chips are frozen (disabled).
   const amtPairSelected = selectedPair?.kind === "amt";
 
+  // Enabling a Roof/Floor Trendlines window is EXCLUSIVE: every other
+  // section's picks clear (RSI Trends, High/Low Streaks, Px-Vol States,
+  // Top-10% OHLC Days, Market Regimes), the header overlay returns to
+  // Amt, and an Amt/MA envelope view falls back to Price/MA5 — so the
+  // window's roof/floor overlays own the chart and its change-since-
+  // last-anchor plot owns the right axis. Toggling the same window off
+  // just clears it (the other sections stay cleared until re-picked);
+  // the section's own "shade" chip and the clicked anchor survive.
+  // (Defined here because the amt-envelope fallback reads
+  // amtPairSelected.)
+  const handleRoofFloorWindowClick = useCallback(
+    (w: number) => {
+      const turningOn = roofFloorWindow !== w;
+      const apply = () => {
+        if (!turningOn) {
+          setRoofFloorWindow(null);
+          return;
+        }
+        setChartOverlay("amt");
+        setRsiDays([]);
+        setRsiTopPct(null);
+        setStreakPeriod(null);
+        setStreakPct(null);
+        setPxVolSpeed(null);
+        setPxVolVol(null);
+        setGapMarks({ spike: false, flush: false });
+        setRegimePicks(new Set());
+        if (amtPairSelected) setSelectedPairIdx(0);
+        setRoofFloorWindow(w);
+      };
+      if (extras.ohlc == null) {
+        void ensureMetric("ohlc").then(apply);
+      } else {
+        apply();
+      }
+    },
+    [ensureMetric, extras.ohlc, roofFloorWindow, amtPairSelected],
+  );
+
+  // ---- Slopes/Curvatures overlay lines (the header toggle's two
+  // derivative modes). THREE DIRECT derivative curves read from the
+  // DB-STORED columns (no client-side computation, no averaging):
+  //   Price  — price_slope / price_curvature (P[t] − P[t−1] and its diff)
+  //   MA5/EMA6 + MA20/EMA20 — the slope of the moving-average LINE
+  //            itself (maW[t] − maW[t−1] / emaW[t] − emaW[t−1],
+  //            curvature = that slope's diff), straight from the
+  //            ma{5,20}_* / ema{6,20}_* detail columns.
+  // The family follows the pair switch: an EMA chip swaps the MA curves
+  // to EMA6/EMA20; a Simple-MA chip (the default) shows MA5/MA20.
+  const derivTrend = useMemo<DerivTrendSpec | null>(() => {
+    if (chartOverlay !== "slope" && chartOverlay !== "curv") return null;
+    const mode = chartOverlay === "slope" ? "slope" : "curvature";
+    const suffix = mode === "slope" ? "Slope" : "Curv";
+    const isEma = selectedPair?.kind === "ema";
+    // The Price/{W} pairs: short leg = price (short_slope /
+    // short_curvature carry the DB's price derivatives), long leg = the
+    // window's MA/EMA (long_slope / long_curvature carry its stored
+    // derivative).
+    const anchor = pairs[pairIndexMap.get(isEma ? "ema-0-6" : "price-0-5") ?? -1];
+    const long20 = pairs[pairIndexMap.get(isEma ? "ema-0-20" : "price-0-20") ?? -1];
+    const pick = (
+      p: typeof anchor,
+      leg: "short" | "long",
+    ): Array<number | null> =>
+      (p?.rows ?? []).map((r) =>
+        mode === "slope"
+          ? leg === "short"
+            ? r.short_slope
+            : r.long_slope
+          : leg === "short"
+            ? r.short_curvature
+            : r.long_curvature,
+      );
+    const shortName = isEma ? "EMA6" : "MA5";
+    const longName = isEma ? "EMA20" : "MA20";
+    return {
+      mode,
+      lines: [
+        { name: `Price ${suffix}`, data: pick(anchor, "short"), color: MUTED_PALETTE[0] },
+        { name: `${shortName} ${suffix}`, data: pick(anchor, "long"), color: MUTED_PALETTE[1] },
+        { name: `${longName} ${suffix}`, data: pick(long20, "long"), color: MUTED_PALETTE[2] },
+      ],
+    };
+  }, [chartOverlay, selectedPair, pairs, pairIndexMap]);
+
   // The Top-10% OHLC Days SHADES — light red bands over spike-fade
   // days (upper wick in its trailing-252d top decile), light green over
   // flush-recover days (lower wick likewise). Consecutive flagged dates
@@ -788,6 +1041,132 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     return { shades, counts };
   }, [gapMarks, extras.ohlcGaps, selectedPair]);
 
+  // The RSI Top-% SHADES (the RSI Trends section's pct row): the picked
+  // pct is SPLIT EVENLY across the two ends of the code's own RSI-rank
+  // axis (analysis.mov_ave_rsi_ranks — ONE rank family, rank 1 = the
+  // code's highest RSI reading, dense 1..N; the axis is treated as a
+  // signed scale): green shades mark the dates ranking within the top
+  // pct/2 of the window's own history (rises, UP_COLOR), red the bottom
+  // pct/2 (drops, DOWN_COLOR). Per window the half cutoff is
+  // ceil(pct/2 × N_w) with N_w the window's count of ranked days = the
+  // max stored rank; the bottom side qualifies at rank > N_w − cutoff.
+  //
+  // DEPTH: every picked window contributes the SAME base strength and
+  // transparency (one qualifying window = the flat base fill), and each
+  // ADDITIONAL picked window whose ranks qualify on the same date stacks
+  // the shade darker — per-date qualifying-window COUNT per side, merged
+  // into runs of equal count, rect opacity = base × count (capped). The
+  // days row scopes the ranks (picked windows only; rsi3 1% and rsi60 1%
+  // shade different date sets), and a single side's date may qualify for
+  // both sides via different windows — the green and red overlays then
+  // overlap (each independently legend-toggleable). The overlays draw in
+  // every right-axis mode once a pct is picked.
+  const rsiRankShades = useMemo<ShadeOverlay[]>(() => {
+    if (rsiTopPct == null) return [];
+    const ranks = extras.rsiRanks;
+    if (ranks == null || ranks.length === 0 || selectedPair == null) return [];
+    // The days row scopes the rank windows: picked windows only (sorted),
+    // or all six when the row is empty.
+    const shadeWindows =
+      rsiDays.length > 0
+        ? [...rsiDays].sort((a, b) => a - b)
+        : [...RSI_WINDOWS];
+    // Per-window N_w = the count of ranked (non-null-RSI) days — the max
+    // stored rank, exact because the ranks are dense 1..N per window.
+    const totals = new Map<number, number>();
+    for (const r of ranks) {
+      for (const w of shadeWindows) {
+        const rk = r[`rank_rsi_${w}days`];
+        if (rk != null && rk > (totals.get(w) ?? 0)) totals.set(w, rk);
+      }
+    }
+    // The picked pct split evenly: half for the top (rise) end, half for
+    // the bottom (drop) end — one cutoff per window serves both sides.
+    const cutoffs = new Map<number, number>();
+    for (const [w, n] of totals) {
+      cutoffs.set(w, Math.max(1, Math.ceil((rsiTopPct / 2) * n)));
+    }
+    // Per-date qualifying-window count per side — the shade's depth.
+    const counts = new Map<string, { rise: number; drop: number }>();
+    for (const r of ranks) {
+      let rise = 0;
+      let drop = 0;
+      for (const w of shadeWindows) {
+        const cutoff = cutoffs.get(w);
+        const rk = r[`rank_rsi_${w}days`];
+        const n = totals.get(w);
+        if (cutoff == null || n == null || rk == null) continue;
+        if (rk <= cutoff) rise += 1;
+        else if (rk > n - cutoff) drop += 1;
+      }
+      if (rise > 0 || drop > 0) counts.set(r.date, { rise, drop });
+    }
+    const byDateHas = new Set(counts.keys());
+    const dates = selectedPair.rows.map((r) => r.date);
+    // Consecutive dates of EQUAL count merge into one band; a count
+    // change starts a new band (single-day bands allowed — the marked
+    // days are scattered by nature).
+    const buildCountedRuns = (
+      side: "rise" | "drop",
+    ): Array<{ start: string; end: string; count: number }> => {
+      const runs: Array<{ start: string; end: string; count: number }> = [];
+      let cur: { start: string; end: string; count: number } | null = null;
+      for (const dt of dates) {
+        const c = byDateHas.has(dt) ? counts.get(dt)![side] : 0;
+        if (c > 0) {
+          if (cur != null && cur.count === c) {
+            cur.end = dt;
+          } else {
+            cur = { start: dt, end: dt, count: c };
+            runs.push(cur);
+          }
+        } else {
+          cur = null;
+        }
+      }
+      return runs;
+    };
+    const shadeRects = (
+      runs: Array<{ start: string; end: string; count: number }>,
+      accent: string,
+    ): ShadeOverlay["data"] =>
+      runs.map((r) => [
+        {
+          xAxis: r.start,
+          itemStyle: {
+            color: accent,
+            opacity: Math.min(RSI_SHADE_BASE_OPACITY * r.count, 0.8),
+          },
+        },
+        { xAxis: r.end },
+      ]);
+    const riseRuns = buildCountedRuns("rise");
+    const dropRuns = buildCountedRuns("drop");
+    // The half pct in percent (e.g. picked 1% → 0.5) for the legend labels.
+    const halfPct = Math.round(rsiTopPct * 500) / 10;
+    // A single picked window names it in the legend (RSI3 Rise 0.5% vs
+    // RSI60's — the comparison the days row exists for); multi/none stays
+    // generic.
+    const wLabel =
+      shadeWindows.length === 1 ? `RSI${shadeWindows[0]} ` : "";
+    const out: ShadeOverlay[] = [];
+    if (riseRuns.length > 0) {
+      out.push({
+        label: `${wLabel}Rise ${halfPct}%`,
+        accent: UP_COLOR,
+        data: shadeRects(riseRuns, UP_COLOR),
+      });
+    }
+    if (dropRuns.length > 0) {
+      out.push({
+        label: `${wLabel}Drop ${halfPct}%`,
+        accent: DOWN_COLOR,
+        data: shadeRects(dropRuns, DOWN_COLOR),
+      });
+    }
+    return out;
+  }, [rsiTopPct, rsiDays, extras.rsiRanks, selectedPair]);
+
   // Optional secondary stat row from the latest snapshot of all 9 pairs —
   // surfaced as a small caption so the user can scan the page quickly.
   const latestSummary = chartData?.pairs[safePairIdx]?.rows.slice(-1)[0] ?? null;
@@ -833,10 +1212,15 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
           </Select>
         </Stack>
       )}
-      {/* Amt | RSI Trends — ONE two-position switch for the chart's lower
-          overlay (mirrors the OhlcModeToggle group beside it). Disabled
-          while an Amt/MA pair's envelope view is shown (that view's whole
-          plot IS amount). */}
+      {/* Amt | Slopes | Curvatures — the header switch for the chart's
+          right-axis overlay (mirrors the OhlcModeToggle group beside it).
+          Slopes/Curvatures draw the DB-stored direct derivative lines of
+          the price and the 5/20-day MA (6/20-day EMA while an EMA pair
+          chip is selected) — value[t] − value[t−1] and its diff, no
+          averaging. The RSI Trends overlay moved out (its own button row
+          beneath the chart) and rides the "amt" slot via its days row.
+          Disabled while an Amt/MA pair's envelope view is shown (that
+          view's whole plot IS amount). */}
       <ToggleButtonGroup
         size="small"
         exclusive
@@ -849,8 +1233,11 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         <ToggleButton value="amt" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
           Amt
         </ToggleButton>
-        <ToggleButton value="rsi" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
-          RSI Trends
+        <ToggleButton value="slope" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+          Slopes
+        </ToggleButton>
+        <ToggleButton value="curv" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+          Curvatures
         </ToggleButton>
       </ToggleButtonGroup>
       <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
@@ -874,7 +1261,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               longStreaks,
               streakPeriod,
               streakPct,
-              streakAnchorIdx: ohlcClickIdx,
+              streakAnchorIdx: anchorIdx,
               pxVolShade,
               regimeShades: [...regimeShades, ...ohlcGapShades],
               ohlcGapRows: extras.ohlcGaps ?? null,
@@ -885,18 +1272,25 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               shared: chartData?.shared ?? null,
               themeMode,
               bollingerK,
-              tradingAmtMode: chartOverlay === "amt" ? "lowkey" : "off",
-              rsiTrendMode: chartOverlay === "rsi",
+              tradingAmtMode:
+                chartOverlay === "amt" && rsiDays.length === 0
+                  ? "lowkey"
+                  : "off",
+              rsiTrendMode: rsiLinesActive,
+              rsiWindows: rsiDays,
+              derivTrend,
               ohlcMode,
-              ohlcWindow,
-              ohlcClickIdx,
-              ohlcRows: extras.ohlc ?? null,
+              roofFloorWindow,
+              roofFloorClickIdx: anchorIdx,
+              roofFloorRows: extras.ohlc ?? null,
+              bandRows: extras.roofFloorBands ?? null,
+              roofFloorShadeWindows: roofFloorShade ? ROOF_FLOOR_WINDOWS : null,
               longStreaks,
               streakPeriod,
               streakPct,
-              streakAnchorIdx: ohlcClickIdx,
+              streakAnchorIdx: anchorIdx,
               pxVolShade,
-              regimeShades: [...regimeShades, ...ohlcGapShades],
+              regimeShades: [...regimeShades, ...ohlcGapShades, ...rsiRankShades],
               ohlcGapRows: extras.ohlcGaps ?? null,
               ohlcGapActive: gapMarks.spike || gapMarks.flush,
             })
@@ -911,15 +1305,21 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       themeMode,
       bollingerK,
       chartOverlay,
+      rsiDays,
+      rsiLinesActive,
+      derivTrend,
       ohlcMode,
-      ohlcWindow,
-      ohlcClickIdx,
+      roofFloorWindow,
+      anchorIdx,
+      roofFloorShade,
+      extras.roofFloorBands,
       longStreaks,
       streakPeriod,
       streakPct,
       pxVolShade,
       regimeShades,
       ohlcGapShades,
+      rsiRankShades,
       extras.ohlcGaps,
       gapMarks.spike,
       gapMarks.flush,
@@ -941,8 +1341,8 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // Primitive (not the firstPairRows array) so the spec memo below stays
   // identity-stable.
   const anchorDate =
-    ohlcClickIdx != null && firstPairRows[ohlcClickIdx]
-      ? firstPairRows[ohlcClickIdx].date
+    anchorIdx != null && firstPairRows[anchorIdx]
+      ? firstPairRows[anchorIdx].date
       : undefined;
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
@@ -950,7 +1350,8 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         `MA-spread study for ${code} — pair ${selectedPair?.pair_label ?? "—"}: short curve vs ` +
         "long MA, green fill when short > long, red when short < long; tooltips report each " +
         "series' slope and curvature. Control overlays: Bollinger ±kσ envelope on the long " +
-        "MA, click-anchored rolling High/Low trendlines (roof/floor), break-streak zones, " +
+        "MA, click-anchored rolling High/Low trendlines (roof/floor), extreme↔2nd-extreme " +
+        "shade zones (all roof/floor windows at once), break-streak zones, " +
         "Px-Vol state shading (price speed × amount state). % mode: OHLC + MAs rebased to " +
         "% change from the first valid close; Amt pairs switch to an amount-envelope view " +
         "with a lowkey price reference. Indication: green fill = momentum regime long; " +
@@ -970,23 +1371,41 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         : [
             { name: shortName, description: "the pair's short leg (price or short MA/EMA)" },
             { name: longName, description: "the pair's long moving average" },
-            ...(chartOverlay === "rsi"
-              ? [3, 6, 10, 14, 20].map((w) => ({
+            ...(rsiLinesActive
+              ? rsiDays.slice().sort((a, b) => a - b).map((w) => ({
                   name: `RSI${w}`,
                   description: `${w}-day Wilder RSI trend line on the offset right axis — RSI 0-100 hugs the bottom quarter of the shared plot (dashed 70/30 guides)`,
                 }))
-              : [
-                  { name: "Amt Up", unit: "亿", description: "daily trading amount on up days (lowkey bars)" },
-                  { name: "Amt Down", unit: "亿", description: "daily trading amount on down days (lowkey bars)" },
-                ]),
+              : derivTrend != null
+                ? derivTrend.lines.map((l) => ({
+                    name: l.name,
+                    description:
+                      `${l.name.replace(/ (Slope|Curv)$/, "")} ${derivTrend.mode === "slope" ? "1st derivative — daily diff of the price / MA / EMA line" : "2nd derivative — diff of that daily diff"}, DB-stored direct diff, raw price units per trading day, dashed zero guide`,
+                  }))
+                : roofFloorWindow != null
+                  ? [
+                      { name: `Δ Low(${roofFloorWindow}d)`, description: "close − the LAST low anchor's value (change_since_last_low): floor-blue bars ABOVE the dashed zero central line, positive = price above the floor anchor; crossing below it = floor break" },
+                      { name: `Δ High(${roofFloorWindow}d)`, description: "close − the LAST high anchor's value (change_since_last_high): roof-orange bars BELOW the zero central line, negative = price below the roof anchor; crossing above it = roof breakout" },
+                    ]
+                  : [
+                    { name: "Amt Up", unit: "亿", description: "daily trading amount on up days (lowkey bars)" },
+                    { name: "Amt Down", unit: "亿", description: "daily trading amount on down days (lowkey bars)" },
+                  ]),
             { name: `Upper (+${bollingerK}σ)`, description: "long MA + k×σ Bollinger band edge" },
             { name: `Lower (−${bollingerK}σ)`, description: "long MA − k×σ Bollinger band edge" },
-            ...(ohlcWindow != null
+            ...(roofFloorWindow != null
               ? [
-                  { name: `High(${ohlcWindow}d)`, description: "rolling OHLC window high" },
-                  { name: `Low(${ohlcWindow}d)`, description: "rolling OHLC window low" },
-                  { name: `Roof(${ohlcWindow}d)`, description: "trendline through the window's top+2nd highs, stopping at the anchor date" },
-                  { name: `Floor(${ohlcWindow}d)`, description: "trendline through the window's top+2nd lows, stopping at the anchor date" },
+                  { name: `High(${roofFloorWindow}d)`, description: "rolling OHLC window high" },
+                  { name: `Low(${roofFloorWindow}d)`, description: "rolling OHLC window low" },
+                  { name: `Roof(${roofFloorWindow}d)`, description: "trendline through the window's top+2nd highs, stopping at the anchor date" },
+                  { name: `Floor(${roofFloorWindow}d)`, description: "trendline through the window's top+2nd lows, stopping at the anchor date" },
+                ]
+              : []),
+            ...(roofFloorShade
+              ? [
+                  { name: "Roof shade", description: "all roof/floor windows (60–1275d) at once: each window's flat band between its two high anchors (from the bands table's upper_band edges) of the window ending at the anchor date, drawn over that window's trailing span and cut at the 20d-max line, light purple — deepening where windows overlap (strength by confluence)" },
+                  { name: "Floor shade", description: "the mirror on the two low anchors (lower_band edges), cut at the 20d-min line, light blue" },
+                  { name: "Band event marks", description: "event markers on the DRAWN band edges, read from the bands table's stored event-date arrays (σ = trailing-20d population std of the daily close changes): SOLID ▲/▼ triangles on a bounce — the curve touched the drawn roof-bottom/floor-top edge within ±1σ and the next day turned back; oversized NAIL pins (📍, 2× the bounce mark's height, tip pointing in the break's direction) on a breach — a DIRECTIONAL entry into the band from outside: the prior close sat at/below the roof's drawn edge (at/above the floor's) and the day closed beyond edge + 1σ in the break's direction (roof = up move, floor = down move; a close already inside the band that later clears +1σ is not a breach); re-anchored with the clicked date like the shades, only windows whose band survived the 20d cut carry marks, stacked marks = multi-window confluence" },
                 ]
               : []),
             ...(streakLabel
@@ -1002,10 +1421,20 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         ohlc_mode: ohlcMode === "percentage" ? "% (rebased to first valid close)" : "absolute",
         bollinger_k: bollingerK,
         lower_overlay:
-          chartOverlay === "rsi"
-            ? "rsi trends (RSI 3/6/10/14/20 window lines replace the amt bars)"
-            : "amt (lowkey bars)",
-        ohlc_window: ohlcWindow ?? "off",
+          (rsiLinesActive
+            ? `rsi trends (${rsiDays.slice().sort((a, b) => a - b).join("/")}d window lines replace the amt bars)`
+            : derivTrend != null
+              ? `${derivTrend.mode === "slope" ? "slopes" : "curvatures"} (Price + ${selectedPair?.kind === "ema" ? "EMA6/EMA20" : "MA5/MA20"} DB-stored derivative lines — value[t] − value[t−1], no averaging — replace the amt bars; the MA/EMA curves follow the selected pair chip)`
+              : roofFloorWindow != null
+                ? "change-since-last-anchor plot (the enabled roof/floor window's Δ Low / Δ High bars around a dashed zero central line — Δ Low positive above = price off the floor anchor, Δ High negative below = price off the roof anchor — replace the amt bars)"
+                : "amt (lowkey bars)") +
+          (rsiTopPct != null
+            ? ` + RSI top-${Math.round(rsiTopPct * 100)}% history-rank shades split evenly: green where the RSI ranked within the top ${Math.round(rsiTopPct * 500) / 10}% of its own ${rsiDays.length > 0 ? `${rsiDays.slice().sort((a, b) => a - b).join("/")}d window` : "history (any window)"} (rises), red where within the bottom ${Math.round(rsiTopPct * 500) / 10}% (drops); base fill per qualifying window, darker where multiple picked windows' extremes overlap`
+            : ""),
+        ohlc_window: roofFloorWindow ?? "off",
+        ohlc_shade: roofFloorShade
+          ? "on — every window's (60–1275d) band from the bands table (mov_ave_spreads_roof_and_floor_bands) of the window ending at the anchor date, purple top / blue bottom over each window's trailing span, overlap depth = strength; re-anchors with the clicked date; cut at the anchor's trailing-20-row CLOSE extremes — roof bottoms raised to the 20d max close, floor tops lowered to the 20d min close (wicks cannot wipe a band), so no band crosses the last 20 days' closing range; ▲/▼ markers on days the close crossed INTO a drawn band (up into a roof / down below a floor)"
+          : "off",
         anchor_date: anchorDate ?? "none",
         streak_combo: streakLabel || "off",
         px_vol: pxVolShade?.label ?? "off",
@@ -1023,12 +1452,16 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       shortName,
       longName,
       bollingerK,
-      ohlcWindow,
+      roofFloorWindow,
+      roofFloorShade,
       streakLabel,
       pxVolShade,
       ohlcMode,
-      chartOverlay,
+      rsiDays,
+      rsiLinesActive,
+      derivTrend,
       anchorDate,
+      rsiTopPct,
     ],
   );
   const aiAskAddon = useAiAskAddon({
@@ -1237,39 +1670,146 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
             })}
           </Box>
 
-          {/* ---- Rolling-OHLC window buttons ----
-              Row label ("OHLC Window") spans the full grid width on its own
-              row — same style as the Trading Amt/MA label — with the window
-              buttons on a new row below it. The buttons keep the
-              period-column alignment of the pair chips: 20d sits under the
-              MA20 column, …, 1275d in the last column. */}
+          {/* ---- RSI Trends buttons (days multi-select + pct single-select) ----
+              The right-axis RSI overlay's own row (moved out of the header
+              Amt/Slopes/Curvatures toggle). The section rests fully OFF:
+              the DAYS row multi-picks the Wilder-RSI window lines
+              (3/6/10/14/20/60d) — while any day is picked and the header
+              toggle sits at Amt, the picked RSI lines replace the
+              trading-amt bars — and the FIRST day pick auto-arms the 1%
+              shade (un-picking the last day takes it off). The PCT row
+              single-picks the Top-% history-rank shade (split evenly green
+              top-half rises / red bottom-half drops; clicking the active
+              pct again clears it); the picked days scope the ranks and
+              overlapping windows stack the shade darker. Both rows sit on
+              the section grid's period columns (3-7) like the other rows. */}
           <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
             {/* Row label */}
-            <SectionLabel id="ohlcWindow" active={ohlcWindow != null} />
-            {OHLC_WINDOWS.map((w, col) => (
+            <SectionLabel
+              id="rsiTrends"
+              active={rsiDays.length > 0 || rsiTopPct != null}
+            />
+            {/* Days row — multi-select, columns 3-8. */}
+            {RSI_WINDOWS.map((w, col) => (
+              <Chip
+                key={w}
+                label={`${w}d`}
+                size="small"
+                clickable
+                color={rsiDays.includes(w) ? "primary" : "default"}
+                variant={rsiDays.includes(w) ? "filled" : "outlined"}
+                onClick={() => toggleRsiDay(w)}
+                sx={{ gridColumn: col + 3, ...PERIOD_CHIP_SX }}
+              />
+            ))}
+            {/* Pct row — single-select toggles, columns 3-7 (no Off entry:
+                the active pct toggles off by clicking it again). */}
+            {RSI_TOP_PCTS.map((p, col) => (
+              <Chip
+                key={p}
+                label={`${Math.round(p * 100)}%`}
+                size="small"
+                clickable
+                color={rsiTopPct === p ? "primary" : "default"}
+                variant={rsiTopPct === p ? "filled" : "outlined"}
+                onClick={() => handleRsiTopPctSelect(rsiTopPct === p ? 0 : p)}
+                sx={{ gridColumn: col + 3, ...PERIOD_CHIP_SX }}
+              />
+            ))}
+          </Box>
+          {rsiTopPct != null && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              Top {Math.round(rsiTopPct * 100)}% split — green bands where the
+              RSI ranked within the top {Math.round(rsiTopPct * 500) / 10}% of
+              its own{" "}
+              {rsiDays.length > 0
+                ? `${rsiDays.slice().sort((a, b) => a - b).join("/")}d`
+                : "history (any window)"}{" "}
+              (rises), red where within the bottom{" "}
+              {Math.round(rsiTopPct * 500) / 10}% (drops); one qualifying
+              window draws the base fill, each extra window overlapping the
+              date stacks it darker
+              {rsiDays.length > 0
+                ? ` · drawing RSI ${rsiDays.slice().sort((a, b) => a - b).join("/")}d lines`
+                : " · pick days above to scope the ranks and draw the lines"}
+            </Typography>
+          )}
+
+          {/* ---- Roof/floor window buttons ----
+              Row label ("Roof/Floor Trendlines") spans the full grid width
+              on its own row — same style as the Trading Amt/MA label — with
+              the window buttons on a new row below it. The buttons keep the
+              period-column alignment of the pair chips: 60d sits under the
+              MA60 column, …, 1275d in the last column (column 2 stays
+              empty — the 20d is not a roof/floor window). The "shade"
+              toggle in the row's first column shades EVERY window's
+              extreme↔2nd-extreme band at once over each window's trailing
+              span, anchored to the clicked chart date (latest by default),
+              independent of the selected period button. */}
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+            {/* Row label */}
+            <SectionLabel id="roofFloorWindow" active={roofFloorWindow != null || roofFloorShade} />
+            {/* "shade" toggle — column 1 (the free MA5 column). */}
+            <Chip
+              label="shade"
+              size="small"
+              clickable
+              disabled={extrasLoading}
+              color={roofFloorShade ? "primary" : "default"}
+              variant={roofFloorShade ? "filled" : "outlined"}
+              onClick={handleRoofFloorShadeClick}
+              sx={{ gridColumn: 1, ...PERIOD_CHIP_SX }}
+            />
+            {ROOF_FLOOR_WINDOWS.map((w, col) => (
               <Chip
                 key={w}
                 label={`${w}d`}
                 size="small"
                 clickable
                 disabled={extrasLoading}
-                color={ohlcWindow === w ? "primary" : "default"}
-                variant={ohlcWindow === w ? "filled" : "outlined"}
-                onClick={() => handleOhlcWindowClick(w)}
-                sx={{ gridColumn: col + 2, ...PERIOD_CHIP_SX }}
+                color={roofFloorWindow === w ? "primary" : "default"}
+                variant={roofFloorWindow === w ? "filled" : "outlined"}
+                onClick={() => handleRoofFloorWindowClick(w)}
+                sx={{ gridColumn: col + 3, ...PERIOD_CHIP_SX }}
               />
             ))}
           </Box>
-          {ohlcWindow != null && (
+          {roofFloorWindow != null && (
             <Typography
               variant="caption"
               color="text.secondary"
               sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
             >
-              click a date on the chart to draw roof/floor trendlines
-              {ohlcClickIdx != null && firstPairRows[ohlcClickIdx]
-                ? ` · anchor ${firstPairRows[ohlcClickIdx].date}`
+              click a date on the chart to draw roof/floor trendlines ·
+              right axis: Δ since last anchor (Δ Low above the zero line ·
+              Δ High below) replaces the amt bars
+              {anchorIdx != null && firstPairRows[anchorIdx]
+                ? ` · anchor ${firstPairRows[anchorIdx].date}`
                 : ""}
+            </Typography>
+          )}
+          {roofFloorShade && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              shade: all windows {ROOF_FLOOR_WINDOWS.join("/")}d — light
+              purple 2nd high → high, light blue low → 2nd low, deeper where
+              windows overlap; cut at the anchor's 20d CLOSE extremes (roof
+              bottoms ≥ 20d max close, floor tops ≤ 20d min close); solid ▲/▼ =
+              bounce off a band edge, oversized nail pins (2× the bounce mark,
+              tip in the break's direction) = days the close crossed into a
+              drawn band (up into a roof /
+              down below a floor; stacked marks = multi-window confluence)
+              ·{" "}
+              {anchorIdx != null && firstPairRows[anchorIdx]
+                ? `anchored to ${firstPairRows[anchorIdx].date} (click again to clear)`
+                : "anchored to the latest date (click a chart date to re-anchor)"}
             </Typography>
           )}
 
@@ -1354,7 +1894,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                     : "no streaks in this window")
                 : "no window"}
               {streakWin
-                ? ohlcClickIdx != null
+                ? anchorIdx != null
                   ? ` · anchored to ${streakWin.endDate} (click again to clear)`
                   : " · click a chart date to anchor the window"
                 : ""}

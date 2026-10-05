@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from _common.df_utils import should_use_gpu
+from _common.labels import POOL_SIZE_CODE
 
 import logging
 logger = logging.getLogger(__name__)
@@ -31,12 +32,19 @@ logger = logging.getLogger(__name__)
 # OHLC fields rebased to 100 at each index's first available close.
 _OHLC_FIELDS = ("open", "high", "low", "close")
 
+# Internal NULL-stock_num sentinel (classifies into NO bucket): -1 is
+# never written — it only makes the bucket filters below miss, so such
+# indices contribute to the 'all' (3) slice only.
+_NO_POOL = -1
+
 
 def classify_pool_vectorized(stock_num: pd.Series) -> pd.Series:
     """Vectorized pool_size classification (no per-row apply/lambda).
 
-    NULL stock_num -> "" (index only contributes to the 'all' slice,
-    excluded from every bucket filter ``pool_size == bucket``).
+    Emits the stats.label_dim SMALLINT codes (0 small / 1 mid / 2
+    large); NULL stock_num -> _NO_POOL (index only contributes to the
+    'all' slice, excluded from every bucket filter
+    ``pool_size == bucket``).
 
     Thresholds:
       small  = stock_num < 51    (tight thematic indices, e.g. 中证银行 50)
@@ -49,11 +57,14 @@ def classify_pool_vectorized(stock_num: pd.Series) -> pd.Series:
             [notna & (stock_num < 51),
              notna & (stock_num <= 180),
              notna],
-            ["small", "mid", "large"],
-            default="",
-        ),
+            [
+                POOL_SIZE_CODE["small"],
+                POOL_SIZE_CODE["mid"],
+                POOL_SIZE_CODE["large"],
+            ],
+            default=_NO_POOL,
+        ).astype("int16"),
         index=stock_num.index,
-        dtype="object",
     )
 
 
@@ -94,10 +105,12 @@ def rebase_ohlc(df: pd.DataFrame) -> pd.DataFrame:
 def aggregate_by_pool(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate rebased OHLC / raw PE per (date, industry_id, pool_size).
 
-    For each (date, industry_id) emits 4 rows — one per pool_size slice:
-      'all' = every member index on that date.
-      'small'/'mid'/'large' = only indices whose stock_num classifies into
-                              that bucket (NULL stock_num -> 'all' only).
+    For each (date, industry_id) emits 4 rows — one per pool_size slice
+    (the stats.label_dim SMALLINT codes):
+      3 (all) = every member index on that date.
+      0/1/2 (small/mid/large) = only indices whose stock_num classifies
+                                into that bucket (NULL stock_num -> 'all'
+                                only).
 
     Aggregates per slice (index-level):
       mean_open/high/low/close = AVG(rebased_*) — the composite index OHLC
@@ -153,19 +166,20 @@ def aggregate_by_pool(df: pd.DataFrame) -> pd.DataFrame:
         work.groupby(["date", "industry_id"], as_index=False)
             .agg(**agg_spec)
     )
-    all_agg["pool_size"] = "all"
+    all_agg["pool_size"] = np.int16(POOL_SIZE_CODE["all"])
     agg_rows.append(all_agg)
 
-    # Per-bucket slices: filter by pool_size, then aggregate.
-    for bucket in ["small", "mid", "large"]:
-        sub = work[work["pool_size"] == bucket]
+    # Per-bucket slices: filter by pool_size code, then aggregate.
+    for bucket in ("small", "mid", "large"):
+        code = POOL_SIZE_CODE[bucket]
+        sub = work[work["pool_size"] == code]
         if sub.empty:
             continue
         bucket_agg = (
             sub.groupby(["date", "industry_id"], as_index=False)
                 .agg(**agg_spec)
         )
-        bucket_agg["pool_size"] = bucket
+        bucket_agg["pool_size"] = np.int16(code)
         agg_rows.append(bucket_agg)
 
     result = pd.concat(agg_rows, ignore_index=True)

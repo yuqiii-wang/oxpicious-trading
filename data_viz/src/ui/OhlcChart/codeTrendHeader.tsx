@@ -10,7 +10,11 @@ import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import type { OhlcMode } from "@/lib/ohlc";
 import { REGIME_ACCENT_COLORS } from "@/shared/charts/regimeBands";
 import type { SecBoardTag } from "@shared/types";
-import type { CodeTrendChartProps, CodeTrendData } from "./codeTrendTypes";
+import type {
+  CodeTrendChartProps,
+  CodeTrendData,
+  CodeTrendIndustryData,
+} from "./codeTrendTypes";
 
 /** One dim outline chip of the header's board tag ("MAIN", or
  *  "MAIN 40%" for ETF/index mixes). Percent formatting: integers at
@@ -89,6 +93,52 @@ export function CodeTrendSubtitle({
   return (
     <span style={{ fontSize: "0.7rem", color: "var(--chart-subtitle)" }}>
       {data ? `${n} bars${span}${subtitleExtra ? ` · ${subtitleExtra}` : ""}` : "Loading…"}
+    </span>
+  );
+}
+
+/** Header title (card variant, industry mode): the industry label — the
+ *  member lines have no single "code · name" identity of their own. */
+export function CodeTrendIndustryTitle({
+  title,
+  label,
+}: Pick<CodeTrendChartProps, "title"> & { label: string }) {
+  if (title !== undefined) return title;
+  return (
+    <span style={{ fontSize: "0.9rem", fontWeight: 600 }}>{label}</span>
+  );
+}
+
+/** Header subtitle (card variant, industry mode) — member index count +
+ *  overall date span + extras. Per-index rows are date-ascending, so the
+ *  span is the min first date / max last date across members. */
+export function CodeTrendIndustrySubtitle({
+  subtitleExtra,
+  data,
+}: {
+  subtitleExtra?: string;
+  data: CodeTrendIndustryData | null;
+}) {
+  if (!data) {
+    return (
+      <span style={{ fontSize: "0.7rem", color: "var(--chart-subtitle)" }}>
+        Loading…
+      </span>
+    );
+  }
+  let first: string | null = null;
+  let last: string | null = null;
+  for (const idx of data.indices) {
+    if (idx.rows.length === 0) continue;
+    const f = idx.rows[0].date;
+    const l = idx.rows[idx.rows.length - 1].date;
+    if (first === null || f < first) first = f;
+    if (last === null || l > last) last = l;
+  }
+  const span = first && last ? ` · ${first} → ${last}` : "";
+  return (
+    <span style={{ fontSize: "0.7rem", color: "var(--chart-subtitle)" }}>
+      {`${data.indices.length} member indices${span}${subtitleExtra ? ` · ${subtitleExtra}` : ""}`}
     </span>
   );
 }

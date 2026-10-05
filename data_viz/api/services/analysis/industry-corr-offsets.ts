@@ -23,6 +23,7 @@ import type {
   IndustryCorrOffsetsResponse,
 } from "../../../shared/types.js";
 import { fetchIndustryLabels } from "./industry-correlations.js";
+import { encodeLabelParam } from "../label-codes.js";
 
 // ----------------------------------------------------------------------------
 //  GET rows — one row per (start_date, lexicographic pair, benchmark) for
@@ -100,11 +101,16 @@ export async function getIndustryCorrOffsets(
       opposite_score_ma255_255d
     FROM analysis_composites.industry_corr_benchmark_offsets
     WHERE benchmark_code = $${pairParams.length + 1}::text
-      AND pool_size = $${pairParams.length + 2}::text
+      AND pool_size = $${pairParams.length + 2}::smallint
       AND (industry_id, benchmark_industry_id) IN (${pairPlaceholders})
     ORDER BY start_date ASC, industry_id, benchmark_industry_id
   `;
-  const params = [...pairParams, benchmarkCode, poolSize];
+  // pool_size crosses as its stats.label_dim SMALLINT code.
+  const params = [
+    ...pairParams,
+    benchmarkCode,
+    encodeLabelParam("pool_size", poolSize),
+  ];
 
   const [rows, labelMap] = await Promise.all([
     queryRows<DbIndustryCorrOffsetRow>(sql, params),

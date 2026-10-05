@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from _common.labels import SEC_TYPE_CODE
+
 from analyze._common import upsert_analysis_identity
 
 from analyze.margins.changes.constants import DESCRIPTION, INSERT_COLUMNS
@@ -81,7 +83,7 @@ async def run_margin_changes(
             continue
 
         amt_sec = trading_amt[
-            trading_amt["sec_type"] == sec_type
+            trading_amt["sec_type_id"] == SEC_TYPE_CODE[sec_type]
         ] if not trading_amt.empty else trading_amt
         episodes = detect_trend_episodes(
             history, tech_stats, sec_type, trading_amt=amt_sec,

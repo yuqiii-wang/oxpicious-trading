@@ -1,0 +1,212 @@
+"""Configuration constants for analyze.mov_ave_spread.
+
+One file per table family:
+
+  pipeline            — core detail-table + sec-type + numeric bounds
+  ema                 — EMA detail table
+  ohlc                — roof/floor LINES table (anchor windows + schema)
+  bands               — roof/floor SHADE BANDS table
+  ohlc_gaps           — intraday OHLC gap table
+  trading_amt         — trading-amount metric table + column names
+  trading_amt_ratios  — liquidity-impact ratio table
+  holiday             — non-trading-day risk table
+  price_vs_amt        — Price × Amount state registry + px_vol calibration
+  high_low_pct        — high/low percentile bands + excursion streaks
+
+Every public name is re-exported here, so consumers keep the flat
+``from analyze.mov_ave_spread.config import X`` import.
+"""
+from analyze.mov_ave_spread.config.price_sources import (  # noqa: F401
+    AMT_SOURCE,
+    OHL_EST_FILTER,
+    PRICE_SOURCE,
+)
+
+from analyze.mov_ave_spread.config.pipeline import (
+    ANALYSIS_NAME,
+    CODES_SUMMARY_TABLE,
+    DESCRIPTION,
+    DETAIL_TABLE,
+    MA_DERIV_WINDOWS,
+    MA_WINDOWS,
+    NUMERIC_MAX_ABS,
+    NUMERIC_WIDE_MAX_ABS,
+    PAIRS,
+    SEC_TYPES,
+    SEC_TYPE_IDENTITY_TABLE,
+    TECH_STATS_EMA_COLUMNS,
+    TECH_STATS_MA_COLUMNS,
+)
+from analyze.mov_ave_spread.config.ema import (
+    EMA_ANALYSIS_NAME,
+    EMA_CURVATURE_COLUMNS,
+    EMA_DERIV_WINDOWS,
+    EMA_DETAIL_TABLE,
+    EMA_PAIRS,
+    EMA_SLOPE_COLUMNS,
+    EMA_STD_COLUMNS,
+    EMA_VS_COLUMNS,
+)
+from analyze.mov_ave_spread.config.ohlc import (
+    OHLC_ANALYSIS_NAME,
+    OHLC_COLUMNS,
+    OHLC_DATE_COLUMNS,
+    OHLC_DESCRIPTION,
+    OHLC_GAP_FLOOR_TD,
+    OHLC_GAP_PCT,
+    OHLC_NUMERIC_COLUMNS,
+    OHLC_TABLE,
+    OHLC_WINDOWS,
+    OHLC_WIDE_COLUMNS,
+    OHLC_WIDE_DATE_COLUMNS,
+    OHLC_WIDE_NUMERIC_COLUMNS,
+    ohlc_second_gap_td,
+    ohlc_wide_columns,
+)
+from analyze.mov_ave_spread.config.bands import (
+    BANDS_ANALYSIS_NAME,
+    BANDS_BOUNCE_MIN_SEPARATION_SIGMA,
+    BANDS_COLUMNS,
+    BANDS_CUT_WINDOW,
+    BANDS_DESCRIPTION,
+    BANDS_EDGE_COLUMNS,
+    BANDS_EVENT_SIGMA_WINDOW,
+    BANDS_MIN_HEIGHT_FACTOR,
+    BANDS_TABLE,
+    BANDS_WIDE_COLUMNS,
+    bands_wide_columns,
+)
+from analyze.mov_ave_spread.config.ohlc_gaps import (
+    OHLC_GAPS_ANALYSIS_NAME,
+    OHLC_GAPS_COLUMNS,
+    OHLC_GAPS_EXCLUDE_FLAG_COLUMNS,
+    OHLC_GAPS_TABLE,
+)
+from analyze.mov_ave_spread.config.trading_amt import (
+    TRADING_AMT_ANALYSIS_NAME,
+    TRADING_AMT_COLUMNS,
+    TRADING_AMT_DESCRIPTION,
+    TRADING_AMT_MA_COLUMNS,
+    TRADING_AMT_MA_SLOPE_COLUMNS,
+    TRADING_AMT_MARKET_SHARE_MA_COLUMNS,
+    TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS,
+    TRADING_AMT_RAW_SLOPE_COLUMN,
+    TRADING_AMT_STD_COLUMNS,
+    TRADING_AMT_TABLE,
+)
+from analyze.mov_ave_spread.config.trading_amt_ratios import (
+    TRADING_AMT_HIGH_LOW_RATIO_COLUMN,
+    TRADING_AMT_MA5_HIGH_LOW_RATIO_COLUMN,
+    TRADING_AMT_MA5_OVERNIGHT_GAP_RATIO_COLUMN,
+    TRADING_AMT_OVERNIGHT_GAP_RATIO_COLUMN,
+    TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS,
+    TRADING_AMT_RATIOS_ANALYSIS_NAME,
+    TRADING_AMT_RATIOS_COLUMNS,
+    TRADING_AMT_RATIOS_DESCRIPTION,
+    TRADING_AMT_RATIOS_MAX_ABS,
+    TRADING_AMT_RATIOS_TABLE,
+    TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS,
+)
+from analyze.mov_ave_spread.config.holiday import (
+    HOLIDAY_ANALYSIS_NAME,
+    HOLIDAY_COLUMNS,
+    HOLIDAY_DESCRIPTION,
+    HOLIDAY_TABLE,
+)
+from analyze.mov_ave_spread.config.price_vs_amt import (
+    PRICE_VS_AMT_ANALYSIS_NAME,
+    PRICE_VS_AMT_COLUMNS,
+    PRICE_VS_AMT_DESCRIPTION,
+    PRICE_VS_AMT_TABLE,
+    PX_VOL_AMT_METRIC,
+    PX_VOL_K_SHARP,
+    PX_VOL_K_SLOW_DN,
+    PX_VOL_K_SLOW_UP,
+    PX_VOL_LB_WINDOW,
+    PX_VOL_SIGMA_FLOOR,
+    PX_VOL_SIGMA_MIN_DAYS,
+    PX_VOL_SIGMA_WINDOW,
+    PX_VOL_SPEED_SIDE,
+    PX_VOL_SPEEDS,
+    PX_VOL_VOL_STATES,
+    PX_VOL_Z_HEAVY,
+    PX_VOL_Z_SHRINK,
+)
+from analyze.mov_ave_spread.config.high_low_pct import (
+    HIGH_LOW_PCT_ANALYSIS_NAME,
+    HIGH_LOW_PCT_COLUMNS,
+    HIGH_LOW_PCT_DESCRIPTION,
+    HIGH_LOW_PCT_GAP_TOLERANCE,
+    HIGH_LOW_PCT_MIN_PERIODS,
+    HIGH_LOW_PCT_PERIODS,
+    HIGH_LOW_PCT_ROWS_PER_PAIR,
+    HIGH_LOW_PCT_STREAKS_COLUMNS,
+    HIGH_LOW_PCT_STREAKS_DESCRIPTION,
+    HIGH_LOW_PCT_STREAKS_NAME,
+    HIGH_LOW_PCT_STREAKS_TABLE,
+    HIGH_LOW_PCT_TABLE,
+    HIGH_LOW_PCT_TYPES,
+)
+
+__all__ = [
+    # pipeline
+    "ANALYSIS_NAME", "CODES_SUMMARY_TABLE", "DESCRIPTION", "DETAIL_TABLE",
+    "MA_DERIV_WINDOWS", "MA_WINDOWS", "NUMERIC_MAX_ABS",
+    "NUMERIC_WIDE_MAX_ABS", "PAIRS", "SEC_TYPES",
+    "SEC_TYPE_IDENTITY_TABLE", "TECH_STATS_EMA_COLUMNS",
+    "TECH_STATS_MA_COLUMNS",
+    # ema
+    "EMA_ANALYSIS_NAME", "EMA_CURVATURE_COLUMNS", "EMA_DERIV_WINDOWS",
+    "EMA_DETAIL_TABLE", "EMA_PAIRS", "EMA_SLOPE_COLUMNS",
+    "EMA_STD_COLUMNS", "EMA_VS_COLUMNS",
+    # ohlc lines
+    "OHLC_ANALYSIS_NAME", "OHLC_COLUMNS", "OHLC_DATE_COLUMNS",
+    "OHLC_DESCRIPTION", "OHLC_GAP_FLOOR_TD", "OHLC_GAP_PCT",
+    "OHLC_NUMERIC_COLUMNS", "OHLC_TABLE", "OHLC_WINDOWS",
+    "OHLC_WIDE_COLUMNS", "OHLC_WIDE_DATE_COLUMNS",
+    "OHLC_WIDE_NUMERIC_COLUMNS", "ohlc_second_gap_td", "ohlc_wide_columns",
+    # bands
+    "BANDS_ANALYSIS_NAME", "BANDS_BOUNCE_MIN_SEPARATION_SIGMA",
+    "BANDS_COLUMNS", "BANDS_CUT_WINDOW",
+    "BANDS_DESCRIPTION", "BANDS_EDGE_COLUMNS", "BANDS_EVENT_SIGMA_WINDOW",
+    "BANDS_MIN_HEIGHT_FACTOR", "BANDS_TABLE", "BANDS_WIDE_COLUMNS",
+    "bands_wide_columns",
+    # ohlc gaps
+    "OHLC_GAPS_ANALYSIS_NAME", "OHLC_GAPS_COLUMNS",
+    "OHLC_GAPS_EXCLUDE_FLAG_COLUMNS", "OHLC_GAPS_TABLE",
+    # trading amt
+    "TRADING_AMT_ANALYSIS_NAME", "TRADING_AMT_COLUMNS",
+    "TRADING_AMT_DESCRIPTION", "TRADING_AMT_MA_COLUMNS",
+    "TRADING_AMT_MA_SLOPE_COLUMNS", "TRADING_AMT_MARKET_SHARE_MA_COLUMNS",
+    "TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS",
+    "TRADING_AMT_RAW_SLOPE_COLUMN", "TRADING_AMT_STD_COLUMNS",
+    "TRADING_AMT_TABLE",
+    # trading amt ratios
+    "TRADING_AMT_HIGH_LOW_RATIO_COLUMN",
+    "TRADING_AMT_MA5_HIGH_LOW_RATIO_COLUMN",
+    "TRADING_AMT_MA5_OVERNIGHT_GAP_RATIO_COLUMN",
+    "TRADING_AMT_OVERNIGHT_GAP_RATIO_COLUMN",
+    "TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS",
+    "TRADING_AMT_RATIOS_ANALYSIS_NAME", "TRADING_AMT_RATIOS_COLUMNS",
+    "TRADING_AMT_RATIOS_DESCRIPTION", "TRADING_AMT_RATIOS_MAX_ABS",
+    "TRADING_AMT_RATIOS_TABLE", "TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS",
+    # holiday
+    "HOLIDAY_ANALYSIS_NAME", "HOLIDAY_COLUMNS", "HOLIDAY_DESCRIPTION",
+    "HOLIDAY_TABLE",
+    # price vs amt / px_vol
+    "PRICE_VS_AMT_ANALYSIS_NAME", "PRICE_VS_AMT_COLUMNS",
+    "PRICE_VS_AMT_DESCRIPTION", "PRICE_VS_AMT_TABLE",
+    "PX_VOL_AMT_METRIC", "PX_VOL_K_SHARP", "PX_VOL_K_SLOW_DN",
+    "PX_VOL_K_SLOW_UP", "PX_VOL_LB_WINDOW", "PX_VOL_SIGMA_FLOOR",
+    "PX_VOL_SIGMA_MIN_DAYS", "PX_VOL_SIGMA_WINDOW", "PX_VOL_SPEED_SIDE",
+    "PX_VOL_SPEEDS", "PX_VOL_VOL_STATES", "PX_VOL_Z_HEAVY",
+    "PX_VOL_Z_SHRINK",
+    # high/low pct + streaks
+    "HIGH_LOW_PCT_ANALYSIS_NAME", "HIGH_LOW_PCT_COLUMNS",
+    "HIGH_LOW_PCT_DESCRIPTION", "HIGH_LOW_PCT_GAP_TOLERANCE",
+    "HIGH_LOW_PCT_MIN_PERIODS", "HIGH_LOW_PCT_PERIODS",
+    "HIGH_LOW_PCT_ROWS_PER_PAIR", "HIGH_LOW_PCT_STREAKS_COLUMNS",
+    "HIGH_LOW_PCT_STREAKS_DESCRIPTION", "HIGH_LOW_PCT_STREAKS_NAME",
+    "HIGH_LOW_PCT_STREAKS_TABLE", "HIGH_LOW_PCT_TABLE",
+    "HIGH_LOW_PCT_TYPES",
+]

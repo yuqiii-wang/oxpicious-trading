@@ -26,6 +26,11 @@ export interface AiScopeParams {
   industry_id?: string | null;
   industry_ids?: string[] | null;
   search?: string | null;
+  /** true = keep only Q&A rows whose mapped industry had a big market move
+   *  on the row's Shanghai qa_date day (text.llm_qa.is_big_fluctuation).
+   *  Pass true or null — the ask-history table has no such column, so the
+   *  by-ask endpoints ignore it. */
+  is_big_fluctuation?: boolean | null;
 }
 
 function qs<T extends object>(params: T): string {

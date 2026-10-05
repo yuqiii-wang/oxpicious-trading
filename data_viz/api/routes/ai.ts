@@ -66,6 +66,12 @@ function industryIds(v: unknown): string[] | null {
   return String(v).split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+/** Boolean flag query param — "1" (URLSearchParams-friendly) or "true"
+ *  (String(boolean) from the api-client's qs). Anything else = off. */
+function bool(v: unknown): boolean {
+  return v === "1" || v === "true";
+}
+
 router.get("/calendar", async (req: Request, res: Response) => {
   try {
     res.json(
@@ -74,6 +80,7 @@ router.get("/calendar", async (req: Request, res: Response) => {
         industryId: str(req.query.industry_id) ?? null,
         industryIds: industryIds(req.query.industry_ids),
         search: str(req.query.search) ?? null,
+        bigFluctuationOnly: bool(req.query.is_big_fluctuation),
       }),
     );
   } catch (err) {
@@ -92,6 +99,7 @@ router.get("/items", async (req: Request, res: Response) => {
         industryId: str(req.query.industry_id) ?? null,
         industryIds: industryIds(req.query.industry_ids),
         search: str(req.query.search) ?? null,
+        bigFluctuationOnly: bool(req.query.is_big_fluctuation),
         date: str(req.query.date) ?? null,
         dateFrom: str(req.query.date_from) ?? null,
         dateTo: str(req.query.date_to) ?? null,

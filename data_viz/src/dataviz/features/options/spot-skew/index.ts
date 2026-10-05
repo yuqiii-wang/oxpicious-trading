@@ -1,6 +1,7 @@
 export { default, default as SpotSkewTrendPanel } from "./SpotSkewTrendPanel";
 export {
   buildExpiryGroupAgg,
+  buildSkewGroupsFromDaily,
   buildSkewDayPoints,
   buildSkewTermStructure,
   FRONT_MIN_DTE,

@@ -32,11 +32,33 @@ CREATE TABLE IF NOT EXISTS text.news (
     sector_id     TEXT,                       -- denormalized parent sector of industry_id
     word_count    INTEGER,
     votes         INTEGER,                    -- upvotes when the source provides them (zhihu VoteUpCount); NULL otherwise
+    is_big_fluctuation BOOLEAN NOT NULL DEFAULT false,  -- mapped industry's day qualified as a big move (builds.text.big_market_mv)
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_news PRIMARY KEY (title, source, date),
     CONSTRAINT uq_news_news_id UNIQUE (news_id)
 );
+
+-- Upgrade: is_big_market_mv renamed to is_big_fluctuation (same semantics).
+-- Runs BEFORE the ADD COLUMN retro-fit below: on a deployment that has the
+-- old column this renames it in place (data preserved); everywhere else the
+-- DO block is a no-op.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'text' AND table_name = 'news'
+                 AND column_name = 'is_big_market_mv')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_schema = 'text' AND table_name = 'news'
+                         AND column_name = 'is_big_fluctuation') THEN
+        ALTER TABLE text.news RENAME COLUMN is_big_market_mv TO is_big_fluctuation;
+    END IF;
+END $$;
+
+-- Retro-fit for deployments whose text.news predates the column (the
+-- CREATE above already includes it for fresh installs).
+ALTER TABLE text.news
+    ADD COLUMN IF NOT EXISTS is_big_fluctuation BOOLEAN NOT NULL DEFAULT false;
 
 -- Uniqueness as a standalone index (not just the table constraint) so it is
 -- also created on deployments where the table already existed without
@@ -69,6 +91,16 @@ COMMENT ON COLUMN text.news.sector_id IS
   'BROAD for BROAD_SSE, …), denormalized by the Python tagging pipeline so '
   'an L1-only scope filters on this column directly. Set iff industry_id '
   'is set; backfilled on the next builds.text run.';
+
+COMMENT ON COLUMN text.news.is_big_fluctuation IS
+  'True when the row''s mapped industry_id had a BIG market move on the '
+  'row''s date: |single-day change| >= 3% AND Wilder RSI(3) of the '
+  'industry composite (stats.industry_basic_stats mean_close, pool_size '
+  '''all'') pinned at a rail (>= 97 up / <= 3 down). First qualifying day '
+  'per industry survives; further qualifying days within 5 trading days '
+  'of a surviving one stay false (cooldown). Maintained by the '
+  'builds.text.big_market_mv full-recompute pass (re-runs are idempotent '
+  'and re-derive the whole flag). Renamed from is_big_market_mv.';
 
 COMMENT ON TABLE text.news IS
   'Raw news articles. One row per (title, source, date). content holds the '

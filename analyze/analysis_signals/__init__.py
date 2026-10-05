@@ -1,16 +1,15 @@
-"""Signal strategies + history signals over analysis_forecasts
+"""Signal strategies + history signals over the RSI percentile
 (analyze.analysis_signals).
 
-A forecast bucket (code × stat_date snapshot M × config, trailing
-5-year window (M - 5y, M]) whose MIXED forecast_results row passes the
-plain gate IS a signal strategy for that forecast period
-(analysis_signals.signal_strategies); the bucket's trigger days inside
-the snapshot M are its history signals
-(analysis_signals.history_signals). The live tier
-(live.live_signals) breaches the strategies' stored bars — it never
-re-detects anything.
-
-NO CASE/WHEN anywhere in the emission SQL: the bucket's side is a
-STORED column on signal_strategies, and every other conditional lives
-in this package's vectorized cudf.pandas engines.
+Since the forecast layer's removal (2026-10-05) the tier computes its
+OWN rsi-pct buckets in-engine (analysis.mov_ave_rsi + prices — see
+engines/signal_families/mov_rsi/_buckets.py): a bucket (code ×
+stat_date snapshot M × rsi pct config, trailing 10y window (M - 10y,
+M]) whose blended mixed-row stats pass the plain gate at the per-side
+robustness floors IS a signal strategy for that window period — one
+analysis_signals.signal_thresholds row (the confidence-scale model:
+confidence_base + scale_method/base/factor), plus the trigger days
+(each qualifying streak's first day) inside the snapshot's calendar
+year as history_signals rows. python -m live.live_signals breaches the active
+thresholds intraday (live.live_signals).
 """

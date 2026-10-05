@@ -17,6 +17,9 @@
  *     non-enabled source chips disable while the bar has input). Below it
  *     the shared DateEventStrip (the PBoC OMA date-event component): one
  *     dot per date that has news, co-filtered by scope + keyword + source.
+ *     When the scope is a SINGLE industry, an industry trend card sits
+ *     directly ABOVE the strip (CodeTrendChart industryId mode): one raw
+ *     close-price line per member index of the industry.
  *   • NewsFeedPage (shared) — social-media-style post feed matching
  *     (classification scope ∧ keyword ∧ source ∧ picked date); click a post
  *     to expand its full content and its threaded comments. Swapped for
@@ -49,6 +52,7 @@ import type {
   NewsSearchResponse,
 } from "@shared/types";
 import NewsFeedPage, { PAGE_SIZE } from "@/shared/components/news/NewsFeedPage";
+import { CodeTrendChart } from "@/ui/OhlcChart";
 import QuestionSearchBar, { QUESTION_SEARCH_ENABLED_SOURCES } from "./QuestionSearchBar";
 import NewsSearchResults from "./NewsSearchResults";
 
@@ -66,6 +70,11 @@ export default function NewsPage() {
   // list. Both chip rows render BELOW the Industry row in the nav.
   const [source, setSource] = useState<string | null>(DEFAULT_SOURCE);
   const [author, setAuthor] = useState<string | null>(null);
+  // Big-market-move only (text.news.is_big_fluctuation): keep only articles
+  // whose mapped industry had a big move on the article's date. Same
+  // co-filtering contract as source/author (strip + list, not the nav
+  // counts). Toggle chip renders in its own Filter row below Author.
+  const [bigMvOnly, setBigMvOnly] = useState(false);
 
   // ---- Question bar (beneath the classification nav): two search paths ----
   // • ONLINE — live zhihu content search; the page's source + author are sent
@@ -225,9 +234,13 @@ export default function NewsPage() {
     return {};
   }, [nav.industrySlug, nav.themeSlug, nav.sectorId, nav.strategyId, slugToIndustryId]);
   const scopeKey = JSON.stringify(scope);
+  /** The picked industry's id when the scope is a SINGLE industry (L2 chip
+   *  or strategy theme) — null for sector-only / unscoped picks. Drives the
+   *  industry trend chart above the date strip. */
+  const industryScopeId = "industry_id" in scope ? scope.industry_id : null;
   const scopeParams = useMemo(
-    () => ({ ...scope, search: searchTerm, search_mode: searchTerm ? searchMode : null, source, author }),
-    [scopeKey, searchTerm, searchMode, source, author], // eslint-disable-line react-hooks/exhaustive-deps -- scopeKey is the canonical scope identity
+    () => ({ ...scope, search: searchTerm, search_mode: searchTerm ? searchMode : null, source, author, is_big_fluctuation: bigMvOnly || null }),
+    [scopeKey, searchTerm, searchMode, source, author, bigMvOnly], // eslint-disable-line react-hooks/exhaustive-deps -- scopeKey is the canonical scope identity
   );
 
   // Scope/search/source changes reset the day pick + pagination + author pick
@@ -236,7 +249,7 @@ export default function NewsPage() {
     setSelectedDate(null);
     setPage(1);
     setAuthor(null);
-  }, [scopeKey, searchTerm, source]);
+  }, [scopeKey, searchTerm, source, bigMvOnly]);
 
   // Top authors for the filter chips (scoped by everything except author).
   const [authors, setAuthors] = useState<Array<{ author: string; count: number }>>([]);
@@ -436,6 +449,40 @@ export default function NewsPage() {
               ))}
             </Stack>
           )}
+          {/* Big-move filter — single toggle chip in its own Filter row (same
+              chip idiom as Source/Author). ON keeps only articles whose
+              mapped industry had a big market move that day
+              (is_big_fluctuation); co-filters the date strip AND the list. */}
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mb: 0.75 }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, minWidth: 56, fontSize: "0.75rem" }}>
+              Filter
+            </Typography>
+            <Chip
+              label="On Big Fluctuations"
+              size="small"
+              color={bigMvOnly ? "primary" : "default"}
+              variant={bigMvOnly ? "filled" : "outlined"}
+              onClick={() => setBigMvOnly((v) => !v)}
+              sx={{ fontSize: "0.7rem" }}
+            />
+          </Stack>
+          {/* Industry trend — one raw close-price line per member index of
+              the picked industry (L2 industry chip or strategy theme),
+              above the date strip so the news dots read against the
+              industry's price context. Sector-only / unscoped picks have no
+              single industry, so no chart. Fetches the shared
+              industry-sentiments chart endpoint through CodeTrendChart's
+              industryId mode. */}
+          {industryScopeId && (
+            <Box sx={{ mb: 1 }}>
+              <CodeTrendChart
+                secType="index"
+                code=""
+                industryId={industryScopeId}
+                height={280}
+              />
+            </Box>
+          )}
           <DateEventStrip
             events={stripEvents}
             typeMeta={{ news: { label: "新闻", color: "#5470c6" } }}
@@ -476,7 +523,7 @@ export default function NewsPage() {
           onPageChange={setPage}
           loading={itemsLoading}
           error={itemsError}
-          scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${searchTerm ? ` · “${searchTerm}”` : ""}${source ? ` · ${source}` : ""}${author ? ` · ${author}` : ""}`}
+          scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${searchTerm ? ` · “${searchTerm}”` : ""}${source ? ` · ${source}` : ""}${author ? ` · ${author}` : ""}${bigMvOnly ? " · On Big Fluctuations" : ""}`}
         />
       )}
     </SecNavShell>

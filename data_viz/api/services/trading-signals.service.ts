@@ -25,6 +25,7 @@
 //    marker.
 // ---------------------------------------------------------------------------
 import { queryRows, formatDate } from "./db.service.js";
+import { labelDecodeSql } from "./label-codes.js";
 import type { QueryResultRow } from "pg";
 
 /** One menu entry: a signal family + window (e.g. mov_rsi / rsi14). */
@@ -54,31 +55,18 @@ export interface TradingSignalRow {
   signal_excess_pct: number | null;
   signal: number;
   signal_threshold: number;
-  /** The strategy's expected-move confidence in BASIS POINTS
-   *  (ROUND(10000 × signal_strategies.confidence) — the chosen rung's
-   *  sign-aligned dir_ave). The SignalActionChip input (its 1..100 ramp
-   *  clamps above 100 bp, the ForecastTable treatment). */
+  /** The breach's SCALED expected-move confidence in BASIS POINTS
+   *  (ROUND(10000 × signal_thresholds.confidence_base × scale(|excess|))
+   *  — the on-bar sign-aligned dir_ave amplified by the row's scale
+   *  model over the breach depth). The SignalActionChip input (its
+   *  1..100 ramp clamps above 100 bp, the ForecastTable treatment). */
   confidence: number;
   /** The same confidence as the EXPECTED-MOVE PERCENT (confidence / 100,
    *  e.g. 0.87 = 0.87%) — the display number (text cells + tooltips). */
   confidence_pct: number;
-  /** The SAME bucket's ohlcv_boost cohort confidence (bp, ROUND(10000 ×
-   *  the @boost child row's confidence) — the ohlcv-score-trust-weighted
-   *  measurement of the same trigger days). ADD-ON context, never a
-   *  gate; null = the cohort never registered or the family carries no
-   *  ohlcv children (mov_std / the pair-cross families). Live rows
-   *  only — null on history arm rows. */
-  confidence_boost: number | null;
-  /** confidence_boost / 100 as the expected-move PERCENT — the
-   *  parenthetical add-on's display number. */
-  confidence_boost_pct: number | null;
-  /** The SAME bucket's ohlcv_selection cohort confidence (bp — the
-   *  favorable-anatomy subset's own dir_ave; bottom side only, the top
-   *  side carries no selection child). Same add-on rule as
-   *  confidence_boost. */
-  confidence_selection: number | null;
-  /** confidence_selection / 100 as the expected-move PERCENT. */
-  confidence_selection_pct: number | null;
+  /** (The confidence_boost cohort add-on fields were RETIRED with
+   *  the forecast layer 2026-10-05 — the plain rsi-pct population
+   *  is the only cohort.) */
   is_day_close_trigger: boolean;
   /** The breach bar's DATE market regime — the stats.market_regimes
    *  day label (calm/hot/panic/quiet). Context, not a gate: the breach
@@ -112,7 +100,7 @@ export async function fetchTradingSignalConfigs(
   const st = assertSecType(secType);
   const rows = await queryRows<TradingSignalConfigRow & QueryResultRow>(
     `SELECT signal_type, signal_sub_type, count(*)::int AS n_configs
-     FROM analysis_signals.signal_strategies
+     FROM analysis_signals.signal_thresholds
      WHERE sec_type = $1 AND is_active
      GROUP BY signal_type, signal_sub_type
      ORDER BY signal_type, signal_sub_type`,
@@ -171,19 +159,15 @@ export async function fetchTriggeredSignals(
             s.signal_sub_type,
             to_char(s.date, 'YYYY-MM-DD') AS date,
             to_char(s.time, 'HH24:MI')    AS time,
-            s.action,
+            ${labelDecodeSql("action", "s.action")} AS action,
             s.signal_excess::float8       AS signal_excess,
             s.signal_excess_pct::float8    AS signal_excess_pct,
             s.signal::float8              AS signal,
             s.signal_threshold::float8     AS signal_threshold,
             s.confidence,
             (s.confidence::float8 / 100.0) AS confidence_pct,
-            s.confidence_boost,
-            (s.confidence_boost::float8 / 100.0) AS confidence_boost_pct,
-            s.confidence_selection,
-            (s.confidence_selection::float8 / 100.0) AS confidence_selection_pct,
             s.is_day_close_trigger,
-            s.regime_state,
+            ${labelDecodeSql("regime", "s.regime_state")} AS regime_state,
             (SELECT count(DISTINCT ls.date)::int
              FROM live.live_signals ls
              WHERE ls.sec_type = s.sec_type
@@ -240,7 +224,7 @@ export async function isTradingSignalComputeEligible(
   const st = assertSecType(secType);
   const rows = await queryRows<{ eligible: boolean } & QueryResultRow>(
     `SELECT (
-        EXISTS (SELECT 1 FROM analysis_signals.signal_strategies
+        EXISTS (SELECT 1 FROM analysis_signals.signal_thresholds
                 WHERE sec_type = $1 AND is_active)
         AND EXISTS (SELECT 1 FROM ${BASIC_STATS_TABLE[st]!}
                     WHERE date = $2::date AND close IS NOT NULL)
@@ -342,10 +326,6 @@ export async function fetchTradingSignalHistory(
                s.signal_threshold::float8     AS signal_threshold,
                s.confidence,
                (s.confidence::float8 / 100.0) AS confidence_pct,
-               s.confidence_boost,
-               (s.confidence_boost::float8 / 100.0) AS confidence_boost_pct,
-               s.confidence_selection,
-               (s.confidence_selection::float8 / 100.0) AS confidence_selection_pct,
                s.is_day_close_trigger,
                s.regime_state
         FROM live.live_signals s
@@ -355,10 +335,7 @@ export async function fetchTradingSignalHistory(
      ),
      history AS (
         -- THE PLOT BULK — the multi-year record, every year the strategy
-        -- tier registered (15:00 day-close anchors). The cohort add-on
-        -- confidences exist only on live rows — NULL placeholders keep
-        -- the union's column lists aligned (the @boost/@selection
-        -- children appear here as their own config rows instead).
+        -- tier registered (15:00 day-close anchors).
         SELECT s.code,
                s.sec_type,
                s.signal_type,
@@ -372,10 +349,6 @@ export async function fetchTradingSignalHistory(
                s.signal_threshold::float8     AS signal_threshold,
                s.confidence,
                (s.confidence::float8 / 100.0) AS confidence_pct,
-               NULL::int                      AS confidence_boost,
-               NULL::float8                   AS confidence_boost_pct,
-               NULL::int                      AS confidence_selection,
-               NULL::float8                   AS confidence_selection_pct,
                s.is_day_close_trigger,
                s.regime_state
         FROM analysis_signals.history_signals s
@@ -412,7 +385,7 @@ export async function fetchTradingSignalHistory(
             r.signal_sub_type,
             to_char(r.date, 'YYYY-MM-DD') AS date,
             to_char(r.time, 'HH24:MI')    AS time,
-            r.action,
+            ${labelDecodeSql("action", "r.action")} AS action,
             r.signal_excess,
             r.signal_excess_pct,
             r.signal,
@@ -420,7 +393,7 @@ export async function fetchTradingSignalHistory(
             r.confidence,
             r.confidence_pct,
             r.is_day_close_trigger,
-            r.regime_state,
+            ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
             (SELECT to_char(win_start, 'YYYY-MM-DD') FROM win)
                 AS recent_window_start
      FROM deduped r
@@ -434,8 +407,174 @@ export async function fetchTradingSignalHistory(
   // off the first row and strip it so `signals` stays pure event rows.
   const recent_window_start = rows[0]?.recent_window_start ?? null;
   const signals = rows.map((r) => {
-    const { recent_window_start: _win, ...rest } = r;
+    const { recent_window_start: win, ...rest } = r;
+    void win;
     return rest;
   });
   return { signals, recent_window_start };
+}
+
+// ---------------------------------------------------------------------------
+//  Signal CURVES / THRESHOLDS / RSI series — the Recent Movements
+//  code-trend's threshold-vs-curve overlay panel.
+// ---------------------------------------------------------------------------
+
+/** One fitted depth-response curve row (analysis_signals.signal_curves
+ *  at its LATEST snapshot per key): mu(s) = mu_center + slope *
+ *  (s - s_center) over the Gaussian depth score s = Phi^-1(1 - q);
+ *  tail_bars maps tail pct ("1".."10") to the window's RSI bar (the
+ *  s -> RSI-value mapping). */
+export interface SignalCurveRow {
+  code: string;
+  sec_type: string;
+  signal_type: string;
+  rsi_window: number;
+  /** 'top' (sell) | 'bottom' (buy) — decoded from the label code. */
+  side: string;
+  /** calm / hot / panic / quiet — decoded from the label code. */
+  regime_state: string;
+  start_date: string;
+  end_date: string;
+  /** The cell's delay-0 trigger count over the window (the fit's sample). */
+  n: number;
+  /** y-bar: the cell's sign-aligned blended mean forward change at its
+   *  own depth center (fraction; > 0 = the reversal worked). */
+  mu_center: number;
+  /** s-bar: the cell's own mean depth score (never a universal constant). */
+  s_center: number;
+  /** b: dmu/ds — the pooled (side, regime) OLS slope (buy side >= 0). */
+  slope: number;
+  /** Tail pct ("1" | "2" | "3" | "5" | "10") -> the window's interpolated
+   *  RSI bar for this (code, rsi_window, side). */
+  tail_bars: Record<string, number>;
+}
+
+/** The code's LATEST depth-response curves (one row per rsi_window x
+ *  side x regime_state at the newest snapshot) — the curve overlay's
+ *  data. */
+export async function fetchSignalCurves(
+  secType: string | null | undefined,
+  code: string,
+): Promise<SignalCurveRow[]> {
+  const st = assertSecType(secType);
+  const c = (code ?? "").trim();
+  if (!c) {
+    throw Object.assign(new Error("code is required"), { status: 400 });
+  }
+  return queryRows<SignalCurveRow & QueryResultRow>(
+    `SELECT s.code,
+            s.sec_type,
+            s.signal_type,
+            s.rsi_window::int AS rsi_window,
+            ${labelDecodeSql("side", "s.side")} AS side,
+            ${labelDecodeSql("regime", "s.regime_state")} AS regime_state,
+            to_char(s.start_date, 'YYYY-MM-DD') AS start_date,
+            to_char(s.end_date, 'YYYY-MM-DD') AS end_date,
+            s.n::int AS n,
+            s.mu_center::float8 AS mu_center,
+            s.s_center::float8 AS s_center,
+            s.slope::float8 AS slope,
+            s.tail_bars
+     FROM analysis_signals.signal_curves s
+     WHERE s.sec_type = $1 AND s.code = $2
+       AND s.end_date = (
+           SELECT max(c2.end_date) FROM analysis_signals.signal_curves c2
+           WHERE c2.sec_type = $1 AND c2.code = $2
+       )
+     ORDER BY s.rsi_window, s.side, s.regime_state`,
+    [st, c],
+  );
+}
+
+/** One ACTIVE threshold row of the code (analysis_signals.
+ *  signal_thresholds WHERE is_active) — the threshold overlay's bars
+ *  in the RSI's own space. */
+export interface SignalThresholdRow {
+  code: string;
+  sec_type: string;
+  signal_type: string;
+  signal_sub_type: string;
+  /** 'top' (sell) | 'bottom' (buy) — decoded from the label code. */
+  side: string;
+  /** calm / hot / panic / quiet — decoded from the label code. */
+  regime_state: string;
+  action: string;
+  /** The breach bar in the RSI's own space (null when unmeasured). */
+  signal_threshold: number | null;
+  /** The on-bar sign-aligned confidence base (fraction). */
+  confidence_base: number | null;
+  scale_method: string | null;
+  scale_base: number | null;
+  scale_factor: number | null;
+  start_date: string;
+  end_date: string;
+}
+
+/** The code's ACTIVE signal thresholds (the current threshold set —
+ *  each config's latest end_date row). */
+export async function fetchSignalThresholds(
+  secType: string | null | undefined,
+  code: string,
+): Promise<SignalThresholdRow[]> {
+  const st = assertSecType(secType);
+  const c = (code ?? "").trim();
+  if (!c) {
+    throw Object.assign(new Error("code is required"), { status: 400 });
+  }
+  return queryRows<SignalThresholdRow & QueryResultRow>(
+    `SELECT t.code,
+            t.sec_type,
+            t.signal_type,
+            t.signal_sub_type,
+            ${labelDecodeSql("side", "t.side")} AS side,
+            ${labelDecodeSql("regime", "t.regime_state")} AS regime_state,
+            ${labelDecodeSql("action", "t.action")} AS action,
+            t.signal_threshold::float8 AS signal_threshold,
+            t.confidence_base::float8 AS confidence_base,
+            t.scale_method,
+            t.scale_base::float8 AS scale_base,
+            t.scale_factor::float8 AS scale_factor,
+            to_char(t.start_date, 'YYYY-MM-DD') AS start_date,
+            to_char(t.end_date, 'YYYY-MM-DD') AS end_date
+     FROM analysis_signals.signal_thresholds t
+     WHERE t.sec_type = $1 AND t.code = $2 AND t.is_active
+     ORDER BY t.signal_sub_type, t.side, t.regime_state`,
+    [st, c],
+  );
+}
+
+/** One RSI row of the code's series (analysis.mov_ave_rsi — one column
+ *  per RSI window; the mov_ave_spread rsi step's fixed vocabulary
+ *  3/6/10/14/20/60). */
+export interface SignalRsiRow {
+  date: string;
+  rsi_3: number | null;
+  rsi_6: number | null;
+  rsi_10: number | null;
+  rsi_14: number | null;
+  rsi_20: number | null;
+  rsi_60: number | null;
+}
+
+const RSI_SERIES_COLUMNS = "r.rsi_3days::float8 AS rsi_3, r.rsi_6days::float8 AS rsi_6, r.rsi_10days::float8 AS rsi_10, r.rsi_14days::float8 AS rsi_14, r.rsi_20days::float8 AS rsi_20, r.rsi_60days::float8 AS rsi_60" as const;
+
+/** The code's FULL daily RSI series (every window column, ascending) —
+ *  the threshold overlay's lines. */
+export async function fetchSignalRsiSeries(
+  secType: string | null | undefined,
+  code: string,
+): Promise<SignalRsiRow[]> {
+  const st = assertSecType(secType);
+  const c = (code ?? "").trim();
+  if (!c) {
+    throw Object.assign(new Error("code is required"), { status: 400 });
+  }
+  return queryRows<SignalRsiRow & QueryResultRow>(
+    `SELECT to_char(r.date, 'YYYY-MM-DD') AS date,
+            ${RSI_SERIES_COLUMNS}
+     FROM analysis.mov_ave_rsi r
+     WHERE r.sec_type = $1 AND r.code = $2
+     ORDER BY r.date ASC`,
+    [st, c],
+  );
 }

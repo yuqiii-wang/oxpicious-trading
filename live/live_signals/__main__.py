@@ -4,7 +4,7 @@ Run via ``python -m live.live_signals --code 000300 [--signal-scheme analysis]``
 or ``python -m live.live_signals --sec-type index [--date YYYY-MM-DD]``.
 
 LIVE breach check of the threshold set for ONE code (the LIVE signal
-tier — a breach of an active analysis_signals.signal_strategies
+tier — a breach of an active analysis_signals.signal_thresholds
 threshold IS the
 live signal; never a re-detection):
 
@@ -13,27 +13,24 @@ live signal; never a re-detection):
      sec_type is derived from whichever intraday table holds the code.
      NO intraday price → print ``404`` and exit 404.
   2. Load the code's ACTIVE signal configs (``is_active`` rows of
-     analysis_signals.signal_strategies — all signal types / sub
+     analysis_signals.signal_thresholds — all signal types / sub
      types of the
      resolved sec_type) and apply ONE GENERIC rule per config — the
      row's OWN action vs its OWN signal_threshold, direction by the
      action (sell breaches above, buy below), confidence copied from
      the row; NO per-family logic. The current value per config comes
      from the declarative SIGNAL_VALUE_SOURCE map
-     (live_signals/analysis/fetch): the intraday close (mov_std /
-     high_low_streaks), the latest analysis.mov_ave_rsi RSI
-     column (mov_rsi), the day's cross legs (mov_pairs /
-     mov_pairs_ema — the day's ma5/ema6/price vs the day's
-     ma{W}/ema{W} slow leg) or the recomputed
-     ratio z (margin_ratio).
+     (live_signals/analysis/fetch): the latest
+     analysis.mov_ave_rsi RSI column (mov_rsi — the only family
+     since the 2026-10-05 retirement of the mov_std / pair-cross
+     strategies).
   3. Triggered configs are recorded in live.live_signals (one row per
      (code, sec_type, signal_type, signal_sub_type, date, time); PK
      upsert so re-running the same bar updates in place). Every
-     config's evaluation (triggered or not) is printed. is_triggered_once
-     strategies (the pair-cross families — the cross is an event) flag
-     ONCE per breach episode: the evaluator resolves the episode from
-     the daily legs-row chain and records at most one live row per
-     episode; the state families keep flagging on every observation.
+     config's evaluation (triggered or not) is printed. mov_rsi is a
+     STATE family: it keeps flagging on every qualifying observation
+     while the breach persists (the pair-cross once-per-episode
+     machinery was RETIRED with those families).
   4. Upsert live.live_identity.
 
 ON-DEMAND AS-OF MODE (--date D — invoked by the Trading Signals API

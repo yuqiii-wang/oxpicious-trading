@@ -25,6 +25,8 @@ from _common.db_commons import (
     DEFAULT_MAX_REPLICA_LAG_MB,
     chunked_purge_async,
 )
+from _common.df_utils import host_unique
+from _common.labels import REGIME_CODE, SEC_TYPE_LABEL
 from builds.market_regimes.config import (
     AMT_BAR,
     AMT_Z_MIN_PERIODS,
@@ -173,7 +175,8 @@ async def run_market_regimes(
     if sec_type is not None:
         sec_types = (sec_type,)
     else:
-        sec_types = tuple(sorted(df["sec_type"].unique()))
+        sec_types = tuple(SEC_TYPE_LABEL[c]
+                          for c in host_unique(df["sec_type_id"]))
 
     # ---- Step 1: compute the regime states over full history ----------
     logger.info("\n[mr1/4] Computing regime states (EWMA vol span "
@@ -181,11 +184,11 @@ async def run_market_regimes(
           f"(min {VOL_Z_MIN_PERIODS}/{AMT_Z_MIN_PERIODS}), bars "
           f"vol_z > {VOL_BAR} / amt_z > {AMT_BAR})...")
     out = compute_market_regimes(
-        df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
+        df.sort_values(["sec_type_id", "code", "date"])
+          .reset_index(drop=True)
     )
 
-    # ---- Step 2: recorded build parameters + column order -------------
-    out = out.reindex(columns=list(MARKET_REGIMES_COLUMNS))
+    # ---- Step 2: recorded build parameters -----------------------------
     out["vol_span"] = VOL_SPAN
     out["vol_min_periods"] = VOL_MIN_PERIODS
     out["vol_z_window"] = VOL_Z_WINDOW
@@ -198,18 +201,34 @@ async def run_market_regimes(
     out["vol_bar"] = out["vol_bar"].round(4)
     out["amt_bar"] = out["amt_bar"].round(4)
 
-    n_codes = out[["sec_type", "code"]].drop_duplicates().shape[0]
+    n_codes = out[["sec_type_id", "code"]].drop_duplicates().shape[0]
     cov = out["regime"].value_counts(normalize=True) * 100
     logger.info(f"[mr2/4] {len(out):,} state rows across {n_codes:,} "
           f"(sec_type, code) groups — coverage: "
-          + " ".join(f"{r}={cov.get(r, 0.0):.1f}%" for r in
+          + " ".join(f"{r}={cov.get(REGIME_CODE[r], 0.0):.1f}%" for r in
                      ("calm", "hot", "panic", "quiet")))
 
     # ---- Step 3: collapse the daily states into contiguous spans -----
+    # BEFORE the states frame's column reindex — the collapse selects the
+    # sec_type_id frame-code column. Write boundary for spans: re-materialize
+    # the TEXT sec_type (the loop constant in the run_build path — never a
+    # per-row decode), then drop the frame code via the column reindex.
     spans = compute_regime_spans(out)
+    spans["sec_type"] = (
+        sec_type if sec_type is not None
+        else spans["sec_type_id"].map(SEC_TYPE_LABEL)
+    )
+    spans = spans.reindex(columns=list(MARKET_REGIME_SPANS_COLUMNS))
     spans_per_code = len(spans) / n_codes if n_codes else 0.0
     logger.info(f"[mr3/4] {len(spans):,} regime spans "
           f"({spans_per_code:.0f}/code avg) for stats.market_regime_spans")
+
+    # ---- Write boundary (states frame): TEXT sec_type + table order ----
+    out["sec_type"] = (
+        sec_type if sec_type is not None
+        else out["sec_type_id"].map(SEC_TYPE_LABEL)
+    )
+    out = out.reindex(columns=list(MARKET_REGIMES_COLUMNS))
 
     # ---- Step 4: replace the scope's rows wholesale (both tables) -----
     for st in sec_types:

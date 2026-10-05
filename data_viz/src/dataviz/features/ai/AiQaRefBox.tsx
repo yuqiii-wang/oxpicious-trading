@@ -232,9 +232,16 @@ export function RefExpandBox({ tag, refItem }: { tag: string; refItem?: AiQaRefI
           >
             {refItem.title}
           </Typography>{" "}
-          <Typography component="span" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-            {refItem.date}
-          </Typography>
+          {refItem.date && (
+            <Typography
+              component="span"
+              color="text.secondary"
+              sx={{ fontSize: "0.65rem" }}
+              title="文章发布日期（ref_time；未知时不显示）"
+            >
+              {refItem.date}
+            </Typography>
+          )}
         </Box>
         {link && (
           <OpenInNewIcon

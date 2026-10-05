@@ -79,6 +79,11 @@ interface AiFilters {
    *  other filters. */
   industryIds?: string[] | null;
   search?: string | null;
+  /** true = only Q&A rows whose mapped industry had a big market move on the
+   *  row's Shanghai qa_date day (text.llm_qa.is_big_fluctuation — the
+   *  builds.text big_market_mv pass: |day change| >= 3% AND RSI(3) pinned,
+   *  5-td cooldown per industry). */
+  bigFluctuationOnly?: boolean;
 }
 
 async function buildFilterSql(
@@ -111,6 +116,9 @@ async function buildFilterSql(
   }
   // Inactive rows never surface (no opt-out — the feed is active-only).
   clauses.push(`q.is_active`);
+  if (filters.bigFluctuationOnly) {
+    clauses.push(`q.is_big_fluctuation`);
+  }
   // Keyword search: every term must hit question OR answer (AND).
   const terms = (filters.search ?? "").trim().split(/\s+/).filter(Boolean);
   const termClauses = terms.map((term) => {
@@ -192,7 +200,7 @@ export async function listAiCalendar(
 
 const QA_LIST_SELECT = `
   SELECT m.qa_id, m.question, m.industry_id, m.sector_id, m.category,
-         m.llm_model, m.language, m.trade_day::text AS date,
+         m.llm_model, m.language, m.is_big_fluctuation, m.trade_day::text AS date,
          (m.updated_at AT TIME ZONE 'Asia/Shanghai')::text AS updated_at,
          LEFT(m.answer, 240) AS answer_snippet,
          (SELECT COUNT(*)::int FROM text.news_group_items gi
@@ -248,6 +256,16 @@ export async function listAiItems(
 // (the feed card's click-to-expand fetch). Each ref carries a 4000-char
 // content preview for the inline expansion — exact rows can hold ~50KB of
 // fetched page text, too much for one detail payload times every ref.
+//
+// REF DATES — the DB carries the truth, populated by the Python writers
+// (llm_agents / builds.text): text.llm_qa_refs.ref_time is the ref's
+// ACTUAL publish time (the search response's date, else the URL-embedded
+// date) and NULL means unknown — a now()/qa-date fallback used to be
+// written there and displayed as the article's date. `date` below is
+// ref_time's Asia/Shanghai day; null renders nothing on the card. Refs
+// whose known date falls outside the QA's interest window
+// [interest day − 20d, interest day] (qa_date's Shanghai day — the date
+// the question is about, not the ask time) are not stored at all.
 // ---------------------------------------------------------------------------
 
 export async function getAiQa(qaId: number): Promise<AiQaDetail | null> {
@@ -266,7 +284,7 @@ export async function getAiQa(qaId: number): Promise<AiQaDetail | null> {
      )
     SELECT m.qa_id, m.question, m.answer, m.context, m.industry_id,
            m.sector_id, m.category, m.llm_model, m.language,
-           m.trade_day::text AS date,
+           m.is_big_fluctuation, m.trade_day::text AS date,
            (m.updated_at AT TIME ZONE 'Asia/Shanghai')::text AS updated_at,
            (SELECT COUNT(*)::int FROM text.news_group_items gi
              WHERE gi.news_group_id = m.news_group_id) AS n_sources,
@@ -282,8 +300,9 @@ export async function getAiQa(qaId: number): Promise<AiQaDetail | null> {
   const refs = await queryRows<AiQaRefItem & QueryResultRow>(
     `SELECT r.ref, r.ref_type, r.resolved_via, r.resolved_url, r.is_used,
            (r.ref_time AT TIME ZONE 'Asia/Shanghai')::text AS ref_time,
-           n.news_id, n.title, n.source, n.date::text AS date, n.url,
-           LEFT(n.content, 4000) AS content
+           n.news_id, n.title, n.source, n.url,
+           LEFT(n.content, 4000) AS content,
+           (r.ref_time AT TIME ZONE 'Asia/Shanghai')::date::text AS date
       FROM text.llm_qa_refs r
       JOIN text.news n ON n.news_id = r.news_id
      WHERE r.qa_id = $1

@@ -1,11 +1,15 @@
 /**
- * Single-ETF panel — rebased close % + MA20/MA60/MA120 + RZ/RQ margin fills +
- * volume bars. Mirrors draw_etf_panel() in plot_szse_sse_etf_and_margin.py.
+ * Single-ETF panel — rebased close % + MA20/MA60/MA120 + dividend price
+ * estimation curve (Div Est, the PE-curve replacement on the Dividends
+ * page) + RZ/RQ margin fills + volume bars. Mirrors draw_etf_panel() in
+ * plot_szse_sse_etf_and_margin.py.
  *
  * Layout:
  *   • Primary axis (left): rebased close % (start = 0%) + MA20/MA60/MA120
  *     For bond ETFs: line + neutral-gray fill to 0%.
  *     For equity ETFs: OHLC bars of rebased OHLC %.
+ *     Plus the dashed Div Est line (analysis.dividend_est
+ *     div_est_price, adjusted-space converted, same axis/units).
  *   • Twin axis (hidden): RZ green fill UP from middle (always ≥0) +
  *     RQ red fill DOWN from middle (always ≤0).
  *   • Twin axis (right, visible): trading-turnover bars colored by price-up/down
@@ -33,6 +37,7 @@ import type { EtfBundle } from "@shared/types";
 import {
   DOWN_COLOR,
   DIVIDEND_COLOR,
+  DIV_EST_COLOR,
   MA120_COLOR,
   MA20_COLOR,
   MA60_COLOR,
@@ -58,6 +63,10 @@ import type { ECharts, EChartsOption } from "echarts";
 
 interface Props {
   etf: EtfBundle;
+  /** Show the dividend price estimation curve (analysis.dividend_est
+   *  "Div Est" dashed line + tooltip row + AI-ask series). Set ONLY by the
+   *  Dividends page — the PE and ETF-margin pages keep the plain panel. */
+  showDivEst?: boolean;
   /** Optional default window (inclusive date strings). When provided
    *  the dataZoom initializes to the range covering [defaultStartDate,
    *  defaultEndDate] inside this ETF's rows — used to align multiple panels
@@ -80,6 +89,7 @@ function buildOption(
   etf: EtfBundle,
   themeMode: ThemeMode,
   ohlcMode: OhlcMode,
+  showDivEst: boolean,
   dataZoomStart = 0,
   dataZoomEnd = 100,
 ): EChartsOption {
@@ -90,6 +100,16 @@ function buildOption(
   // and splits — raw OHLC shows a fake gap on corp-action days (e.g. a 3:1
   // split looks like a -67% crash). Fall back to raw when adj_* is missing.
   const close = rows.map((r) => r.adj_close ?? r.close);
+  // Dividend price estimation curve (analysis.dividend_est), RAW
+  // price units — convert to the candles' ADJUSTED space (× the row's
+  // adj_close/close factor) so it overlays the adj_* series across
+  // corp actions. Null before the code's first ex-dividend date.
+  const divEstAdj = rows.map((r) =>
+    r.div_est_price != null && r.close > 0
+      ? r.div_est_price * ((r.adj_close ?? r.close) / r.close)
+      : null,
+  );
+  const hasDivEst = divEstAdj.some((v) => v != null && Number.isFinite(v));
   // Trading turnover (成交金额) in yuan — sourced from stats.etf_liquidity_margin
   // .trading_amount (loaded by build_szse_sse_etf_and_margin.py from the CSV's
   // 成交金额 column, stored in yuan). Displayed in 亿元 (1 亿 = 1e8 yuan).
@@ -97,11 +117,31 @@ function buildOption(
   const isBond = etf.is_bond;
 
   // Rebase close to % change in percentage mode; raw in absolute mode.
-  const { rebased: rebasedClose } = rebasePriceArrays({ close }, ohlcMode);
+  // divEst rides the same rebase (same base close) so it overlays the
+  // candles in BOTH modes.
+  const { rebased: rebasedClose } = rebasePriceArrays(
+    { close, divEst: divEstAdj },
+    ohlcMode,
+  );
   const closePct = rebasedClose.close;
+  const divEstPct = rebasedClose.divEst;
   const ma20 = safeMa(closePct, 20);
   const ma60 = safeMa(closePct, 60);
   const ma120 = safeMa(closePct, 120);
+
+  // date → raw (RAW-space) div-est diagnostics for the axis tooltip: the
+  // curve's raw CNY value plus the segment's next ex-date / next dividend
+  // (null next_* = open tail).
+  const divEstByDate = new Map<string, {
+    raw: number | null;
+    nextEx: string | null;
+    nextDiv: number | null;
+  }>(
+    rows.map((r) => [
+      r.date,
+      { raw: r.div_est_price, nextEx: r.seg_end_date, nextDiv: r.seg_next_div },
+    ]),
+  );
 
   // Corporate-action event markers (dividends / splits) — markers only, no
   // text labels (full detail is shown in the axis tooltip). Gold diamond =
@@ -214,7 +254,7 @@ function buildOption(
 
   // Break arrays at gaps so lines don't interpolate across weekends/holidays
   if (isBond) {
-    const broken = breakArraysAtGaps(dates, [closePct, ma20, ma60, ma120]);
+    const broken = breakArraysAtGaps(dates, [closePct, ma20, ma60, ma120, divEstPct]);
     series.push({
       type: "line",
       name: ohlcMode === "percentage" ? "Rebased %" : "Close",
@@ -258,6 +298,19 @@ function buildOption(
       lineStyle: { color: MA120_COLOR, width: 0.7, type: "dotted" },
       z: 4,
     });
+    if (hasDivEst && showDivEst) {
+      series.push({
+        type: "line",
+        name: "Div Est",
+        yAxisIndex: 0,
+        data: broken.arrays[4],
+        smooth: false,
+        symbol: "none",
+        color: DIV_EST_COLOR,
+        lineStyle: { color: DIV_EST_COLOR, width: 1.1, type: "dashed", opacity: 0.9 },
+        z: 7,
+      });
+    }
   } else {
     // OHLC bars — rebased to % in percentage mode, raw prices in absolute mode.
     // Uses ADJUSTED OHLC so dividends/splits don't create artificial gaps.
@@ -268,12 +321,12 @@ function buildOption(
     const highs = rows.map((r) => r.adj_high ?? r.high);
     const lows = rows.map((r) => r.adj_low ?? r.low);
     const { rebased: rebasedOhlc } = rebasePriceArrays(
-      { open: opens, high: highs, low: lows, close },
+      { open: opens, high: highs, low: lows, close, divEst: divEstAdj },
       ohlcMode,
     );
     const broken = breakArraysAtGaps(dates, [
       rebasedOhlc.open, rebasedOhlc.high, rebasedOhlc.low, closePct,
-      ma20, ma60, ma120,
+      ma20, ma60, ma120, rebasedOhlc.divEst,
     ]);
     const candleData = broken.dates.map((_, i) => [
       broken.arrays[0][i],
@@ -321,6 +374,22 @@ function buildOption(
       lineStyle: { color: MA120_COLOR, width: 0.7, type: "dotted" },
       z: 6,
     });
+    // Dividend price estimation curve — the PE-curve REPLACEMENT on the
+    // Dividends page: same price axis as the candles (same units once
+    // adjusted-space converted), dashed so it reads as a model line.
+    if (hasDivEst && showDivEst) {
+      series.push({
+        type: "line",
+        name: "Div Est",
+        yAxisIndex: 0,
+        data: broken.arrays[7],
+        smooth: false,
+        symbol: "none",
+        color: DIV_EST_COLOR,
+        lineStyle: { color: DIV_EST_COLOR, width: 1.1, type: "dashed", opacity: 0.9 },
+        z: 7,
+      });
+    }
   }
 
   // RZ green fill UP from middle (always ≥0) on hidden twin axis
@@ -435,6 +504,24 @@ function buildOption(
           ]));
         }
 
+        // Dividend price estimation curve — raw CNY value + the segment's
+        // next ex-date / next dividend (the tooltip shows the RAW model
+        // value even in percentage mode, where the plotted line is rebased).
+        const de = divEstByDate.get(dateStr);
+        if (showDivEst && de && de.raw != null && Number.isFinite(de.raw)) {
+          const nextTxt = de.nextEx
+            ? ` · next ex ${de.nextEx.slice(0, 10)}` +
+              (de.nextDiv != null ? ` · D ${fmtNum(de.nextDiv, 3)}` : "")
+            : " · open tail";
+          children.push(makeRow([
+            React.createElement("span", { style: { color: DIV_EST_COLOR } }, "●"),
+            " ",
+            "Div Est: ",
+            React.createElement(tooltipComponents.Bold, null, `¥${fmtNum(de.raw, 3)}`),
+            React.createElement("span", { style: { opacity: 0.75 } }, nextTxt),
+          ]));
+        }
+
         return renderReactElement(React.createElement(React.Fragment, null, children));
       },
     }),
@@ -531,7 +618,7 @@ function ReturnBadges({ etf }: { etf: EtfBundle }) {
   );
 }
 
-export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, onDateClick }: Props) {
+export default function EtfMarginPanel({ etf, showDivEst = false, defaultStartDate, defaultEndDate, onDateClick }: Props) {
   const themeMode = useChartThemeMode();
   const allRows = etf.rows;
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -616,8 +703,8 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
   }, [etf.code, allRows.length, defaultStartDate, defaultEndDate]);
 
   const option = useMemo(
-    () => buildOption(etf, themeMode, ohlcMode, dataZoomRange.start, dataZoomRange.end),
-    [etf, themeMode, ohlcMode, dataZoomRange],
+    () => buildOption(etf, themeMode, ohlcMode, showDivEst, dataZoomRange.start, dataZoomRange.end),
+    [etf, themeMode, ohlcMode, showDivEst, dataZoomRange],
   );
 
   // Chart instance for the AI Ask screenshot.
@@ -630,13 +717,23 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
       intro:
         `Single-ETF daily chart of ${etf.code} ${etf.name} ` +
         `(${etf.is_bond ? "bond ETF — rebased close % line, neutral fill" : "equity ETF — adjusted OHLC bars, so dividends/splits draw no fake gaps"}): ` +
-        "MA20/60/120 on the same left axis; RZ (融资, green up-fill) and RQ (融券, red " +
+        "MA20/60/120 on the same left axis" +
+        (showDivEst
+          ? "; the dashed Div Est line is the dividend price estimation curve " +
+            "(cum-dividend fair value anchored on each ex-date's post-drop close, " +
+            "regrowing exponentially to the next cum level by the next ex-date — the " +
+            "PE curve's replacement on this page)"
+          : "") +
+        "; RZ (融资, green up-fill) and RQ (融券, red " +
         "down-fill) margin balances as shifted/clipped scores on a hidden axis (tooltip = " +
         "raw balance); turnover bars (亿元) on the right, close-vs-open colored. % mode: " +
         "prices rebased to % change from the first valid close. Gold/teal diamonds = " +
         "dividend / split markers; the dataZoom owns the visible window. Indication: RZ " +
         "swelling = leveraged longs crowding; RQ swelling = shorts building — watch the " +
-        "balance inflection against price.",
+        "balance inflection against price." +
+        (showDivEst
+          ? " Div Est hugging the candles = price move is dividend-accrual-like; a widening gap = pure market drift."
+          : ""),
       instruments: [{ code: etf.code, name: etf.name, assetClass: "etf" }],
       series: [
         ...(etf.is_bond
@@ -653,6 +750,9 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
         { name: "MA20", unit: ohlcMode === "percentage" ? "%" : "元", description: "20-day mean of the rebased close" },
         { name: "MA60", unit: ohlcMode === "percentage" ? "%" : "元", description: "60-day mean of the rebased close" },
         { name: "MA120", unit: ohlcMode === "percentage" ? "%" : "元", description: "120-day mean of the rebased close" },
+        ...(showDivEst
+          ? [{ name: "Div Est", unit: ohlcMode === "percentage" ? "%" : "元", description: "dividend price estimation curve (analysis.dividend_est): cum-dividend fair-value line anchored on each ex-date's post-drop close, growing exponentially to the next cum-dividend level (close(next ex) + next D) on the record date; open tail accrues at the last dividend yield / frequency" }]
+          : []),
         { name: "cash borrow balance", description: "RZ 融资 balance — plotted as a shifted/clipped score on the hidden axis; the tooltip shows the raw balance" },
         { name: "sec borrow balance", description: "RQ 融券 balance — plotted as a shifted/clipped score on the hidden axis; the tooltip shows the raw balance" },
         { name: "Amount", unit: "亿元", description: "daily trading turnover (成交金额), bar color = close vs open" },
@@ -662,9 +762,12 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
         "Percentage mode rebases price series to % change from the first valid close; Amount and margin scores are not rebased.",
         "Margin fills are scores on a hidden axis, not raw yuan — read balances from the tooltip.",
         "Diamond markers: gold = dividend, teal = split/conversion.",
+        ...(showDivEst
+          ? ["Div Est is drawn in adjusted price space (raw curve × adj factor) so it overlays the adjusted candles; its tooltip row shows the RAW CNY value and the segment's next ex-date / next dividend."]
+          : []),
       ],
     }),
-    [etf.code, etf.name, etf.is_bond, ohlcMode],
+    [etf.code, etf.name, etf.is_bond, ohlcMode, showDivEst],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${etf.code} · ${etf.name}`,

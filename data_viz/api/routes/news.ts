@@ -67,6 +67,12 @@ function searchMode(v: unknown): "any" | "all" {
   return str(v) === "any" ? "any" : "all";
 }
 
+/** Boolean flag query param — "1" (URLSearchParams-friendly) or "true"
+ *  (String(boolean) from the api-client's qs). Anything else = off. */
+function bool(v: unknown): boolean {
+  return v === "1" || v === "true";
+}
+
 /** Sources that support the interactive question search — the News page
  *  disables every other source chip while the question bar has input.
  *  Mirrored UI-side (NewsPage QUESTION_SEARCH_ENABLED_SOURCES). */
@@ -122,6 +128,7 @@ router.get("/calendar", async (req: Request, res: Response) => {
         searchAny: searchMode(req.query.search_mode) === "any",
         source: str(req.query.source) ?? null,
         author: str(req.query.author) ?? null,
+        bigFluctuationOnly: bool(req.query.is_big_fluctuation),
         start: str(req.query.start) ?? null,
         end: str(req.query.end) ?? null,
       }),
@@ -145,6 +152,7 @@ router.get("/items", async (req: Request, res: Response) => {
         searchAny: searchMode(req.query.search_mode) === "any",
         source: str(req.query.source) ?? null,
         author: str(req.query.author) ?? null,
+        bigFluctuationOnly: bool(req.query.is_big_fluctuation),
         date: str(req.query.date) ?? null,
         dateFrom: str(req.query.date_from) ?? null,
         dateTo: str(req.query.date_to) ?? null,

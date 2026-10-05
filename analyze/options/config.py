@@ -294,10 +294,225 @@ VOL_INDEX_NUMERIC_COLS = [
     "var_near", "var_far", "variance_30d", "vol_index_30d",
 ]
 
+# ---- Options bands table (v2 — OI-MASS CORRIDOR) ---------------------------
+# The options-bounded region per (underlying_code, date): strikes enclosing
+# the central BANDS_CORRIDOR_MASS of pooled chain OI (all expiries,
+# OI-CDF P10..P90), with spot's position in the mass (spot_pct), edge
+# gaps, pos_state, a validated direction lean, and prior-session corridor
+# events (EXIT_LOW/EXIT_HIGH/REENTER). Study 2026-10-04
+# (temp_scripts/study_skew_position_bands.py, 3 CFFEX index underlyings
+# 2020-2026): below the P25 edge (spot_pct < 0.25) mean 10-session
+# +1.4% (n=341), with the deep P10 extreme at 90% up / mean +4.5%
+# (n=10); >= P90 -> 89% down, mean -3.3% (n=9), while 75-90% is weak. The moneyness-skew level flags (all
+# expiries' E[M] > 1) carry NO standalone edge (20% frequency, up-rate
+# 0.484 vs 0.507 base) — stored as context; strongest combined state:
+# skew_all_above & spot_pct <= 25% = mean 10-session +1.57% (n=289).
+# Date-granular — no FK to options_expiry_identity.
+BANDS_TABLE_NAME = "analysis.options_bands"
+BANDS_ANALYSIS_NAME = "options_bands"
+
+BANDS_PK_COLUMNS = ["underlying_code", "date"]
+
+# Corridor = central mass share of pooled OI (CDF P25..P75 strikes).
+# P25/P75 (not P10/P90): the quartile edges coincide with the validated
+# lean thresholds (spot_pct <= 0.25 = UP zone) so corridor_low IS the
+# lean boundary; the P10/P90 extremes stay the strongest-but-rarest
+# snap-back levels (<= P10: 90% up, mean +4.5%, n=10).
+BANDS_CORRIDOR_LO_QT = 0.25
+BANDS_CORRIDOR_HI_QT = 0.75
+# Lean thresholds on spot_pct (OI share at strikes <= spot): <=0.25 = UP
+# (validated snap-back), >=0.90 = DOWN (only the top decile is reliably
+# bearish; 75-90% is not).
+BANDS_LEAN_LOW_PCT = 0.25
+BANDS_LEAN_HIGH_PCT = 0.90
+# Expected-move horizon (trading sessions) and annualization basis.
+BANDS_EM_SESSIONS = 5
+BANDS_EM_TRADING_DAYS = 252
+# Plausibility floor for the source chain ATM IV (fractional; 10 vol
+# points — A-share index ATM IV has never sustained below ~12 vol
+# points). ETF-code underlyings' stats.options_greeks implied_vol is
+# currently miscalibrated ~30x low (venue x1000 scaling — see
+# fetch_vol_index_rows docstring; their max chain IV ~7.5 vol points);
+# below this floor em5_pct/exhausted_5d are NULLed instead of emitting
+# garbage. Revisit when the greeks calibration for SZSE/SSE ETF chains
+# is fixed upstream.
+BANDS_IV_MIN_FRACTION = 0.10
+
+# Fresh strike-grid expansion window (sessions) and the amplifier
+# threshold. Exchanges list new strikes as the underlying moves: a
+# burst of new higher/lower strikes marks genuine range extension.
+# Calibrated on the 2025-08-22..26 rally (000300 grid ceiling 4700 ->
+# 5000 in three sessions; new_hi_40d 2 -> 6): the 2025-08-28 EXIT_HIGH
+# breached into freshly-listed price territory -> amplified. Grids step
+# by 2 strikes at a time, so >= 2 = one genuine expansion step.
+BANDS_STRIKE_WIN_SESSIONS = 40
+BANDS_SIG_MIN_NEW_STRIKES = 2
+
+# Exit-quality re-study (2026-10-05,
+# temp_scripts/study_corridor_events_v2.py, ~4,700 underlying-days): the
+# stored event is a one-day binary cross of the PRIOR session's corridor
+# edges — ~50% of exits breach by less than BANDS_EXIT_NOISE_Z x the
+# day's own fluctuation (sigma20, trailing 20-session daily-return std)
+# and CONTINUE in the breach direction (low side 29% up, mean 5-session
+# -0.71%), while deep breaches (>= BANDS_EXIT_FLUSH_Z x sigma20) are the
+# capitulation flush that snaps back (80% up, mean +2.0%; consistent per
+# underlying: 000300 87.5%, 000852/000016 66.7%). Wall context: a
+# low-side exit that also closes below the chain-dominant PUT wall's
+# prior low while that wall was ACTIVE is the strongest observed cell
+# (80% up, mean 5-session +3.12%).
+BANDS_SIGMA_WIN_SESSIONS = 20   # trailing window of the daily-return std (fluctuation unit)
+BANDS_EXIT_NOISE_Z = 0.5        # breach depth below this = NOISE (sub-fluctuation cross)
+BANDS_EXIT_FLUSH_Z = 1.5        # breach depth at/above this = FLUSH (capitulation-grade)
+
+BANDS_RESULT_COLUMNS = [
+    "date", "underlying_code", "underlying_close",
+    "corridor_low", "corridor_high", "oi_total", "spot_pct",
+    "gap_low_pct", "gap_high_pct", "pos_state", "lean", "event",
+    "sigma20", "dev_edge_pct", "dev_z", "exit_class",
+    "wall_side_broken", "wall_state_prior",
+    "new_hi_40d", "new_lo_40d", "edge_sig",
+    "n_expiries", "skew_all_above", "skew_all_below", "min_em", "mean_em",
+    "em5_pct", "ret5_pct", "exhausted_5d",
+]
+
+BANDS_NUMERIC_COLS = [
+    "underlying_close",
+    "corridor_low", "corridor_high", "oi_total", "spot_pct",
+    "gap_low_pct", "gap_high_pct",
+    "sigma20", "dev_edge_pct", "dev_z", "wall_side_broken",
+    "new_hi_40d", "new_lo_40d",
+    "n_expiries", "skew_all_above", "skew_all_below", "min_em", "mean_em",
+    "em5_pct", "ret5_pct", "exhausted_5d",
+]
+
+BANDS_DESCRIPTION = (
+    "Options-implied OI-MASS CORRIDOR bands per (underlying_code, date): the "
+    "bounded region = strikes enclosing the central 80% of pooled chain OI "
+    "(all expiries; corridor_low/corridor_high = OI-CDF P10/P90), with "
+    "spot_pct (OI share at strikes <= spot), signed edge gaps, pos_state "
+    "(BELOW/INSIDE/ABOVE), a validated direction lean (UP at/below the "
+    "corridor bottom — close <= P10 = 90% up next 5 sessions, mean +4.5%; "
+    "DOWN at/above the top — 89% down, mean -3.3%), and prior-session "
+    "corridor events (EXIT_LOW/EXIT_HIGH/REENTER). Edge significance: "
+    "new_hi_40d/new_lo_40d count strikes newly present beyond the chain's "
+    "max/min strike of 40 sessions earlier (fresh exchange listing "
+    "expansion), and edge_sig marks a breached/approached edge whose own "
+    "side just expanded by >= 2 new strikes (UP/DOWN/BOTH; e.g. 000300 "
+    "2025-08-28 EXIT_HIGH with new_hi_40d=6 -> UP — a breach into "
+    "freshly-listed price territory). Exit quality (2026-10-05 re-study, "
+    "~4,700 underlying-days): sigma20/dev_edge_pct/dev_z/exit_class grade "
+    "every exit by breach depth in fluctuation units (NOISE < 0.5x sigma20 "
+    "— ~half of all exits, continuation-leaning; BREAK 0.5..1.5; FLUSH "
+    ">= 1.5 — the 80%-up snap-back cell), and wall_side_broken/"
+    "wall_state_prior carry the chain-dominant wall context (an ACTIVE "
+    "put wall's floor giving way on an EXIT_LOW = the strongest cell, "
+    "80% up, mean 5-session +3.12%). Moneyness-skew flags "
+    "(skew_all_above/below, min_em, mean_em) are context-only (no standalone "
+    "edge; strongest combined state: all_above & spot_pct <= 25%, mean "
+    "10-session +1.57%). em5_pct = 5-session chain-ATM IV expected move; "
+    "exhausted_5d = |ret5| >= em5. PK (underlying_code, date); no FK "
+    "(date-granular). Built by analyze.options."
+)
+
+# Band position states (pos_state CHECK)
+BAND_POS_BELOW = "BELOW"
+BAND_POS_INSIDE = "INSIDE"
+BAND_POS_ABOVE = "ABOVE"
+
+# Band direction lean (lean CHECK)
+BAND_LEAN_UP = "UP"
+BAND_LEAN_DOWN = "DOWN"
+BAND_LEAN_NEUTRAL = "NEUTRAL"
+
+# Band corridor events (event CHECK; vs the PRIOR session's corridor)
+BAND_EVENT_NONE = "NONE"
+BAND_EVENT_EXIT_LOW = "EXIT_LOW"
+BAND_EVENT_EXIT_HIGH = "EXIT_HIGH"
+BAND_EVENT_REENTER = "REENTER"
+
+# Exit-quality classes (exit_class CHECK) by breach depth in fluctuation
+# units (dev_z = dev_edge_pct / sigma20): NOISE = sub-fluctuation cross
+# (dev_z < BANDS_EXIT_NOISE_Z) — continuation-leaning, not a level
+# signal; BREAK = genuine but unresolved (between the thresholds);
+# FLUSH = capitulation-grade breach (dev_z >= BANDS_EXIT_FLUSH_Z) — the
+# validated snap-back cell.
+BAND_EXIT_CLASS_FLUSH = "FLUSH"
+BAND_EXIT_CLASS_BREAK = "BREAK"
+BAND_EXIT_CLASS_NOISE = "NOISE"
+
+# Edge-significance states (edge_sig CHECK): a breached/approached
+# corridor edge whose OWN side just saw fresh strike-grid expansion
+# (>= BANDS_SIG_MIN_NEW_STRIKES new strikes in the trailing
+# BANDS_STRIKE_WIN_SESSIONS sessions). UP = upper edge (lean DOWN /
+# EXIT_HIGH) + new HIGHER strikes; DOWN = lower edge (lean UP /
+# EXIT_LOW) + new LOWER strikes; BOTH = both sides same day.
+BAND_EDGE_SIG_NONE = "NONE"
+BAND_EDGE_SIG_UP = "UP"
+BAND_EDGE_SIG_DOWN = "DOWN"
+BAND_EDGE_SIG_BOTH = "BOTH"
+
 # Zone lifecycle states (analysis.options_walls.state CHECK)
 WALL_STATE_ACTIVE = "ACTIVE"
 WALL_STATE_ERODED = "ERODED"
 WALL_STATE_BREACHED = "BREACHED"
+
+# ---- Options moneyness series tables ---------------------------------------
+# Materialized read models behind /api/szse-options/oi-moneyness-series
+# (the OI-weighted Moneyness Skew panel). options_moneyness_series holds
+# the per (underlying_code, date, expiry_month) oi_moneyness aggregates;
+# options_spot_daily the per (underlying_code, date) underlying close
+# (the panel's spot axis, incl. dates with no valid group). Both replace
+# a former live 5-way full-history join per API request (~4.8s cold on
+# the biggest CFFEX underlying). No FK (month-group / date-granular keys).
+MONEYNESS_TABLE_NAME = "analysis.options_moneyness_series"
+MONEYNESS_ANALYSIS_NAME = "options_moneyness_series"
+
+MONEYNESS_PK_COLUMNS = ["underlying_code", "date", "expiry_month"]
+
+MONEYNESS_RESULT_COLUMNS = [
+    "date", "underlying_code", "expiry_month", "expiry_date",
+    "n_valid", "e_m", "wsum_k", "wsum",
+    "call_oi", "put_oi", "call_otm_oi", "put_otm_oi",
+]
+
+MONEYNESS_NUMERIC_COLS = [
+    "e_m", "wsum_k", "wsum",
+    "call_oi", "put_oi", "call_otm_oi", "put_otm_oi",
+]
+
+# Per-group e_m gate (browser/server parity): fewer valid rows -> e_m NULL.
+MONEYNESS_MIN_VALID = 3
+
+MONEYNESS_DESCRIPTION = (
+    "Materialized oi_moneyness skew series per (underlying_code, date, "
+    "expiry_month): per month group and date — n_valid (valid rows: "
+    "expiry_date >= date AND 0 < implied_vol < 5), wsum_k/wsum "
+    "(GREATEST(OI,1)-weighted strike and weight sums), e_m = (Σ w·K / Σ w) "
+    "/ day close (NULL when n_valid < 3 or close missing/<= 0), call/put "
+    "OI and OTM OI sums over the group's active rows, expiry_date = MIN "
+    "valid expiry. The precomputed read model behind the OI-weighted "
+    "Moneyness Skew panel's /oi-moneyness-series endpoint (replaces the "
+    "former live 5-way full-history join, ~4.8s cold on the biggest CFFEX "
+    "underlying). PK (underlying_code, date, expiry_month); no FK "
+    "(month-group keys)."
+)
+
+SPOT_TABLE_NAME = "analysis.options_spot_daily"
+SPOT_ANALYSIS_NAME = "options_spot_daily"
+
+SPOT_PK_COLUMNS = ["underlying_code", "date"]
+
+SPOT_RESULT_COLUMNS = ["date", "underlying_code", "close"]
+
+SPOT_NUMERIC_COLS = ["close"]
+
+SPOT_DESCRIPTION = (
+    "Per (underlying_code, date) underlying close from the options loader "
+    "(MAX(options_settlement.underlying_close) over the date's settlement "
+    "rows; close <= 0 is mapped to null by the API). Serves the spot axis "
+    "of /oi-moneyness-series (dates with no valid moneyness group "
+    "included). PK (underlying_code, date); no FK (date-granular)."
+)
 
 # ---- Zone walls (wall_type='zone') ---------------------------------------
 # Empirically calibrated on 4,115 (date, nearest-expiry) observations

@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 def parse_date_str(s: Any) -> Optional[datetime.date]:
-    """Parse 'YYYY-MM-DD' or 'YYYY/MM/DD' (possibly embedded in longer text)
-    → date, or None."""
+    """Parse 'YYYY-MM-DD' / 'YYYY/M/D' / 'YYYY年M月D日' (possibly embedded
+    in longer text) → date, or None."""
     if not s:
         return None
-    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", str(s))
+    m = re.search(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?", str(s))
     if not m:
         return None
     try:

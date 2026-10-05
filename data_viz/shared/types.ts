@@ -138,16 +138,54 @@ export interface OptionsDatesResponse {
   contract_count: number;
 }
 
-/** Single-date quote rows + history-wide display meta (unified strike /
- *  expiry-month axes for the wall panel). */
-export interface OptionsSnapshotResponse {
+/** Quote rows for one or more specific trading dates (single small
+ *  per-date query — the (underlying_code, date) index drives each date).
+ *  Feeds the wall / smile / greeks panels and the StatTable snapshot
+ *  columns (batched: one round trip for all 4 derived dates). */
+export interface OptionsSnapshotRowsResponse {
   underlying_code: string;
-  date: string;
   rows: OptionsRow[];
+}
+
+/** History-wide display meta for the wall panel (unified strike /
+ *  expiry-month axes) — fetched once per underlying/venue, not per date. */
+export interface OptionsSnapshotAxesResponse {
+  underlying_code: string;
   /** Distinct strike_price values across the underlying's full history. */
   strikes: number[];
   /** Distinct expiry_month labels across the full history (e.g. "10月"). */
   expiry_months: string[];
+  /** Latest trading date in the scope (client cache version anchor). */
+  latest_date: string;
+}
+
+/** Per (date × real expiry) smile-anchor aggregate for the skew chronology
+ *  panel — the nearest-|x| anchors the panel used to recompute in-browser
+ *  from the full-history /combined blob (~200MB JSON on the biggest CFFEX
+ *  underlying; ~10k rows here instead). Row validity mirrors the panel's
+ *  old filter (0 < IV < 5, delta present, strike > 0, close > 0). IVs are
+ *  in vol points (fraction × 100); spot is the RAW underlying close (ETF
+ *  venues store 厘 — the panel applies PRICE_SCALE; CFFEX is native). */
+export interface SkewDailyRow {
+  date: string;
+  expiry_date: string;
+  /** MIN(days_to_expiry) over the group's valid rows. */
+  dte: number;
+  /** Underlying close on the date (raw venue scale, null when absent). */
+  spot: number | null;
+  /** IV of the row nearest |moneyness_ratio − 1| (null → last resort). */
+  atm_iv: number | null;
+  /** IV of the CALL row nearest |delta − 0.25| within (0, 0.5). */
+  call25_iv: number | null;
+  /** IV of the PUT row nearest |delta + 0.25| within (−0.5, 0). */
+  put25_iv: number | null;
+  call10_iv: number | null;
+  put10_iv: number | null;
+}
+
+export interface OptionsSkewDailyResponse {
+  underlying_code: string;
+  rows: SkewDailyRow[];
 }
 
 /** Per (date × expiry) call/put open interest + per-date spot close. */
@@ -175,8 +213,10 @@ export interface OptionsOiCellsResponse {
   }>;
 }
 
-/** Per-contract final open interest (last session ≤ its expiry) grouped
- * by expiry, plus per-expiry lifetime OI totals (cohort list). */
+/** Per-contract final open interest (last session ≤ its expiry) — the
+ *  expiry markers. Per-expiry lifetime totals (the cohort list) are
+ *  derived client-side from /oi-daily's per (date × expiry) rows instead
+ *  of a second full-history SQL aggregation. */
 export interface OptionsExpiryMetaResponse {
   underlying_code: string;
   markers: Array<{
@@ -187,7 +227,6 @@ export interface OptionsExpiryMetaResponse {
     last_date: string;
     open_interest: number;
   }>;
-  cohorts: Array<{ expiry_date: string; total_oi: number }>;
 }
 
 /**
@@ -312,6 +351,60 @@ export interface OptionsOiStatsResponse {
   rows: OptionsOiStatsRow[];
 }
 
+/** Options-implied OI-MASS CORRIDOR band per (date) from
+ *  analysis.options_bands v2: the bounded region = strikes enclosing the
+ *  central 80% of pooled chain OI (corridor_low/high = OI-CDF P10/P90),
+ *  spot's position in the mass, a validated direction lean, and
+ *  prior-session corridor events. Evidence (2020-2026): close <= P10 =
+ *  90% up next 5 sessions (mean +4.5%); close >= P90 = 89% down
+ *  (-3.3%); skew flags alone carry no edge (context only). */
+export interface OptionsBandsRow {
+  date: string;
+  underlying_close: number | null;
+  /** OI-CDF P10 / P90 strikes, raw units (same scale as
+   *  underlying_close — SSE/SZSE ETF venues store 厘: divide by 1000
+   *  for yuan, like spot). */
+  corridor_low: number | null;
+  corridor_high: number | null;
+  oi_total: number | null;
+  /** OI share at strikes <= spot, [0,1]: <=0.25 = snap-back-up zone. */
+  spot_pct: number | null;
+  gap_low_pct: number | null;
+  gap_high_pct: number | null;
+  pos_state: "BELOW" | "INSIDE" | "ABOVE" | null;
+  lean: "UP" | "DOWN" | "NEUTRAL" | null;
+  /** Fresh corridor cross vs the PRIOR session's corridor. */
+  event: "NONE" | "EXIT_LOW" | "EXIT_HIGH" | "REENTER" | null;
+  /** Distinct strikes present beyond the chain's max/min strike of 40
+   *  sessions earlier — fresh exchange listing expansion as the
+   *  underlying moves (null when the 40-session window is incomplete). */
+  new_hi_40d: number | null;
+  new_lo_40d: number | null;
+  /** Edge-significance amplifier: a breached/approached corridor edge
+   *  (upper: lean DOWN / EXIT_HIGH; lower: lean UP / EXIT_LOW) whose OWN
+   *  side just expanded by >= 2 new strikes in the trailing 40 sessions
+   *  — a breach into freshly-listed price territory, not routine
+   *  corridor noise (null = window incomplete / not computed). */
+  edge_sig: "NONE" | "UP" | "DOWN" | "BOTH" | null;
+  n_expiries: number | null;
+  /** CONTEXT ONLY (no standalone edge): every expiry group's E[M] > 1 /
+   *  < 1 — whole OI mass overhead / underfoot. */
+  skew_all_above: 0 | 1 | null;
+  skew_all_below: 0 | 1 | null;
+  min_em: number | null;
+  mean_em: number | null;
+  /** 5-session IV expected move in % of spot (NULL when the source chain
+   *  ATM IV is below the plausibility floor — ETF greeks miscalibration). */
+  em5_pct: number | null;
+  ret5_pct: number | null;
+  exhausted_5d: 0 | 1 | null;
+}
+
+export interface OptionsBandsResponse {
+  underlying_code: string;
+  rows: OptionsBandsRow[];
+}
+
 export interface IvSkewRow {
   date: string;
   expiry_month: string;
@@ -405,6 +498,17 @@ export interface EtfMarginRow {
   implied_dividend_per_share: number | null;
   /** Cumulative split/adjustment factor (1.0 = no adjustment). */
   cum_split_factor: number | null;
+  /** Dividend price estimation curve value in RAW price units (CNY), from
+   *  analysis.dividend_est — cum-dividend fair-value line anchored
+   *  on each ex-date's post-drop close. Null before the code's first
+   *  ex-dividend date (non-payers have no rows). The chart converts it to
+   *  adjusted space (× adj_close/close) to overlay the adjusted OHLC. */
+  div_est_price: number | null;
+  /** Next ex-dividend date bounding the curve's current segment; null on
+   *  the open tail (no next ex-date yet). */
+  seg_end_date: string | null;
+  /** Per-share dividend going ex on seg_end_date; null on the open tail. */
+  seg_next_div: number | null;
   trading_shares: number;
   trading_amount: number;
   /** 融资余额 (cash borrow balance, yuan). Null when no margin data. */
@@ -1074,13 +1178,22 @@ export interface MovAveSpreadPairRow {
   long_value: number | null;
   /** (short_value - long_value) / long_value — signed fractional gap. */
   gap_value: number | null;
-  /** 1st derivative of the short series on this date. NULL when ma_short = 0 (price has no slope). */
+  /**
+   * 1st derivative of the short series — the DB-stored DIRECT diff
+   * value[t] − value[t−1] (price_slope for the price legs; ma5_slope /
+   * ema6_slope for the short MA/EMA legs). Null on amt rows and where
+   * the window has no stored derivative.
+   */
   short_slope: number | null;
-  /** 2nd derivative of the short series on this date. NULL when ma_short = 0. */
+  /** 2nd derivative of the short series — the slope's diff. See short_slope. */
   short_curvature: number | null;
-  /** 1st derivative of the long MA/EMA on this date. */
+  /**
+   * 1st derivative of the long MA/EMA — the DB-stored direct diff
+   * (ma{5,20}_slope / ema{6,20}_slope). Null for the 60/120/255-day
+   * windows (their derivative columns were dropped 2026-09).
+   */
   long_slope: number | null;
-  /** 2nd derivative of the long MA/EMA on this date. */
+  /** 2nd derivative of the long MA/EMA — see long_slope. */
   long_curvature: number | null;
   /**
    * Rolling population σ (ddof=0) of price over the long window's span —
@@ -1108,12 +1221,13 @@ export interface MovAveSpreadPairRow {
  */
 export interface MovAveSpreadSharedMetricsRow {
   date: string;
-  /** Wilder RSI over 3/6/10/14/20 trading days (analysis.mov_ave_rsi). */
+  /** Wilder RSI over 3/6/10/14/20/60 trading days (analysis.mov_ave_rsi). */
   rsi_3days: number | null;
   rsi_6days: number | null;
   rsi_10days: number | null;
   rsi_14days: number | null;
   rsi_20days: number | null;
+  rsi_60days: number | null;
   /** Fractional daily change of trading_amt_ma{W} — tooltip readout when
    *  the trading-amt display is on (analysis.mov_ave_spreads_detail). */
   trading_amt_ma5_slope: number | null;
@@ -1127,7 +1241,7 @@ export interface MovAveSpreadSharedMetricsRow {
   trading_amt_market_share_ma60: number | null;
   trading_amt_market_share_ma120: number | null;
   trading_amt_market_share_ma255: number | null;
-  /** Rolling OHLC of the pair-matching windows (analysis.mov_ave_spreads_detail_ohlc):
+  /** Rolling OHLC of the pair-matching windows (analysis.mov_ave_spreads_roof_and_floor_lines):
    *  open W trading days ago + max high / min low over the window. Shown in
    *  the tooltip of SMA pairs whose ma_long matches the window. */
   open_20d: number | null;
@@ -1162,7 +1276,9 @@ export interface MovAveSpreadAmtRow extends MovAveSpreadPairRow {
 /**
  * Rolling-window OHLC extrema for one date — one row per date, index-aligned
  * with every pair's rows (all pairs share one date axis, so a single copy
- * serves all 23 pair series). Source: analysis.mov_ave_spreads_detail_ohlc
+ * serves all 23 pair series). Source:
+ * analysis.mov_ave_spreads_roof_and_floor_lines (renamed 2026-10 from
+ * mov_ave_spreads_detail_ohlc)
  * — the table is LONG format (one row per (code, sec_type, date, period)
  * with generic *_over_period columns); the API joins it once per period and
  * aliases the columns back to the per-window names below, so the response
@@ -1188,6 +1304,19 @@ export interface MovAveSpreadAmtRow extends MovAveSpreadPairRow {
  *                       so a far trough must be proportionally lower to beat
  *                       a nearer one; value = INTRADAY low)
  *   low_2nd_date_Wd   — date of the second trough
+ *   change_since_last_high_Wd — close MINUS the value of the LAST high
+ *                       anchor of the window (the later-dated of the two
+ *                       high anchors — the 2nd whenever present, else the
+ *                       top; sign encodes direction — negative = below
+ *                       the roof anchor, positive = above it)
+ *   days_since_last_high_Wd   — trading days between `date` and that
+ *                       last high anchor date
+ *   change_since_last_low_Wd  — close MINUS the value of the LAST low
+ *                       anchor (the mirror rule on the low side;
+ *                       positive = above the floor anchor, negative =
+ *                       below it)
+ *   days_since_last_low_Wd    — trading days between `date` and that
+ *                       last low anchor date
  *
  * The (top, 2nd) high pairs determine the "roof" trendline and the (top,
  * 2nd) low pairs determine the "floor" trendline drawn on the MA-Spread
@@ -1195,18 +1324,6 @@ export interface MovAveSpreadAmtRow extends MovAveSpreadPairRow {
  */
 export interface MovAveSpreadOhlcRow {
   date: string;
-
-  open_20d: number | null;
-  high_20d: number | null;
-  high_date_20d: string | null;
-  high_2nd_20d: number | null;
-  high_2nd_date_20d: string | null;
-  high_line_slope_20d: number | null;
-  low_20d: number | null;
-  low_date_20d: string | null;
-  low_2nd_20d: number | null;
-  low_2nd_date_20d: string | null;
-  low_line_slope_20d: number | null;
 
   open_60d: number | null;
   high_60d: number | null;
@@ -1219,6 +1336,10 @@ export interface MovAveSpreadOhlcRow {
   low_2nd_60d: number | null;
   low_2nd_date_60d: string | null;
   low_line_slope_60d: number | null;
+  change_since_last_high_60d: number | null;
+  days_since_last_high_60d: number | null;
+  change_since_last_low_60d: number | null;
+  days_since_last_low_60d: number | null;
 
   open_120d: number | null;
   high_120d: number | null;
@@ -1231,6 +1352,10 @@ export interface MovAveSpreadOhlcRow {
   low_2nd_120d: number | null;
   low_2nd_date_120d: string | null;
   low_line_slope_120d: number | null;
+  change_since_last_high_120d: number | null;
+  days_since_last_high_120d: number | null;
+  change_since_last_low_120d: number | null;
+  days_since_last_low_120d: number | null;
 
   open_255d: number | null;
   high_255d: number | null;
@@ -1243,6 +1368,10 @@ export interface MovAveSpreadOhlcRow {
   low_2nd_255d: number | null;
   low_2nd_date_255d: string | null;
   low_line_slope_255d: number | null;
+  change_since_last_high_255d: number | null;
+  days_since_last_high_255d: number | null;
+  change_since_last_low_255d: number | null;
+  days_since_last_low_255d: number | null;
 
   open_500d: number | null;
   high_500d: number | null;
@@ -1255,6 +1384,10 @@ export interface MovAveSpreadOhlcRow {
   low_2nd_500d: number | null;
   low_2nd_date_500d: string | null;
   low_line_slope_500d: number | null;
+  change_since_last_high_500d: number | null;
+  days_since_last_high_500d: number | null;
+  change_since_last_low_500d: number | null;
+  days_since_last_low_500d: number | null;
 
   open_750d: number | null;
   high_750d: number | null;
@@ -1267,6 +1400,10 @@ export interface MovAveSpreadOhlcRow {
   low_2nd_750d: number | null;
   low_2nd_date_750d: string | null;
   low_line_slope_750d: number | null;
+  change_since_last_high_750d: number | null;
+  days_since_last_high_750d: number | null;
+  change_since_last_low_750d: number | null;
+  days_since_last_low_750d: number | null;
 
   open_1275d: number | null;
   high_1275d: number | null;
@@ -1279,6 +1416,10 @@ export interface MovAveSpreadOhlcRow {
   low_2nd_1275d: number | null;
   low_2nd_date_1275d: string | null;
   low_line_slope_1275d: number | null;
+  change_since_last_high_1275d: number | null;
+  days_since_last_high_1275d: number | null;
+  change_since_last_low_1275d: number | null;
+  days_since_last_low_1275d: number | null;
 }
 
 /** Kind of pair: price-based (Simple MA, default, backward-compatible),
@@ -1346,6 +1487,7 @@ export interface MovAveSpreadCodesResponse {
  *  AND-gated hype boolean), quiet = volume expansion without price
  *  movement, calm = everything else. */
 export type MarketRegime = "calm" | "hot" | "panic" | "quiet";
+
 
 /** One CONTIGUOUS same-regime run from the stats.market_regime_spans
  *  table (materialized by builds.market_regimes over the daily
@@ -1446,14 +1588,102 @@ export interface MovAveSpreadPriceVsAmtDay {
 /** Which optional metric group the /extras endpoint loads. Each group feeds
  *  one of the MA-Spread panel's on-demand control sections:
  *    amt     — the 5 Trading Amt/MA pair series (Amt/MA chips → envelope view)
- *    ohlc    — rolling-window OHLC extrema (OHLC Window buttons → high/low
- *              envelope + roof/floor trendlines)
+ *    ohlc    — rolling-window OHLC extrema (Roof/Floor Trendlines buttons →
+ *              high/low envelope + roof/floor trendlines)
+ *    bands   — roof/floor shade-band edges + per-date breach/bounce
+ *              EVENT flags (analysis.mov_ave_spreads_roof_and_floor_bands
+ *              → the "shade" toggle's rectangles + event markers)
  *    streaks — band-break streaks (High/Low Streaks buttons' availability)
- *    pxvol   — per-date Price × Trading-Amount states (Px-Vol States shading) */
-export type MovAveSpreadMetric = "amt" | "ohlc" | "streaks" | "pxvol" | "gaps";
+ *    pxvol   — per-date Price × Trading-Amount states (Px-Vol States shading)
+ *    rsiranks — per-date RSI history ranks (RSI Trends' Top-% shades) */
+export type MovAveSpreadMetric = "amt" | "ohlc" | "bands" | "streaks" | "pxvol" | "gaps" | "rsiranks";
 
 /** All metric groups, in canonical order (used to normalize the query param). */
-export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "streaks", "pxvol", "gaps"] as const;
+export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "bands", "streaks", "pxvol", "gaps", "rsiranks"] as const;
+
+/** One row of the "rsiranks" extras group: the code's per-date RSI history
+ *  ranks (analysis.mov_ave_rsi_ranks, one row per mov_ave_rsi row). Per
+ *  window, rank 1 = the code's HIGHEST RSI reading within its own full
+ *  history (overbought extreme), N = the lowest; ties break by earlier
+ *  date; ranks are dense 1..N so the window's count of ranked days is the
+ *  max rank over the rows (the client derives its top-% cutoff from it).
+ *  NULL wherever that window's RSI is NULL (before min_periods / flat
+ *  windows). */
+export interface MovAveSpreadRsiRankDay {
+  date: string;
+  rank_rsi_3days: number | null;
+  rank_rsi_6days: number | null;
+  rank_rsi_10days: number | null;
+  rank_rsi_14days: number | null;
+  rank_rsi_20days: number | null;
+  rank_rsi_60days: number | null;
+}
+
+/** One row of the "bands" extras group: the roof/floor shade-band edges +
+ * the ANCHOR-BAND event DATE arrays per window (all 6), index-aligned
+ * with the chart response's pair rows (all pairs share one date axis).
+ *
+ * Edges: analysis.mov_ave_spreads_roof_and_floor_bands stores min/max of
+ * the window's two anchors per side (the pair is date-ordered); NULL when
+ * either anchor is absent. Event arrays (σ = population std of the daily
+ * close changes over the trailing 20 trading rows ending at i-1): the
+ * breach/bounce days of THAT DATE'S OWN band inside its own trailing
+ * window — exactly the band the shade toggle draws anchored at that date
+ * (crossings of the band's NEAR edge; bounce = poke within +1σ +
+ * next-day turn-back, breach = beyond +1σ; mutually exclusive). The UI
+ * reads the anchor row's arrays directly as its marker set — no
+ * client-side recomputation or windowing. */
+export interface MovAveSpreadBandsRow {
+  date: string;
+  upper_band_low_60d: number | null;
+  upper_band_high_60d: number | null;
+  lower_band_low_60d: number | null;
+  lower_band_high_60d: number | null;
+  upper_breach_dates_60d: string[] | null;
+  lower_breach_dates_60d: string[] | null;
+  upper_bounce_dates_60d: string[] | null;
+  lower_bounce_dates_60d: string[] | null;
+  upper_band_low_120d: number | null;
+  upper_band_high_120d: number | null;
+  lower_band_low_120d: number | null;
+  lower_band_high_120d: number | null;
+  upper_breach_dates_120d: string[] | null;
+  lower_breach_dates_120d: string[] | null;
+  upper_bounce_dates_120d: string[] | null;
+  lower_bounce_dates_120d: string[] | null;
+  upper_band_low_255d: number | null;
+  upper_band_high_255d: number | null;
+  lower_band_low_255d: number | null;
+  lower_band_high_255d: number | null;
+  upper_breach_dates_255d: string[] | null;
+  lower_breach_dates_255d: string[] | null;
+  upper_bounce_dates_255d: string[] | null;
+  lower_bounce_dates_255d: string[] | null;
+  upper_band_low_500d: number | null;
+  upper_band_high_500d: number | null;
+  lower_band_low_500d: number | null;
+  lower_band_high_500d: number | null;
+  upper_breach_dates_500d: string[] | null;
+  lower_breach_dates_500d: string[] | null;
+  upper_bounce_dates_500d: string[] | null;
+  lower_bounce_dates_500d: string[] | null;
+  upper_band_low_750d: number | null;
+  upper_band_high_750d: number | null;
+  lower_band_low_750d: number | null;
+  lower_band_high_750d: number | null;
+  upper_breach_dates_750d: string[] | null;
+  lower_breach_dates_750d: string[] | null;
+  upper_bounce_dates_750d: string[] | null;
+  lower_bounce_dates_750d: string[] | null;
+  upper_band_low_1275d: number | null;
+  upper_band_high_1275d: number | null;
+  lower_band_low_1275d: number | null;
+  lower_band_high_1275d: number | null;
+  upper_breach_dates_1275d: string[] | null;
+  lower_breach_dates_1275d: string[] | null;
+  upper_bounce_dates_1275d: string[] | null;
+  lower_bounce_dates_1275d: string[] | null;
+}
 
 /**
  * Response for GET /chart — the DEFAULT load: the 18 Simple-MA + EMA pair
@@ -1519,6 +1749,10 @@ export interface MovAveSpreadExtrasResponse {
   /** Rolling-window OHLC extrema (all 7 windows), index-aligned with the
    *  chart response's pair rows. */
   ohlc?: MovAveSpreadOhlcRow[];
+  /** Roof/floor shade-band edges + per-date breach EVENT flags (all 7
+   *  windows, analysis.mov_ave_spreads_roof_and_floor_bands), index-aligned
+   *  with the chart response's pair rows — drives the "shade" toggle. */
+  roofFloorBands?: MovAveSpreadBandsRow[];
   /** High/low band-BREAK excursion streaks, flat across all (period,
    *  pctType) combos — gates the High/Low Streaks buttons. */
   highLowStreaks?: MovAveSpreadHighLowStreak[];
@@ -1529,6 +1763,9 @@ export interface MovAveSpreadExtrasResponse {
    *  classified pattern (analysis.mov_ave_spreads_detail_ohlc_gaps) —
    *  drives the Top-10% OHLC Days group. */
   ohlcGaps?: MovAveSpreadOhlcGapDay[];
+  /** Per-date RSI history ranks (analysis.mov_ave_rsi_ranks) — drives
+   *  the RSI Trends overlay's Top-% vertical shades. */
+  rsiRanks?: MovAveSpreadRsiRankDay[];
 }
 
 /** One day's OHLC gap anatomy row (the gaps store's wide row, trimmed
@@ -1550,588 +1787,11 @@ export interface MovAveSpreadOhlcGapDay {
 
 // ----------------------------------------------------------------------------
 //  Analysis Commons — Forecast buckets (analysis_forecasts schema)
-//    mov_rsi / mov_std / mov_pairs / mov_pairs_ema — bucket-definition
-//      (motivation) tables, each row linking 1:1 via forecast_id to its
-//      forecast_results rows (normalized: 3 period rows next/5d/20d +
-//      the blended 'mixed' row).
-//    Served by GET /api/analysis/mov-ave-spread/forecast — the MA-Spread
-//    panel's second plot: a config→result table beneath the spread chart.
-// ----------------------------------------------------------------------------
-
-/** Which bucket family the forecast table shows. (mov_gap is retired —
- *  the gap indicator columns were removed from analysis.mov_ave_rsi;
- *  the family has no tab and no kind here.) */
-export type ForecastKind = "mov_rsi" | "mov_std" | "mov_pairs" | "mov_pairs_ema" | "margin_ratio" | "high_low_streaks" | "pe" | "dividend";
-
-/** One horizon's forecast stats at one ladder rung — the delay's OWN
- *  forecast for that horizon (the forecast_results (delay, period) row),
- *  the same stats the main table's delay-0 pivoted columns show but
- *  conditioned on the signal having lasted delay + 1 days. ave / max /
- *  min are SIGN-ALIGNED like the rung's blended mean (top → −, bottom
- *  → +) so favorable reads positive on both sides; std is a dispersion
- *  magnitude and close a raw price level — never sign-aligned. */
-export interface DelayRungHorizon {
-  /** Sign-aligned mean n-day forward change (fractional). */
-  ave: number | null;
-  /** Std-dev of the same horizon's forward changes (magnitude). */
-  std: number | null;
-  /** Trigger anchors with a valid forward window (occurrence_count —
-   *  the mean's denominator; the horizon's "days" column). */
-  n: number | null;
-  /** Close-based extreme forward changes (NULL on the next horizon —
-   *  no 1-day close-based high/low). */
-  max: number | null;
-  min: number | null;
-  /** Mean PERIOD-END close — raw price units, the level the horizon
-   *  lands at (NULL on the next horizon). */
-  close: number | null;
-}
-
-/** One anchor-delay rung of the bucket's delay ladder (the
- *  forecast_results delay 0..5 axis — the 2026-09-21 incremental-anchor
- *  convention: a persistent qualifying streak re-forecasts from EACH of
- *  its first 6 days, so delay d's stats are conditioned on the signal
- *  having lasted d + 1 days). */
-export interface DelayLadderRung {
-  /** The anchor delay: 0 = the streak's first qualifying day (the
-   *  moment the signal becomes observable). */
-  delay: number;
-  /** Trigger anchors with a valid blended forward change — the mixed
-   *  row's occurrence count at this delay. */
-  n: number;
-  /** Sign-aligned blended mean forward change (top → −ave_change,
-   *  bottom → +; flat sides raw) — the "expected reversal return if
-   *  the signal is `delay` days old" number the decay rule reads. The
-   *  delay's WEIGHTED RETURN (the fixed 5d 65% / next 25% / 20d 10%
-   *  blend). */
-  dir_ave: number | null;
-  /** Sign-aligned per-horizon means for the rung tooltip. */
-  dir_ave_next: number | null;
-  dir_ave_5d: number | null;
-  dir_ave_20d: number | null;
-  /** The rung's per-horizon forecast stats — each delay's own
-   *  next / 5d / 20d forecast for the row-click expansion panel. */
-  horizons: Record<"next" | "5d" | "20d", DelayRungHorizon>;
-}
-
-/** The forecast_results numeric columns: mean + std-dev of the forward
- *  fractional changes at all 3 horizons; close-based max/min forward
- *  changes at the 5d/20d horizons only; per-horizon occurrence
- *  counts. (The per-horizon P(>1% reversal) columns were REMOVED
- *  2026-09-25 with forecast_results.reverse_prob.) */
-export interface ForecastResultCols {
-  /** The bucket's surrogate id into analysis_forecasts.forecast_results —
-   *  links to the row-click trigger-dates endpoint
-   *  (fetchForecastTriggerDates) and to the 4 period rows behind these
-   *  pivoted columns. */
-  forecast_id: number;
-  /** The bucket's mean TRIGGER DELAY (from the identities registry via
-   *  the row's forecast_id): the mean trading-day offset of the
-   *  bucket's emitted anchor triggers within their streaks, CAPPED at
-   *  5. 0 for 1-day / state-family signals. null on rows written
-   *  before the column existed. */
-  delayed_signal_days: number | null;
-  /** The bucket's anchor-delay ladder (the delay 0..5 forecast rows,
-   *  sign-aligned, ASC by delay; delay 0 first — the row's pivoted
-   *  columns above ARE the delay-0 stats). Null when the ladder query
-   *  returned nothing for the bucket. */
-  delay_ladder?: DelayLadderRung[] | null;
-  /** The highest delay whose sign-aligned blended mean is still
-   *  DECAYING (strictly below the previous rung's and positive — the
-   *  reversal edge fades as the signal ages; per the study rule the
-   *  ladder "stops" at the first rung that breaks the decay). null =
-   *  no positive edge at delay 0 or a flat side (no directional
-   *  claim). Rungs past decay_stop render de-emphasized. */
-  decay_stop?: number | null;
-  /** The delay whose rung carries the HIGHEST weighted return
-   *  (sign-aligned blended mean) of the ladder — set ONLY when that
-   *  max is > 0 (a favorable edge worth acting on); null when every
-   *  rung is non-positive. The ladder highlights exactly this rung. */
-  best_delay?: number | null;
-  ave_next_change: number | null;
-  ave_next_5d_change: number | null;
-  ave_next_20d_change: number | null;
-  /** Std-dev of the n-day forward fractional change over the same
-   *  bucket days as the ave (NULL for pre-std_change rows). */
-  std_next_change: number | null;
-  std_next_5d_change: number | null;
-  std_next_20d_change: number | null;
-  max_5d_change: number | null;
-  max_20d_change: number | null;
-  min_5d_change: number | null;
-  min_20d_change: number | null;
-  /** Mean PERIOD-END close — mean of close[t+n] over the SAME bucket
-   *  days as the ave (raw price units, NOT a fractional change): the
-   *  average price level the 5d/20d horizon lands at. Null on the
-   *  mixed row (price levels do not blend) and on rows written before
-   *  the column existed (pre-2026-09-22). */
-  ave_close_5d: number | null;
-  ave_close_20d: number | null;
-  /** Bucket days with a valid {n}-day forward change — the mean's
-   *  denominator per horizon. NULL for pre-migration rows. */
-  occurrence_count_next: number | null;
-  occurrence_count_5d: number | null;
-  occurrence_count_20d: number | null;
-}
-
-/** A derived-population verdict value (analysis_forecasts
- *  .forecast_identities.ohlcv_type): the TWO derived children of a
- *  parent forecast — the 2026-09-27 OHLCV consolidation (the four
- *  legacy gap/vol values retired): 'ohlcv_selection' the score-gated
- *  strict subset and 'ohlcv_boost' the score-weighted same-days
- *  re-measurement, both driven by the single three-axis day-0 score
- *  (analyze.analysis_forecasts.ohlcv_boost / ohlcv_selection — the
- *  UI's short labels selection / boost). */
-export type OhlcvPopulation =
-  | "ohlcv_selection"
-  | "ohlcv_boost";
-
-/** One mov_rsi bucket row (RSI extreme-percentile bucket) + its results.
- *  Bucket key: (stat_date, rsi_window, side, pct,
- *  regime_state). */
-export interface MovRsiForecastRow extends ForecastResultCols {
-  stat_date: string;
-  rsi_window: number;
-  side: "top" | "bottom";
-  pct: number;
-  regime_state: MarketRegime;
-  /** The row's OWN population verdict (analysis_forecasts
-   *  .forecast_identities.ohlcv_type — moved from forecast_results
-   *  2026-09-26; the is_ohlc_selection / is_ohlc_boosted BOOLEAN pair
-   *  consolidated into this one nullable column 2026-09-27, renamed
-   *  with the vol×amt siblings the same day):
-   *  null = the parent's full-population row (and every other
-   *  family's), "gap_selection" = the rule-based selection child (the
-   *  hot-regime exhaustion-candle subset, top side / index only),
-   *  "gap_boost" = the pattern-weighted boost child (the parent's SAME
-   *  trigger days, each streak weighted by its day-0 OHLC pattern's
-   *  measured edge; bottom side / index only), "vol_selection" = the
-   *  vol×amt rule child (the capitulation-flush subset — heavy amount
-   *  level × sharp σ-standardized down move; bottom side / index
-   *  only) and "vol_boost" = the amount-state-weighted boost child
-   *  (the parent's SAME trigger days, each streak weighted by its
-   *  day-0 vol_state's measured edge; bottom side / index + etf).
-   *  Each derived population is its own forecast_id; the mechanisms
-   *  never co-occur on one forecast_id. */
-  ohlcv_type: OhlcvPopulation | null;
-  /** The row's OWN population IMPROV (derived children only — the
-   *  2026-09-27 rename of the boost column): the sign-aligned
-   *  improvement of this child's population over the same bucket
-   *  identity's parent (top → −ave, bottom → +ave — the dir_ave
-   *  convention — then child's delay-0 mean minus the parent's), so
-   *  POSITIVE always reads "the derived population beats the plain
-   *  bucket" at that horizon. Carried on the selection / boost
-   *  children's own rows separately; null (the UI's dash) on parent
-   *  "none" rows — the plain population has nothing to improve on.
-   *  improv_n_* is the CHILD's trigger-day count at the horizon. */
-  improv_ave_next?: number | null;
-  improv_ave_5d?: number | null;
-  improv_ave_20d?: number | null;
-  improv_n_next?: number | null;
-  improv_n_5d?: number | null;
-  improv_n_20d?: number | null;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The registered signal strategy's OWN action — "buy" / "sell"
-   *  (analysis_signals.signal_strategies.action): non-null when the
-   *  row's own bucket (config × side × regime split × stat_date) was
-   *  emitted as a signal strategy — its MIXED forecast_results row
-   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
-   *  10%) cleared the gates the signals layer applies; null when the
-   *  bucket never registered. */
-  signal_action: "buy" | "sell" | null;
-  /** The registered strategy's confidence — the chosen entry rung's
-   *  sign-aligned dir_ave (the expected favorable blended move,
-   *  fractional); null when no strategy exists. */
-  signal_confidence: number | null;
-}
-
-/** One mov_std bucket row (Bollinger-breach bucket) + its results.
- *  Bucket key: (stat_date, ma_window, k, side,
- *  regime_state). */
-export interface MovStdForecastRow extends ForecastResultCols {
-  stat_date: string;
-  ma_window: number;
-  k: number;
-  side: "upper" | "lower";
-  regime_state: MarketRegime;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The registered signal strategy's OWN action — "buy" / "sell"
-   *  (analysis_signals.signal_strategies.action): non-null when the
-   *  row's own bucket (config × side × regime split × stat_date) was
-   *  emitted as a signal strategy — its MIXED forecast_results row
-   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
-   *  10%) cleared the gates the signals layer applies; null when the
-   *  bucket never registered. */
-  signal_action: "buy" | "sell" | null;
-  /** The registered strategy's confidence — the chosen entry rung's
-   *  sign-aligned dir_ave (the expected favorable blended move,
-   *  fractional); null when no strategy exists. */
-  signal_confidence: number | null;
-}
-
-/** One mov_pairs bucket row (MA-pair cross bucket — golden / death cross
- *  read off the EXISTING ma5_vs_ma{pair_window} (fast_leg "ma5") or
- *  price_vs_ma{pair_window} (fast_leg "price", the close price)
- *  relative-MA spread of analysis.mov_ave_spreads_detail) + its
- *  results. Bucket key: (stat_date, fast_leg, pair_window, side,
- *  regime_state). */
-export interface MovPairsForecastRow extends ForecastResultCols {
-  stat_date: string;
-  /** Fast leg of the pair: "ma5" — ma5_vs_ma{pair_window}; "price" —
-   *  the close price, price_vs_ma{pair_window}. */
-  fast_leg: "ma5" | "price";
-  /** Slow MA leg of the pair (trading days): 60 / 120 / 255 (the cross
-   *  is the fast leg's price_vs_ma / ma5_vs_ma sign flip). */
-  pair_window: number;
-  /** Cross side: top = cross UP / golden cross (spread turns > 0 from
-   *  <= 0 — ma5 rises through the slow MA) / bottom = cross DOWN /
-   *  death cross (spread turns < 0 from >= 0). */
-  side: "top" | "bottom";
-  regime_state: MarketRegime;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The registered signal strategy's OWN action — "buy" / "sell"
-   *  (analysis_signals.signal_strategies.action): non-null when the
-   *  row's own bucket (config × side × regime split × stat_date) was
-   *  emitted as a signal strategy — its MIXED forecast_results row
-   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
-   *  10%) cleared the gates the signals layer applies; null when the
-   *  bucket never registered. */
-  signal_action: "buy" | "sell" | null;
-  /** The registered strategy's confidence — the chosen entry rung's
-   *  sign-aligned dir_ave (the expected favorable blended move,
-   *  fractional); null when no strategy exists. */
-  signal_confidence: number | null;
-}
-
-/** One mov_pairs_ema bucket row — the EMA sibling of MovPairsForecastRow
- *  (identical shape): golden / death cross read off the EXISTING
- *  ema6_vs_ema{pair_window} (fast_leg "ema6") or price_vs_ema{pair_window}
- *  (fast_leg "price", the close price) relative-EMA spread of
- *  analysis.mov_ave_spreads_detail_ema. Bucket key: (stat_date,
- *  fast_leg, pair_window, side, regime_state). */
-export interface MovPairsEmaForecastRow extends ForecastResultCols {
-  stat_date: string;
-  /** Fast leg of the pair: "ema6" — ema6_vs_ema{pair_window}; "price" —
-   *  the close price, price_vs_ema{pair_window}. */
-  fast_leg: "ema6" | "price";
-  /** Slow EMA leg of the pair (trading days): 60 / 120 / 255 (the cross
-   *  is the fast leg's price_vs_ema / ema6_vs_ema sign flip). */
-  pair_window: number;
-  /** Cross side: top = cross UP / golden cross (spread turns > 0 from
-   *  <= 0 — ema6 rises through the slow EMA) / bottom = cross DOWN /
-   *  death cross (spread turns < 0 from >= 0). */
-  side: "top" | "bottom";
-  regime_state: MarketRegime;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The registered signal strategy's OWN action — "buy" / "sell"
-   *  (analysis_signals.signal_strategies.action): non-null when the
-   *  row's own bucket (config × side × regime split × stat_date) was
-   *  emitted as a signal strategy — its MIXED forecast_results row
-   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
-   *  10%) cleared the gates the signals layer applies; null when the
-   *  bucket never registered. */
-  signal_action: "buy" | "sell" | null;
-  /** The registered strategy's confidence — the chosen entry rung's
-   *  sign-aligned dir_ave (the expected favorable blended move,
-   *  fractional); null when no strategy exists. */
-  signal_confidence: number | null;
-}
-
-/** One margin_ratio bucket row (margin-buy intensity z-score state —
- *  融资买入额/成交额 ratio vs the code's own trailing distribution) + its
- *  results. Bucket key: (stat_date, ratio_state, regime_state).
- *  State cells — NO cooldown (every qualifying day joins). ETF + Stock
- *  only (index has no margin data). */
-export interface MarginRatioForecastRow extends ForecastResultCols {
-  stat_date: string;
-  /** Margin-intensity state: no_buy (rz_buy <= 0 that day) / vlow
-   *  (z <= -2) / low (-2,-1] / mid (-1,+1] / high (+1,+2] / vhigh
-   *  (z > +2) of the code's rolling-1220-row (min 250) ratio moments
-   *  shifted 1 row. */
-  ratio_state: "no_buy" | "vlow" | "low" | "mid" | "high" | "vhigh";
-  /** Directional claim of the bucket: top (high/vhigh crowding — the
-   *  study's bearish reading) / bottom (vlow/low/no_buy) / flat (mid —
-   *  no directional claim). */
-  side: "top" | "bottom" | "flat";
-  regime_state: MarketRegime;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The registered signal strategy's OWN action — "buy" / "sell"
-   *  (analysis_signals.signal_strategies.action): non-null when the
-   *  row's own bucket (config × side × regime split × stat_date) was
-   *  emitted as a signal strategy — its MIXED forecast_results row
-   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
-   *  10%) cleared the gates the signals layer applies; null when the
-   *  bucket never registered. */
-  signal_action: "buy" | "sell" | null;
-  /** The registered strategy's confidence — the chosen entry rung's
-   *  sign-aligned dir_ave (the expected favorable blended move,
-   *  fractional); null when no strategy exists. */
-  signal_confidence: number | null;
-  /** Mean raw ratio (rz_buy / trading_amount, fraction) over the
-   *  bucket's days (from the linked forecast_results.config JSONB —
-   *  NULL for no_buy). */
-  mean_ratio: number | null;
-  /** Mean z-score over the bucket's days (same config JSONB — NULL for
-   *  no_buy). */
-  mean_z: number | null;
-}
-
-/** One pe bucket row (PE extreme-percentile bucket — the raw pe series
- *  of analysis.pe vs the code's own trailing distribution, the mov_rsi
- *  pct convention) + its results. Bucket key: (stat_date, side, pct,
- *  regime_state). Qualifying runs STREAK-MERGED (consecutive
- *  qualifying days = ONE mid-anchored signal). */
-export interface PeForecastRow extends ForecastResultCols {
-  stat_date: string;
-  /** Directional claim — pe is LOWER the better: the
-   *  top-pct% (expensive) days = top (bearish), the bottom-pct% (cheap)
-   *  days = bottom (bullish). */
-  side: "top" | "bottom";
-  /** Percentile width of the extreme bucket: 1 / 5 / 10 / 25. The
-   *  threshold is the trailing 5-year window's (linearly-interpolated)
-   *  percentile of pe over non-NULL values. */
-  pct: number;
-  regime_state: MarketRegime;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The registered signal strategy's OWN action — "buy" / "sell"
-   *  (analysis_signals.signal_strategies.action): non-null when the
-   *  row's own bucket (config × side × regime split × stat_date) was
-   *  emitted as a signal strategy — its MIXED forecast_results row
-   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
-   *  10%) cleared the gates the signals layer applies; null when the
-   *  bucket never registered. */
-  signal_action: "buy" | "sell" | null;
-  /** The registered strategy's confidence — the chosen entry rung's
-   *  sign-aligned dir_ave (the expected favorable blended move,
-   *  fractional); null when no strategy exists. */
-  signal_confidence: number | null;
-}
-
-/** One dividend bucket row (dividend-yield extreme-percentile bucket —
- *  the trailing-12m D/P series of analysis.dividends vs the code's own
- *  trailing distribution, the mov_rsi pct convention) + its results.
- *  Bucket key: (stat_date, side, pct, regime_state). Qualifying
- *  runs STREAK-MERGED (consecutive qualifying days = ONE mid-anchored
- *  signal). Dividend rows exist only where the code has payout
- *  history. */
-export interface DividendForecastRow extends ForecastResultCols {
-  stat_date: string;
-  /** Directional claim — the yield is HIGHER the better
-   *  (the REVERSE of the pe family's mapping): the top-pct% (cheap,
-   *  well-supported) days = bottom (bullish), the bottom-pct% days =
-   *  top (bearish). */
-  side: "top" | "bottom";
-  /** Percentile width of the extreme bucket: 1 / 5 / 10 / 25. The
-   *  threshold is the trailing 5-year window's (linearly-interpolated)
-   *  percentile of dividend_yield over non-NULL values. */
-  pct: number;
-  regime_state: MarketRegime;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The registered signal strategy's OWN action — "buy" / "sell"
-   *  (analysis_signals.signal_strategies.action): non-null when the
-   *  row's own bucket (config × side × regime split × stat_date) was
-   *  emitted as a signal strategy — its MIXED forecast_results row
-   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
-   *  10%) cleared the gates the signals layer applies; null when the
-   *  bucket never registered. */
-  signal_action: "buy" | "sell" | null;
-  /** The registered strategy's confidence — the chosen entry rung's
-   *  sign-aligned dir_ave (the expected favorable blended move,
-   *  fractional); null when no strategy exists. */
-  signal_confidence: number | null;
-}
-
-/** One high_low_streaks bucket row (MA-Spread High/Low streak — a
- *  band-break excursion streak audited at its MEAN-MID anchor day: the
- *  ((day_count-1)//2 + 1)-th trading day of the span, e.g. an 8-day
- *  streak anchors its 4th day; EX-POST anchor — the streak length is
- *  known only after the streak closes) + its results. Bucket key:
- *  (stat_date, band_period, pct_type, side, regime_state). One
- *  trigger per streak — NO cooldown. */
-export interface HighLowStreaksForecastRow extends ForecastResultCols {
-  stat_date: string;
-  /** Band lookback of the audited band (trading rows): 255 / 500 /
-   *  750 / 1275 (~1/2/3/5 trading years). */
-  band_period: number;
-  /** Band tightness (percent): 1 / 5 / 10 — the band whose high_val /
-   *  low_val the close breaks. */
-  pct_type: number;
-  /** Excursion side: top = ABOVE-band (close on end_date above the end
-   *  month's high_val band — the mean-reversion bearish reading) /
-   *  bottom = BELOW-band (bullish). */
-  side: "top" | "bottom";
-  regime_state: MarketRegime;
-  /** Per-code self-adaptive regime weight
-   *  (analysis_forecasts.regime_weights) — evidence tier; null when
-   *  no fit window exists. */
-  regime_weight?: number | null;
-  /** The registered signal strategy's OWN action — "buy" / "sell"
-   *  (analysis_signals.signal_strategies.action): non-null when the
-   *  row's own bucket (config × side × regime split × stat_date) was
-   *  emitted as a signal strategy — its MIXED forecast_results row
-   *  (the weight-blended forward profile: 5d 65% / next 25% / 20d
-   *  10%) cleared the gates the signals layer applies; null when the
-   *  bucket never registered. */
-  signal_action: "buy" | "sell" | null;
-  /** The registered strategy's confidence — the chosen entry rung's
-   *  sign-aligned dir_ave (the expected favorable blended move,
-   *  fractional); null when no strategy exists. */
-  signal_confidence: number | null;
-  /** Mean streak length (day_count, trading rows) over the bucket's
-   *  streaks (from the linked forecast_results.config JSONB — the
-   *  bucket's streak-length context). */
-  mean_day_count: number | null;
-  /** Minimum streak length in the bucket (same config JSONB). */
-  min_day_count: number | null;
-  /** Maximum streak length in the bucket (same config JSONB). */
-  max_day_count: number | null;
-}
-
-/** Response for GET /forecast?sec_type=&code=&kind=[&date=] — the code's
- *  buckets of the requested kind joined 1:1 with their forecast_results
- *  columns. `date` is a START date: rows cover every stat_date >= date
- *  (ALL stat_dates when date is omitted — the annual grid: one snapshot
- *  per completed year-end plus the running year). `stat_dates` lists
- *  every stat_date available for the code (DESC) for the UI's snapshot
- *  selector. */
-export interface ForecastResponse {
-  kind: ForecastKind;
-  code: string;
-  sec_type: string;
-  /** All distinct stat_dates (YYYY-MM-DD) with rows for this code, DESC. */
-  stat_dates: string[];
-  /** The code's earliest ACTUAL trading day in the pipeline's own bars
-   *  source (stats.{sec_type}_basic_stats, estimated closes excluded) —
-   *  the honest lower end of every stats window: the lookback claims 10y
-   *  but the data may start later (e.g. 2020), so the year column labels
-   *  the window as max(stat_date − 10y, data_start) → stat_date. Null
-   *  when the code has no bars (label falls back to the nominal 10y). */
-  data_start: string | null;
-  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovPairsForecastRow[] | MovPairsEmaForecastRow[] | MarginRatioForecastRow[] | HighLowStreaksForecastRow[] | PeForecastRow[] | DividendForecastRow[];
-  /** Backend arg for the shared ExpandedTable: whether the table renders
-   *  its per-column header filters. Default false (filters disabled). */
-  enable_filters: boolean;
-}
-
-/** One forecast horizon period (forecast_results.period values). */
-export type ForecastPeriod = "next" | "5d" | "20d";
-
-/** One merged forecast signal's qualifying streak period (the run of
- *  consecutive days that produced the mid-anchored signal), inclusive. */
-export interface ForecastStreakSpan {
-  start: string;
-  end: string;
-  /** Trading-day count of the run (forecast_results streak_days
-   *  BIGINT[], element-wise parallel to streak_starts — the run length
-   *  the mid anchor and the [start, end] span derive from). null for
-   *  state-family rows and rows written before the streak-days
-   *  migration. */
-  days: number | null;
-}
-
-/** Response for GET /forecast-dates?forecast_id= — one bucket's 4 period
- *  rows' trigger_dates: the calendar DATEs (YYYY-MM-DD, ascending)
- *  behind each horizon's occurrence_count — under the 2026-09
- *  streak-merge, the merged signals' MID days — plus `streaks`, the
- *  parallel qualifying-run [start, end] spans per period (the
- *  forecast_results streak_starts / streak_ends DATE[]; null for
- *  state-family rows and rows written before the span migration).
- *  Served on forecast-row click so the UI can pinpoint the mid dates
- *  and shade the streak periods on the code's trend chart. */
-export interface ForecastTriggerDatesResponse {
-  forecast_id: number;
-  periods: Record<ForecastPeriod, string[] | null>;
-  streaks: Record<ForecastPeriod, ForecastStreakSpan[] | null>;
-}
-
-/** One bucket's delay ladder — an entry of the split /forecast-ladders
- *  response (the 2026-09-30 progressive-load split: the base table
- *  renders first, the ladders merge into its rows when they land). */
-export interface ForecastLadderEntry {
-  forecast_id: number;
-  /** The delay 0..5 rungs, ASC (see DelayLadderRung). */
-  rungs: DelayLadderRung[];
-  decay_stop: number | null;
-  best_delay: number | null;
-}
-
-/** Response for GET /forecast-ladders — the delay ladders of the
- *  code's buckets for the requested scope (the SAME scope params as
- *  the base forecast table read, so the two payloads cover the same
- *  rows). */
-export interface ForecastLaddersResponse {
-  kind: ForecastKind;
-  code: string;
-  sec_type: string;
-  ladders: ForecastLadderEntry[];
-}
-
-/** Motivation table names registered in
- *  analysis_forecasts.forecast_identities (identity.bucket values).
- *  (mov_gap and opp_pair_state — industry opposite-pair buckets — were
- *  retired 2026-09: tables dropped, their registry rows purged.) */
-export type ForecastIdentityBucket =
-  | "mov_rsi"
-  | "mov_std"
-  | "mov_pairs"
-  | "mov_pairs_ema"
-  | "margin_ratio_state"
-  | "high_low_streaks"
-  | "pe_state"
-  | "dividend_state";
-
-/** Response for GET /forecast-identity?forecast_id= — the shared-PK
- *  registry row (analysis_forecasts.forecast_identities): what a
- *  forecast_id resolves to (sec_type / code / stat_date / bucket
- *  family) without probing the eight motivation tables. `kind` is the
- *  ForecastTable family that renders the bucket (null for retired
- *  families that have no table in this UI). `code` is the forecast
- *  SUBJECT (the security ticker). */
-export interface ForecastIdentityResponse {
-  forecast_id: number;
-  sec_type: string;
-  code: string;
-  /** Snapshot date (YYYY-MM-DD) of the bucket — a completed year-end
-   *  on the annual grid (the running year keys at its year-end). */
-  stat_date: string;
-  bucket: ForecastIdentityBucket;
-  kind: ForecastKind | null;
-  /** The bucket's mean streak length per merged signal (the 2026-09
-   *  streak-merge: consecutive qualifying days are ONE mid-anchored
-   *  signal) — whole trading days. 1 for the state families (every
-   *  qualifying day is a 1-day signal); high_low_streaks reports its
-   *  config mean_day_count. */
-  streak_signal_days: number | null;
-  /** The bucket's mean TRIGGER DELAY: whole trading days from a merged
-   *  signal's FIRST qualifying day (streak start) to the MID day the
-   *  forecast actually triggers at — mean((run_len − 1) // 2), CAPPED
-   *  at 5. 0 for 1-day / state-family signals (trigger = the signal
-   *  day itself). */
-  delayed_signal_days: number | null;
-  lookback_period: string;
-}
-
+//
+//    REMOVED 2026-10-05 with the forecast layer (tables dropped, package
+//    + SQL files deleted): the signals tier's rsi-pct strategies are
+//    computed in-engine and surface via the trading-signals endpoints.
+//
 // ----------------------------------------------------------------------------
 //  Analysis Commons — PE (per-(sec_type, code, date) valuation)
 //    analysis.pe / analysis.dividends   — daily raw pe / trailing-12m dividend_yield (split 2026-09)
@@ -2166,6 +1826,53 @@ export interface PeChartResponse {
   code: string;
   name: string;
   rows: PeChartRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Analysis Commons — Dividend Deliveries (analysis.dividend_deliveries)
+//    Rolling 5-year (1-year stride) dividend delivery audit per
+//    (sec_type, code, window_end_date); etf + stock (an index has no
+//    per-share deliveries). Built by analyze.pe_and_dividends
+//    --metrics deliveries; the Dividends page renders it as the
+//    "Dividend Deliveries" table under the baseline code-trend chart
+//    (where the renamed analysis.dividend_est estimation curve stays as
+//    the dashed "Div Est" overlay).
+// ----------------------------------------------------------------------------
+/** One rolling-window audit row (newest first). */
+export interface DividendDeliveryRow {
+  /** Window anchor: the calendar year's last data date (current year =
+   *  latest close — the open window). */
+  window_end_date: string;
+  /** window_end_date - 5 calendar years + 1 day. */
+  window_start_date: string;
+  /** Delivery events (ex-date with D > 0) inside the window. */
+  deliveries: number;
+  /** Distinct event calendar years inside the window (0..6). */
+  years_with_delivery: number;
+  /** Mean of the per-event yields D / close(ex-date) (fractional). */
+  avg_yield: number | null;
+  /** Σ per-event D/close ÷ window span years (~5) — the window's average
+   *  ANNUAL cash yield on per-event prices; NULL when no delivery. */
+  annualized_yield: number | null;
+  /** Σ per-event D/close over the final 365d of the window — the
+   *  trailing-1-year yield as of the anchor (0 when the window has
+   *  deliveries but none in the last year; NULL when no delivery). */
+  latest_year_yield: number | null;
+  /** Mean of the per-event eps (close/pe at the ex-date); NULL when the
+   *  window has no delivery or no EPS source. */
+  avg_eps: number | null;
+  /** Deliveries with a same-code delivery within ±20 days of the same
+   *  date one year earlier (last-year ±20d repeat rule). */
+  stable_events: number;
+  /** stable_events / deliveries; NULL when no delivery. */
+  stability: number | null;
+}
+
+/** Response for GET /api/analysis/dividends/deliveries. */
+export interface DividendDeliveriesResponse {
+  code: string;
+  secType: PeSecType;
+  rows: DividendDeliveryRow[];
 }
 
 // ----------------------------------------------------------------------------
@@ -3820,6 +3527,10 @@ export interface NewsItem {
   votes: number | null;
   /** Stored comments for this article (0 when none loaded yet). */
   comment_count: number;
+  /** True when the mapped industry had a big market move on this date
+   *  (builds.text big_market_mv: |day change| >= 3% AND RSI(3) pinned,
+   *  5-td cooldown per industry). */
+  is_big_fluctuation: boolean;
   /** First ~200 chars of the article body (or null when not crawled). */
   snippet: string | null;
 }
@@ -3953,6 +3664,10 @@ export interface AiQaItem {
   updated_at: string;
   /** Articles in the Q&A's news-group provenance (0 when none). */
   n_sources: number;
+  /** True when the mapped industry had a big market move on the row's
+   *  Shanghai qa_date day (builds.text big_market_mv: |day change| >= 3%
+   *  AND RSI(3) pinned, 5-td cooldown per industry). */
+  is_big_fluctuation: boolean;
 }
 
 /** One reference resolution of a Q&A answer, joined to its article. */
@@ -3975,7 +3690,13 @@ export interface AiQaRefItem {
   news_id: number;
   title: string;
   source: string | null;
-  date: string;
+  /** The ref's ACTUAL publish date (text.llm_qa_refs.ref_time's
+   *  Asia/Shanghai day — populated by the Python writers: the search
+   *  response's date, else the URL-embedded date). null = unknown —
+   *  nothing renders (never a now()/qa-date fallback). Refs whose known
+   *  date falls outside the QA's interest window [interest day − 20d,
+   *  interest day] are not stored at all. */
+  date: string | null;
   url: string | null;
   /** Article content preview for the ref expansion (first 4000 chars,
    *  server-truncated; null for placeholder / content-less rows). */

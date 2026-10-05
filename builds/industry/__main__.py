@@ -213,19 +213,19 @@ POOL_UNION_TEMP_SQL = """
           AND sc.is_active = TRUE
     )
     SELECT DISTINCT industry_id, industry_label,
-           'all' AS pool_size, stock_code
+           3::smallint AS pool_size, stock_code
     FROM index_stocks
     UNION ALL
     SELECT DISTINCT industry_id, industry_label,
-           'small' AS pool_size, stock_code
+           0::smallint AS pool_size, stock_code
     FROM index_stocks WHERE stock_num < 51
     UNION ALL
     SELECT DISTINCT industry_id, industry_label,
-           'mid' AS pool_size, stock_code
+           1::smallint AS pool_size, stock_code
     FROM index_stocks WHERE stock_num >= 51 AND stock_num <= 180
     UNION ALL
     SELECT DISTINCT industry_id, industry_label,
-           'large' AS pool_size, stock_code
+           2::smallint AS pool_size, stock_code
     FROM index_stocks WHERE stock_num > 180
 """
 

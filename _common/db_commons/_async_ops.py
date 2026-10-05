@@ -475,7 +475,7 @@ async def csv_copy_from_frame_async(
     Args:
         conn: asyncpg connection.
         table_name: target table (schema-qualified, e.g.
-            "analysis.mov_ave_spreads_detail_ohlc").
+            "analysis.mov_ave_spreads_roof_and_floor_lines").
         df: DataFrame whose columns (after optional reordering via
             ``columns``) match the target table.
         columns: optional explicit column order; defaults to df.columns.

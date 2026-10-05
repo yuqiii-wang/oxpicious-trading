@@ -4,13 +4,27 @@ Reads three per-day SSE sources (see downloads/_common/exchanges/sse_options.py
 for the endpoint study) and writes the same split tables as the SZSE/CFFEX
 builders, distinguished by exchange='SSE':
 
-  1. EOD quotes  — temps/sse_options_intraday/sse_options_intraday_YYYYMMDD.csv
-     (the stream's raw snapshot archive; the LAST sample per contract is the
-     EOD state — day OHLC + day-cumulative volume, captured post-close by
-     ``downloads.stream.sse.price --options-eod`` or the final in-session poll)
+  1. EOD quotes  — temps/sse_options_daily/sse_options_daily_YYYYMMDD.csv
+     (the price page https://www.sse.com.cn/assortment/options/price/ EOD
+     snapshot: one row per contract post-close with day OHLC + day totals —
+     close = ``last``, 成交量(手) = ``volume``, 成交额(元) = ``amount``,
+     written by ``downloads.stream.sse.price --options-eod`` alongside its
+     intraday archive; the daily build NEVER aggregates the intraday CSV)
   2. Contract listing — temps/sse_options_price/sse_options_price_YYYYMMDD.csv
      (preinfo 当日合约: numeric 合约编码 = contract_code, 合约简称, 类型
-     认购/认沽, 行权价, 到期日 — authoritative, no name-regex parsing needed)
+     认购/认沽, 行权价, 到期日, 前结算价 — authoritative, no name-regex
+     parsing needed)
+
+Listing-only dates: the 当日合约 listing has run daily for far longer than
+the intraday stream, and SSE publishes no historical per-contract EOD
+endpoint (yunhq ``sho/dayk`` does not exist; tstyle is live-only), so every
+listing date WITHOUT a final (>= 15:00) quotes file still builds — terms,
+strike and identity at full fidelity, ``prev_settle`` from the listing's
+own 前结算价, and ``settle`` recovered from the NEXT listing date's
+前结算价 (settle(T) == 前结算价(T+1) — the exchange publishes settlement
+with a one-day lag). close / pct_change stay NULL and volume is 0 on those
+dates: no source exists, the nullable option_* columns carry the gap, and
+the IV calibration prices off settle instead of close.
   3. Underlying close — temps/sse_trend/sse_trend_etf_YYYYMMDD.csv (今收 of
      the 5 underlying ETFs → moneyness / IV)
   4. Risk indicators — temps/sse_options_risk/sse_options_risk_YYYYMMDD.csv
@@ -21,21 +35,41 @@ builders, distinguished by exchange='SSE':
      off close.)
 
 SSE-specific gaps vs the SZSE source (by design, documented):
-  * settle — SSE publishes the daily settlement price with a lag; rows are
-    written with settle = NULL and the IV calibration prices off
-    ``close`` (settle coalesced to close). Backfilling settle from the t+1
-    snapshot's prev_settle is a future refinement (re-run with --date).
+  * settle — SSE publishes the daily settlement price with a one-day lag;
+    rows carry settle recovered from the next listing date's 前结算价
+    (see ``build_settle_map``); the latest built date and expiry-day
+    contracts (absent from every later listing) keep settle = NULL and
+    price IV off ``close``. Normal runs refresh the most recent built
+    date once its settle becomes knowable (``_pick_settle_refresh_date``).
   * open_interest — no per-contract OI source exists for SSE (tstyle
-    ``position`` returns null); OI columns are NULL and the OI aggregate
-    ratios degenerate to 0. Per-underlying OI totals exist on the exchange's
-    每日统计 endpoint (future: downloads → options_aggregate refresh).
+    ``position`` returns null; no daily-stats endpoint), so per the
+    accepted approximation ``open_interest`` carries the per-contract
+    ACCUMULATED VOLUME since the intraday stream started
+    (``chain_open_interest``: OI(T) = OI(prev trading row) + volume(T),
+    seeded from the latest stored row before the build window). The same
+    upper-bound estimator ``live.options_intraday_oi`` chains its
+    intraday estimate from (oi_base = this column); closes/rolls are not
+    netted, so the series only grows while a contract trades and freezes
+    after expiry. Listing-only dates (volume 0) carry the level forward.
   * Greeks — loaded directly from the exchange risk table
     (temps/sse_options_risk/, scheduled in downloads_daily.sh); the BS
     pipeline is the fallback only.
 
-Missing-data detection: dates available = EOD-quote CSVs whose last sample is
->= 15:00 (final) AND a same-day contract listing exists; missing = those not
-in ``SELECT DISTINCT date FROM stats.options_identity WHERE exchange='SSE'``.
+Missing-data detection: dates available = contract-listing dates (a final
+quotes file upgrades the date to the full-EOD path); missing = those not in
+``SELECT DISTINCT date FROM stats.options_terms WHERE exchange='SSE'``.
+Underlying closes: temps/sse_trend_etf_*.csv daily snapshots, with the
+per-code dayk archives temps/sse_archive/{code}_trend.csv filling any
+(etf_code, date) pair the snapshots lack (fetch via the
+``downloads.stock.sse.archive`` dayk endpoint — full immutable history).
+
+Backfill fix: a build date whose daily CSV is missing (EOD capture failed
+or ran before the file landed) gets one reconstructed from the intraday
+raw archive — the LAST sample per contract carries the day-cumulative
+volume/amount at that moment (``backfill_daily_from_intraday``). A
+partial-day intraday archive yields a partial daily row — better than no
+volume/amount; the captured ``update_time`` column keeps the shortfall
+visible. No external sources are used.
 
 Usage:
   python -m builds.options.sse
@@ -61,7 +95,8 @@ import numpy as np
 import pandas as pd
 
 from downloads._common import read_csv_preferred
-from _common.df_utils import safe_columns
+from downloads._common.exchanges.sse_options import OPTIONS_CSV_COLUMNS
+from _common.df_utils import safe_columns, grouped_shift
 
 from _common.build_commons import (
     parse_date, ymd_from_filename, ymd_to_date,
@@ -87,10 +122,12 @@ _EPOCH = datetime.date(1970, 1, 1)
 # ============================================================================
 # Paths
 # ============================================================================
+SSE_OPTIONS_DAILY_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_options_daily")
 SSE_OPTIONS_INTRADAY_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_options_intraday")
 SSE_OPTIONS_PRICE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_options_price")
 SSE_OPTIONS_RISK_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_options_risk")
 SSE_TREND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_trend")
+SSE_ETF_ARCHIVE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "temps", "sse_archive")
 
 logger = setup_logging("sse_options")
 
@@ -99,32 +136,81 @@ def _resolve(path: str) -> str:
     return os.path.normpath(os.path.abspath(path))
 
 
-SSE_OPTIONS_INTRADAY_DIR = _resolve(SSE_OPTIONS_INTRADAY_DIR)
+SSE_OPTIONS_DAILY_DIR = _resolve(SSE_OPTIONS_DAILY_DIR)
 SSE_OPTIONS_PRICE_DIR = _resolve(SSE_OPTIONS_PRICE_DIR)
 SSE_OPTIONS_RISK_DIR = _resolve(SSE_OPTIONS_RISK_DIR)
 SSE_TREND_DIR = _resolve(SSE_TREND_DIR)
+SSE_ETF_ARCHIVE_DIR = _resolve(SSE_ETF_ARCHIVE_DIR)
+
+# The 5 SSE option underlying ETFs — the per-code dayk close archives under
+# temps/sse_archive/ use these bare codes as filenames.
+SSE_OPTIONS_UNDERLYING_CODES = ("510050", "510300", "510500", "588000", "588080")
 
 
 # ============================================================================
 # Source frames
 # ============================================================================
-def build_quotes_df(files, verbose=True):
-    """EOD quotes: LAST raw sample per contract from each daily archive.
+def backfill_daily_from_intraday(build_ymd, verbose=True):
+    """Materialize missing daily CSVs from the intraday raw archives.
 
-    Each file is one trading day's appended snapshots (raw cumulative
-    volume/amount); after close the last sample per contract is the day's
-    final state — close = ``last``, day volume = ``volume`` (cumulative at
-    EOD), prev_settle = ``prev_settle``, pct_change = ``chg_rate``.
+    Backfill fix for build dates whose EOD capture never landed a
+    sse_options_daily file: the intraday archive's LAST sample per
+    contract already holds the day-cumulative 成交量/成交额 at that moment,
+    so one dedup pass writes the day's daily row. No external requests —
+    intraday aggregation is the only backfill source. Partial-day archives
+    (stream died pre-close) yield partial totals; the written
+    ``update_time`` keeps that visible.
+    """
+    made = []
+    for ymd in sorted(build_ymd):
+        daily_path = os.path.join(SSE_OPTIONS_DAILY_DIR, f"sse_options_daily_{ymd}.csv")
+        if os.path.exists(daily_path):
+            continue
+        intraday_path = os.path.join(SSE_OPTIONS_INTRADAY_DIR, f"sse_options_intraday_{ymd}.csv")
+        if not os.path.exists(intraday_path):
+            continue
+        try:
+            df = read_csv_preferred(intraday_path, dtype={"code": str})
+        except Exception:
+            continue
+        if df is None or len(df) == 0 or "code" not in safe_columns(df):
+            continue
+        df = df.sort_values("update_time", kind="stable")
+        df = df.drop_duplicates(subset=["code"], keep="last")
+        cols = [c for c in OPTIONS_CSV_COLUMNS if c in safe_columns(df)]
+        df = df[cols]
+        # cuDF's CSV writer emits full float64 reprs (0.09899999999999999) —
+        # round the numeric legs back to quoted precision for clean files
+        for c in ("open", "high", "low", "last", "prev_settle", "chg_rate",
+                  "volume", "amount"):
+            if c in safe_columns(df):
+                df[c] = df[c].round(6)
+        df.to_csv(daily_path, index=False, encoding="utf-8-sig")
+        made.append(ymd)
+        if verbose:
+            logger.info(f"    [BACKFILL] {ymd}: daily CSV reconstructed from intraday — "
+                  f"{len(df)} contracts, last sample {df['update_time'].max()}")
+    return made
+
+
+def build_quotes_df(files, verbose=True):
+    """EOD quotes: the day's DAILY snapshot rows (price page, post-close).
+
+    Each file is one trading day's EOD capture (day OHLC + day-total
+    成交量(手)/成交额(元), raw cumulative values); a re-run capture appends
+    duplicate rows, so the LAST sample per contract wins. close = ``last``,
+    day volume = ``volume`` (张), amount = ``amount`` (元),
+    prev_settle = ``prev_settle``, pct_change = ``chg_rate``.
     """
     if verbose:
-        logger.info(f"    [OPTIONS] reading {len(files)} sse_options_intraday_*.csv files")
+        logger.info(f"    [OPTIONS] reading {len(files)} sse_options_daily_*.csv files")
 
     frames: list[pd.DataFrame] = []
     n_empty = 0
     n_ok = 0
 
     for path in files:
-        ymd = ymd_from_filename(path, "sse_options_intraday_")
+        ymd = ymd_from_filename(path, "sse_options_daily_")
         if not ymd:
             continue
         try:
@@ -139,7 +225,7 @@ def build_quotes_df(files, verbose=True):
         date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
         trade_date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
 
-        # Last sample per contract = EOD state (file appends in poll order)
+        # Last sample per contract = EOD state (idempotent re-captures append)
         df = df.sort_values("update_time", kind="stable")
         df = df.drop_duplicates(subset=["code"], keep="last")
 
@@ -152,6 +238,7 @@ def build_quotes_df(files, verbose=True):
             ("prev_settle", "prev_settle"),
             ("chg_rate", "pct_change"),
             ("volume", "volume"),
+            ("amount", "amount"),
         ):
             part[dst] = safe_to_numeric(df[src]) if src in safe_columns(df) else np.nan
         frames.append(part)
@@ -222,6 +309,10 @@ def build_contract_meta_df(files, verbose=True):
         # contractid series marker at index 11 ('M' standard, 'A' adjusted)
         tc = part["trade_code"]
         part["has_a_suffix"] = tc.str.slice(11, 12).eq("A").astype(int)
+        # 前结算价 (previous settlement, yuan) — the listing's own price
+        # column; feeds listing-only quotes and the settle(T+1) recovery
+        part["prev_settle"] = (safe_to_numeric(df["前结算价"])
+                               if "前结算价" in safe_columns(df) else np.nan)
         # 到期日 YYYYMMDD → datetime64 (authoritative expiry; no weekday math)
         # Clean-data fast path — to_datetime(errors="coerce") on a Series
         # is a cudf fallback per call (non-scalar arg); coerce only on junk.
@@ -248,8 +339,108 @@ def build_contract_meta_df(files, verbose=True):
     return out
 
 
+def build_settle_map(meta_df, verbose=True):
+    """Recover official settle(T) from the next listing date's 前结算价.
+
+    The 当日合约 listing carries 前结算价 = the PREVIOUS trading day's
+    settlement, so within one contract's listing-date sequence the row at
+    T+1 holds date T's official settle (SSE publishes settlement with a
+    one-day lag — the same fact that makes the intraday ``prev_settle``
+    and the listing column agree). Contracts absent from every later
+    listing (expiry-day drops, delisted) keep settle = NaN.
+
+    ``meta_df`` must span the build dates AND all later listing files so
+    the look-ahead row exists; only (date, contract_code, settle) comes
+    back, left-merged onto the options frame by the caller.
+    """
+    if meta_df is None or len(meta_df) == 0 or "prev_settle" not in safe_columns(meta_df):
+        return pd.DataFrame()
+
+    keys = meta_df[["contract_code", "date", "prev_settle"]].sort_values(
+        ["contract_code", "date"], kind="stable")
+    # sort=False: already sorted on the FULL key above — grouped_shift's own
+    # group-key-only sort would not preserve within-group date order
+    keys = grouped_shift(keys, ["contract_code"], "prev_settle",
+                         out_names="settle", periods=-1, sort=False)
+    out = keys[["date", "contract_code", "settle"]]
+    if verbose:
+        n = int(out["settle"].notna().sum())
+        logger.info(f"    [SETTLE] next-listing settle recovered for {n:,}/{len(out):,} contract-days")
+    return out
+
+
+def build_listing_only_quotes(meta_df, ymd_set, verbose=True):
+    """Settle-only EOD rows for build dates lacking a final quotes file.
+
+    The intraday stream is younger than the 当日合约 listing and crashes
+    can cut a day before 15:00, so those dates build from the listing
+    alone: full terms/strike/identity, ``prev_settle`` from the listing's
+    前结算价, settle via ``build_settle_map``. close/pct_change stay NaN
+    (no source) and volume is 0 — IV prices off settle.
+    """
+    if meta_df is None or len(meta_df) == 0 or not ymd_set:
+        return pd.DataFrame()
+
+    ymd_key = meta_df["date"].dt.strftime("%Y%m%d")
+    lo = meta_df[ymd_key.isin(ymd_set)]
+    if len(lo) == 0:
+        return pd.DataFrame()
+
+    part = pd.DataFrame({
+        "trade_code": lo["trade_code"].astype(str).str.strip(),
+        "date": lo["date"],
+        "close": np.nan,
+        "prev_settle": lo["prev_settle"],
+        "pct_change": np.nan,
+        "volume": 0.0,
+    })
+    if verbose:
+        n_days = int(lo["date"].dt.strftime("%Y%m%d").nunique())
+        logger.info(f"    [OPTIONS] {n_days} listing-only dates → {len(part):,} settle-only quote rows")
+    return part
+
+
+def _load_archive_etf_close():
+    """Full-history closes for the option underlying ETFs from dayk archives.
+
+    temps/sse_archive/{code}_trend.csv (downloads.stock.sse.archive, yunhq
+    ``sh1/dayk`` endpoint) carries each security's complete immutable daily
+    history — used to fill (etf_code, date) pairs the sse_trend_etf daily
+    snapshots don't cover. Dates stay strings so the shared tail's single
+    safe_to_datetime parse handles snapshot + archive rows alike.
+    """
+    parts: list = []
+    for code in SSE_OPTIONS_UNDERLYING_CODES:
+        path = os.path.join(SSE_ETF_ARCHIVE_DIR, f"{code}_trend.csv")
+        if not os.path.exists(path):
+            continue
+        try:
+            df = read_csv_preferred(path, dtype={"证券代码": str})
+        except Exception:
+            continue
+        if df is None or len(df) == 0 or "今收" not in safe_columns(df):
+            continue
+        code_s = df["证券代码"].astype(str).str.strip().str.replace(".SS", "", regex=False)
+        close_s = safe_to_numeric(df["今收"])
+        date_s = df["交易日期"].astype(str).str.strip()
+        m = (code_s.str.fullmatch(r"\d{6}") & close_s.notna()).to_numpy()
+        if not bool(m.any()):
+            continue
+        part = pd.DataFrame({"etf_code": code_s[m]})
+        part["date"] = date_s[m]
+        part["etf_close"] = close_s[m].astype(float)
+        parts.append(part)
+    return parts
+
+
 def load_etf_close(files, verbose=True):
-    """Underlying ETF closes (今收) from sse_trend_etf_*.csv → moneyness."""
+    """Underlying ETF closes (今收) → moneyness.
+
+    Primary: sse_trend_etf_*.csv same-day snapshots. The per-code dayk
+    archives fill any (etf_code, date) pair the snapshots lack — the
+    snapshot downloader started 2026-07-31, the options listings
+    2026-07-17, and moneyness/IV need the spot on every build date.
+    """
     if verbose:
         logger.info(f"    [ETF-CLOSE] reading {len(files)} sse_trend_etf_*.csv files")
 
@@ -275,6 +466,8 @@ def load_etf_close(files, verbose=True):
         part["etf_close"] = close_s[m].astype(float)
         parts.append(part)
 
+    parts.extend(_load_archive_etf_close())
+
     if not parts:
         if verbose:
             logger.warning("    [WARN] No ETF close data loaded — moneyness will be 0")
@@ -282,6 +475,8 @@ def load_etf_close(files, verbose=True):
 
     out = pd.concat(parts, ignore_index=True)
     out["date"] = safe_to_datetime(out["date"]).astype("datetime64[ns]")
+    # archive rows only fill gaps — the same-day snapshot wins on collision
+    out = out.drop_duplicates(subset=["etf_code", "date"], keep="first")
     out = out.dropna(subset=["date"]).sort_values(["etf_code", "date"]).reset_index(drop=True)
     if verbose:
         logger.info(f"    → {len(out):,} ETF close rows  ·  {out['etf_code'].nunique()} ETFs")
@@ -354,8 +549,78 @@ def load_risk_indicators(files, verbose=True):
 
 
 # ============================================================================
+# Accumulated-volume OI chain — SSE's open_interest estimator (no published
+# per-contract OI; volume only exists in the intraday captures)
+# ============================================================================
+async def fetch_prev_oi_seed(conn, before_date, code_filter=None) -> pd.DataFrame:
+    """Latest stored SSE open_interest per contract strictly before a date.
+
+    Seeds ``chain_open_interest`` so a build window continues each
+    contract's accumulated-volume OI from where the stored rows left off
+    (0 for contracts never built before the cutoff).
+    """
+    where_extra = ""
+    params: list = [before_date]
+    if code_filter:
+        where_extra = " AND t.underlying_code = $2"
+        params.append(code_filter)
+    rows = await conn.fetch(
+        "SELECT DISTINCT ON (v.contract_code) v.contract_code, v.open_interest "
+        "FROM stats.options_volume_oi v "
+        "JOIN stats.options_terms t "
+        "  ON t.contract_code = v.contract_code AND t.date = v.date "
+        f"WHERE v.exchange = 'SSE' AND v.date < $1{where_extra} "
+        "ORDER BY v.contract_code, v.date DESC",
+        *params,
+    )
+    if not rows:
+        return pd.DataFrame(columns=["contract_code", "open_interest"])
+    return pd.DataFrame({
+        "contract_code": [r["contract_code"] for r in rows],
+        "open_interest": [float(r["open_interest"] or 0.0) for r in rows],
+    })
+
+
+def chain_open_interest(df, seed_df=None, verbose=True):
+    """open_interest(T) = open_interest(prev trading row) + volume(T).
+
+    SSE publishes no per-contract OI, so the accepted approximation is the
+    per-contract accumulated VOLUME (the intraday stream is the only
+    volume source — the same upper-bound estimator
+    ``live.options_intraday_oi`` chains from this column as oi_base).
+    Within the build window this is one grouped cumsum over volume seeded
+    with each contract's latest stored OI before the window; listing-only
+    dates (volume 0) carry the level forward, contracts past expiry keep
+    their frozen value only on rows that still exist for them.
+    """
+    if df is None or len(df) == 0:
+        return df
+
+    work = df[["contract_code", "date", "volume"]].sort_values(
+        ["contract_code", "date"], kind="stable")
+    if seed_df is not None and len(seed_df):
+        work = work.merge(seed_df, on="contract_code", how="left")
+    else:
+        work = work.assign(open_interest=np.nan)
+    # seed is constant per contract: seed + cumsum(volume) adds it exactly
+    # once at the chain head of every row's running total; volume NaN
+    # (no quote leg) counts as 0 — the level carries forward
+    work["volume"] = work["volume"].fillna(0.0)
+    seed = work["open_interest"].fillna(0.0)
+    work["_oi"] = seed + work.groupby("contract_code", sort=False)["volume"].cumsum()
+
+    if verbose:
+        n_pos = int((work["_oi"] > 0).sum())
+        logger.info(f"    [OI-CHAIN] accumulated-volume OI: {n_pos:,}/{len(work):,} "
+              f"contract-days carry a positive level")
+    return df.merge(
+        work[["contract_code", "date", "_oi"]].rename(columns={"_oi": "open_interest"}),
+        on=["contract_code", "date"], how="left")
+
+
+# ============================================================================
 # Derived columns (mirrors builds.options.szse.add_derived_columns; SSE gaps:
-# settle NULL → IV priced off close; no per-contract OI → OI aggregates 0)
+# settle NULL → IV priced off close; open_interest = accumulated volume)
 # ============================================================================
 from _common.df_utils import compute_iv_and_greeks  # noqa: E402
 
@@ -368,12 +633,18 @@ def add_derived_columns(df, etf_close=None, risk_df=None, verbose=True):
     df = df.copy()
     df["_date_key"] = df["date"].dt.strftime("%Y-%m-%d")
 
-    df["settle"] = np.nan  # SSE settles publish with a lag — NULL for now
+    # settle arrives from build_settle_map (next listing's 前结算价);
+    # dates/contracts without a later listing keep NULL and price IV off
+    # close below (the fillna order encodes that preference)
+    if "settle" not in safe_columns(df):
+        df["settle"] = np.nan
     df["volume_wan"] = df["volume"] / 10000.0
-    # no per-contract OI source on SSE — 0, not NULL (options_volume_oi's
-    # open_interest is NOT NULL; 0 keeps the OI aggregates consistently 0)
-    df["open_interest"] = 0.0
-    df["open_interest_wan"] = 0.0
+    # open_interest arrives chained (accumulated-volume estimator — see
+    # chain_open_interest); the guard keeps direct add_derived callers
+    # working. NOT NULL column → 0, never NaN.
+    if "open_interest" not in safe_columns(df):
+        df["open_interest"] = 0.0
+    df["open_interest_wan"] = df["open_interest"] / 10000.0
 
     df["prev_settle_norm"] = df["prev_settle"] / 100.0
     df["close_norm"] = df["close"] / 100.0
@@ -426,14 +697,19 @@ def add_derived_columns(df, etf_close=None, risk_df=None, verbose=True):
 
     df["volume_pct"] = np.where(df["total_volume_underlying"] > 0,
                                 df["volume"] / df["total_volume_underlying"] * 100.0, 0.0)
-    df["open_interest_pct"] = 0.0  # no OI source
+    df["open_interest_pct"] = np.where(df["total_oi_underlying"] > 0,
+                                       df["open_interest"] / df["total_oi_underlying"] * 100.0, 0.0)
 
     _grp_keys = ["_date_key", "underlying_code", "strike_price"]
+    call_oi = df[df["option_type"] == "CALL"].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "call_oi"})
+    put_oi = df[df["option_type"] == "PUT"].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "put_oi"})
     call_vol = df[df["option_type"] == "CALL"].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "call_vol"})
     put_vol = df[df["option_type"] == "PUT"].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "put_vol"})
-    ratios = pd.merge(call_vol, put_vol, on=_grp_keys, how="outer")
+    ratios = pd.merge(call_oi, put_oi, on=_grp_keys, how="outer")
+    ratios = pd.merge(ratios, call_vol, on=_grp_keys, how="outer")
+    ratios = pd.merge(ratios, put_vol, on=_grp_keys, how="outer")
+    ratios["oi_call_put_ratio"] = np.where(ratios["put_oi"] > 0, ratios["call_oi"] / ratios["put_oi"], np.nan)
     ratios["vol_call_put_ratio"] = np.where(ratios["put_vol"] > 0, ratios["call_vol"] / ratios["put_vol"], np.nan)
-    ratios["oi_call_put_ratio"] = np.nan  # no OI source
 
     df = df.merge(ratios[["_date_key", "underlying_code", "strike_price",
                           "oi_call_put_ratio", "vol_call_put_ratio"]],
@@ -441,16 +717,19 @@ def add_derived_columns(df, etf_close=None, risk_df=None, verbose=True):
     df["oi_call_put_ratio"] = df["oi_call_put_ratio"].fillna(0.0)
     df["vol_call_put_ratio"] = df["vol_call_put_ratio"].fillna(0.0)
 
-    df["open_interest_call"] = 0.0
-    df["open_interest_put"] = 0.0
+    df["open_interest_call"] = np.where(df["option_type"] == "CALL", df["open_interest"], 0.0)
+    df["open_interest_put"] = np.where(df["option_type"] == "PUT", df["open_interest"], 0.0)
     df["volume_call"] = np.where(df["option_type"] == "CALL", df["volume"], 0.0)
     df["volume_put"] = np.where(df["option_type"] == "PUT", df["volume"], 0.0)
-    df["oi_total_call_put_ratio"] = 0.0  # no OI source
+    call_oi_total = df.groupby(["_date_key", "underlying_code"])["open_interest_call"].transform("sum")
+    put_oi_total = df.groupby(["_date_key", "underlying_code"])["open_interest_put"].transform("sum")
+    df["oi_total_call_put_ratio"] = np.where(put_oi_total > 0, call_oi_total / put_oi_total, 0.0)
 
     if verbose:
         logger.info(f"    → Computing implied volatility and Greeks for {len(df):,} rows …")
 
-    # IV calibration price: settle when published, else close (SSE settle lag)
+    # IV calibration price: settle when recovered (official), else close
+    # (settle publishes with a one-day lag — see build_settle_map)
     iv_frame = df.assign(settle=df["settle"].fillna(df["close"]))
     iv, delta, theta, gamma, vega, rho = compute_iv_and_greeks(iv_frame)
     df["implied_vol"] = iv
@@ -495,12 +774,43 @@ def add_derived_columns(df, etf_close=None, risk_df=None, verbose=True):
 # ============================================================================
 # Missing-date detection (exchange column on every options_* table)
 # ============================================================================
+def _newest_listing_underlyings(meta_files) -> set:
+    """Underlying codes of the newest 当日合约 file — the current SSE universe.
+
+    Keeps missing-date detection honest about brand-new underlyings: a code
+    with no options_terms rows at all would stay invisible to a
+    table-derived universe.
+    """
+    newest = max(
+        (f for f in meta_files
+         if ymd_from_filename(f, "sse_options_price_")),
+        key=lambda f: ymd_from_filename(f, "sse_options_price_") or "",
+        default=None,
+    )
+    if newest is None:
+        return set()
+    try:
+        df = read_csv_preferred(newest, dtype={"标的券名称及代码": str})
+    except Exception:
+        return set()
+    if df is None or len(df) == 0 or "标的券名称及代码" not in safe_columns(df):
+        return set()
+    under = df["标的券名称及代码"].astype(str).str.strip()
+    return set(under.str.extract(r"\((\d{6})\)", expand=False).dropna())
 async def find_missing_sse_dates(
     conn,
     source_dates: set,
     code_filter: str | None = None,
+    source_underlyings: set | None = None,
 ) -> set:
-    """Dates from source_dates not yet built for exchange='SSE'.
+    """Dates from source_dates whose (date, underlying) coverage is incomplete.
+
+    A date is missing while ANY source underlying lacks rows that date — a
+    partially-built date (one underlying's source arrived late) or a newly
+    listed underlying whose whole history is otherwise "present" both
+    re-enter the queue. The universe defaults to the underlyings already in
+    the table; pass ``source_underlyings`` (today's listing codes) to catch
+    underlyings with no rows at all.
 
     Probes stats.options_terms — NOT options_identity: the SSE options
     stream writes identity rows itself (FK parent for intraday bars), so
@@ -511,16 +821,28 @@ async def find_missing_sse_dates(
 
     if code_filter:
         sql = (
-            'SELECT DISTINCT date FROM stats.options_terms '
+            'SELECT DISTINCT date, underlying_code FROM stats.options_terms '
             "WHERE underlying_code = $1 AND exchange = 'SSE'"
         )
         existing_rows = await conn.fetch(sql, code_filter)
     else:
-        sql = "SELECT DISTINCT date FROM stats.options_terms WHERE exchange = 'SSE'"
+        sql = ("SELECT DISTINCT date, underlying_code FROM stats.options_terms "
+               "WHERE exchange = 'SSE'")
         existing_rows = await conn.fetch(sql)
-    existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
+    existing_pairs = {(r["date"], r["underlying_code"]) for r in existing_rows
+                      if r["date"] is not None}
 
-    return source_dates - existing_dates
+    universe = source_underlyings if source_underlyings else {
+        u for _, u in existing_pairs}
+    if code_filter:
+        universe = {code_filter}
+    if not universe:
+        return set(source_dates)
+
+    return {
+        d for d in source_dates
+        if any((d, u) not in existing_pairs for u in universe)
+    }
 
 
 # ============================================================================
@@ -554,6 +876,34 @@ def _quotes_file_is_final(path) -> bool:
         return False
 
 
+def _scan_final_quote_ymds(quote_files, meta_ymds, forced_date):
+    """(final daily-file ymds, non-final count) over the CURRENT file set.
+
+    Runs AFTER ``backfill_daily_from_intraday`` so regenerated daily files
+    count as quote sources for their dates. --date rebuilds accept a
+    non-final file (a day cut short by a streamer crash will never gain a
+    15:00 sample); regular dates take the listing-only path instead
+    (settle is official there; a partial close is not).
+    """
+    final = set()
+    n_not_final = 0
+    for f in quote_files:
+        ymd = ymd_from_filename(f, "sse_options_daily_")
+        if not ymd or ymd not in meta_ymds:
+            continue
+        if not _quotes_file_is_final(f):
+            if not (forced_date is not None
+                    and ymd == forced_date.strftime("%Y%m%d")):
+                n_not_final += 1
+                continue
+            logger.info(
+                f"    → {ymd}: non-final quotes file accepted for "
+                f"--date rebuild (last snapshot wins)"
+            )
+        final.add(ymd)
+    return final, n_not_final
+
+
 # ============================================================================
 # Main pipeline — SseOptionsBuild entry class
 # ============================================================================
@@ -582,11 +932,56 @@ class SseOptionsBuild(DataBuild):
 
     def header_fields(self) -> dict:
         return {
-            "Quotes dir":  SSE_OPTIONS_INTRADAY_DIR,
+            "Quotes dir":  SSE_OPTIONS_DAILY_DIR,
             "Date range":  f"{self.args.start_date or '(all)'} → {self.args.end_date or '(all)'}",
             "Code filter": self.code_filter or "(none — all underlyings)",
             "Today":       TODAY_STR,
         }
+
+    async def _pick_settle_refresh_date(self, conn, missing_dates, code_filter, max_listing_date):
+        """Most recent already-built SSE date whose settle can now be filled.
+
+        settle(T) arrives with the T+1 当日合约 listing (one-day publication
+        lag — ``build_settle_map``), so a normal run refreshes at most one
+        prior date: the newest built date before the missing dates' minimum
+        (daily flow: yesterday), or the latest built date itself when the DB
+        is otherwise current. Dates without a newer listing file, or whose
+        settle is already complete, are left alone.
+        """
+        if max_listing_date is None:
+            return None
+
+        where_code = " AND underlying_code = $1" if code_filter else ""
+        params = [code_filter] if code_filter else []
+        rows = await conn.fetch(
+            "SELECT DISTINCT date FROM stats.options_terms "
+            f"WHERE exchange = 'SSE'{where_code} "
+            "ORDER BY date DESC LIMIT 60",
+            *params,
+        )
+        built_desc = [r["date"] for r in rows]
+        if not built_desc:
+            return None
+
+        if missing_dates:
+            cut = min(missing_dates)
+            prior = [d for d in built_desc if d < cut]
+            if not prior:
+                return None
+            cand = prior[0]  # newest built date before the new dates
+        else:
+            cand = built_desc[0]  # latest built date
+        if cand >= max_listing_date:
+            return None  # no newer listing → nothing to recover yet
+
+        n_null = await conn.fetchval(
+            "SELECT count(*) FROM stats.options_settlement "
+            "WHERE exchange = 'SSE' AND date = $1 AND settle IS NULL",
+            cand,
+        )
+        if not n_null:
+            return None
+        return cand
 
     async def run(self) -> None:
         args = self.args
@@ -602,44 +997,27 @@ class SseOptionsBuild(DataBuild):
         # 1. Discover source files and available dates
         # ------------------------------------------------------------------
         logger.info("\n[1/4] Discovering source CSV files …")
-        quote_files = glob_source_files(SSE_OPTIONS_INTRADAY_DIR, "sse_options_intraday_*.csv")
+        quote_files = glob_source_files(SSE_OPTIONS_DAILY_DIR, "sse_options_daily_*.csv")
         meta_files = glob_source_files(SSE_OPTIONS_PRICE_DIR, "sse_options_price_*.csv")
         etf_files = glob_source_files(SSE_TREND_DIR, "sse_trend_etf_*.csv")
         logger.info(f"    → {len(quote_files)} quote files, {len(meta_files)} contract-listing files, "
               f"{len(etf_files)} ETF close files available")
 
-        if not quote_files or not meta_files:
-            logger.error("    [FATAL] No quote or contract-listing source CSVs found")
+        if not meta_files:
+            logger.error("    [FATAL] No contract-listing source CSVs found")
             sys.exit(1)
 
-        # available = dates with BOTH a final (>=15:00) quotes file and a
-        # same-day contract listing; ETF closes are optional (moneyness→0)
+        # available = every listing date in range; a final (>=15:00) quotes
+        # file upgrades the date to the full-EOD path (close + volume), the
+        # rest build listing-only (terms + strike + settle — see
+        # build_listing_only_quotes). ETF closes are gap-filled from the
+        # dayk archives (moneyness needs the spot on every date).
         meta_ymds = {ymd_from_filename(f, "sse_options_price_") for f in meta_files} - {None}
-        available_dates = set()
-        n_not_final = 0
-        for f in quote_files:
-            ymd = ymd_from_filename(f, "sse_options_intraday_")
-            if not ymd or ymd not in meta_ymds:
-                continue
-            if not _quotes_file_is_final(f):
-                # --date rebuild accepts a non-final quotes file: a day cut
-                # short by a streamer crash will never gain a 15:00 sample,
-                # so its last snapshot is the best EOD that date will ever
-                # have, and the terms enrichment (the part the intraday
-                # skewness estimator reads the prev-day snapshot for) comes
-                # from the same-day contract listing, not the quotes. The
-                # regular missing-data pass keeps requiring finality.
-                if not (forced_date is not None
-                        and ymd == forced_date.strftime("%Y%m%d")):
-                    n_not_final += 1
-                    continue
-                logger.info(
-                    f"    → {ymd}: non-final quotes file accepted for "
-                    f"--date rebuild (last snapshot wins)"
-                )
-            d = ymd_to_date(ymd)
-            if d:
-                available_dates.add(d)
+        # current venue universe from the newest listing (missing-date
+        # detection uses it — see find_missing_sse_dates)
+        listing_universe = _newest_listing_underlyings(meta_files)
+
+        available_dates = {d for y in meta_ymds if (d := ymd_to_date(y))}
 
         if args.start_date:
             start_d = parse_date(args.start_date)
@@ -650,8 +1028,7 @@ class SseOptionsBuild(DataBuild):
             if end_d:
                 available_dates = {d for d in available_dates if d <= end_d}
 
-        logger.info(f"    → {len(available_dates)} unique final dates available in range "
-              f"({n_not_final} non-final quote files skipped)")
+        logger.info(f"    → {len(available_dates)} listing dates available in range")
 
         # ------------------------------------------------------------------
         # 2. Connect to DB and find missing dates
@@ -676,10 +1053,22 @@ class SseOptionsBuild(DataBuild):
             elif forced_date:
                 missing_dates = forced_date_scope(available_dates, forced_date)
             else:
-                missing_dates = await find_missing_sse_dates(conn, available_dates, code_filter=code_filter)
+                missing_dates = await find_missing_sse_dates(
+                    conn, available_dates, code_filter=code_filter,
+                    source_underlyings=listing_universe)
+                # Settle-lag refresh: settle(T) is only knowable once the
+                # T+1 listing exists, so also rebuild the most recent built
+                # date that precedes a newer listing file — keeps settle
+                # self-healing on daily runs without --date gymnastics.
+                refresh_date = await self._pick_settle_refresh_date(
+                    conn, missing_dates, code_filter,
+                    max_listing_date=max(available_dates) if available_dates else None)
+                if refresh_date:
+                    logger.info(f"    [DB] settle-lag refresh of already-built date {refresh_date}")
+                    missing_dates = set(missing_dates) | {refresh_date}
 
-            logger.info(f"    [DB] {len(missing_dates)} dates missing from stats.options_identity "
-                  f"(out of {len(available_dates)} available)")
+            logger.info(f"    [DB] {len(missing_dates)} dates to build "
+                  f"(missing or settle-refresh; out of {len(available_dates)} available)")
 
             if not missing_dates:
                 logger.info("    [INFO] Database is up to date — no new dates to insert")
@@ -691,34 +1080,80 @@ class SseOptionsBuild(DataBuild):
             logger.info(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …")
             missing_ymd = {d.strftime("%Y%m%d") for d in missing_dates}
 
+            # Backfill fix: daily CSVs missing for build dates are
+            # reconstructed from the intraday archives (last sample =
+            # day-cumulative volume/amount) before the quote glob below;
+            # the finality scan runs AFTER it so regenerated files count
+            backfilled = backfill_daily_from_intraday(missing_ymd)
+            if backfilled:
+                quote_files = glob_source_files(SSE_OPTIONS_DAILY_DIR, "sse_options_daily_*.csv")
+            final_quote_ymds, n_not_final = _scan_final_quote_ymds(
+                quote_files, meta_ymds, forced_date)
+            logger.info(f"    → {len(final_quote_ymds)} dates with daily quote files "
+                  f"({n_not_final} non-final → listing-only path)")
+
             missing_quote_files = [
                 f for f in quote_files
-                if ymd_from_filename(f, "sse_options_intraday_") in missing_ymd
+                if ymd_from_filename(f, "sse_options_daily_") in missing_ymd
+                and ymd_from_filename(f, "sse_options_daily_") in final_quote_ymds
             ]
-            missing_meta_files = [
+            # listings: build dates plus every LATER file — build_settle_map
+            # reads the T+1 前结算价 off those rows (look-ahead)
+            min_build_ymd = min(missing_ymd)
+            meta_lookahead_files = [
                 f for f in meta_files
-                if ymd_from_filename(f, "sse_options_price_") in missing_ymd
+                if ymd_from_filename(f, "sse_options_price_") >= min_build_ymd
             ]
             missing_etf_files = [
                 f for f in etf_files
                 if ymd_from_filename(f, "sse_trend_etf_") in missing_ymd
             ]
-            logger.info(f"    → {len(missing_quote_files)} quote files, {len(missing_meta_files)} "
-                  f"contract-listing files, {len(missing_etf_files)} ETF close files to read")
+            logger.info(f"    → {len(missing_quote_files)} quote files, {len(meta_lookahead_files)} "
+                  f"contract-listing files (incl. settle look-ahead), "
+                  f"{len(missing_etf_files)} ETF close files to read")
 
             quotes_df = build_quotes_df(missing_quote_files)
-            meta_df = build_contract_meta_df(missing_meta_files)
-            if len(quotes_df) == 0 or len(meta_df) == 0:
-                logger.info("    [INFO] No rows parsed from missing-date files")
+            meta_df = build_contract_meta_df(meta_lookahead_files)
+            if len(meta_df) == 0:
+                logger.info("    [INFO] No rows parsed from listing files")
                 return
 
-            options_df = quotes_df.merge(meta_df, on=["date", "trade_code"], how="inner")
+            # listing-only dates (no final quotes file) → settle-only rows
+            listing_only_ymd = {y for y in missing_ymd if y not in final_quote_ymds}
+            synth_df = build_listing_only_quotes(meta_df, listing_only_ymd)
+            if len(quotes_df) == 0 and len(synth_df) == 0:
+                logger.info("    [INFO] No rows parsed from missing-date files")
+                return
+            if len(synth_df) and len(quotes_df):
+                quotes_df = pd.concat([quotes_df, synth_df], ignore_index=True)
+            elif len(synth_df):
+                quotes_df = synth_df
+
+            # meta's own prev_settle stays out of the join — the quotes side
+            # carries it (intraday prev_settle == listing 前结算价, verified)
+            options_df = quotes_df.merge(
+                meta_df.drop(columns=["prev_settle"]),
+                on=["date", "trade_code"], how="inner")
             n_dropped = len(quotes_df) - len(options_df)
             if n_dropped:
                 logger.info(f"    [OPTIONS] {n_dropped} quote rows without a same-day contract listing — dropped")
             if len(options_df) == 0:
                 logger.info("    [INFO] No joinable option rows")
                 return
+
+            # official settle(T) from the next listing date's 前结算价
+            settle_map = build_settle_map(meta_df)
+            if len(settle_map):
+                options_df = options_df.merge(
+                    settle_map, on=["date", "contract_code"], how="left")
+            else:
+                options_df = options_df.assign(settle=np.nan)
+
+            # accumulated-volume OI chain — seed from the latest stored rows
+            # before the build window so daily/--date runs continue each
+            # contract's level instead of restarting it
+            oi_seed = await fetch_prev_oi_seed(conn, min(missing_dates))
+            options_df = chain_open_interest(options_df, oi_seed)
 
             if code_filter:
                 n_before = len(options_df)

@@ -20,7 +20,7 @@
  * input that selects rows whose stats period EQUALS it (emitted as the
  * inclusive [end, end] range, so exactly one month's rows show). The
  * lower bound is auto-FROZEN at (end − frozenFromYears years — the
- * stats' trailing lookback window, e.g. the forecast buckets' 10y
+ * stats' trailing lookback window, e.g. a signals window's 10y
  * window) and reported as a muted caption only — the recorded stats
  * window behind the selected month, never a second editable input or
  * a filter bound. Clearing the end input unbounds both sides.

@@ -195,6 +195,7 @@ SELECT
     vo.volume_wan,
     vo.open_interest,
     vo.open_interest_wan,
+    vo.amount,
     -- Aggregate
     a.total_volume_underlying,
     a.total_oi_underlying,

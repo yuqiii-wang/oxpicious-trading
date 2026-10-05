@@ -54,7 +54,7 @@ export interface SecNavState {
   handleClearSearch: () => void;
 
   /** Set the active code DIRECTLY, without classification-tree
-   *  resolution — for external jumps (e.g. a forecast-id search that
+   *  resolution — for external jumps (e.g. a search that
    *  resolves a code which exists in the data universe but not in the
    *  nav trees). Clears the nav error; leaves tree highlights
    *  untouched. */

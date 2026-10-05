@@ -9,7 +9,8 @@ bucketed by pool_size. Renamed from analysis.industry_sentiments
 were added (all four share the per-index scale factor 100 / first close).
 
 PK: (industry_id, date, pool_size)
-  pool_size in ('small','mid','large','all')
+  pool_size stores its stats.label_dim SMALLINT code
+  (0 small / 1 mid / 2 large / 3 all):
     small = stock_num < 51   (tight thematic indices, e.g. 中证银行 50)
     mid   = stock_num <= 180 (mid-cap baskets, e.g. CSI 100/200)
     large = otherwise         (broad baskets, e.g. CSI 300/500/800/1000)

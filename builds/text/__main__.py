@@ -9,7 +9,8 @@ Pipeline (all steps reuse one DB connection):
      sec_classification catalog + news keyword taxonomy).
   4. Upsert text.news, refresh text.news_keywords for new/changed articles,
      recompute doc_freq/idf corpus-wide, fill today_industry_change from
-     stats.industry_basic_stats.
+     stats.industry_basic_stats, and recompute the is_big_fluctuation flag
+     on text.news + text.llm_qa (builds.text.big_market_mv).
   5. ai_daily source: store the downloaded Q&A envelopes into
      text.llm_qa (+ text.llm_qa_refs / news-group provenance) via
      builds.text.ai_daily_qa — idempotent per (question, qa_date), the
@@ -44,7 +45,7 @@ from typing import List, Optional
 from _common.data_build import DataBuild
 from _common.log_setup import setup_logging
 
-from builds.text import upsert
+from builds.text import big_market_mv, upsert
 from builds.text.ai_daily_qa import sync_ai_daily_qa
 from builds.text.keywords import extract_for_articles
 from builds.text.loaders import ALL_SOURCES, load_news, load_zhihu_comments
@@ -193,6 +194,15 @@ class TextBuild(DataBuild):
                 n_qa, n_skip = await sync_ai_daily_qa(conn)
                 logger.info("    [DB] ai_daily Q&A: %d stored, %d already "
                             "present", n_qa, n_skip)
+
+            # --- is_big_fluctuation (text.news + text.llm_qa) -----------------
+            # Full-recompute flag pass: big-move trigger days from the
+            # industry composite closes + the 5-trading-day cooldown, one
+            # UPDATE per table (idempotent — also heals rows stored
+            # directly by llm_agents since the last run).
+            mv = await big_market_mv.apply_big_market_mv(conn)
+            logger.info("    [DB] is_big_fluctuation: %d news / %d llm_qa "
+                        "rows touched", mv["news_touched"], mv["qa_touched"])
 
             # --- 4. text.news_keywords --------------------------------------
             if self.args.no_keywords:

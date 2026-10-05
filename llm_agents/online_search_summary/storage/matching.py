@@ -76,13 +76,84 @@ def source_from_url(url: Optional[str]) -> Optional[str]:
 
 
 def hit_ref_time(hit: SearchHit) -> Optional[datetime.datetime]:
-    """The reference's publish time per the search response.
+    """The reference's ACTUAL publish time, or None when unknown.
 
-    publish_date (a date) is anchored at midnight Asia/Shanghai; hits the
-    response carried no date for yield None — the caller defaults those to
-    now() when writing text.llm_qa_refs.ref_time.
+    The search response's publish_date (anchored at midnight
+    Asia/Shanghai), else the date embedded in the article URL. None is
+    stored as NULL — never defaulted to now()/the qa date, which wrote the
+    row-creation date as the article's date.
     """
-    if hit.publish_date is None:
+    d = hit.publish_date or date_from_url(hit.link)
+    if d is None:
         return None
-    return datetime.datetime.combine(
-        hit.publish_date, datetime.time.min, tzinfo=SHANGHAI_TZ)
+    return datetime.datetime.combine(d, datetime.time.min,
+                                     tzinfo=SHANGHAI_TZ)
+
+
+# A stored ref's known date must sit within [qa interest day - 20d, qa
+# interest day] — references older than the window predate what the
+# question is about. Unknown-dated refs (ref_time NULL) are kept: nothing
+# places them outside the window.
+REF_WINDOW_DAYS = 20
+
+
+def in_ref_window(ref_time: Optional[datetime.datetime],
+                  qa_day: datetime.date) -> bool:
+    """Whether a ref's publish time falls inside the qa's interest window.
+
+    *qa_day* is the question's own data date (qa_date's Asia/Shanghai
+    day) — the date the question is about, not the time it was stored.
+    """
+    if ref_time is None:
+        return True
+    d = ref_time.astimezone(SHANGHAI_TZ).date()
+    return qa_day - datetime.timedelta(days=REF_WINDOW_DAYS) <= d <= qa_day
+
+
+# Structural publish dates in article URLs — separated path segments
+# (…/articles/2026-09-30/4595816.html, …/2026/09/30/…) and compact id
+# prefixes: the EastMoney article id (/a/202609111234567890.html — the
+# id's first 8 digits are the publish date) and qq.com news ids
+# (SN20260929181501a45db296 — a YYYYMMDDHHMMSS stamp). Month-only
+# segments (…/202508/…) and bare long ids (m.toutiao.com/a68463…)
+# deliberately do not match.
+_URL_YMD_RE = re.compile(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})")
+_URL_EASTMONEY_RE = re.compile(r"/a/(20\d{2})(\d{2})(\d{2})\d{6,}")
+_URL_QQ_RE = re.compile(r"SN(20\d{2})(\d{2})(\d{2})\d{6,}")
+
+
+def date_from_url(url: Optional[str], *,
+                  today: Optional[datetime.date] = None) -> Optional[datetime.date]:
+    """The article's publish date embedded in its URL, or None.
+
+    Used as the second chance for hits the response carried no parseable
+    date for — a fallback to now()/the qa date there writes a misleading
+    text.news.date. Range-checked (a valid calendar date, not in the
+    future); only explicit year+month+day shapes qualify.
+    """
+    if not url:
+        return None
+    m = (_URL_EASTMONEY_RE.search(url) or _URL_QQ_RE.search(url)
+         or _URL_YMD_RE.search(url))
+    if not m:
+        return None
+    try:
+        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+    if d > (today or datetime.datetime.now(SHANGHAI_TZ).date()):
+        return None
+    return d
+
+
+def news_row_date(hit: SearchHit,
+                  fallback_date: datetime.date) -> datetime.date:
+    """The text.news ``date`` for a hit: the response's own publish date,
+    else the URL-embedded date, else *fallback_date* (now()/qa date — the
+    shape the AI page's ref dates must not display as news dates).
+
+    One derivation shared by every writer/resolver so the (title, source,
+    date) natural key stays identical across build_news_rows,
+    _upsert_news_row and the re-find queries.
+    """
+    return hit.publish_date or date_from_url(hit.link) or fallback_date

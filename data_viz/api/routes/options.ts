@@ -10,10 +10,13 @@ import {
   getEtfOhlcv,
   getOptionsSkewnessSeries,
   getOptionsOiStats,
+  getOptionsBands,
   getOptionsIvSkew,
   getOptionsVolIndex,
   getOptionsDates,
-  getOptionsSnapshot,
+  getOptionsSnapshotRows,
+  getOptionsSnapshotAxes,
+  getOptionsSkewDaily,
   getOptionsOiDaily,
   getOptionsOiCells,
   getOptionsExpiryMeta,
@@ -28,6 +31,11 @@ function parseSkewType(raw: unknown): SkewType {
   return typeof raw === "string" && (SKEW_TYPES as string[]).includes(raw)
     ? (raw as SkewType)
     : "oi_moneyness";
+}
+
+/** ?fresh=1 — Refresh-button bypass for the version-keyed aggregate cache. */
+function wantsFresh(req: Request): boolean {
+  return req.query.fresh === "1";
 }
 
 router.get("/underlyings", async (req: Request, res: Response) => {
@@ -135,6 +143,26 @@ router.get("/oi-stats", async (req: Request, res: Response) => {
   }
 });
 
+router.get("/bands", async (req: Request, res: Response) => {
+  try {
+    const underlying =
+      typeof req.query.underlying === "string" ? req.query.underlying : "";
+    if (!underlying) {
+      res.status(400).json({ error: "Missing 'underlying' query parameter" });
+      return;
+    }
+    const data = await getOptionsBands(
+      underlying,
+      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+    );
+    res.json(data);
+  } catch (err) {
+    console.error("[szse-options/bands] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.get("/iv-skew", async (req: Request, res: Response) => {
   try {
     const underlying =
@@ -169,24 +197,46 @@ function parsePlotQuery(req: Request) {
 /** Per-plot: distinct trading dates + counters (date picker, caption). */
 router.get("/dates", async (req: Request, res: Response) => {
   try {
-    res.json(await getOptionsDates(parsePlotQuery(req)));
+    res.json(await getOptionsDates(parsePlotQuery(req), wantsFresh(req)));
   } catch (err) {
     console.error("[szse-options/dates] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-/** Per-plot: one date's quote rows + unified strike/expiry-month meta. */
-router.get("/snapshot", async (req: Request, res: Response) => {
+/** Per-plot: quote rows for one or more specific dates
+ *  (?dates=YYYY-MM-DD,YYYY-MM-DD,… — index-narrow per date, no history scan). */
+router.get("/snapshot-rows", async (req: Request, res: Response) => {
   try {
-    const query = parsePlotQuery(req);
-    if (!query.start_date && !query.end_date) {
-      res.status(400).json({ error: "Missing 'start_date' (snapshot date)" });
-      return;
-    }
-    res.json(await getOptionsSnapshot(query));
+    const dates = typeof req.query.dates === "string"
+      ? req.query.dates.split(",").map((s) => s.trim()).filter(Boolean)
+      : [];
+    res.json(await getOptionsSnapshotRows(parsePlotQuery(req), dates));
   } catch (err) {
-    console.error("[szse-options/snapshot] error:", err);
+    console.error("[szse-options/snapshot-rows] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** Per-plot: history-wide strike/expiry-month axes (wall panel) — cached
+ *  per underlying/venue, never varies with the selected date. */
+router.get("/snapshot-axes", async (req: Request, res: Response) => {
+  try {
+    res.json(await getOptionsSnapshotAxes(parsePlotQuery(req), wantsFresh(req)));
+  } catch (err) {
+    console.error("[szse-options/snapshot-axes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** Per-plot: per (date × real expiry) smile anchors (ATM + 25Δ/10Δ wings)
+ *  for the Smile Chronology panel's Today AND History views — replaces the
+ *  panel's in-browser recompute of the full-history /combined blob. */
+router.get("/skew-daily", async (req: Request, res: Response) => {
+  try {
+    res.json(await getOptionsSkewDaily(parsePlotQuery(req), wantsFresh(req)));
+  } catch (err) {
+    console.error("[szse-options/skew-daily] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
@@ -194,7 +244,7 @@ router.get("/snapshot", async (req: Request, res: Response) => {
 /** Per-plot: per (date × expiry) call/put OI + spot (trend charts). */
 router.get("/oi-daily", async (req: Request, res: Response) => {
   try {
-    res.json(await getOptionsOiDaily(parsePlotQuery(req)));
+    res.json(await getOptionsOiDaily(parsePlotQuery(req), wantsFresh(req)));
   } catch (err) {
     console.error("[szse-options/oi-daily] error:", err);
     res.status(500).json({ error: String(err) });
@@ -215,10 +265,11 @@ router.get("/oi-cells", async (req: Request, res: Response) => {
   }
 });
 
-/** Per-plot: per-contract final OI expiry markers + cohort totals. */
+/** Per-plot: per-contract final OI expiry markers (cohort totals are
+ *  derived client-side from /oi-daily). */
 router.get("/expiry-meta", async (req: Request, res: Response) => {
   try {
-    res.json(await getOptionsExpiryMeta(parsePlotQuery(req)));
+    res.json(await getOptionsExpiryMeta(parsePlotQuery(req), wantsFresh(req)));
   } catch (err) {
     console.error("[szse-options/expiry-meta] error:", err);
     res.status(500).json({ error: String(err) });
@@ -228,7 +279,7 @@ router.get("/expiry-meta", async (req: Request, res: Response) => {
 /** Per-plot: server-computed oi_moneyness skew series (spot + groups). */
 router.get("/oi-moneyness-series", async (req: Request, res: Response) => {
   try {
-    res.json(await getOptionsMoneynessSeries(parsePlotQuery(req)));
+    res.json(await getOptionsMoneynessSeries(parsePlotQuery(req), wantsFresh(req)));
   } catch (err) {
     console.error("[szse-options/oi-moneyness-series] error:", err);
     res.status(500).json({ error: String(err) });

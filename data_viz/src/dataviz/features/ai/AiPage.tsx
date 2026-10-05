@@ -55,6 +55,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
+  Chip,
   IconButton,
   InputAdornment,
   Stack,
@@ -149,6 +150,11 @@ export default function AiPage() {
    *  term also hits the derived keyword rows (codes, product, items). */
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState<string | null>(null);
+  /** KB-only big-market-move filter (text.llm_qa.is_big_fluctuation): keep
+   *  only Q&A rows whose mapped industry had a big move on the row's day.
+   *  The ask-history table has no such column — the toggle renders only in
+   *  kb mode and never reaches the by-ask requests. */
+  const [bigMvOnly, setBigMvOnly] = useState(false);
   /** Picked day from the date-event strip (null = all days). */
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -295,8 +301,12 @@ export default function AiPage() {
   ]);
   const scopeKey = JSON.stringify(scope);
   const scopeParams = useMemo(
-    () => ({ ...scope, search }),
-    [scopeKey, search], // eslint-disable-line react-hooks/exhaustive-deps -- scopeKey is the canonical scope identity
+    () => ({
+      ...scope,
+      search,
+      ...(source === "kb" && bigMvOnly ? { is_big_fluctuation: true } : {}),
+    }),
+    [scopeKey, search, source, bigMvOnly], // eslint-disable-line react-hooks/exhaustive-deps -- scopeKey is the canonical scope identity
   );
   // Ask-mode params: a picked code filters the asks' own code column
   // directly (it wins over the industry mapping in the service), so the
@@ -310,7 +320,7 @@ export default function AiPage() {
   useEffect(() => {
     setSelectedDate(null);
     setPage(1);
-  }, [scopeKey, search, source]);
+  }, [scopeKey, search, source, bigMvOnly]);
 
   // ---- Calendar (date-event strip dots) ------------------------------------
   const [calendar, setCalendar] = useState<AiCalendarResponse | null>(null);
@@ -374,13 +384,16 @@ export default function AiPage() {
     return () => { cancelled = true; };
   }, [source, scopeParams, askParams, selectedDate, page, nav.refreshKey]);
 
-  // Date-strip events: one dot per day with rows (dot size ~ count).
+  // Date-strip events: one dot per day with rows (dot size ~ count). The qa
+  // dots render a bit smaller than the strip's 10px default (size override)
+  // — the multi-year QA calendar is dense and full-size dots merge blobs.
   const stripEvents = useMemo<DateEvent[]>(
     () =>
       (calendar?.days ?? []).map((d) => ({
         date: d.date,
         id: d.date, // the date string IS the selection id
         type: "qa",
+        size: 8,
         title: source === "kb" ? `${d.count} 条 AI 问答` : `${d.count} 条交互问答`,
       })),
     [calendar, source],
@@ -441,6 +454,25 @@ export default function AiPage() {
               </ToggleButton>
             </ToggleButtonGroup>
           </Stack>
+          {/* Big-move filter — single toggle chip, KB mode only (the
+              ask-history table has no is_big_fluctuation column). ON keeps
+              only Q&A rows whose mapped industry had a big market move
+              that day; co-filters the date strip AND the feed. */}
+          {source === "kb" && (
+            <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mb: 0.75 }}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 600, minWidth: 56, fontSize: "0.75rem" }}>
+                Filter
+              </Typography>
+              <Chip
+                label="On Big Fluctuations"
+                size="small"
+                color={bigMvOnly ? "primary" : "default"}
+                variant={bigMvOnly ? "filled" : "outlined"}
+                onClick={() => setBigMvOnly((v) => !v)}
+                sx={{ fontSize: "0.7rem" }}
+              />
+            </Stack>
+          )}
           <SecClassificationNav
             sectors={nav.sectors}
             sectorId={nav.sectorId}
@@ -597,7 +629,7 @@ export default function AiPage() {
         loading={itemsLoading}
         error={itemsError}
         errorLabel="Failed to load Q&A"
-        scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${search ? ` · “${search}”` : ""}`}
+        scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${search ? ` · “${search}”` : ""}${source === "kb" && bigMvOnly ? " · On Big Fluctuations" : ""}`}
         countNoun={source === "kb" ? "条问答" : "条提问"}
         empty={!itemsLoading && (itemsData?.items ?? []).length === 0}
         emptyText={

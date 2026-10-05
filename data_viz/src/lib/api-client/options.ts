@@ -4,8 +4,11 @@ import type {
   OptionsUnderlying,
   OptionsWallsResponse,
   OptionsOiStatsResponse,
+  OptionsBandsResponse,
   OptionsDatesResponse,
-  OptionsSnapshotResponse,
+  OptionsSnapshotRowsResponse,
+  OptionsSnapshotAxesResponse,
+  OptionsSkewDailyResponse,
   OptionsOiDailyResponse,
   OptionsOiCellsResponse,
   OptionsExpiryMetaResponse,
@@ -85,21 +88,62 @@ export function fetchOptionsDates(
   underlying: string,
   targetType?: OptionsTargetType,
   exchange?: OptionsVenue,
+  opts?: { fresh?: boolean },
 ): Promise<OptionsDatesResponse> {
   return fetchJson<OptionsDatesResponse>(
-    `/api/szse-options/dates${plotQs(underlying, targetType, exchange)}`,
+    `/api/szse-options/dates${plotQs(underlying, targetType, exchange, opts?.fresh ? { fresh: "1" } : undefined)}`,
   );
 }
 
-/** One date's quote rows + history-wide strike/expiry-month meta. */
-export function fetchOptionsSnapshot(
+/** One or more specific dates' quote rows (index-narrow per date — no
+ *  history scan). Feeds the wall/smile/greeks panels (single date) and the
+ *  StatTable snapshot columns (batched). end_date carries the max requested
+ *  date so the client LRU can freeze historical batches (see _cache.ts). */
+export function fetchOptionsSnapshotRows(
   underlying: string,
-  date: string,
+  dates: string[],
   targetType?: OptionsTargetType,
   exchange?: OptionsVenue,
-): Promise<OptionsSnapshotResponse> {
-  return fetchJson<OptionsSnapshotResponse>(
-    `/api/szse-options/snapshot${plotQs(underlying, targetType, exchange, { start_date: date })}`,
+  opts?: { fresh?: boolean },
+): Promise<OptionsSnapshotRowsResponse> {
+  if (dates.length === 0) {
+    return Promise.resolve({ underlying_code: underlying, rows: [] });
+  }
+  const sorted = [...dates].sort();
+  const maxDate = sorted[sorted.length - 1];
+  return fetchJson<OptionsSnapshotRowsResponse>(
+    `/api/szse-options/snapshot-rows${plotQs(underlying, targetType, exchange, {
+      dates: dates.join(","),
+      end_date: maxDate,
+      ...(opts?.fresh ? { fresh: "1" } : {}),
+    })}`,
+  );
+}
+
+/** History-wide strike/expiry-month axes for the wall panel — fetched once
+ *  per underlying/venue (it never varies with the selected date). */
+export function fetchOptionsSnapshotAxes(
+  underlying: string,
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+  opts?: { fresh?: boolean },
+): Promise<OptionsSnapshotAxesResponse> {
+  return fetchJson<OptionsSnapshotAxesResponse>(
+    `/api/szse-options/snapshot-axes${plotQs(underlying, targetType, exchange, opts?.fresh ? { fresh: "1" } : undefined)}`,
+  );
+}
+
+/** Per (date × real expiry) smile anchors (ATM + 25Δ/10Δ wings + spot) —
+ *  the Smile Chronology panel's own full-history aggregate (both views),
+ *  replacing the panel's in-browser recompute of the /combined blob. */
+export function fetchOptionsSkewDaily(
+  underlying: string,
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+  opts?: { fresh?: boolean },
+): Promise<OptionsSkewDailyResponse> {
+  return fetchJson<OptionsSkewDailyResponse>(
+    `/api/szse-options/skew-daily${plotQs(underlying, targetType, exchange, opts?.fresh ? { fresh: "1" } : undefined)}`,
   );
 }
 
@@ -108,9 +152,10 @@ export function fetchOptionsOiDaily(
   underlying: string,
   targetType?: OptionsTargetType,
   exchange?: OptionsVenue,
+  opts?: { fresh?: boolean },
 ): Promise<OptionsOiDailyResponse> {
   return fetchJson<OptionsOiDailyResponse>(
-    `/api/szse-options/oi-daily${plotQs(underlying, targetType, exchange)}`,
+    `/api/szse-options/oi-daily${plotQs(underlying, targetType, exchange, opts?.fresh ? { fresh: "1" } : undefined)}`,
   );
 }
 
@@ -128,14 +173,16 @@ export function fetchOptionsOiCells(
   );
 }
 
-/** Per-contract final-OI expiry markers + cohort totals. */
+/** Per-contract final-OI expiry markers (cohort totals derive from
+ *  /oi-daily client-side — same numbers, one less heavy query). */
 export function fetchOptionsExpiryMeta(
   underlying: string,
   targetType?: OptionsTargetType,
   exchange?: OptionsVenue,
+  opts?: { fresh?: boolean },
 ): Promise<OptionsExpiryMetaResponse> {
   return fetchJson<OptionsExpiryMetaResponse>(
-    `/api/szse-options/expiry-meta${plotQs(underlying, targetType, exchange)}`,
+    `/api/szse-options/expiry-meta${plotQs(underlying, targetType, exchange, opts?.fresh ? { fresh: "1" } : undefined)}`,
   );
 }
 
@@ -144,9 +191,10 @@ export function fetchOptionsMoneynessSeries(
   underlying: string,
   targetType?: OptionsTargetType,
   exchange?: OptionsVenue,
+  opts?: { fresh?: boolean },
 ): Promise<OptionsMoneynessSeriesResponse> {
   return fetchJson<OptionsMoneynessSeriesResponse>(
-    `/api/szse-options/oi-moneyness-series${plotQs(underlying, targetType, exchange)}`,
+    `/api/szse-options/oi-moneyness-series${plotQs(underlying, targetType, exchange, opts?.fresh ? { fresh: "1" } : undefined)}`,
   );
 }
 
@@ -180,6 +228,25 @@ export function fetchOptionsOiStats(
   const qs = params.toString();
   return fetchJson<OptionsOiStatsResponse>(
     `/api/szse-options/oi-stats${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Options-implied band events from analysis.options_bands — per (date)
+ *  the nearest-to-spot OI wall zone per side's APPROACH/BREACH events
+ *  (vs the prior session's zone) + same-day state, gap and IV expected
+ *  move context. Rendered as markers on the skew panel's price chart. */
+export function fetchOptionsBands(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<OptionsBandsResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<OptionsBandsResponse>(
+    `/api/szse-options/bands${qs ? `?${qs}` : ""}`,
   );
 }
 

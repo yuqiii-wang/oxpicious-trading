@@ -3,19 +3,21 @@
  *
  * Per-plot loading (one plot, one SQL — see api/services/options.service.ts
  * "Per-plot queries"): the page itself only loads the light /dates index
- * (date picker + caption) and the selected date's /snapshot (wall / smile /
- * greeks / StatTable share it via the LRU cache); the trend and skew
- * panels fetch their own aggregates. No full-history /combined blob.
+ * (date picker + caption), the selected date's /snapshot-rows (wall / smile
+ * / greeks — one small index-narrow query), the history-wide /snapshot-axes
+ * (once per underlying/venue) and ONE batched /snapshot-rows fetch for the
+ * StatTable's 4 derived dates; the trend and skew panels fetch their own
+ * aggregates. No full-history /combined blob.
  *
  * Layout:
  *   • Header — title + subtitle + back button + Refresh
  *   • Underlying selector (dropdown)
  *   • Target type toggle (ETF / INDEX)
- *   • Snapshot date picker
+ *   • Snapshot date picker (defaults to the latest session)
  *   • Tab buttons: Open Interests | Volatility Smile | The Greeks
  *   • Dynamic panels based on tab selection
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -40,7 +42,7 @@ import { DateSelector } from "@/shared/components/date-selector";
 import { computeSnapshotStats } from "@/lib/options-stats";
 import {
   fetchUnderlyings,
-  fetchOptionsSnapshot,
+  fetchOptionsSnapshotRows,
   invalidateCacheForPrefix,
   venueToTargetType,
 } from "@/lib/api-client";
@@ -54,7 +56,8 @@ import { OptionsTrendPanel } from "@/dataviz/features/options/options-trend";
 import GreeksPanel from "./GreeksPanel";
 import {
   useOptionsDates,
-  useOptionsSnapshot,
+  useOptionsSnapshotAxes,
+  useOptionsSnapshotRows,
 } from "@/dataviz/features/options/data-hooks";
 
 type TabKey = "oi" | "smile" | "greeks";
@@ -98,7 +101,7 @@ export default function OptionsAnalysisPage() {
 
   // Per-plot #1: the trading-date index (date picker + caption). Default
   // the selected date to the latest session once it arrives.
-  const datesInfo = useOptionsDates(underlyingCode, optionsTargetType, optionsVenue);
+  const datesInfo = useOptionsDates(underlyingCode, optionsTargetType, optionsVenue, refreshKey);
   useEffect(() => {
     setSelectedDate((cur) =>
       cur && datesInfo.dates.includes(cur)
@@ -109,16 +112,24 @@ export default function OptionsAnalysisPage() {
     );
   }, [datesInfo.dates]);
 
-  // Per-plot #2: the selected date's snapshot rows (wall / smile / greeks).
-  const { snapshot, loading: snapshotLoading } = useOptionsSnapshot(
+  // Per-plot #2: the selected date's snapshot rows (wall / smile / greeks)
+  // — one small index-narrow query, refetched only on date/scope change.
+  const { rows: snapshotRows, loading: snapshotLoading } = useOptionsSnapshotRows(
     underlyingCode,
-    selectedDate,
+    selectedDate ? [selectedDate] : [],
     optionsTargetType,
     optionsVenue,
+    refreshKey,
   );
 
-  // Per-plot #3: StatTable's auto-derived snapshot columns — one small
-  // /snapshot fetch per derived date (LRU-cached, shared with the picker).
+  // Per-plot #3: history-wide wall-panel axes — fetched once per
+  // underlying/venue (it never varies with the selected date).
+  const { axes } = useOptionsSnapshotAxes(underlyingCode, optionsTargetType, optionsVenue, refreshKey);
+
+  // Per-plot #4: StatTable's auto-derived snapshot columns — ONE batched
+  // snapshot-rows fetch (all 4 dates in a single index-narrow query),
+  // replacing four full /snapshot round trips that each re-ran the
+  // full-history strike-axis join.
   const [snapshotStats, setSnapshotStats] = useState<
     { label: string; date: string; stats: ReturnType<typeof computeSnapshotStats> }[]
   >([]);
@@ -129,18 +140,25 @@ export default function OptionsAnalysisPage() {
     }
     let cancelled = false;
     const snaps = autoDeriveSnapshots(datesInfo.dates);
-    Promise.all(
-      snaps.map((sd) =>
-        sd.date
-          ? fetchOptionsSnapshot(underlyingCode, sd.date, optionsTargetType, optionsVenue)
-              .then((r) => computeSnapshotStats(r.rows))
-              .catch(() => null)
-          : Promise.resolve(null),
-      ),
-    ).then((stats) => {
-      if (cancelled) return;
-      setSnapshotStats(snaps.map((sd, i) => ({ label: sd.label, date: sd.date, stats: stats[i] })));
-    });
+    const statDates = snaps.map((sd) => sd.date).filter(Boolean);
+    fetchOptionsSnapshotRows(underlyingCode, statDates, optionsTargetType, optionsVenue, {
+      fresh: refreshKey > 0,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setSnapshotStats(
+          snaps.map((sd) => ({
+            label: sd.label,
+            date: sd.date,
+            stats: sd.date
+              ? computeSnapshotStats(resp.rows.filter((r) => r.date === sd.date))
+              : null,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setSnapshotStats([]);
+      });
     return () => {
       cancelled = true;
     };
@@ -157,7 +175,6 @@ export default function OptionsAnalysisPage() {
     underlyingCode;
 
   const loading = datesInfo.loading;
-  const snapshotRows = useMemo(() => snapshot?.rows ?? [], [snapshot]);
 
   return (
     <Stack spacing={2}>
@@ -350,14 +367,15 @@ export default function OptionsAnalysisPage() {
                   <MarketInterestWallPanel
                     rows={snapshotRows}
                     selectedDate={selectedDate}
-                    unifiedStrikes={snapshot?.strikes ?? []}
-                    expiryMonths={snapshot?.expiry_months ?? []}
+                    unifiedStrikes={axes?.strikes ?? []}
+                    expiryMonths={axes?.expiry_months ?? []}
                     underlyingCode={underlyingCode}
                   />
                   <OptionsTrendPanel
                     underlying={underlyingCode}
                     targetType={optionsTargetType}
                     exchange={optionsVenue}
+                    reloadKey={refreshKey}
                   />
                   <SharedSkewPanel
                     mode="oi_moneyness"
@@ -366,11 +384,16 @@ export default function OptionsAnalysisPage() {
                     exchange={optionsVenue}
                     selectedDate={selectedDate}
                     onDateChange={setSelectedDate}
+                    reloadKey={refreshKey}
                   />
                 </>
               )}
               {activeTab === "smile" && selectedDate && (
-                <AnalysisVolSmilePanel rows={snapshotRows} selectedDate={selectedDate} />
+                <AnalysisVolSmilePanel
+                  rows={snapshotRows}
+                  underlyingCode={underlyingCode}
+                  selectedDate={selectedDate}
+                />
               )}
               {activeTab === "greeks" && selectedDate && (
                 <>
@@ -385,6 +408,7 @@ export default function OptionsAnalysisPage() {
                       exchange={optionsVenue}
                       selectedDate={selectedDate}
                       onDateChange={setSelectedDate}
+                      reloadKey={refreshKey}
                     />
                   )}
                 </>

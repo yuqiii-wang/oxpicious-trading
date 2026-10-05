@@ -9,12 +9,12 @@ All three write into the same 7 options_* tables, separated by the
 exchange column (and underlying code space: SZSE 1599xx, CFFEX index codes,
 SSE 510050/510300/510500/588000/588080).
 
-With --force: truncates all 7 tables ONCE upfront, then runs both
+With --force: truncates all 7 tables ONCE upfront, then runs all three
 builders in normal (non-force) mode so they repopulate from scratch.
 With --force --code <underlying>: only that underlying's rows are
 deleted instead of truncating.
 
-With --date YYYY-MM-DD: both builders are scoped to that single date
+With --date YYYY-MM-DD: all three builders are scoped to that single date
 and the DB missing-date skip is bypassed — the date is always
 (re)processed and rows already in the DB are refreshed through the
 upsert write paths (no truncation, no deletes). Mutually exclusive
@@ -84,9 +84,9 @@ async def _purge_for_force(underlying: str | None) -> None:
 
 
 class OptionsBuild(DataBuild):
-    """``python -m builds.options`` — SZSE + CFFEX options orchestrator."""
+    """``python -m builds.options`` — SZSE + CFFEX + SSE options orchestrator."""
 
-    title = "BUILD OPTIONS (SZSE + CFFEX)  ·  missing-data-only → DATABASE"
+    title = "BUILD OPTIONS (SZSE + CFFEX + SSE)  ·  missing-data-only → DATABASE"
     component = "options"
 
     def add_arguments(self, parser) -> None:

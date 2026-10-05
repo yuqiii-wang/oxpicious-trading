@@ -7,7 +7,8 @@ no look-ahead (the px_vol log_level convention; the retired
 market_hypes build used a look-ahead CENTERED ±10y percentile base,
 inconsistent between backtest and live ends).
 
-Per (sec_type, code, date) — input frame sorted by those keys:
+Per (sec_type_id, code, date) — input frame sorted by those keys
+(sec_type rides the frame as its int16 frame code, _common.labels):
 
   1. ret_1d = price / price.shift(1) - 1          (grouped shift)
   2. vol    = sqrt(EWMA(ret_1d^2, span=VOL_SPAN,
@@ -19,12 +20,14 @@ Per (sec_type, code, date) — input frame sorted by those keys:
      trailing VOL_Z_WINDOW-row moments (ddof=1), SHIFTED 1 row.
   4. amt_z  = (log(trading_amount) - mu) / sd of log(amount)'s own
      trailing AMT_Z_WINDOW-row moments (ddof=1), SHIFTED 1 row.
-  5. regime (exhaustive, np.select on host numpy arrays — the
-     classify_price_vs_amt precedent):
-       hot    = vol_z > VOL_BAR  AND amt_z > AMT_BAR
-       panic  = vol_z > VOL_BAR  AND amt_z <= AMT_BAR
-       quiet  = vol_z <= VOL_BAR AND amt_z > AMT_BAR
-       calm   = rest
+     5. regime (exhaustive, np.select on host numpy arrays — the
+     classify_price_vs_amt precedent), emitted as its int16 code
+     (REGIMES ordinal == _common.labels.REGIME_CODE — the label-code
+     contract; strings exist only at the API boundary):
+       hot    = vol_z > VOL_BAR  AND amt_z > AMT_BAR   (code 1)
+       panic  = vol_z > VOL_BAR  AND amt_z <= AMT_BAR  (code 2)
+       quiet  = vol_z <= VOL_BAR AND amt_z > AMT_BAR   (code 3)
+       calm   = rest                                (code 0)
      No-state days (NULL vol_z/amt_z — the code's first warm-up rows)
      are labeled calm — an explicit label instead of a consumer-side
      hidden default (old semantics: young codes were never hyped).
@@ -39,7 +42,6 @@ from builds.market_regimes.config import (
     AMT_BAR,
     AMT_Z_MIN_PERIODS,
     AMT_Z_WINDOW,
-    MARKET_REGIME_SPANS_COLUMNS,
     REGIMES,
     VOL_BAR,
     VOL_MIN_PERIODS,
@@ -51,7 +53,13 @@ from builds.market_regimes.config import (
 import logging
 logger = logging.getLogger(__name__)
 
-_KEYS = ["sec_type", "code"]
+_KEYS = ["sec_type_id", "code"]
+
+# compute_regime_spans output columns (the runner re-materializes the
+# TEXT sec_type at the write boundary before reindexing to
+# MARKET_REGIME_SPANS_COLUMNS).
+SPANS_FRAME_COLUMNS = ("sec_type_id", "code", "regime", "start_date",
+                       "end_date", "span_days")
 
 
 def _shifted_moments(df: pd.DataFrame, col: str, window: int,
@@ -77,10 +85,10 @@ def _shifted_moments(df: pd.DataFrame, col: str, window: int,
 def compute_market_regimes(df: pd.DataFrame) -> pd.DataFrame:
     """Attach the regime evidence + label columns to the source frame.
 
-    Input: a (sec_type, code, date)-sorted frame with columns price +
+    Input: a (sec_type_id, code, date)-sorted frame with columns price +
     trading_amount (fetch_regime_source). Adds vol / vol_z / amt_z
-    (evidence, NaN on warm-up rows) and regime (the 4-state label,
-    'calm' on warm-up rows) in place; drops the transient moment
+    (evidence, NaN on warm-up rows) and regime (the 4-state int16 code,
+    0 = 'calm' on warm-up rows) in place; drops the transient moment
     columns. Every source row keeps a label — the output frame's row
     count ALWAYS equals the input's.
     """
@@ -88,7 +96,7 @@ def compute_market_regimes(df: pd.DataFrame) -> pd.DataFrame:
         df["vol"] = pd.Series(dtype="float64")
         df["vol_z"] = pd.Series(dtype="float64")
         df["amt_z"] = pd.Series(dtype="float64")
-        df["regime"] = pd.Series(dtype="object")
+        df["regime"] = pd.Series(dtype="int16")
         return df
 
     # ---- ret_1d + EWMA vol ------------------------------------------
@@ -131,20 +139,20 @@ def compute_market_regimes(df: pd.DataFrame) -> pd.DataFrame:
          REGIMES.index("quiet")],
         default=REGIMES.index("calm"),
     )
-    # NaN comparisons are all False -> warm-up rows land on 'calm'.
-    df["regime"] = np.asarray(REGIMES, dtype=object)[ordinals]
+    # NaN comparisons are all False -> warm-up rows land on 'calm' (0).
+    df["regime"] = ordinals.astype("int16")
     return df
 
 
 def compute_regime_spans(states: pd.DataFrame) -> pd.DataFrame:
     """Collapse daily regime states into CONTIGUOUS same-regime spans.
 
-    Input: compute_market_regimes' output (the sec_type / code / date /
-    regime columns), (sec_type, code, date)-sorted — the order the
-    runner guarantees (it sorts right before compute, and compute
-    preserves row order). Output: the MARKET_REGIME_SPANS_COLUMNS frame
-    with one row per MAXIMAL run of consecutive trading rows holding
-    the same regime within a (sec_type, code) — start_date / end_date
+    Input: compute_market_regimes' output (the sec_type_id / code /
+    date / regime columns), (sec_type_id, code, date)-sorted — the order
+    the runner guarantees (it sorts right before compute, and compute
+    preserves row order). Output: the SPANS_FRAME_COLUMNS frame with one
+    row per MAXIMAL run of consecutive trading rows holding the same
+    regime within a (sec_type_id, code) — start_date / end_date
     (inclusive) + span_days (trading-row count). The vectorized
     equivalent of the gaps-and-islands VIEW this build now materializes
     as stats.market_regime_spans.
@@ -153,31 +161,32 @@ def compute_regime_spans(states: pd.DataFrame) -> pd.DataFrame:
     cumsum numbers the runs (every group start is a run start, so run
     numbers are globally unique), one groupby-agg collapses each run.
     The run-start test MUST null-guard the shifted column — under
-    cudf.pandas the shifted object column is a cuDF str series whose
-    group-start fill is <NA>, and ``regime != <NA>`` evaluates to <NA>
-    (Kleene logic), not True: the unguarded form poisoned the cumsum
-    and silently dropped each group's first day from its span.
-    ``prev.isna() |`` forces an exact True at every group start under
-    both engines; fillna(False) keeps the cumsum dtype non-nullable.
+    cudf.pandas the shifted int16 column is nullable and its group-start
+    fill is <NA>, so ``regime != <NA>`` evaluates to <NA> (Kleene
+    logic), not True: the unguarded form poisoned the cumsum and
+    silently dropped each group's first day from its span (first
+    observed on the str column this replaced). ``prev.isna() |`` forces
+    an exact True at every group start under both engines;
+    fillna(False) keeps the cumsum dtype non-nullable.
     """
     if states.empty:
         return pd.DataFrame({
-            "sec_type": pd.Series(dtype="object"),
+            "sec_type_id": pd.Series(dtype="int16"),
             "code": pd.Series(dtype="object"),
-            "regime": pd.Series(dtype="object"),
+            "regime": pd.Series(dtype="int16"),
             "start_date": pd.Series(dtype="datetime64[ns]"),
             "end_date": pd.Series(dtype="datetime64[ns]"),
             "span_days": pd.Series(dtype="int64"),
         })
 
-    base = states.loc[:, ["sec_type", "code", "date", "regime"]]
+    base = states.loc[:, ["sec_type_id", "code", "date", "regime"]]
     prev = base.groupby(_KEYS, sort=False)["regime"].shift(1)
     run_start = prev.isna() | (base["regime"] != prev)
     base["_run"] = (
         run_start.fillna(False).astype("bool").cumsum().astype("int64")
     )
     spans = (
-        base.groupby(["sec_type", "code", "regime", "_run"], sort=False)
+        base.groupby(["sec_type_id", "code", "regime", "_run"], sort=False)
         .agg(
             start_date=("date", "min"),
             end_date=("date", "max"),
@@ -185,7 +194,7 @@ def compute_regime_spans(states: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
         .drop(columns="_run")
-        .sort_values(["sec_type", "code", "start_date"], kind="stable")
+        .sort_values(["sec_type_id", "code", "start_date"], kind="stable")
         .reset_index(drop=True)
     )
-    return spans.reindex(columns=list(MARKET_REGIME_SPANS_COLUMNS))
+    return spans.reindex(columns=list(SPANS_FRAME_COLUMNS))

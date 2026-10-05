@@ -31,7 +31,7 @@ Curated examples — one per job shape, verified live in the repo:
 | Job shape | Read |
 | --- | --- |
 | One-off study / DDL-apply script | `temp_scripts/apply_confidence_col.py` |
-| Incremental pipeline upsert + force-mode purge | `analyze/mov_ave_spread/rsi.py` |
+| Incremental pipeline upsert + force-mode purge | `analyze/mov_ave_spread/steps/rsi.py` |
 | Build-pipeline copy-or-upsert split | `builds/stock/pipeline/writer.py` |
 | Force rebuild via chunked CSV COPY | `builds/index/daily/db_insert.py` |
 

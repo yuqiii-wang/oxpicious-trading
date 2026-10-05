@@ -9,6 +9,8 @@ dropped).
 """
 from __future__ import annotations
 
+from _common.labels import REGIME_CODE
+
 # ---------------------------------------------------------------------------
 #  Target table
 # ---------------------------------------------------------------------------
@@ -27,7 +29,13 @@ TABLE = "stats.market_regimes"
 SPANS_TABLE = "stats.market_regime_spans"
 
 # Regime vocabulary (the taxonomy's exhaustive states, ordinal order).
+# The regime column is SMALLINT (the stats.label_dim contract): the build
+# writes the label's ordinal IN THIS TUPLE, so its order must equal the
+# shared mapping's code order — fail fast on drift.
 REGIMES: tuple[str, ...] = ("calm", "hot", "panic", "quiet")
+assert REGIMES == tuple(REGIME_CODE), (
+    "builds.market_regimes.REGIMES order drifted from _common.labels.REGIME_CODE"
+)
 
 # ---- Detector parameters (Phase-A study calibration, recorded per row) ----
 # All inputs TRAILING + SHIFTED 1 row (no look-ahead — the px_vol

@@ -2,16 +2,16 @@
 emission + the run entry) (analyze.analysis_signals.engines._base).
 
 One engine class per signal family (one package under
-engines/signal_families/ per family — mov_rsi, mov_std, ...),
-dispatched through the registry (engines/__init__ — never if/else'd
-over). The class is THE integration point: ONE object owns the
-family's complete lifecycle, implemented as four single-purpose
-layers mixed into this ABC:
+engines/signal_families/ per family — mov_rsi), dispatched through the
+registry (engines/__init__ — never if/else'd over). The class is THE
+integration point: ONE object owns the family's complete lifecycle,
+implemented as single-purpose layers mixed into this ABC:
 
   engines/_snapshots.py   SnapshotSelection — resolve_snapshots: which
                           stat_dates to (re-)emit (the incremental
-                          snapshot selection) + sweep_stale_snapshots:
-                          the retired rolling-latest keys' purge.
+                          snapshot selection over the engine's OWN
+                          snapshot grid) + sweep_stale_snapshots: the
+                          retired rolling-latest keys' purge.
   engines/_store.py       SignalStore — write_snapshot / purge_sec_type:
                           the transactional writes (ONE transaction per
                           (sec_type, signal_type, stat_date): purge the
@@ -29,39 +29,37 @@ layers mixed into this ABC:
 This module keeps the class's own core:
 
   identity   — class attrs naming the family everywhere it is stored:
-               signal_strategies.signal_type, forecast_identities.bucket,
-               the --metrics stage key and the analysis.analysis_identity
-               row (upserted by run).
-  phases     — the family's THREE abstract data phases per (sec_type,
-               stat_date):
-                 fetch_buckets — the family's forecast buckets for the
-                                 snapshot key (LONG frame: one row per
-                                 bucket × trigger day; bucket-level gate
-                                 fields repeated on every trigger row) —
-                                 pure data access.
-                 fetch_values  — the indicator values at exactly the
-                                 (code, date) points the buckets'
-                                 triggers name (WIDE frame) — pure data
-                                 access.
-                 build         — THE family logic, fully vectorized
-                                 cudf.pandas (no row loops, no if/else
-                                 branches): sign-align the gate, mask
-                                 gate-passing buckets into strategy rows,
-                                 explode the snapshot-owned trigger days into
-                                 history rows, and materialize the write
-                                 records at the COPY boundary.
+               signal_thresholds.signal_type, the --metrics stage key
+               and the analysis.analysis_identity row (upserted by
+               run).
+  phases     — the family's THREE data phases per sec_type:
+                 prepare  — fetch the input frame + first dates +
+                            regimes ONCE per run (pure data access);
+                            builds the BucketContext the snapshots
+                            compute from.
+                 buckets  — one snapshot's IN-ENGINE rsi-pct bucket
+                            frames (rung: the delay-0 mixed stats per
+                            bucket; cells: the trigger rows) — the family's
+                            detection semantics, fully vectorized
+                            cudf.pandas (the forecast layer's tables
+                            were REMOVED 2026-10-05; the signals tier
+                            computes its own percentile buckets off
+                            analysis.mov_ave_rsi + prices).
+                 build    — THE family logic, fully vectorized
+                            cudf.pandas: sign-align the gate, mask
+                            gate-passing buckets into strategy rows,
+                            explode the snapshot-owned trigger days
+                            into history rows, and materialize the
+                            write records at the COPY boundary.
   emission   — emit_snapshot: the template method chaining the phases
-               for one (sec_type, stat_date) (fetch_buckets → detect →
-               the FINAL SignalQuality gate → snapshot_triggers → the
-               trigger-point regime fetch → regime_label →
-               value_points → fetch_values → build); only
-               quality-passing strategies register and own history
-               events.
+               for one (sec_type, stat_date): buckets → detect (the
+               plain gate at the sample floor) →
+               snapshot_triggers → value_points → values → build.
   run        — the per-sec_type entry point: --force purge → the
                stale-key sweep → the incremental snapshot loop → the
                family log line → the identity upsert (returns
                RunStats). The caller (run/pipeline) refreshes is_active
-               + signal_order ONCE after every family ran.
+               ONCE after every family ran.
 
 Every frame is cudf.pandas and stays NATIVE-DTYPE ONLY (numerics,
 strings, datetime64): no object columns, no datetime64[D] casts, no
@@ -79,24 +77,21 @@ from typing import NamedTuple
 
 import pandas as pd
 
-from _common.df_utils import host_array
-
 from analyze._common import upsert_analysis_identity
-from analyze.analysis_forecasts.fetch import fetch_market_regimes_at
 from analyze.analysis_signals.engines._frame import FrameMachinery
 from analyze.analysis_signals.engines._snapshots import SnapshotSelection
 from analyze.analysis_signals.engines._primitives import FramePrimitives
 from analyze.analysis_signals.engines._store import SignalStore
-from analyze.analysis_signals.engines._quality import SignalQuality
 
 logger = logging.getLogger(__name__)
 
 
 def _trig_dates_to_python(snap_trig: pd.DataFrame) -> list[date]:
     """The snapshot-owned trigger days as python dates — the SANCTIONED
-    scalar materialization (the SQL layer takes python date lists; the
-    same host_array idiom as FrameMachinery.value_points, so the
-    cudf.pandas proxy never reaches .tolist())."""
+    scalar materialization (the host_array idiom, so the cudf.pandas
+    proxy never reaches .tolist())."""
+    from _common.df_utils import host_array
+
     iso = host_array(
         snap_trig["trig_date"].dt.strftime("%Y-%m-%d").to_numpy(),
     ).tolist()
@@ -105,11 +100,12 @@ def _trig_dates_to_python(snap_trig: pd.DataFrame) -> list[date]:
 
 class RunStats(NamedTuple):
     """One engine.run() result: how many stat_dates were (re-)emitted
-    and the row counts landed in the two tables."""
+    and the row counts landed in the three tables."""
 
     snapshots: int
-    strategies: int
+    thresholds: int
     history: int
+    curves: int = 0
 
 
 class SignalEngine(
@@ -121,64 +117,44 @@ class SignalEngine(
     store / frame-machinery / primitives mixin layers (see module
     docstring)."""
 
-    signal_type: str          # analysis_signals.signal_strategies.signal_type
-    bucket: str               # analysis_forecasts.forecast_identities.bucket
+    signal_type: str          # analysis_signals.signal_thresholds.signal_type
     stage_key: str            # the --metrics stage key
     identity_name: str        # analysis.analysis_identity row name
     identity_description: str
     bucket_keys: tuple[str, ...] = ("code", "window", "side")
 
-    # The claim profile (the FINAL quality gate's slow split — see
-    # engines._quality): (window column, minimum window) — the bucket
-    # rows whose window reaches the minimum claim the 20d horizon too;
-    # None = the family carries no slow claim (one-day cross events).
-    slow_claim: tuple[str, int] | None = None
-
-    # Whether the family's signals are streak-merged (a persistence
-    # axis exists — the ladder-stability floor applies); one-day cross
+    # Whether the family's signals are streak-merged (consecutive
+    # qualifying days collapse into one trigger); one-day event
     # families override False.
     streak_signals: bool = True
-
-    # The DERIVED-POPULATION cohorts (the 2026-09-28 separate-cohort
-    # registration): one complete emission pass per
-    # forecast_identities.ohlcv_type verdict — None the plain parent,
-    # 'ohlcv_boost' / 'ohlcv_selection' the derived children (mov_rsi
-    # only; every other family keeps the default single pass). Each
-    # cohort gates, registers and ranks INDEPENDENTLY: its own
-    # confidence (its chosen rung's own mean), its own sub_type
-    # suffix (@boost / @selection), its own signal_order pool (the
-    # populations NEVER blend — folding them into one confidence was
-    # measured to degrade the OOS rank,
-    # temp_scripts/study_ohlcv_signal_confidence.py). Children never
-    # enter the live tier: 02_is_active keeps them inactive.
-    populations: tuple[str | None, ...] = (None,)
-
-    # The FINAL quality gate (shared across families — stateless): the
-    # strategies that register are the plain-gate survivors that ALSO
-    # pass this (see engines._quality and emit_snapshot).
-    quality: SignalQuality = SignalQuality()
 
     # ---- phases (the family contract — abstract) ----------------------------
 
     @abstractmethod
-    async def fetch_buckets(
-        self, conn, sec_type: str, stat_date: date,
-        population: str | None = None,
-        codes: list[str] | None = None,
-    ) -> pd.DataFrame:
-        """The family's forecast buckets for the snapshot key (long
-        frame: one row per bucket × trigger day). ``population`` scopes
-        the read to ONE derived-population cohort (None the plain
-        parent; engines declaring children forward it to their SQL).
-        ``codes`` scopes the read to the partial backfill's missing
-        codes (None = every code the snapshot's identities carry)."""
+    async def prepare(
+        self, conn, sec_type: str, specs: list,
+        codes: frozenset[str] | None = None,
+    ) -> None:
+        """Fetch the input frame + the per-code first dates + the
+        market-regime labels ONCE per run (bounded to the earliest
+        target window start) and build the BucketContext the snapshot
+        computations read. ``codes`` optionally scopes the universe
+        (the study-scope rule)."""
 
     @abstractmethod
-    async def fetch_values(
-        self, conn, sec_type: str, codes: list[str], dates: list[date],
+    def buckets(self, spec) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """One snapshot's computed bucket frames — (rung, cells): the
+        delay-0 mixed stats (ave_change / occurrence_count /
+        trig_date / trig_excess per bucket × delay) and the anchor
+        rows (bucket keys + delay + date + excess + regime_state)."""
+
+    @abstractmethod
+    def values_long(
+        self, codes: list[str], dates: list[date],
     ) -> pd.DataFrame:
-        """The indicator values (wide frame) at exactly the (code,
-        date) points value_points names."""
+        """The melted (code, date, window, value) indicator frame at
+        exactly the given point set — the bar recovery + history-row
+        values."""
 
     @abstractmethod
     def build(
@@ -187,69 +163,35 @@ class SignalEngine(
         stat_date: date,
         passing: pd.DataFrame,
         snap_trig: pd.DataFrame,
-        values: pd.DataFrame,
-        population: str | None = None,
+        long: pd.DataFrame,
     ) -> tuple[list[dict], list[dict]]:
-        """(strategy records, history records) for the snapshot from the
-        gate-passing buckets, their snapshot-owned triggers and the
+        """(threshold records, history records) for the snapshot from
+        the gate-passing buckets, their snapshot-owned triggers and the
         values at the selected points — fully vectorized; the returned
-        dicts are the COPY-boundary rows. ``population`` is the cohort
-        the records belong to (None the parent; children suffix their
-        sub_type and carry the ohlcv_type verdict)."""
+        dicts are the COPY-boundary rows."""
+
+    def curves(self, spec) -> list[dict]:
+        """The snapshot's signal_curves records — the family's
+        continuous depth-response model (mov_rsi curve/). The base
+        default emits none (a family without a curve path keeps the
+        two-table shape)."""
+        return []
 
     # ---- emission + lifecycle -------------------------------------------------
 
     async def emit_snapshot(
-        self, conn, sec_type: str, stat_date: date,
-        codes_by_population: dict[str | None, list[str] | None] | None = None,
+        self, conn, sec_type: str, spec,
     ) -> tuple[list[dict], list[dict]]:
-        """The emission template for one (sec_type, stat_date): ONE
-        complete pass per declared population (populations — None the
-        parent, then the derived children): the buckets (long) + the
-        snapshot-owned trigger days + the indicator values at exactly
-        the trigger points (wide) through the machinery into build —
-        returns the concatenated (strategy records, history records).
-        ``codes_by_population`` scopes each cohort's read to the
-        partial backfill's missing codes (None = full emission; a
-        cohort mapped to an empty list is already covered and its pass
-        is skipped). detect's plain gate yields the candidate
-        strategies; ONLY those that ALSO pass the final SignalQuality
-        gate register (and own history events). The regime labels are
-        fetched AT the trigger dates only (fetch_market_regimes_at) — a
-        since-bounded fetch would drag the whole 10-year window's
-        (code, date) rows for the handful of labels the snapshot-owned
-        triggers need."""
-        strategies: list[dict] = []
-        history: list[dict] = []
-        for population in self.populations:
-            codes = (
-                None if codes_by_population is None
-                else codes_by_population.get(population, [])
-            )
-            if codes is not None and not codes:
-                continue
-            buckets = await self.fetch_buckets(
-                conn, sec_type, stat_date, population, codes,
-            )
-            passing = self.detect(buckets)
-            passing = self.quality.gate(passing, self.slow_claim)
-            snap_trig = self.snapshot_triggers(buckets, passing, stat_date)
-            if snap_trig.empty:
-                regimes = pd.DataFrame()
-            else:
-                regimes = await fetch_market_regimes_at(
-                    conn, sec_type, _trig_dates_to_python(snap_trig),
-                )
-            snap_trig = self.regime_label(snap_trig, regimes)
-            codes, dates = self.value_points(passing, snap_trig)
-            values = await self.fetch_values(conn, sec_type, codes, dates)
-            s, h = self.build(
-                sec_type, stat_date, passing, snap_trig, values,
-                population,
-            )
-            strategies += s
-            history += h
-        return strategies, history
+        """The emission template for one (sec_type, stat_date): the
+        in-engine bucket frames through the machinery into build —
+        returns the (threshold records, history records). detect's
+        plain gate at the robustness floors yields the strategies."""
+        rung, cells = self.buckets(spec)
+        passing = self.detect(rung)
+        snap_trig = self.snapshot_triggers(cells, passing, spec.stat_date)
+        codes, dates = self.value_points(passing, snap_trig)
+        long = self.values_long(codes, dates)
+        return self.build(sec_type, spec.stat_date, passing, snap_trig, long)
 
     async def run(
         self,
@@ -258,49 +200,48 @@ class SignalEngine(
         *,
         force: bool = False,
         snapshots: int | None = None,
+        codes: frozenset[str] | None = None,
     ) -> RunStats:
         """The family's per-sec_type entry point: --force purge, the
         stale-key sweep (retired rolling-latest keys), the incremental
-        snapshot loop (emit_snapshot + write_snapshot per snapshot),
-        the family log line and the analysis_identity upsert. The
-        caller (run/pipeline) refreshes is_active + signal_order ONCE
-        after every family ran."""
+        snapshot loop (prepare ONCE → emit_snapshot + curves +
+        write_snapshot per snapshot), the family log line and the
+        analysis_identity upsert. The caller (run/pipeline) refreshes
+        is_active ONCE after every family ran."""
         if force:
             await self.purge_sec_type(conn, sec_type)
         n_stale = await self.sweep_stale_snapshots(conn, sec_type)
-        target_scopes = await self.resolve_snapshots(
+        target_specs = await self.resolve_snapshots(
             conn, sec_type, force, snapshots,
         )
-        n_strategies = n_history = 0
-        for scope in target_scopes:
-            strategies, history = await self.emit_snapshot(
-                conn, sec_type, scope.stat_date,
-                scope.codes_by_population,
+        n_thresholds = n_history = n_curves = 0
+        if target_specs:
+            await self.prepare(conn, sec_type, target_specs, codes)
+        for spec in target_specs:
+            thresholds, history = await self.emit_snapshot(
+                conn, sec_type, spec,
             )
-            s, h = await self.write_snapshot(
-                conn, sec_type, scope.stat_date, strategies, history,
-                scope.codes_by_population,
+            curves = self.curves(spec)
+            s, h, cv = await self.write_snapshot(
+                conn, sec_type, spec.stat_date, thresholds, history,
+                curves,
             )
-            await self.stamp_emissions(conn, sec_type, scope)
-            n_strategies += s
+            n_thresholds += s
             n_history += h
-        if target_scopes or force or n_stale:
-            n_full = sum(
-                1 for scope in target_scopes
-                if any(codes is None for codes in
-                       scope.codes_by_population.values())
-            )
+            n_curves += cv
+        if target_specs or force or n_stale:
             logger.info(
-                "  [%s] %s: %d snapshots (%d full, %d partial backfill; "
-                "%d stale swept) → %d strategies + %d history rows",
-                sec_type, self.signal_type, len(target_scopes), n_full,
-                len(target_scopes) - n_full, n_stale,
-                n_strategies, n_history,
+                "  [%s] %s: %d snapshots (%d stale swept) → "
+                "%d thresholds + %d history + %d curve rows",
+                sec_type, self.signal_type, len(target_specs), n_stale,
+                n_thresholds, n_history, n_curves,
             )
-        if n_strategies or force:
+        if n_thresholds or force:
             await upsert_analysis_identity(
                 conn, name=self.identity_name,
                 detail_name=self.identity_name,
                 description=self.identity_description,
             )
-        return RunStats(len(target_scopes), n_strategies, n_history)
+        return RunStats(
+            len(target_specs), n_thresholds, n_history, n_curves,
+        )

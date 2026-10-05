@@ -180,7 +180,7 @@ export async function getIndustryEtfContributionBars(
       SELECT COALESCE(
         $2::date,
         (SELECT MAX(date) FROM analysis.industry_etf_contribution
-         WHERE industry_id = $1::text AND pool_size = 'all')
+         WHERE industry_id = $1::text AND pool_size = 3)
       ) AS max_date
     ),
     member_indices AS (
@@ -242,7 +242,7 @@ export async function getIndustryEtfContributionBars(
              industry_etf_trading_amount_ma5,
              industry_etf_trading_amount_ma20
       FROM analysis.industry_etf_contribution
-      WHERE industry_id = $1::text AND pool_size = 'all' AND date = ld.max_date
+      WHERE industry_id = $1::text AND pool_size = 3 AND date = ld.max_date
     ) iec ON true
     ORDER BY elm.trading_amount DESC NULLS LAST
   `;

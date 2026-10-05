@@ -14,6 +14,12 @@
  *     index analog) with front expiry, all-expiry mean and a ±2σ(20d)
  *     extreme-skew envelope. Click any date to move the snapshot.
  *
+ * The panel loads its own full-history per (date × expiry) anchor
+ * aggregate (/skew-daily — one plot, one SQL) instead of consuming raw
+ * quote-row props: the full-history /combined blob the old in-browser
+ * compute needed ships ~200MB of JSON for the biggest CFFEX underlying,
+ * and per-plot pages only held one date's rows (empty History view).
+ *
  * Semantics + rationale (why 25Δ default, 10Δ optional; VIX vs SKEW
  * decomposition): docs/options_vol_smile_study.md.
  */
@@ -32,11 +38,12 @@ import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { useStore } from "@/store/filters";
 import { PRICE_SCALE } from "@/theme/chart-palette";
-import { fetchOptionsVolIndex } from "@/lib/api-client/options";
-import type { OptionsRow, VolIndexRow } from "@shared/types";
+import { fetchOptionsVolIndex, venueToTargetType } from "@/lib/api-client/options";
+import type { VolIndexRow } from "@shared/types";
+import { useOptionsSkewDaily } from "@/dataviz/features/options/data-hooks";
 import {
-  buildExpiryGroupAgg,
   buildSkewDayPoints,
+  buildSkewGroupsFromDaily,
   buildSkewTermStructure,
   skewAxisDates,
   type SkewDelta,
@@ -46,16 +53,15 @@ import { buildHistoryOption, buildTodayOption } from "./spotSkewOption";
 type ViewMode = "today" | "history";
 
 interface Props {
-  rows: OptionsRow[];
   selectedDate: string;
   onDateChange?: (date: string) => void;
-  /** When provided, overlays the underlying's 30d model-free vol index
-   *  (VIX-style, analysis.options_vol_index) on the History LEVEL grid. */
+  /** Underlying whose skew chronology to load (drives /skew-daily); when
+   *  set, also overlays its 30d model-free vol index (VIX-style,
+   *  analysis.options_vol_index) on the History LEVEL grid. */
   underlyingCode?: string;
 }
 
 export default function SpotSkewTrendPanel({
-  rows,
   selectedDate,
   onDateChange,
   underlyingCode,
@@ -110,11 +116,16 @@ export default function SpotSkewTrendPanel({
   // closes are native index points already.
   const priceScale = optionsVenue === "CFFEX" ? 1 : PRICE_SCALE;
 
-  // One pass over the quote rows → per (date × real expiry) anchors for
-  // BOTH wings; the delta dropdown then only re-derives the series.
+  // The panel's own full-history anchor aggregate — both views derive from
+  // it; the delta dropdown only re-picks the wing columns client-side.
+  const skew = useOptionsSkewDaily(
+    underlyingCode ?? "",
+    venueToTargetType(optionsVenue),
+    optionsVenue,
+  );
   const groups = useMemo(
-    () => buildExpiryGroupAgg(rows, priceScale),
-    [rows, priceScale],
+    () => buildSkewGroupsFromDaily(skew.rows, priceScale),
+    [skew.rows, priceScale],
   );
   const points = useMemo(
     () => buildSkewDayPoints(groups, delta),
@@ -181,7 +192,9 @@ export default function SpotSkewTrendPanel({
           );
   const emptyText =
     points.length === 0
-      ? "No IV/delta-calibrated option rows for this underlying — the smile chronology needs premium-calibrated quotes (stats.options_greeks)."
+      ? underlyingCode
+        ? "No IV/delta-calibrated option rows for this underlying — the smile chronology needs premium-calibrated quotes (stats.options_greeks)."
+        : "Select an underlying to load the smile chronology."
       : view === "today"
         ? `No expiry groups on ${selectedDate || "the selected date"}.`
         : "No data";
@@ -258,6 +271,8 @@ export default function SpotSkewTrendPanel({
       subtitle={shortSubtitle}
       aiAsk={aiAskSpec}
       height={view === "today" ? 320 : 560}
+      loading={skew.loading}
+      error={skew.error ? `Failed to load skew daily: ${skew.error}` : null}
       headerAction={
         <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
           <FormControl size="small" sx={{ minWidth: 84 }}>

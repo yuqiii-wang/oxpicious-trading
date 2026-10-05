@@ -2,14 +2,14 @@
  * Trend classification logic for the MA-Spread chart.
  *
  * downward_trend: close < MA60, with <5 day interruptions bridged.
- * flat_trend:     MA60 slope ∈ [−0.5, +0.5]
+ * flat_trend:     weak rebound — an upward band whose closes never reach
+ *                 MA60 + σ (the former MA60-slope bar was removed with the
+ *                 MA60 slope column, 2026-09).
  * upward_trend:   everything else
  */
 
 // ---- Trend classification constants (Price/MA60 pair only) --------------
 export const TREND_MAX_INTERRUPTION = 5;
-export const TREND_FLAT_SLOPE_MIN = -0.5;
-export const TREND_FLAT_SLOPE_MAX = 0.5;
 export const TREND_DOWN_COLOR = "rgba(229, 57, 53, 0.07)"; // light red
 export const TREND_FLAT_COLOR = "rgba(255, 193, 7, 0.07)"; // light amber
 export const TREND_UP_COLOR = "rgba(76, 175, 80, 0.05)";   // light green
@@ -28,7 +28,6 @@ export interface TrendBand {
 export function computeTrendBands(
   shorts: Array<number | null>,
   longs: Array<number | null>,
-  longSlopes: Array<number | null>,
   longStds: Array<number | null>,
 ): TrendBand[] {
   const n = shorts.length;
@@ -81,18 +80,7 @@ export function computeTrendBands(
   let curTrend: TrendType | null = null;
   let curStart = 0;
   for (let idx = 0; idx < n; idx++) {
-    let t: TrendType;
-    if (isDownward[idx]) {
-      t = "downward";
-    } else {
-      const slope = longSlopes[idx];
-      if (slope != null && Number.isFinite(slope) &&
-          slope >= TREND_FLAT_SLOPE_MIN && slope <= TREND_FLAT_SLOPE_MAX) {
-        t = "flat";
-      } else {
-        t = "upward";
-      }
-    }
+    const t: TrendType = isDownward[idx] ? "downward" : "upward";
     if (t === curTrend) {
       // same trend as the previous row — the run simply continues
     } else {

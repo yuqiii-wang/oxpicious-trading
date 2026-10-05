@@ -11,7 +11,9 @@
  *   • no spot (loader 0) → null spot, no groups plotted
  *   • date-total valid rows < 3 → null skew, empty per-expiry
  *   • E[M]_date = Σ(w·K)/Σ(w)/S  (from the per-group wsum_k/wsum sums)
- *   • skewPrice = (S/PRICE_SCALE) × E[M]; skewPct = (E[M] − 1) × 100
+ *   • skewPrice = (S/priceScale) × E[M]; skewPct = (E[M] − 1) × 100
+ * priceScale is the venue quote scale (ETF closes in 厘 ÷1000 → yuan;
+ * CFFEX index closes native points ÷1), passed by the panel.
  */
 import { PRICE_SCALE } from "@/theme/chart-palette";
 import { oiStatsKey, type OiStatsLookup } from "../vol-smile/skewSeries";
@@ -25,6 +27,7 @@ const MIN_VALID_ROWS = 3;
 export function moneynessSpecFromSeries(
   resp: OptionsMoneynessSeriesResponse,
   oiStats?: OiStatsLookup,
+  priceScale: number = PRICE_SCALE,
 ): SharedSkewSpec {
   const groupsByDate = new Map<string, OptionsMoneynessSeriesResponse["groups"][number][]>();
   for (const g of resp.groups) {
@@ -41,7 +44,7 @@ export function moneynessSpecFromSeries(
       points.push({ date, spot: null, skewPrice: null, rawSkew: null, skewPct: null, perExpiry: [] });
       continue;
     }
-    const S = close / PRICE_SCALE;
+    const S = close / priceScale;
     const groups = groupsByDate.get(date) ?? [];
     const totalValid = groups.reduce((s, g) => s + g.n_valid, 0);
 
@@ -92,17 +95,24 @@ export function moneynessSpecFromSeries(
     });
   }
 
-  return { mode: "oi_moneyness", points, ...modeMeta("oi_moneyness") };
+  return {
+    mode: "oi_moneyness",
+    points,
+    ...modeMeta("oi_moneyness"),
+    priceUnit: priceScale === 1 ? "index points" : "yuan",
+  };
 }
 
-/** Spot (yuan) per date from the series' spot array — shared by the
- * greek_* adapters (replaces the former spotByDateFromRows over raw rows). */
+/** Spot (native venue units) per date from the series' spot array —
+ *  shared by the greek_* adapters (replaces the former spotByDateFromRows
+ *  over raw rows). */
 export function spotByDateFromSeries(
   resp: OptionsMoneynessSeriesResponse,
+  priceScale: number = PRICE_SCALE,
 ): Map<string, number> {
   const m = new Map<string, number>();
   for (const s of resp.spot) {
-    if (s.close != null) m.set(s.date, s.close / PRICE_SCALE);
+    if (s.close != null) m.set(s.date, s.close / priceScale);
   }
   return m;
 }

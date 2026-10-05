@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from builds.text import paths
 from builds.text.loaders._parsing import parse_date_str
+from llm_agents.online_search_summary.storage.matching import date_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,9 @@ def hit_news_row(
     Shared by :func:`load_ai_daily` and builds.text.ai_daily_qa — the Q&A
     refs resolve to news_ids through the SAME (title, source, date) natural
     key this function writes, so every hit row written here is resolvable.
-    Dated by publish_date_raw with the envelope's own date as fallback (the
-    same shape the --store fast path wrote: source = media or 'web').
+    Dated by publish_date_raw, else the URL-embedded date, else the
+    envelope's own date as last resort (the same shape the --store fast
+    path wrote: source = media or 'web').
     """
     title = (hit.get("title") or "").strip()
     if not title:
@@ -49,7 +51,9 @@ def hit_news_row(
     return {
         "title": title,
         "content": (hit.get("content") or "").strip() or None,
-        "date": parse_date_str(hit.get("publish_date_raw")) or fallback_date,
+        "date": (parse_date_str(hit.get("publish_date_raw"))
+                 or date_from_url((hit.get("link") or "").strip())
+                 or fallback_date),
         "source": (hit.get("media") or "").strip() or "web",
         "url": (hit.get("link") or "").strip() or None,
         "author": None,

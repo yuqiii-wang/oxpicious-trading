@@ -89,6 +89,11 @@ interface DbEtfMarginRow extends QueryResultRow {
   action_type: string | null;
   implied_dividend_per_share: number | null;
   cum_split_factor: number | null;
+  // Dividend price estimation curve (analysis.dividend_est — raw
+  // price units; the UI converts to adjusted space via adj_close/close).
+  div_est_price: number | null;
+  seg_end_date: Date | string | null;
+  seg_next_div: number | null;
   trading_shares: number | null;
   trading_amount: number | null;
   rz_balance: number | null;
@@ -122,6 +127,9 @@ function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
     action_type: r.action_type ?? null,
     implied_dividend_per_share: toNum(r.implied_dividend_per_share),
     cum_split_factor: toNum(r.cum_split_factor),
+    div_est_price: toNum(r.div_est_price),
+    seg_end_date: r.seg_end_date != null ? formatDate(r.seg_end_date) : null,
+    seg_next_div: toNum(r.seg_next_div),
     trading_shares: toNum(r.trading_shares) ?? 0,
     trading_amount: toNum(r.trading_amount) ?? 0,
     // Margin fields preserve NULL (no data) so the chart can break the line
@@ -429,7 +437,9 @@ export async function getEtfMarginCombined(
   // on EVERY table makes each side an index probe (~5ms). Same rationale as
   // getStocksCombined / getStockDaily; INNER JOIN basic_stats + close IS
   // NOT NULL also skips bogus identity-only entries (incomplete same-day
-  // rows), matching the stock service. etf_tech_stats columns are not
+  // rows), matching the stock service. analysis.dividend_est is
+  // LEFT JOINed for the dividend estimation curve (code predicate on it
+  // too, same rule); etf_tech_stats columns are not
   // selected by the row list, so that table needs no join.
   const params: unknown[] = [pageCodes]; // $1 = the code array
   let paramIdx = 2; // date bounds start at $2
@@ -451,6 +461,7 @@ export async function getEtfMarginCombined(
            o.prev_close, o.open, o.high, o.low, o.close, o.eps,
            a.adj_open, a.adj_high, a.adj_low, a.adj_close, a.adj_prev_close,
            a.is_split_event_day, a.action_type, a.implied_dividend_per_share, a.cum_split_factor,
+           dt.div_est_price, dt.seg_end_date, dt.seg_next_div,
            lm.trading_shares, lm.trading_amount,
            lm.rz_balance, lm.rq_balance_qty, lm.rq_balance_amt, lm.total_balance
       FROM stats.etf_identity i
@@ -458,6 +469,9 @@ export async function getEtfMarginCombined(
         ON o.date = i.date AND o.code = i.code AND o.code ${codePred}
       LEFT JOIN stats.etf_adjustment a
         ON a.date = i.date AND a.code = i.code AND a.code ${codePred}
+      LEFT JOIN analysis.dividend_est dt
+        ON dt.date = i.date AND dt.code = i.code AND dt.sec_type = 'etf'
+       AND dt.code ${codePred}
       LEFT JOIN stats.etf_liquidity_margin lm
         ON lm.date = i.date AND lm.code = i.code AND lm.code ${codePred}
      WHERE ${whereParts.join(" AND ")}

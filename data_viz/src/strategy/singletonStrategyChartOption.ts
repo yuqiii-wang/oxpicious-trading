@@ -5,9 +5,12 @@
  *   1. OHLC candlesticks (primary y-axis, left)
  *   2. MA5 + MA60 lines (primary y-axis)
  *   3. Trading amount bars (secondary y-axis, right)
- *   4. BUY markers (green dots; dark green for top-3 confidence) at fill_price
- *   5. SELL markers (red dots; dark red for top-3 losses) at fill_price
- *   6. LAST DAY SELL marker (purple dot; larger) at the projected fill_price
+ *   4. BUY markers (green up-triangles — the shared signalMarker; dark
+ *      green for top-3 confidence) at fill_price
+ *   5. SELL markers (red down-triangles — the shared signalMarker; dark
+ *      red for top-3 losses) at fill_price
+ *   6. LAST DAY SELL marker (purple down-triangle; larger) at the
+ *      projected fill_price
  *   7. Rich tooltip on hover showing full decision details
  *   8. Total return % as a graphic text annotation
  *
@@ -41,6 +44,7 @@ import {
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
+import { signalMarkerSpec } from "@/shared/charts/signalMarker";
 import { createMarkerTooltipFormatter } from "./tooltips";
 import type {
   StrategyBacktestResponse,
@@ -490,8 +494,9 @@ export function buildSingletonStrategyOption({
         })),
         xAxisIndex: 0,
         yAxisIndex: 0,
-        symbol: "circle",
-        symbolSize: 10,
+        // THE shared buy/sell triangle (signalMarker.ts), centered on
+        // the fill price — the app-wide trade-signal look.
+        ...signalMarkerSpec("buy", { placement: "onPoint" }),
         z: 20,
         tooltip: { formatter: markerTooltipFormatter },
         emphasis: { disabled: true },
@@ -519,8 +524,7 @@ export function buildSingletonStrategyOption({
         })),
         xAxisIndex: 0,
         yAxisIndex: 0,
-        symbol: "circle",
-        symbolSize: 10,
+        ...signalMarkerSpec("sell", { placement: "onPoint" }),
         z: 20,
         tooltip: { formatter: markerTooltipFormatter },
         emphasis: { disabled: true },
@@ -548,8 +552,13 @@ export function buildSingletonStrategyOption({
         })),
         xAxisIndex: 0,
         yAxisIndex: 0,
-        symbol: "circle",
-        symbolSize: 16,
+        // The sell triangle, oversized + in the last-day-sell purple —
+        // the shared spec keeps the shape single-sourced.
+        ...signalMarkerSpec("sell", {
+          placement: "onPoint",
+          scale: 1.5,
+          color: LAST_DAY_SELL_COLOR,
+        }),
         z: 30,
         tooltip: { formatter: markerTooltipFormatter },
         emphasis: { disabled: true },

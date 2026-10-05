@@ -67,7 +67,7 @@ DROP TABLE IF EXISTS analysis.industry_correlations;
 CREATE TABLE IF NOT EXISTS analysis.industry_correlations (
     industry_id                       TEXT          NOT NULL,
     benchmark_industry_id             TEXT          NOT NULL,
-    pool_size                         TEXT          NOT NULL,
+    pool_size                         SMALLINT      NOT NULL,  -- label code (stats.label_dim 'pool_size'): 0=small 1=mid 2=large 3=all
     start_date                        DATE          NOT NULL,
     interval                          INTEGER       NOT NULL DEFAULT 20,
 
@@ -99,7 +99,7 @@ SELECT public.create_hash_partitions('analysis', 'industry_correlations', 32);
 COMMENT ON TABLE  analysis.industry_correlations                            IS 'Windowed pairwise Pearson correlation between two industries'' MA curves of mean_close (stats.industry_basic_stats.mean_close, built by builds.industry — former mean_price). One row per (industry_id, benchmark_industry_id, pool_size, start_date, interval). Windows start on the pool calendar grid every `interval` (default 20) trading days; corr_ma{W}_{W}d (W in 20/60/255) correlates the two industries'' MA-W curves over the W trading days starting on start_date. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id (lexicographic) to deduplicate (A,B) vs (B,A). Only same-pool slices materialized (all, small, mid, large). Built by analyze.industry_sentiments.correlations (internal step, incremental / force).';
 COMMENT ON COLUMN analysis.industry_correlations.industry_id                IS 'Subject industry''s industry_id (lexicographically smaller of the two).';
 COMMENT ON COLUMN analysis.industry_correlations.benchmark_industry_id       IS 'Benchmark industry''s industry_id (lexicographically larger of the two).';
-COMMENT ON COLUMN analysis.industry_correlations.pool_size                  IS 'Pool_size slice in which BOTH industries are compared (cross-pool comparisons are not materialized). small (stock_num<51), mid (51-180), large (>180), all (every member).';
+COMMENT ON COLUMN analysis.industry_correlations.pool_size                  IS 'Pool_size slice in which BOTH industries are compared (cross-pool comparisons are not materialized), as its stats.label_dim (''pool_size'' domain) SMALLINT code: 0 small (stock_num<51), 1 mid (51-180), 2 large (>180), 3 all (every member).';
 COMMENT ON COLUMN analysis.industry_correlations.start_date                 IS 'Start date of the compute window on the pool calendar grid (grid stride = interval trading days). The window for corr_ma{W}_{W}d spans [start_date, start_date + W).';
 COMMENT ON COLUMN analysis.industry_correlations."interval"                 IS 'Stride in trading days between consecutive window starts on the pool calendar grid (default 20).';
 COMMENT ON COLUMN analysis.industry_correlations.corr_ma20_20d              IS 'Pearson correlation between the two industries'' MA20 curves over the 20 trading days starting on start_date. NULL when the window is not full or either MA20 curve is undefined on any of its dates.';
@@ -403,7 +403,7 @@ DROP TABLE IF EXISTS analysis.industry_etf_contribution;
 CREATE TABLE IF NOT EXISTS analysis.industry_etf_contribution (
     date                      DATE          NOT NULL,
     industry_id               TEXT          NOT NULL,
-    pool_size                 TEXT          NOT NULL,  -- 'small' | 'mid' | 'large' | 'all'
+    pool_size                 SMALLINT      NOT NULL,  -- label code (stats.label_dim 'pool_size'): 0=small 1=mid 2=large 3=all
 
     -- Display label (denormalized)
     industry_label            TEXT          NOT NULL DEFAULT '',
@@ -429,7 +429,7 @@ CREATE TABLE IF NOT EXISTS analysis.industry_etf_contribution (
 
     CONSTRAINT pk_industry_etf_contribution PRIMARY KEY (industry_id, date, pool_size),
     CONSTRAINT chk_industry_etf_contribution_pool
-        CHECK (pool_size IN ('small', 'mid', 'large', 'all'))
+        CHECK (pool_size BETWEEN 0 AND 3)
 ) PARTITION BY HASH (industry_id);
 
 -- Native hash partitions (8) keyed by industry_id
@@ -443,7 +443,7 @@ CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_date_industry
     ON analysis.industry_etf_contribution (date, industry_id);
 
 COMMENT ON TABLE  analysis.industry_etf_contribution                        IS 'Per-(industry_id, date, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(total_etf_trading_amount) across member indices from stats.index_exts. industry_etf_count = COUNT of member indices with non-NULL ETF amount. Each member index contributes its aggregate ETF turnover (precomputed in stats.index_exts by builds.index exts phase). pool_size: small (stock_num<51), mid (51-180), large (>180), all. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on stats.index_exts being populated first.';
-COMMENT ON COLUMN analysis.industry_etf_contribution.pool_size              IS 'Pool-size slice: small (stock_num<51), mid (51-180), large (>180), all (every member). Classification source: stats.sec_composition (LATEST snapshot per code).';
+COMMENT ON COLUMN analysis.industry_etf_contribution.pool_size              IS 'Pool-size slice as its stats.label_dim (''pool_size'' domain) SMALLINT code: 0 small (stock_num<51), 1 mid (51-180), 2 large (>180), 3 all (every member). Classification source: stats.sec_composition (LATEST snapshot per code).';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_count     IS 'Number of distinct member indices with non-NULL total_etf_trading_amount contributing to this (date, industry_id, pool_size) slice on this date.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount     IS 'SUM(total_etf_trading_amount) across member indices in this pool_size slice on this date. Source: stats.index_exts (total_etf_trading_amount = aggregate ETF turnover tracking the member index, built by builds.index exts phase). NULL when no member index has ETF trading amount data on this date.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma5 IS '5-trading-day moving average of industry_etf_trading_amount. Populated by analyze.industry_sentiments.etf_contribution via pandas rolling(5).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 5-day window.';

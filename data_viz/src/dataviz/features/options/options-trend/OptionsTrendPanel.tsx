@@ -69,6 +69,8 @@ interface Props {
   exchange?: OptionsVenue;
   /** Zone walls (analysis.options_walls, wall_type='zone') for the underlying. */
   walls?: OptionsWallRow[];
+  /** Refresh-button epoch — >0 refetches with caches bypassed. */
+  reloadKey?: number;
 }
 
 export default function OptionsTrendPanel({
@@ -76,6 +78,7 @@ export default function OptionsTrendPanel({
   targetType,
   exchange,
   walls = [],
+  reloadKey = 0,
 }: Props) {
   const themeMode = useChartThemeMode();
   const { buildDataZoom, buildInsideDataZoom, handleDataZoom } = useDataZoomSync();
@@ -95,9 +98,10 @@ export default function OptionsTrendPanel({
     setOiDaily(null);
     setExpiryMeta(null);
     setCellsResp(null);
+    const fresh = { fresh: reloadKey > 0 };
     Promise.all([
-      fetchOptionsOiDaily(underlying, targetType, exchange),
-      fetchOptionsExpiryMeta(underlying, targetType, exchange),
+      fetchOptionsOiDaily(underlying, targetType, exchange, fresh),
+      fetchOptionsExpiryMeta(underlying, targetType, exchange, fresh),
     ])
       .then(([daily, meta]) => {
         if (cancelled) return;
@@ -113,7 +117,7 @@ export default function OptionsTrendPanel({
     return () => {
       cancelled = true;
     };
-  }, [underlying, targetType, exchange]);
+  }, [underlying, targetType, exchange, reloadKey]);
 
   const daily = useMemo<DailyOi[]>(() => (oiDaily ? buildDailyFromOiDaily(oiDaily) : []), [oiDaily]);
   const allDates = useMemo(() => daily.map((d) => d.date), [daily]);
@@ -122,16 +126,23 @@ export default function OptionsTrendPanel({
     [expiryMeta],
   );
 
+  // Per-expiry lifetime OI totals — derived from /oi-daily's per
+  // (date × expiry) rows (Σ over dates = the cohort totals the backend
+  // used to aggregate in a second full-history SQL per request).
   const cohorts = useMemo<ExpiryCohort[]>(() => {
-    if (!expiryMeta) return [];
-    return expiryMeta.cohorts
-      .map((c) => ({
-        key: c.expiry_date,
-        label: c.expiry_date.length >= 7 ? c.expiry_date.slice(0, 7) : c.expiry_date,
-        totalOi: c.total_oi,
+    if (!oiDaily) return [];
+    const totals = new Map<string, number>();
+    for (const r of oiDaily.daily) {
+      totals.set(r.expiry_date, (totals.get(r.expiry_date) ?? 0) + r.call_oi + r.put_oi);
+    }
+    return Array.from(totals.entries())
+      .map(([expiry, totalOi]) => ({
+        key: expiry,
+        label: expiry.length >= 7 ? expiry.slice(0, 7) : expiry,
+        totalOi,
       }))
       .sort((a, b) => a.key.localeCompare(b.key));
-  }, [expiryMeta]);
+  }, [oiDaily]);
 
   const [cohortMode, setCohortMode] = useState<"active" | "history">("active");
   const [monthFilter, setMonthFilter] = useState<"all" | string>("all");
@@ -310,8 +321,8 @@ export default function OptionsTrendPanel({
 
   // Build bands with cells remapped to broken date indices
   const realExpiries = useMemo(
-    () => new Set((expiryMeta?.cohorts ?? []).map((c) => c.expiry_date)),
-    [expiryMeta],
+    () => new Set(cohorts.map((c) => c.key)),
+    [cohorts],
   );
   const built = useMemo(() => {
     if (selectedExpiryKeys.length === 0 || !cellsResp || !oiDaily) return null;
@@ -579,7 +590,7 @@ function buildCellsFromResponse(
   cellsResp: OptionsOiCellsResponse,
   oiDaily: OptionsOiDailyResponse,
   allDates: string[],
-): { cells: BandCell[]; spot: (number | null)[]; oiMax: number } {
+): { dates: string[]; cells: BandCell[]; spot: (number | null)[]; oiMax: number } {
   const dateIdx = new Map<string, number>();
   allDates.forEach((d, i) => {
     if (!dateIdx.has(d)) dateIdx.set(d, i);
@@ -640,5 +651,8 @@ function buildCellsFromResponse(
     },
   );
 
-  return { cells, spot, oiMax };
+  // dates: allDates — the equal-length branch of the `built` memo spreads
+  // this return directly, so `dates` MUST be present (gap-free histories,
+  // e.g. SSE, never take the remap branch that rebuilds it)
+  return { dates: allDates, cells, spot, oiMax };
 }

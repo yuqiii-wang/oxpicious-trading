@@ -564,8 +564,11 @@ def run_options_eod_capture(
 
     After close the tstyle snapshot is the day's final state (day OHLC +
     day-cumulative volume/amount), so ONE sample per contract becomes the
-    15:00 bar (single-sample OHLC semantics, clamped bar time). Idempotent:
-    re-running upserts the same PK rows. Returns (n_contracts, n_bars).
+    15:00 bar (single-sample OHLC semantics, clamped bar time). The same
+    snapshot is ALSO archived as the day's daily CSV
+    (temps/sse_options_daily/, one row per contract with volume + amount —
+    the source builds.options.sse quotes off). Idempotent: re-running
+    upserts the same PK rows. Returns (n_contracts, n_bars).
     """
     asset = build_options_asset(session, host_tracker)
     if asset is None:
@@ -580,9 +583,19 @@ def run_options_eod_capture(
         return 0, 0
 
     csv_path = write_options_snapshot_csv(update_dt, snapshot, asset.contract_map)
+    # The SAME post-close snapshot is the day's DAILY state (close + day
+    # OHLC + day-cumulative 成交量(手)/成交额), so the EOD capture also
+    # writes the one-row-per-contract daily archive the options build
+    # quotes off — builds.options.sse reads temps/sse_options_daily
+    # (volume AND amount), never by aggregating this stream's intraday CSV.
+    daily_path = write_options_snapshot_csv(
+        update_dt, snapshot, asset.contract_map,
+        csv_subdir="sse_options_daily", csv_prefix="sse_options_daily",
+    )
     logger.info(
-        "options EOD capture: %d contracts @ %s → %s",
-        len(snapshot), update_dt.strftime("%Y-%m-%d %H:%M:%S"), csv_path.name,
+        "options EOD capture: %d contracts @ %s → %s (+daily %s)",
+        len(snapshot), update_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        csv_path.name, daily_path.name,
     )
 
     asset.buffer = [(update_dt, snapshot)]

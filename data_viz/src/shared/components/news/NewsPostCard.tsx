@@ -95,6 +95,7 @@ export default function NewsPostCard({ item }: { item: NewsItem }) {
           {item.source && <PostChip label={item.source} color="primary" />}
           {!item.industry_id && item.sector_id && <PostChip label={item.sector_id} color="secondary" />}
           {item.industry_id && <PostChip label={item.industry_id} color="secondary" />}
+          {item.is_big_fluctuation && <PostChip label="On Big Fluctuations" color="warning" />}
         </>
       }
       headline={item.title}

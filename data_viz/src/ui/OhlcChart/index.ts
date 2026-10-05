@@ -24,6 +24,7 @@ export type {
   CodeTrendSecType,
   CodeTrendRow,
   CodeTrendData,
+  CodeTrendIndustryData,
   CodeTrendSource,
   CodeTrendChartOptions,
   CodeTrendChartProps,

@@ -14,7 +14,7 @@
 \ir 02_analysis_identity.sql
 \ir mov_ave_spreads/01_mov_ave_spreads_detail.sql
 \ir mov_ave_spreads/02_mov_ave_spreads_detail_ema.sql
-\ir mov_ave_spreads/03_mov_ave_spreads_detail_ohlc.sql
+\ir mov_ave_spreads/03_mov_ave_spreads_roof_and_floor_lines.sql
 \ir mov_ave_spreads/04_mov_ave_rsi.sql
 \ir mov_ave_spreads/05_mov_ave_trading_amt.sql
 \ir mov_ave_spreads/06_mov_ave_trading_amt_ratios.sql
@@ -31,20 +31,12 @@
 \ir 16_options.sql
 \ir 17_non_trading_day_risk.sql
 \ir 19_price_vs_amt.sql
--- Analysis Commons: forecast buckets + signal strategies + composites.
+-- Analysis Commons: signal strategies + composites. (The forecast
+-- buckets schema was REMOVED 2026-10-05 with the forecast layer —
+-- the signals tier computes its rsi-pct buckets in-engine.)
 -- (02/03 of analysis_signals are $1-parameterized runtime files, applied by
 -- the pipeline after every run — not standalone-runnable, excluded here.)
 \ir analysis_composites/00_schema.sql
 \ir analysis_composites/01_industry_corr_benchmark_offsets.sql
-\ir analysis_forecasts/00_schema.sql
-\ir analysis_forecasts/01_forecast_results.sql
-\ir analysis_forecasts/02_mov_rsi_mov_std.sql
-\ir analysis_forecasts/04_base_rates.sql
-\ir analysis_forecasts/06_margin_ratio.sql
-\ir analysis_forecasts/08_mov_pairs.sql
-\ir analysis_forecasts/09_mov_pairs_ema.sql
-\ir analysis_forecasts/10_high_low_streaks.sql
-\ir analysis_forecasts/11_pe_state.sql
-\ir analysis_forecasts/12_dividend_state.sql
 \ir analysis_signals/00_schema.sql
 \ir analysis_signals/01_signals.sql

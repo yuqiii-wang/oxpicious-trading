@@ -28,6 +28,12 @@ do
   python -m "$m"
 done
 
+# SSE options EOD capture — fetch the post-close tstyle snapshot once
+# (published ~16:29; the server serves it until the next session) so the
+# day's temps/sse_options_intraday CSV gains a >=15:00 sample and the
+# nightly builds.options finality gate accepts the date. Idempotent upsert.
+python -m downloads.stream.sse.price --options-eod
+
 # The daily AI market summary is ARTIFACT-ONLY (temps/ai_daily/*.json):
 # this downloader never touches the DB. builds_daily.sh (source ai_daily)
 # loads the artifacts into the text.* tables the UI reads — answers +

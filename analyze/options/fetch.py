@@ -150,7 +150,9 @@ def _missing_pk_tuples(
         List of PK tuples (python ``date`` objects in the date columns)
         present in ``collapsed`` but not among ``existing_rows``.
     """
-    date_cols = [c for c in pk_columns if c in ("date", "expiry_date")]
+    date_cols = [
+        c for c in pk_columns if c in ("date", "expiry_date", "expiry_month")
+    ]
     if existing_rows:
         existing = _records_frame(existing_rows, pk_columns)
         for c in date_cols:
@@ -691,6 +693,62 @@ async def fetch_missing_vol_index_dates(
     return _missing_pk_tuples(candidates, existing_pks, VOL_INDEX_PK_COLUMNS)
 
 
+# ---- Options bands fetchers -----------------------------------------------
+
+async def fetch_missing_bands_dates(
+    conn,
+    sec_type: str | None = None,
+) -> list:
+    """Fetch (underlying_code, date) pairs missing from options_bands.
+
+    Date-granular (no expiry dimension, no open-expiry collapse): a date
+    is computable whenever any valid contract row (strike + settlement
+    close) exists for the underlying — the same candidate basis as the
+    walls pipeline.
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    from analyze.options.config import (
+        BANDS_PK_COLUMNS,
+        BANDS_TABLE_NAME,
+    )
+
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT DISTINCT t.underlying_code,
+               extract(epoch from t.date)::float8 AS date
+        FROM stats.options_terms t
+        JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
+        WHERE {_SKEWNESS_VALID_WHERE}
+          {sec_filter}
+        ORDER BY t.underlying_code, date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return []
+
+    df = _records_frame(rows, BANDS_PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    candidates = df[BANDS_PK_COLUMNS].drop_duplicates()
+
+    existing_pks: list = []
+    try:
+        existing_pks = await conn.fetch(
+            f"SELECT underlying_code, "
+            f"extract(epoch from date)::float8 AS date "
+            f"FROM {BANDS_TABLE_NAME}"
+        )
+    except Exception:
+        pass
+
+    return _missing_pk_tuples(candidates, existing_pks, BANDS_PK_COLUMNS)
+
+
 # ---- Options walls fetchers -----------------------------------------------
 
 WALLS_FETCH_COLUMNS = [
@@ -745,6 +803,68 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["expiry_date"] = epoch_col_to_dt64(
         df["expiry_date"], index=df.index)
+    return df
+
+
+# ---- Computed zone walls (bands exit-quality context) -----------------------
+
+ZONE_ROWS_FETCH_COLUMNS = [
+    "date", "underlying_code", "option_type", "wall_low", "wall_high",
+    "wall_oi", "mass_share", "state", "strength_score",
+]
+
+
+async def fetch_computed_zone_rows(
+    conn, sec_type: str | None = None,
+) -> pd.DataFrame:
+    """Fetch the computed wall_type='zone' rows from
+    analysis.options_walls for the bands exit-quality context.
+
+    The bands step ranks these into the chain-dominant wall per (date,
+    side) — the strength pick the Options Trend OI Bands chart overlays
+    per cohort — and uses the PRIOR session's edges/state as the
+    insurance floor/cap behind wall_side_broken / wall_state_prior.
+    Reads the table the walls pipeline step wrote earlier in the same
+    run (--force) or a previous run (incremental), so both modes see
+    fresh zone rows.
+
+    Dates stay datetime64 (compute boundary).
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT
+            extract(epoch from w.date)::float8 AS date,
+            w.underlying_code,
+            w.option_type,
+            w.wall_low::float8 AS wall_low,
+            w.wall_high::float8 AS wall_high,
+            w.wall_oi::float8 AS wall_oi,
+            w.mass_share::float8 AS mass_share,
+            w.state,
+            w.strength_score::float8 AS strength_score
+        FROM analysis.options_walls w
+        WHERE w.wall_type = 'zone'
+          AND EXISTS (
+              SELECT 1
+              FROM stats.options_terms t
+              JOIN stats.options_strike k
+                ON k.date = t.date AND k.contract_code = t.contract_code
+              WHERE t.date = w.date
+                AND t.underlying_code = w.underlying_code
+                {sec_filter}
+          )
+        ORDER BY w.underlying_code, w.date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return pd.DataFrame(columns=ZONE_ROWS_FETCH_COLUMNS)
+
+    df = _records_frame(rows, ZONE_ROWS_FETCH_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     return df
 
 
@@ -807,3 +927,160 @@ async def fetch_missing_walls_groups(
     return _missing_pk_tuples(
         candidates, existing_pks, _PK_COLUMNS + ["wall_type"],
     )
+
+
+# ---- Moneyness series fetchers ----------------------------------------------
+# Source basis replicates the former LIVE api SQL exactly: ALL terms rows
+# LEFT-joined to strike/settlement/greeks/volume_oi (NULL-tolerant — the
+# valid/active filters are applied in compute, not in the fetch).
+
+MONEYNESS_FETCH_COLUMNS = [
+    "date", "contract_code", "option_type", "underlying_code",
+    "expiry_date", "strike_price", "underlying_close", "open_interest",
+    "implied_vol",
+]
+
+
+async def fetch_moneyness_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
+    """Fetch ALL in-scope option contract rows for the materialized
+    moneyness series (LEFT-join basis — rows missing strike/settlement/
+    greeks/volume_oi keep NULL columns and still count toward day-spot
+    coverage and n_valid, exactly like the former live SQL's ``scoped`` CTE).
+
+    Returns a DataFrame with columns:
+        date, contract_code, option_type, underlying_code, expiry_date,
+        strike_price, underlying_close, open_interest, implied_vol
+
+    Dates stay datetime64 (compute boundary).
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT
+            extract(epoch from t.date)::float8 AS date,
+            t.contract_code,
+            t.option_type,
+            t.underlying_code,
+            extract(epoch from t.expiry_date)::float8 AS expiry_date,
+            k.strike_price::float8 AS strike_price,
+            s.underlying_close::float8 AS underlying_close,
+            v.open_interest::float8 AS open_interest,
+            g.implied_vol::float8 AS implied_vol
+        FROM stats.options_terms t
+        LEFT JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        LEFT JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
+        LEFT JOIN stats.options_volume_oi v
+          ON v.date = t.date AND v.contract_code = t.contract_code
+        LEFT JOIN stats.options_greeks g
+          ON g.date = t.date AND g.contract_code = t.contract_code
+        WHERE 1=1
+          {sec_filter}
+        ORDER BY t.underlying_code, t.date, t.expiry_date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return pd.DataFrame(columns=MONEYNESS_FETCH_COLUMNS)
+
+    df = _records_frame(rows, MONEYNESS_FETCH_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
+    return df
+
+
+async def fetch_missing_moneyness_groups(
+    conn,
+    sec_type: str | None = None,
+) -> list:
+    """Fetch (underlying_code, date, expiry_month) triples missing from
+    analysis.options_moneyness_series.
+
+    NO open expiry collapse — the table is keyed by the month group the
+    frontend consumes. Candidates: distinct (underlying, date,
+    month-truncated expiry) over VALID rows (expiry_date >= date AND
+    0 < implied_vol < 5 — exactly the live SQL's per_group basis).
+    """
+    from analyze.options.config import MONEYNESS_TABLE_NAME
+
+    pk_columns = ["underlying_code", "date", "expiry_month"]
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT DISTINCT t.underlying_code,
+               extract(epoch from t.date)::float8 AS date,
+               extract(epoch from DATE_TRUNC('month', t.expiry_date))::float8 AS expiry_month
+        FROM stats.options_terms t
+        JOIN stats.options_greeks g
+          ON g.date = t.date AND g.contract_code = t.contract_code
+        WHERE t.expiry_date >= t.date
+          AND g.implied_vol > 0 AND g.implied_vol < 5
+          {sec_filter}
+        ORDER BY t.underlying_code, date, expiry_month
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return []
+
+    df = _records_frame(rows, pk_columns)
+    for c in ("date", "expiry_month"):
+        df[c] = epoch_col_to_dt64(df[c], index=df.index)
+    candidates = df[pk_columns].drop_duplicates()
+
+    existing_pks: list = []
+    try:
+        existing_pks = await conn.fetch(
+            f"SELECT underlying_code, "
+            f"extract(epoch from date)::float8 AS date, "
+            f"extract(epoch from expiry_month)::float8 AS expiry_month "
+            f"FROM {MONEYNESS_TABLE_NAME}"
+        )
+    except Exception:
+        pass
+
+    return _missing_pk_tuples(candidates, existing_pks, pk_columns)
+
+
+async def fetch_missing_spot_dates(
+    conn,
+    sec_type: str | None = None,
+) -> list:
+    """Fetch (underlying_code, date) pairs missing from
+    analysis.options_spot_daily.
+
+    INNER settlement basis — a date qualifies when any settlement row
+    exists for the underlying (the former live spot query's JOIN; dates
+    with only settlement-less terms rows are absent from the axis).
+    """
+    from analyze.options.config import SPOT_TABLE_NAME
+
+    pk_columns = ["underlying_code", "date"]
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT DISTINCT t.underlying_code,
+               extract(epoch from t.date)::float8 AS date
+        FROM stats.options_terms t
+        JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
+        WHERE 1=1
+          {sec_filter}
+        ORDER BY t.underlying_code, date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return []
+
+    df = _records_frame(rows, pk_columns)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    candidates = df[pk_columns].drop_duplicates()
+
+    existing_pks: list = []
+    try:
+        existing_pks = await conn.fetch(
+            f"SELECT underlying_code, "
+            f"extract(epoch from date)::float8 AS date "
+            f"FROM {SPOT_TABLE_NAME}"
+        )
+    except Exception:
+        pass
+
+    return _missing_pk_tuples(candidates, existing_pks, pk_columns)

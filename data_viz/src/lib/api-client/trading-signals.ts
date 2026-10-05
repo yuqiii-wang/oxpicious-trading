@@ -70,28 +70,16 @@ export interface TradingSignal {
   signal_excess_pct: number | null;
   signal: number;
   signal_threshold: number;
-  /** The strategy's expected-move confidence in BASIS POINTS
-   *  (ROUND(10000 × signal_strategies.confidence) — the chosen rung's
-   *  sign-aligned dir_ave). The SignalActionChip input (its 1..100 ramp
-   *  clamps above 100 bp, the ForecastTable treatment). */
+  /** The breach's SCALED expected-move confidence in BASIS POINTS
+   *  (ROUND(10000 × signal_thresholds.confidence_base ×
+   *  scale(|excess|)) — the on-bar dir_ave amplified by the row's
+   *  scale model over the breach depth). The SignalActionChip input
+   *  (its 1..100 ramp clamps above 100 bp, the ForecastTable
+   *  treatment). */
   confidence: number;
   /** The same confidence as the EXPECTED-MOVE PERCENT (confidence / 100,
    *  e.g. 0.87 = 0.87%) — the display number (text cells + tooltips). */
   confidence_pct: number;
-  /** The SAME bucket's ohlcv_boost cohort confidence (bp) — the
-   *  score-trust-weighted measurement of the same trigger days. Add-on
-   *  context shown parenthesized next to the confidence; null when the
-   *  cohort never registered / non-mov_rsi family / history arm row. */
-  confidence_boost: number | null;
-  /** confidence_boost / 100 as the expected-move percent (the
-   *  parenthetical add-on's display number). */
-  confidence_boost_pct: number | null;
-  /** The SAME bucket's ohlcv_selection cohort confidence (bp) — the
-   *  favorable-anatomy subset's own dir_ave (bottom side only, the top
-   *  side carries no selection child). */
-  confidence_selection: number | null;
-  /** confidence_selection / 100 as the expected-move percent. */
-  confidence_selection_pct: number | null;
   /** TRUE = day-close mirror row (analysis run, time 15:00);
    *  FALSE = intraday live-monitor breach. */
   is_day_close_trigger: boolean;
@@ -231,5 +219,121 @@ export function fetchTradingSignalHistory(
   if (date) params.set("date", date);
   return fetchJson<TradingSignalHistoryResponse>(
     `/api/live-data/trading-signals/history?${params.toString()}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Signal CURVES / THRESHOLDS / RSI series — the Recent Movements
+//  code-trend's threshold-vs-curve overlay panel.
+// ---------------------------------------------------------------------------
+
+/** One fitted depth-response curve (analysis_signals.signal_curves at
+ *  its LATEST snapshot): mu(s) = mu_center + slope * (s - s_center)
+ *  over the Gaussian depth score s = Phi^-1(1 - q) of the trigger
+ *  day's tail probability; tail_bars maps tail pct ("1".."10") to the
+ *  window's RSI bar (the s -> RSI-value mapping). */
+export interface SignalCurve {
+  code: string;
+  sec_type: string;
+  signal_type: string;
+  rsi_window: number;
+  /** "top" (sell) | "bottom" (buy). */
+  side: string;
+  /** calm / hot / panic / quiet. */
+  regime_state: string;
+  start_date: string;
+  end_date: string;
+  /** The cell's delay-0 trigger count over the window (the fit's sample). */
+  n: number;
+  /** y-bar: the cell's sign-aligned blended mean forward change at its
+   *  own depth center (fraction; > 0 = the reversal worked). */
+  mu_center: number;
+  /** s-bar: the cell's own mean depth score. */
+  s_center: number;
+  /** b: dmu/ds — the pooled (side, regime) OLS slope (buy side >= 0). */
+  slope: number;
+  /** Tail pct ("1" | "2" | "3" | "5" | "10") -> the window's RSI bar. */
+  tail_bars: Record<string, number>;
+}
+
+export interface SignalCurvesResponse {
+  sec_type: string;
+  code: string;
+  /** The curves' snapshot key (newest end_date; null = no curves). */
+  end_date: string | null;
+  curves: SignalCurve[];
+}
+
+/** The code's LATEST depth-response curves — the CURVE overlay's data. */
+export function fetchSignalCurves(
+  secType: string,
+  code: string,
+): Promise<SignalCurvesResponse> {
+  return fetchJson<SignalCurvesResponse>(
+    `/api/live-data/trading-signals/curves?sec_type=${encodeURIComponent(secType)}&code=${encodeURIComponent(code)}`,
+  );
+}
+
+/** One ACTIVE threshold row of the code — the bar in the RSI's own
+ *  space (the THRESHOLD overlay's lines). */
+export interface SignalThreshold {
+  code: string;
+  sec_type: string;
+  signal_type: string;
+  signal_sub_type: string;
+  /** "top" (sell) | "bottom" (buy). */
+  side: string;
+  /** calm / hot / panic / quiet. */
+  regime_state: string;
+  action: string;
+  signal_threshold: number | null;
+  confidence_base: number | null;
+  scale_method: string | null;
+  scale_base: number | null;
+  scale_factor: number | null;
+  start_date: string;
+  end_date: string;
+}
+
+export interface SignalThresholdsResponse {
+  sec_type: string;
+  code: string;
+  thresholds: SignalThreshold[];
+}
+
+/** The code's ACTIVE signal thresholds — the THRESHOLD overlay's data. */
+export function fetchSignalThresholds(
+  secType: string,
+  code: string,
+): Promise<SignalThresholdsResponse> {
+  return fetchJson<SignalThresholdsResponse>(
+    `/api/live-data/trading-signals/thresholds?sec_type=${encodeURIComponent(secType)}&code=${encodeURIComponent(code)}`,
+  );
+}
+
+/** One daily RSI row (every mov_ave_rsi window column). */
+export interface SignalRsiRow {
+  date: string;
+  rsi_3: number | null;
+  rsi_6: number | null;
+  rsi_10: number | null;
+  rsi_14: number | null;
+  rsi_20: number | null;
+  rsi_60: number | null;
+}
+
+export interface SignalRsiResponse {
+  sec_type: string;
+  code: string;
+  rows: SignalRsiRow[];
+}
+
+/** The code's FULL daily RSI series — the threshold overlay's lines. */
+export function fetchSignalRsiSeries(
+  secType: string,
+  code: string,
+): Promise<SignalRsiResponse> {
+  return fetchJson<SignalRsiResponse>(
+    `/api/live-data/trading-signals/rsi?sec_type=${encodeURIComponent(secType)}&code=${encodeURIComponent(code)}`,
   );
 }

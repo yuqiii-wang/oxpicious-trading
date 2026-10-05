@@ -1,13 +1,17 @@
 /**
- * spot-skew data aggregation — computes the smile skew chronology
- * in-browser from raw per-contract quote rows (stats.v_options_quote via
- * /api/szse-options/combined), grouped by REAL expiry dates.
+ * spot-skew data aggregation — builds the smile skew chronology grouped
+ * by REAL expiry dates, from the server-side /skew-daily aggregate (per
+ * date × expiry anchors: ATM by moneyness, 25Δ/10Δ wings by delta).
  *
- * Why in-browser: the persisted analysis.options_iv_skew_stats collapses
- * still-open expiry groups to a synthetic mean expiry date, so recent
- * dates carry a single merged group — fine for whole-history lines, but
- * it destroys the expiry term structure this panel's Today view needs.
- * The raw rows carry the real expiry per contract.
+ * Why server-side: the panel previously recomputed the anchors in-browser
+ * from the raw per-contract quote rows via /api/szse-options/combined —
+ * a full-history blob that ships ~200MB of JSON for the biggest CFFEX
+ * underlying (and pages that load per-plot only held one date's rows,
+ * leaving the History view empty). The persisted
+ * analysis.options_iv_skew_stats is no substitute either: it collapses
+ * still-open expiry groups to a synthetic mean expiry date, destroying
+ * the expiry term structure the Today view needs. /skew-daily keeps the
+ * real expiry per group at ~10k rows.
  *
  * All skew values are risk reversals in vol points (percent):
  *   RR<delta> = IV(<delta>Δ OTM call) − IV(<delta>Δ OTM put)
@@ -17,7 +21,7 @@
  * nearest-|delta| selection — no interpolation). See
  * docs/options_vol_smile_study.md.
  */
-import type { OptionsRow } from "@shared/types";
+import type { OptionsRow, SkewDailyRow } from "@shared/types";
 
 /** Selectable OTM wing for the risk reversal. */
 export type SkewDelta = 25 | 10;
@@ -145,6 +149,46 @@ export function buildExpiryGroupAgg(
         a.expiryDate.localeCompare(b.expiryDate),
       ),
     );
+  }
+  return out;
+}
+
+/**
+ * Build the same (date → expiry groups) structure directly from the
+ * server-side /skew-daily aggregate — the anchors (ATM + 25Δ/10Δ wings)
+ * were already resolved in SQL with the same nearest-|x| semantics as
+ * buildExpiryGroupAgg, so both views share the downstream builders
+ * unchanged. `dist` is 0 because the nearest selection is already done.
+ *
+ * priceScale: SZSE/SSE ETF closes are stored in 厘 (÷1000 → yuan); CFFEX
+ * index closes are native index points (÷1).
+ */
+export function buildSkewGroupsFromDaily(
+  rows: SkewDailyRow[],
+  priceScale: number = 1000.0,
+): SkewGroupsByDate {
+  const out: SkewGroupsByDate = new Map();
+  for (const r of rows) {
+    let groups = out.get(r.date);
+    if (!groups) {
+      groups = [];
+      out.set(r.date, groups);
+    }
+    const iv = (v: number | null): Anchor | null =>
+      v != null ? { dist: 0, iv: v } : null;
+    groups.push({
+      expiryDate: r.expiry_date,
+      minDte: r.dte,
+      spot: r.spot != null ? r.spot / priceScale : null,
+      atm: iv(r.atm_iv),
+      call25: iv(r.call25_iv),
+      put25: iv(r.put25_iv),
+      call10: iv(r.call10_iv),
+      put10: iv(r.put10_iv),
+    });
+  }
+  for (const groups of out.values()) {
+    groups.sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
   }
   return out;
 }

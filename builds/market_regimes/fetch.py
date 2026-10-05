@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 
 from _common._holidays_and_weekdays import recent_trading_day_cutoff
 from _common.df_utils import epoch_col_to_dt64
+from _common.labels import SEC_TYPE_CODE
 from _common.pre_check_and_load import (
     RECENT_TRADING_DAYS,
     fetch_codes_with_recent_data_async,
@@ -27,8 +29,11 @@ from builds.market_regimes.config import (
 
 logger = logging.getLogger(__name__)
 
-# Output columns of fetch_regime_source (the detector's inputs).
-REGIME_SOURCE_COLUMNS = ("sec_type", "code", "date", "price",
+# Output columns of fetch_regime_source (the detector's inputs). sec_type
+# rides the frame ONLY as its int16 frame code (the label-code contract);
+# the TEXT string is re-materialized at the write boundary from the loop
+# constant (runner.run_market_regimes).
+REGIME_SOURCE_COLUMNS = ("sec_type_id", "code", "date", "price",
                          "trading_amount")
 
 
@@ -48,9 +53,9 @@ async def fetch_regime_source(
     loaded.
 
     Returns a DataFrame with the REGIME_SOURCE_COLUMNS, sorted by
-    (sec_type, code, date) — the order compute_market_regimes requires.
-    Empty (with those columns) when the sec_type has no active codes /
-    no source data.
+    (sec_type_id, code, date) — the order compute_market_regimes
+    requires. Empty (with those columns) when the sec_type has no active
+    codes / no source data.
     """
     empty = pd.DataFrame(columns=list(REGIME_SOURCE_COLUMNS))
     identity_table = SEC_TYPE_IDENTITY_TABLE[sec_type]
@@ -79,6 +84,6 @@ async def fetch_regime_source(
     df = pd.DataFrame(rows, columns=["code", "date", "price",
                                      "trading_amount"])
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
-    df.insert(0, "sec_type", sec_type)
-    return (df.sort_values(["sec_type", "code", "date"])
+    df.insert(0, "sec_type_id", np.int16(SEC_TYPE_CODE[sec_type]))
+    return (df.sort_values(["sec_type_id", "code", "date"])
               .reset_index(drop=True))

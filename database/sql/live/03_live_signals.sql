@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS live.live_signals (
     date            DATE          NOT NULL,  -- live date of the breach
     time            TIME          NOT NULL,  -- tick/bar time of the breach (intraday)
 
-    action          TEXT          NOT NULL,  -- 'sell' (upward breach, signal_excess > 0) | 'buy' (downward breach, signal_excess < 0)
+    action          SMALLINT      NOT NULL,  -- label code (stats.label_dim 'action'): 1 sell (upward breach, signal_excess > 0) | 0 buy (downward breach, signal_excess < 0)
     signal_excess   NUMERIC(18,6) NOT NULL,  -- signal - signal_threshold: > 0 upward breach (above threshold) | < 0 downward breach (below)
     signal_excess_pct NUMERIC(12,4),         -- (signal_excess / |signal_threshold|) * 100 — unitless breach depth pct; NULL when signal_threshold = 0 (guarded by NULLIF)
     signal          NUMERIC(16,4) NOT NULL,  -- the breaching value at this tick (for mov_rsi rows: the RSI value that breached its threshold)
@@ -59,13 +59,13 @@ CREATE TABLE IF NOT EXISTS live.live_signals (
     confidence_boost INTEGER,     -- the same bucket's @boost cohort confidence (bp) — add-on context, never a gate; NULL = no child / non-mov_rsi (see 05_live_signals_cohort_confidence.sql)
     confidence_selection INTEGER, -- the same bucket's @selection cohort confidence (bp) — add-on context, never a gate; NULL = no child / bottom-only / non-mov_rsi
     is_day_close_trigger BOOLEAN  NOT NULL DEFAULT FALSE,  -- TRUE = legacy day-close mirror row (time 15:00:00); FALSE = intraday live-monitor breach
-    regime_state    TEXT          NOT NULL DEFAULT 'calm',  -- the breach bar's DATE regime (stats.market_regimes day label: calm/hot/panic/quiet)
+    regime_state    SMALLINT      NOT NULL DEFAULT 0,  -- label code (stats.label_dim 'regime'): the breach bar's DATE regime (0 calm / 1 hot / 2 panic / 3 quiet)
 
-    created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),  -- record insertion time
+    created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),  -- record audit
 
     CONSTRAINT pk_live_signals PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, date, time),
-    CONSTRAINT chk_live_signals_action CHECK (action IN ('buy', 'sell')),
-    CONSTRAINT chk_live_signals_regime CHECK (regime_state IN ('calm', 'hot', 'panic', 'quiet')),
+    CONSTRAINT chk_live_signals_action CHECK (action BETWEEN 0 AND 1),
+    CONSTRAINT chk_live_signals_regime CHECK (regime_state BETWEEN 0 AND 3),
     CONSTRAINT chk_live_signals_sec_type CHECK (sec_type IN ('stock', 'etf', 'index'))
 ) PARTITION BY HASH (code);
 
@@ -75,8 +75,9 @@ SELECT public.create_hash_partitions('live', 'live_signals', 8);
 CREATE INDEX IF NOT EXISTS idx_live_signals_date
     ON live.live_signals (sec_type, date, time);
 
--- Existing installs gain the regime column here — BEFORE the COMMENT
--- below references it (fresh installs get it from the CREATE body).
+-- Existing installs gain the regime column here — BEFORE the label-code
+-- migration below maps it (fresh installs get the SMALLINT column from
+-- the CREATE body).
 ALTER TABLE live.live_signals
     ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
 
@@ -90,16 +91,56 @@ COMMENT ON COLUMN live.live_signals.signal_type IS 'Breached config''s detection
 COMMENT ON COLUMN live.live_signals.signal_sub_type IS 'Breached config''s indicator + window: rsi{W} for mov_rsi, std{W}_{k} for mov_std — mirrors analysis_signals.signal_strategies.signal_sub_type.';
 COMMENT ON COLUMN live.live_signals.date IS 'The live date on which the breach was observed.';
 COMMENT ON COLUMN live.live_signals.time IS 'The intraday tick/bar time of the breach observation; 15:00:00 on legacy day-close mirror rows (is_day_close_trigger = TRUE).';
-COMMENT ON COLUMN live.live_signals.action IS 'Trading direction of the breached config: sell (top RSI / upper band — upward breach, positive excess) or buy (bottom RSI / lower band — downward breach, negative excess). Denormalized from analysis_signals.signal_strategies.action for direct filtering.';
+COMMENT ON COLUMN live.live_signals.action IS 'Trading direction of the breached config as its stats.label_dim (''action'' domain) SMALLINT code: 1 sell (top RSI / upper band — upward breach, positive excess) or 0 buy (bottom RSI / lower band — downward breach, negative excess). Denormalized from analysis_signals.signal_thresholds.action for direct filtering.';
 COMMENT ON COLUMN live.live_signals.signal_excess IS 'Signed excess of the breaching value over the threshold: signal - signal_threshold (exactly, on the stored columns). Positive = upward breach (signal above signal_threshold), negative = downward breach (below); the sign is correlated with action by convention (sell ↔ positive, buy ↔ negative). Day-close boundary rows (selected within the threshold-rounding tolerance) may carry a tiny opposite-signed excess since signal is stored at 4 decimals.';
 COMMENT ON COLUMN live.live_signals.signal IS 'The value that breached the threshold: the live price at this tick for mov_std rows, the current RSI (analysis.mov_ave_rsi latest row) for mov_rsi rows — RSI thresholds live on the 0-100 scale, so an RSI-vs-threshold breach is recorded in indicator space.';
 COMMENT ON COLUMN live.live_signals.signal_threshold IS 'The threshold the value crossed, denormalized from analysis_signals.signal_strategies.signal_threshold of the config''s active row — the record pins the value it was compared against.';
 
 COMMENT ON COLUMN live.live_signals.confidence IS 'The breached strategy''s expected-move confidence (integer, basis points) = ROUND(10000 × analysis_signals.signal_strategies.confidence) — the chosen rung''s sign-aligned blended mean forward change (dir_ave, a fractional expected move) scaled to bp, copied from the active strategy row at breach time; column DEFAULT 100 only fills legacy rows. (Was the 0-100 percent scale of the removed reverse_prob until 2026-09-25 — pre-rewrite rows keep their old-scale values.)';
 COMMENT ON COLUMN live.live_signals.is_day_close_trigger IS 'TRUE = day-close observation (time 15:00:00): written by the on-demand --date mode (python -m live.live_signals --date D) when the selected date has no intraday bar for the code — the official daily close from stats.{sec_type}_basic_stats, value sources bounded to rows at-or-before D (plus remaining rows of the retired --live day-close mirror writer; the historical record lives in analysis_signals.history_signals); FALSE (default) = intraday-bar breach (live monitor, or the --date mode''s last-intraday-bar replay). The trigger kind of the observation.';
-COMMENT ON COLUMN live.live_signals.regime_state IS 'The breach bar''s DATE regime — the stats.market_regimes day label (calm / hot / panic / quiet), resolved per check by (code, date), so as-of --date replays see exactly the D verdict (daily states are static historical labels, no peeking; shift-1 trailing inputs make every label known at its own day''s close). RECORD, never a gate: the breach still fires; the label marks which regime produced the event and matches the strategy''s own regime split. Replaces the retired is_market_hyped boolean.';
+COMMENT ON COLUMN live.live_signals.regime_state IS 'The breach bar''s DATE regime as its stats.label_dim (''regime'' domain) SMALLINT code (0 calm / 1 hot / 2 panic / 3 quiet — the stats.market_regimes day label), resolved per check by (code, date), so as-of --date replays see exactly the D verdict (daily states are static historical labels, no peeking; shift-1 trailing inputs make every label known at its own day''s close). RECORD, never a gate: the breach still fires; the label marks which regime produced the event and matches the strategy''s own regime split. Replaces the retired is_market_hyped boolean.';
 COMMENT ON COLUMN live.live_signals.created_at IS 'Row insertion timestamp (record audit).';
 COMMENT ON COLUMN live.live_signals.signal_excess_pct IS 'Unitless breach depth: (signal_excess / |signal_threshold|) * 100. Signed like signal_excess (positive = upward/sell, negative = downward/buy). Guarded against divide-by-zero with NULLIF — only meaningful when signal_threshold ≠ 0. Stored so the identity signal_excess_pct = signal_excess / |signal_threshold| * 100 holds exactly (computed from the same rounded signal_excess).';
+
+-- ----------------------------------------------------------------------------
+--  label-code migration (2026-10-05): existing TEXT action/regime_state
+--  columns convert IN PLACE to their stats.label_dim SMALLINT codes —
+--  live breach rows are append-only records that cannot be regenerated,
+--  so no truncate. Fresh installs already have the SMALLINT columns
+--  from the CREATE body (this block no-ops). MUST run BEFORE the
+--  data-quality gates below (the excess-sign gate compares the column
+--  to integers). The retired 2026-09 is_market_hyped fold + TEXT
+--  realignment blocks it replaces already ran everywhere their input
+--  existed. Dropping the TEXT columns auto-drops their IN-list CHECKs;
+--  the gates below re-create the BETWEEN forms.
+-- ----------------------------------------------------------------------------
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'live'
+                 AND table_name = 'live_signals'
+                 AND column_name = 'action'
+                 AND data_type = 'text') THEN
+        ALTER TABLE live.live_signals
+            ADD COLUMN action_code SMALLINT NOT NULL DEFAULT 0,
+            ADD COLUMN regime_state_code SMALLINT NOT NULL DEFAULT 0;
+        UPDATE live.live_signals
+           SET action_code = CASE action WHEN 'sell' THEN 1 ELSE 0 END;
+        UPDATE live.live_signals
+           SET regime_state_code = CASE regime_state
+                                       WHEN 'hot'   THEN 1
+                                       WHEN 'panic' THEN 2
+                                       WHEN 'quiet' THEN 3
+                                       ELSE 0 END;
+        ALTER TABLE live.live_signals
+            DROP COLUMN action,
+            DROP COLUMN regime_state;
+        ALTER TABLE live.live_signals
+            RENAME COLUMN action_code TO action;
+        ALTER TABLE live.live_signals
+            RENAME COLUMN regime_state_code TO regime_state;
+    END IF;
+END $$;
 
 -- ----------------------------------------------------------------------------
 --  Data-quality gates (shared helpers, see 00_partition_utils.sql): the
@@ -123,55 +164,22 @@ SELECT public.ensure_check_constraint(
     'live.live_signals',
     'chk_live_signals_confidence',
     $chk$confidence BETWEEN 0 AND 10000$chk$);
+-- label-code vocab gates (fresh installs carry these from the CREATE
+-- body; migrated installs lost them with the dropped TEXT columns).
 SELECT public.ensure_check_constraint(
     'live.live_signals',
-    'chk_live_signals_excess_sign',
-    $chk$(action = 'sell' AND (signal_excess >= 0
-                              OR abs(signal_excess) < 0.0001))
-   OR (action = 'buy'  AND (signal_excess <= 0
-                              OR abs(signal_excess) < 0.0001))$chk$);
-
-SELECT public.validate_pending_checks('live');
-
--- ----------------------------------------------------------------------------
---  market-regime migration (2026-09): regime_state ships in the CREATE
---  body above for fresh installs; existing installs gain it here
---  (metadata-only ADD COLUMN, default 'calm'). The retired boolean is
---  folded in (TRUE -> 'hot', FALSE -> 'calm' — the closest successor
---  semantics) and dropped; rows are then realigned with the daily
---  states table where it exists. Idempotent.
--- ----------------------------------------------------------------------------
-ALTER TABLE live.live_signals
-    ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema = 'live'
-                 AND table_name = 'live_signals'
-                 AND column_name = 'is_market_hyped') THEN
-        UPDATE live.live_signals
-        SET regime_state = CASE WHEN is_market_hyped
-                                THEN 'hot' ELSE 'calm' END;
-        ALTER TABLE live.live_signals DROP COLUMN is_market_hyped;
-    END IF;
-    IF to_regclass('stats.market_regimes') IS NOT NULL THEN
-        UPDATE live.live_signals l
-        SET regime_state = r.regime
-        FROM stats.market_regimes r
-        WHERE r.sec_type = l.sec_type
-          AND r.code = l.code
-          AND r.date = l.date
-          AND l.regime_state <> r.regime;
-    END IF;
-END $$;
-
--- ----------------------------------------------------------------------------
---  regime vocab gate on existing installs (fresh installs get it from
---  the CREATE body above). NOT VALID first, validated by the sweep.
--- ----------------------------------------------------------------------------
+    'chk_live_signals_action',
+    $chk$action BETWEEN 0 AND 1$chk$);
 SELECT public.ensure_check_constraint(
     'live.live_signals',
     'chk_live_signals_regime',
-    $chk$regime_state IN ('calm', 'hot', 'panic', 'quiet')$chk$);
+    $chk$regime_state BETWEEN 0 AND 3$chk$);
+SELECT public.ensure_check_constraint(
+    'live.live_signals',
+    'chk_live_signals_excess_sign',
+    $chk$(action = 1 AND (signal_excess >= 0
+                          OR abs(signal_excess) < 0.0001))
+   OR (action = 0 AND (signal_excess <= 0
+                          OR abs(signal_excess) < 0.0001))$chk$);
+
 SELECT public.validate_pending_checks('live');

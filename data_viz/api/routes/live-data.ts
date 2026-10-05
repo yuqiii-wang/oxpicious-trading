@@ -35,6 +35,9 @@ import {
 import { runPythonModule, getPythonProcessStatus, isPythonProcessRunning } from "../services/py-runner.service.js";
 import { getSecAllocLiveAttribution } from "../services/sec-alloc-live-attribution.service.js";
 import {
+  fetchSignalCurves,
+  fetchSignalRsiSeries,
+  fetchSignalThresholds,
   fetchTradingSignalConfigs,
   fetchTriggeredSignals,
   fetchTradingSignalDates,
@@ -407,7 +410,7 @@ router.get("/sec-alloc-live/run/status", async (req: Request, res: Response) => 
 
 // ---------------------------------------------------------------------------
 //  Trading Signals (analysis scheme) — live breach records for the
-//  analysis_signals.signal_strategies threshold set.
+//  analysis_signals.signal_thresholds threshold set.
 // ---------------------------------------------------------------------------
 
 /** Asia/Shanghai "biz today" (YYYY-MM-DD) — UTC+8 year-round, so the
@@ -426,7 +429,7 @@ const TRADING_SIGNALS_RUN_ANALYSIS_TAG = "trading-signals:run-analysis";
 /** POST /api/live-data/trading-signals/run
  *  body: { sec_types?: string[] } — spawns
  *  `python -m live.live_signals --sec-type <csv>` (batch mode: every code
- *  with ACTIVE analysis_signals.signal_strategies configs of the given
+ *  with ACTIVE analysis_signals.signal_thresholds configs of the given
  *  sec_types; codes
  *  without intraday price are skipped server-side). Fired by the page's
  *  Refresh button and the once-per-biz-day 13:30 scheduler. Deduped by
@@ -463,7 +466,7 @@ router.post("/trading-signals/run", async (req: Request, res: Response) => {
 /** POST /api/live-data/trading-signals/run-analysis
  *  body: { sec_types?: string[] } — spawns
  *  `python -m analyze.analysis_signals --sec-type <csv>`: the signals
- *  pipeline (re-emits analysis_signals.signal_strategies +
+ *  pipeline (re-emits analysis_signals.signal_thresholds +
  *  analysis_signals.history_signals for the missing months plus the
  *  newest refresh months, from the analysis_forecasts buckets).
  *  Fired by the page's old-date refresh when no intraday data exists
@@ -515,7 +518,7 @@ router.get("/trading-signals/run/status", async (_req: Request, res: Response) =
 
 /** GET /api/live-data/trading-signals/configs?sec_type=index
  *  → { sec_type, configs: [{signal_type, signal_sub_type, n_configs}] } —
- *  the ACTIVE analysis_signals.signal_strategies configs (signal menu;
+ *  the ACTIVE analysis_signals.signal_thresholds configs (signal menu;
  *  default = all). */
 router.get("/trading-signals/configs", async (req: Request, res: Response) => {
   try {
@@ -574,6 +577,87 @@ router.get("/trading-signals/history", async (req: Request, res: Response) => {
   } catch (err) {
     const status = (err as { status?: number })?.status ?? 500;
     console.error("[live-data/trading-signals/history] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals/curves?sec_type=index&code=000001
+ *  → { sec_type, code, end_date, curves: [...] } — the code's LATEST
+ *  depth-response curves (one row per rsi_window x side x regime at
+ *  the newest snapshot): mu(s) = mu_center + slope * (s - s_center)
+ *  over the Gaussian depth score, plus the tail_bars s -> RSI-value
+ *  mapping. The Recent Movements code-trend's CURVE overlay. */
+router.get("/trading-signals/curves", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const code = typeof req.query.code === "string"
+      ? req.query.code.trim() : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    const curves = await fetchSignalCurves(secType, code);
+    res.json({
+      sec_type: sec_type_valid(secType),
+      code,
+      end_date: curves[0]?.end_date ?? null,
+      curves,
+    });
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals/curves] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals/thresholds?sec_type=index&code=000001
+ *  → { sec_type, code, thresholds: [...] } — the code's ACTIVE signal
+ *  thresholds (each config's latest end_date row; the bars in the
+ *  RSI's own space). The Recent Movements code-trend's THRESHOLD
+ *  overlay. */
+router.get("/trading-signals/thresholds", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const code = typeof req.query.code === "string"
+      ? req.query.code.trim() : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    const thresholds = await fetchSignalThresholds(secType, code);
+    res.json({
+      sec_type: sec_type_valid(secType),
+      code,
+      thresholds,
+    });
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals/thresholds] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals/rsi?sec_type=index&code=000001
+ *  → { sec_type, code, rows: [{date, rsi_3, .., rsi_60}] } — the
+ *  code's FULL daily RSI series (every mov_ave_rsi window column,
+ *  ascending). The threshold overlay's lines. */
+router.get("/trading-signals/rsi", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const code = typeof req.query.code === "string"
+      ? req.query.code.trim() : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    const rows = await fetchSignalRsiSeries(secType, code);
+    res.json({ sec_type: sec_type_valid(secType), code, rows });
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals/rsi] error:", err);
     res.status(status).json({ error: String(err) });
   }
 });

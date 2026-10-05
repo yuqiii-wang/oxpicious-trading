@@ -20,24 +20,29 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-# The side→action constants are single-sourced in config (also read by
-# the engines._quality breach check).
+# The side→action constants are single-sourced in config (SMALLINT
+# label codes — the label-code contract; strings never enter frames).
 from analyze.analysis_signals.config import (
-    ABOVE_ACTION,
-    BELOW_ACTION,
-    SELL_SIDES,
+    ABOVE_ACTION_CODE,
+    BELOW_ACTION_CODE,
+    SELL_SIDE_CODES,
 )
 
 
 class FramePrimitives:
-    """action_of / frame_records — the shared vectorized helpers of
-    the machinery and the family builds (see module docstring)."""
+    """action_of / frame_records — the shared vectorized helpers of the
+    machinery and the family builds (see module docstring)."""
 
     def action_of(self, side: pd.Series) -> pd.Series:
-        """The strategy action by the bucket's OWN stored side (sell for
-        top/upper, buy otherwise) — vectorized, no CASE anywhere."""
-        action = pd.Series(BELOW_ACTION, index=side.index)
-        return action.mask(side.isin(SELL_SIDES), ABOVE_ACTION)
+        """The strategy action CODE by the bucket's OWN stored side code
+        (1 sell for top/upper, 0 buy otherwise) — vectorized, no CASE
+        anywhere. int16 end-to-end (stats.label_dim 'action')."""
+        action = pd.Series(
+            BELOW_ACTION_CODE, index=side.index, dtype="int16",
+        )
+        return action.mask(
+            side.isin(SELL_SIDE_CODES), ABOVE_ACTION_CODE,
+        )
 
     def frame_records(
         self, df: pd.DataFrame, date_cols: tuple[str, ...] = (),

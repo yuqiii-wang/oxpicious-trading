@@ -13,11 +13,11 @@
     links to a news_id either way;
   * the per-ref typing lands in ``text.llm_qa_refs`` (qa_id, news_id) ->
     (ref — the representative citation tag, ref_type, is_used — whether
-    the answer cites the article, resolved_url, ref_time — the
-    reference's publish time per the search response, now() when absent,
-    resolved_via — the provenance behind ref_type), upserted so
-    re-storing refreshes the resolution in place; every hit lands here,
-    cited or not (build_ref_rows collapses same-article refs);
+    the answer cites the article, resolved_url, ref_time — the reference's
+    ACTUAL publish time (response date or URL date; NULL when unknown,
+    never now()), resolved_via — the provenance behind ref_type), upserted
+    so re-storing refreshes the resolution in place; every hit lands
+    here, cited or not (build_ref_rows collapses same-article refs);
   * Q&A -> text.llm_qa through llm_agents.llm_qa.upsert_qa with the
     resolved news_ids grouped as provenance (text.news_groups ->
     text.news_group_items), the formatted reference list as ``context``,
@@ -44,7 +44,8 @@ from llm_agents.online_search_summary.core.models import (
     SHANGHAI_TZ, SearchHit, SearchSummary,
 )
 from llm_agents.online_search_summary.storage.matching import (
-    REF_TYPE_EXACT, VIA_SUMMARY, hit_ref_time,
+    REF_TYPE_EXACT, REF_WINDOW_DAYS, VIA_SUMMARY, hit_ref_time,
+    in_ref_window, news_row_date,
 )
 from llm_agents.online_search_summary.storage.resolve import (
     RefResolver, ResolvedRef, build_ref_rows,
@@ -76,14 +77,18 @@ class OnlineSearchSummaryStore:
     ) -> List[Dict[str, Any]]:
         """Project hits onto text.news column rows, deduped on the natural
         key (title, source, date) — an in-batch PK duplicate would make
-        bulk_upsert raise "cannot affect row a second time"."""
+        bulk_upsert raise "cannot affect row a second time".
+
+        Dated by news_row_date: the hit's own publish date, else the
+        URL-embedded date, else *fallback_date* (last resort — it displays
+        as the row-creation date, not the article's)."""
         fallback_date = fallback_date or datetime.datetime.now(
             SHANGHAI_TZ).date()
         seen: set = set()
         rows: List[Dict[str, Any]] = []
         for h in hits:
             source = h.media or "web"
-            date = h.publish_date or fallback_date
+            date = news_row_date(h, fallback_date)
             key = (h.title, source, date)
             if key in seen:
                 continue
@@ -138,7 +143,7 @@ class OnlineSearchSummaryStore:
         out = []
         for h in hits:
             key = (h.title, h.media or "web",
-                   h.publish_date or fallback_date)
+                   news_row_date(h, fallback_date))
             nid = id_by_key.get(key)
             if nid is None:
                 # A re-find miss right after the batch upsert means key
@@ -213,16 +218,27 @@ class OnlineSearchSummaryStore:
         falling back to a null-content news placeholder. Every resolution
         is written to text.llm_qa_refs on (qa_id, ref). *qa_date* is the
         question's own data date (text.llm_qa.qa_date); None keeps the
-        now() default.
+        now() default. Refs whose KNOWN publish date falls outside the
+        qa's interest window ([qa day - 20d, qa day]) are dropped before
+        the news-group provenance and the refs rows — they predate what
+        the question is about; unknown-dated refs (ref_time NULL) stay.
         """
         from llm_agents.llm_qa import upsert_qa
 
+        qa_day = (qa_date or datetime.datetime.now(SHANGHAI_TZ)).date()
         if resolve:
             resolved = await RefResolver(
                 self._conn, industry_id=industry_id).resolve(summary.hits)
         else:
             resolved = await self._fast_resolve(summary.hits,
                                                 industry_id=industry_id)
+        kept = [r for r in resolved if in_ref_window(r.ref_time, qa_day)]
+        n_dropped = len(resolved) - len(kept)
+        if n_dropped:
+            logger.info("    [DB] %d ref(s) outside the qa interest "
+                        "window (qa_day=%s, -%dd) dropped",
+                        n_dropped, qa_day.isoformat(), REF_WINDOW_DAYS)
+        resolved = kept
 
         # Group news_ids in ref order, deduplicated (two refs may resolve
         # to the same article).
@@ -278,10 +294,10 @@ class OnlineSearchSummaryStore:
         build_ref_rows collapses same-article refs onto one row per
         article — representative ref tag, is_used from the answer's cited
         tags; every resolved ref loads, cited or not. ref_time carries the
-        reference's publish time as reported by the search response; refs
-        the response carried no date for get now(). resolved_via records
-        the provenance ('summary' | 'corpus' | 'ddgs' | 'zhihu' — see
-        storage.matching) that ref_type is derived from.
+        reference's ACTUAL publish time (response publish_date, else the
+        URL-embedded date); unknown dates are stored NULL. resolved_via
+        records the provenance ('summary' | 'corpus' | 'ddgs' | 'zhihu' —
+        see storage.matching) that ref_type is derived from.
 
         Deliberately NON-FATAL: the Q&A row is already stored at this
         point, so a failed refs write logs a warning instead of raising

@@ -66,6 +66,11 @@ export function skewLineColor(skew: number): string {
 // Valuation — PE ratio (distinct from Close/IV_BLUE)
 export const PE_COLOR = cssVar("--chart-pe", "#e377c2"); // tableau pink — stands apart from blue/orange/purple MA lines
 
+// Valuation — dividend price ESTIMATION curve (analysis.dividend_est
+// div_est_price). Replaces the PE curve on the Dividends page's ETF panel;
+// tableau purple, distinct from the pink PE and the gold dividend markers.
+export const DIV_EST_COLOR = cssVar("--chart-div-est", "#9467bd");
+
 // Spot / max pain / OI-weighted
 export const SPOT_COLOR = cssVar("--chart-spot", "#2C3E50");
 

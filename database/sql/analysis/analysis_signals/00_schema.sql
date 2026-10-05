@@ -1,50 +1,46 @@
 -- ============================================================================
 --  Schema: analysis_signals
 --
---  The SIGNAL STRATEGY tier over analysis_forecasts:
+--  The SIGNAL THRESHOLD tier — computed entirely in-engine
+--  (analyze/analysis_signals) off analysis.mov_ave_rsi + prices +
+--  stats.market_regimes (the forecast layer was REMOVED 2026-10-05):
 --
---    - signal_strategies: one row per forecast bucket (code × stat_date
---      snapshot M × config) whose mixed forecast_results DELAY LADDER
---      (delay 0..5, each rung conditioned on the signal having
---      persisted that long) has a rung passing the plain gate
---      (sign-aligned blended mean forward change > 0.75%). The
---      registered rung is the OPTIMAL ENTRY
---      DELAY — occurrence_count × sign-aligned dir_ave argmax over the
---      gate-passing rungs (opportunity cost vs return; ties → the
---      smallest delay) — stored as signal_delay_days. The strategy
---      covers the bucket's
---      forecast period (start_date .. end_date = the snapshot stat_date; the
---      trailing 5-year window (M - 5y, M]) and stores the breach bar in
---      the underlying value's own space — the live tier's threshold set.
---      side is a STORED column (top/bottom/upper/lower) so no consumer
---      ever derives it.
+--    - signal_thresholds: one row per in-engine bucket (code × stat_date
+--      snapshot M × config) whose blended MIXED row (the fixed
+--      5d 0.65 / next 0.25 / 20d 0.10 horizon mix over the triggers'
+--      valid anchors) passes the plain gate (sign-aligned blended mean
+--      forward change > 0.75%) at the per-side sample floor (4 buys /
+--      3 sells). A strategy IS its delay-0 profile — the trigger is
+--      each qualifying streak's FIRST day. The threshold covers the
+--      bucket's window period (start_date .. end_date = the snapshot
+--      stat_date; the trailing 10-year window) and stores the breach
+--      bar in the underlying value's own space plus the
+--      confidence-scale parameters: confidence_base (the on-bar
+--      sign-aligned dir_ave) + scale_method/scale_base/scale_factor —
+--      the breach depth amplifies the base,
+--      confidence(bps) = ROUND(10000 × confidence_base × scale(|excess|)).
+--      side is a STORED column (top/bottom) so no consumer ever
+--      derives it.
 --    - history_signals: one row per qualifying trigger day INSIDE the
 --      strategy's own snapshot M (one snapshot owns each date →
 --      no cross-snapshot PK conflicts) — the event record (value, bar,
---      excess), a structural clone of live.live_signals.
+--      excess, scaled confidence), a structural clone of live.live_signals.
 --
---  Emission slices (current build): mov_rsi pct = 1 (top → sell /
---  bottom → buy) and mov_std MA/σ windows >= 60d at k >= 2.0σ
---  (upper → sell / lower → buy), every regime_state split.
---
---  Cooperation contract with analysis_forecasts:
---    strategies are produced ONLY for the stat_dates that
---    analysis_forecasts already has rows for — the forecasts' start
---    snapshot sets the first strategy period. Each snapshot's emission
---    uses the forecasts' own buckets and trigger days (never re-detects).
+--  Emission slice (current build): mov_rsi pct in {1, 2, 3} (top →
+--  sell / bottom → buy), every regime_state split.
 --
 --  Population convention:
 --    - `python -m analyze.analysis_signals` runs incrementally at
---      snapshot granularity (only stat_dates missing from
---      signal_strategies are emitted, plus the MUTABLE SCOPE — the
+--      snapshot granularity (only snapshots missing from
+--      signal_thresholds are emitted, plus the MUTABLE SCOPE — the
 --      rolling-latest snapshot and the newest year-end whose forward
 --      windows realize — re-emitted every run; each snapshot's
---      strategy + history rows are written atomically in one
+--      threshold + history rows are written atomically in one
 --      transaction).
 --    - `--force` deletes the sec_type's rows in both tables and
---      re-emits every stat_date present in analysis_forecasts.
+--      re-emits every snapshot on the engine's snapshot grid.
 -- ============================================================================
 
 CREATE SCHEMA IF NOT EXISTS analysis_signals;
 
-COMMENT ON SCHEMA analysis_signals IS 'Signal strategy tier over analysis_forecasts: signal_strategies (one row per gate-passing forecast bucket — the fixed setup over its forecast period, with the live breach bar) and history_signals (one row per qualifying trigger day inside the bucket''s own snapshot — the event record). Populated incrementally by python -m analyze.analysis_signals, snapshot-gated to the stat_dates present in analysis_forecasts; mov_rsi pct = 1 and mov_std (>= 60d windows, k >= 2.0) only.';
+COMMENT ON SCHEMA analysis_signals IS 'Signal threshold tier (computed in-engine off analysis.mov_ave_rsi + prices — the forecast layer was removed 2026-10-05): signal_thresholds (one row per gate-passing bucket — the fixed setup over its window period, with the live breach bar and the confidence-scale parameters) and history_signals (one row per qualifying trigger day inside the bucket''s own snapshot — the event record). Populated incrementally by python -m analyze.analysis_signals; mov_rsi pct = 1/2/3 only.';

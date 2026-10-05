@@ -121,7 +121,7 @@ export function fetchMovAveSpreadChartShared(
 }
 
 /** On-demand metric groups for the MA-Spread panel. Each group feeds one
- *  control section (amt → Amt/MA chips, ohlc → OHLC Window,
+ *  control section (amt → Amt/MA chips, ohlc → Roof/Floor Trendlines,
  *  streaks → High/Low Streaks, pxvol → Px-Vol States) and is fetched the
  *  first time one of its buttons is picked. */
 export function fetchMovAveSpreadExtras(

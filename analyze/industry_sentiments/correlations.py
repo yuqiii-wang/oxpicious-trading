@@ -74,6 +74,7 @@ from typing import Optional, Set
 import numpy as np
 import pandas as pd
 
+from _common.labels import POOL_SIZE_CODE, POOL_SIZE_LABEL
 from _common.build_commons import (
     copy_or_upsert_split_async,
     truncate_table_async,
@@ -132,7 +133,10 @@ ANALYSIS_DESCRIPTION = (
 
 # Same-pool slices materialized. Cross-pool comparisons (e.g. corr(A.small,
 # B.large)) are intentionally NOT materialized — see module docstring.
-POOL_SIZES = ["small", "mid", "large", "all"]
+# Values are the stats.label_dim SMALLINT codes (0 small / 1 mid / 2 large /
+# 3 all) — pool_size rides frames, row dicts and the table as int
+# end-to-end; POOL_SIZE_LABEL decodes for the log lines only.
+POOL_SIZES = [POOL_SIZE_CODE[p] for p in ("small", "mid", "large", "all")]
 
 # Window lengths in trading days. The MA-{W} curve is the trailing W-day
 # rolling mean of mean_close; corr_ma{W}_{W}d correlates the two industries'
@@ -574,7 +578,8 @@ async def run_correlations(
         n_pairs_with_data += pool_pairs
         pool_rows = int(s_idx.size)
         if s_idx.size == 0:
-            logger.info(f"      [{pool:5s}] {t_len:,} dates x {n_ind} industries "
+            logger.info(f"      [{POOL_SIZE_LABEL[pool]:5s}] {t_len:,} dates "
+                  f"x {n_ind} industries "
                   f"-> {pool_pairs:,}/{n_ind * (n_ind - 1) // 2:,} pairs "
                   f"(overlap >= {MIN_OVERLAP}), {starts.size:,} grid "
                   f"starts, {pool_rows:,} rows")
@@ -614,7 +619,8 @@ async def run_correlations(
             )
         )
 
-        logger.info(f"      [{pool:5s}] {t_len:,} dates x {n_ind} industries -> "
+        logger.info(f"      [{POOL_SIZE_LABEL[pool]:5s}] {t_len:,} dates x "
+              f"{n_ind} industries -> "
               f"{pool_pairs:,}/{n_ind * (n_ind - 1) // 2:,} pairs "
               f"(overlap >= {MIN_OVERLAP}), {starts.size:,} grid starts, "
               f"{pool_rows:,} rows")
@@ -689,7 +695,8 @@ async def run_correlations(
     """)
     logger.info("\n      Summary by pool_size:")
     for r in summary:
-        logger.info(f"        {r['pool']:6s}: {r['n_rows']:>8,} rows . "
+        logger.info(f"        {POOL_SIZE_LABEL[r['pool']]:6s}: "
+              f"{r['n_rows']:>8,} rows . "
               f"{r['n_pairs']:>4} pairs . "
               f"{r['first_date']} -> {r['last_date']}")
 

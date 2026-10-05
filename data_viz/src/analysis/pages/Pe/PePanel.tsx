@@ -94,6 +94,12 @@ const STREAK_LOW_ACCENT = "#F9A825";
  *  just shows PE content). */
 const STREAK_METRIC: PeStreakMetric = "pe";
 
+/** Combo preselected on mount and after a code switch — the card opens
+ *  listing the 255d / 1% streaks (clicking the active chip still clears
+ *  the selection). */
+const DEFAULT_STREAK_PERIOD = 255;
+const DEFAULT_STREAK_PCT = 1;
+
 /** Format one streak's pe value (a plain multiple). */
 function fmtStreakValue(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "—";
@@ -121,9 +127,12 @@ export function PePanel({
   const [chartData, setChartData] = useState<PeChartResponse | null>(null);
 
   // Streak combo selection: band lookback period + band tightness pct. The
-  // metric is FIXED to PE (STREAK_METRIC — no metric filter row).
-  const [streakPeriod, setStreakPeriod] = useState<number | null>(null);
-  const [streakPct, setStreakPct] = useState<number | null>(null);
+  // metric is FIXED to PE (STREAK_METRIC — no metric filter row). Defaults
+  // to the 255d / 1% combo so the streak table + chart render on open.
+  const [streakPeriod, setStreakPeriod] = useState<number | null>(
+    DEFAULT_STREAK_PERIOD,
+  );
+  const [streakPct, setStreakPct] = useState<number | null>(DEFAULT_STREAK_PCT);
 
   // Streak shading anchor (index into the selected metric's observation
   // rows; null = the latest row) + the clicked archive streak (drives the
@@ -170,10 +179,11 @@ export function PePanel({
     };
   }, [code, secType, refreshKey]);
 
-  // Reset the streak combo/anchor when the code changes.
+  // Reset the streak combo/anchor when the code changes (back to the
+  // default open combo, not to a cleared one).
   useEffect(() => {
-    setStreakPeriod(null);
-    setStreakPct(null);
+    setStreakPeriod(DEFAULT_STREAK_PERIOD);
+    setStreakPct(DEFAULT_STREAK_PCT);
     setStreakAnchorIdx(null);
     setSelectedStreak(null);
   }, [code, secType]);

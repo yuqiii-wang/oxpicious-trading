@@ -1,20 +1,28 @@
 """MovRsiEngine — the mov_rsi signal-family engine
 (analyze.analysis_signals.engines.signal_families.mov_rsi._engine).
 
-Emission slice: the top/bottom-{1,2,3}% RSI percentile buckets, BOTH
-sides, every regime split. A bucket whose MIXED forecast_results row
-passes the plain gate (sign-aligned dir_ave > 0.75%) at the
-robustness floors AND the final claim-profile SignalQuality gate
-becomes ONE strategy row over the bucket's forecast period
-(start_date .. end_date = the snapshot key); the strategy's trigger
-days INSIDE the snapshot's calendar year become its history rows. Row
-construction sits in _strategies / _history.
+THE rsi-pct family (the only one), TWO emission paths over the same
+shared machinery (_buckets — percentile ranks / bars, streak-merged
+delay-0 triggers, blended forward stats):
 
-The wide RSI value frame (one column per window) is melted to long
-(code, date, window, value) by concat-of-window-slices (native ops
-only; no melt, no string ops).
+  threshold/  the DISCRETE path (the family's original emission):
+    per snapshot the in-engine RSI percentile buckets at the
+    top/bottom-{1,2,3}% tails, gated at the robustness floors → ONE
+    signal_thresholds row per passing bucket over its window period +
+    the snapshot-owned trigger days as history_signals rows.
+  curve/      the CONTINUOUS path (2026-10-05): the depth-response
+    line mu(s) = mu_center + slope * (s - s_center) per (code,
+    rsi_window, side, regime_state) over the snapshot's q <= 10% tail
+    triggers → analysis_signals.signal_curves rows (no gate — the
+    confidence model, not a strategy; see curve/_curves.py).
 
-Frames stay NATIVE-dtype only (see engines._base): the per-snapshot
+Emission slice (threshold path): the top/bottom-{1,2,3}% buckets, BOTH
+sides, every regime split (regime_state is a signal_thresholds PK
+member — each split registers on its own gate pass). No derived
+populations (the ohlcv boost/selection cohorts were RETIRED with the
+forecast layer 2026-10-05).
+
+Frames stay NATIVE-DTYPE only (see engines._base): the per-snapshot
 constants (sec_type / signal_type / period bounds / is_active) attach
 to the records at the boundary, never through the frames.
 """
@@ -26,72 +34,115 @@ from datetime import date
 import pandas as pd
 
 from analyze.analysis_signals.config import RSI_PCTS_EMIT, RSI_WINDOWS
-from analyze.analysis_signals.config.mov_rsi import SLOW_CLAIM
 from analyze.analysis_signals.engines._base import SignalEngine
-from analyze.analysis_signals.engines.signal_families.mov_rsi._history import (
-    history_rows,
+from analyze.analysis_signals.engines.signal_families.mov_rsi._buckets import (
+    BucketContext,
 )
-from analyze.analysis_signals.engines.signal_families.mov_rsi._strategies import (  # noqa: E501
+from analyze.analysis_signals.engines.signal_families.mov_rsi.curve import (
+    curve_records,
+)
+from analyze.analysis_signals.engines.signal_families.mov_rsi.threshold import (
+    history_rows,
     strategy_rows,
 )
 from analyze.analysis_signals.fetch import (
-    fetch_mov_rsi_buckets,
-    fetch_mov_rsi_values,
+    fetch_active_codes,
+    fetch_first_dates,
+    fetch_market_regimes,
+    fetch_rsi_codes,
+    fetch_rsi_inputs,
 )
 
 logger = logging.getLogger(__name__)
 
-# The wide RSI value columns (one per window) → the melt's
-# window → column mapping.
-_VALUE_COLS = {w: f"rsi_{w}days" for w in RSI_WINDOWS}
-
 
 class MovRsiEngine(SignalEngine):
-    """mov_rsi: RSI top/bottom-{1,2,3}% percentile strategies + history."""
+    """mov_rsi: RSI top/bottom-{1,2,3}% percentile strategies + history
+    + the continuous depth-response curves, computed in-engine off
+    analysis.mov_ave_rsi."""
 
     signal_type = "mov_rsi"
-    bucket = "mov_rsi"
     stage_key = "rsi"
     identity_name = "signals_mov_rsi"
     bucket_keys = ("code", "rsi_window", "pct", "side", "regime_state")
-    slow_claim = SLOW_CLAIM
     identity_description = (
-        "mov_rsi signal strategies over analysis_forecasts: the "
-        "top/bottom-{1,2,3}% RSI percentile buckets whose MIXED "
-        "forecast row passes the plain gate (sign-aligned blended mean "
-        "reversal > 0.75%) at the robustness floors (chosen-rung "
-        "sample floor 4 buys / 3 sells; ladder stability 2 buys / 1 sell "
-        "of rungs 0-2 positive) AND "
-        "the final claim-profile SignalQuality gate (breach "
-        "coherence + 5d forward-mean alignment on every bucket, + 20d "
-        "alignment on the slow claims W >= 20, + the 0.75 risk cap as "
-        "ONE weight-blended verdict over 5d/20d — bar 0.50, the 5d "
-        "bar carries the decision), "
-        "one strategy per bucket over its forecast period + the "
-        "strategy's trigger days inside its own snapshot year as "
-        "history signals."
+        "mov_rsi signal strategies over the RSI percentile (rsi pct) "
+        "buckets computed in-engine from analysis.mov_ave_rsi (the "
+        "forecast layer was retired 2026-10-05): the top/bottom-{1,2,3}% "
+        "buckets whose delay-0 blended mixed-row stats pass the plain "
+        "gate (sign-aligned blended mean reversal > 0.75%) at the sample "
+        "floor (4 buys / 3 sells of the window's qualifying streaks), "
+        "one strategy per bucket over its trailing 10y window period + "
+        "the strategy's trigger days (each qualifying streak's first "
+        "day) inside its own snapshot year as history signals + the "
+        "continuous depth-response curves (signal_curves: the fitted "
+        "mu(s) line over the Gaussian depth score per code x window x "
+        "side x regime, the 2026-10 depth-response formulation)."
     )
+
+    def __init__(self) -> None:
+        self._context: BucketContext | None = None
+        self._sec_type: str | None = None
 
     # ---- phases -------------------------------------------------------------
 
-    # The derived-population cohorts (the base class's populations
-    # contract): the parent + the two ohlcv children, each its own
-    # independently-gated, separately-ranked strategy cohort.
-    populations = (None, "ohlcv_boost", "ohlcv_selection")
+    async def prepare(
+        self, conn, sec_type: str, specs: list,
+        codes: frozenset[str] | None = None,
+    ) -> None:
+        """Fetch the input frame ONCE for the run's target snapshots
+        (price + the RSI window columns, bounded to the earliest
+        target window start, no upper bound — forward changes need
+        post-snapshot prices), the per-code first-data dates (the live
+        gate) and the daily market-regime labels; build the
+        BucketContext the per-snapshot computations read. ``codes``
+        optionally scopes the universe (the study-scope rule: analysis
+        runs write the 10 study indices unless explicitly widened)."""
+        universe = (await fetch_active_codes(conn, sec_type)) \
+            & (await fetch_rsi_codes(conn, sec_type))
+        if codes is not None:
+            universe &= set(codes)
+        codes_sorted = sorted(universe)
+        self._sec_type = sec_type
+        logger.info(f"  [{sec_type}] mov_rsi universe: "
+                    f"{len(codes_sorted):,} active codes with RSI data")
+        since = min(s.lower for s in specs)
+        first_dates = await fetch_first_dates(
+            conn, sec_type, codes_sorted,
+        )
+        regimes = await fetch_market_regimes(conn, sec_type, since)
+        logger.info(f"  [{sec_type}]   {len(regimes):,} daily "
+                    f"market-regime rows since {since.isoformat()}")
+        df = await fetch_rsi_inputs(conn, sec_type, codes_sorted, since)
+        logger.info(f"  [{sec_type}]   {len(df):,} (code, date) input rows")
+        if df.empty:
+            self._context = BucketContext(df, specs, sec_type)
+            return
+        df = BucketContext.add_forward_changes(df)
+        df = BucketContext.prepare_frame(df, first_dates, regimes)
+        self._context = BucketContext(df, specs, sec_type)
 
-    async def fetch_buckets(
-        self, conn, sec_type: str, stat_date: date,
-        population: str | None = None,
-        codes: list[str] | None = None,
-    ) -> pd.DataFrame:
-        return await fetch_mov_rsi_buckets(
-            conn, sec_type, stat_date, RSI_PCTS_EMIT, population, codes,
+    def buckets(self, spec) -> tuple[pd.DataFrame, pd.DataFrame]:
+        assert self._context is not None, "prepare() must run first"
+        bk = self._context.buckets(
+            spec, rsi_windows=RSI_WINDOWS, pcts=RSI_PCTS_EMIT,
+        )
+        return bk.rung, bk.cells
+
+    def curves(self, spec) -> list[dict]:
+        """The snapshot's signal_curves records — the continuous
+        depth-response line per (code, rsi_window, side, regime_state)
+        over the snapshot's q <= 10% tail (curve/_curves.py)."""
+        assert self._context is not None, "prepare() must run first"
+        return curve_records(
+            self, self._context, spec, self._sec_type, RSI_WINDOWS,
         )
 
-    async def fetch_values(
-        self, conn, sec_type: str, codes: list[str], dates: list[date],
+    def values_long(
+        self, codes: list[str], dates: list[date],
     ) -> pd.DataFrame:
-        return await fetch_mov_rsi_values(conn, sec_type, codes, dates)
+        assert self._context is not None, "prepare() must run first"
+        return self._context.values_long(codes, dates)
 
     def build(
         self,
@@ -99,29 +150,23 @@ class MovRsiEngine(SignalEngine):
         stat_date: date,
         passing: pd.DataFrame,
         snap_trig: pd.DataFrame,
-        values: pd.DataFrame,
-        population: str | None = None,
+        long: pd.DataFrame,
     ) -> tuple[list[dict], list[dict]]:
         # No value points (no strategies passed the gates) → no merge
         # material at all (the empty values frame carries object-dtype
         # date columns — never merge against it).
-        if values.empty:
+        if values_empty(passing, snap_trig, long):
             return [], []
-
-        # The long value frame: one row per (code, date, window).
-        long = pd.concat(
-            [
-                values[["code", "date"]].assign(
-                    window=w, value=values[col],
-                )
-                for w, col in _VALUE_COLS.items()
-            ],
-            ignore_index=True,
-        ).dropna(subset=["value"])
-
         return (
-            strategy_rows(self, sec_type, stat_date, passing, long,
-                          population),
-            history_rows(self, sec_type, stat_date, snap_trig, long,
-                         population),
+            strategy_rows(self, sec_type, stat_date, passing, long),
+            history_rows(self, sec_type, stat_date, snap_trig, long),
         )
+
+
+def values_empty(
+    passing: pd.DataFrame, snap_trig: pd.DataFrame, long: pd.DataFrame,
+) -> bool:
+    """The build's no-material guard: nothing passed the gate, or the
+    value lookup came back empty (either means no rows to build)."""
+    return passing.empty or long.empty
+

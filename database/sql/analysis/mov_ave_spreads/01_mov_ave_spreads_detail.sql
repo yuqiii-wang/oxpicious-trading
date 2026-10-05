@@ -110,19 +110,20 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
     ma5_vs_ma120      NUMERIC(10,6),
     ma5_vs_ma255      NUMERIC(10,6),
 
-    price_slope       NUMERIC(10,6), -- 1st derivative of price
+    -- Derivatives of the price (1-day leg) and the 5/20-day MA legs
+    -- (2026-09: after trimming 120/255 then 20/60, the 5/20-day columns
+    -- were restored as DB-computed columns — slope = value[t] − value[t−1]
+    -- (a DIRECT diff of the MA line, not an average of the close diff),
+    -- curvature = that slope's diff; NULL on the first/first-two dates of
+    -- each code). ma{60,120,255} slopes are still computed in-memory by
+    -- the pipeline as trading_amt_ratios denominators but not persisted.
+    price_slope       NUMERIC(10,6), -- 1st derivative of price (1d leg)
     ma5_slope         NUMERIC(10,6), -- 1st derivative of MA5
     ma20_slope        NUMERIC(10,6), -- 1st derivative of MA20
-    ma60_slope        NUMERIC(10,6), -- 1st derivative of MA60
-    ma120_slope       NUMERIC(10,6), -- 1st derivative of MA120
-    ma255_slope       NUMERIC(10,6),
 
-    price_curvature   NUMERIC(10,6), -- 2nd derivative of price
+    price_curvature   NUMERIC(10,6), -- 2nd derivative of price (1d leg)
     ma5_curvature     NUMERIC(10,6), -- 2nd derivative of MA5
     ma20_curvature    NUMERIC(10,6), -- 2nd derivative of MA20
-    ma60_curvature    NUMERIC(10,6), -- 2nd derivative of MA60
-    ma120_curvature   NUMERIC(10,6), -- 2nd derivative of MA120
-    ma255_curvature   NUMERIC(10,6), -- 2nd derivative of MA255
 
     -- 5 rolling population σ columns (in price units, Bollinger band width).
     -- σ_N[t] = sqrt( mean( (price[t-N+1..t] - mean(price[t-N+1..t]))^2 ) )
@@ -182,17 +183,11 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_vs_ma60  IS '(ma5 - ma60) 
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_vs_ma120 IS '(ma5 - ma120) / ma120.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_vs_ma255 IS '(ma5 - ma255) / ma255.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.price_slope     IS '1st derivative of price (price[t] - price[t-1]) per trading day. NULL on the first date of each code.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_slope       IS '1st derivative of MA5 (MA5[t] - MA5[t-1]) per trading day. NULL on the first date of each code.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma20_slope      IS '1st derivative of MA20 (MA20[t] - MA20[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma60_slope      IS '1st derivative of MA60 (MA60[t] - MA60[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma120_slope     IS '1st derivative of MA120 (MA120[t] - MA120[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma255_slope     IS '1st derivative of MA255 (MA255[t] - MA255[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_slope       IS '1st derivative of the MA5 LINE (MA5[t] - MA5[t-1]) per trading day — a direct diff of the moving-average values, not an average of the close-price diff. NULL on the first date of each code.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma20_slope      IS '1st derivative of the MA20 LINE (MA20[t] - MA20[t-1]) per trading day. NULL on the first date of each code.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.price_curvature IS '2nd derivative of price (slope[t] - slope[t-1]). NULL on the first two dates of each code.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_curvature   IS '2nd derivative of MA5 (slope[t] - slope[t-1]). NULL on the first two dates of each code.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma20_curvature  IS '2nd derivative of MA20 (slope[t] - slope[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma60_curvature  IS '2nd derivative of MA60 (slope[t] - slope[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma120_curvature IS '2nd derivative of MA120 (slope[t] - slope[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma255_curvature IS '2nd derivative of MA255 (slope[t] - slope[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_curvature   IS '2nd derivative of MA5 (ma5_slope[t] - ma5_slope[t-1]). NULL on the first two dates of each code.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma20_curvature  IS '2nd derivative of MA20 (ma20_slope[t] - ma20_slope[t-1]). NULL on the first two dates of each code.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_5days   IS 'Rolling population σ (ddof=0) of price over 5 trading days. Bollinger band width for MA5 envelope. NULL until 5 consecutive rows.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_20days  IS 'Rolling population σ (ddof=0) of price over 20 trading days. Bollinger band width for MA20 envelope. NULL until 20 consecutive rows.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_60days  IS 'Rolling population σ (ddof=0) of price over 60 trading days. Bollinger band width for MA60 envelope. NULL until 60 consecutive rows.';

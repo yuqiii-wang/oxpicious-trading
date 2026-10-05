@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS text.llm_qa_refs (
     news_id      BIGINT      NOT NULL,     -- resolved article; null-content placeholder when unresolved
     is_used      BOOLEAN     NOT NULL DEFAULT false,  -- the answer cites the article (any of its tags)
     resolved_url TEXT,                     -- candidate URL the exact-verification ran against (NULL when none)
-    ref_time     TIMESTAMPTZ NOT NULL DEFAULT now(),  -- reference's publish time per the search response; now() when absent
+    ref_time     TIMESTAMPTZ,              -- reference's ACTUAL publish time (response date or URL date); NULL = unknown — never now()/qa-date
     resolved_via TEXT,                     -- 'summary' | 'corpus' | 'ddgs' | 'zhihu' — the provenance behind ref_type
     CONSTRAINT pk_llm_qa_refs PRIMARY KEY (qa_id, news_id),
     CONSTRAINT uq_llm_qa_refs_qa_ref UNIQUE (qa_id, ref),
@@ -75,9 +75,11 @@ COMMENT ON COLUMN text.llm_qa_refs.news_id IS
   'placeholder row (title/source/date only) so the link is always total.';
 
 COMMENT ON COLUMN text.llm_qa_refs.ref_time IS
-  'The reference''s publish time as reported by the search response '
-  '(publish_date, midnight Asia/Shanghai); now() at insert when the '
-  'response carried no date.';
+  'The reference''s ACTUAL publish time: the search response''s publish_date '
+  '(midnight Asia/Shanghai), else the date embedded in the article URL. '
+  'NULL = unknown — a now()/qa-date fallback here used to display the '
+  'row-creation date as the article''s date. Writers also drop refs whose '
+  'known date falls outside [qa interest day - 20d, qa interest day].';
 
 COMMENT ON COLUMN text.llm_qa_refs.is_used IS
   'true iff the stored answer cites this article (any of its citation '
@@ -125,3 +127,18 @@ BEGIN
             ADD CONSTRAINT pk_llm_qa_refs PRIMARY KEY (qa_id, news_id);
     END IF;
 END $$;
+
+-- ============================================================================
+--  Migrate: ref_time NOT NULL DEFAULT now() dropped 2026-10-03 — the column
+--  now carries the reference's ACTUAL publish time (response publish_date,
+--  else the URL-embedded date) and NULL means unknown. The now() default
+--  wrote the row-creation date as the article's date, which the AI page
+--  then displayed as the ref's date. Existing values are repaired (real
+--  date recovered, else NULL) by temp_scripts/backfill_qa_refs_dates.py,
+--  which also drops refs whose known date sits outside the qa interest
+--  window [qa_day - 20d, qa_day].
+-- ============================================================================
+ALTER TABLE text.llm_qa_refs
+    ALTER COLUMN ref_time DROP NOT NULL;
+ALTER TABLE text.llm_qa_refs
+    ALTER COLUMN ref_time DROP DEFAULT;

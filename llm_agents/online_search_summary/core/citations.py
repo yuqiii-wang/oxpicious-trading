@@ -38,7 +38,12 @@ if TYPE_CHECKING:
 _BRACKET_SPAN_RE = re.compile(r"\[([^\[\]]*)\]")
 REF_TAG_RE = re.compile(r"ref_(\d+)")
 
-_DATE_IN_TEXT_RE = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+# Full dates embedded in longer text, any observed separator form: ZhiPu
+# hyphenates (2026-09-11, 2026-9-11) but raw fields also carry slash
+# (2026/09/30) and 中文 (2026年9月30日) forms — the hyphen-only pattern
+# used to leave those unparsed, so their text.news rows fell back to the
+# now()/qa-date date (the misleading AI-page ref dates).
+_DATE_IN_TEXT_RE = re.compile(r"(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?")
 
 
 def normalize_refer(value: Any, position: int) -> str:
@@ -63,7 +68,8 @@ def ref_number(tag: str) -> int:
 
 
 def parse_publish_date(value: Any) -> Optional[datetime.date]:
-    """Parse 'YYYY-MM-DD' (embedded in longer text) -> date, or None."""
+    """Parse 'YYYY-MM-DD' / 'YYYY/M/D' / 'YYYY年M月D日' (embedded in longer
+    text) -> date, or None."""
     if not value:
         return None
     m = _DATE_IN_TEXT_RE.search(str(value))

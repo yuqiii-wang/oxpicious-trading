@@ -3,11 +3,13 @@ of SignalEngine (analyze.analysis_signals.engines._frame).
 
 detect / snapshot_triggers / value_points: the gate-passing strategy
 set, the snapshot-owned history trigger days and the bounded value
-point set —
-identical for every family, parameterized only by the engine's
-``bucket_keys``. THE gate itself (the plain forecast-results rule) is
-_gate_mask; the DELAY-LADDER balance rule (the optimal entry-delay
-selection over the gate-passing rungs) is the argmax inside detect.
+point set — identical for every family, parameterized only by the
+engine's ``bucket_keys``. THE gate itself (the plain mixed-row rule
+over the engine's computed delay-0 stats) is _gate_mask. (The delay
+ladder's optimal-entry argmax + the ladder-stability floor were
+REMOVED 2026-10-05 — a strategy IS its delay-0 profile. The trigger
+days' regime labels ride the CELLS frame from the in-engine bucket
+computation.)
 
 All frames are cudf.pandas and stay NATIVE-DTYPE ONLY — see _base for
 the full contract.
@@ -22,13 +24,10 @@ from _common.df_utils import host_array
 
 from analyze.analysis_signals.config import (
     BUY_SAMPLE_FLOOR,
-    BUY_STABILITY_MIN,
     GATE_DIR_AVE_MIN,
     SELL_SAMPLE_FLOOR,
-    SELL_STABILITY_MIN,
-    SIGNAL_STABILITY_RUNGS,
 )
-from analyze.analysis_signals.engines._primitives import SELL_SIDES
+from analyze.analysis_signals.engines._primitives import SELL_SIDE_CODES
 
 
 class FrameMachinery:
@@ -40,106 +39,23 @@ class FrameMachinery:
     bucket_keys: tuple[str, ...]
 
     def detect(self, buckets: pd.DataFrame) -> pd.DataFrame:
-        """One row per gate-passing bucket, AT ITS OPTIMAL DELAY RUNG:
-        the CHOSEN rung's mixed-row gate fields (+ every bucket-level
-        config column — stat_date, the family's window/k/k_str keys) +
-        that rung's WINDOW-END trigger (the bar source — trigger arrays
-        are ascending, so the last row IS the rung's window-end) + the
-        rung id as ``delay``.
-
-        The ladder machinery: the bucket read fans the mixed ladder out
-        per rung (bucket × delay × trigger day), so the (bucket, delay)
-        groupby yields ONE RUNG ROW per (bucket, rung-with-anchors).
-        Every rung row faces the plain gate AT THE PER-SIDE ROBUSTNESS
-        FLOORS (the sample floor always; ladder stability on streak
-        families — config BUY/SELL_SAMPLE_FLOOR, BUY/SELL_STABILITY_MIN);
-        among the surviving rungs the OPTIMAL ENTRY DELAY is the balance rule's argmax
-
-            score(d) = sign-aligned dir_ave(d) × occurrence_count(d)
-
-        (the total blended forward move the entry rule captures over
-        the window — the opportunity cost of waiting, occurrence_count
-        decaying with the rung, balanced against the
-        persistence-conditioned return deepening), ties → the smallest
-        delay. Buckets with no gate-passing rung never register. No
-        indicator values yet (the gate reads the mixed ladder only)."""
-        keys = list(self.bucket_keys)
-        trig_cols = ["trig_date", "trig_excess"]
-        rung_keys = keys + ["delay"]
-        # every non-key, non-trigger column is bucket/rung-level
-        # (constant within a (bucket, rung)) → first() carries the
-        # config + gate fields
-        first_cols = [
-            c for c in buckets.columns
-            if c not in rung_keys and c not in trig_cols
-        ]
-        grouped = buckets.groupby(rung_keys, sort=False)
-        rung = grouped.first()[first_cols].reset_index().merge(
-            grouped.last()[trig_cols].reset_index(),
-            on=rung_keys,
-            how="inner",
-        )
-        # rung candidacy: THE gate (the rung's own mixed row) on a
-        # rung that actually has anchors, at the per-SIDE ROBUSTNESS
-        # FLOORS (config 2026-09 quality-v2/v2.1): the sample floor (a
-        # rung without enough window streaks behind it measures
-        # selection noise, not edge) and — streak families only —
-        # ladder stability (the sign-aligned edge positive on enough
-        # early rungs: direction must show before the gate's
-        # magnitude; one-day cross families have no persistence axis
-        # and skip it). Sells carry the looser bars (3 / 1): their
-        # persistence evidence is structurally thinner in positive-
-        # drift markets — measured, not assumed
-        # (temp_scripts/study_sell_floors.py).
-        sell = rung["side"].isin(SELL_SIDES)
-        sample_floor = pd.Series(BUY_SAMPLE_FLOOR, index=rung.index)
+        """The gate-passing bucket rows (one row per bucket, delay 0):
+        the plain gate at the per-side SAMPLE FLOOR. A bucket's
+        blended mixed-row dir_ave must clear GATE_DIR_AVE_MIN on at
+        least BUY_SAMPLE_FLOOR (buy) / SELL_SAMPLE_FLOOR (sell) of the
+        window's qualifying streaks — below it the dir_ave measures
+        selection noise, not edge. No indicator values are needed (the
+        gate reads the blended stats alone)."""
+        if buckets.empty:
+            return buckets
+        sell = buckets["side"].isin(SELL_SIDE_CODES)
+        sample_floor = pd.Series(BUY_SAMPLE_FLOOR, index=buckets.index)
         sample_floor = sample_floor.mask(sell, SELL_SAMPLE_FLOOR)
-        cand = self._gate_mask(rung) & rung["trig_date"].notna()
-        cand = cand & (
-            rung["occurrence_count"].astype("float64") >= sample_floor
+        keep = self._gate_mask(buckets) & buckets["trig_date"].notna()
+        keep = keep & (
+            buckets["occurrence_count"].astype("float64") >= sample_floor
         )
-        drop_cols = ["_score", "_best", "_first"]
-        if self.streak_signals:
-            stab_min = pd.Series(BUY_STABILITY_MIN, index=rung.index)
-            stab_min = stab_min.mask(sell, SELL_STABILITY_MIN)
-            dir_all = pd.Series(1.0, index=rung.index)
-            dir_all = dir_all.mask(sell, -1.0)
-            # the early rungs' sign-aligned positives, summed per bucket
-            # (transform keeps the rung frame's own row alignment)
-            stab = rung.assign(
-                _stab_pos=(
-                    (dir_all * rung["ave_change"] > 0)
-                    & rung["delay"].isin(SIGNAL_STABILITY_RUNGS)
-                ).astype("int64"),
-            ).groupby(keys, sort=False)["_stab_pos"].transform("sum")
-            cand = cand & (stab >= stab_min)
-        # the balance score — NaN on non-candidates so an all-NaN
-        # bucket (no gate-passing rung) drops out at the argmax
-        dir_sign = pd.Series(1.0, index=rung.index)
-        dir_sign = dir_sign.mask(rung["side"].isin(SELL_SIDES), -1.0)
-        rung["_score"] = (
-            dir_sign * rung["ave_change"]
-            * rung["occurrence_count"].astype("float64")
-        ).where(cand)
-        # the argmax per bucket is VALUE-based (cudf frame order is
-        # never trusted): keep the max-score rungs, then the smallest
-        # delay among ties. NaN == NaN is False, so buckets whose
-        # rungs all missed the gate vanish here.
-        best = rung.merge(
-            rung.groupby(keys, sort=False).agg(
-                _best=("_score", "max"),
-            ).reset_index(),
-            on=keys, how="inner",
-        )
-        best = best[best["_score"] == best["_best"]]
-        best = best.merge(
-            best.groupby(keys, sort=False).agg(
-                _first=("delay", "min"),
-            ).reset_index(),
-            on=keys, how="inner",
-        )
-        best = best[best["delay"] == best["_first"]]
-        return best.drop(columns=drop_cols).reset_index(drop=True)
+        return buckets[keep].reset_index(drop=True)
 
     def snapshot_triggers(
         self,
@@ -147,27 +63,28 @@ class FrameMachinery:
         passing: pd.DataFrame,
         stat_date: date,
     ) -> pd.DataFrame:
-        """The strategies' CHOSEN-RUNG trigger days INSIDE the
-        snapshot's OWNERSHIP INTERVAL — its CALENDAR YEAR (the
-        1-year-stride rule: a year-end snapshot owns year Y; the
-        ROLLING LATEST snapshot owns [Jan 1, its key] — the key IS the
-        latest data date, so no trigger can exist beyond it, and year
-        equality picks exactly the owned days for both key kinds; one
-        snapshot owns each date → no cross-snapshot PK conflicts).
-        Inner join on the bucket keys + the chosen ``delay`` rung — a
-        bucket without a strategy has no events. Deduplicated on
-        (bucket keys, trig_date): the upstream trigger arrays can
-        repeat a date within one bucket, and the history PK is exactly
-        (code, sub_type, date, time)."""
+        """The strategies' trigger days INSIDE the snapshot's OWNERSHIP
+        INTERVAL — its CALENDAR YEAR (the 1-year-stride rule: a year-end
+        snapshot owns year Y; the ROLLING LATEST snapshot owns [Jan 1,
+        its key] — the key IS the latest data date, so no trigger can
+        exist beyond it, and year equality picks exactly the owned days
+        for both key kinds; one snapshot owns each date → no
+        cross-snapshot PK conflicts).
+        Inner join on the bucket keys + the ``delay`` column — a bucket
+        without a strategy has no events (ave_change rides along from
+        the strategy row: the history record's confidence denormalizes
+        it). Deduplicated on (bucket keys, trig_date): the trigger
+        population can repeat a date within one bucket, and the
+        history PK is exactly (code, sub_type, date, time)."""
         keys = list(self.bucket_keys)
         rows = buckets.merge(
-            passing[keys + ["delay"]], on=keys + ["delay"], how="inner",
+            passing[keys + ["delay", "ave_change"]],
+            on=keys + ["delay"], how="inner",
         )
         if rows.empty:
-            # A snapshot with no strategy material (e.g. its
-            # forecast_results rows are not computed yet) stops here:
-            # cudf degrades an empty frame's datetime columns to
-            # object, where _in_snapshot_year's .dt accessors raise.
+            # A snapshot with no strategy material stops here: cudf
+            # degrades an empty frame's datetime columns to object,
+            # where _in_snapshot_year's .dt accessors raise.
             return rows.reset_index(drop=True)
         rows = rows[self._in_snapshot_year(rows["trig_date"], stat_date)]
         rows = rows.dropna(subset=["trig_date"])
@@ -202,37 +119,15 @@ class FrameMachinery:
         ).tolist()
         return codes, sorted({date.fromisoformat(str(v)) for v in iso})
 
-    def regime_label(
-        self, snapshot_trig: pd.DataFrame, regimes: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """The snapshot-owned trigger days' market regimes: the
-        stats.market_regimes DAY label (calm/hot/panic/quiet) joined by
-        (code, date) — one plain merge (the daily states table replaces
-        the retired episode spans; no interval join). Days with no
-        state row default to 'calm' (the retired boolean's never-hyped
-        semantics). Regime rows of codes not in the trigger set simply
-        never join."""
-        out = snapshot_trig.copy()
-        if out.empty or regimes.empty:
-            out["regime"] = "calm"
-            return out
-        out = out.merge(
-            regimes[["code", "date", "regime"]],
-            left_on=["code", "trig_date"], right_on=["code", "date"],
-            how="left", sort=False,
-        ).drop(columns=["date"])
-        out["regime"] = out["regime"].fillna("calm")
-        return out.reset_index(drop=True)
-
     # ---- private helpers --------------------------------------------------------
 
     def _gate_mask(self, bucket: pd.DataFrame) -> pd.Series:
-        """THE gate (the plain forecast-results rule) on the bucket-level
+        """THE gate (the plain mixed-row rule) on the bucket-level
         frame: the sign-aligned blended mean forward change (dir_ave —
-        top/upper negated, bottom/lower as-is) > GATE_DIR_AVE_MIN. NaN
-        comparisons stay False, so buckets without results never pass."""
+        top negated, bottom as-is) > GATE_DIR_AVE_MIN. NaN comparisons
+        stay False, so buckets without stats never pass."""
         dir_sign = pd.Series(1.0, index=bucket.index)
-        dir_sign = dir_sign.mask(bucket["side"].isin(SELL_SIDES), -1.0)
+        dir_sign = dir_sign.mask(bucket["side"].isin(SELL_SIDE_CODES), -1.0)
         dir_ave = dir_sign * bucket["ave_change"]
         return dir_ave > GATE_DIR_AVE_MIN
 

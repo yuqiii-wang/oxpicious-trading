@@ -143,7 +143,7 @@ export function useSecNav(options: UseSecNavOptions): SecNavState {
   };
 
   /** Set the active code DIRECTLY, without classification-tree
-   *  resolution — for external jumps (e.g. a forecast-id search that
+   *  resolution — for external jumps (e.g. a search that
    *  resolves a code which exists in the data universe but not in the
    *  nav trees; the chart / table panels key on the code alone). Clears
    *  the nav error; leaves the tree highlights untouched. */

@@ -63,6 +63,16 @@ const TIMEOUT_OVERRIDES: TimeoutOverride[] = [
     timeoutMs: 120_000,
     reason: "GET runs python analysis synchronously",
   },
+  // Member-index close series straight from the DB: ~1s for a typical
+  // industry (5 members, measured 967ms for BROKERS) but the broad-market
+  // themes aggregate 20+ indices × full history (measured 39s / 3.7MB for
+  // BROAD_SSE's 26 members) — beyond the 30s default. Consumed by the
+  // Industry Sentiments page AND CodeTrendChart's industryId mode (news).
+  {
+    prefix: "/api/analysis/industry-sentiments/chart",
+    timeoutMs: 120_000,
+    reason: "broad-theme industries aggregate 20+ full member close series",
+  },
 ];
 
 /** Resolve the per-attempt timeout for a URL (longest matching prefix wins). */

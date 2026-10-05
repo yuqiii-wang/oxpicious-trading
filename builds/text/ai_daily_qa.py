@@ -52,7 +52,8 @@ from llm_agents.online_search_summary.core.models import (
     SHANGHAI_TZ, SearchHit,
 )
 from llm_agents.online_search_summary.storage.matching import (
-    REF_TYPE_EXACT, VIA_SUMMARY, hit_ref_time,
+    REF_TYPE_EXACT, REF_WINDOW_DAYS, VIA_SUMMARY, date_from_url,
+    hit_ref_time, in_ref_window,
 )
 from llm_agents.online_search_summary.storage.resolve import (
     ResolvedRef, build_ref_rows,
@@ -160,10 +161,10 @@ def hit_news_key(
 ) -> Tuple[str, str, datetime.date]:
     """The text.news natural key of a hit — byte-identical to the key of the
     row builds.text.loaders.ai_daily.hit_news_row wrote for it: (stripped
-    title, media or 'web', raw-date or the envelope's date)."""
+    title, media or 'web', raw-date or URL-date or the envelope's date)."""
     return ((h.title or "").strip(),
             (h.media or "").strip() or "web",
-            h.publish_date or fallback_date)
+            h.publish_date or date_from_url(h.link) or fallback_date)
 
 
 async def _resolve_hits(
@@ -208,6 +209,18 @@ async def _resolve_hits(
     if misses:
         resolved.extend(await _store_misses(conn, doc, misses,
                                             industry_id=industry_id))
+    # Refs whose KNOWN publish date sits outside the qa's interest window
+    # ([qa day - 20d, qa day]) are dropped before the group provenance and
+    # the refs rows — they predate what the question (dated by the
+    # artifact's plan/target date) is about; unknown-dated refs stay.
+    qa_day = doc.qa_date.date()
+    kept = [r for r in resolved if in_ref_window(r.ref_time, qa_day)]
+    n_dropped = len(resolved) - len(kept)
+    if n_dropped:
+        logger.info("    [DB] %d ref(s) outside the qa interest window "
+                    "(qa_day=%s, -%dd) dropped", n_dropped, qa_day.isoformat(),
+                    REF_WINDOW_DAYS)
+    resolved = kept
     group_ids: List[int] = []
     seen: set = set()
     for r in resolved:
@@ -240,7 +253,7 @@ async def _store_misses(
     news_rows: List[Dict[str, Any]] = []
     for h in misses:
         source = (h.media or "").strip() or "web"
-        date = h.publish_date or fallback_date
+        date = h.publish_date or date_from_url(h.link) or fallback_date
         key = (h.title, source, date)
         if key in seen:          # one row per article, several tags may hit it
             continue
@@ -271,7 +284,7 @@ async def _store_misses(
     out: List[ResolvedRef] = []
     for h in misses:
         key = (h.title, (h.media or "").strip() or "web",
-               h.publish_date or fallback_date)
+               h.publish_date or date_from_url(h.link) or fallback_date)
         news_id = id_by_key.get(key)
         if news_id is None:
             logger.error("    [DB] %s: placeholder news row re-find failed "

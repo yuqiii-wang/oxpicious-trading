@@ -49,6 +49,16 @@ logger = setup_logger("sse_options_risk_download")
 
 SSE_HEADERS = build_headers_with_referer(SSE_REFERER, extra={"Accept": "*/*"})
 
+# The SSE options stream writes stats.options_identity rows intraday, so by
+# the evening run every recent trading day is already "in the DB" and the
+# identity gate in download_sse_options_risk would skip it — its same-day
+# risk CSV would never download (2026-09-29/30 both hit this). The most
+# recent RECENT_DAYS trading days always fall through to the local CSV
+# cache instead: present files still skip, missing ones download once SSE
+# publishes the risk table (same evening, or the following evening at the
+# latest on short publication lags).
+RECENT_DAYS = 5
+
 
 def download_options_risk_once(
     session: requests.Session,
@@ -131,8 +141,13 @@ def download_sse_options_risk(
 
     days = business_days(_start, _end, reverse=True)
     total_days = len(days)
+    # newest trading days bypass the identity gate (see RECENT_DAYS note)
+    recent = set(days[:RECENT_DAYS])
 
-    # DB-first: skip dates already present in the options identity table.
+    # DB-first: skip dates already present in the options identity table —
+    # for the SSE rows only (exchange filter). A date-only check would let
+    # SZSE/CFFEX rows mask SSE dates whose risk CSV is still missing
+    # (2026-07-18..09-17 all hit this: present via SZSE, risk never fetched).
     # check_identity returns the set of expected trading days that are NOT
     # yet in the DB; dates outside this set are skipped (already built).
     # None = DB unreachable -> the loop falls back to the local CSV cache:
@@ -140,14 +155,30 @@ def download_sse_options_risk(
     # rest download.
     db_missing: Optional[Set[date]] = None
     if db_table:
-        # options_identity has no exchange column (PK is date +
-        # contract_code), so the check is date-only.
         try:
-            db_missing = check_identity(db_table, _start, _end)
+            db_missing = check_identity(db_table, _start, _end, exchange="SSE")
         except Exception as e:
             logger.warning(
                 "DB identity check failed (%s: %s) — falling back to the "
                 "local CSV cache for missing dates", type(e).__name__, e)
+
+    # Bound the download to dates the build can actually build: risk rows
+    # are only consumed for dates with a 当日合约 listing CSV
+    # (temps/sse_options_price). Without this bound the SSE-exchange gate
+    # (DEFAULT_START_DATE 2020) would re-fetch the whole listing-less
+    # history whenever those DB rows are purged.
+    listing_dir = resolve_out_dir(
+        str(Path(__file__).resolve()), "sse_options_price", None)
+    listing_dates = {
+        date(int(p.stem[-8:-4]), int(p.stem[-4:-2]), int(p.stem[-2:]))
+        for p in listing_dir.glob("sse_options_price_*.csv")
+        if len(p.stem) >= 8 and p.stem[-8:].isdigit()
+    }
+    if listing_dates:
+        if db_missing is None:
+            db_missing = listing_dates & set(days)
+        else:
+            db_missing &= listing_dates
 
     stats = RunStats()
 
@@ -166,9 +197,11 @@ def download_sse_options_risk(
                 break
 
             # Skip dates already present in the DB identity table
+            # Recent RECENT_DAYS days are exempt — stream-written identity rows
+            # would mask the current day's missing risk CSV.
             # (db_missing None = DB unreachable -> the local file checks
             # below decide what's already cached)
-            if db_missing is not None and d not in db_missing:
+            if db_missing is not None and d not in db_missing and d not in recent:
                 stats.skipped_cached += 1
                 continue
 

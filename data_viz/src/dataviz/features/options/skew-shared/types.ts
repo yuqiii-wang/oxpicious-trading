@@ -113,4 +113,93 @@ export interface SharedSkewSpec {
   chartTitle: string;
   /** Legend/series name of the mean (aggregate) skew curve. */
   meanSeriesName: string;
+  /** Display unit of spot/skewPrice: "yuan" (SSE/SZSE ETF venues,
+   *  closes stored in 厘) or "index points" (CFFEX, native points). */
+  priceUnit?: string;
+}
+
+/** Options-implied corridor event marker (analysis.options_bands v2): a
+ *  fresh cross of the OI-mass corridor vs the PRIOR session's corridor
+ *  (the corridor re-centres daily). Rendered as a scatter marker on the
+ *  spot curve of the skew chart. */
+export interface SharedBandEvent {
+  date: string;
+  /** "lower" = EXIT_LOW (green up-triangle below the line — snap-back-up
+   *  side), "upper" = EXIT_HIGH (red down-triangle above), "none" =
+   *  REENTER (neutral diamond on the line). */
+  side: "lower" | "upper" | "none";
+  kind: "EXIT_LOW" | "EXIT_HIGH" | "REENTER";
+  /** OI share at strikes <= spot ([0,1]) and the validated lean at the
+   *  event date — tooltip context. */
+  spotPct: number | null;
+  lean: string | null;
+  /**
+   * Edge-significance amplifier (analysis.options_bands.edge_sig): true
+   * when this event's side was breached/approached while the exchange
+   * had JUST extended the strike grid on the same side (>= 2 new
+   * strikes in the trailing 40 sessions) — the cross is into
+   * freshly-listed price territory and renders as a bigger glowing
+   * marker. REENTER is never amplified.
+   */
+  sig?: boolean;
+  /** Count of new same-side strikes in the trailing 40 sessions at the
+   *  event date (tooltip context for `sig`; null when unknown). */
+  sigNewStrikes?: number | null;
+}
+
+/** OI-mass corridor bounds per date (analysis.options_bands v2),
+ *  PRICE-SCALED to the chart's unit — the shaded bounded region between
+ *  the OI-CDF P10 and P90 strikes. */
+export interface SharedCorridorPoint {
+  date: string;
+  low: number | null;
+  high: number | null;
+}
+
+/** One chain-wide zone wall per (date, side) — the DOMINANT
+ *  wall_type='zone' group of analysis.options_walls across all expiry
+ *  cohorts that date (same strength ranking the Options Trend OI Bands
+ *  chart applies per cohort), strike levels PRICE-SCALED to the chart's
+ *  unit. Rendered as the light-shaded low→high wall band with the
+ *  OI-weighted center line. */
+export interface SharedWallZone {
+  date: string;
+  side: "CALL" | "PUT";
+  low: number;
+  high: number;
+  /** OI-weighted center strike of the zone. */
+  center: number;
+  /** Total OI of the dominant zone (contracts). */
+  wallOi: number;
+  /** zone OI / total chain OI (call+put), 0..1. */
+  massShare: number | null;
+  /** Signed away-from-spot distance of the center, % of spot. */
+  gapPct: number | null;
+  state: "ACTIVE" | "ERODED" | "BREACHED" | null;
+  strength: number | null;
+}
+
+/** Dominant chain-wide zone walls per date, per side — the wall/zone
+ *  light-shade layer of the options-bands toggle (analysis.options_walls,
+ *  the same source the Options Trend OI Bands chart overlays). */
+export interface SharedWallZones {
+  call: Map<string, SharedWallZone>;
+  put: Map<string, SharedWallZone>;
+}
+
+/** Forecast trigger-day highlight overlay (the Options Bands signal
+ *  page's forecast row clicks): the same visual language the Recent
+ *  Movements trend chart uses — a purple pinpoint on the spot curve at
+ *  each trigger day, a dark purple band over each merged signal's
+ *  qualifying streak period, and a light band over each trigger day's
+ *  forward forecast window. */
+export interface SharedSkewHighlights {
+  /** Trigger day dates (pinpoint circles at the spot values). */
+  dates: readonly string[];
+  /** Each merged signal's qualifying-run [start, end] calendar dates +
+   *  trading-day count (dark streak-period bands). */
+  spans: ReadonlyArray<{ start: string; end: string; days: number | null }>;
+  /** Forward-window width in trading days from each trigger day (the
+   *  clicked horizon's period — light bands). */
+  horizonDays: number;
 }

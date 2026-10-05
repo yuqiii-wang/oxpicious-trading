@@ -258,15 +258,17 @@ async def fetch_stock_dividends(
 async def fetch_etf_close_and_dividends(
     conn, codes: list[str]
 ) -> pd.DataFrame:
-    """Fetch per-(code, date) close + pe + implied_dividend_per_share for ETFs.
+    """Fetch per-(code, date) close + pe + eps + implied_dividend_per_share
+    for ETFs.
 
-    PE is pre-computed by builds.etf via harmonic-weighted constituent PE.
+    PE is pre-computed by builds.etf via harmonic-weighted constituent PE;
+    eps = close/pe (the deliveries stage's per-event EPS audit).
 
-    Returns DataFrame with columns: code, date, close, pe, implied_dividend_per_share
+    Returns DataFrame with columns: code, date, close, pe, eps, implied_dividend_per_share
     """
     if not codes:
         return pd.DataFrame(
-            columns=["code", "date", "close", "pe", "implied_dividend_per_share"]
+            columns=["code", "date", "close", "pe", "eps", "implied_dividend_per_share"]
         )
     rows = await conn.fetch(
         """
@@ -275,6 +277,10 @@ async def fetch_etf_close_and_dividends(
             extract(epoch from b.date)::float8 AS date,
             b.close::float8 AS close,
             b.pe::float8 AS pe,
+            -- COALESCE to NaN: an all-NULL column (no-PE codes) would
+            -- otherwise build an object-dtype all-None column in the
+            -- frame — NaN keeps it float64 end to end.
+            COALESCE(b.eps::float8, 'NaN'::float8) AS eps,
             COALESCE(a.implied_dividend_per_share, 0)::float8 AS implied_dividend_per_share
         FROM stats.etf_basic_stats b
         LEFT JOIN stats.etf_adjustment a
@@ -287,13 +293,13 @@ async def fetch_etf_close_and_dividends(
     )
     if not rows:
         return pd.DataFrame(
-            columns=["code", "date", "close", "pe", "implied_dividend_per_share"]
+            columns=["code", "date", "close", "pe", "eps", "implied_dividend_per_share"]
         )
     cols = rec_cols(rows)
     cols["date"] = epoch_col_to_dt64(cols["date"])
     return pd.DataFrame(
         cols,
-        columns=["code", "date", "close", "pe", "implied_dividend_per_share"],
+        columns=["code", "date", "close", "pe", "eps", "implied_dividend_per_share"],
     )
 
 
@@ -303,17 +309,21 @@ async def fetch_etf_close_and_dividends(
 async def fetch_stock_close(
     conn, codes: list[str]
 ) -> pd.DataFrame:
-    """Fetch per-(code, date) close + pe for stocks.
+    """Fetch per-(code, date) close + pe + eps for stocks.
 
-    Returns DataFrame with columns: code, date, close, pe
+    Returns DataFrame with columns: code, date, close, pe, eps
     """
     if not codes:
-        return pd.DataFrame(columns=["code", "date", "close", "pe"])
+        return pd.DataFrame(columns=["code", "date", "close", "pe", "eps"])
     rows = await conn.fetch(
         """
         SELECT code,
                extract(epoch from date)::float8 AS date,
-               close::float8 AS close, pe::float8 AS pe
+               close::float8 AS close, pe::float8 AS pe,
+               -- COALESCE to NaN: an all-NULL column (no-PE codes) would
+               -- otherwise build an object-dtype all-None column in the
+               -- frame — NaN keeps it float64 end to end.
+               COALESCE(eps::float8, 'NaN'::float8) AS eps
         FROM stats.stock_basic_stats
         WHERE code = ANY($1::text[])
           AND close IS NOT NULL
@@ -322,10 +332,10 @@ async def fetch_stock_close(
         sorted(codes),
     )
     if not rows:
-        return pd.DataFrame(columns=["code", "date", "close", "pe"])
+        return pd.DataFrame(columns=["code", "date", "close", "pe", "eps"])
     cols = rec_cols(rows)
     cols["date"] = epoch_col_to_dt64(cols["date"])
-    return pd.DataFrame(cols, columns=["code", "date", "close", "pe"])
+    return pd.DataFrame(cols, columns=["code", "date", "close", "pe", "eps"])
 
 
 # ---------------------------------------------------------------------------

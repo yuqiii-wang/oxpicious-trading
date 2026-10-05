@@ -1,32 +1,25 @@
 """AnalysisEvaluator — the GENERIC live breach check.
 
 A live signal IS a breach of an active
-analysis_signals.signal_strategies threshold — never a detection, and
+analysis_signals.signal_thresholds threshold — never a detection, and
 with NO per-family logic: each active config row carries its own
-decision (action 'sell' or 'buy') and its own confidence. The bar is
-resolved per check (fetch.resolve_threshold): the daily-moving
-families' bars are DERIVED FRESH — mov_std's band from the latest
-ma_{W} ± k·std_{W}, the cross families' bar from the day's slow leg
-(ma_{W} / ema_{W}; the compared signal is the day's fast leg: the
-price / ma5 / ema6) — and the strategies' stored snapshots are never
-compared for them. Only the genuinely static bars (mov_rsi's RSI
-percentile, margin_ratio's signed z-bar) are the stored thresholds.
-The evaluator only
+decision (action 'sell' or 'buy') and its own confidence-scale model.
+The bar is resolved per check (fetch.resolve_threshold): mov_rsi's RSI
+percentile bar is static in its own space — the stored threshold (the
+derived-bar families — mov_std's band, the cross slow legs — were
+RETIRED with their strategies 2026-10-05, and with them the
+is_triggered_once once-per-episode machinery: mov_rsi is a STATE
+family that keeps flagging on every qualifying observation while the
+breach persists). The evaluator only
 
   1. resolves the config's CURRENT value (the declarative
      SIGNAL_VALUE_SOURCE map in fetch — data access, not logic),
   2. compares: sell → value > threshold, buy → value < threshold
      (direction by the row's action — the sign convention of
      signal_excess: sell > 0 > buy),
-  3. records the breach with the row's OWN action and confidence,
-  4. and — is_triggered_once strategies (the pair-cross families: the
-     cross is an EVENT, not a state) — records ONCE PER BREACH
-     EPISODE: the previous DAILY basis (the legs row before the
-     current one, fetch._sources' legs_date chain) must have been on
-     the non-breach side, and at most ONE live row lands per episode
-     (a live.live_signals probe against the episode's reset day). The
-     state families (FALSE — the default) keep flagging on every
-     qualifying observation while the breach persists.
+  3. records the breach with the row's OWN action and the SCALED
+     confidence (config.breach.scaled_confidence_bp — the breach depth
+     amplifies the row's confidence_base).
 
 Missing current value / underivable bar ⇒ skipped, never invented.
 
@@ -48,15 +41,11 @@ from live.live_signals.analysis.fetch import (
     fetch_active_codes,
     fetch_active_signals,
     fetch_current_values,
-    fetch_daily_close_before,
     fetch_daily_close_on,
-    fetch_episode_flagged,
     fetch_intraday_bar_on,
     fetch_regime_state,
     resolve_threshold,
     resolve_value,
-    LiveValues,
-    SIGNAL_VALUE_SOURCE,
 )
 from live.live_signals.config import (
     ABOVE_ACTION,
@@ -64,7 +53,10 @@ from live.live_signals.config import (
     INTRADAY_TABLES,
     SIGNAL_PCT_SCALE,
     SIGNAL_SCALE,
+    scaled_confidence_bp,
 )
+
+from _common.labels import ACTION_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -182,18 +174,10 @@ class AnalysisEvaluator:
         values.close = close
 
         records: list[dict] = []
-        # The is_triggered_once episode gate's previous-basis cache —
-        # every config of one source kind shares the same anchor (the
-        # legs row before the current one), so the previous-day
-        # re-resolution runs at most once per kind per check.
-        prev_cache: dict[str, LiveValues] = {}
         for sig in sigs:
             value = resolve_value(sig, values)
-            # THE bar: derived fresh for the daily-moving families
-            # (mov_std's Bollinger band from the latest ma ± k·σ; the
-            # cross families' slow leg — the signal side is the day's
-            # fast leg: the price / ma5 / ema6); the static-bar
-            # families compare against the stored threshold.
+            # THE bar: mov_rsi's percentile bar is static in its own
+            # space — the stored threshold.
             threshold = resolve_threshold(sig, values)
             if value is None or threshold is None:
                 if verbose:
@@ -201,8 +185,8 @@ class AnalysisEvaluator:
                           f"{sig['signal_sub_type']}: not comparable "
                           f"(no current value)")
                 continue
-            # THE decision — the row's own action against its own
-            # threshold (sell breaches above, buy below).
+            # THE decision — the row's own action CODE against its own
+            # threshold (sell (1) breaches above, buy (0) below).
             triggered = (
                 value > threshold
                 if sig["action"] == ABOVE_ACTION
@@ -211,37 +195,12 @@ class AnalysisEvaluator:
             if verbose:
                 mark = "TRIGGERED" if triggered else "ok"
                 logger.info(f"    {sig['signal_type']}/"
-                      f"{sig['signal_sub_type']} ({sig['action']}): "
+                      f"{sig['signal_sub_type']} "
+                      f"({ACTION_LABEL[sig['action']]}): "
                       f"value={value:.4f} vs threshold="
                       f"{threshold:.4f} → {mark}")
             if not triggered:
                 continue
-            # THE episode gate — is_triggered_once strategies (the
-            # pair-cross families) flag ONCE per breach episode: only
-            # the first observation after the daily legs were last on
-            # the non-breach side, at most one live row per episode.
-            # Families without a daily legs basis (none carry the flag
-            # today) fall through to the keep-flagging behaviour.
-            if sig.get("is_triggered_once") and values.legs_date is not None:
-                episode_after = await self._episode_start(
-                    sec_type, code, sig, values, prev_cache,
-                )
-                if episode_after is None:
-                    if verbose:
-                        logger.info(f"    {sig['signal_type']}/"
-                              f"{sig['signal_sub_type']}: mid-episode "
-                              f"(previous daily basis already in breach) "
-                              f"— skipped")
-                    continue
-                if await fetch_episode_flagged(
-                    self._conn, sec_type, code, sig["signal_type"],
-                    sig["signal_sub_type"], sig["action"], episode_after,
-                ):
-                    if verbose:
-                        logger.info(f"    {sig['signal_type']}/"
-                              f"{sig['signal_sub_type']}: episode already "
-                              f"recorded since {episode_after} — skipped")
-                    continue
             # signal is stored at SIGNAL_SCALE decimals; signal_excess is
             # computed FROM the rounded value so the stored identity
             # signal_excess = signal - signal_threshold holds exactly.
@@ -249,18 +208,19 @@ class AnalysisEvaluator:
             signal_excess: float = signal_val - threshold
             # signal_excess_pct = signal_excess / |threshold| * 100.
             # Guarded against threshold = 0 (a pure safety net — the
-            # derived bars are daily price levels, the static bars are
-            # RSI/z values: none is 0 in practice; NULLIF-equivalent
-            # to SQL's safety net).
+            # static bars are RSI values: none is 0 in practice;
+            # NULLIF-equivalent to SQL's safety net).
             signal_excess_pct: float | None = (
                 round(signal_excess / abs(threshold) * 100,
                       SIGNAL_PCT_SCALE)
                 if threshold != 0 else None
             )
-            # action + confidence come straight from the analysis row —
-            # the confidence is already ROUND(10000 × the row's forecast
-            # confidence) on the live INTEGER basis-point scale (SQL-side
-            # exact rounding).
+            # action + the SCALED confidence come from the analysis
+            # row's own scale model: the breach depth |signal_excess|
+            # amplifies confidence_base (scale_base at zero excess +
+            # scale_factor per excess unit, linear) — ROUND(10000 ×
+            # confidence_base × scale), the identical formula the
+            # history writer applies.
             records.append({
                 "code": sig["code"],
                 "sec_type": sig["sec_type"],
@@ -273,16 +233,7 @@ class AnalysisEvaluator:
                 "signal_excess_pct": signal_excess_pct,
                 "signal": signal_val,
                 "signal_threshold": threshold,
-                "confidence": sig["confidence"],
-                # the same bucket's derived-cohort add-on confidences
-                # (@boost / @selection children — permanently inactive
-                # rows fetched as context by fetch_active_signals;
-                # None when the cohort never registered or the family
-                # carries no ohlcv children). Already on the live
-                # INTEGER basis-point scale, SQL-side like confidence;
-                # display-only context, never a gate.
-                "confidence_boost": sig["confidence_boost"],
-                "confidence_selection": sig["confidence_selection"],
+                "confidence": scaled_confidence_bp(sig, signal_excess),
                 # TRUE only on the on-demand mode's daily-close fallback
                 # rows (time 15:00); FALSE on every intraday-bar
                 # observation (live monitor AND as-of replay).
@@ -305,88 +256,6 @@ class AnalysisEvaluator:
                     cur["signal_excess"]):
                 strongest[key] = rec
         return list(strongest.values()), True
-
-    # ---- trigger-once episode gate (the pair-cross families) ----------------
-
-    async def _episode_start(
-        self, sec_type: str, code: str, sig: dict,
-        values: LiveValues, prev_cache: dict[str, LiveValues],
-    ) -> datetime.date | None:
-        """ONE triggered is_triggered_once config's EPISODE boundary.
-
-        A cross strategy's breach persists while the fast leg stays
-        beyond the slow leg, but the SIGNAL is the crossing itself —
-        an event, not a state — so the config flags ONCE per episode:
-        on the first breach observation after the daily legs were last
-        on the non-breach side. The boundary resolves from the DAILY
-        legs-row chain (the derived-bar families' state basis,
-        values.legs_date = L — the row at-or-before the checked bar's
-        date):
-
-          1. the PREVIOUS basis — the legs row before L, plus that
-             day's official daily close for the price-leg fragments —
-             is re-resolved through the SAME value/threshold machinery
-             at as_of = L − 1 day (cached per source kind per check:
-             the anchor is shared by every config of the kind);
-          2. the previous basis IN BREACH ⇒ mid-episode ⇒ None (the
-             episode already flagged — or the strategy went active
-             mid-cross and waits for the legs to reset);
-          3. no previous legs row (the strategy's first observable
-             state) ⇒ the episode starts at L itself (the caller's
-             probe still caps one row per day while L is the basis);
-          4. otherwise the episode starts after the previous basis's
-             own date R (the RESET day): the caller records only when
-             no live.live_signals row exists dated after R — at most
-             ONE row per episode, on its first qualifying observation.
-
-        Returns the episode-start date for the caller's
-        fetch_episode_flagged probe, or None when the breach must stay
-        silent. The anchor steps BEFORE the current legs row (never to
-        the bar date minus one): the cross lands on the row that took
-        effect at that day's close — the state the monitor is breaching
-        RIGHT NOW — so the row before it is the last non-breach basis
-        by construction.
-
-        Known limit (price-leg fragments): the episode chain is daily —
-        an intraday recovery whose official close resets the episode is
-        absorbed by the current legs row, so a re-cross against that
-        same row is not re-flagged; the legs reset (a later row back on
-        the non-breach side) re-arms the strategy.
-        """
-        legs_date: datetime.date = values.legs_date
-        anchor: datetime.date = legs_date - datetime.timedelta(days=1)
-        kind = SIGNAL_VALUE_SOURCE.get(sig["signal_type"])
-        prev = prev_cache.get(kind)
-        if prev is None:
-            prev = await fetch_current_values(
-                self._conn, sec_type, code, {sig["signal_type"]}, anchor,
-            )
-            if kind in ("close", "cross"):
-                # the price-space fragments' previous-day value: the
-                # official close of the day BEFORE the current legs row
-                # (at-or-before the anchor — it is often weekend-
-                # adjacent, so the exact-date fetch would find nothing)
-                prev.close = await fetch_daily_close_before(
-                    self._conn, sec_type, code, anchor,
-                )
-            prev_cache[kind] = prev
-        prev_value = resolve_value(sig, prev)
-        prev_threshold = resolve_threshold(sig, prev)
-        if prev_value is None or prev_threshold is None:
-            # no previous observable state — the strategy's first
-            # breach flags (probe date > anchor ≡ date >= legs_date)
-            return anchor
-        prev_triggered = (
-            prev_value > prev_threshold
-            if sig["action"] == ABOVE_ACTION
-            else prev_value < prev_threshold
-        )
-        if prev_triggered:
-            return None
-        # the reset day — the previous basis row's own date (the last
-        # day the strategy was observably on the non-breach side)
-        reset_day: datetime.date | None = prev.legs_date
-        return reset_day if reset_day is not None else anchor
 
     # ---- per-sec_type batch -------------------------------------------------
 

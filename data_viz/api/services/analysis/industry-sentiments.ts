@@ -7,6 +7,7 @@ import type { QueryResultRow } from "pg";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import { stripExchangeSuffix, matchesExchange } from "../../lib/classify-etf.js";
 import { cachedRows } from "../classification-cache.js";
+import { labelDecodeSql, POOL_SIZE_SORT_SQL } from "../label-codes.js";
 import type {
   SectorNode,
   IndustryNode,
@@ -326,11 +327,17 @@ export async function getIndustrySentimentsChart(
   // Precomputed mean/var aggregation rows from stats.industry_basic_stats
   // (built by builds.industry). Returns rows for ALL 4 pool_size slices —
   // the frontend filters to the user-selected slice for the overlay.
+  // pool_size decodes to its TEXT label in the SELECT (the UI contract);
+  // ORDER BY keeps the pre-refactor TEXT presentation order via
+  // label_dim.sort_order (pool codes are semantic-ordered, not
+  // alphabetical).
   const aggSql = `
-    SELECT date, pool_size, index_count, mean_close, var_price, mean_pe, total_trading_amount
+    SELECT date,
+           ${labelDecodeSql("pool_size", "pool_size")} AS pool_size,
+           index_count, mean_close, var_price, mean_pe, total_trading_amount
     FROM stats.industry_basic_stats
     WHERE industry_id = $1::text
-    ORDER BY pool_size, date ASC
+    ORDER BY ${POOL_SIZE_SORT_SQL}, date ASC
   `;
   const benchmarkCodes = INDUSTRY_SENTIMENTS_BENCHMARKS.map((b) => b.code);
   const [chartRows, aggRows, labelRows, benchmarkRows] = await Promise.all([

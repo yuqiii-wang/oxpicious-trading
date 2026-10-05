@@ -40,6 +40,7 @@ export default function DividendsPage() {
       emptyNoun="dividends data"
       refreshTooltip="Refresh Dividends themes + codes + chart data (bypass cache)"
       errorPrefix="Dividends data"
+      defaultSecType="etf"
       pageSize={PAGE_SIZE}
       renderCode={(c) => <DividendsPanel code={c.code} name={c.name} secType={c.secType} />}
     />

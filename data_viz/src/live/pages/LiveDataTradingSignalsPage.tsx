@@ -25,9 +25,10 @@
  *   • Row expansion — every row is CLICKABLE: clicking toggles a panel
  *     below the row with (1) the tick's collapsed signals (only when
  *     several configs breached the same tick), (2) the code's daily price
- *     trend (shared CodeTrendChart over the sec_type's baseline endpoint)
- *     carrying the code's FULL signal history as buy (green ▲ below the
- *     low) / sell (red ▼ above the high) markers — every recorded event —
+ *     trend (shared SignalCodeTrendChart over the sec_type's baseline
+ *     endpoint) carrying the code's FULL signal history as buy (green ▲
+ *     below the low) / sell (red ▼ above the high) markers — every
+ *     recorded event —
  *     and (3) the code's history-signals table (GET
  *     /api/live-data/trading-signals/history — analysis_signals
  *     .history_signals UNION live.live_signals, one record per config-day)
@@ -85,11 +86,8 @@ import {
   type TradingSignalsResponse,
 } from "@/lib/api-client";
 import RefreshButton from "@/components/RefreshButton";
-import {
-  CodeTrendChart,
-  type CodeTrendSecType,
-  type OhlcTradeSignal,
-} from "@/ui/OhlcChart";
+import { SignalCodeTrendChart, SignalRecordsTable } from "@/shared/components/signal-code-trend";
+import type { CodeTrendSecType } from "@/ui/OhlcChart";
 import { DateSelector } from "@/shared/components/date-selector";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
 
@@ -452,8 +450,8 @@ function tickKey(s: TradingSignal): string {
  *  Signal cell marks the collapsed siblings. Every row is CLICKABLE:
  *  clicking toggles an expansion below the row with (1) the tick's
  *  collapsed signals (multi-config ticks only), (2) the code's daily price
- *  trend (shared CodeTrendChart) marked with the code's full history of
- *  buy/sell signals and (3) the code's history-signals table. One row
+ *  trend (shared SignalCodeTrendChart) marked with the code's full history
+ *  of buy/sell signals and (3) the code's history-signals table. One row
  *  expanded at a time. */
 function SignalTable({
   rows,
@@ -716,13 +714,13 @@ function SignalTable({
 
 // ---------------------------------------------------------------------------
 //  Row expansion — the tick's collapsed signals (multi-config ticks), above
-//  the code's price trend (shared CodeTrendChart) with the FULL signal
+//  the code's price trend (shared SignalCodeTrendChart) with the FULL signal
 //  history drawn as buy/sell markers, above the code's history-signals
 //  table (history_signals ∪ live_signals, one per config-day) scoped to
 //  the LAST 20 TRADING DAYS ending on the viewed day.
 // ---------------------------------------------------------------------------
 
-/** The sec_types CodeTrendChart knows how to fetch. */
+/** The sec_types SignalCodeTrendChart knows how to fetch. */
 const TREND_SEC_TYPES: ReadonlySet<string> = new Set(["index", "etf", "stock"]);
 
 function SignalExpansion({
@@ -761,18 +759,9 @@ function SignalExpansion({
     };
   }, [signal.sec_type, signal.code, signal.date]);
 
-  // Chart markers: EVERY history row (all years — the full record).
-  const markers: OhlcTradeSignal[] = useMemo(
-    () =>
-      (history?.signals ?? []).map((h) => ({
-        date: h.date,
-        action: h.action,
-        signal_type: h.signal_type,
-        signal_sub_type: h.signal_sub_type,
-        confidence: h.confidence_pct,
-      })),
-    [history],
-  );
+  // Chart markers: EVERY history row (all years — the full record) —
+  // built inside the shared SignalCodeTrendChart from the same response
+  // this expansion fetched for its history table.
 
   // Table rows: only the last 20 trading days ending on the viewed day —
   // (windowStart, anchor], the count_20d window. The anchor is ALSO the
@@ -804,14 +793,20 @@ function SignalExpansion({
   }
   return (
     <Stack spacing={2} sx={{ p: 1.5 }}>
-      {group.length > 1 && <TickSignalsTable group={group} />}
+      {group.length > 1 && (
+        <SignalRecordsTable
+          caption={`All signals at this tick · ${group[0].date} ${group[0].time} · ${group.length} config${group.length === 1 ? "" : "s"}`}
+          rows={group}
+        />
+      )}
       {TREND_SEC_TYPES.has(signal.sec_type) && (
-        <CodeTrendChart
+        <SignalCodeTrendChart
           secType={signal.sec_type as CodeTrendSecType}
           code={signal.code}
           name={signal.code_name ?? undefined}
+          anchorDate={signal.date}
+          history={history}
           height={380}
-          chartOptions={{ tradeSignals: markers }}
         />
       )}
       <HistorySignalsTable
@@ -822,9 +817,6 @@ function SignalExpansion({
   );
 }
 
-/** Every config that breached the expanded row's (code, date, time) tick —
- *  the rows the parent table's PK grouping withheld, confidence DESC (the
- *  first is the parent row itself). */
 /** The same bucket's ohlcv cohort add-on confidences, parenthesized
  *  next to the confidence (the Excess column's muted paren pattern;
  *  the forecast table's population-marker convention): e.g.
@@ -833,12 +825,6 @@ function SignalExpansion({
 function CohortConfidenceAddOn({ s }: { s: TradingSignal }) {
   const theme = useTheme();
   const parts: string[] = [];
-  if (s.confidence_boost_pct != null) {
-    parts.push(`boost ${s.confidence_boost_pct.toFixed(2)}%`);
-  }
-  if (s.confidence_selection_pct != null) {
-    parts.push(`sel ${s.confidence_selection_pct.toFixed(2)}%`);
-  }
   if (parts.length === 0) return null;
   return (
     <Box
@@ -852,90 +838,6 @@ function CohortConfidenceAddOn({ s }: { s: TradingSignal }) {
     >
       ({parts.join(" / ")})
     </Box>
-  );
-}
-
-function TickSignalsTable({ group }: { group: TradingSignal[] }) {
-  const theme = useTheme();
-  return (
-    <Paper variant="outlined" sx={{ p: 1.25 }}>
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{ display: "block", mb: 0.75, px: 0.5 }}
-      >
-        All signals at this tick · {group[0].date} {group[0].time} ·{" "}
-        {group.length} config{group.length === 1 ? "" : "s"}
-      </Typography>
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>Signal</TableCell>
-            <TableCell>Action</TableCell>
-            <TableCell align="right">Signal value</TableCell>
-            <TableCell align="right">Threshold</TableCell>
-            <TableCell align="right">Excess</TableCell>
-            <Tooltip
-              title={
-                "The strategy's expected favorable move (the chosen entry " +
-                "rung's sign-aligned dir_ave) as a % of price — the breach " +
-                "record's confidence in basis points / 100"
-              }
-              arrow
-            >
-              <TableCell align="right">Confidence</TableCell>
-            </Tooltip>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {group.map((s) => (
-            <TableRow key={rowKey(s)}>
-              <TableCell sx={{ whiteSpace: "nowrap" }}>
-                {s.signal_type} · {s.signal_sub_type}
-              </TableCell>
-              <TableCell>
-                <SignalActionChip action={s.action} confidence={s.confidence} />
-              </TableCell>
-              <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
-              <TableCell align="right">
-                {s.signal_threshold.toFixed(4)}
-              </TableCell>
-              <TableCell
-                align="right"
-                sx={{
-                  whiteSpace: "nowrap",
-                  color: s.action === "buy"
-                    ? theme.palette.success.main
-                    : theme.palette.error.main,
-                  fontWeight: 600,
-                }}
-              >
-                {s.signal_excess >= 0 ? "▲ " : "▼ "}
-                {s.signal_excess.toFixed(4)}
-                {s.signal_excess_pct !== null &&
-                  s.signal_excess_pct !== undefined && (
-                    <Box
-                      component="span"
-                      sx={{
-                        color: theme.palette.text.secondary,
-                        fontWeight: 400,
-                        ml: 0.5,
-                      }}
-                    >
-                      ({s.signal_excess_pct >= 0 ? "+" : ""}
-                      {s.signal_excess_pct.toFixed(2)}%)
-                    </Box>
-                  )}
-              </TableCell>
-              <TableCell align="right" sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
-                {s.confidence_pct.toFixed(2)}%
-                <CohortConfidenceAddOn s={s} />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </Paper>
   );
 }
 

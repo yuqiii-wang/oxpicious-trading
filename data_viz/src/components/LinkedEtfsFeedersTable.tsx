@@ -7,7 +7,8 @@
  *
  * One flat table under the title "Index → ETF → Feeder Fund (联接基金)",
  * with ONE shared column set and the expanded-table style: per-column header
- * filters → sticky Σ aggregation row → zebra rows → 10-per-page pagination.
+ * filters → sticky Σ aggregation row → flat (non-zebra) rows → 10-per-page
+ * pagination.
  * Feeder sub-rows REUSE the same columns beneath their ETF (no separate
  * feeder column group): feeder code/name/NAV map onto Code/Name/Close-NAV,
  * feeder AUM onto AUM; the feeder-only details (发起式, manager, inception)
@@ -26,9 +27,12 @@
  *
  * Data source: /api/sec-composition/linked-etfs?code=<index> (rows + Σ meta
  * + per-row feeder counts). Hosted twice with the same contract:
- *   · IndexPanel     — code = the index shown on the panel
+ *   · IndexPanel     — code = the index shown on the panel (no focusCode —
+ *     rows expand on click only)
  *   · EtfMarginPanel — code = the ETF's tracking index, focusCode = the ETF
- *     (highlighted + paged into view, so its feeders stay one click away)
+ *     whose trend the parent chart displays; the table FOLLOWS it: the row
+ *     is highlighted, paged into view, and its feeder sub-rows auto-expand
+ *     when present (re-fires on every focusCode change)
  */
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -70,7 +74,6 @@ import type { LinkedEtfRow, LinkedEtfsResponse, LinkedFeederRow } from "@shared/
 import {
   expandedTableAggCellSx,
   expandedTableBodyCellSx,
-  expandedTableBodyRowSx,
   expandedTableContainerSx,
   expandedTableHeadCellSx,
 } from "@/shared/styles/expanded-table-styles";
@@ -250,8 +253,9 @@ const COLUMNS: ChainColumn[] = [
 interface Props {
   /** Index code (bare, e.g. "000300") — the ETFs listed track this index. */
   code: string;
-  /** ETF code (bare) to highlight and page into view once per scope —
-   *  EtfMarginPanel passes its own ETF so the row is easy to find. */
+  /** ETF code (bare) the parent panel's trend chart displays — the table
+   *  follows it: highlights, pages into view, and auto-expands its feeder
+   *  sub-rows when the row has any. */
   focusCode?: string;
   /** Overrides the default empty-state text (default distinguishes an empty
    *  index from a MISSING tracking index). */
@@ -304,9 +308,10 @@ export default function LinkedEtfsFeedersTable({
   // Generation guard — feeder fetches in flight when the scope/refresh
   // changes are dropped instead of repopulating the cleared cache.
   const feederGenRef = useRef(0);
-  // One-shot focus page-jump per scope (do not yank the user's page when
-  // they filter or page manually afterwards).
-  const jumpedRef = useRef(false);
+  // The last parent trend code the follow effect applied — guards it against
+  // re-running on unrelated re-renders, so manual paging/filtering after the
+  // auto-expand is never yanked back.
+  const lastFocusRef = useRef<string | null>(null);
 
   const onLoadingChangeRef = useRef(onLoadingChange);
   onLoadingChangeRef.current = onLoadingChange;
@@ -351,7 +356,7 @@ export default function LinkedEtfsFeedersTable({
     setFeederErrors({});
     setFeederLoadingKeys(new Set());
     feederGenRef.current += 1;
-    jumpedRef.current = false;
+    lastFocusRef.current = null;
   }, [code, refreshKey]);
 
   const handleRefresh = () => {
@@ -379,14 +384,6 @@ export default function LinkedEtfsFeedersTable({
   const currentPage = Math.min(page, totalPages);
   const pagedRows = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
-  // Page the focused ETF into view once per scope (EtfMarginPanel usage).
-  useEffect(() => {
-    if (!focusCode || !payload || jumpedRef.current) return;
-    jumpedRef.current = true;
-    const idx = filtered.findIndex((e) => sameSecCode(e.code, focusCode));
-    if (idx >= PAGE_SIZE) setPage(Math.floor(idx / PAGE_SIZE) + 1);
-  }, [filtered, focusCode, payload]);
-
   const fetchFeedersFor = (etfCode: string) => {
     const gen = feederGenRef.current;
     setFeederLoadingKeys((prev) => new Set(prev).add(etfCode));
@@ -409,28 +406,53 @@ export default function LinkedEtfsFeedersTable({
       });
   };
 
+  /** Open an ETF's feeder sub-rows, lazily fetching them once per scope.
+   *  Shared by the ETF-row click handler and the parent-trend auto-expand. */
+  const expandEtfFeeders = (e: LinkedEtfRow) => {
+    setExpandedKeys((prev) => new Set(prev).add(e.code));
+    if (e.code in feedersByEtf) return;
+    // Clear a previous error so this expansion retries the fetch.
+    setFeederErrors((prev) => {
+      if (!(e.code in prev)) return prev;
+      const next = { ...prev };
+      delete next[e.code];
+      return next;
+    });
+    fetchFeedersFor(e.code);
+  };
+
+  // Follow the parent's code trend (focusCode — EtfMarginPanel passes the
+  // ETF whose trend its chart displays): when that code is one of this
+  // table's ETF rows, page it into view and — when the row has feeders —
+  // auto-expand its feeder sub-rows. A focus code matching no row (e.g. an
+  // index) is a no-op. Guarded by lastFocusRef so it fires once per
+  // focusCode change (manual paging/filtering afterwards is never yanked
+  // back), and by the payload-scope check so a scope switch never consumes
+  // the follow on the previous index's stale rows.
+  useEffect(() => {
+    if (!focusCode || !payload || payload.index_code !== code) return;
+    if (lastFocusRef.current === focusCode) return;
+    lastFocusRef.current = focusCode;
+    const row = rows.find((e) => sameSecCode(e.code, focusCode));
+    if (!row) return;
+    const idx = filtered.findIndex((e) => sameSecCode(e.code, focusCode));
+    if (idx >= PAGE_SIZE) setPage(Math.floor(idx / PAGE_SIZE) + 1);
+    if (row.feeder_count > 0) expandEtfFeeders(row);
+  }, [focusCode, payload, code, rows, filtered, feedersByEtf, expandEtfFeeders]);
+
   // ETF row click: with feeders → toggle its feeder sub-rows (lazy fetch) AND
   // open the ETF's own daily trend beneath the table (collapsing the feeders
   // closes it again); without feeders → toggle the ETF's own daily trend.
   const handleEtfRowClick = (e: LinkedEtfRow) => {
     if (e.feeder_count > 0) {
       const willOpen = !expandedKeys.has(e.code);
-      setExpandedKeys((prev) => {
-        const n = new Set(prev);
-        if (willOpen) n.add(e.code);
-        else n.delete(e.code);
-        return n;
-      });
-      if (willOpen && !(e.code in feedersByEtf)) {
-        // Clear a previous error so this click retries the fetch.
-        setFeederErrors((prev) => {
-          if (!(e.code in prev)) return prev;
-          const next = { ...prev };
-          delete next[e.code];
-          return next;
+      if (willOpen) expandEtfFeeders(e);
+      else
+        setExpandedKeys((prev) => {
+          const n = new Set(prev);
+          n.delete(e.code);
+          return n;
         });
-        fetchFeedersFor(e.code);
-      }
       setSelectedTrend((prev) =>
         willOpen
           ? { code: e.code, name: e.name || e.code, secType: "etf" }
@@ -459,6 +481,7 @@ export default function LinkedEtfsFeedersTable({
     payload != null ? `${payload.index_code} ${payload.index_name}`.trim() : "";
 
   const AGG_SX = expandedTableAggCellSx(theme);
+  const agg = aggCells({ rows, payload });
   // Feeder sub-row tint — a faint primary wash distinct from the parent
   // zebra rows and from the selected/expanded highlight.
   const feederRowSx = {
@@ -559,13 +582,15 @@ export default function LinkedEtfsFeedersTable({
                             position: sticky pins it to the top of the
                             scrollable container so it stays visible. */}
                         <TableRow>
-                          {aggCells({ rows, payload }).map((c, i) => (
-                            <TableCell key={aggKeys[i] ?? i} sx={AGG_SX}>
-                              {c}
+                          {/* Same column mapping + align as member rows so
+                              the Σ values line up with their columns. */}
+                          {COLUMNS.map((col) => (
+                            <TableCell key={col.key} sx={AGG_SX} align={col.align ?? "left"}>
+                              {agg[col.key] ?? "—"}
                             </TableCell>
                           ))}
                         </TableRow>
-                        {pagedRows.map((e, idx) => {
+                        {pagedRows.map((e) => {
                           const expandable = e.feeder_count > 0;
                           const expanded = expandable && expandedKeys.has(e.code);
                           const focused = focusCode != null && sameSecCode(e.code, focusCode);
@@ -576,7 +601,11 @@ export default function LinkedEtfsFeedersTable({
                               <TableRow
                                 onClick={() => handleEtfRowClick(e)}
                                 sx={{
-                                  ...expandedTableBodyRowSx(idx),
+                                  // Flat paper bg — this table opts out of the
+                                  // shared zebra alternation; hover/selected
+                                  // still lift to action.selected.
+                                  bgcolor: "background.paper",
+                                  "&:hover": { bgcolor: "action.selected" },
                                   cursor: "pointer",
                                   ...(highlighted ? { bgcolor: "action.selected" } : {}),
                                 }}
@@ -696,20 +725,19 @@ export default function LinkedEtfsFeedersTable({
   }
 }
 
-/** Stable keys for the sticky Σ row cells (column order as rendered). */
-const aggKeys = COLUMNS.map((c) => `etf:${c.key}`);
-
-/** Σ aggregation row — client-side sums over ALL linked ETFs. Cells map 1:1
- *  onto the rendered columns. (The index-level total ETF trading amount from
- *  stats.index_exts is not shown — the Trading Amt Σ already aggregates
- *  turnover; only its date is reused as the Σ row's date.) */
+/** Σ aggregation row — client-side sums over ALL linked ETFs. Returned as a
+ *  record keyed by ChainColumn.key so the render can place each value (and
+ *  its alignment) in the exact column the member rows use. (The index-level
+ *  total ETF trading amount from stats.index_exts is not shown — the Trading
+ *  Amt Σ already aggregates turnover; only its date is reused as the Σ
+ *  row's date.) */
 function aggCells({
   rows,
   payload,
 }: {
   rows: LinkedEtfRow[];
   payload: LinkedEtfsResponse | null;
-}): ReactNode[] {
+}): Record<string, ReactNode> {
   let sumTradingAmtYi: number | null = null;
   let sumAumYi: number | null = null;
   {
@@ -726,15 +754,15 @@ function aggCells({
     rows.reduce((m, e) => (e.latest_date > m ? e.latest_date : m), "") ||
     "";
   const n = rows.length;
-  return [
-    `Σ ${n} ETF${n === 1 ? "" : "s"}`,
-    "—",
-    "—",
-    "—",
-    sumTradingAmtYi != null ? <span style={{ fontFamily: "monospace" }}>{fmtNum(sumTradingAmtYi)}</span> : "—",
-    sumAumYi != null ? <span style={{ fontFamily: "monospace" }}>{fmtNum(sumAumYi)}</span> : "—",
-    aggDate || "—",
-    "—",
-    "—",
-  ];
+  return {
+    code: `Σ ${n} ETF${n === 1 ? "" : "s"}`,
+    name: "—",
+    exchange: "—",
+    latest_close: "—",
+    trading_amt: sumTradingAmtYi != null ? <span style={{ fontFamily: "monospace" }}>{fmtNum(sumTradingAmtYi)}</span> : "—",
+    aum: sumAumYi != null ? <span style={{ fontFamily: "monospace" }}>{fmtNum(sumAumYi)}</span> : "—",
+    latest_date: aggDate || "—",
+    n_days: "—",
+    industry: "—",
+  };
 }

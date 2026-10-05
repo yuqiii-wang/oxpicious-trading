@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from _common.labels import SEC_TYPE_CODE
+
 
 # Map sec_type → trading_amount source table.
 # Stock / ETF trading_amount lives in the liquidity_margin tables;
@@ -32,13 +34,16 @@ _TRADING_AMT_TABLES: dict[str, str] = {
 async def fetch_trading_amt(conn, sec_types: list[str]) -> pd.DataFrame:
     """Fetch daily trading_amount for all sec_types.
 
-    Returns a DataFrame with columns [sec_type, code, date, trading_amount]
-    for merging with the daily margin rows.
+    Returns a DataFrame with columns
+    [sec_type_id, code, date, trading_amount] for merging with the daily
+    margin rows. sec_type rides as its int16 frame code (the label-code
+    contract — the 7M-row frame never carries label strings); the
+    caller filters on the code.
 
     Uses a single UNION ALL query across all sec_type tables to avoid
     per-type round-trips.
     """
-    _empty_cols = ["sec_type", "code", "date", "trading_amount"]
+    _empty_cols = ["sec_type_id", "code", "date", "trading_amount"]
     if not sec_types:
         return pd.DataFrame(columns=_empty_cols)
 
@@ -50,8 +55,8 @@ async def fetch_trading_amt(conn, sec_types: list[str]) -> pd.DataFrame:
             continue
         params.append(sec_type)
         parts.append(f"""
-            SELECT ${len(params)}::text AS sec_type, code, date,
-                   trading_amount
+            SELECT {SEC_TYPE_CODE[sec_type]}::smallint AS sec_type_id,
+                   code, date, trading_amount
             FROM {table}
             WHERE trading_amount IS NOT NULL
         """)

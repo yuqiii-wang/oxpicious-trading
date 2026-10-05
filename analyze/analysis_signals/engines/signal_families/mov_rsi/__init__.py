@@ -1,7 +1,9 @@
 """mov_rsi signal-family engine (analyze.analysis_signals.engines.
 signal_families.mov_rsi) — re-exports the engine; the implementation
-sits in _engine (identity + phases), _strategies (strategy rows) and
-_history (history rows)."""
+sits in _engine (identity + phases) over the shared _buckets
+machinery, with the emission split into threshold/ (the discrete
+{1,2,3}% percentile-bucket strategies + history) and curve/ (the
+continuous depth-response signal_curves rows)."""
 from analyze.analysis_signals.engines.signal_families.mov_rsi._engine import (
     MovRsiEngine,
 )

@@ -95,6 +95,11 @@ interface NewsFilters {
   searchAny?: boolean;
   source?: string | null;
   author?: string | null;
+  /** true = only articles whose mapped industry had a big market move on the
+   *  article's date (text.news.is_big_fluctuation — the builds.text
+   *  big_market_mv pass: |day change| >= 3% AND RSI(3) pinned, 5-td
+   *  cooldown per industry). */
+  bigFluctuationOnly?: boolean;
 }
 
 async function buildFilterSql(
@@ -132,6 +137,9 @@ async function buildFilterSql(
   if (filters.author) {
     params.push(filters.author);
     clauses.push(`n.author = $${params.length}`);
+  }
+  if (filters.bigFluctuationOnly) {
+    clauses.push(`n.is_big_fluctuation`);
   }
   // Keyword search: every term must hit title OR content (AND), or — with
   // searchAny — a single clause matching ANY term (OR across terms).
@@ -413,7 +421,7 @@ async function finishItems(
   params.push(offset);
   const items = await queryRows<NewsItem & QueryResultRow>(
     `SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
-            n.author, n.industry_id, n.sector_id, n.votes,
+            n.author, n.industry_id, n.sector_id, n.votes, n.is_big_fluctuation,
             (SELECT COUNT(*)::int FROM text.news_comments c
               WHERE c.news_id = n.news_id) AS comment_count,
             CASE WHEN n.content IS NULL THEN NULL
@@ -435,6 +443,7 @@ export async function getNewsItem(newsId: number): Promise<NewsItemDetail | null
   const rows = await queryRows<NewsItemDetail & QueryResultRow>(
     `SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
             n.author, n.industry_id, n.sector_id, n.votes, n.content,
+            n.is_big_fluctuation,
             (SELECT COUNT(*)::int FROM text.news_comments c
               WHERE c.news_id = n.news_id) AS comment_count
        FROM text.news n

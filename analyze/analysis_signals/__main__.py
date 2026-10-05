@@ -2,92 +2,66 @@
 
 Run via ``python -m analyze.analysis_signals``.
 
-Signal STRATEGIES + history signals over analysis_forecasts (see
-database/sql/analysis/analysis_signals/00_schema.sql and
-01_signals.sql):
+Signal STRATEGIES + history signals computed IN-ENGINE off the RSI
+percentile data (see database/sql/analysis/analysis_signals/
+00_schema.sql and 01_signals.sql). The forecast layer was REMOVED
+2026-10-05 (tables dropped, package + SQL files deleted) — the signals
+tier computes its own rsi-pct buckets from analysis.mov_ave_rsi +
+prices, and the plain gate at the per-side robustness floors is the
+whole gate:
 
-  - A forecast bucket (code × stat_date snapshot M × config, trailing
-    5-year window (M - 5y, M]) whose mixed forecast_results DELAY
-    LADDER (rung d 0..5 is conditioned on the signal having persisted
-    d days) has a rung passing the plain rule at the PER-SIDE
-    ROBUSTNESS FLOORS
-    — the sign-aligned blended mean forward change (dir_ave) > 0.75%
-    on a rung carrying >= 4 (buy) / 3 (sell) window streaks that shows
-    ladder stability (>= 2 (buy) / 1 (sell) of rungs 0-2 sign-aligned
-    positive; streak families only) — IS a signal
-    strategy: ONE
-    analysis_signals.signal_strategies row over the bucket's forecast
-    period (start_date .. end_date = the snapshot key — the
-    ROLLING LATEST snapshot is keyed at the sec_type's latest
-    available data date). The
-    registered rung is the OPTIMAL ENTRY DELAY — the balance rule's
-    argmax occurrence_count × sign-aligned dir_ave over the
-    gate-passing rungs (the opportunity cost of waiting — fewer
-    occurrences as the rung deepens — against the persistence-
-    conditioned return), ties → the smallest delay — stored as
-    signal_delay_days, carrying the chosen rung's confidence
-    (the sign-aligned dir_ave — the expected favorable blended move)
-    and breach bar in the underlying value's own space
-    (the live tier's threshold set) and the bucket's OWN side as a
-    STORED column.
+  - A bucket (code × stat_date snapshot M × config, trailing
+    10-year window (M - 10y, M]) whose DELAY-0 blended mixed-row stats
+    pass the plain rule — the sign-aligned blended mean forward change
+    (dir_ave) > 0.75% over >= 4 (buy) / 3 (sell) of the window's
+    qualifying streaks — IS a signal strategy: ONE
+    analysis_signals.signal_thresholds row over the bucket's window
+    period (start_date .. end_date = the snapshot key — the ROLLING
+    LATEST snapshot is keyed at the sec_type's latest available RSI
+    data date). The trigger is each qualifying streak's FIRST day
+    (delay 0 — the 0..5 delay ladder + the optimal-entry selection
+    were REMOVED 2026-10-05); the row carries the bucket's
+    confidence-scale model (confidence_base = the sign-aligned dir_ave
+    — the expected favorable blended move ON the bar — plus
+    scale_method/scale_base/scale_factor: the breach depth amplifies
+    the base) and the breach bar in the RSI's own space (the window's
+    top/bottom-pct%
+    percentile bar; the live tier's threshold set) and the bucket's
+    OWN side as a STORED column.
 
-  - The bucket's CHOSEN-RUNG trigger days INSIDE the snapshot key's
-    calendar year M
-    are its history signals: ONE analysis_signals.history_signals row
-    per day (the day's value, the bar it crossed, the excess — a
-    structural clone of live.live_signals; one snapshot owns each
-    date, so no cross-snapshot PK conflicts). A delayed strategy's
-    history days are its streaks' day-d anchors (signal_delay_days
-    rides both tables).
+  - The bucket's trigger days (the qualifying streaks' first days)
+    INSIDE the snapshot key's calendar year M are its history signals: ONE
+    analysis_signals.history_signals row per day (the day's value, the
+    bar it crossed, the excess — a structural clone of
+    live.live_signals; one snapshot owns each date, so no
+    cross-snapshot PK conflicts).
 
-  - Emission slices (current build): mov_rsi pct in {1, 2, 3}
-    (top → sell / bottom → buy), mov_std MA/σ windows >= 60d at
-    k >= 2.0σ (upper → sell / lower → buy; the 20d window was removed
-    2026-09-30 — its sell side sign-flipped out-of-sample, the OOS
-    study temp_scripts/study_std20_oos.py; the 20d buckets stay in
-    analysis_forecasts), and the two pair-cross
-    families — mov_pairs / mov_pairs_ema, each covering BOTH its fast
-    legs (ma5/ema6 and the close price) — at slow-leg windows >= 60d,
-    both cross sides (bottom cross-down → buy, top cross-up →
-    sell). All slices cover every regime split. Other forecast
-    families get strategies as their engines land.
-
-  - NO CASE/WHEN anywhere in the SQL: side is stored, and every other
-    conditional lives in this package's vectorized cudf.pandas engines
-    (engines/ — one SignalEngine subclass per family, dispatched
-    through the registry).
+  - Emission slice: mov_rsi pct in {1, 2, 3} (top → sell / bottom →
+    buy), every regime split. NO CASE/WHEN anywhere in the SQL: side
+    is stored, and every other conditional lives in this package's
+    vectorized cudf.pandas engines.
 
 Pipeline per sec_type (index / etf / stock), every step owned by the
-family's engine (engines/signal_families/<family>/ — one
-SignalEngine subclass per family, dispatched through the registry;
-see engines/_base):
-  1. Resolve the target snapshots per family: the stat_dates PRESENT
-     in analysis_forecasts.forecast_identities (bucket-filtered) that
-     are missing from signal_strategies, plus the MUTABLE SCOPE
-     (config.mutable_dates — the ROLLING LATEST snapshot keyed at the
-     sec_type's latest available data date, always re-emitted; the
-     newest completed year-end while its 20d forward windows
-     realize). Retired keys (yesterday's rolling-latest date) are
-     SWEPT from both tables before the resolution. ``--force`` purges
-     the sec_type's family rows and re-emits every present snapshot.
-  2. Per snapshot: fetch the buckets (long, carrying the quality
-     periods' forward profiles) + the indicator values at exactly the
-     trigger points (wide) → vectorized plain gate at the robustness
-     floors → the FINAL claim-profile SignalQuality gate
-     (engines/_quality — breach coherence + 5d forward-mean
-     alignment on every bucket + 20d alignment on the family's slow
-     claims (engine slow_claim), plus the
-     0.75 risk cap as ONE weight-blended verdict over the quality
-     periods 65% 5d / 10% 20d at bar 0.50 (the 5d bar
-     carries the decision — long-horizon failures alone can't kill);
-     only quality-passing buckets register as strategies) →
-     vectorized strategy/history
-     frames → ONE transaction: purge the snapshot, COPY both tables.
+family's engine (engines/signal_families/mov_rsi/ — dispatched through
+the registry; see engines/_base):
+  1. Resolve the target snapshots over the engine's OWN snapshot grid
+     (the last N year-ends + the ROLLING LATEST key, config.grid):
+     those missing from signal_thresholds, plus the MUTABLE SCOPE
+     (config.mutable_dates — the rolling latest, always re-emitted;
+     the newest year-end while its 20d forward windows realize).
+     Retired keys (yesterday's rolling-latest date) are SWEPT from
+     both tables before the resolution. ``--force`` purges the
+     sec_type's family rows and re-emits every present snapshot.
+  2. Per run: fetch the input frame ONCE (price + RSI windows, the
+     first dates, the market-regime labels; in-engine forward
+     changes) → per snapshot: compute the rsi-pct buckets + the
+     delay-0 mixed stats (in-buckets) → plain gate at the sample
+     floor → vectorized
+     strategy/history frames → ONE transaction: purge the snapshot,
+     COPY both tables.
   3. After every run: refresh is_active (each config's latest
-     end_date) and rank signal_order (confidence DESC within each
-     (sec_type, end_date) pool) — 02_is_active.sql /
-     03_signal_order_rank.sql — and each engine upserts its own
-     analysis.analysis_identity row.
+     end_date — run/pipeline.refresh_is_active) and the engine upserts
+     its own analysis.analysis_identity row.
 """
 from __future__ import annotations
 
@@ -115,7 +89,7 @@ setup_utf8_stdout()
 
 from _common.log_setup import setup_logging  # noqa: E402
 
-from analyze.analysis_forecasts.config import SEC_TYPES  # noqa: E402
+from analyze.analysis_signals.config import SEC_TYPES  # noqa: E402
 from analyze.analysis_signals.config import (  # noqa: E402
     STAGE_NAMES,
 )
@@ -130,25 +104,19 @@ logger = setup_logging("analysis_signals")
 
 async def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Analysis Signals (signal strategies + history "
-                    "signals over analysis_forecasts): one "
-                    "signal_strategies row per forecast bucket whose "
-                    "mixed forecast_results delay ladder has a rung "
-                    "passing the plain gate (sign-aligned blended mean "
-                    "forward change > 0.75%), at "
-                    "the OPTIMAL ENTRY DELAY (occurrence_count × "
-                    "aligned dir_ave argmax over the gate-passing "
-                    "rungs — opportunity cost vs return), covering the "
-                    "bucket's forecast period (the trailing 5-year "
-                    "snapshot key), plus the chosen rung's trigger "
-                    "days inside its own snapshot year as "
-                    "history_signals rows. Emission slices: mov_rsi "
-                    "pct in {1, 2, 3}; mov_std >= 60d windows at "
-                    "k >= 2.0σ; "
-                    "the two pair-cross families (mov_pairs / "
-                    "mov_pairs_ema, both fast legs) at >= 60d slow "
-                    "legs, both cross sides; every regime split.",
-    )
+        description="Analysis Signals (rsi-pct signal strategies + history "
+                    "signals, computed in-engine over analysis.mov_ave_rsi): "
+                    "one signal_thresholds row per RSI percentile bucket "
+                    "whose delay-0 blended mixed-row stats pass the "
+                    "plain gate (sign-aligned blended mean forward "
+                    "change > 0.75%) at the sample floor (4 buys / "
+                    "3 sells), covering the "
+                    "bucket's window period (the trailing 10-year "
+                    "snapshot key), plus the bucket's trigger days "
+                    "(each qualifying streak's first day) inside its "
+                    "own snapshot year as "
+                    "history_signals rows. Emission slice: mov_rsi "
+                    "pct in {1, 2, 3}; every regime split.",    )
     ap.add_argument(
         "--sec-type", choices=SEC_TYPES, default=None,
         help="Process only this sec_type (for testing). Default: all.",
@@ -160,8 +128,15 @@ async def main() -> None:
     )
     ap.add_argument(
         "--snapshots", type=int, default=None, metavar="N",
-        help="Cap the target stat_dates to the newest N present in "
-             "analysis_forecasts (default: all present snapshots).",
+        help="Cap the target stat_dates to the newest N on the "
+             "snapshot grid (default: all present snapshots).",
+    )
+    ap.add_argument(
+        "--codes", type=str, default=None, metavar="CSV",
+        help="Comma-separated codes scoping the universe (the study-"
+             "scope rule: analysis runs write only the 10 study "
+             "indices unless explicitly widened). Default: the "
+             "sec_type's full active universe.",
     )
     ap.add_argument(
         "--analyze", action="store_true",
@@ -186,12 +161,16 @@ async def main() -> None:
         metrics = None
 
     sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
+    codes = (
+        frozenset(c.strip() for c in args.codes.split(",") if c.strip())
+        if args.codes else None
+    )
 
     t0 = time.time()
     print_build_header(
-        "ANALYZE SIGNALS (signal strategies + history signals over "
-        "the analysis_forecasts buckets)",
-        tables="analysis_signals.signal_strategies, "
+        "ANALYZE SIGNALS (rsi-pct signal strategies + history signals, "
+        "computed in-engine over analysis.mov_ave_rsi)",
+        tables="analysis_signals.signal_thresholds, "
                "analysis_signals.history_signals",
         sec_types=", ".join(sec_types),
         metrics=", ".join(sorted(metrics)) if metrics else "all",
@@ -203,26 +182,29 @@ async def main() -> None:
 
     conn = await get_db_connection_async()
     try:
-        totals = {"strategies": 0, "history": 0}
+        totals = {"thresholds": 0, "history": 0, "curves": 0}
         for st in sec_types:
             stats = await process_sec_type(
-                conn, st, force=force, metrics=metrics, snapshots=args.snapshots,
+                conn, st, force=force, metrics=metrics,
+                snapshots=args.snapshots, codes=codes,
             )
             for engine in engines_for(metrics):
                 run = stats.get(engine.stage_key, RunStats(0, 0, 0))
-                totals["strategies"] += run.strategies
+                totals["thresholds"] += run.thresholds
                 totals["history"] += run.history
+                totals["curves"] += run.curves
 
-        if totals["strategies"] == 0 and totals["history"] == 0 \
-                and not force:
+        if totals["thresholds"] == 0 and totals["history"] == 0 \
+                and totals["curves"] == 0 and not force:
             logger.info("\n  DB is up to date; nothing to do.")
             print_wall_time(t0)
             return
 
         logger.info(
-            f"\n  TOTAL: {totals['strategies']:,} signal_strategies + "
-            f"{totals['history']:,} history_signals rows written "
-            f"(is_active + signal_order refreshed per sec_type)",
+            f"\n  TOTAL: {totals['thresholds']:,} signal_thresholds + "
+            f"{totals['history']:,} history_signals + "
+            f"{totals['curves']:,} signal_curves rows written "
+            f"(is_active refreshed per sec_type)",
         )
         # Post-bulk-write ANALYZE — same rationale as the forecasts
         # build: stale primary statistics after a rewrite turn every
@@ -232,8 +214,9 @@ async def main() -> None:
         # routine builds skip it.
         if args.analyze:
             await analyze_tables_async(conn, (
-                "analysis_signals.signal_strategies",
+                "analysis_signals.signal_thresholds",
                 "analysis_signals.history_signals",
+                "analysis_signals.signal_curves",
             ))
         else:
             logger.info(

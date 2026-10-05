@@ -6,6 +6,7 @@
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
+import { encodeLabelParam } from "../label-codes.js";
 import type {
   IndustryCorrelationRow,
   IndustryCorrelationsResponse,
@@ -130,11 +131,12 @@ export async function getIndustryCorrelations(
       corr_ma60_60d,
       corr_ma255_255d
     FROM analysis.industry_correlations
-    WHERE pool_size = $${pairParams.length + 1}::text
+    WHERE pool_size = $${pairParams.length + 1}::smallint
       AND (industry_id, benchmark_industry_id) IN (${pairPlaceholders})
     ORDER BY start_date ASC, industry_id, benchmark_industry_id
   `;
-  const params = [...pairParams, poolSize];
+  // pool_size crosses as its stats.label_dim SMALLINT code.
+  const params = [...pairParams, encodeLabelParam("pool_size", poolSize)];
 
   const [rows, labelMap] = await Promise.all([
     queryRows<DbIndustryCorrelationRow>(sql, params),

@@ -4,8 +4,13 @@ One module per data source / greek (see the module docstrings for the
 metric semantics and industry anchors):
 
   skewness.py   — oi_moneyness (OI-wtd mean moneyness, positioning)
+  moneyness.py  — materialized oi_moneyness series + spot daily (the
+                 /oi-moneyness-series read model, exact live-SQL parity)
   oi_stats.py   — plain put/call OI ratio correlation stats
   walls.py      — strength-scored OI wall zones with lifecycle
+  bands.py      — options-implied bounded-fluctuation bands
+                 (nearest-to-spot zones + approach/breach states
+                 and prior-session-zone events)
   iv_skew.py    — IV skew stats (ATM/25d wings/risk reversal) + iv_smile
                  (OI-wtd 3rd moment of IV, pricing)
   vix.py        — 30d model-free implied-vol index per underlying
@@ -28,6 +33,7 @@ needed).
 """
 from __future__ import annotations
 
+from analyze.options.compute.bands import compute_options_bands
 from analyze.options.compute.greek_delta import (
     compute_options_greek_delta_skew_stats,
 )
@@ -40,6 +46,9 @@ from analyze.options.compute.greek_vega import (
 from analyze.options.compute.iv_skew import (
     compute_options_iv_skew_stats,
     compute_options_iv_smile_corr_stats,
+)
+from analyze.options.compute.moneyness import (
+    compute_options_moneyness_series,
 )
 from analyze.options.compute.oi_stats import compute_options_oi_stats
 from analyze.options.compute.skewness import compute_options_skewness_stats
@@ -58,9 +67,11 @@ __all__ = [
     "compute_options_skewness_stats",
     "compute_options_oi_stats",
     "compute_options_walls",
+    "compute_options_bands",
     "compute_options_iv_skew_stats",
     "compute_options_vol_index",
     "compute_options_iv_smile_corr_stats",
+    "compute_options_moneyness_series",
     "compute_options_greek_delta_skew_stats",
     "compute_options_greek_gamma_skew_stats",
     "compute_options_greek_vega_skew_stats",

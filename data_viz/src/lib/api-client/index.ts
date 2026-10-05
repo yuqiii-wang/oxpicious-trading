@@ -62,7 +62,8 @@ export {
   fetchOptionsWalls,
   fetchEtfOhlcv,
   fetchOptionsDates,
-  fetchOptionsSnapshot,
+  fetchOptionsSnapshotRows,
+  fetchOptionsSnapshotAxes,
   fetchOptionsOiDaily,
   fetchOptionsOiCells,
   fetchOptionsExpiryMeta,
@@ -120,7 +121,6 @@ export {
   fetchMovAveSpreadExtras,
 } from "./analysis-ma-spread";
 
-export { fetchAnalysisForecast, fetchForecastLadders, fetchForecastTriggerDates, fetchForecastIdentity } from "./analysis-forecasts";
 
 export { fetchMarketRegimeSpans } from "./analysis-market-regimes";
 
@@ -128,6 +128,8 @@ export {
   fetchPeChart,
   fetchPeStreaks,
 } from "./analysis-pe";
+
+export { fetchDividendDeliveries } from "./analysis-dividends";
 
 export {
   fetchValuationCodes,
@@ -228,12 +230,21 @@ export {
   fetchTradingSignalConfigs,
   fetchTradingSignals,
   fetchTradingSignalHistory,
+  fetchSignalCurves,
+  fetchSignalThresholds,
+  fetchSignalRsiSeries,
   type TradingSignalsRunResponse,
   type TradingSignalConfig,
   type TradingSignalConfigsResponse,
   type TradingSignal,
   type TradingSignalsResponse,
   type TradingSignalHistoryResponse,
+  type SignalCurve,
+  type SignalCurvesResponse,
+  type SignalThreshold,
+  type SignalThresholdsResponse,
+  type SignalRsiRow,
+  type SignalRsiResponse,
 } from "./trading-signals";
 
 export {

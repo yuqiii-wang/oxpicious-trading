@@ -29,6 +29,10 @@ export interface NewsScopeParams {
   search_mode?: "any" | "all" | null;
   source?: string | null;
   author?: string | null;
+  /** true = keep only articles whose mapped industry had a big market move
+   *  on the article's date (text.news.is_big_fluctuation). Pass true or null —
+   *  false would serialize as a no-op "false" param. */
+  is_big_fluctuation?: boolean | null;
 }
 
 function qs<T extends object>(params: T): string {

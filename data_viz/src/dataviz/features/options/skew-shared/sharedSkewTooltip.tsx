@@ -4,8 +4,18 @@
  */
 import React from "react";
 import { fmtCompact, fmtNum } from "@/lib/series";
+import { DOWN_COLOR, MA20_COLOR, UP_COLOR } from "@/theme/chart-palette";
+import {
+  CALL_ZONE_SERIES_NAME,
+  PUT_ZONE_SERIES_NAME,
+} from "../options-trend/bandData";
 import { renderTooltip } from "../vol-smile/renderTooltip";
-import type { SharedSkewPoint } from "./types";
+import type {
+  SharedBandEvent,
+  SharedSkewPoint,
+  SharedWallZone,
+  SharedWallZones,
+} from "./types";
 
 interface SharedSkewTooltipData {
   date: string;
@@ -17,6 +27,28 @@ interface SharedSkewTooltipData {
   }>;
   points: SharedSkewPoint[];
   expiryColorMap: Map<string, string>;
+  /** Options-implied band events keyed by date (markers on the spot
+   *  curve); rendered as a compact events line when the hovered date
+   *  carries one. */
+  bandEventsByDate?: Map<string, SharedBandEvent[]>;
+  /** Chain-dominant wall zones per (date, side) — analysis.options_walls
+   *  light-shade layer; rendered as per-side wall rows when the hovered
+   *  date carries one. */
+  wallZonesByDate?: SharedWallZones;
+}
+
+/** Wall lifecycle state color — ACTIVE side color, ERODED orange,
+ *  BREACHED red (palette tokens, same semantics as the Options Trend
+ *  band tooltip's state label). */
+function wallStateColor(state: SharedWallZone["state"], sideColor: string): string {
+  switch (state) {
+    case "BREACHED":
+      return DOWN_COLOR;
+    case "ERODED":
+      return MA20_COLOR;
+    default:
+      return sideColor;
+  }
 }
 
 function ColoredDot({ color }: { color: string }) {
@@ -41,11 +73,33 @@ function signedCompact(v: number): string {
   return (v >= 0 ? "+" : "") + fmtCompact(v);
 }
 
+/** One chain-dominant wall zone row — the same per-side entry the
+ *  Options Trend OI Bands tooltip shows, ranked chain-wide here: strike
+ *  range, OI-weighted center, mass share, lifecycle state. */
+function WallZoneRow({ name, zone, color }: { name: string; zone: SharedWallZone; color: string }) {
+  return (
+    <div>
+      <ColoredDot color={color} />
+      {name} · <b>{fmtNum(zone.low)}–{fmtNum(zone.high)}</b> (ctr {fmtNum(zone.center)})
+      {zone.massShare != null && (
+        <span style={{ opacity: 0.65 }}> · mass {(zone.massShare * 100).toFixed(1)}%</span>
+      )}
+      {zone.state != null && (
+        <span style={{ color: wallStateColor(zone.state, color), fontWeight: 600 }}>
+          {" "}· {zone.state}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function SharedSkewTooltipContent({
   date,
   seriesItems,
   points,
   expiryColorMap,
+  bandEventsByDate,
+  wallZonesByDate,
 }: SharedSkewTooltipData) {
   const d = points.find((s) => s.date === date);
 
@@ -84,6 +138,63 @@ function SharedSkewTooltipContent({
       <div key="chain-oi">
         Chain OI: <b>{fmtCompact(chainOi)}</b> contracts
       </div>,
+    );
+  }
+
+  // Corridor events (options_bands v2): fresh crosses of the OI-mass
+  // corridor vs the prior session's corridor, with spot's OI-mass
+  // position share and the validated lean for context. Amplified events
+  // (sig) add the fresh strike-grid expansion that makes the cross more
+  // significant — the breach is into freshly-listed price territory.
+  const bandEvents = bandEventsByDate?.get(date);
+  if (bandEvents && bandEvents.length > 0) {
+    for (const ev of bandEvents) {
+      const parts: React.ReactNode[] = [
+        `Corridor ${ev.kind} (vs prior corridor)`,
+      ];
+      if (ev.spotPct != null && Number.isFinite(ev.spotPct)) {
+        parts.push(
+          <> · OI below spot <b>{fmtNum(ev.spotPct * 100, 0)}%</b></>,
+        );
+      }
+      if (ev.lean && ev.lean !== "NEUTRAL") {
+        parts.push(<> · lean <b>{ev.lean}</b></>);
+      }
+      if (ev.sig) {
+        const side = ev.kind === "EXIT_HIGH" ? "higher" : "lower";
+        parts.push(
+          <>
+            {" · "}
+            <b>
+              AMPLIFIED: +
+              {ev.sigNewStrikes != null ? fmtNum(ev.sigNewStrikes, 0) : "?"}{" "}
+              new {side} strikes/40d
+            </b>{" "}
+            (breach into fresh strike territory)
+          </>,
+        );
+      }
+      children.push(
+        <div key={`band-${ev.kind}`}>
+          ◈ {parts}
+        </div>,
+      );
+    }
+  }
+
+  // Chain-dominant wall zones (analysis.options_walls, wall_type='zone')
+  // — the per-side light-shade wall layer; tooltip rows mirror the
+  // Options Trend OI Bands wall entries.
+  const wallCall = wallZonesByDate?.call.get(date);
+  const wallPut = wallZonesByDate?.put.get(date);
+  if (wallCall) {
+    children.push(
+      <WallZoneRow key="wall-call" name={CALL_ZONE_SERIES_NAME} zone={wallCall} color={UP_COLOR} />,
+    );
+  }
+  if (wallPut) {
+    children.push(
+      <WallZoneRow key="wall-put" name={PUT_ZONE_SERIES_NAME} zone={wallPut} color={DOWN_COLOR} />,
     );
   }
 
@@ -132,6 +243,8 @@ function SharedSkewTooltipContent({
 export function makeSharedSkewTooltipFormatter(
   points: SharedSkewPoint[],
   expiryColorMap: Map<string, string>,
+  bandEventsByDate?: Map<string, SharedBandEvent[]>,
+  wallZonesByDate?: SharedWallZones,
 ): (params: unknown) => string {
   return (p: unknown): string => {
     const items = (Array.isArray(p) ? p : [p]) as Array<{
@@ -148,6 +261,8 @@ export function makeSharedSkewTooltipFormatter(
         seriesItems={items}
         points={points}
         expiryColorMap={expiryColorMap}
+        bandEventsByDate={bandEventsByDate}
+        wallZonesByDate={wallZonesByDate}
       />,
     );
   };

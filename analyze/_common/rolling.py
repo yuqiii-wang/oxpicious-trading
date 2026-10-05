@@ -17,7 +17,7 @@ The original docstring (kept for historical reference):
     Consolidates the ``groupby(keys)[col].rolling(W, min_periods=P).agg(...)
     .reset_index(level=..., drop=True)`` pattern used in 3 places:
 
-      - analyze.mov_ave_spread.helpers.compute_rolling_stds (std, ddof=0)
+      - analyze.mov_ave_spread._common.derive.compute_rolling_stds (std, ddof=0)
       - analyze.sec_alloc_perf_attribution.compute (MA5 mean)
       - analyze.industry_sentiments.etf_contribution (MA5 + MA20 mean)
 

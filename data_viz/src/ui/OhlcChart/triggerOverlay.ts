@@ -8,9 +8,8 @@
 import {
   TRIGGER_DATE_FILL,
   TRIGGER_STREAK_FILL,
-  UP_COLOR,
-  DOWN_COLOR,
 } from "@/theme/chart-palette";
+import { signalMarkerSpec } from "@/shared/charts/signalMarker";
 import type { CodeTrendStreakInfo } from "@/shared/charts/CodeTrendTooltip";
 import type {
   ForecastActionByDateRef,
@@ -116,16 +115,11 @@ export function buildTriggerOverlay({
         ? bar
         : anchor.close[i];
       if (y != null && Number.isFinite(y)) {
-        const buy = act.action === "buy";
         actionPoints.push({
           value: [d, y],
-          symbol: "triangle",
-          symbolRotate: buy ? 0 : 180,
-          symbolSize: [11, 10],
-          // Up-triangle below the bar for buys, down-triangle above
-          // for sells (symbolOffset px: +y down, -y up).
-          symbolOffset: buy ? [0, 12] : [0, -12],
-          itemStyle: { color: buy ? UP_COLOR : DOWN_COLOR },
+          // THE shared buy/sell triangle (signalMarker.ts) — up below
+          // the bar for buys, down above for sells.
+          ...signalMarkerSpec(act.action),
         });
         forecastActionInfo.set(d, act);
       }

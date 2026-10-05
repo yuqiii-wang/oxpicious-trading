@@ -31,6 +31,7 @@ import pandas as pd
 
 from _common.build_commons import rec_cols
 from _common.db_commons import copy_insert_async, batched_copy_by_key_async
+from _common.df_utils import safe_columns
 from builds._commons.row_emission import records_from_frame
 
 import logging
@@ -128,7 +129,7 @@ def build_split_tables(
         "rho": "rho",
     })
 
-    volume_oi = recs({
+    volume_oi_mapping: Dict[str, object] = {
         "date": "date",
         "contract_code": "contract_code",
         "exchange": const(exchange),
@@ -136,7 +137,12 @@ def build_split_tables(
         "volume_wan": "volume_wan",
         "open_interest": "open_interest",
         "open_interest_wan": "open_interest_wan",
-    })
+    }
+    # SSE daily rows carry 成交额 (amount, yuan); SZSE/CFFEX frames lack
+    # the column entirely — omit the key so those rows write NULL
+    if "amount" in safe_columns(df):
+        volume_oi_mapping["amount"] = "amount"
+    volume_oi = recs(volume_oi_mapping)
 
     aggregate = recs({
         "date": "date",

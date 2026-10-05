@@ -10,6 +10,7 @@ import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange, codeVariants } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
+import { labelDecodeSql } from "../label-codes.js";
 import type {
   MaSpreadSecType,
   MovAveSpreadCodeRow,
@@ -24,6 +25,7 @@ import type {
   MovAveSpreadSharedMetricsRow,
   MovAveSpreadAmtRow,
   MovAveSpreadMetric,
+  MovAveSpreadBandsRow,
   MovAveSpreadOhlcGapDay,
   MovAveSpreadExtrasResponse,
   MovAveSpreadHighLowStreak,
@@ -34,6 +36,7 @@ import type {
   MovAveSpreadPriceVsAmtDay,
   MovAveSpreadPxVolSpeed,
   MovAveSpreadPxVolVolState,
+  MovAveSpreadRsiRankDay,
   SectorNode,
   IndustryNode,
   StrategyNode,
@@ -42,7 +45,7 @@ import type {
 /** The extras metric groups in canonical order — the /extras route's
  *  `metrics` param is validated against this list. */
 const EXTRAS_METRICS: readonly MovAveSpreadMetric[] = [
-  "amt", "ohlc", "streaks", "pxvol", "gaps",
+  "amt", "ohlc", "bands", "streaks", "pxvol", "gaps", "rsiranks",
 ];
 
 /** Parse + normalize the /extras `metrics` query param (comma-separated).
@@ -194,18 +197,14 @@ interface DbChartRow extends QueryResultRow {
   ma5_vs_ma60: number | null;
   ma5_vs_ma120: number | null;
   ma5_vs_ma255: number | null;
-  // slope/curvature columns from the detail row.
+  // Derivative columns: price (the 1-day leg) + the persisted MA windows
+  // 5/20 — direct diffs of the series lines (the 60/120/255-day
+  // derivatives were dropped across 2026-09).
   price_slope: number | null;
   ma5_slope: number | null;
   ma20_slope: number | null;
-  ma60_slope: number | null;
-  ma120_slope: number | null;
-  ma255_slope: number | null;
   ma5_curvature: number | null;
   ma20_curvature: number | null;
-  ma60_curvature: number | null;
-  ma120_curvature: number | null;
-  ma255_curvature: number | null;
   price_curvature: number | null;
   // 5 rolling population σ columns (Bollinger band widths) from the detail row.
   std_5days: number | null;
@@ -229,17 +228,13 @@ interface DbChartRow extends QueryResultRow {
   ema6_vs_ema60: number | null;
   ema6_vs_ema120: number | null;
   ema6_vs_ema255: number | null;
-  // 5 EMA slope + 5 EMA curvature columns from the EMA detail table.
+  // EMA slope + EMA curvature columns from the EMA detail table — the
+  // persisted EMA windows 6/20 (direct diffs of the EMA lines; the
+  // 60/120/255-day derivatives were dropped across 2026-09).
   ema6_slope: number | null;
   ema20_slope: number | null;
-  ema60_slope: number | null;
-  ema120_slope: number | null;
-  ema255_slope: number | null;
   ema6_curvature: number | null;
   ema20_curvature: number | null;
-  ema60_curvature: number | null;
-  ema120_curvature: number | null;
-  ema255_curvature: number | null;
   // 5 rolling population σ columns of price (Bollinger band widths) from the
   // EMA detail table (alias `ema`), aliased as ema_std_*days — the long_std
   // source for Price/EMA pair Bollinger envelopes.
@@ -254,6 +249,7 @@ interface DbChartRow extends QueryResultRow {
   rsi_10days: number | null;
   rsi_14days: number | null;
   rsi_20days: number | null;
+  rsi_60days: number | null;
   // 5 trading-amount MA SLOPE + 5 MARKET-SHARE columns (shared tooltip metrics).
   trading_amt_ma5_slope: number | null;
   trading_amt_ma20_slope: number | null;
@@ -286,8 +282,9 @@ interface DbChartRow extends QueryResultRow {
 // ---- DB row types — EXTRAS queries ----------------------------------------
 
 /** One row of the "ohlc" extras group: the full 7-window rolling extrema
- *  (anchors + dates + line slopes) from analysis.mov_ave_spreads_detail_ohlc,
- *  pivoted back to the per-window names MovAveSpreadOhlcRow carries. */
+ *  (anchors + dates + line slopes + change/days since the last extreme)
+ *  from analysis.mov_ave_spreads_roof_and_floor_lines, pivoted back to the
+ *  per-window names MovAveSpreadOhlcRow carries. */
 interface DbExtremaRow extends QueryResultRow {
   date: Date | string;
   [column: string]: unknown;
@@ -343,26 +340,24 @@ function pickLong(r: DbChartRow, maLong: number): number | null {
   }
 }
 
-/** Pick the slope (1st derivative) of MA{window} from a chart row. */
+/** Pick the slope (1st derivative) of MA{window} from a chart row — a
+ *  direct diff of the MA line (MA{W}[t] - MA{W}[t-1]). Only the
+ *  persisted windows 5/20 return a value; 60/120/255 return null (their
+ *  derivative columns were dropped across 2026-09). */
 function pickSlope(r: DbChartRow, window: number): number | null {
   switch (window) {
     case 5:   return toNum(r.ma5_slope);
     case 20:  return toNum(r.ma20_slope);
-    case 60:  return toNum(r.ma60_slope);
-    case 120: return toNum(r.ma120_slope);
-    case 255: return toNum(r.ma255_slope);
     default:  return null;
   }
 }
 
-/** Pick the curvature (2nd derivative) of MA{window} from a chart row. */
+/** Pick the curvature (2nd derivative) of MA{window} from a chart row.
+ *  Only the persisted windows 5/20 return a value (see pickSlope). */
 function pickCurvature(r: DbChartRow, window: number): number | null {
   switch (window) {
     case 5:   return toNum(r.ma5_curvature);
     case 20:  return toNum(r.ma20_curvature);
-    case 60:  return toNum(r.ma60_curvature);
-    case 120: return toNum(r.ma120_curvature);
-    case 255: return toNum(r.ma255_curvature);
     default:  return null;
   }
 }
@@ -425,28 +420,23 @@ function pickEmaLong(r: DbChartRow, maLong: number): number | null {
 }
 
 /** Pick the EMA slope (1st derivative) for the given window from a chart
- *  row. EMA slopes come from analysis.mov_ave_spreads_detail_ema (aliased
- *  as `ema` in the chart SQL). */
+ *  row — a direct diff of the EMA line (EMA{W}[t] - EMA{W}[t-1]), from
+ *  analysis.mov_ave_spreads_detail_ema. Only the persisted windows 6/20
+ *  return a value; 60/120/255 return null (dropped across 2026-09). */
 function pickEmaSlope(r: DbChartRow, window: number): number | null {
   switch (window) {
     case 6:   return toNum(r.ema6_slope);
     case 20:  return toNum(r.ema20_slope);
-    case 60:  return toNum(r.ema60_slope);
-    case 120: return toNum(r.ema120_slope);
-    case 255: return toNum(r.ema255_slope);
     default:  return null;
   }
 }
 
 /** Pick the EMA curvature (2nd derivative) for the given window from a
- *  chart row. EMA curvatures come from analysis.mov_ave_spreads_detail_ema. */
+ *  chart row. Only the persisted windows 6/20 return a value. */
 function pickEmaCurvature(r: DbChartRow, window: number): number | null {
   switch (window) {
     case 6:   return toNum(r.ema6_curvature);
     case 20:  return toNum(r.ema20_curvature);
-    case 60:  return toNum(r.ema60_curvature);
-    case 120: return toNum(r.ema120_curvature);
-    case 255: return toNum(r.ema255_curvature);
     default:  return null;
   }
 }
@@ -706,38 +696,66 @@ export async function listMovAveSpreadCodes(
 //  gap_value) plus one shared metrics row.
 // ----------------------------------------------------------------------------
 
-// analysis.mov_ave_spreads_detail_ohlc is LONG format — one row per
+// analysis.mov_ave_spreads_roof_and_floor_lines (renamed 2026-10 from
+// mov_ave_spreads_detail_ohlc) is LONG format — one row per
 // (sec_type, code, date, period) with generic *_over_period columns. Every
 // consumer pivots it in ONE prefetched CTE (one index range scan — the PK
 // (code, sec_type, date, period) keeps a code's rows contiguous) and aliases
 // the generic columns to the per-window names the API serves.
+// Entries are [db_column, stem] pairs: most columns follow the
+// `${stem}_over_period` naming; the change/days_since_last_high|low
+// columns carry no suffix, so the db column is spelled out per stem.
 const OHLC_STEMS = [
-  "open", "high", "high_date", "low", "low_date",
-  "high_2nd", "high_2nd_date", "low_2nd", "low_2nd_date",
-  "high_line_slope", "low_line_slope",
+  ["open_over_period", "open"],
+  ["high_over_period", "high"],
+  ["high_date_over_period", "high_date"],
+  ["low_over_period", "low"],
+  ["low_date_over_period", "low_date"],
+  ["high_2nd_over_period", "high_2nd"],
+  ["high_2nd_date_over_period", "high_2nd_date"],
+  ["low_2nd_over_period", "low_2nd"],
+  ["low_2nd_date_over_period", "low_2nd_date"],
+  ["high_line_slope_over_period", "high_line_slope"],
+  ["low_line_slope_over_period", "low_line_slope"],
+  ["change_since_last_high", "change_since_last_high"],
+  ["days_since_last_high", "days_since_last_high"],
+  ["change_since_last_low", "change_since_last_low"],
+  ["days_since_last_low", "days_since_last_low"],
 ] as const;
+
+/** The anchor/slope stems the DEFAULT chart's shared tooltip pivot needs —
+ *  the change/days-since-last-high/low columns load only with the "ohlc"
+ *  extras group (they belong to the roof/floor readout, which the extras
+ *  group feeds). */
+const OHLC_SHARED_STEMS = OHLC_STEMS.filter(
+  ([, stem]) => !stem.startsWith("change_since_last") && !stem.startsWith("days_since_last"),
+);
 
 /** Windows whose rolling OHLC the DEFAULT chart's shared tooltip metrics
  *  carry — the 4 windows a pair's ma_long can take (ma_long ∈ 20/60/120/255;
  *  the tooltip shows them on SMA pairs matching the window). */
 const OHLC_SHARED_PERIODS = [20, 60, 120, 255] as const;
 
-/** All 7 windows the "ohlc" extras group loads (the panel's OHLC Window
- *  buttons): includes the long 500/750/1275 windows and the anchor/line
- *  columns that drive the roof/floor trendlines. */
-const OHLC_EXTREMA_PERIODS = [20, 60, 120, 255, 500, 750, 1275] as const;
+/** The roof/floor windows the "ohlc" + "bands" extras groups load (the
+ *  panel's Roof/Floor Trendlines row): 60…1275 — the 20d is NOT a
+ *  roof/floor window (the shared tooltip block keeps its own 20d pivot
+ *  for the Price/MA20 pair readout). */
+const ROOF_FLOOR_PERIODS = [60, 120, 255, 500, 750, 1275] as const;
 
 /** WITH-CTE fragment fetching the requested codes' long-format OHLC rows in
  *  one range scan and pivoting them to `{stem}_{p}d` columns per date. */
-function ohlcPivotCteSql(periods: readonly number[]): string {
+function ohlcPivotCteSql(
+  periods: readonly number[],
+  stems: readonly (readonly [string, string])[] = OHLC_STEMS,
+): string {
   const pivot = periods.flatMap((p) =>
-    OHLC_STEMS.map(
-      (stem) =>
-        `MAX(o.${stem}_over_period) FILTER (WHERE o.period = ${p}) AS ${stem}_${p}d`,
+    stems.map(
+      ([db, stem]) =>
+        `MAX(o.${db}) FILTER (WHERE o.period = ${p}) AS ${stem}_${p}d`,
     ),
   ).join(",\n        ");
   return `ohlc_raw AS MATERIALIZED (
-      SELECT * FROM analysis.mov_ave_spreads_detail_ohlc
+      SELECT * FROM analysis.mov_ave_spreads_roof_and_floor_lines
       WHERE sec_type = $1
         AND code = ANY($2::text[])
     ),
@@ -754,9 +772,13 @@ function ohlcPivotCteSql(periods: readonly number[]): string {
 /** Final-SELECT fragment reading the pivoted `ohlc` CTE columns, aliased
  *  under `prefix` ("sh_" for the chart's shared tooltip metrics, "" for the
  *  ohlc extras group's MovAveSpreadOhlcRow names). */
-function ohlcPivotSelectSql(periods: readonly number[], prefix: string): string {
+function ohlcPivotSelectSql(
+  periods: readonly number[],
+  prefix: string,
+  stems: readonly (readonly [string, string])[] = OHLC_STEMS,
+): string {
   return periods.flatMap((p) =>
-    OHLC_STEMS.map((stem) => `ohlc.${stem}_${p}d AS ${prefix}${stem}_${p}d`),
+    stems.map(([db, stem]) => `ohlc.${stem}_${p}d AS ${prefix}${stem}_${p}d`),
   ).join(",\n      ");
 }
 
@@ -825,9 +847,8 @@ function buildChartPairsSql(secType: MaSpreadSecType): string {
       d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
       d.price_vs_ma120, d.price_vs_ma255,
       d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255,
-      d.price_slope, d.ma5_slope, d.ma20_slope, d.ma60_slope, d.ma120_slope, d.ma255_slope,
-      d.price_curvature, d.ma5_curvature, d.ma20_curvature, d.ma60_curvature,
-      d.ma120_curvature, d.ma255_curvature,
+      d.price_slope, d.ma5_slope, d.ma20_slope,
+      d.price_curvature, d.ma5_curvature, d.ma20_curvature,
       d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days
     FROM d
     ${chartJoinSql(tables)}
@@ -856,12 +877,11 @@ function buildChartEmaSql(secType: MaSpreadSecType): string {
       ${src.tradingAmtExpr} AS trading_amount,
       t.ema6,
       d.price_slope, d.price_curvature,
+      ema.ema6_slope, ema.ema20_slope,
+      ema.ema6_curvature, ema.ema20_curvature,
       ema.price_vs_ema6, ema.price_vs_ema20, ema.price_vs_ema60,
       ema.price_vs_ema120, ema.price_vs_ema255,
       ema.ema6_vs_ema20, ema.ema6_vs_ema60, ema.ema6_vs_ema120, ema.ema6_vs_ema255,
-      ema.ema6_slope, ema.ema20_slope, ema.ema60_slope, ema.ema120_slope, ema.ema255_slope,
-      ema.ema6_curvature, ema.ema20_curvature, ema.ema60_curvature,
-      ema.ema120_curvature, ema.ema255_curvature,
       ema.std_5days AS ema_std_5days, ema.std_20days AS ema_std_20days,
       ema.std_60days AS ema_std_60days, ema.std_120days AS ema_std_120days,
       ema.std_255days AS ema_std_255days
@@ -883,7 +903,7 @@ function buildChartSharedSql(): string {
         AND code = ANY($2::text[])
     ),
     ${chartCtesSql(tables)},
-    ${ohlcPivotCteSql(OHLC_SHARED_PERIODS)}
+    ${ohlcPivotCteSql(OHLC_SHARED_PERIODS, OHLC_SHARED_STEMS)}
     SELECT
       d.date,
       d.trading_amt_ma5_slope, d.trading_amt_ma20_slope, d.trading_amt_ma60_slope,
@@ -892,7 +912,8 @@ function buildChartSharedSql(): string {
       d.trading_amt_market_share_ma60, d.trading_amt_market_share_ma120,
       d.trading_amt_market_share_ma255,
       rsi.rsi_3days, rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days,
-      ${ohlcPivotSelectSql(OHLC_SHARED_PERIODS, "sh_")}
+      rsi.rsi_60days,
+      ${ohlcPivotSelectSql(OHLC_SHARED_PERIODS, "sh_", OHLC_SHARED_STEMS)}
     FROM d
     ${chartJoinSql(tables)}
     LEFT JOIN ohlc ON ohlc.code = d.code AND ohlc.date = d.date
@@ -910,12 +931,61 @@ function buildOhlcExtrasSql(): string {
       WHERE sec_type = $1
         AND code = ANY($2::text[])
     ),
-    ${ohlcPivotCteSql(OHLC_EXTREMA_PERIODS)}
+    ${ohlcPivotCteSql(ROOF_FLOOR_PERIODS)}
     SELECT
       d.date,
-      ${ohlcPivotSelectSql(OHLC_EXTREMA_PERIODS, "")}
+      ${ohlcPivotSelectSql(ROOF_FLOOR_PERIODS, "")}
     FROM d
     LEFT JOIN ohlc ON ohlc.code = d.code AND ohlc.date = d.date
+    ORDER BY d.date ASC
+  `;
+}
+
+/** SQL for the "bands" extras group: the roof/floor shade-band pivot (all
+ *  7 windows) driven off the detail rows' dates (index-aligned with the
+ *  chart response; sec_type binds through the $1 parameter at call time).
+ *  Per window: the 4 band edges — the ANCHOR-BAND event DATE arrays are
+ *  served by buildBandsEventDatesSql (no NULL-safe array aggregate
+ *  exists for a FILTER pivot) and merged per (date, period). */
+function buildBandsExtrasSql(): string {
+  const periods = ROOF_FLOOR_PERIODS;
+  const pivot = periods
+    .flatMap((p) => [
+      `MAX(b.upper_band_low) FILTER (WHERE b.period = ${p}) AS upper_band_low_${p}d`,
+      `MAX(b.upper_band_high) FILTER (WHERE b.period = ${p}) AS upper_band_high_${p}d`,
+      `MAX(b.lower_band_low) FILTER (WHERE b.period = ${p}) AS lower_band_low_${p}d`,
+      `MAX(b.lower_band_high) FILTER (WHERE b.period = ${p}) AS lower_band_high_${p}d`,
+    ])
+    .join(",\n        ");
+  const select = periods
+    .flatMap((p) => [
+      `bands.upper_band_low_${p}d`,
+      `bands.upper_band_high_${p}d`,
+      `bands.lower_band_low_${p}d`,
+      `bands.lower_band_high_${p}d`,
+    ])
+    .join(",\n      ");
+  return `
+    WITH d AS MATERIALIZED (
+      SELECT * FROM analysis.mov_ave_spreads_detail
+      WHERE sec_type = $1
+        AND code = ANY($2::text[])
+    ),
+    bands AS MATERIALIZED (
+      SELECT
+        b.code,
+        b.date,
+        ${pivot}
+      FROM analysis.mov_ave_spreads_roof_and_floor_bands b
+      WHERE b.sec_type = $1
+        AND b.code = ANY($2::text[])
+      GROUP BY b.code, b.date
+    )
+    SELECT
+      d.date,
+      ${select}
+    FROM d
+    LEFT JOIN bands ON bands.code = d.code AND bands.date = d.date
     ORDER BY d.date ASC
   `;
 }
@@ -958,7 +1028,7 @@ function buildAmtSql(secType: MaSpreadSecType): string {
 function buildMarketRegimeSpansSql(): string {
   return `
     SELECT
-      s.regime,
+      ${labelDecodeSql("regime", "s.regime")} AS regime,
       s.start_date,
       s.end_date,
       s.span_days::int AS span_days
@@ -1023,6 +1093,43 @@ function buildPriceVsAmtSql(): string {
       AND p.code = ANY($2::text[])
     ORDER BY p.date
   `;
+}
+
+/** SQL for the "rsiranks" extras group: one code's per-date RSI history
+ *  ranks (analysis.mov_ave_rsi_ranks — rank 1 = the code's highest RSI
+ *  reading within its own history, dense 1..N, NULL where that window's
+ *  RSI is NULL). The client derives each window's top-% cutoff from the
+ *  max rank over the rows (dense ranks ⇒ max = the count of ranked
+ *  days), so no totals row is fetched. */
+function buildRsiRanksSql(): string {
+  return `
+    SELECT
+      r.date,
+      r.rank_rsi_3days,
+      r.rank_rsi_6days,
+      r.rank_rsi_10days,
+      r.rank_rsi_14days,
+      r.rank_rsi_20days,
+      r.rank_rsi_60days
+    FROM analysis.mov_ave_rsi_ranks r
+    WHERE r.sec_type = $1
+      AND r.code = ANY($2::text[])
+    ORDER BY r.date
+  `;
+}
+
+/** DB row → API shape of the "rsiranks" extras group (ranks arrive as
+ *  real int4 / NULL). */
+function toRsiRankDay(r: DbRsiRankRow): MovAveSpreadRsiRankDay {
+  return {
+    date: formatDate(r.date),
+    rank_rsi_3days: toNum(r.rank_rsi_3days),
+    rank_rsi_6days: toNum(r.rank_rsi_6days),
+    rank_rsi_10days: toNum(r.rank_rsi_10days),
+    rank_rsi_14days: toNum(r.rank_rsi_14days),
+    rank_rsi_20days: toNum(r.rank_rsi_20days),
+    rank_rsi_60days: toNum(r.rank_rsi_60days),
+  };
 }
 
 /** SQL for the high/low band-BREAK excursion streaks of one (sec_type,
@@ -1094,20 +1201,92 @@ function buildNameSql(secType: MaSpreadSecType): string {
  *  Used to build the "ohlc" extras group — ONE copy per date shared by all
  *  pair series (instead of fanning the extrema out into every pair's rows,
  *  which would multiply the payload by the pair count). */
+/** One pivoted row of the "bands" extras group (pg returns NUMERIC as
+ *  string; DATE[] columns come back as Date[] | null). */
+interface DbBandsRow extends QueryResultRow {
+  date: string | Date;
+  [k: string]: unknown;
+}
+
+function toBandsRow(r: DbBandsRow): MovAveSpreadBandsRow {
+  const out: Record<string, unknown> = { date: formatDate(r.date) };
+  for (const p of ROOF_FLOOR_PERIODS) {
+    out[`upper_band_low_${p}d`] = toNum(r[`upper_band_low_${p}d`]);
+    out[`upper_band_high_${p}d`] = toNum(r[`upper_band_high_${p}d`]);
+    out[`lower_band_low_${p}d`] = toNum(r[`lower_band_low_${p}d`]);
+    out[`lower_band_high_${p}d`] = toNum(r[`lower_band_high_${p}d`]);
+    // Event date arrays merged per (date, period) by
+    // mergeBandsEventDates; default null until then.
+    out[`upper_breach_dates_${p}d`] = null;
+    out[`lower_breach_dates_${p}d`] = null;
+    out[`upper_bounce_dates_${p}d`] = null;
+    out[`lower_bounce_dates_${p}d`] = null;
+  }
+  return out as unknown as MovAveSpreadBandsRow;
+}
+
+/** One plain (date, period) row of the bands table's event arrays. */
+interface DbBandsEventDatesRow extends QueryResultRow {
+  date: string | Date;
+  period: number;
+  upper_breach_dates: unknown;
+  lower_breach_dates: unknown;
+  upper_bounce_dates: unknown;
+  lower_bounce_dates: unknown;
+}
+
+/** SQL for the bands table's ANCHOR-BAND event DATE arrays: one plain
+ *  (date, period) row, no FILTER pivot — ARRAY_AGG over an empty
+ *  filter raises "cannot accumulate empty arrays" for dates lacking
+ *  that period's row, and arrays have no NULL-safe pivot aggregate
+ *  (MAX works for the numeric edges only). The service merges these
+ *  into the pivoted bands rows by (date, period). */
+function buildBandsEventDatesSql(): string {
+  return `
+    SELECT
+      b.date,
+      b.period,
+      b.upper_band_breach_dates AS upper_breach_dates,
+      b.lower_band_breach_dates AS lower_breach_dates,
+      b.upper_band_bounce_dates AS upper_bounce_dates,
+      b.lower_band_bounce_dates AS lower_bounce_dates
+    FROM analysis.mov_ave_spreads_roof_and_floor_bands b
+    WHERE b.sec_type = $1
+      AND b.code = ANY($2::text[])
+    ORDER BY b.date
+  `;
+}
+
+/** Merge the (date, period) event-date arrays into the pivoted bands
+ *  rows — the anchor row's stored breach/bounce days of its OWN band,
+ *  which the UI reads directly as its marker set. */
+function mergeBandsEventDates(
+  bandsRows: MovAveSpreadBandsRow[],
+  eventRows: DbBandsEventDatesRow[],
+): MovAveSpreadBandsRow[] {
+  if (bandsRows.length === 0) return bandsRows;
+  const byDate = new Map<string, Record<string, unknown>>();
+  for (const r of bandsRows) byDate.set(r.date, r as unknown as Record<string, unknown>);
+  const dateArr = (v: unknown): string[] | null =>
+    Array.isArray(v) ? v.map((d) => formatDate(d)) : null;
+  const periods = ROOF_FLOOR_PERIODS as readonly number[];
+  for (const e of eventRows) {
+    if (!periods.includes(e.period)) continue;
+    const row = byDate.get(formatDate(e.date));
+    if (row == null) continue;
+    row[`upper_breach_dates_${e.period}d`] = dateArr(e.upper_breach_dates);
+    row[`lower_breach_dates_${e.period}d`] = dateArr(e.lower_breach_dates);
+    row[`upper_bounce_dates_${e.period}d`] = dateArr(e.upper_bounce_dates);
+    row[`lower_bounce_dates_${e.period}d`] = dateArr(e.lower_bounce_dates);
+  }
+  return bandsRows;
+}
+
 function toOhlcExtremaRow(r: DbExtremaRow): MovAveSpreadOhlcRow {
   const d = (v: unknown): string | null =>
     v != null ? formatDate(v) : null;
   return {
     date: formatDate(r.date),
-    open_20d: toNum(r.open_20d),
-    high_20d: toNum(r.high_20d),
-    high_date_20d: d(r.high_date_20d),
-    high_2nd_20d: toNum(r.high_2nd_20d),
-    high_2nd_date_20d: d(r.high_2nd_date_20d),
-    low_20d: toNum(r.low_20d),
-    low_date_20d: d(r.low_date_20d),
-    low_2nd_20d: toNum(r.low_2nd_20d),
-    low_2nd_date_20d: d(r.low_2nd_date_20d),
     open_60d: toNum(r.open_60d),
     high_60d: toNum(r.high_60d),
     high_date_60d: d(r.high_date_60d),
@@ -1162,8 +1341,6 @@ function toOhlcExtremaRow(r: DbExtremaRow): MovAveSpreadOhlcRow {
     low_date_1275d: d(r.low_date_1275d),
     low_2nd_1275d: toNum(r.low_2nd_1275d),
     low_2nd_date_1275d: d(r.low_2nd_date_1275d),
-    high_line_slope_20d: toNum(r.high_line_slope_20d),
-    low_line_slope_20d: toNum(r.low_line_slope_20d),
     high_line_slope_60d: toNum(r.high_line_slope_60d),
     low_line_slope_60d: toNum(r.low_line_slope_60d),
     high_line_slope_120d: toNum(r.high_line_slope_120d),
@@ -1176,6 +1353,30 @@ function toOhlcExtremaRow(r: DbExtremaRow): MovAveSpreadOhlcRow {
     low_line_slope_750d: toNum(r.low_line_slope_750d),
     high_line_slope_1275d: toNum(r.high_line_slope_1275d),
     low_line_slope_1275d: toNum(r.low_line_slope_1275d),
+    change_since_last_high_60d: toNum(r.change_since_last_high_60d),
+    days_since_last_high_60d: toNum(r.days_since_last_high_60d),
+    change_since_last_low_60d: toNum(r.change_since_last_low_60d),
+    days_since_last_low_60d: toNum(r.days_since_last_low_60d),
+    change_since_last_high_120d: toNum(r.change_since_last_high_120d),
+    days_since_last_high_120d: toNum(r.days_since_last_high_120d),
+    change_since_last_low_120d: toNum(r.change_since_last_low_120d),
+    days_since_last_low_120d: toNum(r.days_since_last_low_120d),
+    change_since_last_high_255d: toNum(r.change_since_last_high_255d),
+    days_since_last_high_255d: toNum(r.days_since_last_high_255d),
+    change_since_last_low_255d: toNum(r.change_since_last_low_255d),
+    days_since_last_low_255d: toNum(r.days_since_last_low_255d),
+    change_since_last_high_500d: toNum(r.change_since_last_high_500d),
+    days_since_last_high_500d: toNum(r.days_since_last_high_500d),
+    change_since_last_low_500d: toNum(r.change_since_last_low_500d),
+    days_since_last_low_500d: toNum(r.days_since_last_low_500d),
+    change_since_last_high_750d: toNum(r.change_since_last_high_750d),
+    days_since_last_high_750d: toNum(r.days_since_last_high_750d),
+    change_since_last_low_750d: toNum(r.change_since_last_low_750d),
+    days_since_last_low_750d: toNum(r.days_since_last_low_750d),
+    change_since_last_high_1275d: toNum(r.change_since_last_high_1275d),
+    days_since_last_high_1275d: toNum(r.days_since_last_high_1275d),
+    change_since_last_low_1275d: toNum(r.change_since_last_low_1275d),
+    days_since_last_low_1275d: toNum(r.days_since_last_low_1275d),
   };
 }
 
@@ -1212,6 +1413,18 @@ interface DbPriceVsAmtRow {
   date: Date | string;
   px_speed: string;
   vol_state: string;
+}
+
+/** One analysis.mov_ave_rsi_ranks row (see buildRsiRanksSql) — int4
+ *  ranks arrive as numbers, NULLs as null. */
+interface DbRsiRankRow {
+  date: Date | string;
+  rank_rsi_3days: number | null;
+  rank_rsi_6days: number | null;
+  rank_rsi_10days: number | null;
+  rank_rsi_14days: number | null;
+  rank_rsi_20days: number | null;
+  rank_rsi_60days: number | null;
 }
 
 /** Map the registry rows into the response's per-date state array
@@ -1329,8 +1542,9 @@ function mapPricePairRows(chartRows: DbChartRow[]): MovAveSpreadPairSeries[] {
       const series = byPair.get(`price-${maShort}/${maLong}`);
       if (!series) continue;
       const shortVal = maShort === 0 ? price : ma5;
-      // slope/curvature: when ma_short = 0 the short series is price, so use
-      // price_slope / price_curvature; otherwise use the short MA's derivatives.
+      // Derivatives: the DB-stored direct diffs (value[t] - value[t-1])
+      // — price_slope/price_curvature for the price leg, ma{5,20}_* for
+      // the MA legs; windows beyond 20 have no stored derivatives (null).
       const row: MovAveSpreadPairRow = {
         date: dateStr,
         short_value: shortVal,
@@ -1374,6 +1588,9 @@ function mapEmaPairRows(chartRows: DbChartRow[]): MovAveSpreadPairSeries[] {
         short_value: maShort === 0 ? price : ema6,
         long_value: pickEmaLong(r, maLong),
         gap_value: toNum(r[gapCol as keyof DbChartRow]),
+        // Derivatives: price legs carry the SMA table's price_slope /
+        // price_curvature; EMA legs the EMA table's stored ema{6,20}_*
+        // direct diffs (windows beyond 20 null).
         short_slope: maShort === 0 ? toNum(r.price_slope) : pickEmaSlope(r, maShort),
         short_curvature: maShort === 0 ? toNum(r.price_curvature) : pickEmaCurvature(r, maShort),
         long_slope: pickEmaSlope(r, maLong),
@@ -1400,6 +1617,7 @@ function mapSharedRows(chartRows: DbChartRow[]): MovAveSpreadSharedMetricsRow[] 
     rsi_10days: toNum(r.rsi_10days),
     rsi_14days: toNum(r.rsi_14days),
     rsi_20days: toNum(r.rsi_20days),
+    rsi_60days: toNum(r.rsi_60days),
     trading_amt_ma5_slope: toNum(r.trading_amt_ma5_slope),
     trading_amt_ma20_slope: toNum(r.trading_amt_ma20_slope),
     trading_amt_ma60_slope: toNum(r.trading_amt_ma60_slope),
@@ -1587,6 +1805,14 @@ export async function getMovAveSpreadChartExtras(
           response.ohlc = rows.map(toOhlcExtremaRow);
           break;
         }
+        case "bands": {
+          const [rows, eventRows] = await Promise.all([
+            queryRows<DbBandsRow>(buildBandsExtrasSql(), [secType, variants]),
+            queryRows<DbBandsEventDatesRow>(buildBandsEventDatesSql(), [secType, variants]),
+          ]);
+          response.roofFloorBands = mergeBandsEventDates(rows.map(toBandsRow), eventRows);
+          break;
+        }
         case "streaks": {
           const rows = await queryRows<DbStreakRow>(buildStreaksSql(), [secType, variants]);
           response.highLowStreaks = toStreaks(rows);
@@ -1600,6 +1826,13 @@ export async function getMovAveSpreadChartExtras(
         case "gaps": {
           const rows = await queryRows<DbOhlcGapRow>(buildOhlcGapsSql(), [secType, variants]);
           response.ohlcGaps = rows.map(toOhlcGapDay);
+          break;
+        }
+        case "rsiranks": {
+          const rows = await queryRows<DbRsiRankRow>(
+            buildRsiRanksSql(), [secType, variants],
+          );
+          response.rsiRanks = rows.map(toRsiRankDay);
           break;
         }
       }

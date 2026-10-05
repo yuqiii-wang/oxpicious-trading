@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from _common.df_utils import grouped_rolling_agg, safe_columns
+from _common.df_utils import grouped_rolling_agg, host_unique, safe_columns
 
 
 # ---- Regime-detection windows ---------------------------------------------
@@ -124,6 +124,39 @@ def compute_tech_stats(df: pd.DataFrame, sec_type: str) -> pd.DataFrame:
 #  Per-(date, industry_id) SUM aggregation
 # ---------------------------------------------------------------------------
 
+_INDUSTRY_STATS_COLUMNS = [
+    "date", "industry_id", "industry_label",
+    "stock_margin_balance", "etf_margin_balance",
+    "stock_margin_buy", "etf_margin_buy",
+]
+
+
+def _industry_code_frame(
+    etf_industry_map: pd.DataFrame,
+    stock_industry_map: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """One shared factorization of the run's industry ids (the
+    label-code contract): industry_id/industry_label strings never ride
+    the 7M-row merge/groupby/outer-join chain — the compute keys on the
+    int32 ``industry_code`` and the small frame re-attaches the TEXT
+    identity at the write boundary. Returns (code_frame, label->code).
+    """
+    both = pd.concat([
+        m[["industry_id", "industry_label"]]
+        for m in (stock_industry_map, etf_industry_map) if not m.empty
+    ], ignore_index=True)
+    labels = host_unique(both["industry_id"])
+    code_of = {u: i for i, u in enumerate(labels)}
+    frame = pd.DataFrame({
+        "industry_code": np.arange(len(labels), dtype="int32"),
+        "industry_id": labels,
+    }).merge(
+        both.drop_duplicates(subset=["industry_id"]),
+        on="industry_id", how="left",
+    )
+    return frame, code_of
+
+
 def compute_industry_stats(
     etf_tech: pd.DataFrame,
     stock_tech: pd.DataFrame,
@@ -148,8 +181,18 @@ def compute_industry_stats(
       [date, industry_id, industry_label, stock_margin_balance,
       etf_margin_balance, stock_margin_buy, etf_margin_buy].
       One row per (date, industry_id).
+
+    LABEL-CODE CONTRACT: the merge/groupby/outer-join/sort chain runs on
+    the int32 industry_code (one shared factorization of the run's
+    industry ids); industry_id/industry_label TEXT values are re-attached
+    by the final merge onto the small _industry_code_frame — the string
+    columns never ride the big frames (the cuDF 26.08 string
+    host-transfer fault class).
     """
     out_frames: list[pd.DataFrame] = []
+    code_frame, code_of = _industry_code_frame(
+        etf_industry_map, stock_industry_map,
+    )
 
     for hist_df, map_df, prefix in [
         (stock_tech, stock_industry_map, "stock"),
@@ -158,10 +201,15 @@ def compute_industry_stats(
         if hist_df.empty or map_df.empty:
             continue
 
-        # Join history with industry mapping — drops codes with no
+        # Join history with the industry CODE (label-code contract —
+        # int keys through the whole chain) — drops codes with no
         # industry (e.g. ETFs tracking BROAD indices).
+        map_codes = map_df[["code", "industry_id"]].copy()
+        map_codes["industry_code"] = (
+            map_codes["industry_id"].map(code_of).astype("int32")
+        )
         merged = hist_df.merge(
-            map_df[["code", "industry_id", "industry_label"]],
+            map_codes[["code", "industry_code"]],
             on="code",
             how="inner",
         )
@@ -177,7 +225,7 @@ def compute_industry_stats(
         ).fillna(0)
 
         agg = merged.groupby(
-            ["date", "industry_id", "industry_label"], as_index=False
+            ["date", "industry_code"], as_index=False
         ).agg(
             **{
                 f"{prefix}_margin_balance": ("rz_balance", "sum"),
@@ -187,15 +235,9 @@ def compute_industry_stats(
         out_frames.append(agg)
 
     if not out_frames:
-        return pd.DataFrame(
-            columns=[
-                "date", "industry_id", "industry_label",
-                "stock_margin_balance", "etf_margin_balance",
-                "stock_margin_buy", "etf_margin_buy",
-            ]
-        )
+        return pd.DataFrame(columns=_INDUSTRY_STATS_COLUMNS)
 
-    # Outer-join the stock and etf aggregations on (date, industry_id).
+    # Outer-join the stock and etf aggregations on (date, industry_code).
     # An industry might have stocks but no ETFs (or vice versa) on a given
     # date — fill missing side with 0.
     # Host-pure membership via safe_columns — `in f.columns` is a proxied
@@ -213,7 +255,7 @@ def compute_industry_stats(
     if stock_agg is not None and etf_agg is not None:
         merged = stock_agg.merge(
             etf_agg,
-            on=["date", "industry_id", "industry_label"],
+            on=["date", "industry_code"],
             how="outer",
         )
     elif stock_agg is not None:
@@ -226,20 +268,20 @@ def compute_industry_stats(
         merged["stock_margin_buy"] = 0.0
 
     # Fill NaN sums with 0 (outer join produces NaN where one side is
-    # missing). industry_label may be NaN if both sides miss — fillna('').
+    # missing).
     for c in ("stock_margin_balance", "etf_margin_balance",
               "stock_margin_buy", "etf_margin_buy"):
         merged[c] = merged[c].fillna(0)
+
+    # Write boundary: re-attach the TEXT identity (industry_id /
+    # industry_label) from the small code frame — the labels never rode
+    # the big chain. industry_label may still be NULL for an id without
+    # a label row — fillna('').
+    merged = merged.merge(code_frame, on="industry_code", how="left")
     merged["industry_label"] = merged["industry_label"].fillna("")
 
-    # Reorder columns to match DB schema.
-    column_order = [
-        "date", "industry_id", "industry_label",
-        "stock_margin_balance", "etf_margin_balance",
-        "stock_margin_buy", "etf_margin_buy",
-    ]
-    return merged[column_order].sort_values(
-        ["date", "industry_id"]
+    return merged[_INDUSTRY_STATS_COLUMNS].sort_values(
+        ["date", "industry_code"]
     ).reset_index(drop=True)
 
 

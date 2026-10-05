@@ -126,6 +126,11 @@ from _common.df_utils import (
     grouped_rolling_agg,
     host_array,
 )
+from _common.labels import (
+    RANK_SIDE_CODE,
+    WEIGHTING_CODE,
+    WEIGHTING_LABEL,
+)
 from analyze._common import upsert_analysis_identity
 
 import logging
@@ -406,16 +411,17 @@ def _compute_shared_nd(m: pd.DataFrame, n: int) -> pd.Series:
     return nd.where(full_count == float(n))
 
 
-def _rank_top5(part: pd.DataFrame, *, side: str) -> pd.DataFrame:
+def _rank_top5(part: pd.DataFrame, *, side: int) -> pd.DataFrame:
     """Top-5 rows of one (period, weighting) slice by metric_value —
     the former ranked CTE's ROW_NUMBER per date (DESC for HYPE, ASC for
-    DRAIN), scoped here per (benchmark, date).
+    DRAIN), scoped here per (benchmark, date). ``side`` is the
+    stats.label_dim 'rank_side' SMALLINT code (0 HYPE / 1 DRAIN).
 
     Stable sort + groupby cumcount: equal metrics keep input row order
     (the SQL left equal-key order to the planner — see the docstring's
     tie note).
     """
-    ascending = side == "DRAIN"
+    ascending = side == RANK_SIDE_CODE["DRAIN"]
     ordered = part.sort_values(
         ["benchmark_code", "date", "metric_value"],
         ascending=[True, True, ascending], kind="mergesort",
@@ -424,7 +430,7 @@ def _rank_top5(part: pd.DataFrame, *, side: str) -> pd.DataFrame:
         ["benchmark_code", "date"], sort=False
     ).cumcount() + 1
     top = ordered[rank <= 5].copy()
-    top["rank_side"] = side
+    top["rank_side"] = np.int16(side)
     top["rank"] = rank[rank <= 5].astype("int64")
     return top
 
@@ -467,14 +473,14 @@ def _compute_hypes_and_drains(
         industry_nd = m[f"shared_return_nd_{n}"] / 100.0
         hype = industry_nd - bench_nd
         base_ok = m[f"shared_return_nd_{n}"].notna() & bench_nd.notna()
-        for weighting in ("equal", "amt"):
-            metric = hype if weighting == "equal" \
-                else hype * shared_trading_amt
+        for weighting in (WEIGHTING_CODE["equal"], WEIGHTING_CODE["amt"]):
+            metric = (hype if weighting == WEIGHTING_CODE["equal"]
+                      else hype * shared_trading_amt)
             part = pd.DataFrame({
                 "date": m["date"],
                 "benchmark_code": m["benchmark_code"],
                 "period_days": np.int64(n),
-                "weighting": weighting,
+                "weighting": np.int16(weighting),
                 "industry_id": m["industry_id"],
                 "metric_value": metric,
                 "shared_trading_amt": shared_trading_amt,
@@ -485,8 +491,8 @@ def _compute_hypes_and_drains(
             part = part[base_ok & part["metric_value"].notna()]
             if part.empty:
                 continue
-            parts.append(_rank_top5(part, side="HYPE"))
-            parts.append(_rank_top5(part, side="DRAIN"))
+            parts.append(_rank_top5(part, side=RANK_SIDE_CODE["HYPE"]))
+            parts.append(_rank_top5(part, side=RANK_SIDE_CODE["DRAIN"]))
 
     if not parts:
         return pd.DataFrame(columns=HD_COLUMNS)
@@ -537,7 +543,8 @@ def _compute_seasonal(hd_df: pd.DataFrame) -> pd.DataFrame:
     gk = ["season_qkey", "benchmark_code", "period_days", "weighting",
           "rank_side", "industry_id"]
     parts: list[pd.DataFrame] = []
-    for side, agg in (("HYPE", "max"), ("DRAIN", "min")):
+    for side, agg in ((RANK_SIDE_CODE["HYPE"], "max"),
+                      (RANK_SIDE_CODE["DRAIN"], "min")):
         sub = df[df["rank_side"] == side]
         if sub.empty:
             continue
@@ -547,7 +554,7 @@ def _compute_seasonal(hd_df: pd.DataFrame) -> pd.DataFrame:
             gb["industry_label"].max().rename("industry_label"),
         ], axis=1).reset_index()
 
-        ascending = side == "DRAIN"
+        ascending = side == RANK_SIDE_CODE["DRAIN"]
         ordered = monthly.sort_values(
             ["season_qkey", "benchmark_code", "period_days", "weighting",
              "rank_side", "peak_metric_value"],
@@ -685,7 +692,7 @@ async def run_hypes_and_drains(
     logger.info("\n      Summary by (benchmark, period, weighting) [first 60]:")
     for r in summary:
         logger.info(f"        {r['benchmark_code']} {r['period_days']:>3d}d "
-              f"{r['weighting']:5s}: "
+              f"{WEIGHTING_LABEL[r['weighting']]:5s}: "
               f"{r['n_rows']:>7,} rows . "
               f"{r['n_industries']:>3} ind . "
               f"{r['first_date']} -> {r['last_date']} . "

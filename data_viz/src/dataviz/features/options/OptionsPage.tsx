@@ -1,6 +1,15 @@
 /**
  * SZSE Options page — interactive mirror of plot_szse_options.py.
  *
+ * Per-plot loading (one plot, one SQL — see api/services/options.service.ts
+ * "Per-plot queries"): the page loads the light /dates index (date picker +
+ * caption), the selected date's /snapshot-rows (wall / smile), the
+ * history-wide /snapshot-axes (wall axes) and ONE batched /snapshot-rows
+ * fetch for the StatTable's 4 derived dates; the trend, skew, vol-index
+ * and chronology panels fetch their own aggregates. No full-history
+ * /combined blob (the biggest CFFEX underlying ships ~200MB of JSON
+ * through it).
+ *
  *   • SnapshotControls — underlying ETF selector + snapshot date picker
  *   • StatTable — 4 auto-derived snapshot columns (Q4 Start / Last Quarter / Last Month / Latest)
  *   • VolSmilePanel — IV smile snapshot for the selected date
@@ -12,7 +21,7 @@
  *   • OptionsTrendPanel — OI bands + P/C Ratio + Total OI (merged card)
  *   • AnnualSentimentPanel — ETF OHLC price & volume (separate card)
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -34,7 +43,7 @@ import { buildOhlcOption } from "@/dataviz/features/options/annual-sentiment";
 import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import {
   fetchEtfOhlcv,
-  fetchOptionsCombined,
+  fetchOptionsSnapshotRows,
   fetchOptionsWalls,
   fetchUnderlyings,
   invalidateCacheForPrefix,
@@ -43,13 +52,17 @@ import {
 import { useStore } from "@/store/filters";
 import type {
   EtfOhlcvResponse,
-  OptionsCombinedResponse,
   OptionsUnderlying,
   OptionsWallsResponse,
 } from "@shared/types";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
 import { computeSnapshotStats } from "@/lib/options-stats";
 import type { OhlcMode } from "@/lib/ohlc";
+import {
+  useOptionsDates,
+  useOptionsSnapshotAxes,
+  useOptionsSnapshotRows,
+} from "@/dataviz/features/options/data-hooks";
 
 export default function OptionsPage() {
   const underlyingCode = useStore((s) => s.underlyingCode);
@@ -61,10 +74,8 @@ export default function OptionsPage() {
   const optionsTargetType = venueToTargetType(optionsVenue);
 
   const [underlyings, setUnderlyings] = useState<OptionsUnderlying[]>([]);
-  const [optionsData, setOptionsData] = useState<OptionsCombinedResponse | null>(null);
   const [wallsData, setWallsData] = useState<OptionsWallsResponse | null>(null);
   const [ohlcv, setOhlcv] = useState<EtfOhlcvResponse | null>(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
@@ -82,86 +93,113 @@ export default function OptionsPage() {
       .catch((e: Error) => setError(e.message));
   }, [optionsVenue, optionsTargetType, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load ALL options + OHLCV data (no date filter — trend plots need full history)
+  // Per-plot #1: the trading-date index (date picker + caption). Default
+  // the selected date to the latest session once it arrives.
+  const datesInfo = useOptionsDates(underlyingCode, optionsTargetType, optionsVenue, refreshKey);
+  useEffect(() => {
+    setSelectedDate((cur) =>
+      cur && datesInfo.dates.includes(cur)
+        ? cur
+        : datesInfo.dates.length > 0
+          ? datesInfo.dates[datesInfo.dates.length - 1]
+          : "",
+    );
+  }, [datesInfo.dates]);
+
+  // Per-plot #2: the selected date's snapshot rows (wall / smile panels).
+  const { rows: snapshotRows, loading: snapshotLoading } = useOptionsSnapshotRows(
+    underlyingCode,
+    selectedDate ? [selectedDate] : [],
+    optionsTargetType,
+    optionsVenue,
+    refreshKey,
+  );
+
+  // Per-plot #3: history-wide wall-panel axes — fetched once per
+  // underlying/venue (it never varies with the selected date).
+  const { axes } = useOptionsSnapshotAxes(underlyingCode, optionsTargetType, optionsVenue, refreshKey);
+
+  // Underlying OHLCV + zone walls — light fetches, optional context for
+  // their panels (walls missing ≠ page failure).
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    Promise.all([
-      fetchOptionsCombined(underlyingCode, null, null, optionsTargetType, optionsVenue),
-      fetchEtfOhlcv(underlyingCode, null, null, optionsTargetType),
-      // Zone walls are optional — don't fail the page when the walls table
-      // is missing or empty for this underlying.
-      fetchOptionsWalls(underlyingCode).catch(() => null),
-    ])
-      .then(([opts, ohlc, walls]) => {
-        if (cancelled) return;
-        setOptionsData(opts);
-        setOhlcv(ohlc);
-        setWallsData(walls);
-        setSelectedDate(opts.dates.length > 0 ? opts.dates[opts.dates.length - 1] : "");
-        setLoading(false);
+    setOhlcv(null);
+    setWallsData(null);
+    fetchEtfOhlcv(underlyingCode, null, null, optionsTargetType)
+      .then((ohlc) => {
+        if (!cancelled) setOhlcv(ohlc);
       })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setError(e.message);
-        setLoading(false);
+      .catch(() => {
+        if (!cancelled) setOhlcv(null);
+      });
+    fetchOptionsWalls(underlyingCode)
+      .then((walls) => {
+        if (!cancelled) setWallsData(walls);
+      })
+      .catch(() => {
+        if (!cancelled) setWallsData(null);
       });
     return () => {
       cancelled = true;
     };
-  }, [underlyingCode, optionsVenue, optionsTargetType, refreshKey]);
+  }, [underlyingCode, optionsTargetType, refreshKey]);
 
   const handleRefresh = () => {
     invalidateCacheForPrefix("/api/szse-options/");
     setRefreshKey((k) => k + 1);
   };
 
-  // Auto-derive snapshot dates once options data arrives (only if all 4 are blank)
+  // Auto-derive snapshot dates once the date index arrives (only if all 4 are blank)
   useEffect(() => {
-    if (!optionsData || optionsData.dates.length === 0) return;
+    if (datesInfo.dates.length === 0) return;
     const allBlank = snapshotDates.every((sd) => !sd.date);
     if (allBlank) {
-      setSnapshotDates(autoDeriveSnapshots(optionsData.dates));
+      setSnapshotDates(autoDeriveSnapshots(datesInfo.dates));
     }
-  }, [optionsData, snapshotDates, setSnapshotDates]);
+  }, [datesInfo.dates, snapshotDates, setSnapshotDates]);
 
-  const snapshotStats = useMemo(() => {
-    if (!optionsData) return [];
-    return snapshotDates.map((sd) => {
-      const snap = optionsData.rows.filter((r) => r.date === sd.date);
-      return {
-        label: sd.label,
-        date: sd.date,
-        stats: computeSnapshotStats(snap),
-      };
-    });
-  }, [optionsData, snapshotDates]);
+  // Per-plot #4: StatTable's auto-derived snapshot columns — ONE batched
+  // snapshot-rows fetch (all 4 dates in a single index-narrow query).
+  const [snapshotStats, setSnapshotStats] = useState<
+    { label: string; date: string; stats: ReturnType<typeof computeSnapshotStats> }[]
+  >([]);
+  useEffect(() => {
+    if (datesInfo.dates.length === 0 || !underlyingCode) {
+      setSnapshotStats([]);
+      return;
+    }
+    let cancelled = false;
+    const snaps = autoDeriveSnapshots(datesInfo.dates);
+    const statDates = snaps.map((sd) => sd.date).filter(Boolean);
+    fetchOptionsSnapshotRows(underlyingCode, statDates, optionsTargetType, optionsVenue, {
+      fresh: refreshKey > 0,
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        setSnapshotStats(
+          snaps.map((sd) => ({
+            label: sd.label,
+            date: sd.date,
+            stats: sd.date
+              ? computeSnapshotStats(resp.rows.filter((r) => r.date === sd.date))
+              : null,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setSnapshotStats([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [underlyingCode, datesInfo.dates, optionsTargetType, optionsVenue, refreshKey]);
 
   const underlyingName =
     UNDERLYING_LABELS[underlyingCode] ??
     underlyings.find((u) => u.code === underlyingCode)?.name ??
     underlyingCode;
 
-  // Snapshot-derived props for the wall panel — this page still holds the
-  // combined blob (SpotSkew needs raw rows), so derive the unified axes
-  // from it once; the per-plot pages get the same meta from /snapshot.
-  const { wallRows, unifiedStrikes, expiryMonths } = useMemo(() => {
-    const rows = optionsData?.rows ?? [];
-    const strikes = new Set<number>();
-    const months = new Set<string>();
-    const snap: typeof rows = [];
-    for (const r of rows) {
-      strikes.add(r.strike_price);
-      months.add(r.expiry_month);
-      if (r.date === selectedDate) snap.push(r);
-    }
-    return {
-      wallRows: snap,
-      unifiedStrikes: Array.from(strikes).sort((a, b) => a - b),
-      expiryMonths: Array.from(months),
-    };
-  }, [optionsData, selectedDate]);
+  const loading = datesInfo.loading;
 
   return (
     <Stack spacing={2}>
@@ -191,7 +229,7 @@ export default function OptionsPage() {
 
       <SnapshotControls
         underlyings={underlyings}
-        dates={optionsData?.dates ?? []}
+        dates={datesInfo.dates}
         selectedDate={selectedDate}
         onSelectedDateChange={setSelectedDate}
       />
@@ -206,26 +244,36 @@ export default function OptionsPage() {
           Failed to load options data: {error}
         </Alert>
       )}
-      {!loading && !error && optionsData && (
+      {datesInfo.error && (
+        <Alert severity="error" variant="filled">
+          Failed to load options dates: {datesInfo.error}
+        </Alert>
+      )}
+      {!loading && !error && (
         <>
-          {optionsData.rows.length === 0 ? (
+          {datesInfo.dates.length === 0 ? (
             <Alert severity="warning">No options data available.</Alert>
           ) : (
             <>
               <Typography variant="caption" color="text.secondary">
-                {optionsData.rows.length} option contracts · {optionsData.dates.length} trading days ·{" "}
+                {datesInfo.rowCount} option contracts · {datesInfo.dates.length} trading days ·{" "}
                 {snapshotDates.filter((sd) => sd.date).length}/{snapshotDates.length} snapshots in table ·{" "}
-                {optionsData.dates[0] ?? "—"} → {optionsData.dates[optionsData.dates.length - 1] ?? "—"}
+                {datesInfo.dates[0] ?? "—"} → {datesInfo.dates[datesInfo.dates.length - 1] ?? "—"}
               </Typography>
 
               <StatTable statsList={snapshotStats} />
 
+              {snapshotLoading && (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
+                  <CircularProgress size={24} />
+                </Box>
+              )}
+
               <VolSmilePanel
-                rows={optionsData.rows}
+                rows={snapshotRows}
                 selectedDate={selectedDate}
               />
               <SpotSkewTrendPanel
-                rows={optionsData.rows}
                 selectedDate={selectedDate}
                 onDateChange={setSelectedDate}
                 underlyingCode={underlyingCode}
@@ -238,12 +286,13 @@ export default function OptionsPage() {
                 exchange={optionsVenue}
                 selectedDate={selectedDate}
                 onDateChange={setSelectedDate}
+                reloadKey={refreshKey}
               />
               <MarketInterestWallPanel
-                rows={wallRows}
+                rows={snapshotRows}
                 selectedDate={selectedDate}
-                unifiedStrikes={unifiedStrikes}
-                expiryMonths={expiryMonths}
+                unifiedStrikes={axes?.strikes ?? []}
+                expiryMonths={axes?.expiry_months ?? []}
                 underlyingCode={underlyingCode}
               />
               <OptionsTrendPanel
@@ -251,6 +300,7 @@ export default function OptionsPage() {
                 targetType={optionsTargetType}
                 exchange={optionsVenue}
                 walls={wallsData?.rows ?? []}
+                reloadKey={refreshKey}
               />
 
               <BaseChart

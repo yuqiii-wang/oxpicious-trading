@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS text.llm_qa (
     is_active      BOOLEAN     NOT NULL DEFAULT true,
     has_refs       BOOLEAN     NOT NULL DEFAULT false,
     is_failed_explanation BOOLEAN NOT NULL DEFAULT true,
+    is_big_fluctuation BOOLEAN NOT NULL DEFAULT false,  -- mapped industry's day qualified as a big move (builds.text.big_market_mv)
     qa_date        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -27,6 +28,27 @@ CREATE TABLE IF NOT EXISTS text.llm_qa (
     CONSTRAINT fk_llm_qa_news_groups FOREIGN KEY (news_group_id)
         REFERENCES text.news_groups (news_group_id)
 );
+
+-- Upgrade: is_big_market_mv renamed to is_big_fluctuation (same semantics).
+-- Runs BEFORE the ADD COLUMN retro-fit below: on a deployment that has the
+-- old column this renames it in place (data preserved); everywhere else the
+-- DO block is a no-op.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'text' AND table_name = 'llm_qa'
+                 AND column_name = 'is_big_market_mv')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_schema = 'text' AND table_name = 'llm_qa'
+                         AND column_name = 'is_big_fluctuation') THEN
+        ALTER TABLE text.llm_qa RENAME COLUMN is_big_market_mv TO is_big_fluctuation;
+    END IF;
+END $$;
+
+-- Retro-fit for deployments whose text.llm_qa predates the column (the
+-- CREATE above already includes it for fresh installs).
+ALTER TABLE text.llm_qa
+    ADD COLUMN IF NOT EXISTS is_big_fluctuation BOOLEAN NOT NULL DEFAULT false;
 
 -- Upgrade: has_refs — whether per-reference resolution wrote
 -- text.llm_qa_refs rows for this answer. Set by
@@ -76,6 +98,16 @@ COMMENT ON COLUMN text.llm_qa.is_failed_explanation IS
   'explanation (keyword hit on 无法解释 / 无法提供…实质性原因要点 / '
   '没有来源支持 etc. — llm_agents.llm_qa.FAILED_EXPLANATION_KEYWORDS). '
   'Derived at store time; defaults true for unassessed rows.';
+
+COMMENT ON COLUMN text.llm_qa.is_big_fluctuation IS
+  'True when the row''s mapped industry_id had a BIG market move on the '
+  'Shanghai calendar date of qa_date: |single-day change| >= 3% AND Wilder '
+  'RSI(3) of the industry composite (stats.industry_basic_stats mean_close, '
+  'pool_size ''all'') pinned at a rail (>= 97 up / <= 3 down). First '
+  'qualifying day per industry survives; further qualifying days within 5 '
+  'trading days of a surviving one stay false (cooldown). Maintained by '
+  'the builds.text.big_market_mv full-recompute pass (re-runs are '
+  'idempotent and re-derive the whole flag). Renamed from is_big_market_mv.';
 
 COMMENT ON TABLE text.llm_qa IS
   'Curated Q&A knowledge base for LLM retrieval. One row per question/answer '

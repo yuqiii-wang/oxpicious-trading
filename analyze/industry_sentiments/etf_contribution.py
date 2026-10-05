@@ -121,9 +121,10 @@ COUNT_SOURCE_SQL = """
 #   index_info    — per-index: industry_id, industry_label, stock_num (from
 #                   COUNT(DISTINCT stock_code) in sec_composition — same as
 #                   industry_sentiments POOL_UNION_TEMP_SQL).
-#   pool_rows     — one row per (index_code, pool_size): 'all' for every
-#                   index, plus the specific pool (small/mid/large) based on
-#                   stock_num. UNION ALL expands each index into 1-2 rows.
+#   pool_rows     — one row per (index_code, pool_size): 3 (all) for every
+#                   index, plus the specific pool (0 small / 1 mid /
+#                   2 large) based on stock_num. UNION ALL expands each
+#                   index into 1-2 rows.
 #   Final SELECT  — JOIN etf_amt with pool_rows. GROUP BY
 #                   (date, industry_id, pool_size). Computes:
 #                     industry_etf_count = COUNT(DISTINCT code) [with non-NULL
@@ -164,19 +165,21 @@ index_info AS (
           AND code = cls.code
     ) sc ON true
 ),
--- Generate pool_size rows: 'all' for every index, plus the specific pool.
+-- Generate pool_size rows (stats.label_dim SMALLINT codes: 0 small /
+-- 1 mid / 2 large / 3 all): 3 (all) for every index, plus the specific
+-- pool based on stock_num.
 pool_rows AS (
-    SELECT code, industry_id, industry_label, 'all' AS pool_size
+    SELECT code, industry_id, industry_label, 3::smallint AS pool_size
     FROM index_info
     UNION ALL
-    SELECT code, industry_id, industry_label, 'small' AS pool_size
+    SELECT code, industry_id, industry_label, 0::smallint AS pool_size
     FROM index_info WHERE stock_num IS NOT NULL AND stock_num < 51
     UNION ALL
-    SELECT code, industry_id, industry_label, 'mid' AS pool_size
+    SELECT code, industry_id, industry_label, 1::smallint AS pool_size
     FROM index_info WHERE stock_num IS NOT NULL
                        AND stock_num >= 51 AND stock_num <= 180
     UNION ALL
-    SELECT code, industry_id, industry_label, 'large' AS pool_size
+    SELECT code, industry_id, industry_label, 2::smallint AS pool_size
     FROM index_info WHERE stock_num IS NOT NULL AND stock_num > 180
 )
 SELECT

@@ -7,6 +7,7 @@
 import type { MutableRefObject } from "react";
 import type { ECharts } from "echarts";
 import type { CodeTrendStreakInfo } from "@/shared/charts/CodeTrendTooltip";
+import type { SignalMarkPointData, SignalMarkerSpec } from "@/shared/charts/signalMarker";
 import type { OhlcMode } from "@/lib/ohlc";
 import type {
   MarketRegimeSpans,
@@ -54,17 +55,12 @@ export const TRIGGER_SERIES_ID = "trigger-days";
  * highlightAction labels) — same imperative placeholder pattern. */
 export const TRIGGER_ACTION_SERIES_ID = "trigger-actions";
 
-/** One forecast-action triangle overlay point — per-item symbol
- *  overrides on the action scatter host reproducing the tradeSignals
- *  markPoint look (triangle at the bar, up below for buy / down above
- *  for sell). */
-export interface TriggerActionPoint {
+/** One forecast-action triangle overlay point — the shared signal
+ * marker spec on the action scatter host, reproducing the tradeSignals
+ * markPoint look (triangle at the bar, up below for buy / down above
+ * for sell). */
+export interface TriggerActionPoint extends SignalMarkerSpec {
   value: [string, number];
-  symbol: "triangle";
-  symbolRotate: 0 | 180;
-  symbolSize: [number, number];
-  symbolOffset: [number, number];
-  itemStyle: { color: string };
 }
 
 /** Fixed y position of the signal-day rail circles on the hidden [0, 1]
@@ -97,6 +93,11 @@ export interface TriggerAnchor {
  *  for the overlay builder (assigned inside the option memo — an
  *  idempotent side effect; see chartOption.ts). */
 export type TriggerAnchorRef = MutableRefObject<TriggerAnchor | null>;
+
+/** Ref through which the option builder stashes the built trade-signal
+ *  markPoint data for the selected-signal-date emphasis effect (same
+ *  idempotent-stash pattern). */
+export type MarkPointDataRef = MutableRefObject<SignalMarkPointData[] | null>;
 
 /** Ref carrying the date → streak context of the trigger overlay's DARK
  *  spans, read by the axis tooltip formatter at hover time. */
@@ -152,6 +153,15 @@ export interface OhlcChartProps {
    *  low / red down-triangle (sell) above the high, and a per-day signal
    *  block in the axis tooltip. Same (date, action) pairs share a marker. */
   tradeSignals?: OhlcTradeSignal[];
+  /** FALSE suppresses the PE twin-axis overlay even when the rows carry
+   *  PE (the Recent Movements code-trend — the signal overlays replace
+   *  the valuation context there). Default true. */
+  showPe?: boolean;
+  /** The SELECTED signal date — its trade-signal marker(s) render
+   *  enlarged with a soft glow (the Recent Movements marker-click
+   *  emphasis; null = none). Applied as a markPoint-only merge update —
+   *  no full chart rebuild. */
+  selectedSignalDate?: string | null;
   /** Forecast trigger DAYS to mark — small purple circles above each
    *  date's high (fallback close): the analysis_forecasts.forecast_results.
    *  trigger_dates of a clicked forecast row — under the 2026-09

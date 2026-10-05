@@ -1,129 +1,62 @@
 /**
- * React-based tooltip formatters for MA-Spread charts.
+ * React-based tooltip formatters for MA-Spread charts — composers only.
  *
  * Uses React.createElement + a custom element-to-HTML renderer to produce
  * HTML strings for ECharts tooltips, giving us proper React syntax (elements,
  * components, conditional rendering) while still being compatible with ECharts'
  * `formatter` API — without requiring react-dom/server (SSR-only).
+ *
+ * Each button group's rows live in its subdirectory's tooltipRows.tsx
+ * (roofFloor/, tradingAmt/, bollinger/, rsiTrend/, derivTrend/, ohlcGaps/);
+ * the shared Row/Header kit + formatter helpers live in _common/tooltipKit.
+ * The rows below belong to the pair chips — the always-on core chart (date,
+ * OHLC/curves, gap, rolling-window OHLC, price slope/curvature) and the
+ * tooltip-only trend classification.
  */
 import React from "react";
-import { fmtNum, fmtPct, fmtYi } from "@/lib/series";
-import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
-import type { MovAveSpreadPairSeries } from "@shared/types";
-import { type OhlcMode } from "@/lib/ohlc";
-import { type TrendBand } from "./trendBands";
-
+import { fmtPct } from "@/lib/series";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
+import {
+  fmtVal,
+  Header,
+  Row,
+  makeFmtPrice,
+  tooltipAxisValue,
+} from "./_common";
+import type { TooltipContext, TooltipFmtHelpers } from "./_common";
+import { appendBollingerRows } from "./bollinger";
+import { appendRsiRow } from "./rsiTrend";
+import { appendDerivTrendRows } from "./derivTrend";
+import {
+  appendTradingAmtRow,
+  appendAmtSlopeRow,
+  appendAmtEnvelopeRows,
+} from "./tradingAmt";
+import { appendRoofFloorRows } from "./roofFloor";
+import { appendGapRows } from "./ohlcGaps";
+import type { GapTooltipInfo } from "./ohlcGaps";
 
-// ---- Shared helpers ------------------------------------------------------
-
-/** Format a yuan amount as 亿元 (100M yuan). */
-function fmtAmtYi(v: number | null | undefined, digits = 2): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return fmtYi(v, digits);
-}
-
-/** Null-safe number formatter with "—" fallback. */
-function fmtVal(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return fmtNum(v);
-}
-
-// ---- Shared type: tooltip context ----------------------------------------
-
-/** Context shared by both tooltip formatters (built by buildPairOption). */
-export interface TooltipContext {
-  dates: string[];
-  shorts: Array<number | null>;
-  longs: Array<number | null>;
-  shortSlopes: Array<number | null>;
-  shortCurvs: Array<number | null>;
-  longSlopes: Array<number | null>;
-  longCurvs: Array<number | null>;
-  longStds: Array<number | null>;
-  opens: Array<number | null>;
-  highs: Array<number | null>;
-  lows: Array<number | null>;
-  tradingAmts: Array<number | null>;
-  rsi3: Array<number | null>;
-  rsi6: Array<number | null>;
-  rsi10: Array<number | null>;
-  rsi14: Array<number | null>;
-  rsi20: Array<number | null>;
-  amtMaSlopeOfLong: Array<number | null>;
-  amtMarketShareOfLong: Array<number | null>;
-  ohlcOpens: Array<number | null>;
-  ohlcHighs: Array<number | null>;
-  ohlcLows: Array<number | null>;
-  /** Enabled rolling-OHLC window (trading days) — null when the OHLC-window
-   *  overlay is off. */
-  ohlcWindow: number | null;
-  /** Per-date OHLC extrema arrays for the enabled window (from the top-level
-   *  chartData.ohlc rows) — null when the overlay is off. */
-  ohlcWinArrays: {
-    open: Array<number | null>;
-    high: Array<number | null>;
-    highDate: Array<string | null>;
-    high2nd: Array<number | null>;
-    high2ndDate: Array<string | null>;
-    highSlope: Array<number | null>;
-    low: Array<number | null>;
-    lowDate: Array<string | null>;
-    low2nd: Array<number | null>;
-    low2ndDate: Array<string | null>;
-    lowSlope: Array<number | null>;
-  } | null;
-  /** Top-10% OHLC Days: the gaps store's per-date anatomy, index-aligned
-   *  with dates — null when the group is off or not loaded. */
-  ohlcGapInfo: {
-    gap: Array<number | null>;
-    intra: Array<number | null>;
-    uw: Array<number | null>;
-    lw: Array<number | null>;
-    pattern: Array<string | null>;
-  } | null;
-  trendBands: TrendBand[];
-  hasTrendBands: boolean;
-  hasBase: boolean;
-  baseVal: number | null;
-  showBoll: boolean;
-  upperData: Array<number | null>;
-  lowerData: Array<number | null>;
-  bollBase: Array<number | null>;
-  pair: MovAveSpreadPairSeries;
-  isPricePair: boolean;
-  sName: string;
-  lName: string;
-  tradingAmtMode: "off" | "lowkey";
-  ohlcMode: OhlcMode;
-}
-
-// ---- Reusable React tooltip components -----------------------------------
-
-/** A styled row with optional left padding and opacity. */
-function Row({
-  children,
-  style,
-}: {
-  children?: React.ReactNode;
-  style?: React.CSSProperties;
-}) {
-  const defaultStyle: React.CSSProperties = { marginBottom: "2px" };
-  return React.createElement("div", {
-    style: { ...defaultStyle, ...style },
-    children,
+/** Shared fmt helpers for the pair tooltip's sections (built once per
+ *  formatter from the context's display-mode state). */
+function pairFmtHelpers(ctx: TooltipContext): TooltipFmtHelpers {
+  const fmtPrice = makeFmtPrice(ctx.ohlcMode, {
+    baseVal: ctx.baseVal,
+    hasBase: ctx.hasBase,
   });
+  // Percentage-mode slope scale — shared by the roof/floor line slopes
+  // and the MA slope/curvature rows below.
+  const isPctSlope = ctx.ohlcMode === "percentage" && ctx.hasBase && ctx.baseVal != null;
+  const slopeScale = isPctSlope && ctx.baseVal != null ? 100 / ctx.baseVal : 1;
+  const fmtSlope = (v: number | null | undefined): string =>
+    fmtVal(v != null && Number.isFinite(v) ? v * slopeScale : null);
+  const rebasedTag = isPctSlope
+    ? React.createElement("span", {
+        key: "rebased",
+        style: { opacity: 0.6, fontSize: "0.9em" },
+      }, " (rebased to 100)")
+    : null;
+  return { fmtPrice, fmtSlope, isPctSlope, slopeScale, rebasedTag };
 }
-
-/** A bold header row. */
-function Header({ children }: { children?: React.ReactNode }) {
-  return React.createElement(Row, {
-    style: { fontWeight: 600, marginBottom: "2px" },
-    children,
-  });
-}
-
-// ---- Main tooltip formatter for buildPairOption --------------------------
 
 /**
  * Build the ECharts tooltip formatter for the main pair chart
@@ -136,59 +69,31 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     longs,
     shortSlopes,
     shortCurvs,
-    longSlopes,
-    longCurvs,
-    longStds,
     opens,
     highs,
     lows,
-    tradingAmts,
-    rsi3,
-    rsi6,
-    rsi10,
-    rsi14,
-    rsi20,
-    amtMaSlopeOfLong,
-    amtMarketShareOfLong,
     ohlcOpens,
     ohlcHighs,
     ohlcLows,
-    ohlcWindow,
-    ohlcWinArrays,
-    ohlcGapInfo,
+    roofFloorWindow,
     trendBands,
     hasTrendBands,
-    hasBase,
-    baseVal,
-    showBoll,
-    upperData,
-    lowerData,
     pair,
     isPricePair,
     sName,
     lName,
-    tradingAmtMode,
-    ohlcMode,
   } = ctx;
+  const helpers = pairFmtHelpers(ctx);
+  const { fmtPrice, fmtSlope } = helpers;
 
   // Derive the MA/EMA prefix from the pair kind.
   const maPrefix = pair.kind === "ema" ? "EMA" : "MA";
   const maLabel = `${maPrefix}${pair.ma_long}`;
 
-  const fmtPrice = (v: number | null | undefined): string => {
-    if (v == null || !Number.isFinite(v) || !hasBase || baseVal == null) return "—";
-    if (ohlcMode === "percentage") {
-      return fmtPct((v / baseVal - 1) * 100, 2);
-    }
-    return fmtNum(v);
-  };
-
   return (params: unknown): string => {
-    const arr = (Array.isArray(params) ? params : [params]) as Array<{
-      axisValue?: string;
-    }>;
+    const arr = Array.isArray(params) ? params : [params];
     if (arr.length === 0) return "";
-    const dateStr = (arr[0].axisValue as string) || "";
+    const dateStr = tooltipAxisValue(params);
     const idx = dates.indexOf(dateStr);
     if (idx < 0) return renderReactElement(React.createElement(Header, null, dateStr));
 
@@ -202,8 +107,6 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     const gv = sv != null && lv != null && lv !== 0 ? (sv - lv) / lv : null;
     const ss = shortSlopes[idx];
     const sc = shortCurvs[idx];
-    const ls = longSlopes[idx];
-    const lc = longCurvs[idx];
 
     // OHLC for Price/MA pairs
     if (isPricePair) {
@@ -234,7 +137,7 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     // Rolling OHLC for SMA pairs only (kind === "price"). Skipped when the
     // enabled OHLC-window overlay covers the same window (the overlay
     // section below already shows it).
-    if (pair.ma_long >= 20 && pair.kind === "price" && pair.ma_long !== ohlcWindow) {
+    if (pair.ma_long >= 20 && pair.kind === "price" && pair.ma_long !== roofFloorWindow) {
       const ohlcO = ohlcOpens[idx];
       const ohlcH = ohlcHighs[idx];
       const ohlcL = ohlcLows[idx];
@@ -255,160 +158,38 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
       }
     }
 
-    // Percentage-mode slope scale — shared by the roof/floor line slopes
-    // and the MA slope/curvature rows below.
-    const isPctSlope = ohlcMode === "percentage" && hasBase && baseVal != null;
-    const slopeScale = isPctSlope && baseVal != null ? 100 / baseVal : 1;
-    const fmtSlope = (v: number | null | undefined): string =>
-      fmtVal(v != null && Number.isFinite(v) ? v * slopeScale : null);
+    // Enabled OHLC-window overlay (roof/floor group).
+    appendRoofFloorRows(children, ctx, idx, helpers);
 
-    // Enabled OHLC-window overlay: rolling O/H/L of the window ending at the
-    // hovered date plus its (top, 2nd) extrema with dates — the four points
-    // that determine the roof/floor trendlines. The DB-persisted
-    // high/low_line_slope_Wd (price units per trading day, slope of the
-    // line through the two anchors) is shown alongside the anchor points.
-    if (ohlcWinArrays != null && ohlcWindow != null) {
-      const w = ohlcWindow;
-      const A = ohlcWinArrays;
-      const o = A.open[idx];
-      const h = A.high[idx];
-      const l = A.low[idx];
+    // Trading amount + its MA slope / market share (tradingAmt group).
+    appendTradingAmtRow(children, ctx, idx);
+    appendAmtSlopeRow(children, ctx, idx);
+
+    // Price slope + curvature. The ONLY persisted derivatives — shown on
+    // the price legs (Price/* pairs); MA5/EMA6-short pairs and the long
+    // legs have no derivative columns anymore.
+    if (isPricePair) {
       children.push(
         React.createElement(Row, {
-          key: "ohlcOverlay",
+          key: "shortSlope",
           style: { marginTop: "2px", opacity: 0.85 },
-        }, `OHLC ${w}d: O ${fmtPrice(o)} · H ${fmtPrice(h)} · L ${fmtPrice(l)}`),
-      );
-      const hDate = A.highDate[idx];
-      const h2 = A.high2nd[idx];
-      const h2Date = A.high2ndDate[idx];
-      const hSlope = A.highSlope[idx];
-      if (hDate != null || h2Date != null || hSlope != null) {
-        children.push(
-          React.createElement(Row, {
-            key: "ohlcPeaks",
-            style: { color: "#FB8C00", opacity: 0.95 },
-          }, `Roof pts: top ${fmtPrice(h)} @ ${hDate ?? "—"} · 2nd ${fmtPrice(h2)} @ ${h2Date ?? "—"} · slope ${fmtSlope(hSlope)}/d`),
-        );
-      }
-      const lDate = A.lowDate[idx];
-      const l2 = A.low2nd[idx];
-      const l2Date = A.low2ndDate[idx];
-      const lSlope = A.lowSlope[idx];
-      if (lDate != null || l2Date != null || lSlope != null) {
-        children.push(
-          React.createElement(Row, {
-            key: "ohlcTroughs",
-            style: { color: "#1E88E5", opacity: 0.95 },
-          }, `Floor pts: top ${fmtPrice(l)} @ ${lDate ?? "—"} · 2nd ${fmtPrice(l2)} @ ${l2Date ?? "—"} · slope ${fmtSlope(lSlope)}/d`),
-        );
-      }
-    }
-
-    // Trading amount
-    const amt = tradingAmts[idx];
-    if (amt != null) {
-      children.push(
-        React.createElement(Row, {
-          key: "amt",
-          style: { marginTop: "2px", opacity: 0.85 },
-        }, `Trading Amt: ${fmtAmtYi(amt)}`),
-      );
-    }
-
-    // Trading-amount MA slope + market share
-    if (tradingAmtMode !== "off") {
-      const aSlope = amtMaSlopeOfLong[idx];
-      const aShare = amtMarketShareOfLong[idx];
-      if (aSlope != null || aShare != null) {
-        const slopeStr = aSlope != null ? fmtPct(aSlope * 100, 2) : "—";
-        const shareStr = aShare != null ? fmtPct(aShare * 100, 4) : "—";
-        const slopeColor = aSlope != null && aSlope < 0 ? DOWN_COLOR : UP_COLOR;
-        children.push(
-          React.createElement(Row, {
-            key: "amtSlope",
-            style: { opacity: 0.85 },
-          }, [
-            `Amt ${maLabel} slope: `,
-            React.createElement("span", {
-              style: { color: slopeColor, fontWeight: 600 },
-            }, slopeStr),
-            ` · mkt share: ${shareStr}`,
-          ]),
-        );
-      }
-    }
-
-    // Slope + curvature (fmtSlope/slopeScale defined above, shared with the
-    // roof/floor line-slope rows).
-    const rebasedTag = isPctSlope
-      ? React.createElement("span", {
-          style: { opacity: 0.6, fontSize: "0.9em" },
-        }, " (rebased to 100)")
-      : null;
-
-    children.push(
-      React.createElement(Row, {
-        key: "shortSlope",
-        style: { marginTop: "2px", opacity: 0.85 },
-      }, [
-        `${sName} slope: ${fmtSlope(ss)} · curv: ${fmtSlope(sc)}`,
-        rebasedTag,
-      ]),
-    );
-    children.push(
-      React.createElement(Row, {
-        key: "longSlope",
-        style: { opacity: 0.85 },
-      }, [
-        `${lName} slope: ${fmtSlope(ls)} · curv: ${fmtSlope(lc)}`,
-        rebasedTag,
-      ]),
-    );
-
-    // Bollinger band values
-    if (showBoll) {
-      const uv = upperData[idx];
-      const lo = lowerData[idx];
-      const sd = longStds[idx];
-      const bw = uv != null && lo != null ? uv - lo : null;
-      children.push(
-        React.createElement(Row, {
-          key: "boll1",
-          style: { marginTop: "2px", opacity: 0.85 },
-        }, `Upper: ${fmtPrice(uv)} · Lower: ${fmtPrice(lo)}`),
-      );
-      children.push(
-        React.createElement(Row, {
-          key: "boll2",
-          style: { opacity: 0.85 },
         }, [
-          `σ${maLabel}: ${fmtSlope(sd)} · band width: ${fmtSlope(bw)}`,
-          rebasedTag,
+          `Price slope: ${fmtSlope(ss)} · curv: ${fmtSlope(sc)}`,
+          helpers.rebasedTag,
         ]),
       );
     }
 
-    // Wilder RSI
-    const r3 = rsi3[idx], r6 = rsi6[idx], r10 = rsi10[idx], r14 = rsi14[idx], r20 = rsi20[idx];
-    if (r3 != null || r6 != null || r10 != null || r14 != null || r20 != null) {
-      const fmtRsi = (v: number | null | undefined): string =>
-        v != null && Number.isFinite(v) ? v.toFixed(1) : "—";
-      const ref = r14 ?? r10 ?? r6 ?? r3 ?? r20;
-      let rsiColor = "#9E9E9E";
-      if (ref != null && Number.isFinite(ref)) {
-        if (ref >= 70) rsiColor = "#FB8C00";
-        else if (ref <= 30) rsiColor = "#43A047";
-      }
-      children.push(
-        React.createElement(Row, {
-          key: "rsi",
-          style: { marginTop: "2px", color: rsiColor, opacity: 0.9 },
-        }, `RSI: 3d ${fmtRsi(r3)} · 6d ${fmtRsi(r6)} · 10d ${fmtRsi(r10)} · 14d ${fmtRsi(r14)} · 20d ${fmtRsi(r20)}`),
-      );
-    }
+    // Slopes/Curvatures overlay (derivTrend group).
+    appendDerivTrendRows(children, ctx, idx, helpers);
 
-    // Trend classification
+    // Bollinger band values (bollinger group).
+    appendBollingerRows(children, ctx, idx, helpers);
+
+    // Wilder RSI (rsiTrend group).
+    appendRsiRow(children, ctx, idx);
+
+    // Trend classification (tooltip-only — computed from the pair data).
     if (hasTrendBands) {
       const band = trendBands.find(
         (b) => idx >= b.startIdx && idx <= b.endIdx,
@@ -439,79 +220,39 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
       }
     }
 
-    // Top-10% OHLC Days: the day's classified pattern + raw gap legs
-    // (analysis.mov_ave_spreads_detail_ohlc_gaps) — shown when the
-    // group's toggles are on.
-    if (ohlcGapInfo != null) {
-      const pat = ohlcGapInfo.pattern[idx];
-      const g = ohlcGapInfo.gap[idx];
-      const it = ohlcGapInfo.intra[idx];
-      const uw = ohlcGapInfo.uw[idx];
-      const lw = ohlcGapInfo.lw[idx];
-      const cn: Record<string, string> = {
-        spike_fade: "冲高回落",
-        flush_recover: "探底回升",
-        gap_up_advance: "高开高走",
-        gap_up_decline: "高开低走",
-        gap_down_advance: "低开高走",
-        gap_down_decline: "低开低走",
-      };
-      if (pat != null) {
-        const gloss = cn[pat] ? ` (${cn[pat]})` : "";
-        const pc = pat === "spike_fade" ? "#E53935" : pat === "flush_recover" ? "#43A047" : undefined;
-        children.push(
-          React.createElement(Row, {
-            key: "gapPattern",
-            style: { marginTop: "2px", fontWeight: 600, ...(pc ? { color: pc } : {}) },
-          }, `Pattern: ${pat}${gloss}`),
-        );
-      }
-      if (g != null || it != null || uw != null || lw != null) {
-        const f = (v: number | null): string =>
-          v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
-        children.push(
-          React.createElement(Row, {
-            key: "gapLegs",
-            style: { opacity: 0.85 },
-          }, `Gap legs: gap ${f(g)} · intra ${f(it)} · uw ${f(uw)} · lw ${f(lw)}`),
-        );
-      }
-    }
+    // Top-10% OHLC Days (ohlcGaps group).
+    appendGapRows(children, ctx.ohlcGapInfo, idx);
 
     return renderReactElement(React.createElement(React.Fragment, null, children));
   };
 }
 
-// ---- Tooltip formatter for buildAmtEnvelopeOption -------------------------
+/** The Amt Envelope tooltip's arguments (from buildAmtEnvelopeOption). */
+export interface AmtTooltipArgs {
+  dates: string[];
+  tradingAmts: Array<number | null>;
+  amtMaArrays: Record<number, Array<number | null>>;
+  amtMaSlopeArrays: Record<number, Array<number | null>>;
+  amtMarketShareArrays: Record<number, Array<number | null>>;
+  highs: Array<number | null>;
+  lows: Array<number | null>;
+  selectedWindow: number;
+  amtMaWindows: readonly number[];
+  fmtPrice: (v: number | null | undefined) => string;
+  gapInfo: GapTooltipInfo | null;
+}
 
 /**
  * Build the ECharts tooltip formatter for the Amt Envelope chart.
  */
-export function buildAmtTooltipFormatter(
-  dates: string[],
-  tradingAmts: Array<number | null>,
-  amtMaArrays: Record<number, Array<number | null>>,
-  amtMaSlopeArrays: Record<number, Array<number | null>>,
-  amtMarketShareArrays: Record<number, Array<number | null>>,
-  highs: Array<number | null>,
-  lows: Array<number | null>,
-  selectedWindow: number,
-  amtMaWindows: readonly number[],
-  fmtPrice: (v: number | null | undefined) => string,
-  gapInfo?: {
-    gap: Array<number | null>;
-    intra: Array<number | null>;
-    uw: Array<number | null>;
-    lw: Array<number | null>;
-    pattern: Array<string | null>;
-  } | null,
-) {
+export function buildAmtTooltipFormatter(args: AmtTooltipArgs) {
+  const {
+    dates, gapInfo,
+  } = args;
   return (params: unknown): string => {
-    const arr = (Array.isArray(params) ? params : [params]) as Array<{
-      axisValue?: string;
-    }>;
+    const arr = Array.isArray(params) ? params : [params];
     if (arr.length === 0) return "";
-    const dateStr = (arr[0].axisValue as string) || "";
+    const dateStr = tooltipAxisValue(params);
     const idx = dates.indexOf(dateStr);
     if (idx < 0) return renderReactElement(React.createElement(Header, null, dateStr));
 
@@ -519,99 +260,11 @@ export function buildAmtTooltipFormatter(
 
     children.push(React.createElement(Header, { key: "date" }, dateStr));
 
-    const amt = tradingAmts[idx];
-    children.push(
-      React.createElement(Row, { key: "amt", style: { marginTop: "2px" } }, `Trading Amt: ${fmtAmtYi(amt)}`),
-    );
+    // The whole amount block (tradingAmt group).
+    appendAmtEnvelopeRows(children, { ...args, idx });
 
-    for (const w of amtMaWindows) {
-      const v = amtMaArrays[w][idx];
-      const marker = w === selectedWindow ? " ●" : "";
-      children.push(
-        React.createElement(Row, {
-          key: `amtma-${w}`,
-          style: { opacity: w === selectedWindow ? 1 : 0.7 },
-        }, `Amt MA${w}: ${fmtAmtYi(v)}${marker}`),
-      );
-    }
-
-    const sv = tradingAmts[idx];
-    const lv = amtMaArrays[selectedWindow][idx];
-    if (sv != null && lv != null && lv !== 0) {
-      const gap = (sv - lv) / lv;
-      const gapColor = gap >= 0 ? UP_COLOR : DOWN_COLOR;
-      children.push(
-        React.createElement(Row, {
-          key: "gap",
-          style: { marginTop: "2px", color: gapColor, fontWeight: 600 },
-        }, `gap (Amt vs MA${selectedWindow}): ${fmtPct(gap * 100, 3)}`),
-      );
-    }
-
-    const sl = amtMaSlopeArrays[selectedWindow][idx];
-    const sh = amtMarketShareArrays[selectedWindow][idx];
-    if (sl != null || sh != null) {
-      const slopeStr = sl != null ? fmtPct(sl * 100, 2) : "—";
-      const shareStr = sh != null ? fmtPct(sh * 100, 4) : "—";
-      const slopeColor = sl != null && sl < 0 ? DOWN_COLOR : UP_COLOR;
-      children.push(
-        React.createElement(Row, {
-          key: "slope",
-          style: { marginTop: "2px", opacity: 0.85 },
-        }, [
-          `Amt MA${selectedWindow} slope: `,
-          React.createElement("span", {
-            style: { color: slopeColor, fontWeight: 600 },
-          }, slopeStr),
-          ` · mkt share: ${shareStr}`,
-        ]),
-      );
-    }
-
-    const h = highs[idx];
-    const l = lows[idx];
-    children.push(
-      React.createElement(Row, {
-        key: "hl",
-        style: { marginTop: "2px", opacity: 0.5 },
-      }, `H: ${fmtPrice(h)} · L: ${fmtPrice(l)}`),
-    );
-
-    if (gapInfo != null) {
-      const pat = gapInfo.pattern[idx];
-      const g = gapInfo.gap[idx];
-      const it = gapInfo.intra[idx];
-      const uw = gapInfo.uw[idx];
-      const lw = gapInfo.lw[idx];
-      const cn: Record<string, string> = {
-        spike_fade: "冲高回落",
-        flush_recover: "探底回升",
-        gap_up_advance: "高开高走",
-        gap_up_decline: "高开低走",
-        gap_down_advance: "低开高走",
-        gap_down_decline: "低开低走",
-      };
-      if (pat != null) {
-        const gloss = cn[pat] ? ` (${cn[pat]})` : "";
-        const pc = pat === "spike_fade" ? "#E53935" : pat === "flush_recover" ? "#43A047" : undefined;
-        children.push(
-          React.createElement(Row, {
-            key: "gapPattern",
-            style: { marginTop: "2px", fontWeight: 600, ...(pc ? { color: pc } : {}) },
-          }, `Pattern: ${pat}${gloss}`),
-        );
-      }
-      if (g != null || it != null || uw != null || lw != null) {
-        const f = (v: number | null): string =>
-          v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
-        children.push(
-          React.createElement(Row, {
-            key: "gapLegs",
-            style: { opacity: 0.85 },
-          }, `Gap legs: gap ${f(g)} · intra ${f(it)} · uw ${f(uw)} · lw ${f(lw)}`),
-        );
-      }
-    }
+    // Top-10% OHLC Days (ohlcGaps group).
+    appendGapRows(children, gapInfo, idx);
 
     return renderReactElement(React.createElement(React.Fragment, null, children));
   };

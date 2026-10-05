@@ -2,7 +2,8 @@
  * Description texts for the MA-Spread panel's button-group titles.
  *
  * Every button-group row in MaSpreadPanel (the two pair sections, Trading
- * Amt/MA, OHLC Window, High/Low Streaks, Px-Vol States, Market Regimes)
+ * Amt/MA, Roof/Floor Trendlines, High/Low Streaks, Px-Vol States, Market
+ * Regimes)
  * shows a small info mark next to its title; clicking it opens a popover
  * with this text. The SectionLabel component renders both the title and the
  * popover — the panel only passes the group id, so all wording lives here.
@@ -25,7 +26,8 @@ export type MaSpreadGroupId =
   | "pairsSimple"
   | "pairsEma"
   | "tradingAmt"
-  | "ohlcWindow"
+  | "rsiTrends"
+  | "roofFloorWindow"
   | "highLowStreaks"
   | "pxVolStates"
   | "ohlcGaps"
@@ -58,15 +60,77 @@ export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
       "— breakouts on above-MA amount stick; a trend on shrinking amount is " +
       "losing sponsorship — don't chase.",
   },
-  ohlcWindow: {
-    title: "OHLC Window",
+  rsiTrends: {
+    title: "RSI Trends",
     description:
-      "Rolling channel over the trailing w trading days (w = 20…1275): " +
-      "High_w = max High, Low_w = min Low; a chart-date click draws the " +
-      "roof/floor lines through the window's top + 2nd highs / top + 2nd " +
-      "lows, stopping at that date. Indication: a close outside the channel " +
-      "= breakout; a falling roof meeting a rising floor = range compression " +
-      "coiling before a directional move.",
+      "The Wilder-RSI overlay's two rows; the section rests fully OFF. " +
+      "Days row — multi-pick the Wilder-RSI window lines (3/6/10/14/20/60d; " +
+      "EWM alpha=1/N, adjust=False, min_periods=N) drawn on the offset " +
+      "right axis (0-400 so the RSI 0-100 hugs the bottom quarter, dashed " +
+      "70/30 guides); any pick replaces the trading-amt bars while the " +
+      "header toggle sits at Amt (Slopes/Curvatures override), and the " +
+      "FIRST pick auto-arms the 1% shade (un-picking the last day takes " +
+      "the shade off). Pct row — the Top-% history-rank shade from " +
+      "analysis.mov_ave_rsi_ranks, split evenly across the rank axis " +
+      "treated as signed: green where the RSI ranked within the top pct/2 " +
+      "of the window's own history (rises), red where within the bottom " +
+      "pct/2 (drops); per window the half cutoff is rank ≤ ceil(pct/2 × " +
+      "N_w), N_w = the window's count of ranked days (ranks dense 1..N, " +
+      "rank 1 = the highest reading); clicking the active pct again " +
+      "clears it. The days row scopes the ranks — a single picked window " +
+      "shades its own extremes (rsi3 1% and rsi60 1% differ); every " +
+      "window contributes the SAME base fill and dates where SEVERAL " +
+      "picked windows' extremes overlap stack the shade darker. " +
+      "Indication: top-rank RSI days mark stretched momentum (fade-prone), " +
+      "bottom-rank days washed-out selling (bounce-prone); deep shade = " +
+      "multi-window confluence; the tooltip's RSI row shows all six " +
+      "windows regardless of the days pick.",
+  },
+  roofFloorWindow: {
+    title: "Roof/Floor Trendlines",
+    description:
+      "Roof/floor trendlines over the trailing w trading days (w = 60…1275; " +
+      "the 20d is not a roof/floor window — its top + 2nd extrema almost " +
+      "coincide, degenerating the lines): the dashed High_w / Low_w channel " +
+      "bounds each date " +
+      "(High_w = max High, Low_w = min Low within the window); clicking a " +
+      "chart date draws the roof line through the window's top + 2nd highs " +
+      "and the floor line through its top + 2nd lows, stopping at that " +
+      "date. The \"shade\" toggle is independent of the period buttons: it " +
+      "shades EVERY window's extreme↔2nd-extreme band at once — light " +
+      "purple from 2nd high to high (roof zone), light blue from low to 2nd " +
+      "low (floor zone), each over its own trailing span; overlapping " +
+      "windows stack, so the deepest tint marks where several windows " +
+      "agree. The shades react to the chosen date: they anchor to the " +
+      "window ending at the clicked chart date (latest by default; click " +
+      "again to clear), re-anchoring like the trendlines and streak " +
+      "windows. The anchor's trailing-20-day CLOSE extremes (max / min " +
+      "close of the last 20 rows) supply two cut lines — a roof's " +
+      "bottom edge is raised to the 20d max close, a floor's top edge " +
+      "lowered to the 20d min close — so bands never cross into the " +
+      "last 20 days' closing range (close-based: an intraday wick " +
+      "cannot wipe a band; at fresh highs the roofs compress to a " +
+      "narrow strip above the top close). Guard: a side left with zero " +
+      "bands draws one from the trailing-60-day extremes (roof = 60d " +
+      "max close → max high, floor = 60d min low → min close). " +
+      "Clicking a window button is EXCLUSIVE: every other section's " +
+      "picks clear (RSI Trends, High/Low Streaks, Px-Vol States, Top-10% " +
+      "OHLC Days, Market Regimes), the header toggle returns to Amt, and " +
+      "an Amt/MA envelope view falls back to Price/MA5 — while the " +
+      "trading-amt bars yield the right axis to the enabled window's " +
+      "change-since-last-anchor plot: Δ Low(Wd) = close − the LAST low " +
+      "anchor's value (change_since_last_low), floor-blue bars ABOVE the " +
+      "dashed zero central line, positive = price above the floor " +
+      "anchor; Δ High(Wd) = close − the LAST high anchor's value " +
+      "(change_since_last_high), roof-orange bars BELOW the line, " +
+      "negative = price below the roof anchor; a bar crossing the " +
+      "central line = price beyond that side's anchor (breakout). RSI " +
+      "Trends / Slopes / Curvatures picks made afterwards take the " +
+      "right-axis slot back. " +
+      "Indication: a close outside the " +
+      "channel = breakout; a falling roof meeting a rising floor = range " +
+      "compression coiling before a directional move; deep shade overlap = " +
+      "confluence strength behind that zone.",
   },
   highLowStreaks: {
     title: "High/Low Streaks",

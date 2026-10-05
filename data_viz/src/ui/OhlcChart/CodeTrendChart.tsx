@@ -7,6 +7,10 @@
  * inside a Card with an OhlcModeToggle and a date-range slider.
  *
  * Configuration (props) — every part of the default setup is switchable:
+ *   • industryId         — INDUSTRY MODE: plot one raw close-price line per
+ *                          member index of the industry (instead of one
+ *                          security's OHLC); the OHLC mode toggle, regime
+ *                          shading, board tags and AI Ask are suppressed
  *   • sources            — per-sec_type data-source override (fetch + map)
  *   • chartOptions       — pass-through OhlcChart options (dividends,
  *                          dataZoomStart/End, onDateClick, …) for full
@@ -46,8 +50,13 @@ import {
 } from "@mui/material";
 import TimeSlider from "@/shared/components/time-slider/TimeSlider";
 import OhlcChart from "./OhlcChart";
+import IndustryTrendChart from "./IndustryTrendChart";
 import type { ECharts } from "echarts";
-import { fetchMarketRegimeSpans, fetchSecBoardMap } from "@/lib/api-client";
+import {
+  fetchIndustrySentimentsChart,
+  fetchMarketRegimeSpans,
+  fetchSecBoardMap,
+} from "@/lib/api-client";
 import { shadedRegimeSpans } from "@/shared/charts/regimeBands";
 import type { OhlcMode } from "@/lib/ohlc";
 import type { MarketRegimeSpans, StockDividend } from "@shared/types";
@@ -61,6 +70,8 @@ import type {
 import { CODE_TREND_SOURCES } from "./codeTrendSources";
 import {
   CodeTrendHeaderActions,
+  CodeTrendIndustrySubtitle,
+  CodeTrendIndustryTitle,
   CodeTrendSubtitle,
   CodeTrendTitle,
 } from "./codeTrendHeader";
@@ -105,7 +116,11 @@ export default class CodeTrendChart extends React.Component<
   }
 
   componentDidUpdate(prev: CodeTrendChartProps) {
-    if (prev.secType !== this.props.secType || prev.code !== this.props.code) {
+    if (
+      prev.secType !== this.props.secType ||
+      prev.code !== this.props.code ||
+      prev.industryId !== this.props.industryId
+    ) {
       this.setState({
         ohlcMode: this.props.defaultOhlcMode ?? "percentage",
         showRegimes: false,
@@ -129,13 +144,42 @@ export default class CodeTrendChart extends React.Component<
     return this.getSource().fetch(code);
   }
 
-  /** The inner chart. Override to render a custom ECharts option. */
+  /** Fetch + map an industry's member-index close series (industryId
+   *  mode). Rows stay empty — the industry lines replace the OHLC chart. */
+  protected fetchIndustrySource(industryId: string): Promise<CodeTrendData> {
+    return fetchIndustrySentimentsChart(industryId).then((r) => ({
+      rows: [],
+      name: r.industry_label || r.industry_id,
+      dividends: [],
+      industry: {
+        industry_id: r.industry_id,
+        industry_label: r.industry_label,
+        indices: r.indices,
+      },
+    }));
+  }
+
+  /** The inner chart. Industry mode renders the member-index close lines
+   *  instead of the OHLC candles; override for other custom charts. */
   protected renderChart(
     rows: CodeTrendRow[],
     ohlcMode: OhlcMode,
     height: number,
   ): React.ReactNode {
     const { chartOptions } = this.props;
+    const industry = this.state.data?.industry;
+    if (industry) {
+      return (
+        <IndustryTrendChart
+          data={industry}
+          height={height}
+          onChartReady={(c) => {
+            this.chartInstance = c;
+            chartOptions?.onChartReady?.(c);
+          }}
+        />
+      );
+    }
     // Default windowing: the in-chart ECharts dataZoom slider (shared
     // commonDataZoom — same style as the MA-Spread chart) over the FULL
     // history. Only suppressed when the caller opted into the MUI range
@@ -167,6 +211,15 @@ export default class CodeTrendChart extends React.Component<
 
   /** Header title (card variant). */
   protected renderTitle(): React.ReactNode {
+    if (this.props.industryId) {
+      const ind = this.state.data?.industry;
+      return (
+        <CodeTrendIndustryTitle
+          title={this.props.title}
+          label={ind ? ind.industry_label || ind.industry_id : this.props.industryId}
+        />
+      );
+    }
     return (
       <CodeTrendTitle
         code={this.props.code}
@@ -181,6 +234,14 @@ export default class CodeTrendChart extends React.Component<
 
   /** Header subtitle (card variant) — bars + date span + extras. */
   protected renderSubtitle(): React.ReactNode {
+    if (this.props.industryId) {
+      return (
+        <CodeTrendIndustrySubtitle
+          subtitleExtra={this.props.subtitleExtra}
+          data={this.state.data?.industry ?? null}
+        />
+      );
+    }
     return (
       <CodeTrendSubtitle
         subtitleExtra={this.props.subtitleExtra}
@@ -190,8 +251,12 @@ export default class CodeTrendChart extends React.Component<
   }
 
   /** Header actions (card variant) — mode toggle + Regimes toggle +
-   *  prop extras (see codeTrendHeader.tsx). */
+   *  prop extras (see codeTrendHeader.tsx). Industry mode has neither
+   *  toggle (plain close lines, no regime shading) — only the extras. */
   protected renderHeaderActions(): React.ReactNode {
+    if (this.props.industryId) {
+      return this.props.headerAction ?? null;
+    }
     return (
       <CodeTrendHeaderActions
         showModeToggle={this.props.showModeToggle}
@@ -220,7 +285,9 @@ export default class CodeTrendChart extends React.Component<
   protected renderEmpty(): React.ReactNode {
     return (
       <Alert severity="info" sx={{ py: 0.5 }}>
-        No daily data available for {this.props.code}.
+        {this.props.industryId
+          ? `No member index close data for industry ${this.state.data?.name || this.props.industryId}.`
+          : `No daily data available for ${this.props.code}.`}
       </Alert>
     );
   }
@@ -228,7 +295,26 @@ export default class CodeTrendChart extends React.Component<
   // ---- Lifecycle -----------------------------------------------------------
 
   private load() {
-    const { code, secType, onLoaded } = this.props;
+    const { code, secType, industryId, onLoaded } = this.props;
+    // Industry mode — member-index close lines; no board tags (a board mix
+    // is a per-security concept, an industry has none).
+    if (industryId) {
+      const seq = ++this.loadSeq;
+      this.setState({
+        loading: true, error: null, data: null, range: [0, 0], boardTags: [],
+      });
+      this.fetchIndustrySource(industryId)
+        .then((data) => {
+          if (seq !== this.loadSeq) return;
+          this.setState({ data, loading: false });
+          onLoaded?.(data);
+        })
+        .catch((e: Error) => {
+          if (seq !== this.loadSeq) return;
+          this.setState({ loading: false, error: e.message });
+        });
+      return;
+    }
     if (!code) return;
     const seq = ++this.loadSeq;
     const boardSeq = ++this.boardSeq;
@@ -300,11 +386,18 @@ export default class CodeTrendChart extends React.Component<
 
     // MUI range slider: opt-in only (default windowing is the in-chart
     // ECharts dataZoom — the chart then needs the FULL history, so rows
-    // must stay unwindowed here).
-    const sliderOn = showRangeSlider ?? false;
+    // must stay unwindowed here). Never in industry mode (no single row
+    // axis — the industry chart's in-chart dataZoom owns windowing).
+    const industryMode = !!this.props.industryId;
+    const sliderOn = (showRangeSlider ?? false) && !industryMode;
 
     const allRows = data?.rows ?? [];
     const maxIdx = allRows.length - 1;
+    // Industry mode plots the member-index lines (rows stay empty); the
+    // security mode needs at least one row.
+    const hasContent = industryMode
+      ? (data?.industry?.indices.length ?? 0) > 0
+      : allRows.length > 0;
     // Filter rows to the selected date window (full history otherwise).
     const windowedRows = sliderOn ? allRows.slice(range[0], range[1] + 1) : allRows;
     // Without the external slider the chart owns the full card height (its
@@ -320,10 +413,11 @@ export default class CodeTrendChart extends React.Component<
       />
     );
 
-    // AI Ask — the "?" beside the title (codeTrendAiAsk.tsx).
+    // AI Ask — the "?" beside the title (codeTrendAiAsk.tsx). Security
+    // mode only: its question payload is per-instrument.
     const { code, name, secType } = this.props;
     const displayName = name || data?.name || "—";
-    const aiAskButton = (
+    const aiAskButton = industryMode ? null : (
       <CodeTrendAiAsk
         code={code}
         displayName={displayName}
@@ -342,8 +436,8 @@ export default class CodeTrendChart extends React.Component<
       <Box sx={{ width: "100%" }}>
         {loading && this.renderLoading()}
         {error && this.renderError(error)}
-        {!loading && !error && data && allRows.length === 0 && this.renderEmpty()}
-        {!loading && !error && data && allRows.length > 0 && (
+        {!loading && !error && data && !hasContent && this.renderEmpty()}
+        {!loading && !error && data && hasContent && (
           <>
             {this.renderChart(windowedRows, ohlcMode, chartHeight)}
             {slider}

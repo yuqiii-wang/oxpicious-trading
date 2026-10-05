@@ -12,7 +12,7 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_ema';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_detail_ema  (WIDE: one row per
---  asset+code+date, 9 EMA gap columns + 5 EMA slope + 5 EMA curvature)
+--  asset+code+date, 9 EMA gap columns + 2 EMA slope + 2 EMA curvature)
 --
 --  EMA counterpart of mov_ave_spreads_detail. Source: stats.{etf,index,
 --  stock}_tech_stats.ema{6,20,60,120,255} (already fetched by the parent
@@ -23,10 +23,14 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_ema';
 --    5 Price-vs-EMA pairs:  gap = (price - emaX) / emaX,  X ∈ {6,20,60,120,255}
 --    4 EMA6-vs-EMA pairs:   gap = (ema6 - emaX) / emaX,   X ∈ {20,60,120,255}
 --
---  5 EMA slope columns (1st derivative = group-diff per (sec_type, code)
---  ordered by date) + 5 EMA curvature columns (2nd derivative = diff of
---  slope). NULL on first date (slope) / first two dates (curvature) of
---  each code.
+--  2 EMA slope columns (1st derivative = group-diff per (sec_type, code)
+--  ordered by date) + 2 EMA curvature columns (2nd derivative = diff of
+--  slope), windows 6/20 only (2026-09: the derivatives were trimmed to
+--  nothing, then restored for the 6/20-day legs — slope = emaW[t] −
+--  emaW[t−1], a DIRECT diff of the EMA line, curvature = that slope's
+--  diff). NULL on first date (slope) / first two dates (curvature) of
+--  each code. The price leg's derivatives live on the SMA detail table
+--  (mov_ave_spreads_detail.price_slope).
 --
 --  Populated by the internal EMA step of `analyze.mov_ave_spread` (see
 --  ema.py). Incremental upsert by missing dates; --force truncates first.
@@ -49,19 +53,14 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ema (
     ema6_vs_ema120    NUMERIC(10,6),
     ema6_vs_ema255    NUMERIC(10,6),
 
-    -- 5 EMA slope columns (1st derivative per (sec_type, code) by date)
+    -- 2 EMA slope columns (1st derivative per (sec_type, code) by date) +
+    -- 2 EMA curvature columns — windows 6/20 only, direct diffs of the
+    -- EMA line values.
     ema6_slope        NUMERIC(10,6),
     ema20_slope       NUMERIC(10,6),
-    ema60_slope       NUMERIC(10,6),
-    ema120_slope      NUMERIC(10,6),
-    ema255_slope      NUMERIC(10,6),
 
-    -- 5 EMA curvature columns (2nd derivative = diff of slope)
     ema6_curvature    NUMERIC(10,6),
     ema20_curvature   NUMERIC(10,6),
-    ema60_curvature   NUMERIC(10,6),
-    ema120_curvature  NUMERIC(10,6),
-    ema255_curvature  NUMERIC(10,6),
 
     std_5days         NUMERIC(10,6),
     std_20days        NUMERIC(10,6),
@@ -76,7 +75,7 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ema (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
 SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail_ema', 16);
 
-COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ema              IS 'EMA-spread detail (WIDE format): one row per (code, sec_type, date) with 9 EMA gap columns (5 Price/EMA + 4 EMA6/EMA) + 5 EMA slope + 5 EMA curvature columns. sec_type ∈ {etf, index, stock}. Source: stats.{etf,index,stock}_tech_stats.ema{6,20,60,120,255}.';
+COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ema              IS 'EMA-spread detail (WIDE format): one row per (code, sec_type, date) with 9 EMA gap columns (5 Price/EMA + 4 EMA6/EMA) + 2 EMA slope + 2 EMA curvature columns (windows 6/20, direct diffs of the EMA line) + 5 rolling σ columns. sec_type ∈ {etf, index, stock}. Source: stats.{etf,index,stock}_tech_stats.ema{6,20,60,120,255}.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.sec_type     IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.code         IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.date         IS 'Business date (trading day).';
@@ -89,16 +88,10 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_vs_ema20  IS '(ema6 -
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_vs_ema60  IS '(ema6 - ema60) / ema60.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_vs_ema120 IS '(ema6 - ema120) / ema120.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_vs_ema255 IS '(ema6 - ema255) / ema255.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_slope        IS '1st derivative of EMA6 (EMA6[t] - EMA6[t-1]) per trading day. NULL on the first date of each code.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema20_slope       IS '1st derivative of EMA20 (EMA20[t] - EMA20[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema60_slope       IS '1st derivative of EMA60 (EMA60[t] - EMA60[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema120_slope      IS '1st derivative of EMA120 (EMA120[t] - EMA120[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema255_slope      IS '1st derivative of EMA255 (EMA255[t] - EMA255[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_curvature    IS '2nd derivative of EMA6 (slope[t] - slope[t-1]). NULL on the first two dates of each code.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema20_curvature   IS '2nd derivative of EMA20 (slope[t] - slope[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema60_curvature   IS '2nd derivative of EMA60 (slope[t] - slope[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema120_curvature  IS '2nd derivative of EMA120 (slope[t] - slope[t-1]).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema255_curvature  IS '2nd derivative of EMA255 (slope[t] - slope[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_slope        IS '1st derivative of the EMA6 LINE (EMA6[t] - EMA6[t-1]) per trading day — a direct diff of the EMA values, not an average of the close-price diff. NULL on the first date of each code.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema20_slope       IS '1st derivative of the EMA20 LINE (EMA20[t] - EMA20[t-1]) per trading day. NULL on the first date of each code.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_curvature    IS '2nd derivative of EMA6 (ema6_slope[t] - ema6_slope[t-1]). NULL on the first two dates of each code.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema20_curvature   IS '2nd derivative of EMA20 (ema20_slope[t] - ema20_slope[t-1]). NULL on the first two dates of each code.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.std_5days   IS 'Rolling population σ (ddof=0) of price over 5 trading days. Bollinger band width for the EMA6 envelope (EMA6 uses the 5-day σ as the closest available window). NULL until 5 consecutive rows. Same source data as analysis.mov_ave_spreads_detail.std_5days — populated from the parent pipeline so the EMA table is self-contained for Bollinger rendering without a JOIN back to the SMA detail table.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.std_20days  IS 'Rolling population σ (ddof=0) of price over 20 trading days. Bollinger band width for the EMA20 envelope. NULL until 20 consecutive rows. Same source data as analysis.mov_ave_spreads_detail.std_20days.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.std_60days  IS 'Rolling population σ (ddof=0) of price over 60 trading days. Bollinger band width for the EMA60 envelope. NULL until 60 consecutive rows. Same source data as analysis.mov_ave_spreads_detail.std_60days.';

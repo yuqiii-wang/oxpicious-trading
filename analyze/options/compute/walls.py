@@ -173,17 +173,22 @@ def _zone_walls(
             gap_pct = (sp - z["wall_center"]) / sp * 100.0
             breached = sp < z["wall_low"]
         mass_share = z["wall_oi"] / z["_chain"]
+        # attach BEFORE the eligibility filter: .loc[eligible] keeps frame
+        # columns aligned with their rows. (The previous pattern — filter,
+        # reset_index, then series.loc[z.index] — realigned gap/mass/breach
+        # by POSITION after the reset, shifting them onto wrong rows
+        # whenever eligibility dropped an earlier row.)
+        z["mass_share"] = mass_share
+        z["gap_pct"] = gap_pct
+        z["_breached"] = breached.fillna(False)
         eligible = (
-            (mass_share >= ZONE_ELIGIBLE_MASS_SHARE)
+            (z["mass_share"] >= ZONE_ELIGIBLE_MASS_SHARE)
             & (sp > 0)
-            & (gap_pct.abs() <= ZONE_MAX_GAP_PCT)
+            & (z["gap_pct"].abs() <= ZONE_MAX_GAP_PCT)
         )
         z = z.loc[eligible].reset_index(drop=True)
         if z.empty:
             continue
-        z["mass_share"] = mass_share.loc[z.index]
-        z["gap_pct"] = gap_pct.loc[z.index]
-        z["_breached"] = breached.loc[z.index]
 
         # ---- lifecycle: overlap match + persistence run -----------------
         z = z.sort_values(

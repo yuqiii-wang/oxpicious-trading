@@ -34,20 +34,25 @@ export const REGIME_SHADE_COLORS: Record<MarketRegime, string> = {
 };
 
 /** Solid accent per regime — legend markers and toggle styling. hot
- *  keeps the retired HYPE_ACCENT_COLOR purple. */
-export const REGIME_ACCENT_COLORS: Record<MarketRegime, string> = {
+ *  keeps the retired HYPE_ACCENT_COLOR purple. Includes the FORECAST
+ *  tables' ALL pseudo-regime (amber — the unconditioned all-days
+ *  split; charts never shade it, but the forecast tables' regime
+ *  cells and tick menus look it up through regimeAccentColor). */
+export const REGIME_ACCENT_COLORS: Record<MarketRegime | "all", string> = {
   calm: "#9E9E9E",
   hot: "#7E57C2",
   panic: "#E53935",
   quiet: "#2196F3",
+  all: "#F9A825",
 };
 
 /** Display label per regime (series names / chips). */
-export const REGIME_LABELS: Record<MarketRegime, string> = {
+export const REGIME_LABELS: Record<MarketRegime | "all", string> = {
   calm: "Calm",
   hot: "Hot",
   panic: "Panic",
   quiet: "Quiet",
+  all: "All",
 };
 
 /** The regimes that get SHADED when regime display is on (calm is the

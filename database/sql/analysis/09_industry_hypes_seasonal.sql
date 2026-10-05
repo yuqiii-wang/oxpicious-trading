@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS analysis.industry_hypes_seasonal (
     season_end        DATE          NOT NULL,  -- calendar month end
     benchmark_code    TEXT          NOT NULL,
     period_days       INTEGER       NOT NULL,  -- 5 | 20 | 60 | 120 | 255 | 500
-    weighting         TEXT          NOT NULL DEFAULT 'equal',  -- 'equal' | 'amt'
-    rank_side         TEXT          NOT NULL,  -- 'HYPE' | 'DRAIN'
+    weighting         SMALLINT      NOT NULL DEFAULT 0,  -- label code (stats.label_dim 'weighting'): 0=equal 1=amt
+    rank_side         SMALLINT      NOT NULL,  -- label code (stats.label_dim 'rank_side'): 0=HYPE 1=DRAIN
     rank              SMALLINT      NOT NULL,  -- 1 | 2 | 3 | 4 | 5
     industry_id       TEXT          NOT NULL,
     industry_label    TEXT          NOT NULL DEFAULT '',
@@ -66,8 +66,8 @@ CREATE TABLE IF NOT EXISTS analysis.industry_hypes_seasonal (
     CONSTRAINT pk_industry_hypes_seasonal PRIMARY KEY
         (benchmark_code, season_qkey, period_days, weighting, rank_side, rank),
     CONSTRAINT chk_seasonal_period_days  CHECK (period_days IN (5, 20, 60, 120, 255, 500)),
-    CONSTRAINT chk_seasonal_weighting    CHECK (weighting IN ('equal', 'amt')),
-    CONSTRAINT chk_seasonal_rank_side    CHECK (rank_side IN ('HYPE', 'DRAIN')),
+    CONSTRAINT chk_seasonal_weighting    CHECK (weighting BETWEEN 0 AND 1),
+    CONSTRAINT chk_seasonal_rank_side    CHECK (rank_side BETWEEN 0 AND 1),
     CONSTRAINT chk_seasonal_rank         CHECK (rank BETWEEN 1 AND 5),
     CONSTRAINT chk_seasonal_month        CHECK (season_month BETWEEN 1 AND 12)
 ) PARTITION BY HASH (benchmark_code);

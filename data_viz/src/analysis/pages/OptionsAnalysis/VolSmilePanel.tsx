@@ -5,7 +5,8 @@
  *     selected date).
  *   • SpotSkewTrendPanel — smile chronology: spot vs smile level (ATM
  *     IV, VIX analog) vs smile tilt (25Δ/10Δ risk reversal, SKEW
- *     analog) over time — see docs/options_vol_smile_study.md.
+ *     analog) over time — loads its own /skew-daily aggregate — see
+ *     docs/options_vol_smile_study.md.
  *   • VolIndexPanel — 30d model-free vol index (VIX-style) for the
  *     selected underlying (store-driven, single curve).
  */
@@ -16,22 +17,21 @@ import type { OptionsRow } from "@shared/types";
 
 interface Props {
   rows: OptionsRow[];
+  underlyingCode: string;
   selectedDate: string;
   onDateChange?: (date: string) => void;
 }
 
 export default function AnalysisVolSmilePanel({
   rows,
+  underlyingCode,
   selectedDate,
   onDateChange,
 }: Props) {
-  const underlyingCode = rows[0]?.underlying_code ?? "";
-
   return (
     <>
       <VolSmilePanel rows={rows} selectedDate={selectedDate} />
       <SpotSkewTrendPanel
-        rows={rows}
         selectedDate={selectedDate}
         onDateChange={onDateChange}
         underlyingCode={underlyingCode}

@@ -20,7 +20,9 @@ import type {
   LatestDatesResponse,
   DebtDailyResponse,
   OptionsCombinedResponse,
-  OptionsSnapshotResponse,
+  OptionsSnapshotRowsResponse,
+  OptionsSnapshotAxesResponse,
+  OptionsSkewDailyResponse,
   OptionsOiDailyResponse,
   OptionsOiCellsResponse,
   OptionsExpiryMetaResponse,
@@ -102,7 +104,9 @@ function mapUrlToSource(url: string): keyof LatestDatesResponse | null {
   if (url.startsWith("/api/szse-options/etf-ohlcv"))      return "etf_margin";
   // per-plot options endpoints — same "options" data source for version checks
   if (url.startsWith("/api/szse-options/dates"))             return "options";
-  if (url.startsWith("/api/szse-options/snapshot"))          return "options";
+  if (url.startsWith("/api/szse-options/snapshot-rows"))     return "options";
+  if (url.startsWith("/api/szse-options/snapshot-axes"))     return "options";
+  if (url.startsWith("/api/szse-options/skew-daily"))         return "options";
   if (url.startsWith("/api/szse-options/oi-daily"))          return "options";
   if (url.startsWith("/api/szse-options/oi-cells"))          return "options";
   if (url.startsWith("/api/szse-options/expiry-meta"))       return "options";
@@ -165,8 +169,17 @@ function extractLatestDate(url: string, data: unknown): string {
       const dates = (data as { dates?: string[] })?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
     }
-    if (url.startsWith("/api/szse-options/snapshot")) {
-      return (data as OptionsSnapshotResponse)?.date ?? "";
+    if (url.startsWith("/api/szse-options/snapshot-axes")) {
+      // No per-row dates — the service anchors the version with latest_date.
+      return (data as OptionsSnapshotAxesResponse)?.latest_date ?? "";
+    }
+    if (url.startsWith("/api/szse-options/snapshot-rows")) {
+      const rows = (data as OptionsSnapshotRowsResponse)?.rows ?? [];
+      return rows.reduce((max, r) => (r.date > max ? r.date : max), "");
+    }
+    if (url.startsWith("/api/szse-options/skew-daily")) {
+      const rows = (data as OptionsSkewDailyResponse)?.rows ?? [];
+      return rows.reduce((max, r) => (r.date > max ? r.date : max), "");
     }
     if (url.startsWith("/api/szse-options/oi-daily")) {
       const spot = (data as OptionsOiDailyResponse)?.spot ?? [];

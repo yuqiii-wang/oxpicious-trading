@@ -96,6 +96,8 @@ export interface SecCodesPageShellProps {
   errorPrefix?: string;
   /** sec_types shown in the toggle. Default: all three. */
   secTypes?: SecNavSecType[];
+  /** Initial sec_type for the toggle. Default "index". */
+  defaultSecType?: SecNavSecType;
   /** Codes per page. Default 1 (full-height baseline charts per code). */
   pageSize?: number;
   /** One panel card per visible code. */
@@ -115,6 +117,7 @@ export default function SecCodesPageShell({
   refreshTooltip,
   errorPrefix,
   secTypes = ["etf", "index", "stock"],
+  defaultSecType,
   pageSize = 1,
   renderCode,
 }: SecCodesPageShellProps) {
@@ -122,6 +125,7 @@ export default function SecCodesPageShell({
   const nav = useSecNav({
     themesSources,
     dataLabel,
+    defaultSecType,
     onInvalidateCache,
   });
 

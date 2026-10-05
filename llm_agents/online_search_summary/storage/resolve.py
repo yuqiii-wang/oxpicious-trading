@@ -41,8 +41,8 @@ from llm_agents.online_search_summary.core.models import (
 from llm_agents.online_search_summary.storage.fetching import PageFetcher
 from llm_agents.online_search_summary.storage.matching import (
     REF_TYPE_EXACT, REF_TYPE_RELEVANT, VIA_CORPUS, VIA_DDGS, VIA_SUMMARY,
-    VIA_ZHIHU, hit_ref_time, is_exact_article, normalize_text,
-    source_from_url,
+    VIA_ZHIHU, hit_ref_time, is_exact_article, news_row_date,
+    normalize_text, source_from_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class ResolvedRef:
     ref_type: str                     # exact (from summary) | relevant (post-hoc title match)
     news_id: int
     resolved_url: Optional[str] = None  # candidate URL the check ran against
-    ref_time: Optional[datetime.datetime] = None  # publish time per the response (None -> now())
+    ref_time: Optional[datetime.datetime] = None  # actual publish time (None -> stored NULL)
     via: str = VIA_SUMMARY            # provenance: summary | corpus | ddgs
 
     def to_dict(self) -> Dict[str, Any]:
@@ -80,7 +80,6 @@ def build_ref_rows(
     resolved: Sequence[ResolvedRef],
     *,
     cited: Sequence[str],
-    now: Optional[datetime.datetime] = None,
 ) -> List[Dict[str, Any]]:
     """text.llm_qa_refs rows for one stored Q&A — one per resolved article.
 
@@ -90,8 +89,9 @@ def build_ref_rows(
     group, else the smallest tag — and ``is_used`` marks whether any cited
     tag hit the group. ``cited`` is the answer's own tag set
     (extract_cited_refs); refs the summarizer never cited are kept too,
-    unused. ``now`` is the ref_time fallback (ref_time stays now() when
-    the response carried no date).
+    unused. ref_time carries the reference's ACTUAL publish time; unknown
+    dates stay NULL (a now() fallback here wrote the row-creation date as
+    the article's date).
     """
     groups: Dict[int, List[ResolvedRef]] = {}
     order: List[int] = []
@@ -100,7 +100,6 @@ def build_ref_rows(
             groups[r.news_id] = []
             order.append(r.news_id)
         groups[r.news_id].append(r)
-    fallback = now or datetime.datetime.now(SHANGHAI_TZ)
     wanted = set(cited)
     rows: List[Dict[str, Any]] = []
     for news_id in order:
@@ -114,7 +113,7 @@ def build_ref_rows(
             "news_id": news_id,
             "is_used": bool(used),
             "resolved_url": repr_ref.resolved_url,
-            "ref_time": repr_ref.ref_time or fallback,
+            "ref_time": repr_ref.ref_time,
             "resolved_via": repr_ref.via,
         })
     return rows
@@ -269,6 +268,9 @@ class RefResolver:
 
         ``content=None`` creates the null-content placeholder; a later
         exact resolution upserts over it in place (same natural key).
+        Dated by the hit's own publish date, else the URL-embedded date,
+        else now() — the last resort only (a now()-date displays as the
+        row-creation date, not the article's).
         """
         fallback_date = datetime.datetime.now(SHANGHAI_TZ).date()
         text = hit.title + "\n" + (content or "")
@@ -279,7 +281,7 @@ class RefResolver:
         row = {
             "title": hit.title,
             "content": content,
-            "date": hit.publish_date or fallback_date,
+            "date": news_row_date(hit, fallback_date),
             "source": source,
             "url": url,
             "author": None,

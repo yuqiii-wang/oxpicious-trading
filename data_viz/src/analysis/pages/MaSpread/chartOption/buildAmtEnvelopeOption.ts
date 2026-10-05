@@ -1,11 +1,16 @@
 /**
  * Amt Envelope chart — rendered when an Amt/MA pair is selected.
  *
+ * Orchestrator only — the button groups the view shares own their
+ * computation and series in their subdirectories (bollinger/, streaks/,
+ * tradingAmt/, pxVol/, ohlcGaps/, _common/); the envelope's own layers
+ * (lowkey H/L band + price line, the 5-MA envelope band, the amt bars)
+ * stay here.
+ *
  * Shows trading_amount BARS + a slim envelope of all 5 trading_amt_ma lines
  * on the right y-axis (yuan), with the OHLC/price curve shown lowkey
  * (dimmed) on the left y-axis (price).
  */
-import { fmtNum, fmtPct } from "@/lib/series";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import {
   MA5_COLOR,
@@ -16,7 +21,6 @@ import {
   UP_COLOR,
   DOWN_COLOR,
   SPOT_COLOR,
-  BOLL_BAND_COLOR,
   BOLL_BAND_FILL,
   axisColors,
   commonLegend,
@@ -32,16 +36,23 @@ import type {
   MovAveSpreadOhlcGapDay,
 } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
-import {
-  computeStreakBandWindow,
-  streakShadeMarkAreas,
-  STREAK_HIGH_ACCENT_COLOR,
-  STREAK_LOW_ACCENT_COLOR,
-  STREAK_HIGH_SHADE_COLOR,
-  STREAK_LOW_SHADE_COLOR,
-  type LongBandStreak,
-  type StreakMarkAreaDatum,
+import type {
+  LongBandStreak,
 } from "@/shared/charts/streakBands";
+import { makeFmtPrice, pctBaseOf, sharedNum, shadeOverlaySeries } from "./_common";
+import type { SeriesList, ShadeOverlay } from "./_common";
+import { computeAmtBollinger, appendAmtBollingerSeries } from "./bollinger";
+import {
+  SHARED_AMT_SLOPE_KEYS,
+  SHARED_AMT_SHARE_KEYS,
+  buildAmtRightAxis,
+} from "./tradingAmt";
+import {
+  computeStreakShading,
+  streakLegendLabel,
+  appendStreakSeries,
+} from "./streaks";
+import { buildGapInfo } from "./ohlcGaps";
 import { buildAmtTooltipFormatter } from "./tooltipFormatter";
 
 /** Trading-amount MA windows in canonical order. */
@@ -90,28 +101,10 @@ export interface BuildAmtEnvelopeOptionArgs {
   /** Px-Vol States overlay (selected speed × vol combo): precomputed
    *  markArea rects over the consecutive runs of matching dates + the
    *  legend label + the accent color. Null when the row is off. */
-  pxVolShade?: {
-    label: string;
-    data: Array<
-      [
-        { xAxis: string; itemStyle: { color: string } },
-        { xAxis: string },
-      ]
-    >;
-    accent: string;
-  } | null;
+  pxVolShade?: ShadeOverlay | null;
   /** Market-regime overlays (stats.market_regime_spans — each picked
    *  regime's contiguous spans), rendered identically. */
-  regimeShades?: Array<{
-    label: string;
-    data: Array<
-      [
-        { xAxis: string; itemStyle: { color: string } },
-        { xAxis: string },
-      ]
-    >;
-    accent: string;
-  }>;
+  regimeShades?: Array<ShadeOverlay>;
   /** Top-10% OHLC Days: the gaps store's per-day anatomy rows for this
    *  code (null when the group is off/unloaded). With ``ohlcGapActive``
    *  the hovered day's pattern + gap legs join the tooltip. */
@@ -158,30 +151,16 @@ export function buildAmtEnvelopeOption({
   };
   // Slopes / market shares are per-date values shared across pairs — read
   // from the chart response's `shared` row at the same index.
-  const AMT_SLOPE_KEYS: Record<number, keyof MovAveSpreadSharedMetricsRow> = {
-    5: "trading_amt_ma5_slope",
-    20: "trading_amt_ma20_slope",
-    60: "trading_amt_ma60_slope",
-    120: "trading_amt_ma120_slope",
-    255: "trading_amt_ma255_slope",
-  };
-  const AMT_SHARE_KEYS: Record<number, keyof MovAveSpreadSharedMetricsRow> = {
-    5: "trading_amt_market_share_ma5",
-    20: "trading_amt_market_share_ma20",
-    60: "trading_amt_market_share_ma60",
-    120: "trading_amt_market_share_ma120",
-    255: "trading_amt_market_share_ma255",
-  };
   const amtMaSlopeArrays: Record<number, Array<number | null>> = Object.fromEntries(
     AMT_MA_WINDOWS.map((w) => [
       w,
-      rows.map((_, i) => (shared?.[i]?.[AMT_SLOPE_KEYS[w]] as number | null | undefined) ?? null),
+      rows.map((_, i) => sharedNum(shared, i, SHARED_AMT_SLOPE_KEYS[w])),
     ]),
   );
   const amtMarketShareArrays: Record<number, Array<number | null>> = Object.fromEntries(
     AMT_MA_WINDOWS.map((w) => [
       w,
-      rows.map((_, i) => (shared?.[i]?.[AMT_SHARE_KEYS[w]] as number | null | undefined) ?? null),
+      rows.map((_, i) => sharedNum(shared, i, SHARED_AMT_SHARE_KEYS[w])),
     ]),
   );
 
@@ -201,56 +180,27 @@ export function buildAmtEnvelopeOption({
   }
 
   // ---- Percentage mode base ----
-  let baseVal: number | null = null;
-  for (let i = 0; i < n; i++) {
-    const v = highs[i];
-    if (v != null && Number.isFinite(v) && Math.abs(v) >= 1e-9) {
-      baseVal = v;
-      break;
-    }
-  }
-  const hasBase = baseVal != null && Number.isFinite(baseVal);
-  const fmtPctFromBase = (v: number | null | undefined): string => {
-    if (v == null || !Number.isFinite(v) || !hasBase || baseVal == null) return "—";
-    return fmtPct((v / baseVal - 1) * 100, 2);
-  };
-  const fmtPrice = (v: number | null | undefined): string =>
-    ohlcMode === "percentage" ? fmtPctFromBase(v) : fmtNum(v);
+  const base = pctBaseOf(highs);
+  const fmtPrice = makeFmtPrice(ohlcMode, base);
 
   // ---- Build series ----
-  const echartsSeries: NonNullable<EChartsOption["series"]> = [];
+  const echartsSeries: SeriesList = [];
 
   // ---- High/low streak shading (purple above / yellow below the band) ---
-  // Active when BOTH nested buttons are picked (period then pct). DEFAULT
-  // view (no chart date clicked): the LATEST date's trailing streakPeriod-
-  // row window is filled with its top/bottom pct% price zones — light
-  // purple from the window's high_val up to its max high, light yellow
-  // from its min low down to low_val. Clicking a chart date ANCHORS the
-  // window to that date (the trailing rows before it). The break streak is
-  // the WHOLE-WINDOW LONG HORIZONTAL band per side — the in-window DB
-  // streaks merged into one span — drawn ONE step darker from the window's
-  // constant band edge to the merged extreme, painted after the zone rect
-  // so it sits on top where they coincide (the fractured per-DB-streak
-  // rects of the previous design are gone). All values are raw prices (the
-  // price y-axis stays raw in every display mode). Two series (high + low
-  // side, z=0 price y-axis, behind everything) — legend entries toggle
-  // each side.
-  const streakData: { high: StreakMarkAreaDatum[]; low: StreakMarkAreaDatum[] } | null =
-    streakPeriod != null && streakPct != null
-      ? (() => {
-          const win = computeStreakBandWindow(
-            rows,
-            streakPeriod,
-            streakPct,
-            streakAnchorIdx,
-          );
-          if (win == null) return null;
-          return streakShadeMarkAreas(win, longStreaks);
-        })()
-      : null;
-  const streakLabel = streakPeriod != null && streakPct != null
-    ? `Streak(${streakPeriod}d·${streakPct}%)`
-    : "";
+  // Active when BOTH nested buttons are picked (period then pct) — the
+  // streaks group's shared computation (see streaks/build.ts for the
+  // window/zone/streak semantics). All values are raw prices (the price
+  // y-axis stays raw in every display mode). Two series (high + low side,
+  // z=0 price y-axis, behind everything) — legend entries toggle each
+  // side.
+  const streakData = computeStreakShading(
+    rows,
+    streakPeriod,
+    streakPct,
+    streakAnchorIdx,
+    longStreaks,
+  );
+  const streakLabel = streakLegendLabel(streakPeriod, streakPct);
 
   // Lowkey high-low band
   const hlBase: Array<number | null> = lows.slice();
@@ -381,154 +331,51 @@ export function buildAmtEnvelopeOption({
     });
   }
 
-  // ---- Bollinger envelope around selected trading_amt_maW -----------
-  const showBoll = bollingerK > 0;
-  const amtUpperData: Array<number | null> = new Array(n).fill(null);
-  const amtLowerData: Array<number | null> = new Array(n).fill(null);
-  const bollBase: Array<number | null> = new Array(n).fill(null);
-  const bollDelta: Array<number | null> = new Array(n).fill(null);
-  if (showBoll) {
-    const selectedAmtMaData = amtMaArrays[selectedWindow];
-    for (let i = 0; i < n; i++) {
-      const ma = selectedAmtMaData[i];
-      const sd = longStds[i];
-      if (ma == null || sd == null || !Number.isFinite(ma) || !Number.isFinite(sd)) continue;
-      const upper = ma + bollingerK * sd;
-      const lower = ma - bollingerK * sd;
-      amtUpperData[i] = upper;
-      amtLowerData[i] = lower;
-      bollBase[i] = lower;
-      bollDelta[i] = upper - lower;
-    }
-    const upperName = `Amt Upper (+${bollingerK}σ)`;
-    const lowerName = `Amt Lower (−${bollingerK}σ)`;
-    echartsSeries.push({
-      type: "line",
-      name: upperName,
-      data: amtUpperData,
-      symbol: "none",
-      lineStyle: { color: BOLL_BAND_COLOR, width: 1, type: "dashed", opacity: 0.7 },
-      yAxisIndex: 1,
-      z: 6,
-    });
-    echartsSeries.push({
-      type: "line",
-      name: lowerName,
-      data: amtLowerData,
-      symbol: "none",
-      lineStyle: { color: BOLL_BAND_COLOR, width: 1, type: "dashed", opacity: 0.7 },
-      yAxisIndex: 1,
-      z: 6,
-    });
-    echartsSeries.push({
-      type: "line",
-      name: "_bollBase",
-      data: bollBase,
-      stack: "bollBand",
-      symbol: "none",
-      lineStyle: { opacity: 0 },
-      areaStyle: { opacity: 0 },
-      yAxisIndex: 1,
-      z: 0,
-    });
-    echartsSeries.push({
-      type: "line",
-      name: "_bollDelta",
-      data: bollDelta,
-      stack: "bollBand",
-      symbol: "none",
-      lineStyle: { opacity: 0 },
-      areaStyle: { color: BOLL_BAND_FILL, opacity: 0.12 },
-      yAxisIndex: 1,
-      z: 0,
-    });
-  }
+  // ---- Bollinger envelope around selected trading_amt_ma -----------
+  // (bollinger group).
+  const amtBoll = computeAmtBollinger(selectedAmtMa, longStds, bollingerK);
+  appendAmtBollingerSeries(echartsSeries, amtBoll);
 
   // ---- Legend ----
   const legendData: string[] = ["Price", "Amt Above", "Amt Below"];
   for (const w of AMT_MA_WINDOWS) {
     legendData.push(`Amt MA${w}`);
   }
-  if (showBoll) {
-    legendData.push(`Amt Upper (+${bollingerK}σ)`, `Amt Lower (−${bollingerK}σ)`);
+  if (amtBoll.showBoll) {
+    legendData.push(amtBoll.upperName, amtBoll.lowerName);
   }
   // Per-side high/low streak shading series (rect legend marker + that
   // side's markArea: light window zone + the darker whole-window long
-  // streak band) — same
-  // toggle-per-legend-entry pattern as the trend-band shading above. Both sides
-  // always carry the window zone rect when the combo is selected.
+  // streak band) — same toggle-per-legend-entry pattern as the
+  // shade overlays below. Both sides always carry the window zone rect
+  // when the combo is selected.
+  appendStreakSeries(echartsSeries, streakData, streakLabel, 0);
   if (streakData != null) {
-    const streakSides: Array<{
-      hasData: boolean;
-      name: string;
-      accent: string;
-      shade: string;
-      data: StreakMarkAreaDatum[];
-    }> = [
-      {
-        hasData: streakData.high.length > 0,
-        name: `High ${streakLabel}`,
-        accent: STREAK_HIGH_ACCENT_COLOR,
-        shade: STREAK_HIGH_SHADE_COLOR,
-        data: streakData.high,
-      },
-      {
-        hasData: streakData.low.length > 0,
-        name: `Low ${streakLabel}`,
-        accent: STREAK_LOW_ACCENT_COLOR,
-        shade: STREAK_LOW_SHADE_COLOR,
-        data: streakData.low,
-      },
-    ];
-    for (const s of streakSides) {
-      if (!s.hasData) continue;
-      legendData.push(s.name);
-      echartsSeries.push({
-        type: "scatter",
-        name: s.name,
-        data: [null],
-        symbol: "rect",
-        symbolSize: [10, 8],
-        itemStyle: { color: s.accent, opacity: 0.45, borderColor: s.shade },
-        z: 0,
-        markArea: {
-          silent: true as const,
-          itemStyle: { borderWidth: 0 },
-          data: s.data,
-        },
-      });
-    }
+    if (streakData.high.length > 0) legendData.push(`High ${streakLabel}`);
+    if (streakData.low.length > 0) legendData.push(`Low ${streakLabel}`);
   }
 
   // Px-Vol States + market-regime shading — same rect-legend + markArea
   // pattern as the streak shading above (one legend series per overlay).
-  const amtShadeOverlays = [
+  const amtShadeOverlays: ShadeOverlay[] = [
     ...(pxVolShade != null ? [pxVolShade] : []),
     ...(regimeShades ?? []),
   ];
   for (const so of amtShadeOverlays) {
     if (so.data.length === 0) continue;
     legendData.push(so.label);
-    echartsSeries.push({
-      type: "scatter",
+    echartsSeries.push(shadeOverlaySeries({
       name: so.label,
-      data: [null],
-      symbol: "rect",
-      symbolSize: [10, 8],
-      itemStyle: { color: so.accent, opacity: 0.45 },
+      data: so.data,
+      accent: so.accent,
       z: 0,
-      markArea: {
-        silent: true as const,
-        itemStyle: { borderWidth: 0 },
-        data: so.data,
-      },
-    });
+    }));
   }
 
   const grid = commonGrid({ left: 55, right: 65, bottom: 50 });
 
   // ---- Build tooltip ----
-  const formatter = buildAmtTooltipFormatter(
+  const formatter = buildAmtTooltipFormatter({
     dates,
     tradingAmts,
     amtMaArrays,
@@ -537,29 +384,12 @@ export function buildAmtEnvelopeOption({
     highs,
     lows,
     selectedWindow,
-    AMT_MA_WINDOWS,
+    amtMaWindows: AMT_MA_WINDOWS,
     fmtPrice,
     // Top-10% OHLC Days tooltip info (active only when a toggle is on):
     // the gaps store's anatomy aligned to the chart's date axis.
-    ohlcGapRows != null && ohlcGapActive
-      ? (() => {
-          const byDate = new Map(ohlcGapRows.map((d) => [d.date, d]));
-          const pick = (
-            pickFn: (d: MovAveSpreadOhlcGapDay) => number | null,
-          ) => dates.map((dt) => {
-            const d = byDate.get(dt);
-            return d == null ? null : pickFn(d);
-          });
-          return {
-            gap: pick((d) => d.gap_open),
-            intra: pick((d) => d.intra),
-            uw: pick((d) => d.uw),
-            lw: pick((d) => d.lw),
-            pattern: dates.map((dt) => byDate.get(dt)?.pattern ?? null),
-          };
-        })()
-      : null,
-  );
+    gapInfo: buildGapInfo(ohlcGapRows, ohlcGapActive, dates),
+  });
 
   // Shared preamble (transparent bg, animations off, themed fragments) via
   // baseChartOption; the line-snap axisPointer replaces the common cross one
@@ -598,19 +428,7 @@ export function buildAmtEnvelopeOption({
         },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.3 } },
       },
-      {
-        type: "value" as const,
-        scale: true,
-        name: "Amt (亿)",
-        nameTextStyle: { color: c.textColor, fontSize: 9 },
-        axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: {
-          color: c.textColor,
-          fontSize: 9,
-          formatter: (v: number) => fmtNum(v / 1e8, 1),
-        },
-        splitLine: { show: false },
-      },
+      buildAmtRightAxis(c),
     ],
     series: echartsSeries,
   });

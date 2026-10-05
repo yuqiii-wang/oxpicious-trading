@@ -23,6 +23,7 @@
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
+import { encodeLabelParam, labelDecodeSql } from "../label-codes.js";
 import type {
   IndustryHypesAndDrainsResponse,
   HypesDrainsBenchmarkRow,
@@ -71,13 +72,17 @@ interface DbIndustrySeriesRow extends QueryResultRow {
 // ----------------------------------------------------------------------------
 
 // All seasonal rankings for the given (benchmark_code, period, weighting).
+// weighting filters by its stats.label_dim SMALLINT code ($3); rank_side
+// decodes to its TEXT label in the SELECT (the response stays strings).
 const SEASONAL_RANKINGS_SQL = `
-    SELECT season_qkey, rank_side, rank, industry_id, industry_label,
+    SELECT season_qkey,
+           ${labelDecodeSql("rank_side", "rank_side")} AS rank_side,
+           rank, industry_id, industry_label,
            peak_metric_value
     FROM analysis.industry_hypes_seasonal
     WHERE benchmark_code = $1::text
       AND period_days = $2::int
-      AND weighting = $3::text
+      AND weighting = $3::smallint
     ORDER BY season_qkey, rank_side, rank
 `;
 
@@ -87,7 +92,7 @@ const SEASONS_SQL = `
     FROM analysis.industry_hypes_seasonal
     WHERE benchmark_code = $1::text
       AND period_days = $2::int
-      AND weighting = $3::text
+      AND weighting = $3::smallint
     ORDER BY season_qkey
 `;
 
@@ -246,10 +251,11 @@ export async function getIndustryHypesAndDrains(
   }
 
   // Step 1: fetch all seasonal rankings + season boundaries + benchmark
-  // name — all in parallel.
+  // name — all in parallel. weighting crosses as its label-dim code.
+  const weightingCode = encodeLabelParam("weighting", weighting);
   const [seasonalRows, seasonRows, nameRows] = await Promise.all([
-    queryRows<DbSeasonalRow>(SEASONAL_RANKINGS_SQL, [benchmarkCode, periodDays, weighting]),
-    queryRows<DbSeasonInfoRow>(SEASONS_SQL, [benchmarkCode, periodDays, weighting]),
+    queryRows<DbSeasonalRow>(SEASONAL_RANKINGS_SQL, [benchmarkCode, periodDays, weightingCode]),
+    queryRows<DbSeasonInfoRow>(SEASONS_SQL, [benchmarkCode, periodDays, weightingCode]),
     queryRows<{ name: string | null }>(BENCHMARK_NAME_SQL, [benchmarkCode]),
   ]);
 

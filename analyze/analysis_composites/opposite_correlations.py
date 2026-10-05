@@ -73,6 +73,7 @@ from _common.build_commons import (
 )
 from _common.db_commons import batched_copy_by_key_async
 from _common.df_utils import epoch_col_to_dt64
+from _common.labels import POOL_SIZE_LABEL
 from analyze._common import upsert_analysis_identity
 from analyze.industry_sentiments.correlations import (
     _grid_start_indices,
@@ -180,21 +181,22 @@ cls AS (
       AND is_industry_not_strategy = TRUE
 ),
 member_pool AS (
-    -- Pool buckets mirror builds.industry.classify_pool_vectorized:
+    -- Pool buckets mirror builds.industry.classify_pool_vectorized
+    -- (stats.label_dim SMALLINT codes: 0 small / 1 mid / 2 large):
     -- small < 51 constituent stocks, mid <= 180, large otherwise;
-    -- compositionless members contribute to the 'all' pool only.
+    -- compositionless members contribute to the 'all' (3) pool only.
     SELECT cls.code, cls.industry_id,
            CASE
                WHEN sn.n IS NULL THEN NULL
-               WHEN sn.n < 51 THEN 'small'
-               WHEN sn.n <= 180 THEN 'mid'
-               ELSE 'large'
-           END AS bucket
+               WHEN sn.n < 51 THEN 0
+               WHEN sn.n <= 180 THEN 1
+               ELSE 2
+           END::smallint AS bucket
     FROM cls cls
     LEFT JOIN stock_num sn ON sn.code = cls.code
 ),
 pools(pool_size) AS (
-    VALUES ('small'), ('mid'), ('large'), ('all')
+    VALUES (0::smallint), (1::smallint), (2::smallint), (3::smallint)
 )
 SELECT mp.industry_id, p.pool_size,
        extract(epoch from cs.date)::float8 AS date,
@@ -205,7 +207,7 @@ JOIN stats.cross_stats cs
    AND cs.benchmark_code = $1::text
    AND cs.sec_type = 'index'
    AND cs.code_price_with_benchmark_offset IS NOT NULL
-JOIN pools p ON p.pool_size = 'all' OR p.pool_size = mp.bucket
+JOIN pools p ON p.pool_size = 3 OR p.pool_size = mp.bucket
 GROUP BY mp.industry_id, p.pool_size, cs.date
 """
 
@@ -415,7 +417,8 @@ async def run_opposite_correlations(
             pool_rows = int(s_idx.size)
             n_pairs = int(pair_ok.sum())
             if s_idx.size == 0:
-                logger.info(f"      [{pool:5s}|{bench_code}] {t_len:,} dates x "
+                logger.info(f"      [{POOL_SIZE_LABEL[pool]:5s}|{bench_code}] "
+                      f"{t_len:,} dates x "
                       f"{n_ind} industries -> {n_pairs:,} pairs "
                       f"(overlap >= {MIN_OVERLAP}), {starts.size:,} grid "
                       f"starts, {pool_rows:,} rows")
@@ -478,7 +481,8 @@ async def run_opposite_correlations(
                     sc_l[0], sc_l[1], sc_l[2],
                 )
             )
-            logger.info(f"      [{pool:5s}|{bench_code}] {t_len:,} dates x "
+            logger.info(f"      [{POOL_SIZE_LABEL[pool]:5s}|{bench_code}] "
+                  f"{t_len:,} dates x "
                   f"{n_ind} industries -> {n_pairs:,} pairs "
                   f"(overlap >= {MIN_OVERLAP}), {starts.size:,} grid "
                   f"starts, {pool_rows:,} rows")
@@ -542,7 +546,8 @@ async def run_opposite_correlations(
     """)
     logger.info("\n      Summary by (benchmark, pool_size):")
     for r in summary:
-        logger.info(f"        {r['benchmark_code']} {r['pool']:6s}: "
+        logger.info(f"        {r['benchmark_code']} "
+              f"{POOL_SIZE_LABEL[r['pool']]:6s}: "
               f"{r['n_rows']:>8,} rows . {r['n_pairs']:>4} pairs . "
               f"{r['first_date']} -> {r['last_date']}")
 

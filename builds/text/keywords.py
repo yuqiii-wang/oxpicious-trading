@@ -32,7 +32,12 @@ tokens (the denominator of ``text.news_keywords.count_pct``).
 
 Industry assignment: when an article matches several industries, the winner
 is the one appearing FIRST in the catalog (sector rule order — same
-tie-breaking convention as _common.sec_statics.classification).
+tie-breaking convention as _common.sec_statics.classification). ONE
+exception, applied only in :func:`extract_for_articles` (the text.news
+tagging path — llm_agents QA tagging keeps the plain rule): a general daily
+broad-market recap item (zhihu 「如何看待…A股市场行情?」 answers, media
+A股收评/午评/开盘 pieces, the ai_daily 整体行情 question) is ALWAYS tagged
+上证 (BROAD_SSE) — see :data:`BROAD_MARKET_RECAP_INDUSTRY_ID`.
 """
 from __future__ import annotations
 
@@ -192,6 +197,29 @@ def get_taxonomy() -> "KeywordTaxonomy":
     return _TAXONOMY
 
 
+# ----------------------------------------------------------------------------
+# General daily broad-market recaps → 上证 (BROAD_SSE)
+# ----------------------------------------------------------------------------
+# A recap item IS a broad-market view, but its body name-drops sectors and 15
+# of the 21 catalog sectors precede BROAD in rule order, so the earliest-match
+# rule almost never picks a BROAD industry for it. Title shape decides: a
+# broad-market term AND a market-session term in the TITLE (calibrated
+# 2026-10-03 against all 25 866 distinct text.news titles — every match is a
+# market recap/analysis/commentary piece; 查询 excludes the single-stock
+# quote-lookup posts 「…股票行情…走势查询」).
+BROAD_MARKET_RECAP_INDUSTRY_ID = "BROAD_SSE"
+_BROAD_RECAP_TERM = re.compile(r"A\s*股|股市|大盘|沪指|上证指数|股票市场")
+_BROAD_RECAP_SESSION_TERM = re.compile(r"行情|市场|走势|收盘|收评|午评|开盘|复盘")
+_BROAD_RECAP_QUOTE_LOOKUP = re.compile(r"查询")
+
+
+def is_general_broad_recap_title(title: str) -> bool:
+    """True when *title* names a general daily broad-market recap item."""
+    return bool(_BROAD_RECAP_TERM.search(title)
+                and _BROAD_RECAP_SESSION_TERM.search(title)
+                and not _BROAD_RECAP_QUOTE_LOOKUP.search(title))
+
+
 def extract_for_articles(
     rows: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -204,11 +232,19 @@ def extract_for_articles(
     A row that already carries an industry_id keeps it (ai_daily movers
     rows are pre-set with the movers plan's own industry — stronger than a
     text match); its sector_id is still resolved from the taxonomy.
+
+    A general daily broad-market recap title (see
+    :func:`is_general_broad_recap_title`) overrides the text-match primary
+    with 上证 (BROAD_SSE) — before the pre-set check, so a loader-preset
+    industry still wins over everything.
     """
     taxonomy = get_taxonomy()
     for row in rows:
-        text = row["title"] + "\n" + (row.get("content") or "")
+        title = row["title"]
+        text = title + "\n" + (row.get("content") or "")
         counts, industry_id = taxonomy.match(text)
+        if is_general_broad_recap_title(title):
+            industry_id = BROAD_MARKET_RECAP_INDUSTRY_ID
         row["industry_id"] = row.get("industry_id") or industry_id
         row["sector_id"] = taxonomy.sector_of(row["industry_id"])
         row["word_count"] = taxonomy.word_count(text)
