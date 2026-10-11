@@ -35,20 +35,15 @@ import pandas as pd
 from _common.db_commons import get_db_connection
 
 # ---------------------------------------------------------------------------
-# Classification — loaded from sec_classification.json (replaces _classification.py)
+# Classification — loaded from the sec_classification/ shard tree
 # ---------------------------------------------------------------------------
-import json as _json
-from pathlib import Path as _Path
+from database.sec_statics import classification_store
 
-_CLASSIFICATION_JSON = _Path(__file__).resolve().parent / "sec_statics" / "sec_classification.json"
-with _CLASSIFICATION_JSON.open("r", encoding="utf-8") as _f:
-    _CLASSIFICATION = _json.load(_f)
-
-_CATALOG = _CLASSIFICATION.get("catalog", {})
+_CATALOG = classification_store.load_catalog()
 
 # Build industry_id → (sector_id, sector_label, industry_id, industry_label, slug) lookup
 # and industry_id → [keywords] lookup from the catalog + build_classification.INDEX_RULES.
-from _common.sec_statics.classification import INDEX_RULES as _INDEX_RULES
+from database.sec_statics.classification import INDEX_RULES as _INDEX_RULES
 
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("study_select_etf")

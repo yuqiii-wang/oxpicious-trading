@@ -1,0 +1,72 @@
+{
+  "932365": {
+    "name": "中证现金流",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_CASHFLOW",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_CASHFLOW"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932366": {
+    "name": "300现金流",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_CASHFLOW",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_CASHFLOW"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932367": {
+    "name": "500现金流",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_CASHFLOW",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_CASHFLOW"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932368": {
+    "name": "800现金流",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_CASHFLOW",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_CASHFLOW"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_DIV_CASHFLOW": {
+    "name": "现金流综合指数",
+    "exchange": null,
+    "sector_id": "DIV",
+    "industry_id": "DIV_CASHFLOW",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_CASHFLOW"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

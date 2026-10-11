@@ -3,7 +3,7 @@
  *
  * Source: the price speed × trading-amount STATE categories of
  * analysis.mov_ave_price_vs_amt (the mov_ave_spread registry, see
- * analyze/mov_ave_spread/px_vol.py add_px_vol_features and
+ * analysis/mov_ave_spread/px_vol.py add_px_vol_features and
  * database/sql/analysis/19_price_vs_amt.sql). The panel recomputes the
  * per-date state client-side from the chart's own rows. The inputs match
  * the registry exactly:

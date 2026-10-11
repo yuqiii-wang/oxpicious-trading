@@ -238,6 +238,8 @@ async def main() -> int:
              "--date-from).",
     )
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     as_of: datetime.date | None = None
     if args.date is not None:

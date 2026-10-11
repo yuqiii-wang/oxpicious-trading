@@ -25,7 +25,8 @@ longer in the JSON).  When False (default), existing index/ETF rows are
 upserted in place (stale rows preserved).  sec_index_tags is always
 truncated + rebuilt (needed for correctness when JSON is hand-edited).
 Stock rows are always DELETEd + re-inserted (the set of qualifying indices
-can change between runs).
+can change between runs).  monitor.src_data_audit follows the same
+force semantics (truncated in force mode, upserted in place otherwise).
 
 After all leaf upserts, ``_update_is_active`` recomputes the ``is_active``
 flag for every row from the identity tables (index/stock/etf_identity):
@@ -44,6 +45,7 @@ from builds.classification.sector_industry.index.upsert import (
 )
 from builds.classification.sector_industry.index.etf.upsert import upsert_etfs
 from builds.classification.sector_industry.index.stock.upsert import upsert_stocks
+from builds.classification.sector_industry.src_data_audit import upsert_src_data_audit
 
 import logging
 logger = logging.getLogger(__name__)
@@ -86,10 +88,13 @@ async def upsert_to_db(
     # --- 3. Upsert stocks ---
     await upsert_stocks(conn, catalog, state["stocks"], verbose=verbose)
 
-    # --- 4. Recompute is_primary_exchange from exchange (derived column) ---
+    # --- 4. Upsert the source-data coverage audit (monitor.src_data_audit) ---
+    await upsert_src_data_audit(conn, state, verbose=verbose, force=force)
+
+    # --- 5. Recompute is_primary_exchange from exchange (derived column) ---
     await _update_is_primary_exchange(conn, verbose=verbose)
 
-    # --- 5. Recompute is_active from identity tables (trailing 1 year) ---
+    # --- 6. Recompute is_active from identity tables (trailing 1 year) ---
     await _update_is_active(conn, verbose=verbose)
 
 

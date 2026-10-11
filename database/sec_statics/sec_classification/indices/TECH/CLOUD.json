@@ -1,0 +1,41 @@
+{
+  "930851": {
+    "name": "云计算",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "CLOUD",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "CLOUD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931469": {
+    "name": "云计算50",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "CLOUD",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "CLOUD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931470": {
+    "name": "SHS云计算",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "CLOUD",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "CLOUD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

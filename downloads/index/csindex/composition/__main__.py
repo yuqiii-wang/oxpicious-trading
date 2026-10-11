@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import argparse
 
-from ._config import SLEEP_SEC
+from ._config import SERVICE
 from .runner import download_index_composition
 
 from _common.log_setup import setup_logging  # noqa: E402
@@ -19,7 +19,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "--index-codes", type=str, default=None,
-        help="Comma-separated list of index codes (default: all from sec_classification.json). "
+        help="Comma-separated list of index codes (default: all from the sec_classification cache). "
              "Example: --index-codes 930606,000300,399997",
     )
     ap.add_argument(
@@ -37,14 +37,17 @@ def _build_parser() -> argparse.ArgumentParser:
              "monthly refresh flow on any day.",
     )
     ap.add_argument(
-        "--sleep-sec", type=float, default=SLEEP_SEC,
-        help=f"Sleep seconds between downloads (default: {SLEEP_SEC})",
+        "--sleep-sec", type=float, default=None,
+        help="Sleep seconds between downloads "
+             f"(default: external_request_config JSON for {SERVICE})",
     )
     return ap
 
 
 if __name__ == "__main__":
     args = _build_parser().parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     codes = None
     if args.index_codes:

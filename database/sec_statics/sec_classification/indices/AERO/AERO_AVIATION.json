@@ -1,0 +1,42 @@
+{
+  "931855": {
+    "name": "通用航空",
+    "exchange": "SS",
+    "sector_id": "AERO",
+    "industry_id": "AERO_AVIATION",
+    "tags": [
+      {
+        "sector_id": "AERO",
+        "industry_id": "AERO_AVIATION"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932088": {
+    "name": "全指航空",
+    "exchange": "SS",
+    "sector_id": "AERO",
+    "industry_id": "AERO_AVIATION",
+    "tags": [
+      {
+        "sector_id": "AERO",
+        "industry_id": "AERO_AVIATION"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_AERO_AVIATION": {
+    "name": "航空综合指数",
+    "exchange": null,
+    "sector_id": "AERO",
+    "industry_id": "AERO_AVIATION",
+    "tags": [
+      {
+        "sector_id": "AERO",
+        "industry_id": "AERO_AVIATION"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

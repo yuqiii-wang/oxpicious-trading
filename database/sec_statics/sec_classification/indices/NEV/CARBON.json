@@ -1,0 +1,63 @@
+{
+  "000977": {
+    "name": "内地低碳",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "CARBON",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "CARBON"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931755": {
+    "name": "SEEE碳中和",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "CARBON",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "CARBON"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931897": {
+    "name": "绿色电力",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "CARBON",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "CARBON"
+      },
+      {
+        "sector_id": "ENG",
+        "industry_id": "POWER_GRID"
+      },
+      {
+        "sector_id": "ESG",
+        "industry_id": "GREEN"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_CARBON": {
+    "name": "碳中和/绿电综合指数",
+    "exchange": null,
+    "sector_id": "NEV",
+    "industry_id": "CARBON",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "CARBON"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

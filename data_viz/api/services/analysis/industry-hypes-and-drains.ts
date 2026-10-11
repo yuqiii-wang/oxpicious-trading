@@ -2,7 +2,7 @@
  * Industry Hypes & Drains — SEASONAL (monthly) ranking service.
  *
  * Reads from analysis.industry_hypes_seasonal (built by
- * analyze.industry_sentiments.hypes_and_drains — truncate-then-recompute).
+ * analysis.industry_sentiments.hypes_and_drains — truncate-then-recompute).
  * Returns ALL seasonal rankings (which industry is top/bottom 5 per month),
  * the benchmark's full daily price series, season boundary info, and each
  * ranked industry's full daily curve.
@@ -128,7 +128,7 @@ const BENCHMARK_NAME_SQL = `
 // the shared-portfolio curve. Returns the DAILY non-this-industry price
 // level + benchmark_shared_weight per date; the SERVICE compounds the
 // daily decomposition identity into the trailing-N-day shared return
-// (same math as analyze.industry_sentiments.hypes_and_drains) and outputs
+// (same math as analysis.industry_sentiments.hypes_and_drains) and outputs
 // it as `rolling`. Reading the pre-materialized rolling_{N}days_price
 // column instead would force the chart to invert it (1/swf amplification
 // of its clamping/compounding artifacts — +-hundreds-of-percent noise for

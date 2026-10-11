@@ -1,0 +1,15 @@
+{
+  "931159": {
+    "name": "创新100",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_TECH_INNOV",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

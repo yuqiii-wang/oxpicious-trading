@@ -59,17 +59,18 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import requests
 
+from dataclasses import replace
+
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
-    DEFAULT_TIMEOUT,
-    AntiBotProxy,
-    AntiBotConfig,
     RunStats,
+    AntiBotProxy,
+    antibot_config_for,
     build_default_session,
     build_headers_with_referer,
     is_valid_file,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 from downloads._common.monthly import is_month_start
 
@@ -77,6 +78,8 @@ from downloads._common.monthly import is_month_start
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+SERVICE = "downloads.etf.sse.composition"
 
 SSE_SUGGEST_DATA_URL = "https://www.sse.com.cn/js/common/ssesuggestfunddata.js"
 SSE_REFERER = "https://www.sse.com.cn/assortment/fund/list/"
@@ -88,9 +91,10 @@ PCF_DOWNLOAD_URL = "https://query.sse.com.cn/etfDownload/downloadETF2Bulletin.do
 SSE_ETF_PREFIXES: Tuple[str, ...] = ("510", "511", "512", "513", "515", "516", "518", "56")
 
 XML_MIN_BYTES = 200
-# Use the centralized anti-bot sleep interval from _download_commons (~20s per
-# request). Override per-run with --sleep-sec for testing.
-SLEEP_SEC = DEFAULT_SLEEP_SEC
+# Anti-bot sleep between requests — resolved from the service's
+# external_request_config JSON row (sleep_sec), overridable per-run with
+# --sleep-sec.
+SLEEP_SEC = sleep_sec_for(SERVICE)
 CSV_ENCODING = "utf-8-sig"
 
 # SubstitutionFlag (现金替代标志) numeric → SZSE-compatible Chinese label.
@@ -152,13 +156,12 @@ def fetch_sse_etf_list(
     ``{code, etf_name, fund_type}`` dicts (fund_type is "" — not in the source).
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
-    
+        proxy = AntiBotProxy(service=SERVICE)
+
     resp = proxy.get(
         session,
         SSE_SUGGEST_DATA_URL,
         headers=SSE_HEADERS,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag="[etf-list]",
     )
@@ -429,7 +432,6 @@ def download_composition(
             PCF_DOWNLOAD_URL,
             params={"fundCode": code},
             headers=SSE_HEADERS,
-            timeout=DEFAULT_TIMEOUT,
             logger=logger,
             log_tag=f"[dl {code}]",
         )
@@ -585,7 +587,7 @@ def download_sse_etf_composition(
     *,
     out_root: Optional[str] = None,
     etf_codes: Optional[List[str]] = None,
-    sleep_sec: float = SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     max_etfs: Optional[int] = None,
     skip_cached: bool = True,
     convert_csv: bool = True,
@@ -607,14 +609,16 @@ def download_sse_etf_composition(
         )
 
     session = build_default_session()
-    
-    # Create unified AntiBotProxy with custom config
-    proxy_config = AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        sleep_jitter=0.3,
-    )
-    proxy = AntiBotProxy(proxy_config)
-    
+
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+    # overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
+
     stats = RunStats()
 
     # --- Enumerate SSE ETFs ---
@@ -733,8 +737,9 @@ if __name__ == "__main__":
                     help="Comma-separated SSE ETF codes to download (default: auto-detect all)")
     ap.add_argument("--out-root", type=str, default=None,
                     help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=SLEEP_SEC,
-                    help=f"Sleep seconds between requests (default: {SLEEP_SEC})")
+    ap.add_argument("--sleep-sec", type=float, default=None,
+                    help="Sleep seconds between requests "
+                         f"(default: external_request_config JSON for {SERVICE})")
     ap.add_argument("--max-etfs", type=int, default=None,
                     help="Limit to N ETFs (dev/testing)")
     ap.add_argument("--skip-cached", action="store_true", default=True,
@@ -750,6 +755,8 @@ if __name__ == "__main__":
     ap.add_argument("--no-convert-csv", action="store_true", default=False,
                     help="Skip CSV aggregation")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     etf_codes_arg = None
     if args.etf_codes:

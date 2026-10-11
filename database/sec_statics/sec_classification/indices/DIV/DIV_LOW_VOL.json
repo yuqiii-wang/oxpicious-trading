@@ -1,0 +1,121 @@
+{
+  "930740": {
+    "name": "300红利低波",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_LOW_VOL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_LOW_VOL"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930955": {
+    "name": "红利低波100",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_LOW_VOL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_LOW_VOL"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931848": {
+    "name": "800红利低波",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_LOW_VOL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_LOW_VOL"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932422": {
+    "name": "A500红利低波",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_LOW_VOL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_LOW_VOL"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_DIV_LOW_VOL": {
+    "name": "红利低波综合指数",
+    "exchange": null,
+    "sector_id": "DIV",
+    "industry_id": "DIV_LOW_VOL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_LOW_VOL"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  },
+  "H30269": {
+    "name": "红利低波",
+    "exchange": "HK",
+    "sector_id": "DIV",
+    "industry_id": "DIV_LOW_VOL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_LOW_VOL"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

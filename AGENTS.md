@@ -15,6 +15,8 @@ the first step of the work:
   groupby / shift, dtypes, DB fetch or bulk-write paths, or a run logging
   `[cudf fallback]` lines → `cudf-dtypes`
 - ANY DB write / insert / upsert / purge / DDL apply → `db-sql-write`
+- ANY table creation/alter with a type/kind/state/family column, or any
+  label-vocabulary domain change → `db-smallint-type-codes`
 - ANY chart component, ECharts option builder, or chart tooltip/colors
   under `data_viz/src` → `ui-charts`
 - ANY verification of `data_viz/` work → `ui-test`

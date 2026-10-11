@@ -1,0 +1,9 @@
+{
+  "service": "builds.etf.feeder_nav",
+  "max_parallel": 1,
+  "freq": "daily",
+  "schedule": "every A-share trading date from 19:00, after downloads_daily.sh (builds_daily.sh loop order)",
+  "notes": "ETF联接 feeder NAV from the huatai-pb fund site (is_ohl_estimated rows); runs right after builds.etf.",
+  "source_ref": "scripts/builds_daily.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

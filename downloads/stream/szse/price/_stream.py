@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import time as _time
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from downloads._common import is_trading_day, setup_logger
 
@@ -47,12 +47,18 @@ StockList = List[Tuple[str, str]]
 
 
 async def stream(
-    poll_interval: float = DEFAULT_POLL_INTERVAL_SEC,
+    poll_interval: Optional[float] = None,
     n_groups: int = DEFAULT_GROUPS,
     once: bool = False,
 ) -> None:
     """Run the SZSE price streamer until cancelled (Ctrl-C) or --once."""
     t_stream = _time.time()
+
+    # Long-lived daemon: resolve worker B's poll cadence ONCE at startup
+    # (None = CLI left the default, which is the source_b_szse JSON row's
+    # poll_interval_sec resolved in _constants.py).
+    if poll_interval is None:
+        poll_interval = DEFAULT_POLL_INTERVAL_SEC
 
     # --- Startup: DB connections, target lists, heavy modules, HTTP stack ---
     conns: StreamConns = open_db_connections()

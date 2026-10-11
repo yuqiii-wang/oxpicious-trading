@@ -47,12 +47,33 @@ stay primary-only; the replica inherits none of them.
 1 = alert):
 
 ```bash
-python -m database.monitoring                  # replication state + backlog + slot retention
+python -m database.monitoring                  # replication state + backlog + slot retention + pg_wal dir size + stream liveness
 python -m database.monitoring --schema-drift   # catalog fingerprint: primary vs replica
 ```
 
-Both run in `run_occasionally.sh`. Thresholds: backlog alert 64MB
-(same as the API probe), slot retained-WAL alert 2GB.
+Both run in `scripts/monitoring_occasionally.sh` (first step of
+`main_run.sh`, so every daily scheduled pass checks before heavy
+writes). Thresholds: backlog alert 64MB (same as the API probe), slot
+retained-WAL alert 2GB, pg_wal dir alert 1.5× `max_wal_size` — the dir
+legitimately idles under `max_wal_size` (recycled segments are kept for
+reuse), so only growth past the recycle horizon means segments are
+being pinned (an inactive slot, stuck replay/checkpoint).
+
+`database/db_health.py` is the HISTORY side of the same picture: an
+always-on sampler (registered as `database.db_health` in
+`_common/service_heartbeat.MONITORED_SERVICES`, so the stream watchdog
+restarts it like the pollers) that appends one row per instance per ~60s
+to `monitor.db_health` — reachability, connect latency, uptime,
+connections, size, cache hit, xact_commit, WAL shipping state, replay
+backlog, the instance's pg_wal dir size, and container CPU/memory from
+`docker stats`. Unreachable instances are sampled too
+(`healthy = false` + a short `error`), so outages leave a trail; the
+table keeps 90 days. Started by the watchdog (main_run.sh adopts it),
+or directly:
+
+```bash
+python -u -m database.db_health        # foreground; --once for a single pass
+```
 
 Never use the wall-clock age of `pg_last_xact_replay_timestamp()` as a
 lag measure: it grows without bound on an idle primary and once

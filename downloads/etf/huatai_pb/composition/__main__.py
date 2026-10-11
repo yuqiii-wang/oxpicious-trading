@@ -61,7 +61,6 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
     RunStats,
     business_days,
     build_default_session,
@@ -80,6 +79,8 @@ from downloads.etf.huatai_pb._endpoints import (
 )
 
 logger = setup_logger("huatai_pb_composition")
+
+SERVICE = "downloads.etf.huatai_pb.composition"
 
 CSV_ENCODING = "utf-8-sig"
 # How many business days back the daily mode probes for a published PCF.
@@ -171,7 +172,7 @@ def download_composition(
     *,
     out_root: str | None = None,
     fund_codes: List[str] | None = None,
-    sleep_sec: float = DEFAULT_SLEEP_SEC,
+    sleep_sec: float | None = None,
     backfill_start: str | None = None,
 ) -> Dict[str, Any]:
     out_dir = resolve_out_dir("", "huatai_etf_composition", out_root)
@@ -179,7 +180,7 @@ def download_composition(
     today = date.today()
 
     session = build_default_session()
-    proxy = build_proxy(sleep_sec)
+    proxy = build_proxy(SERVICE, sleep_sec)
     stats = RunStats()
 
     if backfill_start:
@@ -256,13 +257,16 @@ if __name__ == "__main__":
                          "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
     ap.add_argument("--out-root", type=str, default=None,
                     help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=DEFAULT_SLEEP_SEC,
-                    help=f"Sleep seconds between requests (default: {DEFAULT_SLEEP_SEC})")
+    ap.add_argument("--sleep-sec", type=float, default=None,
+                    help="Sleep seconds between requests "
+                         f"(default: external_request_config JSON for {SERVICE})")
     ap.add_argument("--backfill-start", type=str, default=None,
                     metavar="YYYY-MM-DD",
                     help="Backfill trading days from this date to today "
                          "(skip snapshots already cached on disk).")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     fund_codes_arg = None
     if args.fund_codes:

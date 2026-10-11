@@ -1,0 +1,68 @@
+{
+  "000510": {
+    "name": "中证A500",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI_A",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI_A"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000903": {
+    "name": "中证A100",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI_A",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI_A"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930050": {
+    "name": "中证A50",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI_A",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI_A"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930903": {
+    "name": "中证A股",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI_A",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI_A"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_CSI_A": {
+    "name": "中证A系列综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI_A",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI_A"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

@@ -17,10 +17,13 @@ from typing import Dict, List, Optional, Tuple
 from downloads._common import (
     add_exchange_suffix,
     is_trading_day,
+    poll_interval_sec_for,
     setup_logger,
 )
 
 logger = setup_logger("stream_sse")
+
+SERVICE = "downloads.stream.sse.price"
 
 # A snapshot sample: {bare_code: full_record} where full_record holds every
 # field returned by the SSE list endpoint (name, open, high, low, last,
@@ -35,7 +38,10 @@ TRADING_SESSIONS: List[Tuple[time, time]] = [
 
 CLOSE_TIME = time(15, 0)
 
-DEFAULT_POLL_INTERVAL_SEC = 60
+# Poll-loop cadence — resolved once at import from the service's
+# external_request_config JSON row (request_type "poll"); the row does not
+# define a poll interval, so the old 60s literal stays as the fallback.
+DEFAULT_POLL_INTERVAL_SEC = poll_interval_sec_for(SERVICE, "poll") or 60
 DEFAULT_BAR_WINDOW = 5
 
 

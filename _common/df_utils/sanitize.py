@@ -1,7 +1,7 @@
 """NaN/inf/None sanitization for asyncpg bulk upsert.
 
-Moved from analyze/_common/sanitize.py (2026-08-24) so both builds.* and
-analyze.* packages share ONE implementation. The original module remains
+Moved from analysis/_common/sanitize.py (2026-08-24) so both builds.* and
+analysis.* packages share ONE implementation. The original module remains
 as a thin shim for backward compatibility.
 
 Consolidates the scattered pattern:

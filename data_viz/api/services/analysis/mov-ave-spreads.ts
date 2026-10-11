@@ -10,7 +10,7 @@ import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange, codeVariants } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
-import { labelDecodeSql } from "../label-codes.js";
+import { labelDecodeSql, LABEL_CODE } from "../label-codes.js";
 import type {
   MaSpreadSecType,
   MovAveSpreadCodeRow,
@@ -137,6 +137,14 @@ const EMA_PAIR_ORDER: PairSpec[] = [
 
 const VALID_SEC_TYPES: ReadonlySet<MaSpreadSecType> = new Set(["etf", "index", "stock"]);
 
+/** The stored sec_type value of the analysis.mov_ave* tables: their
+ *  stats.label_dim SMALLINT code (the label-code contract). Only the
+ *  mov_ave queries bind it — stats.* tables (regime spans,
+ *  per-sec_type source tables) keep the label string. */
+function secTypeParam(st: MaSpreadSecType): number {
+  return LABEL_CODE.sec_type[st];
+}
+
 function normalizeSecType(raw: string | undefined | null): MaSpreadSecType {
   const v = (raw ?? "").trim().toLowerCase();
   if (!VALID_SEC_TYPES.has(v as MaSpreadSecType)) {
@@ -250,6 +258,14 @@ interface DbChartRow extends QueryResultRow {
   rsi_14days: number | null;
   rsi_20days: number | null;
   rsi_60days: number | null;
+  // Tail-episode population flags per window (1 typical / 0 re-entry /
+  // null out-of-band — analysis.mov_ave_rsi, steps/rsi_typical.py).
+  is_typical_3days: number | null;
+  is_typical_6days: number | null;
+  is_typical_10days: number | null;
+  is_typical_14days: number | null;
+  is_typical_20days: number | null;
+  is_typical_60days: number | null;
   // 5 trading-amount MA SLOPE + 5 MARKET-SHARE columns (shared tooltip metrics).
   trading_amt_ma5_slope: number | null;
   trading_amt_ma20_slope: number | null;
@@ -566,7 +582,7 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
 //  listMovAveSpreadCodes — one row per asset code with first/last date,
 //  n_dates, and the latest snapshot of all 9 gap_values (for sparkline /
 //  sort). Reads the PRECOMPUTED per-code summary table
-//  analysis.mov_ave_spreads_codes (maintained by analyze.mov_ave_spread's
+//  analysis.mov_ave_spreads_codes (maintained by analysis.mov_ave_spread's
 //  refresh_codes_summary after every detail write pass). The former live
 //  aggregate — GROUP BY code over 18 MIN/MAX columns of the detail table +
 //  per-code LATERAL latest-row and name lookups — took 7-14s on the stock
@@ -623,7 +639,8 @@ export async function listMovAveSpreadCodes(
   // filter is active — both need the sec_classification row to decide.
   const needMeta = hasClassFilter || !!exFilter;
 
-  const rows = await queryRows<DbCodeRow>(buildCodesSql(), [secType]);
+  const rows = await queryRows<DbCodeRow>(buildCodesSql(),
+    [secTypeParam(secType)]);
 
   // When a classification filter is active, fetch the meta rows (same query as
   // listMovAveSpreadThemes) and build a code → classification map so
@@ -632,7 +649,8 @@ export async function listMovAveSpreadCodes(
   let classMap: Map<string, DbMaSpreadMetaRow> | null = null;
   if (needMeta) {
     const metaType = MA_SPREAD_META_TYPE[secType];
-    const metaRows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
+    const metaRows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,
+      [secTypeParam(secType), metaType]);
     classMap = new Map<string, DbMaSpreadMetaRow>();
     for (const m of metaRows) {
       const code = stripExchangeSuffix(m.code);
@@ -913,6 +931,8 @@ function buildChartSharedSql(): string {
       d.trading_amt_market_share_ma255,
       rsi.rsi_3days, rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days,
       rsi.rsi_60days,
+      rsi.is_typical_3days, rsi.is_typical_6days, rsi.is_typical_10days,
+      rsi.is_typical_14days, rsi.is_typical_20days, rsi.is_typical_60days,
       ${ohlcPivotSelectSql(OHLC_SHARED_PERIODS, "sh_", OHLC_SHARED_STEMS)}
     FROM d
     ${chartJoinSql(tables)}
@@ -1086,8 +1106,8 @@ function buildPriceVsAmtSql(): string {
   return `
     SELECT
       p.date,
-      p.px_speed,
-      p.vol_state
+      ${labelDecodeSql("px_speed", "p.px_speed")} AS px_speed,
+      ${labelDecodeSql("vol_state", "p.vol_state")} AS vol_state
     FROM analysis.mov_ave_price_vs_amt p
     WHERE p.sec_type = $1
       AND p.code = ANY($2::text[])
@@ -1618,6 +1638,12 @@ function mapSharedRows(chartRows: DbChartRow[]): MovAveSpreadSharedMetricsRow[] 
     rsi_14days: toNum(r.rsi_14days),
     rsi_20days: toNum(r.rsi_20days),
     rsi_60days: toNum(r.rsi_60days),
+    is_typical_3days: toNum(r.is_typical_3days),
+    is_typical_6days: toNum(r.is_typical_6days),
+    is_typical_10days: toNum(r.is_typical_10days),
+    is_typical_14days: toNum(r.is_typical_14days),
+    is_typical_20days: toNum(r.is_typical_20days),
+    is_typical_60days: toNum(r.is_typical_60days),
     trading_amt_ma5_slope: toNum(r.trading_amt_ma5_slope),
     trading_amt_ma20_slope: toNum(r.trading_amt_ma20_slope),
     trading_amt_ma60_slope: toNum(r.trading_amt_ma60_slope),
@@ -1654,7 +1680,8 @@ export async function getMovAveSpreadChartPairs(
   const target = stripped(rawCode);
   const variants = codeVariants(target);
   const [chartRows, nameRows] = await Promise.all([
-    queryRows<DbChartRow>(buildChartPairsSql(secType), [secType, variants]),
+    queryRows<DbChartRow>(buildChartPairsSql(secType),
+      [secTypeParam(secType), variants]),
     queryRows<{ name: string | null }>(buildNameSql(secType), [variants]),
   ]);
   return {
@@ -1674,7 +1701,8 @@ export async function getMovAveSpreadChartEma(
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
   const variants = codeVariants(target);
-  const chartRows = await queryRows<DbChartRow>(buildChartEmaSql(secType), [secType, variants]);
+  const chartRows = await queryRows<DbChartRow>(buildChartEmaSql(secType),
+      [secTypeParam(secType), variants]);
   return { code: target, pairs: mapEmaPairRows(chartRows) };
 }
 
@@ -1688,7 +1716,8 @@ export async function getMovAveSpreadChartShared(
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
   const variants = codeVariants(target);
-  const chartRows = await queryRows<DbChartRow>(buildChartSharedSql(), [secType, variants]);
+  const chartRows = await queryRows<DbChartRow>(buildChartSharedSql(),
+      [secTypeParam(secType), variants]);
   return { code: target, shared: mapSharedRows(chartRows) };
 }
 
@@ -1793,44 +1822,48 @@ export async function getMovAveSpreadChartExtras(
     wanted.map(async (metric) => {
       switch (metric) {
         case "amt": {
-          const rows = await queryRows<DbAmtRow>(buildAmtSql(secType), [secType, variants]);
+          const rows = await queryRows<DbAmtRow>(buildAmtSql(secType),
+            [secTypeParam(secType), variants]);
           response.amtPairs = toAmtPairs(rows);
           break;
         }
         case "ohlc": {
           const rows = await queryRows<DbExtremaRow>(
             buildOhlcExtrasSql(),
-            [secType, variants],
+            [secTypeParam(secType), variants],
           );
           response.ohlc = rows.map(toOhlcExtremaRow);
           break;
         }
         case "bands": {
           const [rows, eventRows] = await Promise.all([
-            queryRows<DbBandsRow>(buildBandsExtrasSql(), [secType, variants]),
-            queryRows<DbBandsEventDatesRow>(buildBandsEventDatesSql(), [secType, variants]),
+            queryRows<DbBandsRow>(buildBandsExtrasSql(), [secTypeParam(secType), variants]),
+            queryRows<DbBandsEventDatesRow>(buildBandsEventDatesSql(), [secTypeParam(secType), variants]),
           ]);
           response.roofFloorBands = mergeBandsEventDates(rows.map(toBandsRow), eventRows);
           break;
         }
         case "streaks": {
-          const rows = await queryRows<DbStreakRow>(buildStreaksSql(), [secType, variants]);
+          const rows = await queryRows<DbStreakRow>(buildStreaksSql(),
+            [secTypeParam(secType), variants]);
           response.highLowStreaks = toStreaks(rows);
           break;
         }
         case "pxvol": {
-          const rows = await queryRows<DbPriceVsAmtRow>(buildPriceVsAmtSql(), [secType, variants]);
+          const rows = await queryRows<DbPriceVsAmtRow>(buildPriceVsAmtSql(),
+            [secTypeParam(secType), variants]);
           response.priceVsAmt = toPriceVsAmtDays(rows);
           break;
         }
         case "gaps": {
-          const rows = await queryRows<DbOhlcGapRow>(buildOhlcGapsSql(), [secType, variants]);
+          const rows = await queryRows<DbOhlcGapRow>(buildOhlcGapsSql(),
+            [secTypeParam(secType), variants]);
           response.ohlcGaps = rows.map(toOhlcGapDay);
           break;
         }
         case "rsiranks": {
           const rows = await queryRows<DbRsiRankRow>(
-            buildRsiRanksSql(), [secType, variants],
+            buildRsiRanksSql(), [secTypeParam(secType), variants],
           );
           response.rsiRanks = rows.map(toRsiRankDay);
           break;
@@ -1914,7 +1947,7 @@ const MA_SPREAD_META_SQL = `
   WITH spread_codes AS (
     SELECT code
     FROM analysis.mov_ave_spreads_codes
-    WHERE sec_type = $1::text
+    WHERE sec_type = $1
   )
   SELECT
     sc.code,
@@ -1938,7 +1971,8 @@ export async function listMovAveSpreadThemes(
   const secType = normalizeSecType(rawSecType);
   const exFilter = (rawExchange ?? "").trim() || null;
   const metaType = MA_SPREAD_META_TYPE[secType];
-  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
+  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,
+    [secTypeParam(secType), metaType]);
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -2014,7 +2048,8 @@ export async function listMovAveSpreadStrategyThemes(
   const secType = normalizeSecType(rawSecType);
   const exFilter = (rawExchange ?? "").trim() || null;
   const metaType = MA_SPREAD_META_TYPE[secType];
-  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
+  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,
+    [secTypeParam(secType), metaType]);
 
   // Filter by exchange BEFORE building the strategy tree so cross-border
   // securities are excluded when "All (primary)" is selected (same behavior

@@ -1,0 +1,56 @@
+{
+  "000855": {
+    "name": "央视500",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_BRAND",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_BRAND"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931403": {
+    "name": "品牌工程",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_BRAND",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_BRAND"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_STRAT_BRAND": {
+    "name": "品牌综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_BRAND",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_BRAND"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  },
+  "DUMMY_STRAT_BRAND_CCTV": {
+    "name": "央视品牌综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_BRAND",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_BRAND"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

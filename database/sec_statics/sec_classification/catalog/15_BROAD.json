@@ -1,0 +1,77 @@
+{
+  "label": "宽基",
+  "industries": {
+    "BROAD_SSE50": {
+      "label": "上证50",
+      "slug": "broad_sse50"
+    },
+    "BROAD_SSE180": {
+      "label": "上证180",
+      "slug": "broad_sse180"
+    },
+    "BROAD_SSE380": {
+      "label": "上证380",
+      "slug": "broad_sse380"
+    },
+    "BROAD_SSE": {
+      "label": "上证",
+      "slug": "broad_sse"
+    },
+    "BROAD_CSI300": {
+      "label": "沪深300",
+      "slug": "broad_csi300"
+    },
+    "BROAD_CSI500": {
+      "label": "中证500",
+      "slug": "broad_csi500"
+    },
+    "BROAD_CSI800": {
+      "label": "中证800",
+      "slug": "broad_csi800"
+    },
+    "BROAD_CSI1000": {
+      "label": "中证1000",
+      "slug": "broad_csi1000"
+    },
+    "BROAD_CSI2000": {
+      "label": "中证2000",
+      "slug": "broad_csi2000"
+    },
+    "BROAD_CSI_A": {
+      "label": "中证A系列",
+      "slug": "broad_csi_a"
+    },
+    "BROAD_TECH_INNOV": {
+      "label": "科技创新",
+      "slug": "broad_tech_innov"
+    },
+    "BROAD_CSI": {
+      "label": "中证",
+      "slug": "broad_csi"
+    },
+    "BROAD_GEM": {
+      "label": "创业板",
+      "slug": "broad_gem"
+    },
+    "BROAD_SZSE": {
+      "label": "深证",
+      "slug": "broad_szse"
+    },
+    "BROAD_STAR": {
+      "label": "科创",
+      "slug": "broad_star"
+    },
+    "BROAD_BSE": {
+      "label": "北证",
+      "slug": "broad_bse"
+    },
+    "benchmark_broadmarket": {
+      "label": "宽基基准",
+      "slug": "benchmark_broadmarket"
+    },
+    "BROAD_CNI": {
+      "label": "国证",
+      "slug": "broad_cni"
+    }
+  }
+}

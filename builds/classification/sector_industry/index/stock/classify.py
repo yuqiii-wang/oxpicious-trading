@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from _common.sec_statics.classification import (
+from database.sec_statics.classification import (
     DEFAULT_SECTOR_ID,
     DEFAULT_INDUSTRY_ID,
     classify_index,
@@ -136,6 +136,7 @@ async def classify_stocks(
                     "code": stock_code,
                     "name": meta["name"],
                     "exchange": stock_exchange,
+                    "board": meta.get("board"),
                     "parent_index_code": idx_code,
                     "parent_index_weight": round(idx_weight, 4),
                     "parent_index_is_primary": is_primary,
@@ -194,6 +195,7 @@ async def classify_stocks(
                 "code": stock_code,
                 "name": stock_name,
                 "exchange": exchange,
+                "board": meta.get("board"),
                 "parent_index_code": parent_code,
                 "parent_index_weight": None,
                 "parent_index_is_primary": False,

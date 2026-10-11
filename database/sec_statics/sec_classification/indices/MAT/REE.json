@@ -1,0 +1,33 @@
+{
+  "930598": {
+    "name": "稀土产业",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "REE",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "REE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_REE": {
+    "name": "稀土综合指数",
+    "exchange": null,
+    "sector_id": "MAT",
+    "industry_id": "REE",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "REE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

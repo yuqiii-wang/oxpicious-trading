@@ -5,15 +5,13 @@ from datetime import date, datetime
 from typing import Any, Dict, Optional, Tuple
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
-    AntiBotConfig,
     AntiBotProxy,
 )
 
 from ._config import (
+    SERVICE,
     CNINDEX_DAILY_API,
     CNINDEX_HEADERS,
-    CNINDEX_TIMEOUT,
 )
 
 # Daily-bar array column indices:
@@ -69,14 +67,15 @@ def fetch_daily_data(
     volume, avg] rows, oldest first), or None on failure.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+        # Pacing (sleep/jitter/timeouts/toggles) from the service's
+        # external_request_config JSON row.
+        proxy = AntiBotProxy(service=SERVICE)
 
     resp = proxy.get(
         session,
         CNINDEX_DAILY_API,
         params={"indexCode": code},
         headers=CNINDEX_HEADERS,
-        timeout=CNINDEX_TIMEOUT,
     )
     if resp is None:
         return None

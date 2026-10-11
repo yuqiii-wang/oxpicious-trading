@@ -4,7 +4,7 @@ This is the single entry point for the gov.cn macro-news pipeline. Running
 ``python -m downloads.macro.gov.news`` executes three internal steps in order,
 reusing the same ``--start-date`` / ``--sleep-sec`` / ``--force`` / ``--out-root``
 flags for all of them (mirroring the convention used by ``pboc.repo_news`` and
-``analyze.industry_sentiments``, where internal steps share one CLI surface):
+``analysis.industry_sentiments``, where internal steps share one CLI surface):
 
   1. **gov.news** — fetch the 政策解读 title list from gov.cn (single
      ``ZCJD_QZ.json`` fetch; full backfill to 2020-01-01 in one shot) and
@@ -53,7 +53,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from downloads._common import COMMON_BASE_HEADERS, DEFAULT_START_DATE, LONG_SLEEP_INTERVAL  # noqa: E402
+from downloads._common import (  # noqa: E402
+    COMMON_BASE_HEADERS,
+    DEFAULT_START_DATE,
+    retry_policy_for,
+)
 from downloads.macro.gov.main_gov import (  # noqa: E402
     SourceConfig,
     download_source,
@@ -70,6 +74,8 @@ from downloads.macro.gov.articles import download_articles  # noqa: E402
 # ----------------------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------------------
+SERVICE = "downloads.macro.gov.news"
+
 GOV_JIEDU_LIST_URL = "https://www.gov.cn/zhengce/jiedu/index.htm"
 GOV_JIEDU_JSON_URL = "https://www.gov.cn/zhengce/jiedu/ZCJD_QZ.json"
 
@@ -95,9 +101,11 @@ def fetch_gov_json(
     """Fetch the ``ZCJD_QZ.json`` title list via the shared anti-bot proxy.
 
     Returns the parsed list of items, or None on hard failure. Retries on
-    transient network errors with exponential backoff; the proxy handles
-    browser-fingerprint rotation, the ``random`` query param, host-blocking
-    detection, and the inter-request sleep cadence.
+    transient network errors with exponential backoff (max_retries / backoff
+    base from the service's external_request_config JSON row, former inline
+    constants as fallback); the proxy handles browser-fingerprint rotation,
+    the ``random`` query param, host-blocking detection, and the
+    inter-request sleep cadence.
 
     *floor* (last pub_date already in the CSV) is unused here — the list is a
     single JSON fetch that always returns everything; the orchestrator applies
@@ -106,7 +114,12 @@ def fetch_gov_json(
     headers = dict(COMMON_BASE_HEADERS)
     headers["Referer"] = config.list_url
 
-    max_retries = 3
+    # Retry policy from the service's external_request_config JSON row
+    # (max_retries=3, retry_backoff_sec=1); the former inline constants
+    # apply when the row omits them.
+    row_max_retries, row_backoff_sec = retry_policy_for(SERVICE)
+    max_retries: int = row_max_retries if row_max_retries is not None else 3
+    backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
     for attempt in range(1, max_retries + 1):
         if proxy.is_blocked(GOV_JIEDU_JSON_URL):
             logger.error("  host blocked, aborting JSON fetch")
@@ -117,7 +130,7 @@ def fetch_gov_json(
         )
         if resp is None:
             logger.warning("  JSON fetch failed (attempt %d/%d)", attempt, max_retries)
-            time.sleep(min(2 ** attempt, 30))
+            time.sleep(min(backoff_sec * 2 ** attempt, 30))
             continue
         try:
             data = resp.json()
@@ -166,8 +179,9 @@ def main() -> None:
     )
     parser.add_argument("--start-date", type=str, default=None,
                         help=f"Floor date YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
-    parser.add_argument("--sleep-sec", type=float, default=LONG_SLEEP_INTERVAL,
-                        help=f"Anti-bot sleep between requests (s). Default: {LONG_SLEEP_INTERVAL}")
+    parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Anti-bot sleep between requests (s). "
+                             f"Default: external_request_config JSON for {SERVICE}")
     parser.add_argument("--out-root", type=str, default=None,
                         help="Output root dir. Default: <project>/temps/<source>")
     parser.add_argument("--force", action="store_true",
@@ -191,6 +205,7 @@ def main() -> None:
         logger.info("=== Step 1/3: gov.cn 政策解读 title list ===")
         s1 = download_source(
             CONFIG, fetch_gov_json, parse_gov_items,
+            service=SERVICE,
             out_root=args.out_root,
             start_date=args.start_date,
             sleep_sec=args.sleep_sec,

@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.stream.cnindex.price",
+    "request_type": "page",
+    "resource_type": 0,
+    "sleep_sec": 20,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "CNIndex streaming requests; chunked loop sleeps 5s between chunks; retry path random_sleep(20).",
+    "source_ref": "downloads/stream/cnindex/price/__main__.py; downloads/stream/cnindex/price/_cnindex_api.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

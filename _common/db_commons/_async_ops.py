@@ -54,6 +54,30 @@ DEFAULT_MAX_REPLICA_LAG_MB = 4096.0
 # disables (hot paths opt out explicitly).
 DEFAULT_CHUNK_PAUSE_S = 0.1
 
+# Escalation for LARGE bulk writes: a force rebuild / backfill / schema
+# migration whose write reaches LARGE_BULK_CHUNKS commit chunks holds the
+# disk fsync-bound for many minutes, where the 0.1s default gap is too
+# thin to keep the write disk (and the replica replay) cool. Such writes
+# pause LARGE_BULK_PAUSE_S per chunk instead — unless the caller passed
+# an explicit chunk_pause_s (their explicit value wins, incl. None).
+LARGE_BULK_CHUNKS = 20
+LARGE_BULK_PAUSE_S = 3.0
+
+
+def resolve_chunk_pause_s(
+    n_chunks: int, chunk_pause_s: float | None,
+) -> float | None:
+    """The between-chunk cool-down for one write of ``n_chunks`` chunks.
+
+    The caller's explicit ``chunk_pause_s`` wins; the DEFAULT escalates
+    to ``LARGE_BULK_PAUSE_S`` (3s) once the write is LARGE (>=
+    ``LARGE_BULK_CHUNKS`` commit chunks) — the disk-duty-cycle relief
+    for large bulk writes (force rebuilds, backfills, migrations).
+    """
+    if chunk_pause_s != DEFAULT_CHUNK_PAUSE_S:
+        return chunk_pause_s
+    return LARGE_BULK_PAUSE_S if n_chunks >= LARGE_BULK_CHUNKS else chunk_pause_s
+
 
 async def _wait_for_replica_lag_async(
     conn, max_lag_mb: float, poll_s: float = 2.0,
@@ -319,6 +343,7 @@ async def bulk_upsert_async(
     # keeps legacy flat row-count slices.
     effective_key = _resolve_partition_key(rows[0], key_columns, partition_key)
     commit_chunks = _build_commit_chunks(rows, effective_key, commit_chunk_rows)
+    pause_s = resolve_chunk_pause_s(len(commit_chunks), chunk_pause_s)
 
     try:
         for chunk in commit_chunks:
@@ -327,7 +352,7 @@ async def bulk_upsert_async(
             # the primary does not pile WAL up faster than the replica
             # can replay it.
             await _throttle_between_chunks_async(
-                conn, max_replica_lag_mb, chunk_pause_s)
+                conn, max_replica_lag_mb, pause_s)
             # Dedup by PK within the chunk (last occurrence wins). Rows
             # sharing a PK inside one executemany batch would otherwise
             # abort the whole chunk with "ON CONFLICT DO UPDATE command
@@ -605,10 +630,11 @@ async def chunked_dml_by_key_async(
     if not weighted_keys:
         return 0
     chunks = _chunk_keys_by_weight(weighted_keys, weight_target)
+    pause_s = resolve_chunk_pause_s(len(chunks), chunk_pause_s)
     total = 0
     for chunk in chunks:
         await _throttle_between_chunks_async(
-            conn, max_replica_lag_mb, chunk_pause_s)
+            conn, max_replica_lag_mb, pause_s)
         async with conn.transaction():
             for entry in statements:
                 sql, key_clause = entry[0], entry[1]
@@ -701,10 +727,12 @@ async def chunked_purge_async(
     if not weight_rows:
         return 0
     weighted = [(r["k"], r["n"]) for r in weight_rows]
+    purge_chunks = _chunk_keys_by_weight(weighted, weight_target)
+    pause_s = resolve_chunk_pause_s(len(purge_chunks), chunk_pause_s)
     total = 0
-    for chunk in _chunk_keys_by_weight(weighted, weight_target):
+    for chunk in purge_chunks:
         await _throttle_between_chunks_async(
-            conn, max_replica_lag_mb, chunk_pause_s)
+            conn, max_replica_lag_mb, pause_s)
         status = await conn.execute(
             f"DELETE FROM {from_clause}{alias} WHERE {where_sql} "
             f"AND {key_column} = ANY(${len(params) + 1}::text[])",

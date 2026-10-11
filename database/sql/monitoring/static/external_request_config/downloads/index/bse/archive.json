@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.index.bse.archive",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 3,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": false,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "BSE index kline (www.bse.cn); no fingerprint rotation.",
+    "source_ref": "downloads/index/bse/archive/runner.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

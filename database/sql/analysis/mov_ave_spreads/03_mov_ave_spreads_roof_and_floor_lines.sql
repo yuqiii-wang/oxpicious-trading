@@ -8,7 +8,7 @@
 -- below; also remove the stale analysis_identity row so the registration
 -- starts clean. The 2026-10 rename drops the legacy table name too
 -- (mov_ave_spreads_detail_ohlc) — the data is derived and is fully
--- recomputed by the next analyze.mov_ave_spread run (the incremental
+-- recomputed by the next analysis.mov_ave_spread run (the incremental
 -- missing-date check sees every date missing after the DROP). The same
 -- 2026-10 rework SPLIT change/days_since_last_extreme (the move since
 -- the latest-dated of the four anchors) into the per-side
@@ -81,12 +81,12 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_ohlc';
 --  rows written by the 10% rule must be recomputed via a --force
 --  rebuild of the OHLC step (find_ohlc_repair_dates cannot detect
 --  them).
---  Populated by the internal OHLC step of `analyze.mov_ave_spread`
+--  Populated by the internal OHLC step of `analysis.mov_ave_spread`
 --  (see ohlc.py). Reuses the same source DataFrame as the parent
 --  pipeline — no second DB round-trip.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_spreads_roof_and_floor_lines (
-    sec_type          TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    sec_type          SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code              TEXT         NOT NULL,
     date              DATE         NOT NULL,
 
@@ -122,7 +122,7 @@ SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_roof_and_floor
 -- columns collapse into a single generic *_over_period column set keyed by
 -- `period` ∈ {20,60,120,255,500,750,1275} trading days.
 COMMENT ON TABLE  analysis.mov_ave_spreads_roof_and_floor_lines              IS 'Roof/floor anchor detail, renamed 2026-10 from mov_ave_spreads_detail_ohlc (LONG format): one row per (code, sec_type, date, period) with today_close + rolling-window anchors per period ∈ {20,60,120,255,500,750,1275} trading days. HALF-SPLIT 1st ANCHORS + DYNAMIC 2nd RANGE: the period window [date-period+1, date] is cut in half — h = L // 2 in trading-day positions (for odd L the 2nd half gets the extra day). 1st anchors (high_over_period/low_over_period): the MAXIMUM/MINIMUM valid CLOSE of the 1st half (ties -> earliest date; value = anchor date close). 2nd anchors (high_2nd_over_period/low_2nd_over_period): the MAXIMUM/MINIMUM valid CLOSE found in [1st_anchor_position + gap, window_end] where gap = ceil(0.20*period) with a 20-trading-day floor for periods >= 60 (period 20 keeps the pure 20% gap) — the 2nd anchor is NOT confined to the 2nd half. The time-distance gap is enforced CONSTRUCTIVELY by shifting the 2nd anchor search range, guaranteeing |sec_pos - top_pos| >= gap wherever both exist. value = anchor date INTRADAY high/low. NaN closes are skipped; a half with no valid close NULLs its 1st anchor; when the 1st anchor is too close to the window end (top + gap > window_end), only the 2nd anchor is NULLed while the 1st stays valid. 2nd anchor dates are always strictly after the 1st anchor date. DATE columns record the anchor dates. change/days_since_last_high measure the move since the LAST high anchor (the later-dated of the two high anchors — the 2nd whenever present, else the 1st) and change/days_since_last_low the mirror on the low side; sign indicates growth or drop (negative = below that side''s anchor, positive = above it). sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_lines.sec_type     IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_lines.sec_type     IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_lines.code        IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_lines.date        IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_lines.today_close IS 'Close price on `date` (COALESCE(adj_close, close) for ETFs; close for index/stock). NOT NULL.';

@@ -2,7 +2,7 @@
 
 Consolidates two patterns that share the ``groupby(keys)[col].diff(N)``
 / ``groupby(keys)[col].shift(N)`` shape and were previously inlined
-in analyze.mov_ave_spread:
+in analysis.mov_ave_spread:
 
   - ``grouped_diff``:  compute groupby().diff(periods) for one or more
     columns. Used by mov_ave_spread.helpers.compute_slopes_curvatures

@@ -1,0 +1,29 @@
+{
+  "000048": {
+    "name": "责任指数",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_RESPONSIBILITY",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_RESPONSIBILITY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_ESG_RESPONSIBILITY": {
+    "name": "责任综合指数",
+    "exchange": null,
+    "sector_id": "ESG",
+    "industry_id": "ESG_RESPONSIBILITY",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_RESPONSIBILITY"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

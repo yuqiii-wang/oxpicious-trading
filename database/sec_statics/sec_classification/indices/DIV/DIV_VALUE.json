@@ -1,0 +1,84 @@
+{
+  "930839": {
+    "name": "港股通高息精选",
+    "exchange": "HK",
+    "sector_id": "DIV",
+    "industry_id": "DIV_VALUE",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_VALUE"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_HK"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932305": {
+    "name": "智选高股息",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_VALUE",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_DIV_VALUE": {
+    "name": "红利价值/高息综合指数",
+    "exchange": null,
+    "sector_id": "DIV",
+    "industry_id": "DIV_VALUE",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  },
+  "H30270": {
+    "name": "红利价值",
+    "exchange": "HK",
+    "sector_id": "DIV",
+    "industry_id": "DIV_VALUE",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_VALUE"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H30366": {
+    "name": "高息策略",
+    "exchange": "HK",
+    "sector_id": "DIV",
+    "industry_id": "DIV_VALUE",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

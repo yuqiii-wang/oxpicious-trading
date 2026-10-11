@@ -54,11 +54,12 @@ Architecture (split across this package):
 
 Anti-bot: reuses safe_get(), build_headers_with_referer(), random_sleep,
 HostStatusTracker and build_default_session() from _download_commons.py.
-Cooldown: per-source anti-bot sleep between fetches (jittered ±50%) —
-A (akshare/Sina) uses LONG_SLEEP_INTERVAL (90s); C/D (East Money push2his /
-push2) use VERY_LONG_SLEEP_INTERVAL (300s); B (szse fallback) keeps
---interval (DEFAULT_SLEEP_SEC). NO_ADVANCE_BACKOFF_SEC (60s) when no stock
-advanced.
+Cooldown: per-source anti-bot sleep between fetches (jittered ±50%),
+resolved from the service's external_request_config JSON rows (one row per
+source) — A (akshare/Sina) row source_a_sina (90s); C/D (East Money
+push2his / push2) rows source_c_em_hist / source_d_em_quote (300s); B (szse
+fallback) keeps --interval (row source_b_szse poll_interval_sec, 20s).
+NO_ADVANCE_BACKOFF_SEC (60s) when no stock advanced.
 
 Termination: Ctrl-C cancels all async workers (state.stop + task.cancel) and
 exits cleanly after reaping them; the finally block closes the DB and session.
@@ -86,13 +87,15 @@ import locale as _locale
 import sys
 import time as _time
 
-from downloads._common import DEFAULT_SLEEP_SEC, setup_logger
+from downloads._common import setup_logger
+from _common.service_heartbeat import register_service
 
 from ._constants import (
     COOLDOWN_A_SEC,
     COOLDOWN_C_SEC,
     COOLDOWN_D_SEC,
     DEFAULT_GROUPS,
+    SERVICE,
 )
 from ._stream import stream
 
@@ -130,9 +133,9 @@ def main() -> None:
                     "D=em_push2 %.0fs, B=szse fallback --interval)."
                     % (COOLDOWN_A_SEC, COOLDOWN_C_SEC, COOLDOWN_D_SEC)
     )
-    ap.add_argument("--interval", type=float, default=DEFAULT_SLEEP_SEC,
-                    help=f"Cooldown between fetches for worker B (szse) in seconds "
-                         f"(default {DEFAULT_SLEEP_SEC}).")
+    ap.add_argument("--interval", type=float, default=None,
+                    help="Cooldown between fetches for worker B (szse) in seconds "
+                         f"(default: external_request_config JSON for {SERVICE}).")
     ap.add_argument("--groups", type=int, default=DEFAULT_GROUPS,
                     help=f"Number of groups to split stocks into (default {DEFAULT_GROUPS}).")
     ap.add_argument("--once", action="store_true",
@@ -140,6 +143,10 @@ def main() -> None:
     args = ap.parse_args()
     logger.info("[startup] args parsed (interval=%.1f groups=%d once=%s) in %.2fs; calling asyncio.run(stream)...",
                 args.interval, args.groups, args.once, _time.time() - t_main)
+    # Liveness heartbeat for database/stream_watchdog.py — long-running
+    # mode only; --once exits before a beat would matter.
+    if not args.once:
+        register_service(SERVICE)
     try:
         asyncio.run(stream(
             poll_interval=args.interval,

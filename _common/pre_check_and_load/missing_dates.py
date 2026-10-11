@@ -1,4 +1,4 @@
-"""Missing-data detection for build and analyze scripts.
+"""Missing-data detection for build and analysis scripts.
 
 Two tiers of missing-data detection:
 
@@ -117,7 +117,7 @@ async def find_missing_analysis_dates(
     source_identity_tables: Sequence[str],
     *,
     date_column: str = "date",
-    sec_type: Optional[str] = None,
+    sec_type: Optional[str | int] = None,
 ) -> Set[datetime.date]:
     """Return the set of dates present in source identity tables but NOT
     yet in the analysis result table.
@@ -127,7 +127,7 @@ async def find_missing_analysis_dates(
     table; analysis scripts compare the dates already materialized in their
     result table against the UNION of dates across one or more source
     identity tables (e.g. stats.etf_identity + stats.index_identity for
-    analyze.mov_ave_spread).
+    analysis.mov_ave_spread).
 
     Args:
         conn: asyncpg connection.
@@ -136,14 +136,17 @@ async def find_missing_analysis_dates(
         source_identity_tables: list of stats schema identity tables whose
             UNION of ``date_column`` values forms the "expected" set.
         date_column: date column name (default "date").
-        sec_type: optional value for the ``sec_type`` column to scope the
-            existing-date query (analysis table only). Source identity tables
-            are NOT filtered (each table already represents one sec_type).
-            When omitted, all sec_types in the analysis table are combined
-            (legacy global behavior). Use this for multi-sec_type analysis
-            tables whose PK is (sec_type, code, date) -- without it, a date
-            populated for one sec_type would mask the same date being
-            missing for another sec_type.
+        sec_type: optional stored value of the target table's ``sec_type``
+            column to scope the existing-date query (analysis table only) —
+            the label string for TEXT tables, the stats.label_dim SMALLINT
+            code for SMALLINT-coded tables (the analysis.mov_ave* family).
+            Source identity tables are NOT filtered (each table already
+            represents one sec_type). When omitted, all sec_types in the
+            analysis table are combined (legacy global behavior). Use this
+            for multi-sec_type analysis tables whose PK is
+            (sec_type, code, date) -- without it, a date populated for one
+            sec_type would mask the same date being missing for another
+            sec_type.
 
     Returns:
         Set of ``datetime.date`` present in any source table but missing
@@ -206,10 +209,10 @@ async def filter_rows_to_missing_dates_async(
     this is effectively a no-op (returns all rows). The overhead is one
     ``SELECT DISTINCT date`` query per call.
 
-    Used by analyze.mov_ave_spread (detail) and
-    analyze.industry_sentiments (main table) to skip
+    Used by analysis.mov_ave_spread (detail) and
+    analysis.industry_sentiments (main table) to skip
     already-populated dates before bulk upsert (formerly also
-    analyze.sec_alloc_perf_attribution, migrated to builds.cross_stats).
+    analysis.sec_alloc_perf_attribution, migrated to builds.cross_stats).
 
     Args:
         conn: asyncpg connection.

@@ -1,16 +1,19 @@
 """DataPipeline — ABC base class for every build & analysis entry point.
 
 Template-method base that owns the runtime lifecycle previously
-copy-pasted across every ``__main__.py`` in builds/ and analyze/:
+copy-pasted across every ``__main__.py`` in builds/ and analysis/:
 
     1. ``bootstrap_runtime()``  resource pre-check (RAM/VRAM) → silence
        warnings → cudf.pandas import hook → UTF-8 stdout. MUST run before
        the first pandas import anywhere in the process.
     2. argparse                 parser built from :meth:`add_arguments`
        (+ :meth:`apply_args` post-parse validation/derivation).
-    3. ``print_build_header``   header from ``title`` + :meth:`header_fields`.
-    4. ``asyncio.run(amain())`` the pipeline (:meth:`run`) + wall time.
-    5. ``post_check()``         memory release + report — ALWAYS, even on
+    3. heartbeat registration   the process lands in monitor.* (liveness
+       beat thread + one service_audit run row) — see
+       :mod:`_common.service_heartbeat`.
+    4. ``print_build_header``   header from ``title`` + :meth:`header_fields`.
+    5. ``asyncio.run(amain())`` the pipeline (:meth:`run`) + wall time.
+    6. ``post_check()``         memory release + report — ALWAYS, even on
        exception / Ctrl-C / SystemExit.
 
 Subclasses declare metadata (``title`` / ``description``) and implement
@@ -45,6 +48,7 @@ from __future__ import annotations
 import abc
 import argparse
 import asyncio
+import sys
 import time
 import warnings
 
@@ -203,16 +207,35 @@ class DataPipeline(abc.ABC):
     def execute(self, argv: list[str] | None = None) -> None:
         """Synchronous entry point — replaces the old ``__main__`` block.
 
-        bootstrap → (parse argv unless args were preset) →
+        bootstrap → (parse argv unless args were preset) → register the
+        process heartbeat + run-audit row (monitor.*) →
         ``asyncio.run(amain())`` → ``post_check()`` in ``finally`` so the
         memory release + report also runs on exception / SystemExit /
-        Ctrl-C, exactly like the old wrapper.
+        Ctrl-C, exactly like the old wrapper. Registration happens AFTER
+        the parse so ``--help`` / bad-argv exits are not audited as runs,
+        and only on the real CLI path — programmatic composition calls
+        ``amain()`` directly and stays part of the PARENT's audit life.
         """
         bootstrap_runtime()
         if self.args is None:
             self.parse_argv(argv)
         else:
             self.apply_args()
+        # Lazy import: service_heartbeat pulls db_commons → pandas, which
+        # must stay behind the cudf hook bootstrap_runtime() installed.
+        # autoregister derives the service name from the ENTRY file
+        # (type(self).__module__ is just "__main__" for classes defined
+        # in __main__.py, so the class module carries no path).
+        from _common.service_heartbeat import autoregister
+
+        try:
+            autoregister()
+        except Exception as e:  # noqa: BLE001 — monitoring never kills a build
+            print(
+                f"[service_heartbeat] registration failed for "
+                f"{type(self).__module__}: {e}",
+                file=sys.stderr, flush=True,
+            )
         from _common.post_check import post_check
 
         try:

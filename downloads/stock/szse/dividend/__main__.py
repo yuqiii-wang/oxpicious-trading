@@ -21,8 +21,9 @@ Anti-bot (two layers):
      fingerprint rotation, random query param, sleep with jitter, 4xx host
      blocking detection). Same configuration as the SSE dividend module:
      ``rotate_browser_profile=True``, ``add_random_param=True``,
-     ``enable_host_tracking=True``, ``sleep_jitter=0.3``, base sleep
-     ``SUPER_LONG_SLEEP_INTERVAL`` (600s).
+     ``enable_host_tracking=True``; pacing (sleep/jitter/timeouts) resolves
+     from the service's external_request_config JSON row (600s base sleep,
+     matching the old ``SUPER_LONG_SLEEP_INTERVAL`` cadence).
 
 Response fields (cninfo p_sysapi1139 record):
   F018D — 实施方案公告日期     (announcement date, YYYY-MM-DD)
@@ -82,6 +83,7 @@ import argparse
 import base64
 import csv
 import time
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -91,18 +93,17 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 from downloads._common import (
-    DEFAULT_TIMEOUT,
-    SUPER_LONG_SLEEP_INTERVAL,
-    MIN_VALID_BYTES,
-    AntiBotConfig,
     AntiBotProxy,
     COMMON_BASE_HEADERS,
+    antibot_config_for,
     is_valid_file,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 
 # --- Endpoint constants -----------------------------------------------------
+SERVICE = "downloads.stock.szse.dividend"
 CNINFO_DIVIDEND_URL = "https://webapi.cninfo.com.cn/api/sysapi/p_sysapi1139"
 CNINFO_ORIGIN = "https://webapi.cninfo.com.cn"
 CNINFO_REFERER = "https://webapi.cninfo.com.cn/"
@@ -268,7 +269,6 @@ def _fetch_dividend(
         CNINFO_DIVIDEND_URL,
         params={"scode": scode},
         headers=headers,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[dividend {scode}]",
     )
@@ -417,7 +417,7 @@ def _load_all_szse_stocks_from_db(conn) -> List[Tuple[str, str]]:
 def download_szse_dividends(
     out_root: Optional[str] = None,
     *,
-    sleep_sec: float = SUPER_LONG_SLEEP_INTERVAL,
+    sleep_sec: Optional[float] = None,
     force: bool = False,
     session: Optional[requests.Session] = None,
     etf_filter: bool = True,
@@ -434,7 +434,8 @@ def download_szse_dividends(
 
     Anti-bot: cninfo mcode token (AES-128-CBC of timestamp, regenerated per
     request) + AntiBotProxy (browser fingerprint rotation, random param,
-    sleep with jitter, host blocking detection, base sleep 90s).
+    sleep with jitter, host blocking detection; pacing from the service's
+    external_request_config JSON row — 600s base sleep).
 
     Batch pause: after every ``batch_size`` successful dividend fetches
     (default 20), the downloader sleeps ``batch_pause_sec`` (default 70
@@ -510,17 +511,15 @@ def download_szse_dividends(
         len(stocks), today_suffix,
     )
 
-    # cninfo endpoint — quarterly cadence so we use the long 90s sleep.
-    # The mcode token is handled separately in _build_cninfo_headers();
-    # AntiBotProxy handles fingerprint rotation, random param, sleep, and
-    # host blocking.
-    dividend_proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        sleep_jitter=0.3,
-        rotate_browser_profile=True,
-        add_random_param=True,
-        enable_host_tracking=True,
-        timeout=DEFAULT_TIMEOUT,
+    # cninfo endpoint — quarterly cadence so it runs on the service's
+    # external_request_config row (600s base sleep). The mcode token is
+    # handled separately in _build_cninfo_headers(); AntiBotProxy handles
+    # fingerprint rotation, random param, sleep, and host blocking; an
+    # explicit *sleep_sec* argument overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = sleep_sec_for(SERVICE)
+    dividend_proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
     ))
 
     stocks_done = 0
@@ -628,7 +627,8 @@ if __name__ == "__main__":
                     "cninfo (webapi.cninfo.com.cn p_sysapi1139). Anti-bot: "
                     "AES-128-CBC mcode token (regenerated per request) + "
                     "AntiBotProxy (fingerprint rotation, random param, "
-                    "sleep jitter, host blocking, base sleep 90s). "
+                    "sleep jitter, host blocking; pacing from the service's "
+                    "external_request_config JSON, 600s base sleep). "
                     "Output: {code}_dividend_{YYYYMMDD}.csv under temps/szse_archive/. "
                     "Skips stocks with a local CSV whose mtime is within the "
                     "last 180 days or DB rows updated within the last 180 days."
@@ -660,6 +660,8 @@ if __name__ == "__main__":
              "batch pause entirely.",
     )
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_szse_dividends(
         force=args.force,
         etf_filter=not args.no_etf_filter,

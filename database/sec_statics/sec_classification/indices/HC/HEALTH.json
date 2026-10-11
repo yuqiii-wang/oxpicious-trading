@@ -1,0 +1,33 @@
+{
+  "931166": {
+    "name": "医药健康100",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "HEALTH",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "HEALTH"
+      },
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_HEALTH": {
+    "name": "健康综合指数",
+    "exchange": null,
+    "sector_id": "HC",
+    "industry_id": "HEALTH",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "HEALTH"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

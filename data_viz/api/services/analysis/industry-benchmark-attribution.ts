@@ -26,7 +26,7 @@ import type {
 //  shows the attribution bars for ONE selected industry at the clicked date.
 //
 //  Source: analysis.industry_attributions (built by
-//  analyze.industry_sentiments.attributions — truncate-then-recompute).
+//  analysis.industry_sentiments.attributions — truncate-then-recompute).
 // ----------------------------------------------------------------------------
 interface DbIndustryBenchmarkAttributionRow extends QueryResultRow {
   benchmark_code: string;

@@ -43,14 +43,13 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
-    AntiBotConfig,
     AntiBotProxy,
     HostStatusTracker,
     build_default_session,
     merge_browser_profile,
     setup_logger,
     random_sleep,
+    sleep_sec_for,
 )
 from downloads.stream.cnindex.price._cnindex_api import (
     CNINDEX_CODES,
@@ -68,9 +67,18 @@ from downloads.stream.cnindex.price._cnindex_api import (
     COL_PRECLOSE,
 )
 from _common.db_commons import bulk_upsert, get_db_connection
+from _common.service_heartbeat import register_service
 from _common._holidays_and_weekdays import is_trading_day
 
 logger = setup_logger("cnindex_stream")
+
+SERVICE = "downloads.stream.cnindex.price"
+
+# Inter-fetch anti-bot cooldown — resolved once at import from the service's
+# external_request_config JSON row (request_type "page", sleep_sec). The
+# proxy's internal sleep only fires on successful requests, so this explicit
+# sleep guarantees cadence after every fetch.
+SLEEP_SEC = sleep_sec_for(SERVICE, "page")
 
 # Scheduling time points (two fetch windows per trading day, post-close).
 FIRST_WINDOW_START = time(16, 0)    # 1st fetch: 16:00–16:30
@@ -356,7 +364,7 @@ def _fetch_codes(
         # Anti-bot sleep after EVERY fetch (every index must wait, including
         # the last one and even on failure — the proxy's internal sleep is
         # only applied on successful requests, so this guarantees cadence).
-        random_sleep(DEFAULT_SLEEP_SEC)
+        random_sleep(SLEEP_SEC)
 
     return n_ok, n_fail, n_total_bars
 
@@ -421,13 +429,15 @@ def stream(
         "[startup] cnindex streamer starting "
         "(windows: %s-%s & after %s, sleep=%.0fs, codes=%s)",
         FIRST_WINDOW_START, SECOND_WINDOW_START, SECOND_WINDOW_START,
-        DEFAULT_SLEEP_SEC, index_codes,
+        SLEEP_SEC, index_codes,
     )
 
     conn = get_db_connection()
     session = build_default_session(merge_browser_profile(CNINDEX_HEADERS))
     host_tracker = HostStatusTracker()
-    proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+    # Pacing resolves once at construction from the service's
+    # external_request_config JSON row (request_type "page").
+    proxy = AntiBotProxy(service=SERVICE, request_type="page")
 
     # Per-day state: reset at the start of each new day.
     current_biz_day: Optional[date] = None
@@ -558,6 +568,10 @@ def main():
         help="Fetch a single index code then exit (e.g. --code 399303).",
     )
     args = parser.parse_args()
+    # Liveness heartbeat for database/stream_watchdog.py — long-running
+    # mode only; the one-shot dev modes exit before a beat would matter.
+    if not args.once and not args.code:
+        register_service("downloads.stream.cnindex.price")
     stream(once=args.once, single_code=args.code)
 
 

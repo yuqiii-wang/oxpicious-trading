@@ -1,0 +1,523 @@
+{
+  "ruleset": "strategy",
+  "generic_penalty_sectors": [
+    "BROAD",
+    "REGION"
+  ],
+  "single_tag_sectors": [
+    "BROAD"
+  ],
+  "rules": [
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_SSE50",
+      "industry_label": "上证50",
+      "keywords": [
+        "上证50"
+      ],
+      "note": "Most-specific flagship series FIRST; generic board-level catch-alls (上证/中证/深证) LAST so a specific match wins on keyword length. BROAD tags are deduplicated to a single best (single_tag_sectors), so an index carries exactly ONE broad-market theme. is_broad_market is TRUE for any BROAD-primary index."
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_SSE180",
+      "industry_label": "上证180",
+      "keywords": [
+        "上证180"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_SSE380",
+      "industry_label": "上证380",
+      "keywords": [
+        "上证380"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_SSE",
+      "industry_label": "上证",
+      "keywords": [
+        "上证",
+        "沪综",
+        "综指",
+        "Ａ股",
+        "Ｂ股",
+        "沪市"
+      ],
+      "note": "Residual SSE series (上证指数, 上证580, …)."
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_CSI300",
+      "industry_label": "沪深300",
+      "keywords": [
+        "沪深300"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_CSI500",
+      "industry_label": "中证500",
+      "keywords": [
+        "中证500"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_CSI800",
+      "industry_label": "中证800",
+      "keywords": [
+        "中证800"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_CSI1000",
+      "industry_label": "中证1000",
+      "keywords": [
+        "中证1000"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_CSI2000",
+      "industry_label": "中证2000",
+      "keywords": [
+        "中证2000"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_CSI_A",
+      "industry_label": "中证A系列",
+      "keywords": [
+        "中证A股",
+        "中证A500",
+        "中证A50",
+        "中证A100"
+      ],
+      "note": "Newer CSI broad benchmarks (中证A股 / A500 / A50 / A100)."
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_TECH_INNOV",
+      "industry_label": "科技创新",
+      "keywords": [
+        "科技",
+        "创新100"
+      ],
+      "note": "Placed BEFORE the BROAD_CSI catch-all so 中证科技 resolves to 科技创新 (specific) rather than generic 中证."
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_CSI",
+      "industry_label": "中证",
+      "keywords": [
+        "中证",
+        "沪深",
+        "中国"
+      ],
+      "note": "Generic CSI residual catch-all. 中国 maps to 中证 because broad-market ETFs using 中国 (中国A50, 中国50) track CSI indices. Safe: BROAD carries the generic penalty, so any industry match always wins first."
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_GEM",
+      "industry_label": "创业板",
+      "keywords": [
+        "创业板",
+        "创业"
+      ],
+      "note": "创业 abbreviation: many names use 创业 without 板 (创业50, 创业蓝筹)."
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_SZSE",
+      "industry_label": "深证",
+      "keywords": [
+        "深证",
+        "深"
+      ],
+      "note": "深 single-char keyword catches 深100ETF, 深成ETF, 深成指A/B. Safe: BROAD carries the generic penalty, so any industry match always wins first."
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_STAR",
+      "industry_label": "科创",
+      "keywords": [
+        "科创"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_BSE",
+      "industry_label": "北证",
+      "keywords": [
+        "北证"
+      ]
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "benchmark_broadmarket",
+      "industry_label": "宽基基准",
+      "keywords": [],
+      "note": "EXPLICIT hand-authored tag — NOT auto-classified (empty keywords). Groups the flagship broad-market benchmark indices (000001 上证指数, 000016 上证50, 000688 科创50, 000300 沪深300) as a SECONDARY tag alongside each index's primary BROAD series."
+    },
+    {
+      "sector_id": "BROAD",
+      "sector_label": "宽基",
+      "industry_id": "BROAD_CNI",
+      "industry_label": "国证",
+      "keywords": [
+        "国证"
+      ],
+      "note": "国证 is a separate index provider from 中证; orphan ETFs (no CSV parent) fall back to this theme only when no real 国证 index matches their name."
+    },
+    {
+      "sector_id": "DIV",
+      "sector_label": "红利",
+      "industry_id": "DIV_LOW_VOL",
+      "industry_label": "红利低波",
+      "keywords": [
+        "红利低波",
+        "红利低波动"
+      ]
+    },
+    {
+      "sector_id": "DIV",
+      "sector_label": "红利",
+      "industry_id": "DIV_SOE",
+      "industry_label": "央企/国企红利",
+      "keywords": [
+        "央企红利",
+        "国企红利"
+      ]
+    },
+    {
+      "sector_id": "DIV",
+      "sector_label": "红利",
+      "industry_id": "DIV_QUALITY",
+      "industry_label": "红利质量",
+      "keywords": [
+        "红利质量"
+      ]
+    },
+    {
+      "sector_id": "DIV",
+      "sector_label": "红利",
+      "industry_id": "DIV_VALUE",
+      "industry_label": "红利价值/高息",
+      "keywords": [
+        "红利价值",
+        "高息策略",
+        "高息精选",
+        "高股息",
+        "高息"
+      ]
+    },
+    {
+      "sector_id": "DIV",
+      "sector_label": "红利",
+      "industry_id": "DIV_HK",
+      "industry_label": "港股红利",
+      "keywords": [
+        "港股通高股息",
+        "港股通高息",
+        "港股红利",
+        "香港红利",
+        "港股通央企红利"
+      ]
+    },
+    {
+      "sector_id": "DIV",
+      "sector_label": "红利",
+      "industry_id": "DIV_CASHFLOW",
+      "industry_label": "现金流",
+      "keywords": [
+        "自由现金流",
+        "现金流"
+      ],
+      "note": "Free cash flow is analytically related to dividends (high FCF enables payouts) but kept distinct from generic 红利. Placed BEFORE DIV_GENERAL so 现金流 wins over the catch-all keyword 红利 (中证现金流 must NOT match DIV_GENERAL)."
+    },
+    {
+      "sector_id": "DIV",
+      "sector_label": "红利",
+      "industry_id": "DIV_GENERAL",
+      "industry_label": "红利",
+      "keywords": [
+        "红利",
+        "股东回报"
+      ]
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "LEVERAGED",
+      "industry_label": "杠杆/反向",
+      "keywords": [
+        "两倍",
+        "反向",
+        "杠杆"
+      ]
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_THEMED",
+      "industry_label": "主题",
+      "keywords": [
+        "凤凰",
+        "精选市场",
+        "小康",
+        "新兴成指",
+        "结构调整",
+        "济安"
+      ],
+      "note": "Theme strategies not tied to a sector (凤凰, 精选市场, 小康, 新兴成指, 结构调整, 济安). DUPLICATE (sector, industry) key: the same key appears again later — both entries score with the LAST rule index, and a name matching both keeps the first by stable sort."
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_GROWTH",
+      "industry_label": "成长",
+      "keywords": [
+        "成长"
+      ]
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_LARGE",
+      "industry_label": "大盘",
+      "keywords": [
+        "大盘",
+        "超大盘",
+        "F60"
+      ]
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_MID_SMALL",
+      "industry_label": "中小盘",
+      "keywords": [
+        "中盘",
+        "小盘",
+        "中小",
+        "F120"
+      ],
+      "note": "Merged from former STRAT_MID (中盘) + STRAT_SMALL (小盘) — both are size strata below 大盘 and the distinction is rarely actionable."
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_MICRO",
+      "industry_label": "微小盘",
+      "keywords": [
+        "微盘",
+        "微小盘"
+      ]
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_VALUE",
+      "industry_label": "价值",
+      "keywords": [
+        "价值"
+      ],
+      "note": "Split from STRAT_FACTOR and placed BEFORE it so 价值 wins over the generic factor catch-all. 红利价值 still resolves to DIV/DIV_VALUE because the longer keyword 红利价值 out-scores 价值."
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_FUNDAMENTAL",
+      "industry_label": "基本面",
+      "keywords": [
+        "基本面",
+        "基本"
+      ],
+      "note": "Fundamental-weighted indices (基本面50 is a RAFI index weighted by revenue/cash flow/book value/dividends). Split from STRAT_FACTOR and pulled out of STRAT_LARGE."
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_FACTOR",
+      "industry_label": "因子",
+      "keywords": [
+        "质量",
+        "低波",
+        "等权",
+        "研发创新",
+        "战略新兴",
+        "核心竞争力",
+        "公司治理",
+        "新动能",
+        "SNLV",
+        "治理",
+        "基石",
+        "蓝筹",
+        "量化",
+        "贝塔",
+        "分层",
+        "动态",
+        "稳定",
+        "波动",
+        "高贝",
+        "低贝",
+        "非周期",
+        "市值",
+        "AH"
+      ]
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_THEMED",
+      "industry_label": "主题",
+      "keywords": [
+        "一带",
+        "带路",
+        "一带一路",
+        "改革",
+        "重组",
+        "互联",
+        "百发"
+      ],
+      "note": "Belt and Road / 改革 / 重组 theme strategies not tied to a sector. DUPLICATE (sector, industry) key of the earlier STRAT_THEMED entry."
+    },
+    {
+      "sector_id": "STRATEGY",
+      "sector_label": "策略",
+      "industry_id": "STRAT_BRAND",
+      "industry_label": "品牌",
+      "keywords": [
+        "央视",
+        "百强企业",
+        "品牌"
+      ],
+      "note": "Brand-licensed strategy indices (央视500, 百强企业, 品牌工程) — not industry-specific."
+    },
+    {
+      "sector_id": "SOE",
+      "sector_label": "央企/国企",
+      "industry_id": "SOE_THEME",
+      "industry_label": "央企/国企",
+      "keywords": [
+        "央企",
+        "国企",
+        "国资",
+        "民企",
+        "内地国有"
+      ]
+    },
+    {
+      "sector_id": "REGION",
+      "sector_label": "区域概念",
+      "industry_id": "REGION_CN",
+      "industry_label": "区域",
+      "keywords": [
+        "长三角",
+        "G60",
+        "张江",
+        "大湾区",
+        "成渝",
+        "杭州湾区",
+        "湖北",
+        "海洋经济",
+        "丝路",
+        "新丝路"
+      ]
+    },
+    {
+      "sector_id": "REGION",
+      "sector_label": "区域概念",
+      "industry_id": "REGION_HK_LINK",
+      "industry_label": "沪港深/港股通",
+      "keywords": [
+        "沪港深",
+        "港股通",
+        "港股",
+        "香港",
+        "恒生",
+        "恒生中国",
+        "恒中企",
+        "中华",
+        "股通"
+      ]
+    },
+    {
+      "sector_id": "OVERSEAS",
+      "sector_label": "海外",
+      "industry_id": "OVERSEAS_US",
+      "industry_label": "美国",
+      "keywords": [
+        "纳斯达克",
+        "纳指",
+        "标普",
+        "美国",
+        "道琼斯"
+      ],
+      "note": "Cross-border market-access classification. Sector ETFs tracking a foreign sector index (标普医药, 标普油气, 标普消费) keep their INDUSTRY classification primary; only pure market-access ETFs fall through to OVERSEAS. Keywords are intentionally specific (no 全球/海外/美股/亚太) to avoid false-matching stock company names (戎美股份→美股, 亚太实业→亚太); 亚太精选 instead of 亚太 for the same reason."
+    },
+    {
+      "sector_id": "OVERSEAS",
+      "sector_label": "海外",
+      "industry_id": "OVERSEAS_JAPAN",
+      "industry_label": "日本",
+      "keywords": [
+        "日经",
+        "日本"
+      ]
+    },
+    {
+      "sector_id": "OVERSEAS",
+      "sector_label": "海外",
+      "industry_id": "OVERSEAS_EUROPE",
+      "industry_label": "欧洲",
+      "keywords": [
+        "德国",
+        "法国",
+        "欧洲"
+      ]
+    },
+    {
+      "sector_id": "OVERSEAS",
+      "sector_label": "海外",
+      "industry_id": "OVERSEAS_EMERGING",
+      "industry_label": "新兴市场",
+      "keywords": [
+        "巴西",
+        "沙特",
+        "印度",
+        "越南"
+      ]
+    },
+    {
+      "sector_id": "OVERSEAS",
+      "sector_label": "海外",
+      "industry_id": "OVERSEAS_ASIA",
+      "industry_label": "亚太",
+      "keywords": [
+        "亚太精选"
+      ]
+    }
+  ]
+}

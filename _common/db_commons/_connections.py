@@ -141,7 +141,7 @@ async def get_db_pool_async(
             starving other clients.
         max_queries: asyncpg recycles a connection after this many
             queries to defend against memory leaks in long-lived
-            sessions. 50K is high enough that a single analyze run will
+            sessions. 50K is high enough that a single analysis run will
             not trigger recycling mid-way (which would lose the prepared
             statement cache).
 

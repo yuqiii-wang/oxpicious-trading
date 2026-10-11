@@ -1,0 +1,16 @@
+{
+  "DUMMY_NAT_GAS": {
+    "name": "天然气综合指数",
+    "exchange": null,
+    "sector_id": "ENG",
+    "industry_id": "NAT_GAS",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "NAT_GAS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

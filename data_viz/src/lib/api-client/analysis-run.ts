@@ -2,7 +2,7 @@
 //  Analysis per-security run trigger + status.
 //
 //  POST /api/analysis/run-analysis spawns
-//  `python -m analyze.<module> --sec-type <st> --code <code>` (via the
+//  `python -m analysis.<module> --sec-type <st> --code <code>` (via the
 //  shared py-runner) and waits for it to finish. Used by the per-panel
 //  "build this security" refresh button when a security has no analysis
 //  rows (e.g. it was outside the active universe when the analysis last
@@ -45,7 +45,7 @@ export function analysisRunTag(
   return `analysis-run:${module}:${secType}:${code}`;
 }
 
-/** Trigger one single-security recompute run of `python -m analyze.<module>`.
+/** Trigger one single-security recompute run of `python -m analysis.<module>`.
  *
  *  Resolves when the run finishes (or is deduped — `already_running`).
  *  Never throws; failures surface as `{ success: false, stderr_tail }`

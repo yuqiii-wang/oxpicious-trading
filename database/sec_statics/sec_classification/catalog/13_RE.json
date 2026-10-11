@@ -1,0 +1,9 @@
+{
+  "label": "地产",
+  "industries": {
+    "RE_REAL_ESTATE": {
+      "label": "地产",
+      "slug": "re_real_estate"
+    }
+  }
+}

@@ -4,7 +4,7 @@
  * Serves the Dividends page's "Dividend Deliveries" table: the rolling
  * 5-year (1-year stride) dividend delivery audit (analysis.
  * dividend_deliveries — one row per annual window anchor, etf + stock),
- * built by analyze.pe_and_dividends --metrics deliveries. Per-event
+ * built by analysis.pe_and_dividends --metrics deliveries. Per-event
  * yield (D/close at the ex-date), eps (close/pe) and the stability flag
  * (delivered within ±20 days of the same date one year earlier)
  * aggregated over each window.
@@ -15,6 +15,7 @@
  * page's TABLE-side data source only.
  */
 import { queryRows, formatDate } from "../../lib/db.js";
+import { LABEL_CODE } from "../label-codes.js";
 import { codeVariants } from "../../lib/classify-etf.js";
 import type {
   PeSecType,
@@ -71,7 +72,7 @@ export async function listDividendDeliveries(
      WHERE sec_type = $1 AND code = ANY($2::text[])
      ORDER BY window_end_date DESC
     `,
-    [st, codeVariants(code)],
+    [LABEL_CODE.sec_type[st], codeVariants(code)],
   );
   return {
     code,

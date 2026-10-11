@@ -1,0 +1,37 @@
+{
+  "931866": {
+    "name": "中证机床",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "MACHINE_TOOL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "MACHINE_TOOL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_MACHINE_TOOL": {
+    "name": "机床综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "MACHINE_TOOL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "MACHINE_TOOL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

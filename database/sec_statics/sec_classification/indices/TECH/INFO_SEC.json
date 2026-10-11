@@ -1,0 +1,50 @@
+{
+  "399994": {
+    "name": "信息安全",
+    "exchange": "SZ",
+    "sector_id": "TECH",
+    "industry_id": "INFO_SEC",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INFO_SEC"
+      },
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMPUTER"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931247": {
+    "name": "中证信创",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "INFO_SEC",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INFO_SEC"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_INFO_SEC": {
+    "name": "信息安全综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "INFO_SEC",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INFO_SEC"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

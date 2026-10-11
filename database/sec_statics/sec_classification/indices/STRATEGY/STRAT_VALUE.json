@@ -1,0 +1,215 @@
+{
+  "000029": {
+    "name": "180价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000031": {
+    "name": "180R价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000058": {
+    "name": "全指价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000060": {
+    "name": "全R价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000118": {
+    "name": "380价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000120": {
+    "name": "380R价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000919": {
+    "name": "300价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931052": {
+    "name": "国信价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931586": {
+    "name": "300价值稳健",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931587": {
+    "name": "500价值稳健",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931588": {
+    "name": "1000价值稳健",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "950228": {
+    "name": "智选科创价值50",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "950333": {
+    "name": "智选创新价值",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_STRAT_VALUE": {
+    "name": "价值综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  },
+  "H30352": {
+    "name": "500价值",
+    "exchange": "HK",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H30356": {
+    "name": "800价值",
+    "exchange": "HK",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_VALUE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_VALUE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

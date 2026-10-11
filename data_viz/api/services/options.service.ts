@@ -11,6 +11,7 @@
 import { queryRows, queryReadWithSession, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, codeVariants } from "../lib/classify-etf.js";
+import { decodeLabel, LABEL_CODE } from "./label-codes.js";
 import type {
   OptionsRow,
   OptionsUnderlying,
@@ -98,7 +99,8 @@ interface DbOptionsRow extends QueryResultRow {
   contract_name: string;
   underlying_code: string;
   underlying_name: string;
-  option_type: string;
+  /** stats.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT). */
+  option_type: number;
   expiry_month: string;
   expiry_date: Date | string;
   days_to_expiry: number;
@@ -153,7 +155,7 @@ function transformOptionsRow(r: DbOptionsRow): OptionsRow {
     contract_name: r.contract_name,
     underlying_code: r.underlying_code,
     underlying_name: r.underlying_name,
-    option_type: (String(r.option_type).toUpperCase() === "PUT" ? "PUT" : "CALL") as "CALL" | "PUT",
+    option_type: (decodeLabel("option_type", r.option_type) ?? "CALL") as "CALL" | "PUT",
     expiry_month: r.expiry_month ?? "",
     expiry_date: formatDate(r.expiry_date),
     days_to_expiry: toNum(r.days_to_expiry) ?? 0,
@@ -384,7 +386,8 @@ export async function getOptionsCombined(
 
 interface DbOptionsWallRow extends QueryResultRow {
   date: Date | string;
-  option_type: string;
+  /** stats.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT). */
+  option_type: number;
   underlying_code: string;
   expiry_date: Date | string;
   wall_type: string;
@@ -436,7 +439,7 @@ export async function getOptionsWalls(
   const rows = await queryRows<DbOptionsWallRow>(sql, params);
   const transformed: OptionsWallRow[] = rows.map((r) => ({
     date: formatDate(r.date),
-    option_type: (String(r.option_type).toUpperCase() === "PUT" ? "PUT" : "CALL") as "PUT" | "CALL",
+    option_type: (decodeLabel("option_type", r.option_type) ?? "CALL") as "PUT" | "CALL",
     underlying_code: r.underlying_code,
     expiry_date: formatDate(r.expiry_date),
     wall_type: "zone" as const,
@@ -1143,13 +1146,13 @@ export async function getOptionsSkewDaily(
              MAX(st.underlying_close) AS spot,
              (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(st.moneyness_ratio - 1.0) NULLS LAST, t.contract_code))[1] AS atm_iv,
              (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(g.delta - 0.25), t.contract_code)
-               FILTER (WHERE t.option_type = 'CALL' AND g.delta > 0 AND g.delta < 0.5))[1] AS call25_iv,
+               FILTER (WHERE t.option_type = ${LABEL_CODE.option_type.CALL} AND g.delta > 0 AND g.delta < 0.5))[1] AS call25_iv,
              (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(g.delta + 0.25), t.contract_code)
-               FILTER (WHERE t.option_type = 'PUT' AND g.delta < 0 AND g.delta > -0.5))[1] AS put25_iv,
+               FILTER (WHERE t.option_type = ${LABEL_CODE.option_type.PUT} AND g.delta < 0 AND g.delta > -0.5))[1] AS put25_iv,
              (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(g.delta - 0.10), t.contract_code)
-               FILTER (WHERE t.option_type = 'CALL' AND g.delta > 0 AND g.delta < 0.5))[1] AS call10_iv,
+               FILTER (WHERE t.option_type = ${LABEL_CODE.option_type.CALL} AND g.delta > 0 AND g.delta < 0.5))[1] AS call10_iv,
              (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(g.delta + 0.10), t.contract_code)
-               FILTER (WHERE t.option_type = 'PUT' AND g.delta < 0 AND g.delta > -0.5))[1] AS put10_iv
+               FILTER (WHERE t.option_type = ${LABEL_CODE.option_type.PUT} AND g.delta < 0 AND g.delta > -0.5))[1] AS put10_iv
       FROM stats.options_terms t
       JOIN stats.options_greeks g ON g.contract_code = t.contract_code AND g.date = t.date
       JOIN stats.options_settlement st ON st.contract_code = t.contract_code AND st.date = t.date
@@ -1194,8 +1197,8 @@ export async function getOptionsOiDaily(
       spot_close: string | number | null;
     }>(`
       SELECT t.date, t.expiry_date,
-             SUM(CASE WHEN t.option_type = 'CALL' THEN vo.open_interest ELSE 0 END) AS call_oi,
-             SUM(CASE WHEN t.option_type = 'PUT'  THEN vo.open_interest ELSE 0 END) AS put_oi,
+             SUM(CASE WHEN t.option_type = ${LABEL_CODE.option_type.CALL} THEN vo.open_interest ELSE 0 END) AS call_oi,
+             SUM(CASE WHEN t.option_type = ${LABEL_CODE.option_type.PUT}  THEN vo.open_interest ELSE 0 END) AS put_oi,
              MAX(MAX(st.underlying_close)) OVER (PARTITION BY t.date) AS spot_close
       FROM stats.options_terms t
       JOIN stats.options_volume_oi vo ON vo.contract_code = t.contract_code AND vo.date = t.date
@@ -1245,8 +1248,8 @@ export async function getOptionsOiCells(
     call_oi: string | number; put_oi: string | number;
   }>(`
     SELECT t.date, t.expiry_date, s.strike_price,
-           SUM(CASE WHEN t.option_type = 'CALL' THEN vo.open_interest ELSE 0 END) AS call_oi,
-           SUM(CASE WHEN t.option_type = 'PUT'  THEN vo.open_interest ELSE 0 END) AS put_oi
+           SUM(CASE WHEN t.option_type = ${LABEL_CODE.option_type.CALL} THEN vo.open_interest ELSE 0 END) AS call_oi,
+           SUM(CASE WHEN t.option_type = ${LABEL_CODE.option_type.PUT}  THEN vo.open_interest ELSE 0 END) AS put_oi
     FROM stats.options_terms t
     JOIN stats.options_strike s ON s.contract_code = t.contract_code AND s.date = t.date
     JOIN stats.options_volume_oi vo ON vo.contract_code = t.contract_code AND vo.date = t.date
@@ -1280,7 +1283,8 @@ export async function getOptionsExpiryMeta(
     const where = termsWhere(q, params);
     where.push(`t.date <= t.expiry_date`);
     const markers = await queryRows<QueryResultRow & {
-      contract_code: string; contract_name: string; option_type: string;
+      contract_code: string; contract_name: string; /** label_dim 'option_type' code (0 CALL / 1 PUT). */
+      option_type: number;
       expiry_date: Date | string; last_date: Date | string; open_interest: string | number;
     }>(`
       SELECT DISTINCT ON (t.contract_code)
@@ -1298,7 +1302,7 @@ export async function getOptionsExpiryMeta(
       markers: markers.map((r) => ({
         contract_code: r.contract_code,
         contract_name: r.contract_name,
-        option_type: (String(r.option_type).toUpperCase() === "PUT" ? "PUT" : "CALL") as "CALL" | "PUT",
+        option_type: (decodeLabel("option_type", r.option_type) ?? "CALL") as "CALL" | "PUT",
         expiry_date: formatDate(r.expiry_date),
         last_date: formatDate(r.last_date),
         open_interest: toNum(r.open_interest) ?? 0,
@@ -1310,7 +1314,7 @@ export async function getOptionsExpiryMeta(
 /**
  * Server-side oi_moneyness skew series — read from the materialized
  * analysis.options_moneyness_series / options_spot_daily tables (built by
- * ``python -m analyze.options`` PIPELINE 8), which replicate the former
+ * ``python -m analysis.options`` PIPELINE 8), which replicate the former
  * LIVE compute's semantics exactly:
  *   • valid rows: expiry_date >= date AND 0 < implied_vol < 5
  *   • weights: GREATEST(open_interest, 1)

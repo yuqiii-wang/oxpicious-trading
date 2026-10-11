@@ -20,7 +20,7 @@ import type {
 //  (multi-industry mode only).
 //
 //  Source: analysis.industry_correlations (built by the correlations step
-//  of analyze.industry_sentiments from stats.industry_basic_stats.mean_close).
+//  of analysis.industry_sentiments from stats.industry_basic_stats.mean_close).
 //  corr_ma{W}_{W}d = Pearson correlation between the two industries' MA-W
 //  curves over the W trading days starting on start_date; window starts sit
 //  on the calendar grid every `interval` (default 20) trading days.

@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.stock.szse.dividend",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 600,
+    "sleep_jitter": 0.3,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "cninfo SZSE dividends; batch pause of 4200s (70min) after every 20 successful fetches.",
+    "source_ref": "downloads/stock/szse/dividend/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

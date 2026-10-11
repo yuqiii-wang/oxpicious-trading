@@ -1,0 +1,55 @@
+{
+  "931151": {
+    "name": "光伏产业",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "PV",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "PV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931528": {
+    "name": "光伏设备行业",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "PV",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "PV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931798": {
+    "name": "光伏龙头30",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "PV",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "PV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_PV": {
+    "name": "光伏综合指数",
+    "exchange": null,
+    "sector_id": "NEV",
+    "industry_id": "PV",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "PV"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

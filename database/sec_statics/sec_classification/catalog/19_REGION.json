@@ -1,0 +1,13 @@
+{
+  "label": "区域概念",
+  "industries": {
+    "REGION_CN": {
+      "label": "区域",
+      "slug": "region_cn"
+    },
+    "REGION_HK_LINK": {
+      "label": "沪港深/港股通",
+      "slug": "region_hk_link"
+    }
+  }
+}

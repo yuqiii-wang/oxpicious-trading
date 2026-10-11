@@ -1,7 +1,7 @@
 """Pair-grain benchmark-close pivot (wide format).
 
 Pre-computed ONCE per call; reused by all subjects (avoids per-subject
-stack+reset_index). Ported from analyze.sec_alloc_perf_attribution.compute._pivots.
+stack+reset_index). Ported from analysis.sec_alloc_perf_attribution.compute._pivots.
 (The ETF-amount wide/long pivots were consolidated away 2026-09-07
 together with the cross_stats ETF amount columns.)
 """

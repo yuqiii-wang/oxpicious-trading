@@ -1,0 +1,9 @@
+{
+  "service": "builds.stock.dividends",
+  "max_parallel": 1,
+  "freq": "semiannually",
+  "schedule": "twice-a-year pass (cron-scheduled; no in-script date guard)",
+  "notes": null,
+  "source_ref": "scripts/builds_semiannually.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

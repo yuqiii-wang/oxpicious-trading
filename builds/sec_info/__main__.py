@@ -4,7 +4,7 @@ Loads three DB targets from the SZSE ETF quarterly report CSVs
 (temps/szse_etf_reports/<code>/<code>_<YYYYQn>_*.csv) plus the curated
 sec_owners.json:
 
-  1. stats.sec_owners  — truncate + rebuild from _common/sec_statics/sec_owners.json
+  1. stats.sec_owners  — truncate + rebuild from database/sec_statics/sec_owners.json
                          (migrated here from builds.classification).
   2. stats.sec_info    — one row per fund code, static attributes from the
                          LATEST identify.csv (latest-value snapshot).

@@ -1,0 +1,341 @@
+{
+  "000019": {
+    "name": "治理指数",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000021": {
+    "name": "180治理",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000050": {
+    "name": "50等权",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000051": {
+    "name": "180等权",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000064": {
+    "name": "非周期",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000093": {
+    "name": "180分层",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000115": {
+    "name": "380等权",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000123": {
+    "name": "180动态",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000125": {
+    "name": "180稳定",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000129": {
+    "name": "180波动",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000130": {
+    "name": "380波动",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000135": {
+    "name": "180高贝",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000136": {
+    "name": "180低贝",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000137": {
+    "name": "380高贝",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000138": {
+    "name": "380低贝",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000141": {
+    "name": "380动态",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000142": {
+    "name": "380稳定",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000155": {
+    "name": "市值百强",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000170": {
+    "name": "50AH优选",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000982": {
+    "name": "500等权",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930782": {
+    "name": "500SNLV",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930927": {
+    "name": "CR基石",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930928": {
+    "name": "CR新动能",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931526": {
+    "name": "企业核心竞争力50",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932431": {
+    "name": "300质量",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_STRAT_FACTOR": {
+    "name": "因子综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FACTOR",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

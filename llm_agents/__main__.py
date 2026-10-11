@@ -43,4 +43,6 @@ async def _dispatch():
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     asyncio.run(_dispatch())

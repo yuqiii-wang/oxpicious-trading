@@ -5,7 +5,7 @@
  * consumed by sharedSkewOption.ts.
  *
  * The greek_* metrics are PAIR-level CALL-vs-PUT contrasts computed in
- * the DB pipeline (analyze/options/compute/, NOT in-browser):
+ * the DB pipeline (analysis/options/compute/, NOT in-browser):
  *   greek_delta: dpcr = Σ_put OI·|Δ| / Σ_all OI·|Δ|  (whole chain,
  *                neutral 0.5 — delta-weighted put/call ratio)
  *   greek_gamma: (Σ_call OI·Γ − Σ_put OI·Γ)/(Σ_call OI·Γ + Σ_put OI·Γ)

@@ -11,7 +11,14 @@ Commands (run from the repo root; exit 0 = healthy, 1 = alert):
 
   python -m database.monitoring
       Health check — replication state, replay backlog, slot WAL
-      retention. Suitable for run_occasionally.sh / a scheduler.
+      retention, pg_wal dir size vs max_wal_size, PLUS downloads-stream
+      liveness (--streams). Suitable for run_occasionally.sh / a
+      scheduler.
+
+  python -m database.monitoring --streams
+      Stream liveness only — every downloads.stream.* poller and the
+      stream_watchdog supervisor itself must have a fresh heartbeat in
+      monitor.service_heartbeat.
 
   python -m database.monitoring --wait-catchup
                                   [--max-bytes N] [--timeout S] [--interval S]
@@ -40,6 +47,12 @@ import time
 import psycopg
 
 from _common.db_commons._helpers import _get_conn_params, _get_replica_conn_params
+from _common.service_heartbeat import (
+    HEARTBEAT_TABLE,
+    MONITORED_SERVICES,
+    STALE_AFTER_S,
+    WATCHDOG_SERVICE,
+)
 
 # Replay backlog (bytes the replica received but has not replayed) over
 # which the replica counts as "busy" for the API read path — the SAME
@@ -50,6 +63,19 @@ BACKLOG_ALERT_BYTES = 64 * 1024 * 1024
 # The primary's disk fills silently past this (the 2026-09 bulk-load
 # incident froze the slot at ~29GB of retained WAL).
 SLOT_RETAINED_ALERT_BYTES = 2 * 1024 * 1024 * 1024
+
+# The pg_wal DIRECTORY idles under max_wal_size (recycled segments are kept
+# for reuse), so an absolute alert would false-fire on healthy setups. The
+# disk is in trouble when the dir GROWS past this factor × max_wal_size —
+# segments are being pinned beyond the recycle horizon (an inactive slot,
+# stuck replay/checkpoint), i.e. the silent-fill that precedes the
+# slot-retention blowup above.
+WAL_DIR_ALERT_FACTOR = 1.5
+
+_WAL_SQL = """
+SELECT (SELECT coalesce(sum(size), 0)::bigint FROM pg_ls_waldir()),
+       pg_size_bytes(current_setting('max_wal_size'))::bigint
+"""
 
 _REPLICATION_SQL = """
 SELECT state,
@@ -120,7 +146,8 @@ def _fetch(conn: psycopg.Connection, sql: str) -> list[tuple]:
 
 
 def check_health() -> int:
-    """Replication state + replay backlog + slot WAL retention. 0/1 exit."""
+    """Replica state + replay backlog + slot WAL retention + pg_wal dir
+    size. 0/1 exit."""
     alerts: list[str] = []
 
     with _connect(_get_conn_params()) as primary:
@@ -171,6 +198,95 @@ def check_health() -> int:
                     f"[ok] slot {slot_name} active={active}, "
                     f"retained WAL {_fmt_bytes(retained_bytes)}"
                 )
+
+        # WAL disk: pg_wal dir size vs the cluster's own recycle horizon
+        # (max_wal_size). Recyclable segments legitimately keep the dir a
+        # few GB; only growth beyond the horizon means something is pinned.
+        wal_bytes, max_wal_bytes = _fetch(primary, _WAL_SQL)[0]
+        wal_ceiling = int(max_wal_bytes * WAL_DIR_ALERT_FACTOR)
+        if wal_bytes > wal_ceiling:
+            alerts.append(
+                f"[ALERT] pg_wal dir {_fmt_bytes(wal_bytes)} > "
+                f"{WAL_DIR_ALERT_FACTOR}× max_wal_size "
+                f"({_fmt_bytes(wal_ceiling)}) — segments are pinned beyond the "
+                "recycle horizon; check the slot state above and disk space"
+            )
+        else:
+            print(
+                f"[ok] pg_wal dir {_fmt_bytes(wal_bytes)} "
+                f"(alert ceiling {_fmt_bytes(wal_ceiling)} = "
+                f"{WAL_DIR_ALERT_FACTOR}× max_wal_size {_fmt_bytes(max_wal_bytes)})"
+            )
+
+    for line in alerts:
+        print(line)
+    return 1 if alerts else 0
+
+
+def check_streams() -> int:
+    """Downloads-stream liveness: every poller + the watchdog supervisor
+    must have a fresh heartbeat in monitor.service_heartbeat. 0/1 exit.
+
+    Heartbeats are written by a daemon thread inside each process
+    (_common/service_heartbeat.py) every ~60s regardless of the poll loop's
+    sleep windows, so a stale beat means the process is dead or wedged —
+    it never means "market closed". The watchdog (database/stream_watchdog.py)
+    is included because a dead supervisor silently stops restarting
+    pollers. The heartbeat rows of the repo's OTHER (batch) processes are
+    NOT liveness-alerted here: they legitimately sit stopped between runs
+    (their run history lives in monitor.service_audit; the watchdog's
+    orphan pass closes unrecorded deaths). Restart counts read the same
+    audit table's merged watchdog restart trail (dead lives closed with a
+    'watchdog restart: …' exit_reason).
+    """
+    alerts: list[str] = []
+    expected = list(MONITORED_SERVICES)
+
+    with _connect(_get_conn_params()) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT service, pid, "
+                f"EXTRACT(EPOCH FROM (now() - beat_at))::bigint, "
+                f"scope, sub_scope, stop_reason "
+                f"FROM {HEARTBEAT_TABLE} WHERE service = ANY(%s)",
+                (expected,),
+            )
+            beats = {
+                svc: (pid, age, scope, sub, stop)
+                for svc, pid, age, scope, sub, stop in cur.fetchall()
+            }
+            cur.execute(
+                "SELECT service, count(*) FROM monitor.service_audit "
+                "WHERE exit_reason LIKE 'watchdog restart%' "
+                "AND ended_at > now() - interval '24 hours' "
+                "GROUP BY service"
+            )
+            restarts_24h = dict(cur.fetchall())
+
+    for service in expected:
+        row = beats.get(service)
+        label = "watchdog" if service == WATCHDOG_SERVICE else service
+        if row is None:
+            alerts.append(
+                f"[ALERT] {label}: no heartbeat row — not running (or a "
+                "pre-heartbeat build; restart it once to gain heartbeats)"
+            )
+            continue
+        pid, age, scope, sub, stop_reason = row
+        where = f"{scope}/{sub}" if scope and sub else (scope or "?")
+        stop_note = f" — last exit: {stop_reason}" if stop_reason else ""
+        if age > int(STALE_AFTER_S):
+            alerts.append(
+                f"[ALERT] {label} ({where}): heartbeat stale {age}s > "
+                f"{int(STALE_AFTER_S)}s (pid {pid}) — dead or wedged"
+                f"{stop_note}"
+            )
+        else:
+            n = restarts_24h.get(service, 0)
+            print(
+                f"[ok] {label} ({where}): heartbeat {age}s ago (pid {pid})"
+                + (f", {n} restart(s) in 24h" if n else "")
+            )
 
     for line in alerts:
         print(line)
@@ -263,13 +379,25 @@ def main() -> int:
         action="store_true",
         help="compare the catalog fingerprint between primary and replica",
     )
+    parser.add_argument(
+        "--streams",
+        action="store_true",
+        help="downloads-stream liveness only (heartbeat freshness for all "
+             "pollers + the stream_watchdog supervisor)",
+    )
     args = parser.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     if args.schema_drift:
         return check_schema_drift()
     if args.wait_catchup:
         return wait_catchup(args.max_bytes, args.timeout, args.interval)
-    return check_health()
+    if args.streams:
+        return check_streams()
+    # Default health: replica sync + stream liveness, both alert-only.
+    rc = check_health()
+    return check_streams() | rc
 
 
 if __name__ == "__main__":

@@ -15,17 +15,15 @@ import requests
 
 from downloads._common import (
     MIN_VALID_BYTES,
-    DEFAULT_SLEEP_SEC,
     AntiBotProxy,
-    AntiBotConfig,
     is_error_html,
 )
 
 from ._config import (
     API_INDEX_PERF_ONEDAY,
     CSINDEX_HEADERS,
-    CSINDEX_TIMEOUT,
     logger,
+    make_proxy,
     detail_referer,
 )
 
@@ -42,7 +40,8 @@ def fetch_intraday(
     of a ``tradeDate`` parameter.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+        # Pacing from the service's "intraday" external_request_config row.
+        proxy = make_proxy("intraday")
 
     base_headers = dict(CSINDEX_HEADERS)
     base_headers["Referer"] = detail_referer(index_code)
@@ -52,7 +51,6 @@ def fetch_intraday(
         API_INDEX_PERF_ONEDAY,
         params={"indexCode": index_code},
         headers=base_headers,
-        timeout=CSINDEX_TIMEOUT,
         logger=logger,
         log_tag=f"  [intraday-fetch {index_code}]",
     )

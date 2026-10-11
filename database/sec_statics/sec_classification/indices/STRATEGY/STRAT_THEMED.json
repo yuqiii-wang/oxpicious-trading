@@ -1,0 +1,154 @@
+{
+  "000162": {
+    "name": "沪互联+",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000171": {
+    "name": "新兴成指",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000847": {
+    "name": "腾讯济安",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000851": {
+    "name": "百发100",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000859": {
+    "name": "国企一带一路",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000860": {
+    "name": "结构调整",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000901": {
+    "name": "小康指数",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "399974": {
+    "name": "国企改革",
+    "exchange": "SZ",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930758": {
+    "name": "凤凰50",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932690": {
+    "name": "精选市场稳健",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_STRAT_THEMED": {
+    "name": "主题综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_THEMED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

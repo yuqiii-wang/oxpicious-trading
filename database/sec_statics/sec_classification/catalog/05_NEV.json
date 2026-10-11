@@ -1,0 +1,25 @@
+{
+  "label": "新能源",
+  "industries": {
+    "PV": {
+      "label": "光伏",
+      "slug": "pv"
+    },
+    "EV": {
+      "label": "新能源车",
+      "slug": "ev"
+    },
+    "BATTERY": {
+      "label": "储能/电池",
+      "slug": "battery"
+    },
+    "CARBON": {
+      "label": "碳中和/绿电",
+      "slug": "carbon"
+    },
+    "NEV_GENERAL": {
+      "label": "新能源",
+      "slug": "nev_general"
+    }
+  }
+}

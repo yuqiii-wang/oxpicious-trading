@@ -1,0 +1,42 @@
+{
+  "931719": {
+    "name": "CS电池",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "BATTERY",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "BATTERY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931746": {
+    "name": "储能产业",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "BATTERY",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "BATTERY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_BATTERY": {
+    "name": "储能/电池综合指数",
+    "exchange": null,
+    "sector_id": "NEV",
+    "industry_id": "BATTERY",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "BATTERY"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

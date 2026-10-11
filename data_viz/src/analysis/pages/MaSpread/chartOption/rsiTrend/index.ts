@@ -4,6 +4,7 @@
  */
 export {
   buildRsiArrays,
+  buildRsiFlagArrays,
   rsiTrendLines,
   type RsiArrays,
   type RsiTrendLine,

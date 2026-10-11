@@ -1,6 +1,6 @@
 ---
 name: "cudf-dtypes"
-description: "cudf.pandas COMPUTE-LAYOUT preference + dtype rules for this repo. Use BEFORE writing or refactoring ANY dataframe / pandas / numpy / cudf code in builds.*/analyze.* — rolling, groupby, shift/diff, gathers, dtype choices, DB fetch/write paths — and whenever a run logs [cudf fallback] lines or is slow on GPU. Covers the GPU-first layout (whole-frame pandas via shared grouped helpers; host numpy only as a per-group boundary core; NEVER mid-flow hybrids), datetime64 units ([ns]/[us], never [s]/[D]), float64 vs Decimal, NaN-not-nullable, proxy-ndarray unwrapping, and the fallback-log verification workflow."
+description: "cudf.pandas COMPUTE-LAYOUT preference + dtype rules for this repo. Use BEFORE writing or refactoring ANY dataframe / pandas / numpy / cudf code in builds.*/analysis.* — rolling, groupby, shift/diff, gathers, dtype choices, DB fetch/write paths — and whenever a run logs [cudf fallback] lines or is slow on GPU. Covers the GPU-first layout (whole-frame pandas via shared grouped helpers; host numpy only as a per-group boundary core; NEVER mid-flow hybrids), datetime64 units ([ns]/[us], never [s]/[D]), float64 vs Decimal, NaN-not-nullable, proxy-ndarray unwrapping, and the fallback-log verification workflow."
 ---
 
 # cuDF-safe dtype selection — what dtype in what scenario
@@ -53,9 +53,9 @@ Hard rules from the same refactor:
   identical per-code md5 fold of the output tables
   (temp_scripts/checksum_code.py pattern) AND the `[cudf fallback]`
   count/signature mix does not increase.
-- Reference implementations: `analyze/mov_ave_spread/steps/roof_floor_bands.py`
+- Reference implementations: `analysis/mov_ave_spread/steps/roof_floor_bands.py`
   (whole-frame phases A–C + host event grid D) and
-  `analyze/mov_ave_spread/_common/ohlc_vector.py` (host core + rank bounds).
+  `analysis/mov_ave_spread/_common/ohlc_vector.py` (host core + rank bounds).
 
 ## Scenario → dtype table
 

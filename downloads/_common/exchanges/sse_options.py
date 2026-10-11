@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 import time as _time
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,7 +40,9 @@ import requests
 
 from downloads._common.net import (
     DEFAULT_TIMEOUT,
-    HostStatusTracker,
+    AntiBotConfig,
+    AntiBotProxy,
+    antibot_config_for,
     setup_logger,
 )
 from downloads._common.exchanges.sse import (
@@ -126,26 +129,52 @@ def _update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
+def build_options_proxy(service: Optional[str] = None) -> AntiBotProxy:
+    """The options-leg proxy: paces the ~20 tstyle sweeps at
+    TSTYLE_INTER_REQUEST_SEC (jittered) and audits every request. Pass the
+    STREAM's shared proxy in when called from the streamer so the options
+    sweeps share one cadence with the equity/fund/index pages.
+
+    With *service* the proxy's base pacing resolves from the service's
+    external_request_config JSON row; the per-call
+    ``sleep_sec=inter_request_sec`` overrides in :func:`_get_jsonp` still
+    win for the tstyle sweeps."""
+    if service is not None:
+        return AntiBotProxy(replace(
+            antibot_config_for(service), rotate_browser_profile=False,
+        ))
+    return AntiBotProxy(AntiBotConfig(
+        rotate_browser_profile=False,
+        base_sleep_sec=TSTYLE_INTER_REQUEST_SEC,
+    ))
+
+
 def _get_jsonp(
     session: requests.Session,
     url: str,
     params: Dict[str, str],
     referer: Optional[str] = None,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
+    inter_request_sec: float = TSTYLE_INTER_REQUEST_SEC,
 ) -> Optional[Dict[str, Any]]:
-    """GET one yunhq JSONP endpoint and return the parsed payload."""
+    """GET one yunhq JSONP endpoint and return the parsed payload.
+
+    The proxy audits the request, tracks 4xx blocking, and sleeps
+    *inter_request_sec* (jittered) after each success — callers no longer
+    sleep between pages themselves.
+    """
+    if proxy is None:
+        proxy = build_options_proxy()
     headers = dict(SSE_HEADERS)
     if referer:
         headers["Referer"] = referer
-    try:
-        resp = session.get(url, params=params, headers=headers, timeout=DEFAULT_TIMEOUT)
-    except requests.RequestException as e:
-        logger.warning("SSE options request failed (%s): %s", url, e)
-        return None
-    if resp.status_code != 200:
-        if host_tracker is not None:
-            host_tracker.record_error(url, resp.status_code, resp.reason)
-        logger.warning("SSE options HTTP %s on %s", resp.status_code, url)
+    resp = proxy.get(
+        session, url, params=params, headers=headers,
+        timeout=DEFAULT_TIMEOUT, sleep_sec=inter_request_sec,
+        logger=logger,
+    )
+    if resp is None:
+        logger.warning("SSE options request failed (%s)", url)
         return None
     try:
         return _parse_jsonp(resp.text)
@@ -156,13 +185,13 @@ def _get_jsonp(
 
 def fetch_underlyings(
     session: requests.Session,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> List[str]:
     """Fetch the option underlying list (e.g. ['510050', '510300', …])."""
     payload = _get_jsonp(
         session, SSE_OPTIONS_UNDERLYING_URL,
         {"callback": JSONP_CALLBACK, "select": "stockid"},
-        host_tracker=host_tracker,
+        proxy=proxy,
     )
     if not payload:
         return []
@@ -171,7 +200,7 @@ def fetch_underlyings(
 
 def fetch_expire_months(
     session: requests.Session,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Dict[str, List[str]]:
     """Fetch live expiry months per underlying.
 
@@ -181,7 +210,7 @@ def fetch_expire_months(
     payload = _get_jsonp(
         session, SSE_OPTIONS_EXPIRE_URL,
         {"callback": JSONP_CALLBACK, "select": "stockid,expiremonth"},
-        host_tracker=host_tracker,
+        proxy=proxy,
     )
     months: Dict[str, List[str]] = {}
     if not payload:
@@ -231,7 +260,7 @@ def _parse_tstyle_row(row: list) -> Optional[Dict[str, object]]:
 def fetch_options_snapshot(
     session: requests.Session,
     months: Dict[str, List[str]],
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
     inter_request_sec: float = TSTYLE_INTER_REQUEST_SEC,
 ) -> Tuple[Optional[datetime], Dict[str, dict]]:
     """Sweep every (underlying, expiry-month) tstyle endpoint into one snapshot.
@@ -241,6 +270,8 @@ def fetch_options_snapshot(
     time seen across pages; a failed page logs a warning and is skipped
     (partial snapshot, mirroring the equity pagination behaviour).
     """
+    if proxy is None:
+        proxy = build_options_proxy()
     snapshot: Dict[str, dict] = {}
     update_dt: Optional[datetime] = None
     n_pages = sum(len(v) for v in months.values())
@@ -248,7 +279,6 @@ def fetch_options_snapshot(
         return None, {}
 
     referer = "https://www.sse.com.cn/assortment/options/price/"
-    done = 0
     for stockid, yymms in sorted(months.items()):
         for yymm in sorted(yymms):
             payload = _get_jsonp(
@@ -260,9 +290,9 @@ def fetch_options_snapshot(
                     "order": "contractid,ase",
                 },
                 referer=referer,
-                host_tracker=host_tracker,
+                proxy=proxy,
+                inter_request_sec=inter_request_sec,
             )
-            done += 1
             if not payload:
                 continue
             dt = _update_datetime(payload)
@@ -272,8 +302,6 @@ def fetch_options_snapshot(
                 rec = _parse_tstyle_row(row)
                 if rec is not None:
                     snapshot[rec["code"]] = rec
-            if done < n_pages and inter_request_sec > 0:
-                _time.sleep(inter_request_sec)
 
     return update_dt, snapshot
 
@@ -282,6 +310,7 @@ def fetch_day_contract_map(
     session: requests.Session,
     page_size: int = PAGE_SIZE,
     max_attempts: int = 2,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Dict[str, Tuple[str, str]]:
     """Fetch the current trading day's contract listing from query.sse.com.cn.
 
@@ -299,7 +328,7 @@ def fetch_day_contract_map(
     headers["Accept"] = "*/*"
 
     for attempt in range(1, max_attempts + 1):
-        mapping = _fetch_contract_map_pages(session, headers, page_size)
+        mapping = _fetch_contract_map_pages(session, headers, page_size, proxy=proxy)
         if mapping:
             return mapping
         if attempt < max_attempts:
@@ -315,8 +344,11 @@ def _fetch_contract_map_pages(
     session: requests.Session,
     headers: Dict[str, str],
     page_size: int,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Dict[str, Tuple[str, str]]:
     """One full paginated pass over the 当日合约 listing."""
+    if proxy is None:
+        proxy = build_options_proxy()
     mapping: Dict[str, Tuple[str, str]] = {}
     page_no = 1
     while True:
@@ -332,18 +364,12 @@ def _fetch_contract_map_pages(
             "pageHelp.endPage": page_no,
             "pageHelp.cacheSize": 1,
         }
-        try:
-            resp = session.post(
-                SSE_OPTIONS_CONTRACT_URL, data=data, headers=headers,
-                timeout=DEFAULT_TIMEOUT,
-            )
-        except requests.RequestException as e:
-            logger.warning("SSE options contract map page %d failed: %s", page_no, e)
-            break
-        if resp.status_code != 200:
-            logger.warning(
-                "SSE options contract map page %d HTTP %s", page_no, resp.status_code
-            )
+        resp = proxy.post(
+            session, SSE_OPTIONS_CONTRACT_URL, data=data, headers=headers,
+            timeout=DEFAULT_TIMEOUT, sleep_sec=0.2, logger=logger,
+        )
+        if resp is None:
+            logger.warning("SSE options contract map page %d failed", page_no)
             break
         try:
             payload = _parse_jsonp(resp.text)
@@ -365,7 +391,6 @@ def _fetch_contract_map_pages(
         if page_no >= total_pages:
             break
         page_no += 1
-        _time.sleep(0.2)
 
     return mapping
 

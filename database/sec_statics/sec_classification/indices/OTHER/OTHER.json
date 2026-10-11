@@ -1,0 +1,55 @@
+{
+  "000008": {
+    "name": "综合指数",
+    "exchange": "SS",
+    "sector_id": "OTHER",
+    "industry_id": "OTHER",
+    "tags": [
+      {
+        "sector_id": "OTHER",
+        "industry_id": "OTHER"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000011": {
+    "name": "基金指数",
+    "exchange": "SS",
+    "sector_id": "OTHER",
+    "industry_id": "OTHER",
+    "tags": [
+      {
+        "sector_id": "OTHER",
+        "industry_id": "OTHER"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "399237": {
+    "name": "399237",
+    "exchange": "SZ",
+    "sector_id": "OTHER",
+    "industry_id": "OTHER",
+    "tags": [
+      {
+        "sector_id": "OTHER",
+        "industry_id": "OTHER"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_OTHER": {
+    "name": "未分类综合指数",
+    "exchange": null,
+    "sector_id": "OTHER",
+    "industry_id": "OTHER",
+    "tags": [
+      {
+        "sector_id": "OTHER",
+        "industry_id": "OTHER"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

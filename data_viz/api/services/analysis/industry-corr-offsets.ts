@@ -11,7 +11,7 @@
  * plus the derived opposite score (1 − offset_sub_corr) / 2 ∈ [0, 1].
  *
  * Source: analysis_composites.industry_corr_benchmark_offsets (built by
- * `python -m analyze.analysis_composites`; UI refresh runs it in filtered
+ * `python -m analysis.analysis_composites`; UI refresh runs it in filtered
  * mode via POST /api/analysis/industry-corr-offsets/run).
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";

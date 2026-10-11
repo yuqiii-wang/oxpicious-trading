@@ -1,0 +1,59 @@
+{
+  "930652": {
+    "name": "CS电子",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "CONSUMER_ELEC",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "CONSUMER_ELEC"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931461": {
+    "name": "电子50",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "CONSUMER_ELEC",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "CONSUMER_ELEC"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931494": {
+    "name": "消费电子",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "CONSUMER_ELEC",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "CONSUMER_ELEC"
+      },
+      {
+        "sector_id": "CONS",
+        "industry_id": "CONS_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_CONSUMER_ELEC": {
+    "name": "消费电子综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "CONSUMER_ELEC",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "CONSUMER_ELEC"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

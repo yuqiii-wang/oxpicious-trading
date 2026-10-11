@@ -17,8 +17,9 @@ Downloads 5 statistical items across all available years (2020 → latest):
 
 Anti-bot: The PBoC CDN blocks ``requests``/urllib3 with HTTP 403 via TLS/JA3
 fingerprinting.  This module uses ``curl_cffi`` with ``impersonate="chrome"``
-to bypass the block, plus ``LONG_SLEEP_INTERVAL`` (90 s) + jitter between
-requests.
+to bypass the block; pacing (sleep 90s ± jitter, retries 2 with linear 30s
+backoff, blocked-host cooldown 1h) comes from the service's
+external_request_config JSON row (request_type ``curl_cffi``).
 
 Output:
     temps/pboc_stats/pboc_stats_{slug}_{year}.xlsx
@@ -51,12 +52,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from downloads._common import (
-    LONG_SLEEP_INTERVAL,
     setup_logger,
     resolve_out_dir,
+    sleep_sec_for,
 )
 
-from ._session import PBOC_BASE, build_session
+from ._session import PBOC_BASE, REQUEST_TYPE, SERVICE, build_session
 from ._catalog import TARGET_ITEMS
 from ._scraper import (
     DownloadLink,
@@ -70,6 +71,11 @@ from ._scraper import (
 # ============================================================================
 # Constants
 # ============================================================================
+# Anti-bot sleep between requests — resolved from the service's
+# external_request_config JSON row (request_type curl_cffi, sleep_sec=90),
+# overridable per-run with --sleep-sec.
+SLEEP_SEC = sleep_sec_for(SERVICE, REQUEST_TYPE)
+
 STATS_FILE_PREFIX = "pboc_stats"
 MANIFEST_FILENAME = "pboc_stats_manifest.csv"
 MIN_VALID_XLS_BYTES = 1024  # minimum size for a valid xls/xlsx file
@@ -392,7 +398,7 @@ def download_pboc_stats(
     start_year: int = 2020,
     end_year: Optional[int] = None,
     latest_only: bool = False,
-    sleep_sec: float = LONG_SLEEP_INTERVAL,
+    sleep_sec: Optional[float] = None,
     force: bool = False,
     convert_csv: bool = True,
 ) -> dict:
@@ -403,7 +409,8 @@ def download_pboc_stats(
         start_year: First year to download (inclusive). Default 2020.
         end_year: Last year to download (inclusive). Default: current year.
         latest_only: If True, download only the latest year (overrides start_year).
-        sleep_sec: Sleep between requests (anti-bot). Default LONG_SLEEP_INTERVAL.
+        sleep_sec: Sleep between requests (anti-bot). Default: the service's
+            external_request_config JSON row (request_type curl_cffi).
         force: Purge existing local files in the target year range and re-download.
         convert_csv: After downloading (or caching hit), convert xls → csv.
 
@@ -414,6 +421,9 @@ def download_pboc_stats(
         4. At download time, per-file cache check acts as safety net
     """
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "pboc_stats", out_root)
+
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
 
     if end_year is None:
         end_year = date.today().year
@@ -676,7 +686,8 @@ Items downloaded:
     5. overseas_rmb_assets       — Domestic RMB Financial Assets Held by Overseas Entities
 
 Anti-bot: Uses curl_cffi with impersonate="chrome" to bypass TLS/JA3
-fingerprinting, plus LONG_SLEEP_INTERVAL (90s) between requests.
+fingerprinting; pacing comes from the external_request_config JSON row
+for downloads.macro.pboc.stats (request_type curl_cffi).
 """,
     )
     parser.add_argument(
@@ -692,8 +703,10 @@ fingerprinting, plus LONG_SLEEP_INTERVAL (90s) between requests.
         help="Download only the latest year (overrides --start-year)",
     )
     parser.add_argument(
-        "--sleep-sec", type=float, default=LONG_SLEEP_INTERVAL,
-        help=f"Sleep between requests in seconds (anti-bot). Default: {LONG_SLEEP_INTERVAL}",
+        "--sleep-sec", type=float, default=None,
+        help="Sleep between requests in seconds (anti-bot). "
+             f"Default: external_request_config JSON for {SERVICE} "
+             f"(request_type {REQUEST_TYPE})",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -708,6 +721,8 @@ fingerprinting, plus LONG_SLEEP_INTERVAL (90s) between requests.
         help="Skip xls→csv conversion after download",
     )
     args = parser.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     result = download_pboc_stats(
         out_root=args.out_root,

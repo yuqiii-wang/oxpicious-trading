@@ -1,13 +1,32 @@
 /**
  * SignalOverlayPanel — the Recent Movements code-trend's CURVE overlay
- * panel: the code's continuous depth-response curves mu(s) = mu_center
- * + slope * (s - s_center) per regime (analysis_signals.signal_curves,
- * latest snapshot), with the 1/2/3/5/10% tail guides and each cell's
- * own operating point — the 2026-10 depth-response formulation.
+ * panel: the code's continuous depth-response curves curve(s) =
+ * mu_center + interp(fit_curve, s) per regime (analysis_signals.
+ * signal_curves, latest snapshot), with the 1/2/3/5/10/15/20/25% tail
+ * guides and each cell's own operating point — the 2026-10
+ * depth-response formulation over the EPISODE population (the
+ * 2026-10-06 tails change: every tail-episode day, episode-weighted;
+ * 2026-10-07: the typical/re-entry toggle is BACK as the episode-PASS
+ * population pick — the is_typical flags attribute every in-band day
+ * to its pass (first-touch / re-entry, continuations included), so
+ * each pass's curve now covers the deep tail) — over the per-horizon
+ * path bars (next/3d/5d/10d/20d means beside the blend) that show what
+ * the curve's one number summarizes. The OHLCV-boost toggle picks the
+ * population VARIANT: none = the plain episode-weighted fit; boost =
+ * the twin whose statistics are weight-blended by episode x each
+ * day's ohlcv score (is_ohlcv_boosted — the population-variant PK).
  * (The retired THRESHOLD bars view was removed 2026-10-05; the curves
  * subsume it.)
  *
- * Data: GET /api/live-data/trading-signals/curves.
+ * CONTROLLED from outside: the SIGNAL pick (the indicator family) left
+ * this panel 2026-10-11 — it lives in the hosting panel's shared
+ * controls strip now and drives the history events below too, so the
+ * panel receives it (`signalType`) alongside the pre-fetched curves
+ * (`curves` / `curvesLoading` / `curvesError` — the hosting panel's
+ * fetch, whose response also feeds the Signal picker's options). The
+ * variant + pass arrive the same way (`boost` / `epPass` — the hosting
+ * panel's shared population pick). The curve-local Window / side picks
+ * remain in here.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -22,100 +41,92 @@ import {
   useChartThemeMode,
 } from "@/shared/charts/base-chart";
 import type { BaseChartProps } from "@/shared/charts/base-chart";
-import {
-  fetchSignalCurves,
-  type SignalCurve,
-} from "@/lib/api-client";
-import { stripCodeSuffix } from "@/ui/OhlcChart/codeTrendSources";
+import type { SignalCurve } from "@/lib/api-client";
 import {
   buildSignalCurveOption,
+  DEFAULT_WINDOW_BY_TYPE,
   SIGNAL_TYPE_LABELS,
+  WINDOW_LABEL_BY_TYPE,
 } from "./signalOverlayOption";
 
 export interface SignalOverlayPanelProps extends BaseChartProps {
-  secType: "index" | "etf" | "stock";
-  code: string;
+  /** The population VARIANT: FALSE = the plain episode-weighted fit,
+   *  TRUE = the OHLCV-boost twin — CONTROLLED by the hosting panel's
+   *  shared population pick. */
+  boost: boolean;
+  /** The episode-PASS population drawn: "typical" = the first-touch
+   *  passes' days (is_typical TRUE), "re-entry" = the re-entry passes'
+   *  days (is_typical FALSE) — CONTROLLED by the hosting panel's shared
+   *  population pick. */
+  epPass: "typical" | "re-entry";
+  /** The SIGNAL pick (the indicator family behind the curves) —
+   *  CONTROLLED by the hosting panel's shared pick, which drives the
+   *  history events below too. Null = nothing chosen yet (no curves and
+   *  no history families) → the chart renders its empty state. */
+  signalType: string | null;
+  /** The code's pre-fetched curves (the hosting panel's fetch — the
+   *  same response feeds the Signal picker's options at panel level). */
+  curves: SignalCurve[];
+  /** The curves fetch's loading / error state (BaseChart placeholders). */
+  curvesLoading: boolean;
+  curvesError: string | null;
 }
 
 export default function SignalOverlayPanel({
-  secType,
-  code,
+  boost,
+  epPass,
+  signalType,
+  curves,
+  curvesLoading,
+  curvesError,
   ...base
 }: SignalOverlayPanelProps) {
   const themeMode = useChartThemeMode();
-  const [curves, setCurves] = useState<SignalCurve[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [tag, setTag] = useState<string | null>(null);
   const [rsiWindow, setRsiWindow] = useState<number | null>(null);
   const [side, setSide] = useState<"bottom" | "top">("bottom");
 
-  const bare = stripCodeSuffix(code);
-
-  // Fetch the code's curves (cancelled-guard effect).
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchSignalCurves(secType, bare)
-      .then((r) => {
-        if (!cancelled) {
-          setCurves(r.curves);
-          setLoading(false);
-        }
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) {
-          setError(String(e));
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [secType, bare]);
-
-  // The signal TAGS the curves carry (the indicator families — only
-  // mov_rsi exists today) and, scoped to the selected tag, the windows.
-  const tags = useMemo(
-    () => [...new Set(curves.map((cv) => cv.signal_type))].sort(),
-    [curves],
+  // The variant-scoped curves (the hosting panel's picks select which
+  // boost variant AND episode-pass population feed the window picker
+  // and the chart).
+  const population = useMemo(
+    () => curves.filter(
+      (cv) => (cv.is_ohlcv_boosted ?? false) === boost
+        && (cv.is_typical ?? true) === (epPass === "typical"),
+    ),
+    [curves, boost, epPass],
   );
   const tagged = useMemo(
-    () => (tag == null ? [] : curves.filter((cv) => cv.signal_type === tag)),
-    [curves, tag],
+    () => population.filter((cv) => cv.signal_type === signalType),
+    [population, signalType],
   );
   const windows = useMemo(
     () => [...new Set(tagged.map((cv) => cv.rsi_window))].sort((a, b) => a - b),
     [tagged],
   );
 
-  // Defaults: first tag, then rsi14 within it when present.
-  useEffect(() => {
-    if (tags.length === 0) {
-      setTag(null);
-      return;
-    }
-    if (tag == null || !tags.includes(tag)) setTag(tags[0]!);
-  }, [tags, tag]);
+  // The family's default window within the pick (rsi 14 / boll 20) when
+  // present.
   useEffect(() => {
     if (windows.length === 0) {
       setRsiWindow(null);
       return;
     }
     if (rsiWindow == null || !windows.includes(rsiWindow)) {
-      setRsiWindow(windows.includes(14) ? 14 : windows[0]!);
+      const def = DEFAULT_WINDOW_BY_TYPE[signalType ?? ""] ?? 14;
+      setRsiWindow(windows.includes(def) ? def : windows[0]!);
     }
-  }, [windows, rsiWindow]);
+  }, [windows, rsiWindow, signalType]);
 
   const option = useMemo(() => {
-    if (tag == null || rsiWindow == null) return null;
+    if (signalType == null || rsiWindow == null) return null;
     const cell = tagged.filter(
       (cv) => cv.rsi_window === rsiWindow && cv.side === side,
     );
     if (cell.length === 0) return null;
-    return buildSignalCurveOption(curves, tag, rsiWindow, side, themeMode);
-  }, [curves, tagged, tag, rsiWindow, side, themeMode]);
+    return buildSignalCurveOption(
+      population, signalType, rsiWindow, side, themeMode,
+    );
+  }, [population, tagged, signalType, rsiWindow, side, themeMode]);
 
   const snapshot = tagged[0]?.end_date;
 
@@ -132,28 +143,14 @@ export default function SignalOverlayPanel({
           <TextField
             select
             size="small"
-            label="Signal"
-            value={tag ?? ""}
-            onChange={(e) => setTag(e.target.value)}
-            sx={{ minWidth: 96 }}
-          >
-            {tags.map((t) => (
-              <MenuItem key={t} value={t} dense>
-                {SIGNAL_TYPE_LABELS[t] ?? t}
-              </MenuItem>
-            ))}
-          </TextField>
-          <TextField
-            select
-            size="small"
-            label="RSI window"
+            label="Window"
             value={rsiWindow ?? ""}
             onChange={(e) => setRsiWindow(Number(e.target.value))}
             sx={{ minWidth: 110 }}
           >
             {windows.map((w) => (
               <MenuItem key={w} value={w} dense>
-                RSI {w}
+                {WINDOW_LABEL_BY_TYPE[signalType ?? ""] ?? "W"} {w}
               </MenuItem>
             ))}
           </TextField>
@@ -168,6 +165,9 @@ export default function SignalOverlayPanel({
             <ToggleButton value="bottom">buy side</ToggleButton>
             <ToggleButton value="top">sell side</ToggleButton>
           </ToggleButtonGroup>
+          {/* the SIGNAL + OHLCV-variant + episode-pass picks live in the
+              hosting panel's shared controls strip — one pick each drives
+              this curve fit AND the history events below it */}
         </Stack>
         {snapshot && (
           <span style={{ fontSize: 11, opacity: 0.7 }}>
@@ -177,11 +177,15 @@ export default function SignalOverlayPanel({
       </Stack>
       <BaseChart
         variant="bare"
-        loading={loading}
-        error={error ? `Failed to load signal curves: ${error}` : null}
+        loading={curvesLoading}
+        error={curvesError ? `Failed to load signal curves: ${curvesError}` : null}
         option={option}
-        emptyText="No depth-response curves for this code yet"
-        height={260}
+        emptyText={
+          signalType != null
+            ? `No ${SIGNAL_TYPE_LABELS[signalType] ?? signalType} depth-response curves for this code`
+            : "No depth-response curves for this code yet"
+        }
+        height={430}
         {...base}
       />
     </Stack>

@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.stream.csindex.price",
+    "request_type": "page",
+    "resource_type": 0,
+    "sleep_sec": 20,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": 1800,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "CSI streaming requests on a 30-min loop (LOOP_INTERVAL_SEC).",
+    "source_ref": "downloads/stream/csindex/price/__main__.py; downloads/stream/csindex/price/_constants.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

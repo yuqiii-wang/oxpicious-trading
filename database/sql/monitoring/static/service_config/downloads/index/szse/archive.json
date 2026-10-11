@@ -1,0 +1,9 @@
+{
+  "service": "downloads.index.szse.archive",
+  "max_parallel": 1,
+  "freq": "once",
+  "schedule": "one-time setup/backfill; no recurring schedule (re-run on demand)",
+  "notes": null,
+  "source_ref": "scripts/downloads_once.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

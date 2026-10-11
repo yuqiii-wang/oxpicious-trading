@@ -1,0 +1,88 @@
+{
+  "000692": {
+    "name": "科创新能",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "NEV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "NEV_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000941": {
+    "name": "新能源",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "NEV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "NEV_GENERAL"
+      },
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399808": {
+    "name": "中证新能",
+    "exchange": "SZ",
+    "sector_id": "NEV",
+    "industry_id": "NEV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "NEV_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930997": {
+    "name": "新能源车",
+    "exchange": "SS",
+    "sector_id": "NEV",
+    "industry_id": "NEV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "NEV_GENERAL"
+      },
+      {
+        "sector_id": "NEV",
+        "industry_id": "EV"
+      },
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_NEV_GENERAL": {
+    "name": "新能源综合指数",
+    "exchange": null,
+    "sector_id": "NEV",
+    "industry_id": "NEV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "NEV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

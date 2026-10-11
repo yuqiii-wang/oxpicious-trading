@@ -1,0 +1,29 @@
+{
+  "000906": {
+    "name": "中证800",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI800",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI800"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_CSI800": {
+    "name": "中证800综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI800",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI800"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.etf.csindex.linked_etf",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 20,
+    "sleep_jitter": 0.3,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 120,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "CSI linked-ETF lists. Timeouts (15,120) migrated from the code's CSINDEX_TIMEOUT (10k-row JSON page + .xls export need the read headroom; synced 2026-10-10) - code now reads this row.",
+    "source_ref": "downloads/etf/csindex/linked_etf/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

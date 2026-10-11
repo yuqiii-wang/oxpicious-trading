@@ -1,0 +1,20 @@
+{
+  "DUMMY_PORT": {
+    "name": "港口综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "PORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "PORT"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

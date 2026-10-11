@@ -43,16 +43,15 @@ from bs4 import BeautifulSoup
 
 from downloads._common import (
     COMMON_BASE_HEADERS,
-    DEFAULT_TIMEOUT,
     DEFAULT_START_DATE,
     AntiBotProxy,
-    AntiBotConfig,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
     scan_present_dates_with_pattern,
     build_default_session,
     RunStats,
+    sleep_sec_for,
 )
 # Reuse the well-tested date-parsing utilities from the repo-news downloader
 from downloads.macro.pboc._common.parsing import (
@@ -73,7 +72,11 @@ LPR_FILE_PREFIX = "pboc_lpr"
 LPR_CATEGORY = "lpr"
 
 PBOC_MIN_VALID_BYTES = 200
-SLEEP_SEC = 5.0
+# Anti-bot pacing source — the service's external_request_config JSON row
+# (sleep_sec=5, sleep_jitter=0.5, host tracking OFF: pagination probing hits
+# 404 on non-existent pages and must not block the host).
+SERVICE = "downloads.macro.pboc.lpr_news"
+SLEEP_SEC = sleep_sec_for(SERVICE)
 EMPTY_PLACEHOLDER_SUFFIX = "_empty.md"
 
 # Paging tag detection — PBoC list pages use a JS-generated paging URL like
@@ -346,7 +349,7 @@ def fetch_list_page(
     proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[List[LprAnnouncementItem], Optional[str]]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
 
     url = list_page_url(page, page_prefix_fmt)
     logger.info("Fetching LPR list page %d (%s)", page, url)
@@ -354,7 +357,6 @@ def fetch_list_page(
     resp = proxy.get(
         session,
         url,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[list lpr p{page}]",
     )
@@ -446,7 +448,7 @@ def smart_pagination_pages(
     fetching every page when only recent dates are missing.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
 
     page_prefix_fmt: Optional[str] = None
     items, detected_fmt = fetch_list_page(session, 1, page_prefix_fmt, proxy)
@@ -520,11 +522,10 @@ def fetch_detail(
     proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     resp = proxy.get(
         session,
         item.detail_url,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[detail {item.title[:30]}]",
     )
@@ -761,15 +762,13 @@ def download_pboc_lpr_news(
 
     session = build_session()
     stats = RunStats()
-    proxy_config = AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        # LPR is a small dataset (~5 list pages, ~89 records total). Pagination
-        # probing naturally hits 404 on non-existent pages; we don't want that
-        # to mark the host as blocked. Real anti-bot 403/429 responses are
-        # rare for this endpoint.
-        enable_host_tracking=False,
-    )
-    proxy = AntiBotProxy(proxy_config)
+    # Pacing + anti-bot toggles from the service's external_request_config
+    # JSON row. Its enable_host_tracking=false is deliberate: pagination
+    # probing naturally hits 404 on non-existent pages (LPR is a small
+    # dataset — ~5 list pages, ~89 records total); we don't want that to
+    # mark the host as blocked. Real anti-bot 403/429 responses are rare
+    # for this endpoint.
+    proxy = AntiBotProxy(service=SERVICE)
 
     cached_dates = scan_present_dates_with_pattern(
         out_dir, prefixes=[LPR_FILE_PREFIX], min_bytes=100, ext_glob="*.md",
@@ -1165,6 +1164,8 @@ if __name__ == "__main__":
                         help="Skip the up-to-date check and always download "
                              "(overrides the page-1 vs local/DB latest skip)")
     args = parser.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     convert_csv = not args.no_convert_csv
     build_csv = not args.no_build_csv

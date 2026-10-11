@@ -8,18 +8,17 @@ All data (chart, export, intraday, PE) is served as JSON/Excel via these endpoin
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, Tuple
+from typing import Dict
 
 import requests
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
     COMMON_BASE_HEADERS,
     AntiBotProxy,
-    AntiBotConfig,
     setup_logger,
     build_default_session,
     merge_browser_profile,
+    sleep_sec_for,
 )
 
 # SZSE indices that must NOT be downloaded from csindex.com.cn
@@ -46,7 +45,23 @@ INDICATOR_XLS_TEMPLATE = (
 DETAIL_REFERER = CSINDEX_BASE + "/zh-CN/indices/index#/indices/family/detail?indexCode={indexCode}"
 
 UPDATE_WINDOW_DAYS = 35  # ~1 month plus weekend/holiday buffer
-SLEEP_SEC = DEFAULT_SLEEP_SEC
+
+# The service name this package stamps on its external_resource_audit rows
+# (record_http via AntiBotProxy.audit_service). Passed explicitly because
+# the runner is LONG-LIVED (spawned by the API's yday-ref chain and the
+# nightly scheduler, running far past deploys) — an explicit name keeps
+# its audit rows attributed even when the process outlives its code.
+# Also the key of this package's external_request_config JSON rows
+# (request_type close/export/intraday/pe — the pacing source).
+SERVICE = "downloads.index.csindex.quote"
+
+# Anti-bot sleep between requests — resolved from the service's
+# external_request_config JSON row ("close" request_type: the runner-level
+# daily close-quote pacing; the row also carries sleep_jitter, the
+# connect/read timeouts and the anti-bot toggles). The per-flow rows
+# ("export"/"pe"/"intraday") resolve inside the sub-fetchers. Overridable
+# per-run with --sleep-sec.
+SLEEP_SEC = sleep_sec_for(SERVICE, "close")
 # Retry backoff for the content-freshness gates (runner._run_1m/_run_pe):
 # when a code's local records lack the newest publishable session, the
 # export is re-fetched at most once per this many hours. Bounds the
@@ -54,7 +69,6 @@ SLEEP_SEC = DEFAULT_SLEEP_SEC
 # CSIndex stopped publishing) without delaying a laggard index's
 # late-landing row past the next scheduled run.
 REFETCH_MIN_INTERVAL_HOURS = 6.0
-CSINDEX_TIMEOUT: Tuple[int, int] = (15, 120)
 
 CSINDEX_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)
 CSINDEX_HEADERS["Accept"] = "application/json, text/plain, */*"
@@ -69,9 +83,11 @@ def build_session() -> requests.Session:
     return build_default_session(merge_browser_profile(CSINDEX_HEADERS))
 
 
-def make_proxy(sleep_sec: float = SLEEP_SEC) -> AntiBotProxy:
-    """Create an AntiBotProxy with the given base sleep interval."""
-    return AntiBotProxy(AntiBotConfig(base_sleep_sec=sleep_sec))
+def make_proxy(request_type: str = "close") -> AntiBotProxy:
+    """Create an AntiBotProxy pacing from the request_type's
+    external_request_config JSON row (one of close/export/intraday/pe)."""
+    return AntiBotProxy(service=SERVICE, request_type=request_type,
+                        audit_service=SERVICE)
 
 
 def ymd(d: date) -> str:

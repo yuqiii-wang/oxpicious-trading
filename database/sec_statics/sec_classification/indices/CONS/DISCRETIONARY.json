@@ -1,0 +1,115 @@
+{
+  "000035": {
+    "name": "上证可选",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "DISCRETIONARY",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "DISCRETIONARY"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000073": {
+    "name": "可选等权",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "DISCRETIONARY",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "DISCRETIONARY"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000107": {
+    "name": "380可选",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "DISCRETIONARY",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "DISCRETIONARY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000989": {
+    "name": "全指可选",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "DISCRETIONARY",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "DISCRETIONARY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930697": {
+    "name": "家用电器",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "DISCRETIONARY",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "DISCRETIONARY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931021": {
+    "name": "家电龙头",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "DISCRETIONARY",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "DISCRETIONARY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931241": {
+    "name": "家居家电",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "DISCRETIONARY",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "DISCRETIONARY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_DISCRETIONARY": {
+    "name": "可选消费综合指数",
+    "exchange": null,
+    "sector_id": "CONS",
+    "industry_id": "DISCRETIONARY",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "DISCRETIONARY"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

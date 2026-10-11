@@ -1,0 +1,93 @@
+{
+  "931152": {
+    "name": "CS创新药",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "INNO_DRUG",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "INNO_DRUG"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931250": {
+    "name": "港股通创新药",
+    "exchange": "HK",
+    "sector_id": "HC",
+    "industry_id": "INNO_DRUG",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "INNO_DRUG"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931409": {
+    "name": "SHS创新药",
+    "exchange": "HK",
+    "sector_id": "HC",
+    "industry_id": "INNO_DRUG",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "INNO_DRUG"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931787": {
+    "name": "港股创新药",
+    "exchange": "HK",
+    "sector_id": "HC",
+    "industry_id": "INNO_DRUG",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "INNO_DRUG"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950161": {
+    "name": "科创新药",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "INNO_DRUG",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "INNO_DRUG"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_INNO_DRUG": {
+    "name": "创新药综合指数",
+    "exchange": null,
+    "sector_id": "HC",
+    "industry_id": "INNO_DRUG",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "INNO_DRUG"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

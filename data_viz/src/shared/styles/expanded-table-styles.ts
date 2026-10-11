@@ -45,10 +45,10 @@ export const expandedTableNumCellSx = {
 
 /**
  * TableContainer sx — bordered, rounded, scrollable.
- * Pass `maxHeight` (px) to enable a scroll viewport; omit for unbounded
- * height (grows with content).
+ * Pass `maxHeight` (px number or CSS length) to enable a scroll viewport;
+ * omit for unbounded height (grows with content).
  */
-export const expandedTableContainerSx = (maxHeight?: number) => ({
+export const expandedTableContainerSx = (maxHeight?: number | string) => ({
   border: "1px solid",
   borderColor: "divider",
   borderRadius: 1,

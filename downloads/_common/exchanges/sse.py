@@ -19,7 +19,7 @@ from __future__ import annotations
 import csv
 import json
 import re
-import time as _time
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,7 +34,9 @@ from downloads._common.filescan import (
 )
 from downloads._common.net import (
     DEFAULT_TIMEOUT,
-    HostStatusTracker,
+    AntiBotConfig,
+    AntiBotProxy,
+    antibot_config_for,
     build_headers_with_referer,
     setup_logger,
 )
@@ -60,8 +62,9 @@ LIST_SELECT_FIELDS = "code,name"
 # only selects code+name (the OHLCV comes from the dayk endpoint there).
 STREAM_SELECT_FIELDS = "code,name,open,high,low,last,prev_close,change,volume,amount"
 
-# Inter-page sleep for list-endpoint pagination (lightweight, no anti-bot
-# cadence needed — same as stream_sse_price).
+# Inter-page sleep for list-endpoint pagination — applied by the shared
+# AntiBotProxy as a jittered post-success sleep (and every page lands in
+# monitor.external_resource_audit).
 INTER_PAGE_SLEEP_SEC = 3.0
 
 SSE_HEADERS = build_headers_with_referer(SSE_REFERER, extra={"Accept": "*/*"})
@@ -183,33 +186,50 @@ def _extract_update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
+def build_sse_proxy(service: Optional[str] = None) -> AntiBotProxy:
+    """The SSE list-endpoint proxy: pacing (inter-page sleep) resolves from
+    the caller service's external_request_config JSON row when *service* is
+    given (INTER_PAGE_SLEEP_SEC stays the fallback), and fingerprint
+    rotation stays OFF either way — the yunhq endpoints want the page's own
+    stable header set (a deliberate code override of the JSON rows' rot
+    flag); every page is audited."""
+    if service is not None:
+        return AntiBotProxy(replace(
+            antibot_config_for(service), rotate_browser_profile=False,
+        ))
+    return AntiBotProxy(AntiBotConfig(
+        rotate_browser_profile=False,
+        base_sleep_sec=INTER_PAGE_SLEEP_SEC,
+    ))
+
+
 def _fetch_snapshot_page(
     session: requests.Session,
     begin: int,
     end: int,
     list_url: str,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch one page from an SSE list endpoint with full real-time fields."""
+    if proxy is None:
+        proxy = build_sse_proxy()
     params = {
         "callback": JSONP_CALLBACK,
         "begin": str(begin),
         "end": str(end),
         "select": STREAM_SELECT_FIELDS,
     }
-    try:
-        resp = session.get(
-            list_url,
-            params=params,
-            headers=SSE_HEADERS,
-            timeout=DEFAULT_TIMEOUT,
-        )
-    except requests.RequestException as e:
-        logger.warning("SSE list page %d-%d request failed: %s", begin, end, e)
+    resp = proxy.get(
+        session,
+        list_url,
+        params=params,
+        headers=SSE_HEADERS,
+        logger=logger,
+        log_tag=f"[sse-page {begin}-{end}] ",
+    )
+    if resp is None:
+        logger.warning("SSE list page %d-%d request failed", begin, end)
         return None
-
-    if resp.status_code != 200 and host_tracker is not None:
-        host_tracker.record_error(list_url, resp.status_code, resp.reason)
 
     try:
         return _parse_jsonp(resp.text)
@@ -266,13 +286,15 @@ def _parse_snapshot_to_trend_row(
 def _fetch_today_snapshot(
     session: requests.Session,
     list_url: str,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[Optional[datetime], Optional[str], List[Dict[str, Any]]]:
     """Fetch the SSE list endpoint snapshot (all securities, full field set)."""
-    host_tracker = HostStatusTracker()
+    if proxy is None:
+        proxy = build_sse_proxy()
     asset_tag = list_url.rsplit("/", 1)[-1]
 
     first = _fetch_snapshot_page(
-        session, 0, PAGE_SIZE, list_url=list_url, host_tracker=host_tracker
+        session, 0, PAGE_SIZE, list_url=list_url, proxy=proxy
     )
     if first is None:
         logger.error("Failed to fetch first SSE list page (%s)", asset_tag)
@@ -301,7 +323,7 @@ def _fetch_today_snapshot(
     written = len(first.get("list", []) or [])
     page_index = 1
     while written < total:
-        if host_tracker.is_blocked(list_url):
+        if proxy.is_blocked(list_url):
             logger.warning(
                 "SSE host blocked mid-pagination, using partial snapshot (%d items)",
                 len(rows),
@@ -309,9 +331,9 @@ def _fetch_today_snapshot(
             break
         begin = page_index * PAGE_SIZE
         end = begin + PAGE_SIZE
-        _time.sleep(INTER_PAGE_SLEEP_SEC)
+        # Inter-page pacing is the proxy's post-success sleep.
         payload = _fetch_snapshot_page(
-            session, begin, end, list_url=list_url, host_tracker=host_tracker
+            session, begin, end, list_url=list_url, proxy=proxy
         )
         if payload is None:
             logger.warning(
@@ -345,6 +367,7 @@ def download_one_type(
     *,
     force: bool = False,
     sec_type: str = "auto",
+    proxy: Optional[AntiBotProxy] = None,
 ) -> dict:
     """Download one snapshot type (equity / fund / index) and write its CSV."""
     out_file = _get_out_file(out_dir, expected_latest_str, prefix=prefix)
@@ -381,7 +404,9 @@ def download_one_type(
                 out_file.name,
             )
 
-    update_dt, trade_date_str, rows = _fetch_today_snapshot(sess, list_url=list_url)
+    update_dt, trade_date_str, rows = _fetch_today_snapshot(
+        sess, list_url=list_url, proxy=proxy
+    )
     if trade_date_str is None or not rows:
         logger.error("No snapshot data fetched for %s", prefix)
         return {"downloaded": 0, "failed": 1, "file": str(out_file)}
@@ -408,8 +433,14 @@ def run_snapshot_download(
     out_root: Optional[str] = None,
     force: bool = False,
     session: Optional[requests.Session] = None,
+    service: Optional[str] = None,
 ) -> dict:
-    """Shared entry point for the equity / fund / index snapshot leaves."""
+    """Shared entry point for the equity / fund / index snapshot leaves.
+
+    *service* (the caller's dotted service name) resolves the pacing row
+    from the external_request_config JSON tree; without it the adapter
+    falls back to its INTER_PAGE_SLEEP_SEC constant.
+    """
     out_dir = resolve_out_dir(__file__, "sse_trend", out_root)
     sess = session or requests.Session()
 
@@ -427,6 +458,7 @@ def run_snapshot_download(
     result = download_one_type(
         sess, out_dir, expected_latest_str,
         list_url, prefix, force=force, sec_type=prefix_sec_type,
+        proxy=build_sse_proxy(service),
     )
     return {"out_dir": str(out_dir), "result": result}
 
@@ -450,6 +482,7 @@ __all__ = [
     "_fmt_num",
     "_write_rows",
     "DEFAULT_TIMEOUT",
+    "build_sse_proxy",
     "download_one_type",
     "run_snapshot_download",
 ]

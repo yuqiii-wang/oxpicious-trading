@@ -1,0 +1,172 @@
+{
+  "000160": {
+    "name": "沪新丝路",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000695": {
+    "name": "科长三角",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000697": {
+    "name": "科大湾区",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000853": {
+    "name": "CSSW丝路",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931000": {
+    "name": "大湾区",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931033": {
+    "name": "杭州湾区",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931141": {
+    "name": "CS长三角",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931393": {
+    "name": "湖北指数",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931596": {
+    "name": "SHS张江50",
+    "exchange": "HK",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931695": {
+    "name": "成渝经济圈",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932056": {
+    "name": "海洋经济",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "950049": {
+    "name": "G60成指",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_REGION_CN": {
+    "name": "区域综合指数",
+    "exchange": null,
+    "sector_id": "REGION",
+    "industry_id": "REGION_CN",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_CN"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

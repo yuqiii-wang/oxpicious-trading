@@ -1,0 +1,29 @@
+{
+  "label": "债券",
+  "industries": {
+    "DEBT_TREASURY": {
+      "label": "国债",
+      "slug": "debt_treasury"
+    },
+    "DEBT_LOCAL": {
+      "label": "地方债",
+      "slug": "debt_local"
+    },
+    "DEBT_POLICY": {
+      "label": "政金债",
+      "slug": "debt_policy"
+    },
+    "DEBT_CONVERTIBLE": {
+      "label": "转债",
+      "slug": "debt_convertible"
+    },
+    "DEBT_CORP": {
+      "label": "信用债",
+      "slug": "debt_corp"
+    },
+    "DEBT_GENERAL": {
+      "label": "债券",
+      "slug": "debt_general"
+    }
+  }
+}

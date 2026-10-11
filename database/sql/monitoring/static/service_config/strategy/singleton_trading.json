@@ -1,0 +1,9 @@
+{
+  "service": "strategy.singleton_trading",
+  "max_parallel": 1,
+  "freq": "once",
+  "schedule": "one-time pass; re-run on demand after universe/strategy changes",
+  "notes": "Discover available securities, backtest them, then calculate run risk metrics.",
+  "source_ref": "scripts/strategy_once.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

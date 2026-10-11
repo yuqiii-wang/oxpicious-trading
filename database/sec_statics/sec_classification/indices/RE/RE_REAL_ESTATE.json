@@ -1,0 +1,81 @@
+{
+  "000006": {
+    "name": "地产指数",
+    "exchange": "SS",
+    "sector_id": "RE",
+    "industry_id": "RE_REAL_ESTATE",
+    "tags": [
+      {
+        "sector_id": "RE",
+        "industry_id": "RE_REAL_ESTATE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000948": {
+    "name": "内地地产",
+    "exchange": "SS",
+    "sector_id": "RE",
+    "industry_id": "RE_REAL_ESTATE",
+    "tags": [
+      {
+        "sector_id": "RE",
+        "industry_id": "RE_REAL_ESTATE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399965": {
+    "name": "800地产",
+    "exchange": "SZ",
+    "sector_id": "RE",
+    "industry_id": "RE_REAL_ESTATE",
+    "tags": [
+      {
+        "sector_id": "RE",
+        "industry_id": "RE_REAL_ESTATE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931775": {
+    "name": "房地产",
+    "exchange": "SS",
+    "sector_id": "RE",
+    "industry_id": "RE_REAL_ESTATE",
+    "tags": [
+      {
+        "sector_id": "RE",
+        "industry_id": "RE_REAL_ESTATE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932076": {
+    "name": "全指地产",
+    "exchange": "SS",
+    "sector_id": "RE",
+    "industry_id": "RE_REAL_ESTATE",
+    "tags": [
+      {
+        "sector_id": "RE",
+        "industry_id": "RE_REAL_ESTATE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_RE_REAL_ESTATE": {
+    "name": "地产综合指数",
+    "exchange": null,
+    "sector_id": "RE",
+    "industry_id": "RE_REAL_ESTATE",
+    "tags": [
+      {
+        "sector_id": "RE",
+        "industry_id": "RE_REAL_ESTATE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

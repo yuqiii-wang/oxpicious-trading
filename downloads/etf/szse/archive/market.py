@@ -22,6 +22,8 @@ from downloads._common.exchanges.szse import (
     run_szse_download,
 )
 
+SERVICE = "downloads.etf.szse.archive"
+
 
 ETF_EXTRA_PARAMS: Dict[str, Optional[str]] = {
     "txtHistoryMaxDate": None,
@@ -70,9 +72,12 @@ def download_szse_archive_etf(
     out_root: Optional[str] = None,
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
-    sleep_sec: float = 5.0,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
 ) -> dict:
+    # The daily market-archive path paces at 5s via the service file's
+    # "market" request_type row (the default row's 90s is the quarterly-
+    # reports sweep); sleep_sec still overrides the row's base when given.
     return run_szse_download(
         caller_file=str(Path(__file__).resolve()),
         out_dirname="szse_archive",
@@ -87,6 +92,8 @@ def download_szse_archive_etf(
         security_types=["etf"],
         sleep_sec=sleep_sec,
         session=session,
+        service=SERVICE,
+        request_type="market",
         exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
         db_exchange="SZ",

@@ -26,6 +26,8 @@ from downloads._common.exchanges.szse import (
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("archive")
 
+SERVICE = "downloads.stock.szse.archive"
+
 
 STOCK_EXTRA_PARAMS: Dict[str, Optional[str]] = {}
 
@@ -70,7 +72,6 @@ def download_szse_archive_stock(
     out_root: Optional[str] = None,
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
-    sleep_sec: float = 5.0,
     session: Optional[requests.Session] = None,
 ) -> dict:
     return run_szse_download(
@@ -85,8 +86,8 @@ def download_szse_archive_stock(
         end_date=end_date,
         start_date=start_date,
         security_types=["stock"],
-        sleep_sec=sleep_sec,
         session=session,
+        service=SERVICE,
         exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
         db_exchange="SZ",
@@ -94,4 +95,6 @@ def download_szse_archive_stock(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_szse_archive_stock())

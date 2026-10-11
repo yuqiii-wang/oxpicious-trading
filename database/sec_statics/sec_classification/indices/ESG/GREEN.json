@@ -1,0 +1,76 @@
+{
+  "000158": {
+    "name": "上证环保",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "GREEN",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "GREEN"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000827": {
+    "name": "中证环保",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "GREEN",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "GREEN"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930614": {
+    "name": "环保50",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "GREEN",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "GREEN"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931800": {
+    "name": "绿色生态",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "GREEN",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "GREEN"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_GREEN": {
+    "name": "绿色环保综合指数",
+    "exchange": null,
+    "sector_id": "ESG",
+    "industry_id": "GREEN",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "GREEN"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

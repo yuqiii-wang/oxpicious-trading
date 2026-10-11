@@ -1,0 +1,9 @@
+{
+  "service": "database.db_health",
+  "max_parallel": 1,
+  "freq": "always",
+  "schedule": "always-on sampler, adopted by main_run.sh like the pollers; the stream watchdog restarts it when its beat goes stale",
+  "notes": "DB health sampler (replica state, replay backlog, slot WAL retention, pg_wal dir size); grouped under the stream sub-scope (the always-on services).",
+  "source_ref": "database/db_health.py;database/stream_watchdog.py",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

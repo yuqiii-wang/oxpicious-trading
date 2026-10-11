@@ -28,11 +28,11 @@ the last business day. ``--force`` re-fetches every stock.
 
 Anti-bot: bse.cn fronts every endpoint with a WAF cookie challenge (302 +
 Set-Cookie ``C3VK``, ``Ws-Action: cc``); the shared ``requests.Session``
-passes it transparently. The per-stock kline sweep hits one endpoint per
-individual item (~350 requests), so it runs on the project's LONG_SLEEP_INTERVAL
-(90s) cadence — a full backfill takes ~9h. The quotation-list pagination
-(~18 requests) uses the same 5s cadence as the daily price downloader,
-which has run against that endpoint unblocked.
+passes it transparently. Pacing comes from the service's
+external_request_config JSON rows: request_type ``kline`` drives the
+per-stock sweep (one endpoint hit per individual item, ~350 requests —
+a full backfill takes ~9h) and request_type ``list`` the quotation-list
+pagination (~18 requests).
 """
 from __future__ import annotations
 
@@ -41,16 +41,13 @@ import argparse
 import csv
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import requests
 
 from downloads._common import (
     DEFAULT_START_DATE,
-    DEFAULT_TIMEOUT,
-    LONG_SLEEP_INTERVAL,
     MIN_VALID_BYTES,
-    AntiBotConfig,
     AntiBotProxy,
     ensure_canonical_csv,
     is_valid_file,
@@ -60,7 +57,6 @@ from downloads._common import (
 )
 from downloads._common.exchanges.bjs import (
     BSE_KLINE_URL,
-    COLUMNS,
     CSV_ENCODING,
     _write_page,
     fetch_bse_kline,
@@ -70,14 +66,12 @@ from downloads._common.exchanges.bjs import (
 
 logger = setup_logger("bse_archive")
 
+SERVICE = "downloads.stock.bse.archive"
+
 # Per-stock archive directory, sibling of temps/bse_trend/ (mirrors
 # temps/sse_archive/ next to temps/sse_trend/).
 ARCHIVE_DIRNAME = "bse_archive"
 TREND_DIRNAME = "bse_trend"
-
-# Quotation-list pagination cadence — same 5s the daily price downloader
-# uses against the same endpoint.
-LIST_SLEEP_SEC = 5.0
 
 
 def _find_earliest_trend_date(trend_dir: Path) -> Optional[date]:
@@ -144,12 +138,9 @@ def download_bse_archive(
         threshold_str, DEFAULT_START_DATE, threshold_str,
     )
 
-    list_proxy = AntiBotProxy(AntiBotConfig(
-        rotate_browser_profile=False,
-        base_sleep_sec=LIST_SLEEP_SEC,
-        enable_host_tracking=True,
-        timeout=DEFAULT_TIMEOUT,
-    ))
+    # Quotation-list pagination — the service's "list" external_request_config
+    # row (stable UA, no rotation; pacing/timeouts resolve from the JSON).
+    list_proxy = AntiBotProxy(service=SERVICE, request_type="list")
     stocks = fetch_bse_stock_list(sess, proxy=list_proxy)
     if not stocks:
         logger.error("No BSE stocks found")
@@ -168,15 +159,12 @@ def download_bse_archive(
                 len(skip_codes), len(stocks), threshold_str,
             )
 
-    # Per-stock kline sweep — one endpoint hit per individual item, so use
-    # the project's long anti-bot cadence (LONG_SLEEP_INTERVAL, 90s).
-    kline_proxy = AntiBotProxy(AntiBotConfig(
-        rotate_browser_profile=False,
-        base_sleep_sec=LONG_SLEEP_INTERVAL,
-        sleep_jitter=0.3,
-        enable_host_tracking=True,
-        timeout=DEFAULT_TIMEOUT,
-    ))
+    # Per-stock kline sweep — one endpoint hit per individual item, so it
+    # runs on the service's aggressive "kline" external_request_config row
+    # (90s base sleep, rotation off — the BSE endpoints need specific
+    # headers (Content-Type / X-Requested-With) that fingerprint overlay
+    # would clobber; the bjs adapters enforce the same invariant).
+    kline_proxy = AntiBotProxy(service=SERVICE, request_type="kline")
 
     downloaded = 0
     skipped = 0
@@ -247,8 +235,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(
         description="Download BSE HISTORICAL per-stock daily price archive "
                     "(kline endpoint behind the company detail page, one "
-                    "request per stock at the 90s long-sleep cadence). "
-                    "For TODAY's snapshot, use downloads.stock.bse.price."
+                    "request per stock at the service's ``kline`` pacing "
+                    "cadence). For TODAY's snapshot, use "
+                    "downloads.stock.bse.price."
     )
     ap.add_argument("--force", action="store_true",
                     help="Re-fetch stocks whose archive file already covers "
@@ -256,4 +245,6 @@ if __name__ == "__main__":
     ap.add_argument("--limit", type=int, default=None,
                     help="Fetch at most N stocks (testing only).")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_bse_archive(force=args.force, limit=args.limit))

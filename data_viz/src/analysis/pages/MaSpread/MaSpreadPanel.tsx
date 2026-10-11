@@ -623,6 +623,12 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   //     red bottom-half drops; null = off. A fresh pick loads the
   //     "rsiranks" extras group; the pick applies when it resolves.
   const [rsiDays, setRsiDays] = useState<number[]>([]);
+  // the RSI Trends population toggle (upper-right of the section, once a
+  // day is picked): null = all days; "typical" / "re-entry" = the rsi
+  // analysis layer's is_typical populations only
+  const [rsiPopulation, setRsiPopulation] = useState<
+    "typical" | "re-entry" | null
+  >(null);
   const [rsiTopPct, setRsiTopPct] = useState<number | null>(null);
   // Pure toggle (functional update — rapid clicks can't race the closure);
   // the arm/clear side effects live in the effect below.
@@ -1278,6 +1284,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                   : "off",
               rsiTrendMode: rsiLinesActive,
               rsiWindows: rsiDays,
+              rsiPopulation,
               derivTrend,
               ohlcMode,
               roofFloorWindow,
@@ -1306,6 +1313,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       bollingerK,
       chartOverlay,
       rsiDays,
+      rsiPopulation,
       rsiLinesActive,
       derivTrend,
       ohlcMode,
@@ -1683,7 +1691,47 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               pct again clears it); the picked days scope the ranks and
               overlapping windows stack the shade darker. Both rows sit on
               the section grid's period columns (3-7) like the other rows. */}
-          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1, position: "relative" }}>
+            {/* Population toggle — the section's upper-right corner, once
+                an RSI trend is selected: typical = the first-touch
+                episodes' days (each episode's first tail day AND its
+                gap-1 continuation days — the deep path); re-entry = the
+                same-episode re-registrations' days (each re-qualification
+                AND its continuations); neither = all days. */}
+            {rsiDays.length > 0 && (
+              <Stack
+                direction="row"
+                spacing={0.5}
+                sx={{ position: "absolute", top: -30, right: 0 }}
+              >
+                <Chip
+                  label="typical"
+                  size="small"
+                  clickable
+                  color={rsiPopulation === "typical" ? "secondary" : "default"}
+                  variant={rsiPopulation === "typical" ? "filled" : "outlined"}
+                  onClick={() =>
+                    setRsiPopulation(
+                      rsiPopulation === "typical" ? null : "typical",
+                    )
+                  }
+                  sx={PERIOD_CHIP_SX}
+                />
+                <Chip
+                  label="re-entry"
+                  size="small"
+                  clickable
+                  color={rsiPopulation === "re-entry" ? "secondary" : "default"}
+                  variant={rsiPopulation === "re-entry" ? "filled" : "outlined"}
+                  onClick={() =>
+                    setRsiPopulation(
+                      rsiPopulation === "re-entry" ? null : "re-entry",
+                    )
+                  }
+                  sx={PERIOD_CHIP_SX}
+                />
+              </Stack>
+            )}
             {/* Row label */}
             <SectionLabel
               id="rsiTrends"
@@ -1907,7 +1955,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
             >
               no streak data for this code — run{" "}
-              <code>python -m analyze.mov_ave_spread</code> to build
+              <code>python -m analysis.mov_ave_spread</code> to build
               analysis.mov_ave_high_low_pct_streaks
             </Typography>
           )}

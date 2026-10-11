@@ -5,6 +5,11 @@ real-time snapshot fetcher that polls the SSE ``yunhq.sse.com.cn`` list
 endpoint (the JSONP backing the "刷新" button on the report page) for both
 the equity (股票) and index (指数) tabs.
 
+All requests go through the shared ``AntiBotProxy`` (audit +
+host-blocking detection + inter-page sleep after each successful page),
+so every poll lands in ``monitor.external_resource_audit`` under the
+streamer's service name.
+
 The fetcher is generic over the ``list_url`` parameter so it can serve both
 asset flows:
   * equity endpoint → stock snapshot (full OHLCV + last/volume/amount)
@@ -12,19 +17,13 @@ asset flows:
 """
 from __future__ import annotations
 
-import time as _time
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 import requests
 
-from downloads._common import (
-    DEFAULT_TIMEOUT,
-    HostStatusTracker,
-    setup_logger,
-)
+from downloads._common import AntiBotProxy, setup_logger
 from downloads._common.exchanges.sse import (
-    INTER_PAGE_SLEEP_SEC,
     JSONP_CALLBACK,
     PAGE_SIZE,
     SSE_HEADERS,
@@ -35,6 +34,8 @@ from downloads._common.exchanges.sse import (
 )
 
 logger = setup_logger("stream_sse")
+
+SERVICE = "downloads.stream.sse.price"
 
 
 def _extract_update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
@@ -64,40 +65,57 @@ def _extract_update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
+def build_stream_proxy() -> AntiBotProxy:
+    """The stream's shared proxy: one instance paces ALL SSE legs (stock /
+    ETF / index / options all sit behind the same yunhq host, so their
+    inter-page sleeps must share one cadence). Pacing and toggles (base
+    sleep, jitter, timeouts, rotation off — the yunhq endpoints want the
+    page's own stable header set) resolve from the service's
+    external_request_config JSON row (request_type "page").
+
+    Built directly from ``AntiBotProxy(service=..., request_type="page")``
+    rather than ``build_sse_proxy(SERVICE)`` because the adapter resolves
+    request_type "default" — a row this service's file does not define,
+    which would fall through to default.json's 60s instead of the page
+    row's inter-page sleep.
+    """
+    return AntiBotProxy(service=SERVICE, request_type="page")
+
+
 def _fetch_page(
     session: requests.Session,
     begin: int,
     end: int,
     list_url: str = SSE_LIST_URL,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch one page from an SSE list endpoint with full real-time fields.
 
     Returns the raw parsed JSONP payload (caller drives pagination +
-    update-datetime extraction) so the polling cadence is not slowed by the
-    anti-bot sleep. ``list_url`` selects the asset type (equity/fund/index);
-    ``host_tracker`` records 4xx errors for blocking detection.
+    update-datetime extraction). ``list_url`` selects the asset type
+    (equity/fund/index); the proxy audits the request, tracks 4xx blocking
+    and sleeps the service row's inter-page sleep (jittered) after each
+    success.
     """
+    if proxy is None:
+        proxy = build_stream_proxy()
     params = {
         "callback": JSONP_CALLBACK,
         "begin": str(begin),
         "end": str(end),
         "select": STREAM_SELECT_FIELDS,
     }
-    try:
-        resp = session.get(
-            list_url,
-            params=params,
-            headers=SSE_HEADERS,
-            timeout=DEFAULT_TIMEOUT,
-        )
-    except requests.RequestException as e:
-        logger.warning("SSE list page %d-%d request failed: %s", begin, end, e)
+    resp = proxy.get(
+        session,
+        list_url,
+        params=params,
+        headers=SSE_HEADERS,
+        logger=logger,
+        log_tag=f"[sse-page {begin}-{end}] ",
+    )
+    if resp is None:
+        logger.warning("SSE list page %d-%d request failed", begin, end)
         return None
-
-    if resp.status_code != 200 and host_tracker is not None:
-        host_tracker.record_error(list_url, resp.status_code, resp.reason)
-
     try:
         return _parse_jsonp(resp.text)
     except ValueError as e:
@@ -134,7 +152,7 @@ def fetch_snapshot(
     session: requests.Session,
     list_url: str = SSE_LIST_URL,
     page_size: int = PAGE_SIZE,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
     allowed_codes: Optional[set] = None,
 ) -> Tuple[Optional[datetime], dict]:
     """Fetch all SSE securities of one type in a single snapshot.
@@ -148,7 +166,9 @@ def fetch_snapshot(
     dropped before entering the snapshot — used for indices to implement
     "only load to existing index" (skip the ~200 SSE indices we don't track).
     """
-    first = _fetch_page(session, 0, page_size, list_url=list_url, host_tracker=host_tracker)
+    if proxy is None:
+        proxy = build_stream_proxy()
+    first = _fetch_page(session, 0, page_size, list_url=list_url, proxy=proxy)
     if first is None:
         return None, {}
     update_dt = _extract_update_datetime(first)
@@ -165,7 +185,7 @@ def fetch_snapshot(
     written = len(first.get("list", []) or [])
     page_index = 1
     while written < total:
-        if host_tracker and host_tracker.is_blocked(list_url):
+        if proxy.is_blocked(list_url):
             logger.warning(
                 "SSE host blocked mid-pagination (%s), using partial snapshot (%d codes)",
                 list_url, len(snapshot),
@@ -173,8 +193,10 @@ def fetch_snapshot(
             break
         begin = page_index * page_size
         end = begin + page_size
-        _time.sleep(INTER_PAGE_SLEEP_SEC)
-        payload = _fetch_page(session, begin, end, list_url=list_url, host_tracker=host_tracker)
+        # Inter-page pacing is the proxy's post-success sleep — no inline
+        # sleep here (the proxy-space cadence covers failed pages too, by
+        # ending the sweep).
+        payload = _fetch_page(session, begin, end, list_url=list_url, proxy=proxy)
         if payload is None:
             logger.warning("page %d (begin=%d) failed; using partial snapshot", page_index + 1, begin)
             break

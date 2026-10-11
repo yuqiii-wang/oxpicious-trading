@@ -1,7 +1,8 @@
-"""Runner for the BSE index (北证50) daily archive downloader.
+"""Runner for the BSE index daily archive downloader (北证50 + 北证专精特新).
 
 Mirrors ``downloads.index.cnindex.archive.runner`` (same content gate, raw
-artifact, append-only merge) against BSE's own kline endpoint:
+artifact, append-only merge) against each index's own kline endpoint in
+``BSE_INDEX_ENDPOINTS``:
 
   1. CONTENT gate: skip when the history CSV already covers the newest
      session BSE could have published — ``last_business_day(today-1)``.
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,12 +28,13 @@ import requests
 from _common._holidays_and_weekdays import last_business_day
 
 from downloads._common import (
-    AntiBotConfig,
     AntiBotProxy,
     RunStats,
+    antibot_config_for,
     is_fresh_within,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 from downloads._common.exchanges.bjs import (
     BSE_INDEX_CODES,
@@ -56,14 +59,19 @@ SESSION_END_HOUR = 16
 # not re-hit the network on every run). Same value as cnindex.
 REFETCH_MIN_INTERVAL_HOURS = 6.0
 
-SLEEP_SEC = 3.0
+SERVICE = "downloads.index.bse.archive"
+
+# Anti-bot sleep between requests — resolved from the service's
+# external_request_config JSON row (sleep_sec), overridable per-run with
+# --sleep-sec.
+SLEEP_SEC = sleep_sec_for(SERVICE)
 
 
 def download_bse_index_archive(
     *,
     index_codes: Optional[List[str]] = None,
     force: bool = False,
-    sleep_sec: float = SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Refresh the BSE index daily archive CSVs (incremental by default)."""
     if index_codes is None:
@@ -80,8 +88,15 @@ def download_bse_index_archive(
     )
 
     session = requests.Session()
-    proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False,
-                                       base_sleep_sec=sleep_sec))
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles — the row keeps the proxy
+    # rotation-off); an explicit --sleep-sec overrides the row's base sleep
+    # only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
     stats = RunStats()
 
     for code in index_codes:
@@ -103,7 +118,8 @@ def download_bse_index_archive(
             stats.skipped_cached += 1
             continue
 
-        records = fetch_bse_index_kline(session, proxy=proxy)
+        records = fetch_bse_index_kline(session, code, proxy=proxy,
+                                        service=SERVICE)
         if not records:
             logger.warning("  [kline] %s: fetch failed or no records", code)
             stats.failed += 1
@@ -119,7 +135,7 @@ def download_bse_index_archive(
         except OSError as e:
             logger.warning("  [kline] %s: could not save raw json: %s", code, e)
 
-        rows = bse_index_kline_rows(records)
+        rows = bse_index_kline_rows(records, code=code, name=name)
         today_iso = _dt.date.today().isoformat()
         if _dt.datetime.now().hour < SESSION_END_HOUR:
             # Live intraday row — appending it would freeze today's partial

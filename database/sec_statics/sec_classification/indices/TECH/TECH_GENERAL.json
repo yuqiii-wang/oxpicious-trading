@@ -1,0 +1,270 @@
+{
+  "931087": {
+    "name": "科技龙头",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931165": {
+    "name": "新兴科技100",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931186": {
+    "name": "中证科技",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931187": {
+    "name": "科技100",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931380": {
+    "name": "科技50",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931442": {
+    "name": "SHS科技100",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931447": {
+    "name": "科技先锋",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931524": {
+    "name": "SHS科技龙头",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931573": {
+    "name": "港股通科技",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931574": {
+    "name": "港股科技",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931696": {
+    "name": "科技50策略",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931785": {
+    "name": "智选沪深港科技50",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932038": {
+    "name": "央企科技引领",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932052": {
+    "name": "央企科技创新",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_TECH_GENERAL": {
+    "name": "科技综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "TECH_GENERAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

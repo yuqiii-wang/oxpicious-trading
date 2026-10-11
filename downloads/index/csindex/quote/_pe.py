@@ -10,9 +10,7 @@ import requests
 
 from downloads._common import (
     MIN_VALID_BYTES,
-    DEFAULT_SLEEP_SEC,
     AntiBotProxy,
-    AntiBotConfig,
     is_valid_file,
     is_error_html,
 )
@@ -20,8 +18,8 @@ from downloads._common import (
 from ._config import (
     API_INDEX_CSI_DS_PE,
     CSINDEX_HEADERS,
-    CSINDEX_TIMEOUT,
     logger,
+    make_proxy,
     ymd,
     detail_referer,
 )
@@ -40,7 +38,8 @@ def fetch_pe_series(
     PEG ratio), with values in the 10-30 range typical of P/E. We treat it as PE.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+        # Pacing from the service's "pe" external_request_config row.
+        proxy = make_proxy("pe")
 
     params = {
         "indexCode": index_code,
@@ -55,7 +54,6 @@ def fetch_pe_series(
         API_INDEX_CSI_DS_PE,
         params=params,
         headers=base_headers,
-        timeout=CSINDEX_TIMEOUT,
         logger=logger,
         log_tag=f"  [pe-fetch {index_code}]",
     )

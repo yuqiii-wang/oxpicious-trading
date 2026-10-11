@@ -87,6 +87,19 @@ export interface TradingSignal {
    *  label (calm / hot / panic / quiet); recorded context, never a gate,
    *  and the same split the strategy itself registered under. */
   regime_state: string;
+  /** The event's population VARIANT: FALSE = the plain record, TRUE =
+   *  the OHLCV-boost twin (the SAME trigger, confidence trust-weighted
+   *  by the day-0 ohlcv score). The history panel's OHLCV toggle picks
+   *  which variant renders. Live-tier rows carry no twins (FALSE). */
+  is_ohlcv_boosted: boolean;
+  /** The trigger day's episode-PASS attribution: TRUE = the typical
+   *  pass (buy: the isolated first touch; sell: the re-test), FALSE =
+   *  the re-entry pass (flicker re-crossings / continuations /
+   *  isolated breakouts — the noisy population). The history panel's
+   *  pass toggle filters on it. A live tick winning a day inherits the
+   *  history anchor's stamp; null = no stamped anchor for the day
+   *  (pre-migration rows, live-only days). */
+  is_typical: boolean | null;
   /** The code's SIGNAL-DAY count over the last 20 TRADING DAYS ending on
    *  `date`: one day = one entry (its highest-confidence row), across all
    *  signal types — the main table's "20d count" column. */
@@ -122,7 +135,7 @@ export async function runTradingSignals(
   }
 }
 
-/** Trigger one batch run of `python -m analyze.analysis_signals --live …`:
+/** Trigger one batch run of `python -m analysis.analysis_signals --live …`:
  *  the analysis-signal pipeline + day-close mirror (every not-yet-recorded
  *  signal day becomes ONE live_signals observation at that day's close,
  *  time 15:00). Used for old-date refreshes, where no intraday data exists.
@@ -228,9 +241,11 @@ export function fetchTradingSignalHistory(
 // ---------------------------------------------------------------------------
 
 /** One fitted depth-response curve (analysis_signals.signal_curves at
- *  its LATEST snapshot): mu(s) = mu_center + slope * (s - s_center)
- *  over the Gaussian depth score s = Phi^-1(1 - q) of the trigger
- *  day's tail probability; tail_bars maps tail pct ("1".."10") to the
+ *  its LATEST snapshot): curve(s) = mu_center + interp(fit_curve, s)
+ *  over the Gaussian depth score s = Phi^-1(1 - q) of the day's tail
+ *  probability — the pooled episode-weighted isotonic shape over EVERY
+ *  tail-episode day (registrations + continuations, each day weighted
+ *  1/episode_size); tail_bars maps tail pct ("1".."25") to the
  *  window's RSI bar (the s -> RSI-value mapping). */
 export interface SignalCurve {
   code: string;
@@ -243,15 +258,61 @@ export interface SignalCurve {
   regime_state: string;
   start_date: string;
   end_date: string;
-  /** The cell's delay-0 trigger count over the window (the fit's sample). */
+  /** The cell's population VARIANT (PK member): FALSE = the plain
+   *  fit, TRUE = the OHLCV-boost twin (the same in-band days, every
+   *  statistic weight-blended by episode x day-0 ohlcv score). The
+   *  overlay's toggle picks which variant to render. */
+  is_ohlcv_boosted: boolean;
+  /** FALSE if not usually observed for a signal, e.g., RSI re-entry
+   *  is registered; TRUE if typical, e.g., RSI isolated ups/downs —
+   *  the cell's episode-PASS population (PK member): TRUE = the
+   *  first-touch passes' days (each episode's first tail day AND its
+   *  gap-1 continuations), FALSE = the re-entry passes' days. The
+   *  overlay's toggle picks which population to render. */
+  is_typical: boolean;
+  /** The cell's in-band day count over the window (the fit's raw
+   *  sample). */
   n: number;
-  /** y-bar: the cell's sign-aligned blended mean forward change at its
-   *  own depth center (fraction; > 0 = the reversal worked). */
+  /** The cell's EPISODE count (the effective sample: each episode's
+   *  days carry weight 1/episode_size, summing to exactly 1). */
+  n_episodes: number;
+  /** y-bar: the cell's episode-weighted sign-aligned blended mean
+   *  forward change at its own depth center (fraction; > 0 = the
+   *  reversal worked). */
   mu_center: number;
   /** s-bar: the cell's own mean depth score. */
   s_center: number;
-  /** b: dmu/ds — the pooled (side, regime) OLS slope (buy side >= 0). */
-  slope: number;
+  /** The pooled (index class, side, regime) WEIGHTED ISOTONIC shape
+   *  as {"s": offset} at the 25 1%-band-center knot depths — the PAVA
+   *  values are monotone, so linear interpolation between the knots
+   *  (what this client does) is a CONTINUOUS MONOTONE curve.
+   *  curve(s) = mu_center + interp(fit_curve, s). Significance-gated:
+   *  all-zero offsets (flat at mu_center) when the pool's |fit_t| < 2. */
+  fit_curve: Record<string, number>;
+  /** The pooled weighted Spearman rho(s, y) — the shape's direction
+   *  and strength (gate input). */
+  fit_rho: number;
+  /** The cluster-adjusted significance t over the pool's EPISODE
+   *  count (fit_curve is flat exactly when |fit_t| < 2). */
+  fit_t: number;
+  /** The cell's shallowest MEASURED depth score — draw the fit only
+   *  within [s_lo, s_hi] (no extrapolation). */
+  s_lo: number;
+  /** The cell's deepest MEASURED depth score. */
+  s_hi: number;
+  /** The cell's EMPIRICAL depth response at 1% stride: band key
+   *  (1..25, the deeper edge pct) -> mean sign-aligned response of
+   *  the triggers whose q falls in ((k-1)%, k%] (absent = empty
+   *  band) — the shape the linear mu(s) fit summarizes. */
+  band_curve: Record<string, number> | null;
+  /** Sign-aligned mean forward change at each horizon (fraction, null
+   *  when no trigger carries the leg) — the path behind the
+   *  0.10/0.15/0.50/0.15/0.10 blend's next/3d/5d/10d/20d legs. */
+  mu_1d: number | null;
+  mu_3d: number | null;
+  mu_5d: number | null;
+  mu_10d: number | null;
+  mu_20d: number | null;
   /** Tail pct ("1" | "2" | "3" | "5" | "10") -> the window's RSI bar. */
   tail_bars: Record<string, number>;
 }

@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Tuple
 
 import datetime
 
+from _common.labels import SEC_TYPE_CODE
 from strategy._common.constants import SEC_TYPE_BASIC_STATS_TABLE
 
 
@@ -42,7 +43,7 @@ async def discover_available_codes(conn, sec_type: str) -> List[str]:
     Used by the ``--all`` flag so any strategy can backtest every security
     that has analysis data without manual --codes entry.
     """
-    rows = await conn.fetch(_DISCOVER_SQL, sec_type)
+    rows = await conn.fetch(_DISCOVER_SQL, SEC_TYPE_CODE[sec_type])
     return [r["code"] for r in rows]
 
 

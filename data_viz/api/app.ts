@@ -33,6 +33,8 @@ import strategyRoutes from "./routes/strategy.js";
 import newsRoutes from "./routes/news.js";
 import aiRoutes from "./routes/ai.js";
 import cacheRoutes from "./routes/cache.js";
+import monitorRoutes from "./routes/monitor.js";
+import configRoutes from "./routes/config.js";
 
 const app: express.Application = express();
 
@@ -60,6 +62,8 @@ app.use("/api/strategy", strategyRoutes);
 app.use("/api/news", newsRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/cache", cacheRoutes);
+app.use("/api/monitor", monitorRoutes);
+app.use("/api/config", configRoutes);
 
 /**
  * Health check

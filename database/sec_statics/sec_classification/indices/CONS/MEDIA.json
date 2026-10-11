@@ -1,0 +1,63 @@
+{
+  "399971": {
+    "name": "中证传媒",
+    "exchange": "SZ",
+    "sector_id": "CONS",
+    "industry_id": "MEDIA",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "MEDIA"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930781": {
+    "name": "中证影视",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "MEDIA",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "MEDIA"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_MEDIA": {
+    "name": "传媒综合指数",
+    "exchange": null,
+    "sector_id": "CONS",
+    "industry_id": "MEDIA",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "MEDIA"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30365": {
+    "name": "文娱传媒",
+    "exchange": "HK",
+    "sector_id": "CONS",
+    "industry_id": "MEDIA",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "MEDIA"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

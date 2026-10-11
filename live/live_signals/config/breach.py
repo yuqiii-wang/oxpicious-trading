@@ -52,7 +52,7 @@ def resolve_scale(sig: dict, excess: float) -> float:
 def scaled_confidence_bp(sig: dict, excess: float) -> int:
     """One active row's SCALED breach confidence in integer basis
     points: ROUND(10000 x confidence_base x scale(|excess|)). The
-    history writer (analyze.analysis_signals) applies the identical
+    history writer (analysis.analysis_signals) applies the identical
     formula — the two breach tiers stay comparable."""
     conf_base = float(sig.get("confidence_base") or 0.0)
     scale = resolve_scale(sig, excess)

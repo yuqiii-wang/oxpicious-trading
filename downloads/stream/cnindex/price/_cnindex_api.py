@@ -28,10 +28,12 @@ from typing import Any, Dict, Optional
 
 from downloads._common import (
     COMMON_BASE_HEADERS,
-    DEFAULT_SLEEP_SEC,
-    AntiBotConfig,
     AntiBotProxy,
 )
+
+# Dotted service name for the external_request_config JSON row (rt=page:
+# sleep 20s, jitter 0.5, timeouts 15/60) and the resource audit.
+SERVICE = "downloads.stream.cnindex.price"
 
 # CNINDEX-published indices not covered by SSE/SZSE/CSIndex streamers.
 #   399303 = 国证2000, 399311 = 国证1000, 399310 = 国证A50
@@ -45,9 +47,6 @@ CNINDEX_INTRADAY_API = CNINDEX_HQ_BASE + "/market/market/getIndexRealTimeData"
 CNINDEX_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)
 CNINDEX_HEADERS["Accept"] = "application/json, text/plain, */*"
 CNINDEX_HEADERS["Referer"] = "https://www.cnindex.com.cn/"
-
-# Request timeout (connect, read)
-CNINDEX_TIMEOUT = (15, 60)
 
 # Bar array column indices:
 #   [timestamp, current, high, open, low, close, chg, percent,
@@ -93,14 +92,15 @@ def fetch_intraday_data(
     ``indexName``), or None on failure.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+        # Pacing (sleep/jitter/timeouts) comes from the service's
+        # external_request_config JSON row (request_type "page").
+        proxy = AntiBotProxy(service=SERVICE, request_type="page")
 
     resp = proxy.get(
         session,
         CNINDEX_INTRADAY_API,
         params={"indexCode": code},
         headers=CNINDEX_HEADERS,
-        timeout=CNINDEX_TIMEOUT,
     )
 
     if resp is None:

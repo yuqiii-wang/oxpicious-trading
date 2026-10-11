@@ -1,0 +1,28 @@
+{
+  "899050": {
+    "name": "北证50",
+    "exchange": "BJ",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_BSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_BSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "899601": {
+    "name": "北证专精特新",
+    "exchange": "BJ",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_BSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_BSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

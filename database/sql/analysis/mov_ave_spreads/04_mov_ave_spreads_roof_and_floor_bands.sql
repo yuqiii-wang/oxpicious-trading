@@ -5,7 +5,7 @@
 -- ============================================================================
 
 -- Re-runnable DDL: the table is derived data, fully recomputed by the
--- next analyze.mov_ave_spread run after a DROP (the incremental
+-- next analysis.mov_ave_spread run after a DROP (the incremental
 -- missing-date check sees every date missing).
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_roof_and_floor_bands CASCADE;
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_bands';
@@ -91,7 +91,7 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_bands';
 --  count == cardinality(dates) by construction for both families
 --  (dates ascending, inside the row's own trailing window).
 --
---  Populated by the internal bands step of `analyze.mov_ave_spread`
+--  Populated by the internal bands step of `analysis.mov_ave_spread`
 --  (roof_floor_bands.py — reuses the parent pipeline's source DataFrame,
 --  no second DB round-trip). Sibling of run_ohlc (same windows, same
 --  anchors); the UI's "shade" toggle reads this table instead of
@@ -100,7 +100,7 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_bands';
 --  transparent triangle = breach).
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_spreads_roof_and_floor_bands (
-    sec_type          TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    sec_type          SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code              TEXT         NOT NULL,
     date              DATE         NOT NULL,
     period            INTEGER      NOT NULL,  -- window size in trading days
@@ -129,7 +129,7 @@ CREATE TABLE analysis.mov_ave_spreads_roof_and_floor_bands (
 SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_roof_and_floor_bands', 32);
 
 COMMENT ON TABLE  analysis.mov_ave_spreads_roof_and_floor_bands IS 'Roof/floor SHADE BANDS + per-band anchor-band breach/bounce analytics (LONG format): one row per (code, sec_type, date, period ∈ {20,60,120,255,500,750,1275}). Band edges: upper_band_low/high = min/max of the window''s two high anchors (high_over_period = 1st-half max CLOSE, high_2nd_over_period = 2nd anchor''s INTRADAY HIGH — the pair is stored in DATE order, hence min/max); lower_band_low/high = the mirror on the two low anchors. Event σ: sigma[i] = population std (ddof=0) of the daily close changes over the trailing 20 trading rows ending at i-1 (shifted 1 row; NULL until 20 valid diffs). BREACH/BOUNCE are ANCHOR-BAND events — measured against the ROW''S OWN band AS THE UI DRAWS IT: the near edge after the shade cut (the trailing-20-row close extremes at the anchor raise a roof''s bottom / lower a floor''s top, with the anchor-close fallback and the sub-visible < 0.02% skip), over the row''s window [date-period+1, date]. Day i is an upper bounce iff |close[i] - roof_edge| <= sigma[i] AND close[i] >= close[i-1] AND close[i+1] < close[i] (±1σ touch of the drawn edge, local peak, turned back); an upper breach iff close[i] > roof_edge + sigma[i] with close[i-1] <= roof_edge (a DIRECTIONAL entry into the band from OUTSIDE: the prior close sat at/below the drawn near edge and the day cleared the +1σ breach line upward — an up move by construction; a close already inside the band that later clears +1σ is not a breach). Mirror on the floor''s drawn top edge: close[i-1] >= floor_edge with close[i] < floor_edge - sigma[i] — a downward entry from above the floor. Mutually exclusive by construction. The UI reads the anchor row''s *_dates arrays directly as its marker set. Source: same DataFrame as the mov_ave_spread parent pipeline (roof_floor_bands.py internal step).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_bands.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_bands.sec_type IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_bands.code IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_bands.date IS 'Business date (trading day) — the anchor date of the shade band (the window ends here).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_and_floor_bands.period IS 'Rolling-window size in trading days: one of {20, 60, 120, 255, 500, 750, 1275}. Part of the PK — the long format stores one row per (code, sec_type, date, period).';

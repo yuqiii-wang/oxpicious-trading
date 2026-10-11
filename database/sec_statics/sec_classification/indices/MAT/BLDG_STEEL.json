@@ -1,0 +1,54 @@
+{
+  "930606": {
+    "name": "中证钢铁",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "BLDG_STEEL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "BLDG_STEEL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931009": {
+    "name": "建筑材料",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "BLDG_STEEL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "BLDG_STEEL"
+      },
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      },
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_CONSTR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_BLDG_STEEL": {
+    "name": "建材/钢铁综合指数",
+    "exchange": null,
+    "sector_id": "MAT",
+    "industry_id": "BLDG_STEEL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "BLDG_STEEL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

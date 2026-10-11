@@ -45,18 +45,21 @@ from _common.playwright import (
     sleep_between_requests,
     wait_for_table_data,
 )
-from downloads._common import clean_table_cell, setup_logger
+from downloads._common import (
+    clean_table_cell,
+    request_config_for,
+    setup_logger,
+    sleep_sec_for,
+)
 from downloads.futures.cffex.trend.config import (
     BROWSER_TYPE,
     CFFEX_BASE_ORIGIN,
     CFFEX_TREND_URL,
     CSV_HEADERS,
     DATA_LOAD_TIMEOUT,
-    DOWNLOAD_SLEEP_SEC,
     HEADLESS,
     OUTPUT_CSV_ENCODING,
     PAGE_NAVIGATION_TIMEOUT,
-    SLEEP_JIT_RANGE,
     VIEWPORT_HEIGHT,
     VIEWPORT_WIDTH,
     _format_date_for_filename,
@@ -69,6 +72,10 @@ from downloads.futures.cffex.trend.paths import (
 )
 
 logger = setup_logger("cffex_trend")
+
+# Pacing service key — the between-dates sleep and jitter resolve from this
+# service's external_request_config JSON row (request_type "playwright").
+SERVICE = "downloads.futures.cffex.trend"
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +393,7 @@ def _download_with_page(
 def download_trend_batch(
     dates: List[date],
     out_root: Optional[str] = None,
-    sleep_sec: float = DOWNLOAD_SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
 ) -> dict:
     """Download trend data for a batch of dates using a single browser session.
 
@@ -396,11 +403,22 @@ def download_trend_batch(
     Args:
         dates: List of dates to download.
         out_root: Optional override for output directory.
-        sleep_sec: Base sleep seconds between downloads.
+        sleep_sec: Base sleep seconds between downloads (default: the
+            service's external_request_config JSON row, request_type
+            "playwright"; the row's sleep_jitter fraction of that base is
+            the ± seconds range passed to the jittered sleep).
 
     Returns:
         Summary dict with counts.
     """
+    # Pacing from the service's external_request_config JSON row
+    # (request_type "playwright"); an explicit sleep_sec argument overrides
+    # the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = sleep_sec_for(SERVICE, "playwright")
+    pacing_row = request_config_for(SERVICE, "playwright")
+    jitter_sec = pacing_row.sleep_jitter * pacing_row.sleep_sec
+
     result = {
         "downloaded": 0,
         "skipped": 0,
@@ -448,6 +466,6 @@ def download_trend_batch(
 
             # Sleep between downloads with jitter
             if i < len(dates) - 1:
-                sleep_between_requests(sleep_sec, SLEEP_JIT_RANGE, log=logger)
+                sleep_between_requests(sleep_sec, jitter_sec, log=logger)
 
     return result

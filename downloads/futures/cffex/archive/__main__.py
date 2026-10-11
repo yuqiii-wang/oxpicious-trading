@@ -9,7 +9,8 @@ Each ZIP contains daily settlement CSV files named ``{YYYYMMDD}_1.csv``
     持仓量, 持仓变化, 今收盘, 今结算, 前结算, 涨跌1, 涨跌2, Delta
 
 Archive-only: downloads from 2020-01 to the last completed month.
-Uses AntiBotProxy with LONG_SLEEP_INTERVAL (90s) for anti-bot protection.
+Pacing (90s base sleep, jitter, timeouts, anti-bot toggles) resolves from
+the service's external_request_config JSON row (downloads.futures.cffex.archive).
 """
 
 from __future__ import annotations
@@ -25,11 +26,8 @@ from typing import Dict, List, Optional, Set, Tuple
 import requests
 
 from downloads._common import (
-    DEFAULT_TIMEOUT,
     EMPTY_HTML_MAX_BYTES,
-    LONG_SLEEP_INTERVAL,
     MIN_VALID_BYTES,
-    AntiBotConfig,
     AntiBotProxy,
     build_headers_with_referer,
     clean_table_cell,
@@ -39,6 +37,8 @@ from downloads._common import (
     safe_write_bytes,
     setup_logger,
 )
+
+SERVICE = "downloads.futures.cffex.archive"
 
 CFFEX_BASE_URL = "http://www.cffex.com.cn/sj/historysj"
 CFFEX_REFERER = "http://www.cffex.com.cn/cn/lssjxz.html"
@@ -281,6 +281,18 @@ def _is_month_complete_heuristic(month_dir: Path) -> bool:
     return _count_valid_futures_options_pairs(month_dir) >= _MIN_FUTURES_OPTIONS_PAIRS
 
 
+def _is_month_complete(month_dir: Path, expected: Set[str]) -> bool:
+    """Exact check: month_dir exists and holds every CSV the ZIP carried.
+
+    Used on the backward-compat path where the legacy ZIP still exists —
+    ``expected`` is the ZIP's own CSV name set (``_get_expected_csv_names``),
+    so this is exact rather than the pair-count heuristic.
+    """
+    if not expected or not month_dir.exists():
+        return False
+    return all((month_dir / name).is_file() for name in expected)
+
+
 def download_cffex_archive(
     out_root: Optional[str] = None,
     start_date: date = START_DATE,
@@ -296,8 +308,9 @@ def download_cffex_archive(
     month-named subdirectory. Months already downloaded are skipped
     (``--force`` re-downloads everything).
 
-    Uses AntiBotProxy with LONG_SLEEP_INTERVAL (90s) between requests
-    for anti-bot protection.
+    Pacing (base sleep 90s, jitter, timeouts, anti-bot toggles) resolves
+    from the service's external_request_config JSON row
+    (``downloads.futures.cffex.archive``).
     """
     archive_dir = resolve_out_dir(
         str(Path(__file__).resolve()), ARCHIVE_DIRNAME, out_root,
@@ -316,14 +329,10 @@ def download_cffex_archive(
         end_date.strftime("%Y-%m"),
     )
 
-    proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=LONG_SLEEP_INTERVAL,
-        sleep_jitter=0.3,
-        rotate_browser_profile=True,
-        add_random_param=True,
-        enable_host_tracking=True,
-        timeout=DEFAULT_TIMEOUT,
-    ))
+    # Pacing from the service's external_request_config JSON row: base
+    # sleep 90s (the old LONG_SLEEP_INTERVAL), jitter 0.3, all anti-bot
+    # toggles on, timeouts (15, 60).
+    proxy = AntiBotProxy(service=SERVICE)
 
     downloaded = 0
     skipped = 0
@@ -421,7 +430,6 @@ def download_cffex_archive(
             sess,
             url,
             headers=headers,
-            timeout=DEFAULT_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -506,6 +514,8 @@ if __name__ == "__main__":
         help="Override output directory root",
     )
     args = parser.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     start = datetime.strptime(args.start, "%Y-%m").date()
     end = None

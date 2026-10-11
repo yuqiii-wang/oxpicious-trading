@@ -68,6 +68,7 @@ import random
 import re
 import sys
 import time
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -84,12 +85,13 @@ if str(_PROJECT_ROOT) not in sys.path:
 import requests  # noqa: E402
 
 from downloads._common import (  # noqa: E402
-    AntiBotConfig,
     AntiBotProxy,
     DEFAULT_START_DATE,
-    LONG_SLEEP_INTERVAL,
+    antibot_config_for,
     resolve_out_dir,
+    retry_policy_for,
     setup_logger,
+    sleep_sec_for,
 )
 from _common._holidays_and_weekdays import (  # noqa: E402
     business_days,
@@ -102,6 +104,14 @@ from _common._holidays_and_weekdays import (  # noqa: E402
 # ----------------------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------------------
+# Service row set in the static external_request_config JSON tree — the
+# runtime pacing source. Each code path maps to its own request_type row:
+#   crawl    — scheduled download (www.zhihu.com search API, sleep_sec=90)
+#   search   — one-off --question search (sleep_sec=2)
+#   comments — per-item comments fetch (www.zhihu.com api/v4, sleep_sec=1.5,
+#              browser-profile rotation OFF — stable UA)
+SERVICE = "downloads.macro.zhihu.news"
+
 ZHIHU_SEARCH_URL = "https://developer.zhihu.com/api/v1/content/zhihu_search"
 DEFAULT_KEYWORD = "如何看待A股"
 DEFAULT_COUNT = 10
@@ -111,13 +121,15 @@ CACHED_MIN_BYTES = 80  # a valid stored JSON (even with 0 items) is a few hundre
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 EDIT_TIME_TOLERANCE_DAYS = 3  # accept posts published within ±N days of target
 
+# Scheduled crawl cadence (request_type "crawl").
+SLEEP_SEC = sleep_sec_for(SERVICE, "crawl")
 # One-off question mode (--question): a single request, so the anti-bot
-# cadence drops from the scheduled LONG_SLEEP_INTERVAL to something the
-# interactive UI can wait for.
-SEARCH_SLEEP_SEC = 2.0
+# cadence drops from the scheduled crawl row to the interactive "search"
+# row so the UI can wait for it.
+SEARCH_SLEEP_SEC = sleep_sec_for(SERVICE, "search")
 # Comments fetch (--with-comments): per-item cadence against www.zhihu.com
-# (public api/v4 root_comments — no Bearer auth), so a light sleep is enough.
-COMMENT_SLEEP_SEC = 1.5
+# (public api/v4 root_comments — no Bearer auth), from the "comments" row.
+COMMENT_SLEEP_SEC = sleep_sec_for(SERVICE, "comments")
 COMMENT_PAGE_LIMIT = 20  # root comments per page (api max for one call)
 COMMENT_PAGE_CAP = 3     # pages per item — bounds interactive latency
 # Stdout marker prefixing the JSON result envelope. The logger stream also
@@ -315,22 +327,32 @@ def search_zhihu(
     api_key: str,
     *,
     count: int = DEFAULT_COUNT,
-    max_retries: int = 3,
+    max_retries: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """Call the Zhihu search API via the shared anti-bot proxy.
 
     Returns the parsed JSON dict or None. Retries on transient rate-limiting
-    (API ``Code=30001``) or network failures with exponential backoff. The
-    proxy handles browser-fingerprint rotation, the ``random`` query param,
-    host-blocking detection, and the inter-request sleep cadence; auth headers
-    (Authorization / X-Request-Timestamp / Content-Type) are preserved.
+    (API ``Code=30001``) or network failures with exponential backoff
+    (max_retries / backoff base from the service's external_request_config
+    JSON ``search`` row, former inline constants as fallback). The proxy
+    handles browser-fingerprint rotation, the ``random`` query param,
+    host-blocking detection, and the inter-request sleep cadence; the Bearer
+    credential is injected by the proxy's ``api_key`` support and the
+    request-scoped timestamp header travels in *headers*.
     """
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "X-Request-Timestamp": str(int(time.time())),
         "Content-Type": "application/json",
     }
     params = {"Query": query, "Count": count}
+
+    # Retry policy from the service's external_request_config JSON row
+    # (search: max_retries=3, retry_backoff_sec=1); the former inline
+    # constants apply when the row omits them.
+    row_max_retries, row_backoff_sec = retry_policy_for(SERVICE, "search")
+    if max_retries is None:
+        max_retries = row_max_retries if row_max_retries is not None else 3
+    backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
 
     for attempt in range(1, max_retries + 1):
         if proxy.is_blocked(ZHIHU_SEARCH_URL):
@@ -339,11 +361,12 @@ def search_zhihu(
         resp = proxy.get(
             session, ZHIHU_SEARCH_URL,
             params=params, headers=headers,
+            api_key=api_key,
             logger=logger, log_tag="  ",
         )
         if resp is None:
             logger.warning("  request failed (attempt %d/%d)", attempt, max_retries)
-            time.sleep(min(2 ** attempt, 30))
+            time.sleep(min(backoff_sec * 2 ** attempt, 30))
             continue
 
         try:
@@ -458,7 +481,7 @@ def search_zhihu_question(
     *,
     author: Optional[str] = None,
     count: int = DEFAULT_COUNT,
-    sleep_sec: float = SEARCH_SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     out_dir: Optional[Path] = None,
     with_comments: bool = True,
 ) -> Dict[str, Any]:
@@ -473,15 +496,19 @@ def search_zhihu_question(
     the next ``builds.text`` run ingests it, and the parsed result is echoed
     on stdout as a marker-prefixed JSON envelope for the API layer.
 
+    *sleep_sec* defaults to the service's external_request_config JSON
+    ``search`` row; an explicit value overrides only that base sleep.
+
     Returns the envelope dict (also what gets printed).
     """
     if out_dir is None:
         out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIR_NAME)
 
+    if sleep_sec is None:
+        sleep_sec = SEARCH_SLEEP_SEC
     session = requests.Session()
-    proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        enable_host_tracking=True,
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE, "search"), base_sleep_sec=sleep_sec,
     ))
 
     logger.info("question search: %s (author=%s count=%d)", question, author or "-", count)
@@ -650,16 +677,24 @@ def fetch_item_comments(
     session: requests.Session,
     url: str,
     *,
-    sleep_sec: float = COMMENT_SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch all root comments (± replies) for one item Url. [] on any failure.
 
-    Plain GET with fixed browser headers (see _COMMENT_HEADERS) — no Bearer
-    auth, no proxy randomization; a light sleep paces the page calls.
+    Through the service's external_request_config ``comments`` row (rotation
+    OFF, random param OFF, short sleep — rotation and the random query param
+    both trip a 403 on the public root_comments API) — with fixed browser
+    headers (see _COMMENT_HEADERS), no Bearer auth — while still getting
+    audit coverage and the jittered post-success pacing sleep.
     """
     ref = _content_ref(url or "")
     if ref is None:
         return []
+    if sleep_sec is None:
+        sleep_sec = COMMENT_SLEEP_SEC
+    if proxy is None:
+        proxy = AntiBotProxy(service=SERVICE, request_type="comments")
     kind, cid = ref
     rows: List[Dict[str, Any]] = []
     offset = 0
@@ -668,13 +703,13 @@ def fetch_item_comments(
             f"{_COMMENT_API}/{kind}/{cid}/root_comments"
             f"?limit={COMMENT_PAGE_LIMIT}&offset={offset}&order=normal&status=open"
         )
-        try:
-            resp = session.get(api, headers=_COMMENT_HEADERS, timeout=(15, 60))
-        except requests.RequestException as e:
-            logger.warning("  comments request failed %s/%s: %s", kind, cid, e)
-            return rows
-        if resp.status_code != 200:
-            logger.warning("  comments HTTP %d for %s/%s", resp.status_code, kind, cid)
+        resp = proxy.get(
+            session, api, headers=_COMMENT_HEADERS,
+            sleep_sec=sleep_sec,
+            logger=logger, log_tag="  [comments] ",
+        )
+        if resp is None:
+            logger.warning("  comments request failed %s/%s", kind, cid)
             return rows
         try:
             data = resp.json()
@@ -687,21 +722,24 @@ def fetch_item_comments(
         if paging.get("is_end") or not page_items:
             break
         offset += COMMENT_PAGE_LIMIT
-        time.sleep(random.uniform(sleep_sec * 0.8, sleep_sec * 1.2))
     return rows
 
 
 def with_comments_for_items(
     items: List[Dict[str, Any]],
     *,
-    sleep_sec: float = COMMENT_SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Fetch comments for every *items* entry that reports CommentCount > 0.
 
     Returns {ContentID: [comment rows]} (PK-deduped per item — the same
     comment id can never appear twice within one item). Items without a
     parseable content ref or with zero comments are absent from the result.
+    *sleep_sec* defaults to the service's external_request_config JSON
+    ``comments`` row.
     """
+    if sleep_sec is None:
+        sleep_sec = COMMENT_SLEEP_SEC
     session = requests.Session()
     out: Dict[str, List[Dict[str, Any]]] = {}
     fetched = skipped = 0
@@ -830,7 +868,7 @@ def download_zhihu_news(
     lookback: int = DEFAULT_LOOKBACK,
     keyword: str = DEFAULT_KEYWORD,
     count: int = DEFAULT_COUNT,
-    sleep_sec: float = LONG_SLEEP_INTERVAL,
+    sleep_sec: Optional[float] = None,
     force: bool = False,
     with_comments: bool = True,
 ) -> Dict[str, Any]:
@@ -850,10 +888,14 @@ def download_zhihu_news(
         out_dir,
     )
 
+    # Pacing from the service's external_request_config JSON ``crawl`` row
+    # (sleep_sec, jitter, timeouts, toggles); an explicit sleep_sec overrides
+    # the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
     session = requests.Session()
-    proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        enable_host_tracking=True,
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE, "crawl"), base_sleep_sec=sleep_sec,
     ))
     downloaded = skipped_cached = failed = 0
     accepted_total = rejected_total = 0
@@ -994,7 +1036,8 @@ def main() -> None:
                         help=f"Result count per query (1-10). Default: {DEFAULT_COUNT}")
     parser.add_argument("--sleep-sec", type=float, default=None,
                         help="Anti-bot sleep between requests (s). Default: "
-                             f"{LONG_SLEEP_INTERVAL} scheduled / {SEARCH_SLEEP_SEC} question search")
+                             f"external_request_config JSON for {SERVICE} "
+                             f"(crawl={SLEEP_SEC}, search={SEARCH_SLEEP_SEC})")
     parser.add_argument("--out-root", type=str, default=None,
                         help="Output root dir. Default: <project>/temps/zhihu_news")
     parser.add_argument("--force", action="store_true",
@@ -1028,7 +1071,7 @@ def main() -> None:
             get_api_key(),
             author=_b64_arg(args.author_b64) or args.author,
             count=args.count,
-            sleep_sec=args.sleep_sec if args.sleep_sec is not None else SEARCH_SLEEP_SEC,
+            sleep_sec=args.sleep_sec,
             out_dir=resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIR_NAME, args.out_root),
             with_comments=with_comments,
         )
@@ -1040,7 +1083,7 @@ def main() -> None:
         lookback=args.lookback,
         keyword=args.keyword,
         count=args.count,
-        sleep_sec=args.sleep_sec if args.sleep_sec is not None else LONG_SLEEP_INTERVAL,
+        sleep_sec=args.sleep_sec,
         force=args.force,
         with_comments=with_comments,
     )

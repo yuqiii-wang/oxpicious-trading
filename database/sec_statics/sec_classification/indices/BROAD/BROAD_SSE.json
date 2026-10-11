@@ -1,0 +1,371 @@
+{
+  "000001": {
+    "name": "上证指数",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "benchmark_broadmarket"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000002": {
+    "name": "Ａ股指数",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000003": {
+    "name": "Ｂ股指数",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000017": {
+    "name": "新综指",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000020": {
+    "name": "中型综指",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000047": {
+    "name": "上证全指",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000054": {
+    "name": "上证海外",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000055": {
+    "name": "上证地企",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000062": {
+    "name": "上证沪企",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000063": {
+    "name": "上证周期",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000065": {
+    "name": "上证龙头",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000067": {
+    "name": "上证新兴",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000090": {
+    "name": "上证流通",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000094": {
+    "name": "上证上游",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000095": {
+    "name": "上证中游",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000096": {
+    "name": "上证下游",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000098": {
+    "name": "上证F200",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000099": {
+    "name": "上证F300",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000100": {
+    "name": "上证F500",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000131": {
+    "name": "上证高新",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000132": {
+    "name": "上证100",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000133": {
+    "name": "上证150",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000680": {
+    "name": "科创综指",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000802": {
+    "name": "500沪市",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000888": {
+    "name": "上证收益",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000891": {
+    "name": "新兴综指",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "950580": {
+    "name": "上证580",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_SSE": {
+    "name": "上证综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

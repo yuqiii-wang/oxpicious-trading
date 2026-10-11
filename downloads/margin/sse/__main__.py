@@ -29,6 +29,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,18 +38,20 @@ import requests
 
 from downloads._common import (
     DEFAULT_START_DATE,
-    DEFAULT_TIMEOUT,
     EMPTY_MARKER_RETRY_DAYS,
     AntiBotProxy,
-    AntiBotConfig,
+    antibot_config_for,
     build_headers_with_referer,
     business_days,
     last_business_day,
     resolve_out_dir,
     setup_logger,
     single_instance_lock,
+    sleep_sec_for,
 )
 
+
+SERVICE = "downloads.margin.sse"
 
 SSE_QUERY_URL = "https://query.sse.com.cn/commonSoaQuery.do"
 SSE_REFERER = "https://www.sse.com.cn/market/othersdata/margin/sum/"
@@ -149,7 +152,6 @@ def _fetch_page(
         SSE_QUERY_URL,
         params=params,
         headers=SSE_HEADERS,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[{sql_id} {ymd} p{page_no}]",
     )
@@ -379,7 +381,7 @@ def download_sse_margin(
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
     report_types: Optional[List[str]] = None,
-    sleep_sec: float = 5.0,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
 ) -> dict:
     """Download SSE margin (融资融券) data day by day.
@@ -401,7 +403,8 @@ def download_sse_margin(
             trading day; not-yet-published dates are retried on later runs).
         start_date: ``YYYY-MM-DD`` inclusive (default: ``DEFAULT_START_DATE``).
         report_types: Subset of ``["summary", "detail"]`` (default: both).
-        sleep_sec: Sleep between requests for anti-bot throttling.
+        sleep_sec: Sleep between requests for anti-bot throttling
+            (default: the service's external_request_config JSON row).
         session: Optional ``requests.Session`` to reuse.
 
     Returns:
@@ -409,10 +412,15 @@ def download_sse_margin(
     """
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_margin", out_root)
     sess = session or requests.Session()
-    
-    # Create unified AntiBotProxy
-    proxy_config = AntiBotConfig(base_sleep_sec=sleep_sec)
-    proxy = AntiBotProxy(proxy_config)
+
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+    # argument overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = sleep_sec_for(SERVICE)
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
 
     if end_date is None:
         # Walk all the way to the most recent trading day; dates whose
@@ -520,8 +528,10 @@ def download_sse_margin(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     try:
-        with single_instance_lock("downloads.margin.sse"):
+        with single_instance_lock(SERVICE):
             logger.info(download_sse_margin())
     except RuntimeError as exc:
         logger.warning("%s — exiting", exc)

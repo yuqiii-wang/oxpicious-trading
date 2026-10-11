@@ -21,6 +21,11 @@ from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("szse")
 
 
+# Pacing (sleep/jitter/timeouts/anti-bot toggles) resolves from this service's
+# external_request_config JSON row via run_szse_download(service=...).
+SERVICE = "downloads.margin.szse"
+
+
 REPORT_CFGS: Dict[str, Dict[str, str]] = {
     "summary": {
         "catalogid": "1837_xxpl",
@@ -58,12 +63,16 @@ def download_szse_margin(
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
     report_types: Optional[List[str]] = None,
-    sleep_sec: float = 5.0,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
 ) -> dict:
     """
     Download SZSE margin (融资融券) data day by day, covering both the
     market-wide summary and per-security detail report.
+
+    Pacing (sleep/jitter/timeouts/anti-bot toggles) resolves from the
+    ``downloads.margin.szse`` external_request_config JSON row; an explicit
+    *sleep_sec* overrides the row's base sleep only.
 
     Uses CATALOGID=1837_xxpl from
     https://www.szse.cn/disclosure/margin/margin/index.html with ``txtDate``
@@ -111,14 +120,17 @@ def download_szse_margin(
         security_types=security_types,
         sleep_sec=sleep_sec,
         session=session,
+        service=SERVICE,
         exchange="SZ",
         skip_empty_markers=True,
     )
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     try:
-        with single_instance_lock("downloads.margin.szse"):
+        with single_instance_lock(SERVICE):
             logger.info(download_szse_margin())
     except RuntimeError as exc:
         logger.warning("%s — exiting", exc)

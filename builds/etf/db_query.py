@@ -190,7 +190,7 @@ async def fetch_latest_etf_composition(conn, etf_codes=None):
     """Fetch the LATEST composition snapshot per ETF from stats.sec_composition.
 
     Uses temporal extrapolation (latest snapshot applied to all dates),
-    mirroring the index dividend_yield pattern in analyze.pe_and_dividends.
+    mirroring the index dividend_yield pattern in analysis.pe_and_dividends.
 
     Returns DataFrame with columns: etf_code, stock_code, weight_fraction.
     """

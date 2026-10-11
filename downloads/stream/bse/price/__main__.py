@@ -14,18 +14,21 @@ Two assets per cycle, both sourced from www.bse.cn:
     from the delta of the endpoint's cumulative volume — upserted into
     ``stats.stock_intraday_5min`` (FK-less by design; identity rows also go
     to ``stats.stock_identity``).
-  * INDEX (北证50 899050) — one extra GET per cycle
-    (``neeqRealController/getRealBZ50.do``) returning the whole session's
-    per-minute series; every 5-minute window is re-aggregated and idempotently
-    upserted into ``stats.index_intraday_5min`` (no volume column there), with
-    identity rows to ``stats.index_identity``. Restarts self-heal from any
-    point in the session.
+  * INDICES (北证50 899050, 北证专精特新 899601) — one extra GET per index
+    per cycle (``neeqRealController/getRealBZ50.do`` /
+    ``getRealZJTX.do``, see ``BSE_INDEX_ENDPOINTS``) returning the whole
+    session's per-minute series; every 5-minute window is re-aggregated and
+    idempotently upserted into ``stats.index_intraday_5min`` (no volume
+    column there), with identity rows to ``stats.index_identity``. Restarts
+    self-heal from any point in the session. One index's failure never
+    blocks the stock flow or the other index.
 
 Raw sweeps are archived to ``temps/bse_intraday/bse_intraday_YYYYMMDD.csv``
 (stocks, SSE-compatible column schema) and
-``temps/bse_intraday/bse_index_intraday_YYYYMMDD.csv`` (index per-minute rows,
-the only record of the per-minute volume/amount) so missed bars can be
-backfilled from CSV later.
+``temps/bse_intraday/bse_index_intraday_{code}_YYYYMMDD.csv`` (per-index
+per-minute rows, the only record of the per-minute volume/amount) so missed
+bars can be backfilled from CSV later. (Files before 2026-10-10 carry the
+old single-index name ``bse_index_intraday_YYYYMMDD.csv`` — 899050 only.)
 
 Trading hours (Asia/Shanghai): 09:30-11:30, 13:00-15:00 on trading days
 only. Outside trading hours the loop sleeps until the next session; a
@@ -47,17 +50,20 @@ import csv
 import locale as _locale
 import sys
 import time as _time
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
+from typing import Optional
 
 import requests
 
 from downloads._common import (
-    AntiBotConfig,
     AntiBotProxy,
+    antibot_config_for,
     is_trading_day,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 from downloads._common.exchanges.bjs import (
     BSE_HEADERS,
@@ -66,6 +72,7 @@ from downloads._common.exchanges.bjs import (
     fetch_bse_snapshot,
 )
 from _common.db_commons import bulk_upsert, get_db_connection
+from _common.service_heartbeat import register_service
 
 from ._model import (
     CSV_COLUMNS,
@@ -96,11 +103,14 @@ for _s in (sys.stdout, sys.stderr):
 
 logger = setup_logger("stream_bse")
 
-# Anti-bot spacing between the ~18 pages of one sweep. The EOD downloader
-# uses a much longer sleep (5s) because it only runs once; the stream sweeps
-# every minute, so it uses a short spacing that keeps one sweep well inside
-# the default 60s poll interval.
-DEFAULT_PAGE_SLEEP_SEC = 1.5
+SERVICE = "downloads.stream.bse.price"
+
+# Anti-bot spacing between the ~18 pages of one sweep — resolved once at
+# import from the service's external_request_config JSON row (request_type
+# "page"); --page-sleep overrides it for one run. The stream sweeps every
+# poll interval, so this short spacing keeps one sweep well inside the
+# poll row's cycle period.
+DEFAULT_PAGE_SLEEP_SEC = sleep_sec_for(SERVICE, "page")
 
 CSV_SUBDIR = "bse_intraday"
 CSV_PREFIX = "bse_intraday"
@@ -186,18 +196,18 @@ INDEX_CSV_COLUMNS = [
 ]
 
 
-def write_index_minutes_csv(update_dt: datetime, records: list) -> Path:
-    """Append one polled minute-series to the daily index CSV archive.
+def write_index_minutes_csv(update_dt: datetime, records: list,
+                            code: str, name: str) -> Path:
+    """Append one polled minute-series to the per-index daily CSV archive.
 
-    One file per trading day (bse_index_intraday_YYYYMMDD.csv under
-    temps/bse_intraday/), storing the raw per-minute rows — CJL/CJJE are
-    per-minute volume/amount and never reach the DB (index_intraday_5min
-    has no volume column), so the CSV is their only record.
+    One file per trading day per index (bse_index_intraday_{code}_YYYYMMDD.csv
+    under temps/bse_intraday/), storing the raw per-minute rows — CJL/CJJE are
+    per-minute volume/amount and never reach the DB (index_intraday_5min has
+    no volume column), so the CSV is their only record.
     """
     out_dir = resolve_out_dir(__file__, CSV_SUBDIR, None)
     ds = update_dt.strftime("%Y%m%d")
-    out_file = out_dir / f"bse_index_intraday_{ds}.csv"
-    code, name = next(iter(BSE_INDEX_CODES.items()))
+    out_file = out_dir / f"bse_index_intraday_{code}_{ds}.csv"
     rows = []
     for rec in records or []:
         gxsj = str(rec.get("GXSJ") or "").strip()
@@ -231,36 +241,53 @@ def write_index_minutes_csv(update_dt: datetime, records: list) -> Path:
     return out_file
 
 
-def _emit_index_bars(conn, proxy):
-    """Poll getRealBZ50 once and upsert 北证50 5-min bars (idempotent).
+def _emit_one_index_bars(conn, proxy, index_code: str, index_name: str):
+    """Poll one index's realtime endpoint and upsert its 5-min bars (idempotent).
 
-    Isolated from the stock flow: an index-leg failure must never kill the
-    stock streaming loop. Returns the (possibly reconnected) connection.
+    Isolated per index: an index-leg failure must never kill the stock
+    streaming loop or the other index's bars. Returns the (possibly
+    reconnected) connection.
     """
-    index_code, index_name = next(iter(BSE_INDEX_CODES.items()))
     try:
         session = requests.Session()
-        records = fetch_bse_index_realtime(session, proxy=proxy)
+        records = fetch_bse_index_realtime(session, index_code, proxy=proxy,
+                                           service=SERVICE)
         session.close()
         if not records:
-            logger.warning("index sweep returned no data; skipping cycle.")
+            logger.warning("[%s] index sweep returned no data; skipping cycle.",
+                           index_code)
             return conn
         trade_date_str = str(records[-1].get("JSRQ") or "").strip()
         trade_date = datetime.strptime(trade_date_str[:10], "%Y-%m-%d").date()
         identity_rows, bar_rows, latest = aggregate_index_bars(
             records, trade_date, code=index_code, name=index_name,
         )
-        csv_path = write_index_minutes_csv(datetime.now(), records)
+        csv_path = write_index_minutes_csv(datetime.now(), records,
+                                           index_code, index_name)
         if bar_rows:
             conn = _ensure_conn(conn)
             bulk_upsert(conn, "stats.index_identity", identity_rows,
                         ["date", "code"])
             bulk_upsert(conn, "stats.index_intraday_5min", bar_rows,
                         ["date", "code", "time"])
-            logger.info("emitted %d BSE index bars for %s (latest minute=%s) -> %s",
-                        len(bar_rows), trade_date, latest, csv_path.name)
+            logger.info("emitted %d BSE index bars for %s %s (latest minute=%s)"
+                        " -> %s", index_code, trade_date, len(bar_rows), latest,
+                        csv_path.name)
     except Exception as e:  # noqa: BLE001
-        logger.error("index bar emission failed: %s: %s", type(e).__name__, e)
+        logger.error("[%s] index bar emission failed: %s: %s",
+                     index_code, type(e).__name__, e)
+    return conn
+
+
+def _emit_index_bars(conn, proxy):
+    """Poll every BSE index's realtime endpoint and upsert 5-min bars.
+
+    One GET per index per cycle, re-aggregating every 5-min window
+    idempotently from the minute series. Returns the (possibly reconnected)
+    connection.
+    """
+    for index_code, index_name in BSE_INDEX_CODES.items():
+        conn = _emit_one_index_bars(conn, proxy, index_code, index_name)
     return conn
 
 
@@ -268,15 +295,28 @@ def _emit_index_bars(conn, proxy):
 # Main streaming loop
 # ---------------------------------------------------------------------------
 def stream(
-    poll_interval: float = DEFAULT_POLL_INTERVAL_SEC,
+    poll_interval: Optional[float] = None,
     bar_window: int = DEFAULT_BAR_WINDOW,
     once: bool = False,
-    page_sleep: float = DEFAULT_PAGE_SLEEP_SEC,
+    page_sleep: Optional[float] = None,
     index_only: bool = False,
 ) -> None:
+    # Long-lived daemon: resolve pacing from the service's
+    # external_request_config JSON rows ONCE at startup (None = CLI left the
+    # default, which is the JSON row). page_sleep feeds the proxy's base
+    # sleep so a --page-sleep override keeps working.
+    if poll_interval is None:
+        poll_interval = DEFAULT_POLL_INTERVAL_SEC
+    if page_sleep is None:
+        page_sleep = DEFAULT_PAGE_SLEEP_SEC
+
     session = requests.Session()
-    proxy = AntiBotProxy(AntiBotConfig(
-        rotate_browser_profile=False,
+    # Pacing comes from the JSON "page" row (rotation off, timeouts, toggles;
+    # the BSE endpoints need the fixed headers the row's rotation-off
+    # preserves); page_sleep feeds the base so a --page-sleep override keeps
+    # working. Same BSE invariant the exchanges/bjs.py adapters enforce.
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE, "page"),
         base_sleep_sec=page_sleep,
     ))
 
@@ -344,8 +384,9 @@ def stream(
 
             cycle_start = _time.time()
 
-            # Index leg (北证50): one extra GET per cycle, re-aggregating
-            # every 5-min window idempotently from the minute series.
+            # Index legs (北证50 + 北证专精特新): one extra GET per index
+            # per cycle, re-aggregating every 5-min window idempotently from
+            # the minute series.
             conn = _emit_index_bars(conn, proxy)
 
             if index_only:
@@ -358,7 +399,8 @@ def stream(
                     _time.sleep(sleep_sec)
                 continue
 
-            update_dt, snapshot = fetch_bse_snapshot(session, proxy=proxy)
+            update_dt, snapshot = fetch_bse_snapshot(session, proxy=proxy,
+                                                     service=SERVICE)
 
             if update_dt is None or not snapshot:
                 logger.warning("Sweep returned no data; skipping cycle.")
@@ -396,20 +438,25 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Stream BSE (北交所) stock prices into 5-min OHLCV bars "
                     "(quotation-table snapshot polling).")
-    ap.add_argument("--interval", type=float, default=DEFAULT_POLL_INTERVAL_SEC,
-                    help=f"Target sweep cycle period in seconds (default {DEFAULT_POLL_INTERVAL_SEC}).")
+    ap.add_argument("--interval", type=float, default=None,
+                    help="Target sweep cycle period in seconds "
+                         f"(default: external_request_config JSON for {SERVICE}).")
     ap.add_argument("--bar-window", type=int, default=DEFAULT_BAR_WINDOW,
                     help=f"Samples per 5-min bar (default {DEFAULT_BAR_WINDOW}).")
-    ap.add_argument("--page-sleep", type=float, default=DEFAULT_PAGE_SLEEP_SEC,
-                    help=f"Anti-bot sleep between the sweep's pages in seconds "
-                         f"(default {DEFAULT_PAGE_SLEEP_SEC}).")
+    ap.add_argument("--page-sleep", type=float, default=None,
+                    help="Anti-bot sleep between the sweep's pages in seconds "
+                         f"(default: external_request_config JSON for {SERVICE}).")
     ap.add_argument("--once", action="store_true",
                     help="Emit one bar then exit (dev/test).")
     ap.add_argument("--index-only", action="store_true",
-                    help="Stream only the 北证50 index leg (1 GET/cycle) — "
-                         "used to add the index to a session where the "
-                         "stock streamer is already running.")
+                    help="Stream only the BSE index legs (北证50 + 北证专精特"
+                         "新, 1 GET each/cycle) — used to add the indices to a "
+                         "session where the stock streamer is already running.")
     args = ap.parse_args()
+    # Liveness heartbeat for database/stream_watchdog.py — long-running
+    # mode only (also --index-only); --once exits before a beat would matter.
+    if not args.once:
+        register_service("downloads.stream.bse.price")
     stream(
         poll_interval=args.interval,
         bar_window=args.bar_window,

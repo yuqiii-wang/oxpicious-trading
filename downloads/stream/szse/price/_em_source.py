@@ -17,14 +17,22 @@ matches source A (no spurious 09:30 bar).
 from __future__ import annotations
 
 import time as _time
+from dataclasses import replace
 from datetime import datetime, time
 from typing import List, Optional
 
-from downloads._common import setup_logger
+from downloads._common import (
+    AntiBotProxy,
+    antibot_config_for,
+    retry_policy_for,
+    setup_logger,
+)
 
 from ._akshare_source import MinuteSample
 
 logger = setup_logger("stream_szse")
+
+SERVICE = "downloads.stream.szse.price"
 
 EM_PUSH2HIS_URL = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
 EM_PUSH2_URL = "https://push2.eastmoney.com/api/qt/stock/trends2/get"
@@ -42,6 +50,36 @@ _EM_AFTERNOON_START = time(13, 1)
 _EM_AFTERNOON_END = time(15, 0)
 
 _em_session = None
+
+# Source D retry policy — resolved once at import from the service's
+# external_request_config JSON row (request_type "source_d_em_quote");
+# the old inline values (2 retries, 1.5s between attempts) are the fallback.
+_EM_MAX_RETRIES_JSON, _EM_RETRY_BACKOFF_JSON = retry_policy_for(
+    SERVICE, "source_d_em_quote",
+)
+EM_MAX_RETRIES: int = _EM_MAX_RETRIES_JSON if _EM_MAX_RETRIES_JSON is not None else 2
+EM_RETRY_BACKOFF_SEC: float = (
+    _EM_RETRY_BACKOFF_JSON if _EM_RETRY_BACKOFF_JSON is not None else 1.5
+)
+
+# Every EM attempt goes through this proxy so the audit sees the fetches.
+# Pacing (timeouts) and toggles resolve from the service's
+# source_d_em_quote JSON row, with the code's deliberate overrides kept:
+# pacing stays OFF (enable_sleep=False) — the szse workers dispatch
+# per-stock fetches in threads under a hard per-fetch timeout, an anti-bot
+# sleep here would turn every round into a timeout, and the worker-level
+# cooldown governs. Host tracking stays off too: the worker layer already
+# runs its own circuit breakers / source fallback, and a proxy-level
+# 10-minute host block would silently change that policy. The source_d
+# row itself carries rotate_browser_profile=false and (synced 2026-10-10)
+# add_random_param=true — curl_cffi's TLS-impersonation headers must not
+# be overlaid, and the random cache-buster stays ON — so the row drives
+# both; only the worker-policy invariants below are code overrides.
+_em_proxy = AntiBotProxy(replace(
+    antibot_config_for(SERVICE, "source_d_em_quote"),
+    enable_sleep=False,
+    enable_host_tracking=False,
+))
 
 
 def _get_em_session():
@@ -114,41 +152,40 @@ def _parse_em_trends(trends, bare_code: str, source_tag: str) -> Optional[List[M
 
 
 def _em_get_trends(url: str, params: dict, bare_code: str, source_tag: str,
-                   retries: int = 2) -> Optional[list]:
+                   retries: int = EM_MAX_RETRIES) -> Optional[list]:
     """GET an East Money trends2 endpoint via a persistent curl_cffi Session.
 
     Returns the parsed ``data.trends`` list, or None on failure. Uses a
     Session (TLS connection reuse) to reduce curl error 56 (connection closed
-    abruptly). If the Session raises a connection error, it is recreated once
-    in case the pooled connection went stale.
+    abruptly); every attempt is issued through the shared anti-bot proxy so
+    it is audited and 4xx-tracked (request timeouts come from the
+    source_d_em_quote JSON row). If an attempt fails on a connection error,
+    the Session is recreated once in case the pooled connection went stale.
     """
     sess = _get_em_session()
     headers = {"Referer": EM_REFERER}
     data = None
     err = "no attempts"
     for attempt in range(retries + 1):
-        try:
-            r = sess.get(url, params=params, headers=headers, timeout=15)
-        except Exception as e:  # noqa: BLE001
-            err = f"{type(e).__name__}: {e}"
-            # Recreate the Session once on connection errors (stale pool).
+        r = _em_proxy.get(
+            sess, url, params=params, headers=headers,
+            logger=logger, log_tag=f"[{source_tag} {bare_code}] ",
+        )
+        if r is None:
+            err = "request failed (see audit)"
+            # Recreate the Session on failure (stale pool / non-200).
             global _em_session
             _em_session = None
             sess = _get_em_session()
             if attempt < retries:
-                _time.sleep(1.5)
-            continue
-        if r.status_code != 200:
-            err = f"HTTP {r.status_code}"
-            if attempt < retries:
-                _time.sleep(1.5)
+                _time.sleep(EM_RETRY_BACKOFF_SEC)
             continue
         try:
             data = r.json()
         except ValueError as e:
             err = f"non-JSON: {e}"
             if attempt < retries:
-                _time.sleep(1.5)
+                _time.sleep(EM_RETRY_BACKOFF_SEC)
             continue
         break
     if data is None:

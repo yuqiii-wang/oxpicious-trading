@@ -1,0 +1,33 @@
+{
+  "label": "红利",
+  "industries": {
+    "DIV_LOW_VOL": {
+      "label": "红利低波",
+      "slug": "div_low_vol"
+    },
+    "DIV_SOE": {
+      "label": "央企/国企红利",
+      "slug": "div_soe"
+    },
+    "DIV_QUALITY": {
+      "label": "红利质量",
+      "slug": "div_quality"
+    },
+    "DIV_VALUE": {
+      "label": "红利价值/高息",
+      "slug": "div_value"
+    },
+    "DIV_HK": {
+      "label": "港股红利",
+      "slug": "div_hk"
+    },
+    "DIV_CASHFLOW": {
+      "label": "现金流",
+      "slug": "div_cashflow"
+    },
+    "DIV_GENERAL": {
+      "label": "红利",
+      "slug": "div_general"
+    }
+  }
+}

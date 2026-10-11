@@ -40,7 +40,7 @@
  *     --sec-type <selection>` (the same run the 13:30 scheduler fires),
  *     then reloads the list. On an OLD date (no intraday bars exist) it
  *     first confirms, then runs the analysis day-close job instead
- *     (`python -m analyze.analysis_signals --live`), which records every
+ *     (`python -m analysis.analysis_signals --live`), which records every
  *     not-yet-recorded signal day as one day-close observation (15:00).
  */
 import { Fragment, useEffect, useMemo, useState } from "react";
@@ -86,8 +86,12 @@ import {
   type TradingSignalsResponse,
 } from "@/lib/api-client";
 import RefreshButton from "@/components/RefreshButton";
-import { SignalCodeTrendChart, SignalRecordsTable } from "@/shared/components/signal-code-trend";
-import type { CodeTrendSecType } from "@/ui/OhlcChart";
+import {
+  SignalCodeTrendChart,
+  SignalPopulationToggles,
+  useSignalPopulation,
+  SignalRecordsTable,
+} from "@/shared/components/signal-code-trend";import type { CodeTrendSecType } from "@/ui/OhlcChart";
 import { DateSelector } from "@/shared/components/date-selector";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
 
@@ -248,7 +252,7 @@ export default function LiveDataTradingSignalsPage() {
   };
 
   // Confirmed old-date refresh → the analysis day-close run (spawns
-  // `python -m analyze.analysis_signals --live --sec-type <selection>`),
+  // `python -m analysis.analysis_signals --live --sec-type <selection>`),
   // then reload the list.
   const handleAnalysisConfirm = async () => {
     setAnalysisConfirmOpen(false);
@@ -273,6 +277,15 @@ export default function LiveDataTradingSignalsPage() {
       keys.has(`${s.signal_type} · ${s.signal_sub_type}`),
     );
   }, [data, selectedConfigs, configs]);
+
+  // The population pick (OHLCV variant + episode pass) — the shared
+  // strip above the day table filters its rows (the expansion panels
+  // carry their own per-code strips).
+  const population = useSignalPopulation();
+  const populationRows = useMemo(
+    () => population.apply(rows),
+    [population, rows],
+  );
 
   // Date roster: biz today (resolved by the server) + dates present in
   // live_signals, newest first, de-duplicated.
@@ -393,12 +406,18 @@ export default function LiveDataTradingSignalsPage() {
           {error}
         </Typography>
       ) : (
-        <SignalTable
-          rows={rows}
-          loading={loading}
-          resolvedDate={resolvedDate}
-          total={data?.signals.length ?? 0}
-        />
+        <>
+          <SignalPopulationToggles
+            population={population}
+            count={populationRows.length}
+          />
+          <SignalTable
+            rows={populationRows}
+            loading={loading}
+            resolvedDate={resolvedDate}
+            total={data?.signals.length ?? 0}
+          />
+        </>
       )}
 
       {/* Old-date refresh confirmation: no intraday bars exist for a past
@@ -431,9 +450,11 @@ export default function LiveDataTradingSignalsPage() {
   );
 }
 
-/** Stable React key + expansion identity for one signal row. */
+/** Stable React key + expansion identity for one signal row. The
+ *  population VARIANT rides it: the OHLCV-boost twin shares the plain
+ *  record's (config, day, time). */
 function rowKey(s: TradingSignal): string {
-  return `${s.code}-${s.signal_type}-${s.signal_sub_type}-${s.date}-${s.time}`;
+  return `${s.code}-${s.signal_type}-${s.signal_sub_type}-${s.date}-${s.time}-${s.is_ohlcv_boosted ? "b" : "p"}`;
 }
 
 /** Tick-group identity: the live_signals PK minus the config columns —
@@ -598,6 +619,24 @@ function SignalTable({
                   </TableCell>
                   <TableCell sx={{ whiteSpace: "nowrap" }}>
                     {s.signal_type} · {s.signal_sub_type}
+                    {s.is_ohlcv_boosted && (
+                      <Tooltip
+                        title="The OHLCV-boost twin — the same event with its confidence trust-weighted by the day-0 ohlcv score (the strip's OHLCV toggle picks the variant)"
+                        arrow
+                      >
+                        <Chip
+                          size="small"
+                          label="boost"
+                          variant="outlined"
+                          sx={{
+                            ml: 0.5,
+                            height: 18,
+                            fontSize: "0.65rem",
+                            verticalAlign: "middle",
+                          }}
+                        />
+                      </Tooltip>
+                    )}
                     {group.length > 1 && (
                       <Tooltip
                         title={
@@ -605,7 +644,11 @@ function SignalTable({
                           "tick — expand for all: " +
                           group
                             .slice(1)
-                            .map((g) => `${g.signal_type} · ${g.signal_sub_type}`)
+                            .map(
+                              (g) =>
+                                `${g.signal_type} · ${g.signal_sub_type}` +
+                                (g.is_ohlcv_boosted ? " (boost)" : ""),
+                            )
                             .join(", ")
                         }
                         arrow
@@ -736,6 +779,10 @@ function SignalExpansion({
   const [history, setHistory] =
     useState<TradingSignalHistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The history population controls (the OHLCV variant + episode-pass
+  // picks — the shared SignalPopulationToggles, one control shared with
+  // the analysis Recent Movements panel).
+  const population = useSignalPopulation();
 
   // The code's FULL signal history (every date), anchored on the viewed
   // day — drives both the trend chart's buy/sell markers (ALL of it) and
@@ -759,9 +806,12 @@ function SignalExpansion({
     };
   }, [signal.sec_type, signal.code, signal.date]);
 
-  // Chart markers: EVERY history row (all years — the full record) —
-  // built inside the shared SignalCodeTrendChart from the same response
-  // this expansion fetched for its history table.
+  // The population-filtered events — BOTH the trend chart's markers and
+  // the history table below follow the toggles (one view).
+  const populationRows: TradingSignal[] = useMemo(
+    () => population.apply(history?.signals ?? []),
+    [population, history],
+  );
 
   // Table rows: only the last 20 trading days ending on the viewed day —
   // (windowStart, anchor], the count_20d window. The anchor is ALSO the
@@ -769,13 +819,12 @@ function SignalExpansion({
   // (the chart plots through today). Falls back to everything when the
   // boundary is missing (fewer than 20 baseline closes).
   const recentRows: TradingSignal[] = useMemo(() => {
-    const all = history?.signals ?? [];
     const windowStart = history?.recent_window_start;
-    if (!windowStart) return all;
-    return all.filter(
+    if (!windowStart) return populationRows;
+    return populationRows.filter(
       (h) => h.date > windowStart && h.date <= signal.date,
     );
-  }, [history, signal.date]);
+  }, [populationRows, history?.recent_window_start, signal.date]);
 
   if (error) {
     return (
@@ -806,9 +855,14 @@ function SignalExpansion({
           name={signal.code_name ?? undefined}
           anchorDate={signal.date}
           history={history}
+          population={populationRows}
           height={380}
         />
       )}
+      <SignalPopulationToggles
+        population={population}
+        count={populationRows.length}
+      />
       <HistorySignalsTable
         rows={recentRows}
         windowed={history.recent_window_start !== null}

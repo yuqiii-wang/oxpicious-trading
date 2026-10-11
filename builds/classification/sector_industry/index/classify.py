@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from _common.sec_statics.classification import (
+from database.sec_statics.classification import (
     DEFAULT_SECTOR_ID,
     DEFAULT_INDUSTRY_ID,
     STRATEGY_SECTOR_IDS,
@@ -45,7 +45,8 @@ async def classify_indices(
     (the JSON is authoritative and hand-editable).
     """
     # Collect index names from the CSV and index_identity.  The JSON itself
-    # (sec_classification.json) is the authoritative, hand-editable cache —
+    # (the sec_classification/ shard tree) is the authoritative, hand-editable
+    # cache —
     # new indices discovered here are classified by keyword rules and merged
     # in below.
     index_names: Dict[str, str] = {}  # code → name

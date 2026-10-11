@@ -30,6 +30,7 @@ from _common.build_commons import (
     bulk_upsert_async, copy_insert_async, truncate_table_async, rec_col,
 )
 from _common.db_commons import batched_copy_by_key_async
+from _common.labels import SEC_OWNER_TYPE_CODE
 
 import logging
 logger = logging.getLogger(__name__)
@@ -57,7 +58,9 @@ async def upsert_owners(
     owner_rows = [{
         "owner_id": o["owner_id"],
         "name": o.get("name", ""),
-        "type": o.get("type"),
+        # type stores its stats.label_dim SMALLINT code (the
+        # label-code contract) — map the JSON's string once here.
+        "type": SEC_OWNER_TYPE_CODE.get(o.get("type")),
         "aliases": list(o.get("aliases", [])),
         "full_names": list(o.get("full_names", [])),
     } for o in owners]

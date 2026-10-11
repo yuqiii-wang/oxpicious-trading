@@ -91,7 +91,7 @@ function parseExchange(req: Request): string | null {
 //  Run one analysis main for ONE security (UI per-security build button).
 //
 //  POST /api/analysis/run-analysis   body: { module, sec_type, code }
-//    Spawns `python -m analyze.<module> --sec-type <st> --code <code>` via
+//    Spawns `python -m analysis.<module> --sec-type <st> --code <code>` via
 //    the shared WSL py-runner and WAITS for it to exit. Deduped by
 //    process-id-tag — a second click while a run is in flight resolves
 //    immediately with `already_running: true`.
@@ -126,10 +126,10 @@ router.post("/run-analysis", async (req: Request, res: Response) => {
     }
     const tag = `analysis-run:${module}:${secType}:${code}`;
     console.log(
-      `[analysis/run-analysis] python -m analyze.${module} --sec-type ${secType} --code ${code}`,
+      `[analysis/run-analysis] python -m analysis.${module} --sec-type ${secType} --code ${code}`,
     );
     const result = await runPythonModule(
-      `analyze.${module}`,
+      `analysis.${module}`,
       ["--sec-type", secType, "--code", code],
       { processIdTag: tag },
     );
@@ -467,7 +467,7 @@ router.get("/industry-sentiments/chart-by-code", async (req: Request, res: Respo
 //     (20d/60d/255d).
 //   POST /api/analysis/industry-correlations/run   body:
 //     { industry_ids?: string[], codes?: string[] }
-//     Spawns `python -m analyze.industry_sentiments.corr --industry ...
+//     Spawns `python -m analysis.industry_sentiments.corr --industry ...
 //     --code ...` (filtered mode: recompute + upsert ALL windows for the
 //     pairs among the given industries; codes are resolved to industry_ids
 //     Python-side) via the shared WSL py-runner and WAITS for it to exit.
@@ -532,10 +532,10 @@ router.post("/industry-correlations/run", async (req: Request, res: Response) =>
     if (industryIds.length > 0) args.push("--industry", industryIds.join(","));
     if (codes.length > 0) args.push("--code", codes.join(","));
     console.log(
-      `[analysis/industry-correlations/run] python -m analyze.industry_sentiments.corr ${args.join(" ")}`,
+      `[analysis/industry-correlations/run] python -m analysis.industry_sentiments.corr ${args.join(" ")}`,
     );
     const result = await runPythonModule(
-      "analyze.industry_sentiments.corr",
+      "analysis.industry_sentiments.corr",
       args,
       { processIdTag: INDUSTRY_CORR_RUN_TAG },
     );
@@ -567,7 +567,7 @@ router.post("/industry-correlations/run", async (req: Request, res: Response) =>
 //     dropdown; empty list until the analysis has been run).
 //   POST /api/analysis/industry-corr-offsets/run   body:
 //     { industry_ids?: string[], codes?: string[], benchmark?: string }
-//     Spawns `python -m analyze.analysis_composites --industry ...
+//     Spawns `python -m analysis.analysis_composites --industry ...
 //     --code ... --benchmark ...` (filtered mode: recompute + upsert ALL
 //     windows for the pairs among the given industries) via the shared
 //     py-runner and WAITS for it to exit. Deduped by a fixed
@@ -646,10 +646,10 @@ router.post("/industry-corr-offsets/run", async (req: Request, res: Response) =>
     if (codes.length > 0) args.push("--code", codes.join(","));
     if (benchmarkRaw) args.push("--benchmark", benchmarkRaw);
     console.log(
-      `[analysis/industry-corr-offsets/run] python -m analyze.analysis_composites ${args.join(" ")}`,
+      `[analysis/industry-corr-offsets/run] python -m analysis.analysis_composites ${args.join(" ")}`,
     );
     const result = await runPythonModule(
-      "analyze.analysis_composites",
+      "analysis.analysis_composites",
       args,
       { processIdTag: INDUSTRY_CORR_OFFSET_RUN_TAG },
     );
@@ -976,7 +976,7 @@ router.get("/pe/streaks", async (req: Request, res: Response) => {
 // ---- Dividend Deliveries (rolling 5y / 1y-stride audit table)
 //   analysis.dividend_deliveries — per-(sec_type, code, window_end_date)
 //   rolling 5-year delivery audit (yield / eps / same-month-last-year
-//   stability), built by analyze.pe_and_dividends --metrics deliveries.
+//   stability), built by analysis.pe_and_dividends --metrics deliveries.
 //   Serves the Dividends page's table under the baseline code-trend
 //   chart; the estimation curve itself (analysis.dividend_est) rides
 //   /api/sec-baseline's etf-margin join.

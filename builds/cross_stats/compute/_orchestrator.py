@@ -1,6 +1,6 @@
 """Pair-grain orchestrator — routes to the insert pipeline or the corr fast path.
 
-Ported from analyze.sec_alloc_perf_attribution.compute._orchestrator
+Ported from analysis.sec_alloc_perf_attribution.compute._orchestrator
 (2026-09-04); write target hardwired to stats.cross_stats.
 
   - INSERT mode (``with_corr=False``, default — the main pipeline):

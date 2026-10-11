@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.etf.szse.composition",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 8,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": 4,
+    "retry_backoff_sec": 2,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "SZSE 36347 composition pages + md downloads; linear backoff 2*attempt; auto-cooldown x2 when cache_ratio<0.3 or >10 missing dates; empty-date sleep x0.3; >50 items x1.5.",
+    "source_ref": "downloads/etf/szse/composition/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

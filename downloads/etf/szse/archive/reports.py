@@ -11,8 +11,9 @@ Workflow per ETF:
      in the PDF produce a 0-byte placeholder CSV. An identify CSV records
      basic fund metadata and which sub-sections had content.
 
-Anti-bot: uses LONG_SLEEP_INTERVAL (90s) between HTTP requests as the
-SZSE disclosure endpoint blocks on request volume.
+Anti-bot: the external_request_config JSON row for downloads.etf.szse.archive
+sets a 90s inter-request sleep — the SZSE disclosure endpoint blocks on
+request volume.
 
 ETF universe source: ``stats.etf_identity`` (exchange='SZ'). The DB
 stores codes BARE (``160812``) — passed straight to the API.
@@ -36,7 +37,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -45,16 +46,15 @@ import requests
 
 from downloads._common import (
     DEFAULT_START_DATE,
-    DEFAULT_TIMEOUT,
-    LONG_SLEEP_INTERVAL,
     MIN_VALID_BYTES,
-    AntiBotConfig,
     AntiBotProxy,
     RunStats,
+    antibot_config_for,
     build_default_session,
     is_valid_file,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 from downloads.etf.szse.archive.extract import (
     CSV_NAMES,
@@ -74,6 +74,13 @@ REFERER_PAGE = (
 )
 PAGE_SIZE = 50
 MAX_PAGES = 20  # safety cap: 50 * 20 = 1000 announcements per fund
+
+SERVICE = "downloads.etf.szse.archive"
+
+# Inter-request anti-bot sleep — resolved from the service's
+# external_request_config JSON row (sleep_sec), overridable per-run with
+# --sleep-sec.
+SLEEP_SEC = sleep_sec_for(SERVICE)
 
 # Skip re-downloading if the latest PDF or CSV is within this age.
 # Quarterly reports are published every ~3 months, so no new report
@@ -399,7 +406,6 @@ def fetch_annlist_page(
         params={"random": str(time.time())},
         data=json.dumps(body),
         headers=headers,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[{etf_code} annList p{page}]",
     )
@@ -484,7 +490,7 @@ def download_report_pdf(
     """Download a single quarterly-report PDF. Returns the saved path or None.
 
     Anti-bot: sleeps *sleep_sec* (default: proxy's configured base_sleep_sec,
-    which is LONG_SLEEP_INTERVAL=90s in production) after each HTTP request
+    the service JSON row's 90s in production) after each HTTP request
     via the AntiBotProxy. Cached PDFs skip the request and the sleep.
     """
     out_file = out_dir / report.pdf_filename
@@ -495,11 +501,12 @@ def download_report_pdf(
     pdf_url = PDF_BASE_URL + report.attach_path
     # proxy.get() applies anti-bot: browser fingerprint rotation, random
     # param, and sleep with jitter after the request. sleep_sec overrides
-    # the proxy's base_sleep_sec for this call.
+    # the proxy's base_sleep_sec for this call. Timeouts come from the
+    # service row (30s connect / 120s read — headroom for the multi-MB
+    # PDFs the throttling CDN serves).
     resp = proxy.get(
         session, pdf_url,
         headers=_pdf_headers(),
-        timeout=(30, 120),
         sleep_sec=sleep_sec,
         logger=logger,
         log_tag=f"[{report.tag} pdf]",
@@ -589,7 +596,7 @@ def download_szse_etf_reports(
     *,
     out_root: Optional[str] = None,
     etf_codes: Optional[List[str]] = None,
-    sleep_sec: float = LONG_SLEEP_INTERVAL,
+    sleep_sec: Optional[float] = None,
     extract: bool = True,
     max_etfs: Optional[int] = None,
     other_only: bool = True,
@@ -603,7 +610,9 @@ def download_szse_etf_reports(
         etf_codes: Optional list of bare 6-digit codes to process. If None,
             the SZ ETF universe is built from the DB. Explicit codes bypass
             the *other_only* and *include_lof* filters.
-        sleep_sec: Sleep between HTTP requests (default: LONG_SLEEP_INTERVAL=90s).
+        sleep_sec: Sleep between HTTP requests (default: the service's
+            external_request_config JSON row — 90s for
+            downloads.etf.szse.archive).
         extract: If True, extract the 3 target sections to CSV after each PDF
             download.
         max_etfs: Limit to N ETFs (dev/testing).
@@ -644,7 +653,14 @@ def download_szse_etf_reports(
     )
 
     session = build_default_session()
-    proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=sleep_sec))
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+    # overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
     stats = RunStats()
     reports_found = 0
     csvs_written = 0
@@ -719,7 +735,7 @@ def download_szse_etf_reports(
 
                 # Download each in-range quarterly report on this page.
                 # PDF downloads use the same anti-bot sleep (sleep_sec,
-                # default LONG_SLEEP_INTERVAL=90s) as the annList API.
+                # the service JSON row's 90s) as the annList API.
                 n_new = 0
                 for rpt in in_range:
                     if proxy.is_blocked(PDF_BASE_URL):

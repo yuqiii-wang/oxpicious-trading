@@ -1,0 +1,80 @@
+{
+  "H30082": {
+    "name": "300两倍",
+    "exchange": "HK",
+    "sector_id": "STRATEGY",
+    "industry_id": "LEVERAGED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "LEVERAGED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H30083": {
+    "name": "300反向",
+    "exchange": "HK",
+    "sector_id": "STRATEGY",
+    "industry_id": "LEVERAGED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "LEVERAGED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H30403": {
+    "name": "300日报酬两倍",
+    "exchange": "HK",
+    "sector_id": "STRATEGY",
+    "industry_id": "LEVERAGED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "LEVERAGED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H30404": {
+    "name": "300日报酬反向",
+    "exchange": "HK",
+    "sector_id": "STRATEGY",
+    "industry_id": "LEVERAGED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "LEVERAGED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H50045": {
+    "name": "180两倍",
+    "exchange": "HK",
+    "sector_id": "STRATEGY",
+    "industry_id": "LEVERAGED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "LEVERAGED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H50046": {
+    "name": "180反向",
+    "exchange": "HK",
+    "sector_id": "STRATEGY",
+    "industry_id": "LEVERAGED",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "LEVERAGED"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

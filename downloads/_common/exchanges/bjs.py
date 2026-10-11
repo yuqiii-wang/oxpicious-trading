@@ -23,6 +23,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -34,10 +35,11 @@ from downloads._common.filescan import (
     is_valid_file,
     resolve_out_dir,
 )
+from _common.request_config import sleep_sec_for
 from downloads._common.net import (
-    DEFAULT_TIMEOUT,
     AntiBotConfig,
     AntiBotProxy,
+    antibot_config_for,
     build_headers_with_referer,
     setup_logger,
 )
@@ -136,22 +138,32 @@ def _parse_jsonp(text: str) -> Any:
 def _fetch_page(
     session: requests.Session,
     page: int,
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
+    timeout: Optional[Tuple[float, float]] = None,
     proxy: Optional[AntiBotProxy] = None,
+    service: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch one page of BSE quotation data.
 
     POSTs the quotation page's form fields (BSE-tab filters + stable code
     sort, see ``BSE_TAB_FORM_DATA``) plus ``page=<n>`` to the BSE list
     endpoint and returns the parsed JSON object (the first element of the
-    response array), or None on failure.
+    response array), or None on failure. Pacing resolves from the caller
+    service's external_request_config JSON row when *service* is given.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False, base_sleep_sec=5.0))
+        # Rotation stays OFF for BSE either way: the endpoint needs specific
+        # headers (Content-Type / X-Requested-With) that fingerprint overlay
+        # would clobber.
+        if service is not None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+        else:
+            proxy = AntiBotProxy(AntiBotConfig(
+                rotate_browser_profile=False, base_sleep_sec=5.0,
+            ))
 
     data = {"page": str(page), **BSE_TAB_FORM_DATA}
-    # We disable browser profile rotation because BSE needs specific headers
-    # (Content-Type / X-Requested-With) that would be clobbered by fingerprint overlay.
     resp = proxy.post(
         session,
         BSE_LIST_URL,
@@ -323,9 +335,10 @@ def _write_page(
 def download_bse_price(
     out_root: Optional[str] = None,
     *,
-    sleep_sec: float = 5.0,
+    sleep_sec: Optional[float] = None,
     force: bool = False,
     session: Optional[requests.Session] = None,
+    service: Optional[str] = None,
 ) -> dict:
     """Download the BSE daily price snapshot using the API's trade date.
 
@@ -338,17 +351,27 @@ def download_bse_price(
     ``datetime.now()``.
 
     Skips when the file for the returned trade date already contains the
-    expected row count unless ``force=True``.
+    expected row count unless ``force=True``. Pacing resolves from the
+    caller service's external_request_config JSON row when *service* is
+    given (sleep_sec still overrides the row's base when passed).
     """
     out_dir = resolve_out_dir(__file__, "bse_trend", out_root)
     sess = session or requests.Session()
 
-    # Create unified AntiBotProxy with disabled browser rotation (BSE needs specific headers)
-    proxy_config = AntiBotConfig(
-        rotate_browser_profile=False,
-        base_sleep_sec=sleep_sec,
-    )
-    proxy = AntiBotProxy(proxy_config)
+    # Rotation stays OFF for BSE (specific headers, see _fetch_page).
+    if service is not None:
+        if sleep_sec is None:
+            sleep_sec = sleep_sec_for(service)
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(service),
+            rotate_browser_profile=False,
+            base_sleep_sec=sleep_sec,
+        ))
+    else:
+        proxy = AntiBotProxy(AntiBotConfig(
+            rotate_browser_profile=False,
+            base_sleep_sec=5.0 if sleep_sec is None else sleep_sec,
+        ))
 
     logger.info("Starting BSE price download (BSE tab, page size %d)", PAGE_SIZE)
 
@@ -460,30 +483,44 @@ def download_bse_price(
     }
 
 
-# --- BSE indices (北证指数 — /market_data/bse_indices/bse_bz50.html) ----------
-# The 北证50 page's chart JS (neeq_bz50.min.js, apiHost="" so all on
-# www.bse.cn) serves two GET JSONP endpoints:
-#   /neeqRealController/getBz50Kline.do?type=dayKline  — full daily history
-#     since the index base date (records: jsrq YYYYMMDD, drkp 开盘, drzd 最高,
-#     drzx 最低, drsp 收盘, zrsp 昨收, zd 涨跌(点), zdf 涨跌幅(RATIO — ×100
-#     for percent), cjl 成交量(股), cjje 成交额(元), zsdm/jc 代码/简称). The
-#     LAST record is TODAY's live row during the session (final after close).
-#   /neeqRealController/getRealBZ50.do — per-minute intraday series for today
-#     (records: GXSJ HHMMSS, JSRQ YYYY-MM-DD, SSZS 实时指数, ZRSP 昨收,
-#     ZD/ZDF 涨跌, CJL/CJJE per-MINUTE volume(股)/amount(元) — per-minute, NOT
-#     cumulative). One call returns the whole session so far.
-BSE_INDEX_KLINE_URL = "https://www.bse.cn/neeqRealController/getBz50Kline.do"
-BSE_INDEX_REALTIME_URL = "https://www.bse.cn/neeqRealController/getRealBZ50.do"
-BSE_INDEX_REFERER = "https://www.bse.cn/market_data/bse_indices/bse_bz50.html"
-BSE_INDEX_HEADERS = build_headers_with_referer(
-    BSE_INDEX_REFERER,
-    extra={"Accept": "*/*", "X-Requested-With": "XMLHttpRequest"},
-)
+# --- BSE indices (北证指数 — /market_data/bse_indices/*.html) -----------------
+# Every BSE index page's chart JS (neeq_bz50.min.js / neeq_zjtx.min.js,
+# apiHost="" so all on www.bse.cn) serves the same two GET JSONP endpoints,
+# one pair per index:
+#   /neeqRealController/getBz50Kline.do?type=dayKline  (899050)
+#   /neeqRealController/getZjtxKline.do?type=dayKline  (899601)
+#     — full daily history since the index base date (records: jsrq YYYYMMDD,
+#     drkp 开盘, drzd 最高, drzx 最低, drsp 收盘, zrsp 昨收, zd 涨跌(点), zdf
+#     涨跌幅(RATIO — ×100 for percent), cjl 成交量(股), cjje 成交额(元),
+#     zsdm/jc 代码/简称). The LAST record is TODAY's live row during the
+#     session (final after close).
+#   /neeqRealController/getRealBZ50.do / getRealZJTX.do — per-minute intraday
+#     series for today (records: GXSJ HHMMSS, JSRQ YYYY-MM-DD, SSZS 实时指数,
+#     ZRSP 昨收, ZD/ZDF 涨跌, CJL/CJJE per-MINUTE volume(股)/amount(元) —
+#     per-minute, NOT cumulative). One call returns the whole session so far.
+
+# code -> (日K线 kline URL, 分时线 realtime URL, referer page)
+BSE_INDEX_ENDPOINTS: Dict[str, Tuple[str, str, str]] = {
+    "899050": (
+        "https://www.bse.cn/neeqRealController/getBz50Kline.do",
+        "https://www.bse.cn/neeqRealController/getRealBZ50.do",
+        "https://www.bse.cn/market_data/bse_indices/bse_bz50.html",
+    ),
+    "899601": (
+        "https://www.bse.cn/neeqRealController/getZjtxKline.do",
+        "https://www.bse.cn/neeqRealController/getRealZJTX.do",
+        "https://www.bse.cn/market_data/bse_indices/bse_zjtx.html",
+    ),
+}
 
 # BSE-published indices this repo tracks (code -> Chinese name; bare 6-digit
 # codes per stats.index_identity CHECK). 899050 北证50 is the flagship BSE
-# index; the 三板-series (899001 等) stay on csindex.
-BSE_INDEX_CODES: Dict[str, str] = {"899050": "北证50"}
+# index; 899601 北证专精特新 covers the 专精特新 theme (base 2024-06-28); the
+# 三板-series (899001 等) stay on csindex.
+BSE_INDEX_CODES: Dict[str, str] = {
+    "899050": "北证50",
+    "899601": "北证专精特新",
+}
 
 
 def _fetch_index_payload(
@@ -491,12 +528,27 @@ def _fetch_index_payload(
     url: str,
     params: Optional[Dict[str, str]] = None,
     proxy: Optional[AntiBotProxy] = None,
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
+    timeout: Optional[Tuple[float, float]] = None,
+    referer: str = BSE_INDEX_ENDPOINTS["899050"][2],
+    service: Optional[str] = None,
 ) -> Optional[List[Any]]:
-    """GET one BSE index endpoint and return its parsed JSONP record list."""
+    """GET one BSE index endpoint and return its parsed JSONP record list.
+
+    Pacing resolves from the caller service's external_request_config JSON
+    row when *service* is given (3.0s fallback otherwise)."""
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False, base_sleep_sec=3.0))
-    r = proxy.get(session, url, params=params, headers=BSE_INDEX_HEADERS,
+        if service is not None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+        else:
+            proxy = AntiBotProxy(AntiBotConfig(
+                rotate_browser_profile=False, base_sleep_sec=3.0,
+            ))
+    headers = build_headers_with_referer(
+        referer, extra={"Accept": "*/*", "X-Requested-With": "XMLHttpRequest"},
+    )
+    r = proxy.get(session, url, params=params, headers=headers,
                   timeout=timeout, logger=logger, log_tag="[bse-index] ")
     if r is None:
         return None
@@ -513,42 +565,58 @@ def _fetch_index_payload(
 
 def fetch_bse_index_kline(
     session: requests.Session,
+    code: str,
+    *,
     proxy: Optional[AntiBotProxy] = None,
     kline_type: str = "dayKline",
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Fetch the full daily K-line history of the BSE index (899050).
+    """Fetch the full daily K-line history of one BSE index (899050/899601).
 
     Returns the raw record list (oldest → newest; the last record is today's
     live row during the session), or None on failure.
     """
+    kline_url, _, referer = BSE_INDEX_ENDPOINTS[code]
     return _fetch_index_payload(
-        session, BSE_INDEX_KLINE_URL, {"type": kline_type},
-        proxy=proxy, timeout=timeout,
+        session, kline_url, {"type": kline_type},
+        proxy=proxy, timeout=timeout, referer=referer, service=service,
     )
 
 
 def fetch_bse_index_realtime(
     session: requests.Session,
+    code: str,
+    *,
     proxy: Optional[AntiBotProxy] = None,
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Fetch today's per-minute intraday series of the BSE index (899050).
+    """Fetch today's per-minute intraday series of one BSE index
+    (899050/899601).
 
     Returns the raw record list (one record per minute since open), or None
     on failure.
     """
+    _, realtime_url, referer = BSE_INDEX_ENDPOINTS[code]
     return _fetch_index_payload(
-        session, BSE_INDEX_REALTIME_URL, {}, proxy=proxy, timeout=timeout,
+        session, realtime_url, {}, proxy=proxy, timeout=timeout,
+        referer=referer, service=service,
     )
 
 
-def bse_index_kline_rows(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Map getBz50Kline records to the CSIndex history-CSV row schema.
+def bse_index_kline_rows(
+    records: List[Dict[str, Any]],
+    code: str = "899050",
+    name: str = "北证50",
+) -> List[Dict[str, Any]]:
+    """Map getBz50Kline/getZjtxKline records to the CSIndex history-CSV row
+    schema.
 
     Units pass through as published — trading_shares in SHARES, trading_amount
     in YUAN (the cnindex archive loader's convention); ``changePct`` stores
-    percent (the API's zdf is a ratio, ×100).
+    percent (the API's zdf is a ratio, ×100). ``code``/``name`` are the
+    fallbacks for records missing zsdm/jc (the endpoints always carry them).
     """
     rows: List[Dict[str, Any]] = []
     for rec in records or []:
@@ -559,8 +627,8 @@ def bse_index_kline_rows(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         zdf = _num(rec.get("zdf"))
         rows.append({
             "date": date_iso,
-            "indexCode": str(rec.get("zsdm") or "").strip() or "899050",
-            "indexName": str(rec.get("jc") or "").strip() or "北证50",
+            "indexCode": str(rec.get("zsdm") or "").strip() or code,
+            "indexName": str(rec.get("jc") or "").strip() or name,
             "open": _num(rec.get("drkp")),
             "high": _num(rec.get("drzd")),
             "low": _num(rec.get("drzx")),
@@ -578,7 +646,8 @@ def bse_index_kline_rows(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def fetch_bse_snapshot(
     session: requests.Session,
     proxy: Optional[AntiBotProxy] = None,
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: Optional[str] = None,
 ) -> Tuple[Optional[datetime], Dict[str, Dict[str, Any]]]:
     """Fetch one full BSE-listed snapshot for streaming (all pages).
 
@@ -593,7 +662,14 @@ def fetch_bse_snapshot(
     change, ``hqzdf``).
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False, base_sleep_sec=1.5))
+        if service is not None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+        else:
+            proxy = AntiBotProxy(AntiBotConfig(
+                rotate_browser_profile=False, base_sleep_sec=1.5,
+            ))
 
     first = _fetch_page(session, 0, timeout=timeout, proxy=proxy)
     if first is None:
@@ -658,7 +734,8 @@ def fetch_bse_stock_list(
     session: requests.Session,
     *,
     proxy: Optional[AntiBotProxy] = None,
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: Optional[str] = None,
 ) -> List[Tuple[str, str]]:
     """Walk the BSE quotation pagination and return ``[(bare_code, name), ...]``.
 
@@ -667,7 +744,14 @@ def fetch_bse_stock_list(
     ``bse_trend_stock_<date>.csv`` snapshots. ~348 codes / ~18 pages.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False, base_sleep_sec=5.0))
+        if service is not None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+        else:
+            proxy = AntiBotProxy(AntiBotConfig(
+                rotate_browser_profile=False, base_sleep_sec=5.0,
+            ))
 
     stocks: List[Tuple[str, str]] = []
     first = _fetch_page(session, 0, timeout=timeout, proxy=proxy)
@@ -715,7 +799,8 @@ def fetch_bse_kline(
     code: str,
     *,
     proxy: Optional[AntiBotProxy] = None,
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Fetch one stock's FULL daily K-line history (the 日K series behind the
     company detail page's chart).
@@ -731,7 +816,14 @@ def fetch_bse_kline(
     transparently by following the redirect.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False))
+        # rt=kline pacing (90s — the aggressive-anti-bot cadence) when the
+        # caller service is given; the old default- paced proxy otherwise.
+        if service is not None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+        else:
+            proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False))
 
     resp = proxy.get(
         session,

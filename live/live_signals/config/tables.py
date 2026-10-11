@@ -1,8 +1,9 @@
 """DB tables + the live record layout of live.live_signals (config).
 
 The two signal tables the live tier reads and writes, the RSI
-indicator source, and the live.live_signals record's write columns /
-PK (upsert arbiter).
+indicator source (the bollinger family's values are computed on the
+fly from the price history — no source table), and the live.live_signals
+record's write columns / PK (upsert arbiter).
 """
 from __future__ import annotations
 

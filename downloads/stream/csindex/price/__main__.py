@@ -27,8 +27,9 @@ Loop cadence: 30 minutes. Each loop:
      DB failures don't lose data.
   5. Upserts bars into ``stats.index_intraday_5min`` (+ ``stats.index_identity``).
 
-Anti-bot: reuses ``AntiBotProxy`` with ``DEFAULT_SLEEP_SEC`` (20s jittered)
-per request — same pattern as the SSE/SZSE streamers and the existing
+Anti-bot: reuses ``AntiBotProxy`` paced by the service's
+external_request_config JSON row (rt=page: sleep 20s jittered) per request —
+same pattern as the SSE/SZSE streamers and the existing
 ``downloads.index.csindex.quote`` module.
 
 Note: CSV backfill (recovering missed data from archived CSV files) is
@@ -55,22 +56,22 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
-    AntiBotConfig,
     AntiBotProxy,
     HostStatusTracker,
     build_default_session,
     merge_browser_profile,
     random_sleep,
     setup_logger,
+    poll_interval_sec_for,
+    sleep_sec_for,
 )
 from downloads.index.csindex.quote import CSINDEX_BASE, CSINDEX_HEADERS
 from _common.db_commons import get_db_connection
+from _common.service_heartbeat import register_service
 from _common._holidays_and_weekdays import is_trading_day
 
 from ._constants import (
     CSINDEX_START_TIME,
-    LOOP_INTERVAL_SEC,
 )
 from ._db import (
     load_index_industry_map,
@@ -81,6 +82,16 @@ from ._db import (
 from ._fetch import fetch_and_upsert_one
 
 logger = setup_logger("csindex_stream")
+
+SERVICE = "downloads.stream.csindex.price"
+
+# Inter-fetch anti-bot cooldown — resolved once at import from the service's
+# external_request_config JSON row (request_type "page", sleep_sec).
+SLEEP_SEC = sleep_sec_for(SERVICE, "page")
+
+# Loop cadence — the page row's poll_interval_sec, with the old 30-min
+# literal (._constants.LOOP_INTERVAL_SEC) as the fallback.
+LOOP_INTERVAL_SEC = poll_interval_sec_for(SERVICE, "page") or 1800
 
 
 def _seconds_until_next_loop(last_loop_start: float) -> float:
@@ -130,13 +141,15 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
     logger.info(
         "[startup] csindex streamer starting (loop_interval=%ds, sleep=%.0fs, "
         "afternoon_only_start=%s)",
-        LOOP_INTERVAL_SEC, DEFAULT_SLEEP_SEC, CSINDEX_START_TIME,
+        LOOP_INTERVAL_SEC, SLEEP_SEC, CSINDEX_START_TIME,
     )
 
     conn = get_db_connection()
     session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
     host_tracker = HostStatusTracker()
-    proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+    # Pacing (sleep/jitter/timeouts) resolves once at construction from the
+    # service's external_request_config JSON row (request_type "page").
+    proxy = AntiBotProxy(service=SERVICE, request_type="page")
 
     # Per-biz-day state: refreshed at the start of each new trading day
     current_biz_day = None
@@ -250,7 +263,7 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                         n_fail += 1
 
                     if i < len(ordered_codes) - 1:
-                        random_sleep(DEFAULT_SLEEP_SEC)
+                        random_sleep(SLEEP_SEC)
 
                 loop_elapsed = _time.time() - loop_start
                 logger.info(
@@ -292,6 +305,10 @@ def main():
         help="Fetch a single index code then exit (e.g. --code 930641).",
     )
     args = parser.parse_args()
+    # Liveness heartbeat for database/stream_watchdog.py — long-running
+    # mode only; the one-shot dev modes exit before a beat would matter.
+    if not args.once and not args.code:
+        register_service("downloads.stream.csindex.price")
     stream(once=args.once, single_code=args.code)
 
 

@@ -10,3 +10,11 @@ export { default as SignalOverlayPanel } from "./SignalOverlayPanel";
 export type { SignalOverlayPanelProps } from "./SignalOverlayPanel";
 export { default as SignalRecordsTable } from "./SignalRecordsTable";
 export type { SignalRecordsTableProps } from "./SignalRecordsTable";
+export {
+  SignalPopulationToggles,
+  useSignalPopulation,
+} from "./SignalPopulationControls";
+export type {
+  SignalPopulation,
+  SignalEpPass,
+} from "./SignalPopulationControls";

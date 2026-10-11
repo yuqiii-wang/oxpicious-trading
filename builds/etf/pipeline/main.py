@@ -159,7 +159,7 @@ async def run(args) -> None:
         # table merge/seq scans — the 2026-09-29 v_etf_margin exact-code
         # 3.5s UI regression (the planner scanned the full 1M-row
         # etf_liquidity_margin / etf_adjustment partitions to return 42
-        # rows). Same convention as builds.stock --analyze.
+        # rows). Same convention as builds.stock --analysis.
         if getattr(args, "analyze", False):
             from _common.db_commons import analyze_tables_async
             durations = await analyze_tables_async(conn, (

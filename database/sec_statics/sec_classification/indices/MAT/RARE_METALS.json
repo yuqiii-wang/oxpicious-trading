@@ -1,0 +1,29 @@
+{
+  "930632": {
+    "name": "CS稀金属",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "RARE_METALS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "RARE_METALS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_RARE_METALS": {
+    "name": "稀有金属综合指数",
+    "exchange": null,
+    "sector_id": "MAT",
+    "industry_id": "RARE_METALS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "RARE_METALS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

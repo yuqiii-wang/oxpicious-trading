@@ -9,10 +9,10 @@
 --  LATERAL latest-row and name lookups): 7-14s for the stock universe
 --  (~6.8M rows) and 5-6s for the DISTINCT-code themes scan, gating the
 --  MA-Spread page's first open (2026-09-29). This table moves that work
---  into the analyze.mov_ave_spread pipeline, where it runs offline once
+--  into the analysis.mov_ave_spread pipeline, where it runs offline once
 --  per write pass; the endpoints become a small indexed table read (~10ms).
 --
---  Maintained by analyze/mov_ave_spread/__main__.py (refresh_codes_summary):
+--  Maintained by analysis/mov_ave_spread/__main__.py (refresh_codes_summary):
 --  DELETE + INSERT per affected sec_type (or per --code in single-code
 --  runs) after every detail write pass. Backfill = the same INSERT, run
 --  manually once per sec_type after creating the table.
@@ -26,7 +26,7 @@
 --    name — latest identity name (from stats.{etf,index,stock}_identity)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS analysis.mov_ave_spreads_codes (
-    sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    sec_type        SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,  -- matches detail.code (ETF bare; stock suffixed)
     name            TEXT         NOT NULL DEFAULT '',
     first_date      DATE         NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS analysis.mov_ave_spreads_codes (
     CONSTRAINT pk_mov_ave_spreads_codes PRIMARY KEY (sec_type, code)
 );
 
-COMMENT ON TABLE  analysis.mov_ave_spreads_codes IS 'Per-code summary of analysis.mov_ave_spreads_detail (ONE row per sec_type+code): date coverage, all-time gap extremes, latest gap snapshot, latest name. Maintained by analyze.mov_ave_spread after every detail write pass; read by the /mov-ave-spread/codes + /themes endpoints so they never aggregate the multi-million-row detail table at request time.';
+COMMENT ON TABLE  analysis.mov_ave_spreads_codes IS 'Per-code summary of analysis.mov_ave_spreads_detail (ONE row per sec_type+code): date coverage, all-time gap extremes, latest gap snapshot, latest name. Maintained by analysis.mov_ave_spread after every detail write pass; read by the /mov-ave-spread/codes + /themes endpoints so they never aggregate the multi-million-row detail table at request time.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_codes.name IS 'Latest identity name (stats.{etf,index,stock}_identity row at the greatest date). Empty string when the identity table has no row for the code.';
 
 -- ----------------------------------------------------------------------------

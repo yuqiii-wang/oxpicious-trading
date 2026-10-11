@@ -487,10 +487,10 @@ async def build_daily_df(latest_dates: dict,
     for df in cnindex_dfs:
         dfs.append(df)
 
-    # BSE index history (北证50 899050 from bse.cn's own kline endpoint) —
-    # appended LAST so it wins the (date, code) dedup and owns the index's
-    # OHLCV; PE still flows from the CSIndex frames via the pre-dedup
-    # lookup below (BSE rows carry no pe).
+    # BSE index history (北证50 899050 / 北证专精特新 899601 from bse.cn's
+    # own kline endpoints) — appended LAST so it wins the (date, code) dedup
+    # and owns the indices' OHLCV; PE still flows from the CSIndex frames via
+    # the pre-dedup lookup below (BSE rows carry no pe).
     bse_dfs = load_bse_index_history(verbose=verbose, code_filter=code_filter)
     for df in bse_dfs:
         dfs.append(df)
@@ -576,7 +576,7 @@ async def build_daily_df(latest_dates: dict,
     )
     # Compute EMAs over full per-code history (same correctness constraint).
     # Stays on pandas: cuDF lacks grouped-ewm support (see
-    # analyze/mov_ave_spread/rsi.py for the same constraint).
+    # analysis/mov_ave_spread/rsi.py for the same constraint).
     compute_emas(
         combined,
         group_key="code",

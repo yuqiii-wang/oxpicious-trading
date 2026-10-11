@@ -24,25 +24,10 @@
 // ---------------------------------------------------------------------------
 import { useEffect } from "react";
 import { runSecAllocLivePipeline } from "@/lib/api-client";
+import { isWithinTradingHours } from "@/shared/datetime";
 
 /** Auto-trigger cadence — matches the 5-min intraday bar interval. */
 const PIPELINE_RUN_MS = 5 * 60_000;
-
-/** True if current Asia/Shanghai time is inside trading hours. */
-export function isWithinTradingHours(): boolean {
-  // Asia/Shanghai is UTC+8 year-round (no DST). Build a pseudo-local time
-  // from the UTC offset so the check is correct regardless of the browser's
-  // own timezone.
-  const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60_000;
-  const sh = new Date(utc + 8 * 60 * 60_000); // Shanghai wall-clock
-  const day = sh.getDay(); // 0=Sun .. 6=Sat
-  if (day === 0 || day === 6) return false; // weekend
-  const hm = sh.getHours() * 100 + sh.getMinutes();
-  const morning = hm >= 930 && hm <= 1130;
-  const afternoon = hm >= 1300 && hm <= 1500;
-  return morning || afternoon;
-}
 
 /** Fire one pipeline run iff within trading hours (never throws). */
 function fireIfTrading(): void {

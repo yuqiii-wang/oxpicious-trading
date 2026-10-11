@@ -1,6 +1,6 @@
 /**
  * Intraday Movements service — reads the LIVE schema tables populated by
- * `python -m live.sec_alloc_live_attribution` (the analyze.intraday_industry_
+ * `python -m live.sec_alloc_live_attribution` (the analysis.intraday_industry_
  * sentiments pipeline is NO LONGER needed for this page):
  *
  *   • live.sec_alloc_live_attribution — per-5-min-tick member % vs prev-day
@@ -13,7 +13,7 @@
  * service is equal-weight only and needs no weights at all).
  *
  * Industry-level aggregates are computed AT QUERY TIME (equal-weight AVG of
- * member pcts per (industry, tick)), so NO analyze recompute pass is required
+ * member pcts per (industry, tick)), so NO analysis recompute pass is required
  * for this page.
  *
  * Three SQL queries per request (all run in parallel):

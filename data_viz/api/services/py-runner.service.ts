@@ -1,6 +1,6 @@
 /**
- * Python script runner service — spawns Python modules via WSL and waits for
- * them to exit.
+ * Python / shell script runner service — spawns Python modules and repo
+ * shell scripts via WSL and waits for them to exit.
  *
  * All strategy / build scripts run under WSL (Ubuntu-22.04) with the conda
  * base environment activated. This service centralizes the WSL preamble +
@@ -11,6 +11,11 @@
  *   import { runPythonModule } from "./py-runner.service.js";
  *   const result = await runPythonModule("strategy.singleton_trading",
  *     ["--sec-type", "index", "--codes", "000970", "--force"]);
+ *
+ * Long-lived service starters (their nohup'd children must SURVIVE the
+ * spawn) cannot go through a transient wsl.exe — a session's children
+ * die with its client — so they run via a Task Scheduler task instead:
+ * see api/routes/monitor.ts POST /stream-always + scripts/ui_stream_always.cmd.
  */
 import { spawn } from "child_process";
 
@@ -100,25 +105,21 @@ export interface RunPythonModuleOptions {
 }
 
 /**
- * Spawn a single Python module via WSL and resolve when it exits.
- *
- * The command run is equivalent to:
- *   wsl -d Ubuntu-22.04 -- bash -lc \
- *     "source ~/miniconda3/etc/profile.d/conda.sh && conda activate base \
- *      && cd /mnt/e/oxpicious-trading && python -m <module> <args...>"
+ * Spawn ONE WSL bash -lc command and resolve when it exits — the shared
+ * spawn core behind runPythonModule / runWslScript.
  *
  * Collects stdout/stderr into the returned result. Never throws — spawn
  * errors are captured as `{ code: -1, stderr: <error message> }` so callers
  * can handle all failure modes uniformly via `success === false`.
  *
- * @param module  Python module path (e.g. "strategy.singleton_trading")
- * @param args    CLI args to pass after `python -m <module>`
+ * @param command Full bash -lc command string (preamble + cd + the work).
+ * @param label   What runs, for the process registry (e.g. "python -m x").
  * @param opts    processIdTag dedupes concurrent runs of the same
  *                logical process (see RunPythonModuleOptions).
  */
-export function runPythonModule(
-  module: string,
-  args: ReadonlyArray<string>,
+function runWslCommand(
+  command: string,
+  label: string,
   opts: RunPythonModuleOptions = {},
 ): Promise<RunScriptResult> {
   const tag = opts.processIdTag?.trim() || undefined;
@@ -135,12 +136,10 @@ export function runPythonModule(
   }
 
   return new Promise((resolve) => {
-    const argStr = args.join(" ");
-    const cmd = `${WSL_PREAMBLE} && cd ${WSL_PROJECT_ROOT} && python -m ${module} ${argStr}`;
-    const child = spawn("wsl", ["-d", "Ubuntu-22.04", "--", "bash", "-lc", cmd], {
+    const child = spawn("wsl", ["-d", "Ubuntu-22.04", "--", "bash", "-lc", command], {
       windowsHide: true,
     });
-    if (tag) runningByTag.set(tag, { module, tag, startedAt: Date.now() });
+    if (tag) runningByTag.set(tag, { module: label, tag, startedAt: Date.now() });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
@@ -155,4 +154,27 @@ export function runPythonModule(
       resolve({ success: false, stdout, stderr: stderr + String(err), exitCode: -1 });
     });
   });
+}
+
+/**
+ * Spawn a single Python module via WSL and resolve when it exits.
+ *
+ * The command run is equivalent to:
+ *   wsl -d Ubuntu-22.04 -- bash -lc \
+ *     "source ~/miniconda3/etc/profile.d/conda.sh && conda activate base \
+ *      && cd /mnt/e/oxpicious-trading && python -m <module> <args...>"
+ *
+ * @param module  Python module path (e.g. "strategy.singleton_trading")
+ * @param args    CLI args to pass after `python -m <module>`
+ * @param opts    processIdTag dedupes concurrent runs of the same
+ *                logical process (see RunPythonModuleOptions).
+ */
+export function runPythonModule(
+  module: string,
+  args: ReadonlyArray<string>,
+  opts: RunPythonModuleOptions = {},
+): Promise<RunScriptResult> {
+  const argStr = args.join(" ");
+  const cmd = `${WSL_PREAMBLE} && cd ${WSL_PROJECT_ROOT} && python -m ${module} ${argStr}`;
+  return runWslCommand(cmd, `python -m ${module}`, opts);
 }

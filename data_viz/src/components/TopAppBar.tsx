@@ -1,10 +1,14 @@
 /**
- * Top app bar with app-selector dropdown, navigation tabs, and theme toggle.
+ * Top app bar with app-selector dropdown, navigation tabs, quick-access
+ * Monitor / Config icon buttons, and theme toggle.
  *
- * The title acts as a dropdown to switch between sub-apps (DataViz / Analysis).
+ * The title acts as a dropdown to switch between the browsing sub-apps
+ * (Live Data / DataViz / Analysis / Strategy); Monitor and Config live as
+ * icon buttons next to the theme toggle instead of the dropdown, and
+ * clicking the active one toggles back to the last browsed page.
  * Each sub-app exposes its own set of tabs in the nav bar.
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AppBar,
   Tabs,
@@ -16,11 +20,18 @@ import {
   MenuItem,
   Tooltip,
 } from "@mui/material";
-import { Brightness4, Brightness7, ShowChart, ArrowDropDown } from "@mui/icons-material";
+import {
+  Brightness4,
+  Brightness7,
+  ShowChart,
+  ArrowDropDown,
+  Settings,
+  Monitor,
+} from "@mui/icons-material";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "@/store/filters";
 
-type AppKey = "live" | "dataviz" | "analysis" | "strategy";
+type AppKey = "live" | "dataviz" | "analysis" | "strategy" | "monitor" | "config";
 
 interface AppConfig {
   label: string;
@@ -73,16 +84,72 @@ const APPS: Record<AppKey, AppConfig> = {
       { label: "Commons", path: "/strategy/commons" },
     ],
   },
+  monitor: {
+    label: "Monitor",
+    defaultPath: "/monitor",
+    tabs: [
+      { label: "Services", path: "/monitor" },
+      { label: "External Resources", path: "/monitor/ext-resources" },
+      { label: "Source Data", path: "/monitor/src-data" },
+    ],
+  },
+  config: {
+    label: "Config",
+    defaultPath: "/config/service",
+    tabs: [
+      { label: "Service", path: "/config/service" },
+      { label: "External Resources", path: "/config/external" },
+      { label: "Security Classification", path: "/config/security" },
+    ],
+  },
 };
+
+function QuickAppIconButton(props: {
+  label: string;
+  icon: ReactNode;
+  active: boolean;
+  onOpen: () => void;
+}) {
+  const { label, icon, active, onOpen } = props;
+  return (
+    <Tooltip title={label}>
+      <IconButton
+        color="inherit"
+        size="small"
+        aria-label={label}
+        onClick={onOpen}
+        sx={{
+          opacity: active ? 1 : 0.85,
+          bgcolor: active ? "rgba(255,255,255,0.15)" : "transparent",
+        }}
+      >
+        {icon}
+      </IconButton>
+    </Tooltip>
+  );
+}
 
 export default function TopAppBar() {
   const location = useLocation();
   const navigate = useNavigate();
   const themeMode = useStore((s) => s.themeMode);
   const toggleTheme = useStore((s) => s.toggleTheme);
+  const lastMainPath = useStore((s) => s.lastMainPath);
+  const setLastMainPath = useStore((s) => s.setLastMainPath);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [menuWidth, setMenuWidth] = useState<number | undefined>(undefined);
   const buttonRef = useRef<HTMLButtonElement>(null);
+
+  // Cache the most recent non-Monitor/Config page so un-clicking the active
+  // Monitor / Config icon button has a page to return to.
+  useEffect(() => {
+    if (
+      !location.pathname.startsWith("/config") &&
+      !location.pathname.startsWith("/monitor")
+    ) {
+      setLastMainPath(location.pathname);
+    }
+  }, [location.pathname, setLastMainPath]);
 
   const activeApp: AppKey = location.pathname.startsWith("/strategy")
     ? "strategy"
@@ -90,9 +157,18 @@ export default function TopAppBar() {
       ? "analysis"
       : location.pathname.startsWith("/live")
         ? "live"
-        : "dataviz";
+        : location.pathname.startsWith("/monitor")
+          ? "monitor"
+          : location.pathname.startsWith("/config")
+            ? "config"
+            : "dataviz";
   const config = APPS[activeApp];
-  const activeIdx = config.tabs.findIndex((t) => location.pathname.startsWith(t.path));
+  // Longest path wins ("/monitor" is a prefix of "/monitor/ext-resources",
+  // so naive first-match would light the Services tab on the ext-resources page).
+  const activeIdx = config.tabs
+    .map((_, i) => i)
+    .sort((a, b) => config.tabs[b].path.length - config.tabs[a].path.length)
+    .find((i) => location.pathname.startsWith(config.tabs[i].path));
 
   return (
     <AppBar position="sticky" elevation={0}>
@@ -126,7 +202,9 @@ export default function TopAppBar() {
             },
           }}
         >
-          {(Object.entries(APPS) as Array<[AppKey, AppConfig]>).map(([key, app]) => (
+          {(Object.entries(APPS) as Array<[AppKey, AppConfig]>)
+            .filter(([key]) => key !== "monitor" && key !== "config")
+            .map(([key, app]) => (
             <MenuItem
               key={key}
               selected={key === activeApp}
@@ -152,6 +230,22 @@ export default function TopAppBar() {
             <Tab key={t.path} label={t.label} sx={{ color: "rgba(255,255,255,0.85)" }} />
           ))}
         </Tabs>
+        <QuickAppIconButton
+          label="Config"
+          icon={<Settings fontSize="small" />}
+          active={activeApp === "config"}
+          onOpen={() =>
+            navigate(activeApp === "config" ? lastMainPath : APPS.config.defaultPath)
+          }
+        />
+        <QuickAppIconButton
+          label="Monitor"
+          icon={<Monitor fontSize="small" />}
+          active={activeApp === "monitor"}
+          onOpen={() =>
+            navigate(activeApp === "monitor" ? lastMainPath : APPS.monitor.defaultPath)
+          }
+        />
         <Tooltip title={themeMode === "light" ? "Switch to dark" : "Switch to light"}>
           <IconButton color="inherit" onClick={toggleTheme} size="small">
             {themeMode === "light" ? <Brightness4 /> : <Brightness7 />}

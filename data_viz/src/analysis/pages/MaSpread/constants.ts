@@ -23,7 +23,7 @@ export const ROOF_FLOOR_WINDOWS = [60, 120, 255, 500, 750, 1275] as const;
 /**
  * High/low band-BREAK streak lookback buttons (trading rows) — the first
  * layer of the nested High/Low Streaks row. Mirrors
- * HIGH_LOW_PCT_PERIODS in analyze/mov_ave_spread/config.py and the
+ * HIGH_LOW_PCT_PERIODS in analysis/mov_ave_spread/config.py and the
  * analysis.mov_ave_high_low_pct period values.
  */
 export const HIGH_LOW_STREAK_PERIODS = [60, 120, 255, 500, 750, 1275] as const;
@@ -39,7 +39,7 @@ export const HIGH_LOW_STREAK_PCTS = [1, 5, 10] as const;
 
 /**
  * Wilder-RSI trend-line windows (trading days) of the chart's RSI Trends
- * overlay. Mirrors RSI_WINDOWS in analyze/analysis_forecasts/config/buckets.py
+ * overlay. Mirrors RSI_WINDOWS in analysis/analysis_forecasts/config/buckets.py
  * and the analysis.mov_ave_rsi rsi_*days columns — one drawn line per window
  * (short → long), fed by the chart response's shared block.
  */

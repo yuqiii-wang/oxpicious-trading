@@ -1,0 +1,48 @@
+{
+  "931468": {
+    "name": "红利质量",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_QUALITY",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_QUALITY"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932315": {
+    "name": "中证红利质量",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_QUALITY",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_QUALITY"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

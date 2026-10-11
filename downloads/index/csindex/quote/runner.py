@@ -30,6 +30,7 @@ full sweep.
 from __future__ import annotations
 
 import datetime as _dt
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,8 +41,8 @@ from downloads._common import (
     MIN_VALID_BYTES,
     DEFAULT_START_DATE,
     AntiBotProxy,
-    AntiBotConfig,
     RunStats,
+    antibot_config_for,
     resolve_out_dir,
     parse_date_window,
     is_valid_file,
@@ -55,6 +56,7 @@ from ._config import (
     CSINDEX_SKIP_CODES,
     UPDATE_WINDOW_DAYS,
     REFETCH_MIN_INTERVAL_HOURS,
+    SERVICE,
     SLEEP_SEC,
     logger,
     build_session,
@@ -82,7 +84,7 @@ def download_index(
     out_root: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
     update_days: int = UPDATE_WINDOW_DAYS,
-    sleep_sec: float = SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     skip_intraday: bool = False,
     ensure_prev_trading_day: bool = False,
 ) -> dict:
@@ -112,7 +114,7 @@ def download_index(
         )
         index_codes = [c for c in index_codes if not c.startswith("DUMMY_")]
 
-    # Load index names from sec_classification.json (replaces _classification.py).
+    # Load index names from the sec_classification cache (replaces _classification.py).
     _index_names = load_classification_index_names()
 
     _start, _end = parse_date_window(start_date=start_date)
@@ -147,7 +149,19 @@ def download_index(
     session = build_session()
     stats = RunStats()
 
-    proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=sleep_sec))
+    # Pacing from the service's "close" external_request_config JSON row
+    # (sleep_sec, sleep_jitter, timeouts, anti-bot toggles); an explicit
+    # --sleep-sec overrides the row's base sleep only. ONE proxy threads
+    # every step so host-block tracking stays shared; the sub-fetchers'
+    # fallbacks resolve their own per-flow rows (export/pe/intraday —
+    # same pacing values). audit_service stays explicit: the runner is
+    # long-lived (see _config.SERVICE).
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+    proxy = AntiBotProxy(
+        replace(antibot_config_for(SERVICE, "close"), base_sleep_sec=sleep_sec),
+        audit_service=SERVICE,
+    )
 
     try:
         for code in index_codes:

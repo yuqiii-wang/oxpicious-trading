@@ -8,7 +8,7 @@ router. New code should import from ``_common.df_utils`` directly.
 
 The original docstring (kept for historical reference):
 
-    cuDF / GPU acceleration router for analyze scripts.
+    cuDF / GPU acceleration router for analysis scripts.
 
     Provides a single decision function - ``should_use_gpu(df, op_type)``
     - that checks three conditions and returns True only when GPU

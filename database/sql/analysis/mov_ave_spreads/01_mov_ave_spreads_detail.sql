@@ -21,7 +21,7 @@
 --  `analyze_mov_ave_spread.py` (TRUNCATE then INSERT).
 --
 --  NOTE: NO FOREIGN KEYS / NO CHECK CONSTRAINTS by design. These tables
---  hold derived data owned and rebuilt by `analyze.mov_ave_spread`, so
+--  hold derived data owned and rebuilt by `analysis.mov_ave_spread`, so
 --  each keeps only its PRIMARY KEY for row identity / upserts. (An
 --  earlier revision carried a polymorphic FK pattern — generated
 --  etf_date / index_date / stock_date discriminator columns + 3 FKs to
@@ -30,7 +30,7 @@
 --  removed to keep the schema simple and bulk inserts cheap.)
 --  Consequence: deleting/truncating stats identity rows no longer
 --  cascades into these tables — rebuild them with
---  `python -m analyze.mov_ave_spread` (or `--force`) instead.
+--  `python -m analysis.mov_ave_spread` (or `--force`) instead.
 -- ============================================================================
 
 -- Drop any prior version so a re-run rebuilds the table from the CREATE
@@ -68,7 +68,7 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rebounds';
 --  without overflow for any realistic ETF / index / stock price.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_spreads_detail (
-    sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    sec_type        SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code              TEXT         NOT NULL,
     date              DATE         NOT NULL,
 
@@ -150,7 +150,7 @@ SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail', 16);
 --
 --
 COMMENT ON TABLE  analysis.mov_ave_spreads_detail              IS 'MA-spread detail (WIDE format): one row per (code, sec_type, date) with 9 gap_value columns (5 Price/MA + 4 MA5/MA). sec_type ∈ {etf, index, stock}.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.sec_type   IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.code         IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.date         IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma5    IS '5-trading-day moving average of trading_amount (yuan) per (sec_type, code). NUMERIC(24,4) matches source precision (stats.{etf_liquidity_margin,index_basic_stats,stock_liquidity_margin}.trading_amount) so broad-index daily turnover up to 10^20 yuan fits without overflow. NULL until 5 rows. NULL trading_amount values are treated as 0 (zero turnover) in the rolling sum but still counted in the W-row denominator, so a single NULL date no longer creates a W-day NaN gap.';
@@ -158,17 +158,17 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma20   IS '20-trad
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma60   IS '60-trading-day moving average of trading_amount (yuan). NULL until 60 rows. NULL trading_amount treated as 0 in sum, counted in denominator (see trading_amt_ma5).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma120  IS '120-trading-day moving average of trading_amount (yuan). NULL until 120 rows. NULL trading_amount treated as 0 in sum, counted in denominator (see trading_amt_ma5).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma255  IS '255-trading-day moving average of trading_amount (yuan). NULL until 255 rows. NULL trading_amount treated as 0 in sum, counted in denominator (see trading_amt_ma5).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma5    IS '5-trading-day moving average of trading_amt_market_share (dimensionless ratio 0..1). market_share[date,code] = trading_amount[date,code] / denominator[date], where denominator = SUM(stats.exchange_trading_amt.total_trading_amount) across exchanges whose stats.sec_classification.is_primary_exchange = TRUE on that date. NULL until 5 rows. NULL market_share treated as 0 in rolling mean, counted in W-row denominator (same pattern as trading_amt_ma5). Built by analyze.mov_ave_spread.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma5    IS '5-trading-day moving average of trading_amt_market_share (dimensionless ratio 0..1). market_share[date,code] = trading_amount[date,code] / denominator[date], where denominator = SUM(stats.exchange_trading_amt.total_trading_amount) across exchanges whose stats.sec_classification.is_primary_exchange = TRUE on that date. NULL until 5 rows. NULL market_share treated as 0 in rolling mean, counted in W-row denominator (same pattern as trading_amt_ma5). Built by analysis.mov_ave_spread.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma20   IS '20-trading-day moving average of trading_amt_market_share. NULL until 20 rows. NULL market_share treated as 0 in rolling mean, counted in denominator (see trading_amt_market_share_ma5).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma60   IS '60-trading-day moving average of trading_amt_market_share. NULL until 60 rows. NULL market_share treated as 0 in rolling mean, counted in denominator (see trading_amt_market_share_ma5).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma120  IS '120-trading-day moving average of trading_amt_market_share. NULL until 120 rows. NULL market_share treated as 0 in rolling mean, counted in denominator (see trading_amt_market_share_ma5).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma255  IS '255-trading-day moving average of trading_amt_market_share. NULL until 255 rows. NULL market_share treated as 0 in rolling mean, counted in denominator (see trading_amt_market_share_ma5).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma5_slope    IS 'Fractional daily change of trading_amt_ma5: (ma5[t] - ma5[t-1]) / ma5[t-1]. Signed ratio (e.g. 0.02 = +2% day-over-day change in the 5-day trading-amount MA). NULL on the first date of each code (no prior row) or when ma5[t]/ma5[t-1] is NULL or ma5[t-1] <= 0. NUMERIC(10,4) — ratio values are small (typical |slope| < 0.1). Built by analyze.mov_ave_spread.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma5_slope    IS 'Fractional daily change of trading_amt_ma5: (ma5[t] - ma5[t-1]) / ma5[t-1]. Signed ratio (e.g. 0.02 = +2% day-over-day change in the 5-day trading-amount MA). NULL on the first date of each code (no prior row) or when ma5[t]/ma5[t-1] is NULL or ma5[t-1] <= 0. NUMERIC(10,4) — ratio values are small (typical |slope| < 0.1). Built by analysis.mov_ave_spread.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma20_slope   IS 'Fractional daily change of trading_amt_ma20: (ma20[t] - ma20[t-1]) / ma20[t-1]. NULL on first date or when ma is NULL/<=0 (see trading_amt_ma5_slope).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma60_slope   IS 'Fractional daily change of trading_amt_ma60: (ma60[t] - ma60[t-1]) / ma60[t-1]. NULL on first date or when ma is NULL/<=0 (see trading_amt_ma5_slope).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma120_slope  IS 'Fractional daily change of trading_amt_ma120: (ma120[t] - ma120[t-1]) / ma120[t-1]. NULL on first date or when ma is NULL/<=0 (see trading_amt_ma5_slope).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma255_slope  IS 'Fractional daily change of trading_amt_ma255: (ma255[t] - ma255[t-1]) / ma255[t-1]. NULL on first date or when ma is NULL/<=0 (see trading_amt_ma5_slope).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma5    IS 'Signed fractional gap between current market_share and its 5-day MA: (market_share - trading_amt_market_share_ma5) / trading_amt_market_share_ma5. market_share[date,code] = trading_amount[date,code] / denominator[date], where denominator = SUM(stats.exchange_trading_amt.total_trading_amount) across exchanges whose stats.sec_classification.is_primary_exchange = TRUE on that date. Positive = security is gaining relative liquidity (above its 5-day average market share); negative = losing. NULL when market_share or market_share_ma5 is NULL or market_share_ma5 <= 0. Built by analyze.mov_ave_spread.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma5    IS 'Signed fractional gap between current market_share and its 5-day MA: (market_share - trading_amt_market_share_ma5) / trading_amt_market_share_ma5. market_share[date,code] = trading_amount[date,code] / denominator[date], where denominator = SUM(stats.exchange_trading_amt.total_trading_amount) across exchanges whose stats.sec_classification.is_primary_exchange = TRUE on that date. Positive = security is gaining relative liquidity (above its 5-day average market share); negative = losing. NULL when market_share or market_share_ma5 is NULL or market_share_ma5 <= 0. Built by analysis.mov_ave_spread.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma20   IS 'Signed fractional gap between current market_share and its 20-day MA: (market_share - trading_amt_market_share_ma20) / trading_amt_market_share_ma20. NULL when market_share or market_share_ma20 is NULL or <= 0 (see trading_amt_market_share_vs_ma5).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma60   IS 'Signed fractional gap between current market_share and its 60-day MA: (market_share - trading_amt_market_share_ma60) / trading_amt_market_share_ma60. NULL when market_share or market_share_ma60 is NULL or <= 0 (see trading_amt_market_share_vs_ma5).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma120  IS 'Signed fractional gap between current market_share and its 120-day MA: (market_share - trading_amt_market_share_ma120) / trading_amt_market_share_ma120. NULL when market_share or market_share_ma120 is NULL or <= 0 (see trading_amt_market_share_vs_ma5).';

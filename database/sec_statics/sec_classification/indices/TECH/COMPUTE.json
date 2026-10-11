@@ -1,0 +1,33 @@
+{
+  "931688": {
+    "name": "中证算力",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMPUTE",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMPUTE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_COMPUTE": {
+    "name": "算力综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "COMPUTE",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMPUTE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

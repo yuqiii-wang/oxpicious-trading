@@ -1,0 +1,20 @@
+{
+  "DUMMY_GAS": {
+    "name": "燃气综合指数",
+    "exchange": null,
+    "sector_id": "INFRA",
+    "industry_id": "GAS",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "GAS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

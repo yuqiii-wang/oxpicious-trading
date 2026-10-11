@@ -17,6 +17,7 @@
 import { queryRows } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { cachedRows } from "./classification-cache.js";
+import { labelDecodeSql } from "./label-codes.js";
 
 export type SecBoardSecType = "index" | "etf" | "stock";
 
@@ -34,7 +35,7 @@ async function listBoardRows(secType: SecBoardSecType): Promise<SecBoardRow[]> {
     queryRows<SecBoardRow>(
       `
       SELECT code,
-             board,
+             ${labelDecodeSql("board", "board")} AS board,
              pct,
              n_stocks,
              snapshot_date::text AS snapshot_date

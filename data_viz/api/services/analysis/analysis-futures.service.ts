@@ -1,9 +1,9 @@
 /**
  * analysis-futures.service.ts — backend service for futures_ext analysis table.
  *
- * Reads metrics pre-computed by analyze/futures/ and stored in analysis.futures_ext.
+ * Reads metrics pre-computed by analysis/futures/ and stored in analysis.futures_ext.
  *
- * Computed columns (analyze/futures/compute.py):
+ * Computed columns (analysis/futures/compute.py):
  *   gap_price_vs_underlying       : (futures_close - underlying_price) / underlying_price
  *   corr_price_vs_underlying       : 20d rolling correlation of futures & underlying close
  */

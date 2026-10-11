@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from downloads._common import VERY_LONG_SLEEP_INTERVAL, setup_logger
+from downloads._common import setup_logger, sleep_sec_for
+
+# Service name for the external_request_config JSON row (pacing source).
+SERVICE = "downloads.index.csindex.composition"
 
 # ---------------------------------------------------------------------------
 # HTTP endpoint
@@ -32,9 +35,12 @@ COLUMN_MATCHERS: List[Tuple[str, str]] = [
 # ---------------------------------------------------------------------------
 # Anti-bot cadence
 # ---------------------------------------------------------------------------
-# Default sleep between HTTP requests.  VERY_LONG_SLEEP_INTERVAL (300s) keeps
-# the full ~500-index sweep safe from csindex's anti-bot defenses.
-SLEEP_SEC: float = VERY_LONG_SLEEP_INTERVAL
+# Sleep between HTTP requests — resolved from the service's
+# external_request_config JSON row (sleep_sec=300 with jitter 0.3 keeps the
+# full ~500-index sweep safe from csindex's anti-bot defenses; the same row
+# also carries the connect/read timeouts and anti-bot toggles). Overridable
+# per-run with --sleep-sec.
+SLEEP_SEC: float = sleep_sec_for(SERVICE)
 
 # ---------------------------------------------------------------------------
 # Skip-sets

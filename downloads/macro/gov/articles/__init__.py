@@ -11,8 +11,10 @@ keyed by the URL content slug) so subsequent runs only fetch new articles.
 Only matched articles are crawled — detail links for titles with no keyword
 hit are NOT visited. Anti-bot behaviour (browser-fingerprint rotation,
 ``random`` query param, host-blocking detection, sleep cadence) is provided
-by the shared ``AntiBotProxy`` from ``downloads._common``; the
-inter-request sleep defaults to ``LONG_SLEEP_INTERVAL`` (90s).
+by the shared ``AntiBotProxy`` from ``downloads._common``; pacing (sleep,
+jitter, timeouts, retry policy) comes from the service's
+external_request_config JSON row (``downloads.macro.gov.articles``,
+sleep_sec=90).
 
 Outputs (under ``temps/gov_news/``):
 
@@ -35,6 +37,7 @@ import csv
 import json
 import re
 import sys
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -47,21 +50,23 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from downloads._common import (  # noqa: E402
-    AntiBotConfig,
     AntiBotProxy,
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
-    DEFAULT_TIMEOUT,
-    LONG_SLEEP_INTERVAL,
+    antibot_config_for,
     build_default_session,
     resolve_out_dir,
+    retry_policy_for,
     setup_logger,
+    sleep_sec_for,
 )
 from downloads.macro.gov.main_gov import latest_csv_date, read_csv_rows  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------------------
+SERVICE = "downloads.macro.gov.articles"
+
 GOV_HOST = "https://www.gov.cn"
 GOV_LIST_URL = "https://www.gov.cn/zhengce/jiedu/index.htm"
 KEYWORDS_PATH = Path(__file__).resolve().parent.parent / "keywords.json"
@@ -70,6 +75,10 @@ ARTICLES_SUBDIR = "articles"
 INDEX_FILENAME = "articles_index.csv"
 TITLES_FILENAME = "gov_news_titles.csv"
 GOV_MIN_VALID_BYTES = 200
+# Anti-bot sleep between requests — resolved from the service's
+# external_request_config JSON row (sleep_sec=90), overridable per-run with
+# --sleep-sec.
+SLEEP_SEC = sleep_sec_for(SERVICE)
 
 # URL slug extractor: content_7077850.htm -> content_7077850
 _RE_SLUG = re.compile(r"content_(\d+)\.htm")
@@ -249,12 +258,22 @@ def fetch_detail(
     """Fetch a gov.cn article detail page HTML via the anti-bot proxy.
 
     Returns the HTML string, or None on hard failure. Retries on transient
-    network errors with exponential backoff; the proxy handles fingerprint
-    rotation, the ``random`` query param, host-blocking detection, and the
-    inter-request sleep cadence.
+    network errors with exponential backoff (max_retries / backoff base from
+    the service's external_request_config JSON row, former inline constants
+    as fallback); the proxy handles fingerprint rotation, the ``random``
+    query param, host-blocking detection, and the inter-request sleep
+    cadence (its timeouts come from the JSON row).
     """
     headers = dict(COMMON_BASE_HEADERS)
     headers["Referer"] = GOV_LIST_URL
+
+    # Retry policy from the service's external_request_config JSON row
+    # (max_retries=2, retry_backoff_sec=1); the former inline constants
+    # apply when the row omits them.
+    row_max_retries, row_backoff_sec = retry_policy_for(SERVICE)
+    if row_max_retries is not None:
+        max_retries = row_max_retries
+    backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
 
     for attempt in range(1, max_retries + 1):
         if proxy.is_blocked(url):
@@ -262,14 +281,14 @@ def fetch_detail(
             return None
         resp = proxy.get(
             session, url,
-            headers=headers, timeout=DEFAULT_TIMEOUT,
+            headers=headers,
             logger=logger, log_tag="  ",
         )
         if resp is None:
             logger.warning("  detail fetch failed (attempt %d/%d): %s", attempt, max_retries, url)
             if attempt < max_retries:
                 import time
-                time.sleep(min(2 ** attempt, 30))
+                time.sleep(min(backoff_sec * 2 ** attempt, 30))
             continue
         if len(resp.content) < GOV_MIN_VALID_BYTES:
             logger.warning("  detail too small (%d bytes): %s", len(resp.content), url)
@@ -299,7 +318,7 @@ def download_articles(
     *,
     out_root: Optional[str] = None,
     start_date: Optional[str] = None,
-    sleep_sec: float = LONG_SLEEP_INTERVAL,
+    sleep_sec: Optional[float] = None,
     max_articles: Optional[int] = None,
     force: bool = False,
     titles_csv: Optional[str] = None,
@@ -311,6 +330,9 @@ def download_articles(
     (same-day additions are re-checked; cached ``.md`` files skip re-fetches).
     ``--force`` re-scans all titles and re-fetches every matched detail page.
 
+    *sleep_sec* defaults to the service's external_request_config JSON row
+    (sleep_sec); an explicit value overrides only that base sleep.
+
     Returns a summary dict with counts and output paths.
     """
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIRNAME, out_root)
@@ -319,6 +341,12 @@ def download_articles(
     csv_path = Path(titles_csv) if titles_csv else out_dir / TITLES_FILENAME
 
     start = datetime.strptime(start_date or DEFAULT_START_DATE, "%Y-%m-%d").date()
+
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+    # overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
 
     # Incremental state: latest pub_date already present in the index CSV.
     index_floor: Optional[date] = None
@@ -367,9 +395,8 @@ def download_articles(
 
     # 4. Fetch detail pages for matched titles
     session = build_default_session()
-    proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        enable_host_tracking=True,
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
     ))
 
     index_rows: List[Dict[str, str]] = []
@@ -498,8 +525,9 @@ def main() -> None:
     )
     parser.add_argument("--start-date", type=str, default=None,
                         help=f"Floor date YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
-    parser.add_argument("--sleep-sec", type=float, default=LONG_SLEEP_INTERVAL,
-                        help=f"Anti-bot sleep between requests (s). Default: {LONG_SLEEP_INTERVAL}")
+    parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Anti-bot sleep between requests (s). "
+                             f"Default: external_request_config JSON for {SERVICE}")
     parser.add_argument("--max-articles", type=int, default=None,
                         help="Cap number of detail fetches (for testing). Default: no cap.")
     parser.add_argument("--out-root", type=str, default=None,

@@ -31,6 +31,12 @@ import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
 import SignalsPage from "@/analysis/pages/SignalsPage";
 import RecentMovementsPage from "@/analysis/pages/RecentMovements";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
+import StreamMonitorPage from "@/monitor/pages/StreamMonitorPage";
+import ExternalResourcesPage from "@/monitor/pages/ExternalResources";
+import SrcDataAuditPage from "@/monitor/pages/SrcDataAuditPage";
+import ServiceConfigPage from "@/config/pages/ServiceConfigPage";
+import ExtRequestConfigPage from "@/config/pages/ExtRequestConfigPage";
+import SecStaticsPage from "@/config/pages/SecStaticsPage";
 import { useSecAllocLivePipeline } from "@/live/hooks/useSecAllocLivePipeline";
 import { useTradingSignalsSchedule } from "@/live/hooks/useTradingSignalsSchedule";
 
@@ -93,8 +99,16 @@ export default function App() {
             element={<Box sx={{ p: 4, color: "text.secondary" }}>Strategy Commons — coming soon.</Box>}
           />
           <Route path="/strategy/singleton" element={<SingletonStrategyPage />} />
+          <Route path="/monitor" element={<StreamMonitorPage />} />
+          <Route path="/monitor/ext-resources" element={<ExternalResourcesPage />} />
+          <Route path="/monitor/src-data" element={<SrcDataAuditPage />} />
+          <Route path="/config" element={<Navigate to="/config/service" replace />} />
+          <Route path="/config/service" element={<ServiceConfigPage />} />
+          <Route path="/config/external" element={<ExtRequestConfigPage />} />
+          <Route path="/config/security" element={<SecStaticsPage />} />
         </Routes>
       </Box>
     </Router>
   );
 }
+

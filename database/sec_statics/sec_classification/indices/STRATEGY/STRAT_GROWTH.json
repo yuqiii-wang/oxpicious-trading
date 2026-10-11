@@ -1,0 +1,180 @@
+{
+  "000028": {
+    "name": "180成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000030": {
+    "name": "180R成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000057": {
+    "name": "全指成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000059": {
+    "name": "全R成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000117": {
+    "name": "380成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000119": {
+    "name": "380R成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000690": {
+    "name": "科创成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000918": {
+    "name": "300成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930939": {
+    "name": "500质量成长",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931589": {
+    "name": "300成长创新",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931590": {
+    "name": "500成长创新",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931591": {
+    "name": "1000成长创新",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_STRAT_GROWTH": {
+    "name": "成长综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_GROWTH",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_GROWTH"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

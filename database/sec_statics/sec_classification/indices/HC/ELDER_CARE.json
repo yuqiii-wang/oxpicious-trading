@@ -1,0 +1,33 @@
+{
+  "399812": {
+    "name": "养老产业",
+    "exchange": "SZ",
+    "sector_id": "HC",
+    "industry_id": "ELDER_CARE",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "ELDER_CARE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_ELDER_CARE": {
+    "name": "养老产业综合指数",
+    "exchange": null,
+    "sector_id": "HC",
+    "industry_id": "ELDER_CARE",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "ELDER_CARE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

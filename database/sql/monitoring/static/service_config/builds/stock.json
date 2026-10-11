@@ -1,0 +1,9 @@
+{
+  "service": "builds.stock",
+  "max_parallel": 1,
+  "freq": "daily",
+  "schedule": "every A-share trading date from 19:00, after downloads_daily.sh (builds_daily.sh loop order)",
+  "notes": "tech_stats (MA/EMA) runs as an internal final step; refreshes the stock board-tag slices.",
+  "source_ref": "scripts/builds_daily.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

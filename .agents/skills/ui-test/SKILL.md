@@ -1,6 +1,6 @@
 ---
 name: ui-test
-description: Tiered verification for anything that reaches the data_viz UI — FIRST assert the affected API response arrays (lengths, date-axis alignment, element positions, new field values) with direct HTTP checks and NO browser, and ONLY after those pass take page screenshots for visual confirmation. Use whenever verifying or testing a change under data_viz/ (React pages/components, chart option builders, tooltips, api/routes, api/services, shared/types.ts) or an analyze/ pipeline feeding those endpoints — including requests like "test this UI change", "verify the page/chart", "does it look right", or any moment a session that edited data_viz files moves to verification.
+description: Tiered verification for anything that reaches the data_viz UI — FIRST assert the affected API response arrays (lengths, date-axis alignment, element positions, new field values) with direct HTTP checks and NO browser, and ONLY after those pass take page screenshots for visual confirmation. Use whenever verifying or testing a change under data_viz/ (React pages/components, chart option builders, tooltips, api/routes, api/services, shared/types.ts) or an analysis/ pipeline feeding those endpoints — including requests like "test this UI change", "verify the page/chart", "does it look right", or any moment a session that edited data_viz files moves to verification.
 ---
 
 # data_viz UI test — data check first, screenshot second
@@ -21,7 +21,7 @@ file (they document every route with params):
 
 | Changed under | Meaning for the test |
 |---|---|
-| `analyze/**`, `builds/**` | DB rows feed the responses — re-run the pipeline first (WSL `python -m ...` per oxpicious-dev-conventions), then data-check the endpoints that read those tables |
+| `analysis/**`, `builds/**` | DB rows feed the responses — re-run the pipeline first (WSL `python -m ...` per oxpicious-dev-conventions), then data-check the endpoints that read those tables |
 | `data_viz/shared/types.ts` | the response contract both sides compile against — data-check every endpoint whose response type changed |
 | `data_viz/api/services/**` | SQL + array shaping/ordering — data-check its routes' endpoints |
 | `data_viz/api/routes/**` | endpoint contract/params — data-check the route incl. bad-param and empty-scope cases |

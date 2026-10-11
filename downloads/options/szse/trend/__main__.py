@@ -30,6 +30,11 @@ from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("trend")
 
 
+# Pacing (sleep/jitter/timeouts/anti-bot toggles) resolves from this service's
+# external_request_config JSON row via run_szse_download(service=...).
+SERVICE = "downloads.options.szse.trend"
+
+
 TREND_ARCHIVE_DATE = "2025-07-01"
 
 SECURITY_CFGS: Dict[str, Dict[str, str]] = {
@@ -72,9 +77,12 @@ def download_szse_trend_option(
     out_root: Optional[str] = None,
     end_date: Optional[str] = None,
     start_date: str = "2025-07-01",
-    sleep_sec: float = 5.0,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
 ) -> dict:
+    """Download SZSE option (tab6) trend data; pacing resolves from the
+    ``downloads.options.szse.trend`` external_request_config JSON row
+    (an explicit *sleep_sec* overrides the row's base sleep only)."""
     return run_szse_download(
         caller_file=str(Path(__file__).resolve()),
         out_dirname="szse_trend",
@@ -89,6 +97,7 @@ def download_szse_trend_option(
         security_types=["option"],
         sleep_sec=sleep_sec,
         session=session,
+        service=SERVICE,
         exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
         skip_empty_markers=True,
@@ -96,4 +105,6 @@ def download_szse_trend_option(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_szse_trend_option())

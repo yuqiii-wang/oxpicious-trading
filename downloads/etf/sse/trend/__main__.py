@@ -16,6 +16,8 @@ from downloads._common.exchanges.sse import run_snapshot_download
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("trend")
 
+SERVICE = "downloads.etf.sse.trend"
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(
@@ -24,4 +26,7 @@ if __name__ == "__main__":
     ap.add_argument("--force", action="store_true",
                     help="Overwrite existing date CSV file.")
     args = ap.parse_args()
-    logger.info(run_snapshot_download(SSE_FUND_LIST_URL, "sse_trend_etf", force=args.force))
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
+    logger.info(run_snapshot_download(
+        SSE_FUND_LIST_URL, "sse_trend_etf", force=args.force, service=SERVICE))

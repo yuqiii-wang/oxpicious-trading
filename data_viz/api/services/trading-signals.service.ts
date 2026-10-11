@@ -25,7 +25,7 @@
 //    marker.
 // ---------------------------------------------------------------------------
 import { queryRows, formatDate } from "./db.service.js";
-import { labelDecodeSql } from "./label-codes.js";
+import { labelDecodeSql, LABEL_CODE } from "./label-codes.js";
 import type { QueryResultRow } from "pg";
 
 /** One menu entry: a signal family + window (e.g. mov_rsi / rsi14). */
@@ -72,6 +72,21 @@ export interface TradingSignalRow {
    *  day label (calm/hot/panic/quiet). Context, not a gate: the breach
    *  still fires; the label matches the strategy's own regime split. */
   regime_state: string;
+  /** The event's population VARIANT: FALSE = the plain record, TRUE =
+   *  the OHLCV-boost twin (the SAME trigger, confidence trust-weighted
+   *  by the day-0 ohlcv score). The history panel's OHLCV toggle picks
+   *  which variant renders. Live-tier rows carry no twins (always
+   *  FALSE). */
+  is_ohlcv_boosted: boolean;
+  /** The event's episode-PASS attribution (the rsi analysis layer's
+   *  side-mirrored is_typical flag at the day's own window): TRUE = the
+   *  typical pass (buy: the isolated first touch; sell: the re-test),
+   *  FALSE = the re-entry pass (flicker re-crossings / continuations /
+   *  isolated breakouts — the noisy population). The history panel's
+   *  pass toggle filters on it. A live tick winning a day inherits the
+   *  history anchor's stamp; null = no stamped anchor for the day
+   *  (pre-migration rows, live-only days). */
+  is_typical: boolean | null;
   /** The code's SIGNAL-DAY count over the LAST 20 TRADING DAYS ending on
    *  `date`: one day = one entry — the day's highest-confidence row —
    *  counted once however many rows it has (signal types, intraday
@@ -98,13 +113,17 @@ export async function fetchTradingSignalConfigs(
   secType: string | null | undefined,
 ): Promise<TradingSignalConfigRow[]> {
   const st = assertSecType(secType);
+  // the stored sec_type / signal_type columns are SMALLINT label codes
+  // (the label-code contract) — the filter carries the code, the response
+  // decodes back to the labels the UI speaks
   const rows = await queryRows<TradingSignalConfigRow & QueryResultRow>(
-    `SELECT signal_type, signal_sub_type, count(*)::int AS n_configs
-     FROM analysis_signals.signal_thresholds
-     WHERE sec_type = $1 AND is_active
-     GROUP BY signal_type, signal_sub_type
-     ORDER BY signal_type, signal_sub_type`,
-    [st],
+    `SELECT ${labelDecodeSql("signal_type", "t.signal_type")} AS signal_type,
+            t.signal_sub_type, count(*)::int AS n_configs
+     FROM analysis_signals.signal_thresholds t
+     WHERE t.sec_type = ${LABEL_CODE.sec_type[st]} AND t.is_active
+     GROUP BY t.signal_type, t.signal_sub_type
+     ORDER BY t.signal_type, t.signal_sub_type`,
+    [],
   );
   return rows;
 }
@@ -127,7 +146,16 @@ const BASIC_STATS_TABLE: Record<string, string> = {
 };
 
 /** One day's triggered signals for a sec_type, confidence DESC then time
- *  DESC. `date` is 'YYYY-MM-DD' (the UI pre-resolves biz today).
+ *  DESC — BOTH population variants per event (is_ohlcv_boosted FALSE
+ *  plain / TRUE the w-scaled boost twin; the OHLCV toggle picks) + the
+ *  event's episode-pass attribute (is_typical — the pass toggle
+ *  filters; a live tick winning a day inherits its history anchor's
+ *  stamp, null when no stamped anchor exists). Two source roles, joined
+ *  per (config, day, VARIANT):
+ *    • analysis_signals.history_signals — the day's close-trigger
+ *      anchors (the analysis run's 15:00 records),
+ *    • live.live_signals — the day's monitor breaches + day-close
+ *      observations (no variants: always the plain population).
  *  Joins the sec_type's identity table (latest row per code) to resolve
  *  the display name; falls back to NULL when no identity row exists.
  *  Each row also carries count_20d — the code's SIGNAL-DAY count over the
@@ -151,40 +179,118 @@ export async function fetchTriggeredSignals(
         WHERE date <= $2::date AND close IS NOT NULL
         ORDER BY win_start DESC
         OFFSET 19 LIMIT 1
+     ),
+     recent AS (
+        -- THE MONITOR SLICE — live rows carry no population variants
+        -- (no boost twins, no pass stamp).
+        SELECT s.code,
+               s.sec_type,
+               s.signal_type,
+               s.signal_sub_type,
+               s.date,
+               s.time,
+               s.action,
+               s.signal_excess::float8        AS signal_excess,
+               s.signal_excess_pct::float8    AS signal_excess_pct,
+               s.signal::float8               AS signal,
+               s.signal_threshold::float8     AS signal_threshold,
+               s.confidence,
+               (s.confidence::float8 / 100.0) AS confidence_pct,
+               s.is_day_close_trigger,
+               s.regime_state,
+               FALSE         AS is_ohlcv_boosted,
+               NULL::boolean AS is_typical
+        FROM live.live_signals s
+        WHERE s.sec_type = $1 AND s.date = $2::date
+     ),
+     history AS (
+        -- THE ANALYSIS ANCHORS — the day's close-trigger records, BOTH
+        -- variants (is_ohlcv_boosted) + the day's episode-pass
+        -- attribute (is_typical, NULL pre-stamp).
+        SELECT s.code,
+               ${labelDecodeSql("sec_type", "s.sec_type")} AS sec_type,
+               ${labelDecodeSql("signal_type", "s.signal_type")} AS signal_type,
+               s.signal_sub_type,
+               s.date,
+               s.time,
+               s.action,
+               s.signal_excess::float8        AS signal_excess,
+               s.signal_excess_pct::float8    AS signal_excess_pct,
+               s.signal::float8               AS signal,
+               s.signal_threshold::float8     AS signal_threshold,
+               s.confidence,
+               (s.confidence::float8 / 100.0) AS confidence_pct,
+               s.is_day_close_trigger,
+               s.regime_state,
+               s.is_ohlcv_boosted,
+               s.is_typical
+        FROM analysis_signals.history_signals s
+        WHERE s.sec_type = ${LABEL_CODE.sec_type[st]}
+          AND s.date = $2::date
+     ),
+     combined AS (
+        SELECT h.* FROM history h
+        UNION ALL
+        SELECT r.* FROM recent r
+     ),
+     deduped AS (
+        -- One record per (config, day, VARIANT): the boost twin is the
+        -- same event with w-scaled confidence — it survives beside its
+        -- plain record (the OHLCV toggle picks). Within a variant, a
+        -- live tick wins over the history anchor (earliest first —
+        -- state families re-flag on every qualifying tick while the
+        -- breach persists); a stronger confidence breaks remaining
+        -- ties. The EVENT's pass stamp rides the partition (bool_or —
+        -- one event carries exactly one stamp): a live tick winning a
+        -- day inherits its history anchor's pass.
+        SELECT d.*,
+               bool_or(d.is_typical) OVER (
+                   PARTITION BY d.signal_type, d.signal_sub_type, d.date,
+                                d.is_ohlcv_boosted
+               ) AS event_is_typical,
+               row_number() OVER (
+                   PARTITION BY d.signal_type, d.signal_sub_type, d.date,
+                                d.is_ohlcv_boosted
+                   ORDER BY d.is_day_close_trigger, d.time,
+                            d.confidence DESC
+               ) AS rn
+        FROM combined d
      )
-     SELECT s.code,
+     SELECT r.code,
             n.name                       AS code_name,
-            s.sec_type,
-            s.signal_type,
-            s.signal_sub_type,
-            to_char(s.date, 'YYYY-MM-DD') AS date,
-            to_char(s.time, 'HH24:MI')    AS time,
-            ${labelDecodeSql("action", "s.action")} AS action,
-            s.signal_excess::float8       AS signal_excess,
-            s.signal_excess_pct::float8    AS signal_excess_pct,
-            s.signal::float8              AS signal,
-            s.signal_threshold::float8     AS signal_threshold,
-            s.confidence,
-            (s.confidence::float8 / 100.0) AS confidence_pct,
-            s.is_day_close_trigger,
-            ${labelDecodeSql("regime", "s.regime_state")} AS regime_state,
+            r.sec_type,
+            r.signal_type,
+            r.signal_sub_type,
+            to_char(r.date, 'YYYY-MM-DD') AS date,
+            to_char(r.time, 'HH24:MI')    AS time,
+            ${labelDecodeSql("action", "r.action")} AS action,
+            r.signal_excess,
+            r.signal_excess_pct,
+            r.signal,
+            r.signal_threshold,
+            r.confidence,
+            r.confidence_pct,
+            r.is_day_close_trigger,
+            ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
+            r.is_ohlcv_boosted,
+            r.event_is_typical AS is_typical,
             (SELECT count(DISTINCT ls.date)::int
              FROM live.live_signals ls
-             WHERE ls.sec_type = s.sec_type
-               AND ls.code = s.code
+             WHERE ls.sec_type = r.sec_type
+               AND ls.code = r.code
                AND ls.date <= $2::date
                AND ls.date > COALESCE(
                      (SELECT win_start FROM win), '1900-01-01'::date)
             ) AS count_20d
-     FROM live.live_signals s
+     FROM deduped r
      LEFT JOIN LATERAL (
        SELECT i.name FROM ${idt} i
-       WHERE i.code = s.code
+       WHERE i.code = r.code
        ORDER BY i.date DESC LIMIT 1
      ) n ON TRUE
-     WHERE s.sec_type = $1 AND s.date = $2::date
-     ORDER BY s.confidence DESC, s.time DESC, s.code, s.signal_type,
-              s.signal_sub_type`,
+     WHERE r.rn = 1
+     ORDER BY r.confidence DESC, r.time DESC, r.code, r.signal_type,
+              r.signal_sub_type`,
     [st, date],
   );
   return rows;
@@ -225,7 +331,7 @@ export async function isTradingSignalComputeEligible(
   const rows = await queryRows<{ eligible: boolean } & QueryResultRow>(
     `SELECT (
         EXISTS (SELECT 1 FROM analysis_signals.signal_thresholds
-                WHERE sec_type = $1 AND is_active)
+                WHERE sec_type = ${LABEL_CODE.sec_type[st]} AND is_active)
         AND EXISTS (SELECT 1 FROM ${BASIC_STATS_TABLE[st]!}
                     WHERE date = $2::date AND close IS NOT NULL)
      ) AS eligible`,
@@ -250,13 +356,19 @@ export interface TradingSignalHistoryResult {
 
 /** Every signal event of ONE code (newest first, confidence DESC within
  *  a day) — the row-expansion panel's history table + trend-chart markers.
- *  Two source roles, joined per (config, day) with the live tick winning:
+ *  Two source roles, joined per (config, day, VARIANT) with the live tick
+ *  winning:
  *    • analysis_signals.history_signals — the PLOT BULK: the multi-year
  *      event record (a year-end snapshot owns its calendar year, the
  *      rolling latest owns [Jan 1, its key]; 15:00 day-close anchors),
+ *      BOTH variants per event (is_ohlcv_boosted FALSE plain / TRUE the
+ *      w-scaled boost twin — the UI's OHLCV toggle picks) + the day's
+ *      episode-pass attribute (is_typical TRUE typical / FALSE re-entry /
+ *      NULL unclassified — the UI's pass toggle filters),
  *    • live.live_signals — the RECENT 20-TRADING-DAY SLICE ONLY: the
  *      recorded breaches inside (win_start, anchor]. Older days belong to
- *      the history record — the union never re-scans them.
+ *      the history record — the union never re-scans them. Live rows
+ *      carry no variants (always the plain population).
  *  Optional signal_type / signal_sub_type narrow both sources to one
  *  signal family. `date` ('YYYY-MM-DD', the viewed day) anchors the
  *  window; omitted = the newest baseline close. */
@@ -272,19 +384,34 @@ export async function fetchTradingSignalHistory(
   if (!c) {
     throw Object.assign(new Error("code is required"), { status: 400 });
   }
-  // Shared predicate — applied inside BOTH scans so the optional family
-  // filters prune rows before the union/dedup.
+  // The TWO scans' predicates: live.live_signals keeps its TEXT
+  // sec_type / signal_type columns (the params carry the labels), while
+  // analysis_signals.history_signals stores the SMALLINT label codes —
+  // its own predicates carry the codes (validated map lookups, not user
+  // input) and its SELECT decodes back to the labels the union speaks.
+  // An unknown family label filters to nothing (never a fuzzy match).
+  const secCode = LABEL_CODE.sec_type[st];
+  const sigCode = signalType
+    ? LABEL_CODE.signal_type[signalType.trim()]
+    : undefined;
+  if (signalType && sigCode === undefined) {
+    return { signals: [], recent_window_start: null };
+  }
   const predicates = ["s.sec_type = $1", "s.code = $2"];
+  const histPredicates = ["s.sec_type = " + secCode, "s.code = $2"];
   const params: unknown[] = [st, c];
   if (signalType) {
     params.push(signalType.trim());
     predicates.push(`s.signal_type = $${params.length}`);
+    histPredicates.push(`s.signal_type = ${sigCode}`);
   }
   if (signalSubType) {
     params.push(signalSubType.trim());
     predicates.push(`s.signal_sub_type = $${params.length}`);
+    histPredicates.push(`s.signal_sub_type = $${params.length}`);
   }
   const where = predicates.join(" AND ");
+  const histWhere = histPredicates.join(" AND ");
   // The window anchor: the viewed day when given (ISO-guarded), else the
   // newest baseline close ('infinity' upper bound). The win CTE walks back
   // 20 DISTINCT close dates from it — the count_20d window, verbatim.
@@ -312,7 +439,8 @@ export async function fetchTradingSignalHistory(
         -- anchor's last 20 trading days (the count_20d window). The live
         -- table contributes nothing outside this window — older days
         -- belong to the history record below, so the union never
-        -- re-scans live's back catalog.
+        -- re-scans live's back catalog. Live rows carry no population
+        -- variants (no boost twins, no pass stamp).
         SELECT s.code,
                s.sec_type,
                s.signal_type,
@@ -327,7 +455,9 @@ export async function fetchTradingSignalHistory(
                s.confidence,
                (s.confidence::float8 / 100.0) AS confidence_pct,
                s.is_day_close_trigger,
-               s.regime_state
+               s.regime_state,
+               FALSE        AS is_ohlcv_boosted,
+               NULL::boolean AS is_typical
         FROM live.live_signals s
         WHERE ${where}
           AND s.date > (SELECT win_start FROM win)
@@ -335,10 +465,16 @@ export async function fetchTradingSignalHistory(
      ),
      history AS (
         -- THE PLOT BULK — the multi-year record, every year the strategy
-        -- tier registered (15:00 day-close anchors).
+        -- tier registered (15:00 day-close anchors). BOTH population
+        -- variants x the day's pass attribute: is_ohlcv_boosted FALSE =
+        -- the plain record, TRUE = the boost twin (the same events with
+        -- w-scaled confidence — the overlay-style OHLCV toggle picks);
+        -- is_typical TRUE = the typical pass, FALSE = the re-entry pass
+        -- (the overlay-style pass toggle filters), NULL = unclassified
+        -- (rows written before the stamp). The UI filters client-side.
         SELECT s.code,
-               s.sec_type,
-               s.signal_type,
+               ${labelDecodeSql("sec_type", "s.sec_type")} AS sec_type,
+               ${labelDecodeSql("signal_type", "s.signal_type")} AS signal_type,
                s.signal_sub_type,
                s.date,
                s.time,
@@ -350,9 +486,11 @@ export async function fetchTradingSignalHistory(
                s.confidence,
                (s.confidence::float8 / 100.0) AS confidence_pct,
                s.is_day_close_trigger,
-               s.regime_state
+               s.regime_state,
+               s.is_ohlcv_boosted,
+               s.is_typical
         FROM analysis_signals.history_signals s
-        WHERE ${where}
+        WHERE ${histWhere}
      ),
      combined AS (
         SELECT h.* FROM history h
@@ -360,14 +498,25 @@ export async function fetchTradingSignalHistory(
         SELECT r.* FROM recent r
      ),
      deduped AS (
-        -- One record per (config, day). Inside the window a live tick
-        -- wins over the history anchor (earliest first — state families
-        -- re-flag on every qualifying tick while the breach persists);
-        -- outside it history stands alone. A stronger confidence breaks
-        -- remaining ties (the retired day-close mirror rows).
+        -- One record per (config, day, VARIANT): the boost twin is the
+        -- same event with w-scaled confidence — it must survive beside
+        -- its plain record (the OHLCV toggle picks). Within a variant,
+        -- a live tick wins over the history anchor (earliest first —
+        -- state families re-flag on every qualifying tick while the
+        -- breach persists; live has no twins, so the TRUE partition is
+        -- history-only); a stronger confidence breaks remaining ties
+        -- (the retired day-close mirror rows). The EVENT's pass stamp
+        -- rides the partition (max — one event carries exactly one
+        -- stamp): a live tick winning a day inherits its history
+        -- anchor's pass, so the pass toggle still sees the day.
         SELECT d.*,
+               bool_or(d.is_typical) OVER (
+                   PARTITION BY d.signal_type, d.signal_sub_type, d.date,
+                                d.is_ohlcv_boosted
+               ) AS event_is_typical,
                row_number() OVER (
-                   PARTITION BY d.signal_type, d.signal_sub_type, d.date
+                   PARTITION BY d.signal_type, d.signal_sub_type, d.date,
+                                d.is_ohlcv_boosted
                    ORDER BY d.is_day_close_trigger, d.time,
                             d.confidence DESC
                ) AS rn
@@ -394,6 +543,8 @@ export async function fetchTradingSignalHistory(
             r.confidence_pct,
             r.is_day_close_trigger,
             ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
+            r.is_ohlcv_boosted,
+            r.event_is_typical AS is_typical,
             (SELECT to_char(win_start, 'YYYY-MM-DD') FROM win)
                 AS recent_window_start
      FROM deduped r
@@ -420,10 +571,11 @@ export async function fetchTradingSignalHistory(
 // ---------------------------------------------------------------------------
 
 /** One fitted depth-response curve row (analysis_signals.signal_curves
- *  at its LATEST snapshot per key): mu(s) = mu_center + slope *
- *  (s - s_center) over the Gaussian depth score s = Phi^-1(1 - q);
- *  tail_bars maps tail pct ("1".."10") to the window's RSI bar (the
- *  s -> RSI-value mapping). */
+ *  at its LATEST snapshot per key): curve(s) = mu_center +
+ *  interp(fit_curve, s) over the Gaussian depth score s = Phi^-1(1-q)
+ *  — the pooled episode-weighted isotonic shape, drawn only within
+ *  [s_lo, s_hi]; tail_bars maps tail pct ("1".."25") to the window's
+ *  RSI bar (the s -> RSI-value mapping). */
 export interface SignalCurveRow {
   code: string;
   sec_type: string;
@@ -435,23 +587,73 @@ export interface SignalCurveRow {
   regime_state: string;
   start_date: string;
   end_date: string;
-  /** The cell's delay-0 trigger count over the window (the fit's sample). */
+  /** The cell's population VARIANT (PK member): FALSE = the plain
+   *  fit, TRUE = the OHLCV-boost twin (the same in-band days, every
+   *  statistic weight-blended by episode x day-0 ohlcv score). The
+   *  curve overlay's toggle picks which variant to render. */
+  is_ohlcv_boosted: boolean;
+  /** FALSE if not usually observed for a signal, e.g., RSI re-entry
+   *  is registered; TRUE if typical, e.g., RSI isolated ups/downs —
+   *  the cell's episode-PASS population (PK member): TRUE = the
+   *  first-touch passes' days (each episode's first tail day AND its
+   *  gap-1 continuations), FALSE = the re-entry passes' days. The
+   *  curve overlay's toggle picks which population to render. */
+  is_typical: boolean;
+  /** The cell's in-band day count over the window (the fit's raw
+   *  sample — every tail-episode day, registrations + continuations). */
   n: number;
+  /** The cell's EPISODE count (the effective sample: each episode's
+   *  days carry weight 1/episode_size, summing to exactly 1). */
+  n_episodes: number;
   /** y-bar: the cell's sign-aligned blended mean forward change at its
    *  own depth center (fraction; > 0 = the reversal worked). */
   mu_center: number;
   /** s-bar: the cell's own mean depth score (never a universal constant). */
   s_center: number;
-  /** b: dmu/ds — the pooled (side, regime) OLS slope (buy side >= 0). */
-  slope: number;
+  /** The pooled (index class, side, regime) WEIGHTED ISOTONIC shape
+   *  as {"s": offset} at the 25 1%-band-center knot depths — the PAVA
+   *  values are monotone, so linear interpolation between the knots is
+   *  a CONTINUOUS MONOTONE curve. curve(s) = mu_center +
+   *  interp(fit_curve, s). Significance-gated: all-zero offsets (flat
+   *  at mu_center) when the pool's |fit_t| < 2. */
+  fit_curve: Record<string, number>;
+  /** The pooled weighted Spearman rho(s, y) — the shape's direction
+   *  and strength (gate input). */
+  fit_rho: number;
+  /** The cluster-adjusted significance t over the pool's EPISODE
+   *  count (fit_curve is flat exactly when |fit_t| < 2). */
+  fit_t: number;
+  /** The cell's shallowest MEASURED depth score — draw the fit only
+   *  within [s_lo, s_hi] (no extrapolation). */
+  s_lo: number;
+  /** The cell's deepest MEASURED depth score. */
+  s_hi: number;
+  /** The cell's EMPIRICAL depth response at 1% stride: band key
+   *  (1..25, the deeper edge pct) -> episode-weighted mean
+   *  sign-aligned response of the days whose q falls in
+   *  ((k-1)%, k%] (absent = empty band) — the measured shape beside
+   *  the isotonic fit (the deep bands are measured since the
+   *  2026-10-06 episode population). */
+  band_curve: Record<string, number> | null;
+  /** Sign-aligned mean forward change at each horizon (fraction, NULL
+   *  when no trigger carries the leg) — the path behind the
+   *  0.10/0.15/0.50/0.15/0.10 blend's next/3d/5d/10d/20d legs. */
+  mu_1d: number | null;
+  mu_3d: number | null;
+  mu_5d: number | null;
+  mu_10d: number | null;
+  mu_20d: number | null;
   /** Tail pct ("1" | "2" | "3" | "5" | "10") -> the window's interpolated
    *  RSI bar for this (code, rsi_window, side). */
   tail_bars: Record<string, number>;
 }
 
-/** The code's LATEST depth-response curves (one row per rsi_window x
- *  side x regime_state at the newest snapshot) — the curve overlay's
- *  data. */
+/** The code's LATEST depth-response curves — BOTH boost variants x
+ *  BOTH episode-pass populations per cell (is_ohlcv_boosted FALSE
+ *  plain / TRUE boost twin; is_typical TRUE typical / FALSE re-entry;
+ *  the overlay's toggles filter client-side) — one row per rsi_window
+ *  x side x regime_state x population x variant at the newest
+ *  snapshot. */
 export async function fetchSignalCurves(
   secType: string | null | undefined,
   code: string,
@@ -461,28 +663,51 @@ export async function fetchSignalCurves(
   if (!c) {
     throw Object.assign(new Error("code is required"), { status: 400 });
   }
+  // the stored sec_type / signal_type columns are SMALLINT label codes
+  // (the label-code contract) — the filter carries the code, the response
+  // decodes back to the labels the UI speaks. The LATEST-snapshot
+  // boundary is PER FAMILY (max end_date within the row's own
+  // signal_type): the families key their snapshots on DIFFERENT data
+  // horizons (mov_rsi the latest RSI date, bollinger the latest price
+  // date), so a global max would hide the family whose newest snapshot
+  // is older.
   return queryRows<SignalCurveRow & QueryResultRow>(
     `SELECT s.code,
-            s.sec_type,
-            s.signal_type,
-            s.rsi_window::int AS rsi_window,
+            ${labelDecodeSql("sec_type", "s.sec_type")} AS sec_type,
+            ${labelDecodeSql("signal_type", "s.signal_type")} AS signal_type,
+            s.audit_window::int AS rsi_window,
             ${labelDecodeSql("side", "s.side")} AS side,
             ${labelDecodeSql("regime", "s.regime_state")} AS regime_state,
             to_char(s.start_date, 'YYYY-MM-DD') AS start_date,
             to_char(s.end_date, 'YYYY-MM-DD') AS end_date,
+            s.is_ohlcv_boosted,
+            s.is_typical,
             s.n::int AS n,
+            s.n_episodes::int AS n_episodes,
             s.mu_center::float8 AS mu_center,
             s.s_center::float8 AS s_center,
-            s.slope::float8 AS slope,
+            s.fit_curve,
+            s.fit_rho::float8 AS fit_rho,
+            s.fit_t::float8 AS fit_t,
+            s.s_lo::float8 AS s_lo,
+            s.s_hi::float8 AS s_hi,
+            s.band_curve,
+            s.mu_1d::float8 AS mu_1d,
+            s.mu_3d::float8 AS mu_3d,
+            s.mu_5d::float8 AS mu_5d,
+            s.mu_10d::float8 AS mu_10d,
+            s.mu_20d::float8 AS mu_20d,
             s.tail_bars
      FROM analysis_signals.signal_curves s
-     WHERE s.sec_type = $1 AND s.code = $2
+     WHERE s.sec_type = ${LABEL_CODE.sec_type[st]} AND s.code = $1
        AND s.end_date = (
            SELECT max(c2.end_date) FROM analysis_signals.signal_curves c2
-           WHERE c2.sec_type = $1 AND c2.code = $2
+           WHERE c2.sec_type = ${LABEL_CODE.sec_type[st]}
+             AND c2.code = $1
+             AND c2.signal_type = s.signal_type
        )
-     ORDER BY s.rsi_window, s.side, s.regime_state`,
-    [st, c],
+     ORDER BY s.audit_window, s.side, s.regime_state`,
+    [c],
   );
 }
 
@@ -523,8 +748,8 @@ export async function fetchSignalThresholds(
   }
   return queryRows<SignalThresholdRow & QueryResultRow>(
     `SELECT t.code,
-            t.sec_type,
-            t.signal_type,
+            ${labelDecodeSql("sec_type", "t.sec_type")} AS sec_type,
+            ${labelDecodeSql("signal_type", "t.signal_type")} AS signal_type,
             t.signal_sub_type,
             ${labelDecodeSql("side", "t.side")} AS side,
             ${labelDecodeSql("regime", "t.regime_state")} AS regime_state,
@@ -537,9 +762,10 @@ export async function fetchSignalThresholds(
             to_char(t.start_date, 'YYYY-MM-DD') AS start_date,
             to_char(t.end_date, 'YYYY-MM-DD') AS end_date
      FROM analysis_signals.signal_thresholds t
-     WHERE t.sec_type = $1 AND t.code = $2 AND t.is_active
+     WHERE t.sec_type = ${LABEL_CODE.sec_type[st]} AND t.code = $1
+       AND t.is_active
      ORDER BY t.signal_sub_type, t.side, t.regime_state`,
-    [st, c],
+    [c],
   );
 }
 
@@ -575,6 +801,7 @@ export async function fetchSignalRsiSeries(
      FROM analysis.mov_ave_rsi r
      WHERE r.sec_type = $1 AND r.code = $2
      ORDER BY r.date ASC`,
-    [st, c],
+    // analysis.mov_ave_rsi stores its stats.label_dim 'sec_type' code
+    [LABEL_CODE.sec_type[st], c],
   );
 }

@@ -1,0 +1,37 @@
+{
+  "label": "医药",
+  "industries": {
+    "INNO_DRUG": {
+      "label": "创新药",
+      "slug": "inno_drug"
+    },
+    "MED_DEVICES": {
+      "label": "医疗器械",
+      "slug": "med_devices"
+    },
+    "TCM": {
+      "label": "中药",
+      "slug": "tcm"
+    },
+    "VACCINE": {
+      "label": "疫苗",
+      "slug": "vaccine"
+    },
+    "BIOTECH": {
+      "label": "生物科技",
+      "slug": "biotech"
+    },
+    "HEALTH": {
+      "label": "健康",
+      "slug": "health"
+    },
+    "PHARMA_BROAD": {
+      "label": "医药",
+      "slug": "pharma_broad"
+    },
+    "ELDER_CARE": {
+      "label": "养老产业",
+      "slug": "elder_care"
+    }
+  }
+}

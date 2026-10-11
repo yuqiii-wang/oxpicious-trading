@@ -1,0 +1,29 @@
+{
+  "932000": {
+    "name": "中证2000",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI2000",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI2000"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_CSI2000": {
+    "name": "中证2000综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI2000",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI2000"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

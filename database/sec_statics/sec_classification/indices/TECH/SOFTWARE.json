@@ -1,0 +1,59 @@
+{
+  "930601": {
+    "name": "中证软件",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SOFTWARE",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SOFTWARE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932094": {
+    "name": "软件开发",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SOFTWARE",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SOFTWARE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_SOFTWARE": {
+    "name": "软件综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "SOFTWARE",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SOFTWARE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30202": {
+    "name": "软件指数",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "SOFTWARE",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SOFTWARE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

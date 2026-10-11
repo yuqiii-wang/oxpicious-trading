@@ -1,0 +1,79 @@
+{
+  "000139": {
+    "name": "上证转债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CONVERTIBLE",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CONVERTIBLE"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931078": {
+    "name": "中证转债及可交换债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CONVERTIBLE",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CONVERTIBLE"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950041": {
+    "name": "上证投资级转债及可交换债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CONVERTIBLE",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CONVERTIBLE"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_DEBT_CONVERTIBLE": {
+    "name": "转债综合指数",
+    "exchange": null,
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CONVERTIBLE",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CONVERTIBLE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

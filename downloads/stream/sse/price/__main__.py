@@ -81,22 +81,23 @@ import locale as _locale
 import sys
 import time as _time
 from datetime import date, datetime
+from typing import Optional
 
 from downloads._common import (
-    HostStatusTracker,
     build_default_session,
     is_trading_day,
     setup_logger,
 )
 from downloads._common.exchanges.sse import SSE_HEADERS
 from _common.db_commons import get_db_connection
+from _common.service_heartbeat import register_service
 from _common.study_and_select_stocks import (
     ETF_WEIGHT_THRESHOLD,
     load_etf_member_codes,
 )
 
 from ._csv_backfill import BACKFILL_INTERVAL_SEC, backfill_all_csvs
-from ._fetch import fetch_snapshot
+from ._fetch import build_stream_proxy, fetch_snapshot
 from ._io import (
     _ensure_conn,
     _recover_conn,
@@ -150,6 +151,8 @@ for _s in (sys.stdout, sys.stderr):
 
 
 logger = setup_logger("stream_sse")
+
+SERVICE = "downloads.stream.sse.price"
 
 
 def _emit_options_bars(conn, asset: OptionsStream, trade_date: date, verb: str):
@@ -227,15 +230,22 @@ def _emit_asset_bars(
 # Main streaming loop
 # ---------------------------------------------------------------------------
 def stream(
-    poll_interval: float = DEFAULT_POLL_INTERVAL_SEC,
+    poll_interval: Optional[float] = None,
     bar_window: int = DEFAULT_BAR_WINDOW,
     once: bool = False,
     enable_index: bool = True,
     enable_etf: bool = True,
     enable_options: bool = True,
 ) -> None:
+    # Long-lived daemon: resolve the poll cadence ONCE at startup (None =
+    # CLI left the default, which is the JSON-resolved module constant).
+    if poll_interval is None:
+        poll_interval = DEFAULT_POLL_INTERVAL_SEC
+
     session = build_default_session(SSE_HEADERS)
-    host_tracker = HostStatusTracker()
+    # One shared proxy paces + audits every SSE leg (stock/ETF/index pages
+    # and the options sweeps all sit behind the same yunhq host).
+    proxy = build_stream_proxy()
 
     conn = get_db_connection()
     logger.info("DB ready (stats.stock_intraday_5min / stats.etf_intraday_5min / stats.index_intraday_5min expected to pre-exist).")
@@ -284,7 +294,7 @@ def stream(
     options_asset = None
     if enable_options:
         t0 = _time.time()
-        options_asset = build_options_asset(session, host_tracker)
+        options_asset = build_options_asset(session, proxy)
         if options_asset is not None:
             assets.append(options_asset)
         else:
@@ -452,7 +462,7 @@ def stream(
                     # Same isolation as _emit_options_bars: the options leg
                     # must not take the other assets' day down with it.
                     try:
-                        refresh_options_universe(options_asset, session, host_tracker)
+                        refresh_options_universe(options_asset, session, proxy)
                         load_options_oi_base(conn, options_asset, current_trade_date)
                     except Exception as e:  # noqa: BLE001
                         logger.error(
@@ -470,13 +480,13 @@ def stream(
                 try:
                     if asset.name == "options":
                         update_dt, snapshot = fetch_options_snapshot(
-                            session, asset.months, host_tracker=host_tracker,
+                            session, asset.months, proxy=proxy,
                         )
                     else:
                         update_dt, snapshot = fetch_snapshot(
                             session,
                             list_url=asset.list_url,
-                            host_tracker=host_tracker,
+                            proxy=proxy,
                             allowed_codes=asset.allowed_codes,
                         )
 
@@ -548,8 +558,9 @@ def stream(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Stream SSE prices into 5-min OHLCV bars (stocks + ETFs + indices + options).")
-    ap.add_argument("--interval", type=float, default=DEFAULT_POLL_INTERVAL_SEC,
-                    help=f"Poll interval in seconds (default {DEFAULT_POLL_INTERVAL_SEC}).")
+    ap.add_argument("--interval", type=float, default=None,
+                    help="Poll interval in seconds "
+                         f"(default: external_request_config JSON for {SERVICE}).")
     ap.add_argument("--bar-window", type=int, default=DEFAULT_BAR_WINDOW,
                     help=f"Samples per 5-min bar (default {DEFAULT_BAR_WINDOW}).")
     ap.add_argument("--once", action="store_true",
@@ -564,11 +575,16 @@ def main() -> None:
                     help="Capture the current SSE options snapshot once as today's 15:00 EOD bars, then exit (post-close daily capture; idempotent).")
     args = ap.parse_args()
 
+    # Liveness heartbeat for database/stream_watchdog.py — long-running
+    # mode only; the one-shot dev modes exit before a beat would matter.
+    if not args.once and not args.options_eod:
+        register_service("downloads.stream.sse.price")
+
     if args.options_eod:
         session = build_default_session(SSE_HEADERS)
         conn = get_db_connection()
         try:
-            run_options_eod_capture(session, conn, host_tracker=HostStatusTracker())
+            run_options_eod_capture(session, conn, proxy=build_stream_proxy())
         finally:
             try:
                 conn.close()

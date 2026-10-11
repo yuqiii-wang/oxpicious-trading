@@ -1,0 +1,55 @@
+{
+  "399303": {
+    "name": "国证2000",
+    "exchange": "SZ",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CNI",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CNI"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "399310": {
+    "name": "国证A50",
+    "exchange": "SZ",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CNI",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CNI"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "399311": {
+    "name": "国证1000",
+    "exchange": "SZ",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CNI",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CNI"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_CNI": {
+    "name": "国证综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CNI",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CNI"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

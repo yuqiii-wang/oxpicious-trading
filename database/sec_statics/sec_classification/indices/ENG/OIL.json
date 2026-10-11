@@ -1,0 +1,16 @@
+{
+  "DUMMY_OIL": {
+    "name": "石油综合指数",
+    "exchange": null,
+    "sector_id": "ENG",
+    "industry_id": "OIL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "OIL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

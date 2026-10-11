@@ -21,7 +21,7 @@
 --  DENORMALIZED directly onto sec_classification so callers can render labels
 --  without a JOIN to a separate catalog table. The former
 --  stats.sec_sector_industry_map catalog has been DROPPED — the authoritative
---  catalog now lives in _common/sec_statics/sec_classification.json (maintained by
+--  catalog now lives in database/sec_statics/sec_classification.json (maintained by
 --  build_classification.py from INDEX_RULES + OVERLAPPING_CATALOG).
 --
 --  Hierarchy via parent_index_code / parent_index_weight:
@@ -109,7 +109,7 @@ COMMENT ON COLUMN stats.sec_classification.parent_index_code     IS 'Hierarchy: 
 COMMENT ON COLUMN stats.sec_classification.parent_index_weight   IS 'Stock only: weight_pct of the stock in its parent index. NULL for ETF/index.';
 COMMENT ON COLUMN stats.sec_classification.parent_index_is_primary IS 'TRUE for the single authoritative parent of a security. Stock: row with MAX(parent_index_weight) per code. ETF: TRUE iff ETF name (issuer/manager prefix + legal suffix stripped) exactly matches parent index name. Index: always FALSE (root of hierarchy).';
 COMMENT ON COLUMN stats.sec_classification.aum_yi                IS 'ETF only: net asset value (AUM) in 亿元 (100M yuan). Populated by build_classification.py from etf_index_map_all_*.csv 资产净值（亿元） column. NULL for index/stock.';
-COMMENT ON COLUMN stats.sec_classification.owner_id             IS 'Logical reference to stats.sec_owners.owner_id. ETF: matched fund manager (issuer). Stock: company name (NULL when no curated owner exists). Index: NULL. Populated by build_classification.py from _common/sec_statics/sec_owners.json.';
+COMMENT ON COLUMN stats.sec_classification.owner_id             IS 'Logical reference to stats.sec_owners.owner_id. ETF: matched fund manager (issuer). Stock: company name (NULL when no curated owner exists). Index: NULL. Populated by build_classification.py from database/sec_statics/sec_owners.json.';
 COMMENT ON COLUMN stats.sec_classification.is_dummy             IS 'TRUE for synthetic industry dummy indices (type=''index'', code like DUMMY_BANKS). Created one per industry_id to serve as parent_index_code for orphan ETFs (ETFs with no CSV-mapped tracking index). FALSE for all real indices, ETFs, and stocks.';
 COMMENT ON COLUMN stats.sec_classification.is_active            IS 'TRUE iff the security has >=1 record in the last year (trailing 365 days) in its identity table: index→stats.index_identity (bare 6-digit code), stock→stats.stock_identity (.SZ/.SS suffix), etf→stats.etf_identity (bare 6-digit code). FALSE for delisted ETFs, dead indices, and old stocks with no recent data. Dummy indices (is_dummy=TRUE) are always TRUE — they are synthetic parents for orphan ETFs and have no identity records of their own. Populated by build_classification (sector_industry/upsert.py) as a post-upsert SQL UPDATE.';
 
@@ -150,7 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_sec_classification_type_active
 --  sec_classification (sector_id/industry_id columns); this table stores
 --  the full set of tags for filtering/grouping.
 --
---  Populated by build_classification.py from _common/sec_statics/sec_classification.json `tags`
+--  Populated by build_classification.py from database/sec_statics/sec_classification.json `tags`
 --  arrays.  Truncated + rebuilt every run.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stats.sec_index_tags (

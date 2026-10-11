@@ -82,40 +82,33 @@ from __future__ import annotations
 
 
 import csv
-from datetime import date, datetime
+from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 from downloads._common import (
-    DEFAULT_TIMEOUT,
-    DEFAULT_SLEEP_SEC,
     DEFAULT_START_DATE,
     MIN_VALID_BYTES,
-    DEFAULT_SHORT_SLEEP_SEC,
     AntiBotProxy,
-    AntiBotConfig,
+    antibot_config_for,
     build_headers_with_referer,
-    date_range_backward,
-    date_range_forward,
-    is_trading_day,
     is_valid_file,
     last_business_day,
     next_business_day,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 from downloads._common.exchanges.sse import (
-    COLUMNS,
     CSV_ENCODING,
     JSONP_CALLBACK,
     LIST_SELECT_FIELDS,
     PAGE_SIZE,
     SSE_HEADERS,
     SSE_LIST_URL,
-    SSE_REFERER,
-    _RE_JSONP,
     _fmt_num,
     _num,
     _parse_jsonp,
@@ -125,6 +118,7 @@ from _common.db_commons import get_db_connection
 
 
 # --- History (dayk) constants ----------------------------------------------
+SERVICE = "downloads.stock.sse.archive"
 SSE_DAYK_URL = "https://yunhq.sse.com.cn:32042/v1/sh1/dayk/{code}"
 # Default start date for trend data (imported from _download_commons).
 # The dayk endpoint returns the full listing history (some SSE stocks date
@@ -166,9 +160,6 @@ TRADE_STATS_DIRNAME = ARCHIVE_DIRNAME  # "sse_archive"
 # First trading day of these months is the quarterly snapshot date.
 # User requested: Feb, May, Aug, Nov (quarterly) + Apr, Sep (extra).
 QUARTERLY_MONTHS: Tuple[int, ...] = (2, 4, 5, 8, 9, 11)
-# Smaller sleep than the dayk/list endpoint — query.sse.com.cn is a lightweight
-# query API and does not require the 20s cadence used for yunhq.sse.com.cn.
-TRADE_STATS_SLEEP_SEC = DEFAULT_SHORT_SLEEP_SEC
 # PE file holds both metrics per the user's request.
 PE_COLUMNS: List[str] = [
     "日期", "证券代码", "证券简称", "静态市盈率(倍)", "总换手率(%)",
@@ -205,7 +196,6 @@ def _fetch_page(
         SSE_LIST_URL,
         params=params,
         headers=SSE_HEADERS,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[list-page {begin}-{end}]",
     )
@@ -299,7 +289,6 @@ def _fetch_dayk(
         url,
         params=params,
         headers=SSE_HEADERS,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[dayk {code}]",
     )
@@ -545,7 +534,6 @@ def _fetch_trade_stats_primary(
         SSE_TRADE_STATS_URL,
         params=params,
         headers=SSE_TRADE_STATS_HEADERS,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[trade-stats {code} {tx_date.isoformat()}]",
     )
@@ -599,7 +587,6 @@ def _fetch_trade_stats_alt(
         SSE_TRADE_STATS_ALT_URL,
         params=params,
         headers=SSE_TRADE_STATS_HEADERS,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[trade-stats-alt {code} {tx_date.isoformat()}]",
     )
@@ -969,7 +956,7 @@ def _run_pe_for_stock(
 def download_sse_archive(
     out_root: Optional[str] = None,
     *,
-    sleep_sec: float = TRADE_STATS_SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     force: bool = False,
     session: Optional[requests.Session] = None,
     etf_filter: bool = True,
@@ -1126,20 +1113,14 @@ def download_sse_archive(
             len(up_to_date_stocks), pe_missing_stocks, latest_quarterly_str,
         )
 
-    # dayk endpoint (yunhq.sse.com.cn) needs the full 20s cadence.
-    # trade-stats endpoint (query.sse.com.cn) uses TRADE_STATS_SLEEP_SEC
-    # (stats_proxy created below, used per-stock right after trend).
-    dayk_proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=DEFAULT_SLEEP_SEC,
-        sleep_jitter=0.3,
-        rotate_browser_profile=True,
-        add_random_param=True,
-        enable_host_tracking=True,
-        timeout=DEFAULT_TIMEOUT,
-    ))
+    # dayk + list endpoints (yunhq.sse.com.cn) run on the service's "dayk"
+    # external_request_config row; the trade-stats endpoint (query.sse.com.cn)
+    # uses the lighter "trade_stats" row (stats_proxy below, used per-stock
+    # right after trend).
+    dayk_proxy = AntiBotProxy(service=SERVICE, request_type="dayk")
 
     # Build the target stock list. When etf_filter=False, _fetch_all_stocks
-    # hits yunhq.sse.com.cn which needs the full DEFAULT_SLEEP_SEC cadence.
+    # hits yunhq.sse.com.cn on the dayk proxy's pacing row.
     if etf_filter:
         db_conn = get_db_connection()
         try:
@@ -1173,16 +1154,13 @@ def download_sse_archive(
     trend_rows_written = 0
 
     # PE stats proxy (query.sse.com.cn) — created once, used per-stock
-    # right after each trend fetch. The dayk endpoint (yunhq.sse.com.cn)
-    # uses dayk_proxy with the full 20s cadence; the trade-stats endpoint
-    # uses this lighter proxy (TRADE_STATS_SLEEP_SEC).
-    stats_proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        sleep_jitter=0.3,
-        rotate_browser_profile=True,
-        add_random_param=True,
-        enable_host_tracking=True,
-        timeout=DEFAULT_TIMEOUT,
+    # right after each trend fetch. The trade-stats endpoint runs on the
+    # service's lighter "trade_stats" external_request_config row; an
+    # explicit *sleep_sec* argument overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = sleep_sec_for(SERVICE, "trade_stats")
+    stats_proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE, "trade_stats"), base_sleep_sec=sleep_sec,
     ))
 
     # ----- Per-stock workflow: trend (cached or API) -> PE -> next stock -----
@@ -1312,4 +1290,6 @@ if __name__ == "__main__":
     ap.add_argument("--force", action="store_true",
                     help="Overwrite existing per-stock CSV files.")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_sse_archive(force=args.force, etf_filter=not args.no_etf_filter))

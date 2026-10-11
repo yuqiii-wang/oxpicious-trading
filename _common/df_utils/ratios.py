@@ -28,7 +28,7 @@ def compute_trading_amt_per_move(df: pd.DataFrame, *,
     the intraday net-move leg: HIGH = much capital absorbed per unit of
     move (deep book), LOW = little capital moved the price a lot.
 
-    Conventions (shared with analyze.mov_ave_spread ratio columns):
+    Conventions (shared with analysis.mov_ave_spread ratio columns):
       - Zero move (close == open — flat / 一字板 limit-locked): the 0
         denominator is auto-set to 1.0, so the stored value equals the
         raw trading amount — a pragmatic floor, NOT a true ratio.

@@ -77,11 +77,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import requests
 
+from dataclasses import replace
+
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
-    AntiBotConfig,
     AntiBotProxy,
     RunStats,
+    antibot_config_for,
     build_default_session,
     is_error_html,
     is_valid_file,
@@ -95,6 +96,8 @@ from downloads._common.monthly import is_month_start
 # csindex.com.cn API endpoints
 # ---------------------------------------------------------------------------
 
+SERVICE = "downloads.etf.csindex.linked_etf"
+
 CSINDEX_BASE = "https://www.csindex.com.cn"
 
 # POST JSON list — paginated fund data
@@ -107,8 +110,6 @@ API_EXPORT_FUNDS_EXCEL = CSINDEX_BASE + "/csindex-home/exportExcel/funds-trackin
 API_FUNDS_FILTER = CSINDEX_BASE + "/csindex-home/index-list/funds-filter"
 
 PRODUCT_PAGE_URL = CSINDEX_BASE + "/#/indices/indexProduct"
-
-CSINDEX_TIMEOUT: Tuple[int, int] = (15, 120)
 
 # AUM threshold in 亿元 (1亿 = 100 million CNY)
 DEFAULT_MIN_AUM = 1.0
@@ -194,7 +195,6 @@ def fetch_funds_list(
         API_FUNDS_TRACKING_INDEX,
         data=json.dumps(body),
         headers=CSINDEX_HEADERS,
-        timeout=CSINDEX_TIMEOUT,
         logger=logger,
         log_tag="[funds-list]",
     )
@@ -252,7 +252,6 @@ def fetch_export_excel(
         API_EXPORT_FUNDS_EXCEL,
         data=json.dumps(body),
         headers=CSINDEX_HEADERS,
-        timeout=CSINDEX_TIMEOUT,
         logger=logger,
         log_tag="[export-excel]",
     )
@@ -427,7 +426,7 @@ def download_csindex_linked_etf(
     *,
     out_root: Optional[str] = None,
     min_aum: float = DEFAULT_MIN_AUM,
-    sleep_sec: float = DEFAULT_SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     fetch_excel: bool = True,
     force_month_start: bool = False,
 ) -> dict:
@@ -477,10 +476,15 @@ def download_csindex_linked_etf(
         )
 
     session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
-    proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        sleep_jitter=0.3,
-    ))
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+    # overrides the row's base sleep only.
+    if sleep_sec is None:
+        proxy = AntiBotProxy(service=SERVICE)
+    else:
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
     stats = RunStats()
 
     logger.info(
@@ -567,14 +571,17 @@ if __name__ == "__main__":
                     help="Alternative output root directory")
     ap.add_argument("--min-aum", type=float, default=DEFAULT_MIN_AUM,
                     help=f"Minimum AUM in 亿元 (default: {DEFAULT_MIN_AUM} = 1亿/100mil CNY)")
-    ap.add_argument("--sleep-sec", type=float, default=DEFAULT_SLEEP_SEC,
-                    help=f"Sleep seconds between requests (default: {DEFAULT_SLEEP_SEC})")
+    ap.add_argument("--sleep-sec", type=float, default=None,
+                    help="Sleep seconds between requests "
+                         f"(default: external_request_config JSON for {SERVICE})")
     ap.add_argument("--no-excel", action="store_true", default=False,
                     help="Skip downloading the raw Excel export")
     ap.add_argument("--force-month-start", action="store_true", default=False,
                     help="Force month-start behavior: bypass cache and re-download "
                          "the ETF list. For testing the monthly refresh flow on any day.")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     result = download_csindex_linked_etf(
         out_root=args.out_root,

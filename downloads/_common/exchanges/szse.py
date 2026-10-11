@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -16,7 +17,6 @@ import requests
 
 from downloads._common import (
     DEFAULT_SLEEP_SEC,
-    DEFAULT_TIMEOUT,
     EMPTY_MARKER_RETRY_DAYS,
     MIN_VALID_BYTES,
     AntiBotConfig,
@@ -24,6 +24,7 @@ from downloads._common import (
     DayDownloadPlan,
     DayDownloadPlanItem,
     RunStats,
+    antibot_config_for,
     build_day_download_plan,
     build_headers_with_referer,
     business_days,
@@ -34,6 +35,7 @@ from downloads._common import (
     resolve_out_dir,
     safe_write_bytes,
     setup_logger,
+    sleep_sec_for,
 )
 
 
@@ -112,11 +114,13 @@ def download_xlsx_once(
     headers: Dict[str, str],
     out_file: Path,
     log_tag: str,
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
+    timeout: Optional[Tuple[int, int]] = None,
     proxy: Optional[AntiBotProxy] = None,
     exchange: str = "",
     code_filter: Optional[List[str]] = None,
     sec_type: str = "auto",
+    service: Optional[str] = None,
+    request_type: str = "default",
 ) -> Optional[Path]:
     if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
         logger.info("%s already exists, skipping", log_tag)
@@ -144,7 +148,14 @@ def download_xlsx_once(
         return out_file
 
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+        # Pacing from the caller service's external_request_config JSON row
+        # when given (request_type selects the row); DEFAULT_SLEEP_SEC
+        # fallback otherwise.
+        proxy = (
+            AntiBotProxy(service=service, request_type=request_type)
+            if service is not None
+            else AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+        )
 
     resp = proxy.get(
         session,
@@ -213,9 +224,11 @@ def run_szse_download(
     end_date: Optional[str] = None,
     start_date: str,
     security_types: Optional[List[str]] = None,
-    sleep_sec: float = DEFAULT_SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
     proxy: Optional[AntiBotProxy] = None,
+    service: Optional[str] = None,
+    request_type: str = "default",
     exchange: str = "",
     db_table: Optional[str] = None,
     db_date_column: str = "date",
@@ -265,6 +278,11 @@ def run_szse_download(
     to fall back to the trend endpoint when the archive endpoint has no
     data for a given date. Files/markers from the primary attempt are
     cleaned up before the fallback runs.
+
+    *service* / *request_type* — with a service the loop's pacing resolves
+    from that service's external_request_config JSON row (*request_type*
+    selects the row, default "default"); *sleep_sec* then overrides only
+    the row's base sleep.
     """
     out_dir = resolve_out_dir(caller_file, out_dirname, out_root)
 
@@ -328,12 +346,22 @@ def run_szse_download(
             skip_empty_markers=skip_empty_markers,
         )
 
-    # Create proxy if not provided
+    # Create proxy if not provided. Pacing resolves from the caller
+    # service's external_request_config JSON row when *service* is given
+    # (*request_type* selects the row; sleep_sec still overrides the row's
+    # base when passed explicitly); DEFAULT_SLEEP_SEC fallback otherwise.
     if proxy is None:
-        proxy_config = AntiBotConfig(
-            base_sleep_sec=sleep_sec,
-        )
-        proxy = AntiBotProxy(proxy_config)
+        if service is not None:
+            row = antibot_config_for(service, request_type)
+            if sleep_sec is None:
+                sleep_sec = sleep_sec_for(service, request_type)
+            proxy = AntiBotProxy(replace(row, base_sleep_sec=sleep_sec))
+        else:
+            proxy = AntiBotProxy(AntiBotConfig(
+                base_sleep_sec=(
+                    DEFAULT_SLEEP_SEC if sleep_sec is None else sleep_sec
+                ),
+            ))
 
     sess = session or requests.Session()
     stats = RunStats(skipped_cached=plan.present_count)

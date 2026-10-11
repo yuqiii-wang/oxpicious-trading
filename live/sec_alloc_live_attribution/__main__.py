@@ -300,6 +300,8 @@ async def main() -> None:
         ),
     )
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     # --date is compute-only; --force must never ride the request path.
     if args.mode == "compute":

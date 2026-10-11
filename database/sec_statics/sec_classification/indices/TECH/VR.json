@@ -1,0 +1,19 @@
+{
+  "930821": {
+    "name": "中证VR",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "VR",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "VR"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

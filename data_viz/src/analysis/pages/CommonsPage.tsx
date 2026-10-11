@@ -73,7 +73,7 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
       "diamonds on the price chart; Index securities show the standard " +
       "OHLC + MAs + Amt + PE twin-axis baseline. Backed by analysis.pe / " +
       "analysis.dividends (same security universe as the PE page — both " +
-      "tables are built together by analyze.pe_and_dividends).",
+      "tables are built together by analysis.pe_and_dividends).",
     tags: ["ETF", "Index", "Stock", "dividend yield", "valuation"],
   },
   {

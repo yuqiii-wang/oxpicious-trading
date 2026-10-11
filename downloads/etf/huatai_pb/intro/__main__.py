@@ -31,7 +31,6 @@ from typing import Dict, List
 import pandas as pd
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
     RunStats,
     build_default_session,
     is_valid_file,
@@ -47,6 +46,8 @@ from downloads.etf.huatai_pb._endpoints import (
 )
 
 logger = setup_logger("huatai_pb_intro")
+
+SERVICE = "downloads.etf.huatai_pb.intro"
 
 CSV_ENCODING = "utf-8-sig"
 
@@ -74,7 +75,7 @@ def fund_arr_to_frame(funds: List[Dict[str, str]], *, etf_only: bool) -> pd.Data
 def download_intro(
     *,
     out_root: str | None = None,
-    sleep_sec: float = DEFAULT_SLEEP_SEC,
+    sleep_sec: float | None = None,
     all_funds: bool = False,
     force: bool = False,
 ) -> Dict[str, object]:
@@ -90,7 +91,7 @@ def download_intro(
         return {"out_path": str(out_path), "status": "cached"}
 
     session = build_default_session()
-    proxy = build_proxy(sleep_sec)
+    proxy = build_proxy(SERVICE, sleep_sec)
     stats = RunStats()
 
     resp = proxy.get(session, COMMON_JS_URL, headers=None, logger=logger,
@@ -128,13 +129,16 @@ if __name__ == "__main__":
     )
     ap.add_argument("--out-root", type=str, default=None,
                     help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=DEFAULT_SLEEP_SEC,
-                    help=f"Sleep seconds between requests (default: {DEFAULT_SLEEP_SEC})")
+    ap.add_argument("--sleep-sec", type=float, default=None,
+                    help="Sleep seconds between requests "
+                         f"(default: external_request_config JSON for {SERVICE})")
     ap.add_argument("--all-funds", action="store_true",
                     help="Include non-ETF funds (default: listed ETF codes only).")
     ap.add_argument("--force", action="store_true",
                     help="Re-fetch even when today's intro file exists.")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     download_intro(
         out_root=args.out_root,

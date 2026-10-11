@@ -1,0 +1,953 @@
+{
+  "ruleset": "industry",
+  "generic_penalty_sectors": [],
+  "single_tag_sectors": [],
+  "rules": [
+    {
+      "sector_id": "DEBT",
+      "sector_label": "债券",
+      "industry_id": "DEBT_TREASURY",
+      "industry_label": "国债",
+      "keywords": [
+        "国债"
+      ]
+    },
+    {
+      "sector_id": "DEBT",
+      "sector_label": "债券",
+      "industry_id": "DEBT_LOCAL",
+      "industry_label": "地方债",
+      "keywords": [
+        "地债"
+      ]
+    },
+    {
+      "sector_id": "DEBT",
+      "sector_label": "债券",
+      "industry_id": "DEBT_POLICY",
+      "industry_label": "政金债",
+      "keywords": [
+        "政金债"
+      ]
+    },
+    {
+      "sector_id": "DEBT",
+      "sector_label": "债券",
+      "industry_id": "DEBT_CONVERTIBLE",
+      "industry_label": "转债",
+      "keywords": [
+        "转债",
+        "可交换债"
+      ]
+    },
+    {
+      "sector_id": "DEBT",
+      "sector_label": "债券",
+      "industry_id": "DEBT_CORP",
+      "industry_label": "信用债",
+      "keywords": [
+        "城投债",
+        "短融",
+        "科创债",
+        "公司债",
+        "企债",
+        "信用"
+      ]
+    },
+    {
+      "sector_id": "DEBT",
+      "sector_label": "债券",
+      "industry_id": "DEBT_GENERAL",
+      "industry_label": "债券",
+      "keywords": [
+        "债"
+      ],
+      "note": "Catch-all for bond ETFs/LOFs containing 债 that match no specific debt type (综债, 双债, 强债, 粤债). Safe: 0 stocks have 债 in their name."
+    },
+    {
+      "sector_id": "FIN",
+      "sector_label": "金融",
+      "industry_id": "BANKS",
+      "industry_label": "银行",
+      "keywords": [
+        "银行"
+      ]
+    },
+    {
+      "sector_id": "FIN",
+      "sector_label": "金融",
+      "industry_id": "BROKERS",
+      "industry_label": "证券",
+      "keywords": [
+        "证券",
+        "证保",
+        "券商"
+      ]
+    },
+    {
+      "sector_id": "FIN",
+      "sector_label": "金融",
+      "industry_id": "INSURANCE",
+      "industry_label": "保险",
+      "keywords": [
+        "保险"
+      ]
+    },
+    {
+      "sector_id": "FIN",
+      "sector_label": "金融",
+      "industry_id": "FINTECH",
+      "industry_label": "金融科技",
+      "keywords": [
+        "金融科技"
+      ]
+    },
+    {
+      "sector_id": "FIN",
+      "sector_label": "金融",
+      "industry_id": "FIN_GENERAL",
+      "industry_label": "金融",
+      "keywords": [
+        "金融",
+        "非银",
+        "金地",
+        "期货",
+        "信托"
+      ]
+    },
+    {
+      "sector_id": "HC",
+      "sector_label": "医药",
+      "industry_id": "INNO_DRUG",
+      "industry_label": "创新药",
+      "keywords": [
+        "创新药"
+      ]
+    },
+    {
+      "sector_id": "HC",
+      "sector_label": "医药",
+      "industry_id": "MED_DEVICES",
+      "industry_label": "医疗器械",
+      "keywords": [
+        "医疗器械"
+      ]
+    },
+    {
+      "sector_id": "HC",
+      "sector_label": "医药",
+      "industry_id": "TCM",
+      "industry_label": "中药",
+      "keywords": [
+        "中药"
+      ]
+    },
+    {
+      "sector_id": "HC",
+      "sector_label": "医药",
+      "industry_id": "VACCINE",
+      "industry_label": "疫苗",
+      "keywords": [
+        "疫苗"
+      ]
+    },
+    {
+      "sector_id": "HC",
+      "sector_label": "医药",
+      "industry_id": "BIOTECH",
+      "industry_label": "生物科技",
+      "keywords": [
+        "生科",
+        "生医",
+        "生物"
+      ]
+    },
+    {
+      "sector_id": "HC",
+      "sector_label": "医药",
+      "industry_id": "HEALTH",
+      "industry_label": "健康",
+      "keywords": [
+        "健康"
+      ],
+      "note": "Placed BEFORE PHARMA_BROAD so 健康 (2 chars) wins over 医药 (2 chars) for names containing both (医药健康100 → HEALTH, not PHARMA_BROAD). Catches health-themed ETFs/stocks (健康A/B, 申万健康, 美年健康, 卫宁健康, …)."
+    },
+    {
+      "sector_id": "HC",
+      "sector_label": "医药",
+      "industry_id": "PHARMA_BROAD",
+      "industry_label": "医药",
+      "keywords": [
+        "医药",
+        "制药",
+        "医疗",
+        "医卫",
+        "药业",
+        "精准医"
+      ]
+    },
+    {
+      "sector_id": "HC",
+      "sector_label": "医药",
+      "industry_id": "ELDER_CARE",
+      "industry_label": "养老产业",
+      "keywords": [
+        "养老"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "SEMI",
+      "industry_label": "半导体",
+      "keywords": [
+        "半导体",
+        "半导",
+        "芯片",
+        "集成电路"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "AI",
+      "industry_label": "人工智能",
+      "keywords": [
+        "人工智",
+        "AI"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "COMPUTE",
+      "industry_label": "算力",
+      "keywords": [
+        "算力"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "CLOUD",
+      "industry_label": "云计算",
+      "keywords": [
+        "云计算",
+        "大数据"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "SOFTWARE",
+      "industry_label": "软件",
+      "keywords": [
+        "软件"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "COMPUTER",
+      "industry_label": "计算机",
+      "keywords": [
+        "计算机",
+        "信息"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "COMMS",
+      "industry_label": "通信",
+      "keywords": [
+        "5G",
+        "通信",
+        "电信"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "IOT",
+      "industry_label": "物联网",
+      "keywords": [
+        "物联网",
+        "工业互联",
+        "车联网"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "INFO_SEC",
+      "industry_label": "信息安全",
+      "keywords": [
+        "信息安全",
+        "信创"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "VR",
+      "industry_label": "VR",
+      "keywords": [
+        "VR"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "INTERNET",
+      "industry_label": "互联网",
+      "keywords": [
+        "互联网"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "CONSUMER_ELEC",
+      "industry_label": "消费电子",
+      "keywords": [
+        "消费电子",
+        "电子"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "DIGITAL",
+      "industry_label": "数字经济",
+      "keywords": [
+        "数字经济",
+        "数据"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "TMT",
+      "industry_label": "TMT",
+      "keywords": [
+        "TMT"
+      ]
+    },
+    {
+      "sector_id": "TECH",
+      "sector_label": "科技",
+      "industry_id": "TECH_GENERAL",
+      "industry_label": "科技",
+      "keywords": [
+        "科技"
+      ],
+      "note": "Catch-all for 科技 names matching no specific tech sub-industry; placed LAST in TECH so specific rules win first. Also keeps 科技 from falling through to BROAD/BROAD_TECH_INNOV (a broad-market strategy, not a stock industry)."
+    },
+    {
+      "sector_id": "NEV",
+      "sector_label": "新能源",
+      "industry_id": "PV",
+      "industry_label": "光伏",
+      "keywords": [
+        "光伏"
+      ]
+    },
+    {
+      "sector_id": "NEV",
+      "sector_label": "新能源",
+      "industry_id": "EV",
+      "industry_label": "新能源车",
+      "keywords": [
+        "新能源车",
+        "新能车",
+        "智能电车",
+        "电动汽车"
+      ]
+    },
+    {
+      "sector_id": "NEV",
+      "sector_label": "新能源",
+      "industry_id": "BATTERY",
+      "industry_label": "储能/电池",
+      "keywords": [
+        "电池",
+        "储能"
+      ]
+    },
+    {
+      "sector_id": "NEV",
+      "sector_label": "新能源",
+      "industry_id": "CARBON",
+      "industry_label": "碳中和/绿电",
+      "keywords": [
+        "碳中和",
+        "绿色电力",
+        "绿电",
+        "低碳"
+      ]
+    },
+    {
+      "sector_id": "NEV",
+      "sector_label": "新能源",
+      "industry_id": "NEV_GENERAL",
+      "industry_label": "新能源",
+      "keywords": [
+        "新能源",
+        "新能"
+      ]
+    },
+    {
+      "sector_id": "ENG",
+      "sector_label": "能源",
+      "industry_id": "COAL",
+      "industry_label": "煤炭",
+      "keywords": [
+        "煤炭"
+      ]
+    },
+    {
+      "sector_id": "ENG",
+      "sector_label": "能源",
+      "industry_id": "OIL_GAS",
+      "industry_label": "油气",
+      "keywords": [
+        "油气"
+      ]
+    },
+    {
+      "sector_id": "ENG",
+      "sector_label": "能源",
+      "industry_id": "OIL",
+      "industry_label": "石油",
+      "keywords": [
+        "石油",
+        "原油"
+      ]
+    },
+    {
+      "sector_id": "ENG",
+      "sector_label": "能源",
+      "industry_id": "PETROCHEM",
+      "industry_label": "石化",
+      "keywords": [
+        "石化"
+      ]
+    },
+    {
+      "sector_id": "ENG",
+      "sector_label": "能源",
+      "industry_id": "NAT_GAS",
+      "industry_label": "天然气",
+      "keywords": [
+        "天然气"
+      ]
+    },
+    {
+      "sector_id": "ENG",
+      "sector_label": "能源",
+      "industry_id": "POWER_GRID",
+      "industry_label": "电力/电网",
+      "keywords": [
+        "电力",
+        "电网"
+      ]
+    },
+    {
+      "sector_id": "ENG",
+      "sector_label": "能源",
+      "industry_id": "ENG_GENERAL",
+      "industry_label": "能源",
+      "keywords": [
+        "能源",
+        "资源",
+        "商品",
+        "矿业"
+      ]
+    },
+    {
+      "sector_id": "MIL",
+      "sector_label": "军工",
+      "industry_id": "MIL_DEFENSE",
+      "industry_label": "国防装备",
+      "keywords": [
+        "军工龙头",
+        "军工",
+        "国防"
+      ],
+      "note": "Defense only — aerospace is the separate AERO sector."
+    },
+    {
+      "sector_id": "AERO",
+      "sector_label": "航空航天",
+      "industry_id": "AERO_SPACE",
+      "industry_label": "航天/卫星",
+      "keywords": [
+        "卫星",
+        "航天",
+        "空天"
+      ],
+      "note": "AERO is its own top-level sector (split from MIL)."
+    },
+    {
+      "sector_id": "AERO",
+      "sector_label": "航空航天",
+      "industry_id": "AERO_AVIATION",
+      "industry_label": "航空",
+      "keywords": [
+        "通用航空",
+        "全指航空",
+        "航空"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "BAIJIU",
+      "industry_label": "白酒",
+      "keywords": [
+        "白酒"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "FOOD_BEV",
+      "industry_label": "食品饮料",
+      "keywords": [
+        "食品",
+        "酒",
+        "饮料"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "AGRI",
+      "industry_label": "农业",
+      "keywords": [
+        "农业",
+        "农牧",
+        "现代农",
+        "粮食",
+        "豆粕"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "LIVESTOCK",
+      "industry_label": "畜牧",
+      "keywords": [
+        "畜牧"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "TOURISM",
+      "industry_label": "旅游",
+      "keywords": [
+        "旅游",
+        "文旅"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "SPORTS",
+      "industry_label": "体育",
+      "keywords": [
+        "体育"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "GAMES",
+      "industry_label": "游戏",
+      "keywords": [
+        "游戏"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "MEDIA",
+      "industry_label": "传媒",
+      "keywords": [
+        "传媒",
+        "影视",
+        "动漫"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "DISCRETIONARY",
+      "industry_label": "可选消费",
+      "keywords": [
+        "可选",
+        "家电",
+        "家用电器"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "EDU",
+      "industry_label": "教育",
+      "keywords": [
+        "教育"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "CONS_GENERAL",
+      "industry_label": "消费",
+      "keywords": [
+        "消费"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "RETAIL",
+      "industry_label": "百货/零售",
+      "keywords": [
+        "百货",
+        "零售",
+        "超市",
+        "商业"
+      ]
+    },
+    {
+      "sector_id": "CONS",
+      "sector_label": "消费",
+      "industry_id": "HOTEL",
+      "industry_label": "酒店",
+      "keywords": [
+        "酒店",
+        "饭店"
+      ]
+    },
+    {
+      "sector_id": "MAT",
+      "sector_label": "材料",
+      "industry_id": "RARE_METALS",
+      "industry_label": "稀有金属",
+      "keywords": [
+        "稀金属",
+        "稀有金属"
+      ]
+    },
+    {
+      "sector_id": "MAT",
+      "sector_label": "材料",
+      "industry_id": "REE",
+      "industry_label": "稀土",
+      "keywords": [
+        "稀土"
+      ]
+    },
+    {
+      "sector_id": "MAT",
+      "sector_label": "材料",
+      "industry_id": "PRECIOUS",
+      "industry_label": "黄金/贵金属",
+      "keywords": [
+        "黄金",
+        "贵金属",
+        "金矿",
+        "白银",
+        "金ETF"
+      ]
+    },
+    {
+      "sector_id": "MAT",
+      "sector_label": "材料",
+      "industry_id": "METALS",
+      "industry_label": "有色金属",
+      "keywords": [
+        "有色"
+      ]
+    },
+    {
+      "sector_id": "MAT",
+      "sector_label": "材料",
+      "industry_id": "CHEM",
+      "industry_label": "化工",
+      "keywords": [
+        "化工"
+      ]
+    },
+    {
+      "sector_id": "MAT",
+      "sector_label": "材料",
+      "industry_id": "BLDG_STEEL",
+      "industry_label": "建材/钢铁",
+      "keywords": [
+        "钢铁",
+        "建材",
+        "建筑材料"
+      ]
+    },
+    {
+      "sector_id": "MAT",
+      "sector_label": "材料",
+      "industry_id": "NEW_MAT",
+      "industry_label": "新材料",
+      "keywords": [
+        "新材料"
+      ]
+    },
+    {
+      "sector_id": "MAT",
+      "sector_label": "材料",
+      "industry_id": "MAT_GENERAL",
+      "industry_label": "材料",
+      "keywords": [
+        "材料",
+        "原料"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "AUTO",
+      "industry_label": "汽车",
+      "keywords": [
+        "汽车"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "ROBOTICS",
+      "industry_label": "机器人",
+      "keywords": [
+        "机器人"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "ENG_MACHINERY",
+      "industry_label": "工程机械",
+      "keywords": [
+        "工程机械",
+        "机械",
+        "重工"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "MACHINE_TOOL",
+      "industry_label": "机床",
+      "keywords": [
+        "机床"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "TRANSPORT",
+      "industry_label": "运输/物流",
+      "keywords": [
+        "运输",
+        "船舶",
+        "航运",
+        "物流",
+        "高铁",
+        "铁路",
+        "交运"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "ADVMFG",
+      "industry_label": "高端制造",
+      "keywords": [
+        "智能制造",
+        "高端制造",
+        "高端装备",
+        "高装",
+        "装备产业",
+        "工业4"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "EXPRESSWAY",
+      "industry_label": "高速公路",
+      "keywords": [
+        "高速",
+        "公路"
+      ],
+      "note": "Placed AFTER TRANSPORT so 高铁/铁路 wins for high-speed-rail names; 高速/公路 catches expressway toll-road operators (中原高速, 福建高速, 山东高速, 宁沪高速, …)."
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "ELEC_EQUIP",
+      "industry_label": "电气设备",
+      "keywords": [
+        "电气"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "PORT",
+      "industry_label": "港口",
+      "keywords": [
+        "港口"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "AIRPORT",
+      "industry_label": "机场",
+      "keywords": [
+        "机场"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "TEXTILE",
+      "industry_label": "纺织服装",
+      "keywords": [
+        "纺织",
+        "服饰",
+        "服装"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "PAPER",
+      "industry_label": "造纸",
+      "keywords": [
+        "纸业"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "PRINTING",
+      "industry_label": "印刷",
+      "keywords": [
+        "印刷"
+      ]
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "IND_GENERAL",
+      "industry_label": "工业",
+      "keywords": [
+        "工业",
+        "制造",
+        "投资品",
+        "持续产业",
+        "工业制造",
+        "工业4",
+        "工业互联",
+        "工业等权",
+        "装备",
+        "装备产业",
+        "优势制造"
+      ],
+      "note": "Catch-all for industrial names matching no specific sub-industry (工业指数, 180工业, 380工业, 500工业, 优势制造, 沪投资品); placed LAST in IND so specific rules win first."
+    },
+    {
+      "sector_id": "INFRA",
+      "sector_label": "基建",
+      "industry_id": "INFRA_CONSTR",
+      "industry_label": "建筑/基建",
+      "keywords": [
+        "基建",
+        "建筑",
+        "建工",
+        "建设"
+      ]
+    },
+    {
+      "sector_id": "INFRA",
+      "sector_label": "基建",
+      "industry_id": "INFRA_UTIL",
+      "industry_label": "公用事业",
+      "keywords": [
+        "公用"
+      ]
+    },
+    {
+      "sector_id": "INFRA",
+      "sector_label": "基建",
+      "industry_id": "WATER",
+      "industry_label": "水务",
+      "keywords": [
+        "水务"
+      ]
+    },
+    {
+      "sector_id": "INFRA",
+      "sector_label": "基建",
+      "industry_id": "GAS",
+      "industry_label": "燃气",
+      "keywords": [
+        "燃气"
+      ]
+    },
+    {
+      "sector_id": "RE",
+      "sector_label": "地产",
+      "industry_id": "RE_REAL_ESTATE",
+      "industry_label": "地产",
+      "keywords": [
+        "地产",
+        "REIT",
+        "置业"
+      ]
+    },
+    {
+      "sector_id": "ESG",
+      "sector_label": "ESG",
+      "industry_id": "ESG_GENERAL",
+      "industry_label": "ESG",
+      "keywords": [
+        "ESG",
+        "可持续",
+        "持续发展",
+        "长江保护",
+        "气候"
+      ]
+    },
+    {
+      "sector_id": "ESG",
+      "sector_label": "ESG",
+      "industry_id": "ESG_RESPONSIBILITY",
+      "industry_label": "责任",
+      "keywords": [
+        "责任"
+      ],
+      "note": "Split from ESG_GENERAL; covers 责任指数, 社会责任, and governance/responsibility themed indices."
+    },
+    {
+      "sector_id": "ESG",
+      "sector_label": "ESG",
+      "industry_id": "GREEN",
+      "industry_label": "绿色环保",
+      "keywords": [
+        "绿色",
+        "环保"
+      ]
+    }
+  ]
+}

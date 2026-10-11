@@ -1,0 +1,85 @@
+{
+  "930721": {
+    "name": "CS智汽车",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "AUTO",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "AUTO"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931008": {
+    "name": "汽车指数",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "AUTO",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "AUTO"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931230": {
+    "name": "汽车零部件",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "AUTO",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "AUTO"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931239": {
+    "name": "港股通汽车",
+    "exchange": "HK",
+    "sector_id": "IND",
+    "industry_id": "AUTO",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "AUTO"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_AUTO": {
+    "name": "汽车综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "AUTO",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "AUTO"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30015": {
+    "name": "800汽车",
+    "exchange": "HK",
+    "sector_id": "IND",
+    "industry_id": "AUTO",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "AUTO"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

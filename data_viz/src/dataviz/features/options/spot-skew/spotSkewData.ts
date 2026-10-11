@@ -17,7 +17,7 @@
  *   RR<delta> = IV(<delta>Δ OTM call) − IV(<delta>Δ OTM put)
  * measured in delta space — a spot-centered (sticky-delta) coordinate,
  * so the series is comparable across dates regardless of where spot
- * moved the strike grid (mirrors analyze/options/compute/iv_skew.py's
+ * moved the strike grid (mirrors analysis/options/compute/iv_skew.py's
  * nearest-|delta| selection — no interpolation). See
  * docs/options_vol_smile_study.md.
  */

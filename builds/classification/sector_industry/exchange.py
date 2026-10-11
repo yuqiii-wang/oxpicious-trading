@@ -50,7 +50,7 @@ _HK_NAME_KEYWORDS: List[str] = [
 # Keywords in names that indicate non-Greater-China (overseas) underlying.
 # Used as a fallback when sector_id is not yet computed; the primary signal
 # is sector_id == 'OVERSEAS' (set by the OVERSEAS strategy rules in
-# _common.sec_statics.classification).  Kept intentionally specific to avoid
+# database.sec_statics.classification).  Kept intentionally specific to avoid
 # false-matching stock company names (戎美股份→美股, 亚太实业→亚太).
 #
 # NOTE: "中欧" is deliberately NOT included — "中欧基金" is a Chinese fund

@@ -1,0 +1,16 @@
+{
+  "DUMMY_PAPER": {
+    "name": "造纸综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "PAPER",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

@@ -1,0 +1,40 @@
+[
+  {
+    "service": "downloads.stock.bse.archive",
+    "request_type": "kline",
+    "resource_type": 0,
+    "sleep_sec": 90,
+    "sleep_jitter": 0.3,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": false,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "BSE per-stock kline (www.bse.cn). Rotation stays off: the BSE endpoint needs fixed Content-Type/X-Requested-With headers that fingerprint rotation would clobber (bjs adapter).",
+    "source_ref": "downloads/stock/bse/archive/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  },
+  {
+    "service": "downloads.stock.bse.archive",
+    "request_type": "list",
+    "resource_type": 0,
+    "sleep_sec": 5,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": false,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "BSE stock list; stable UA (no rotation).",
+    "source_ref": "downloads/stock/bse/archive/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

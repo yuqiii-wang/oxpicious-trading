@@ -1,0 +1,9 @@
+{
+  "service": "downloads.stream.cnindex.price",
+  "max_parallel": 1,
+  "freq": "always",
+  "schedule": "always-on while the host is up; the stream watchdog restarts it when the beat goes stale",
+  "notes": null,
+  "source_ref": "scripts/stream_always.sh;scripts/stream_watchdog.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

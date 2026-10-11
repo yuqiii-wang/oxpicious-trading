@@ -69,6 +69,7 @@ import pandas as pd
 
 from downloads._common import read_csv_preferred
 from _common.df_utils import safe_columns
+from _common.labels import OPTION_TYPE_CODE
 
 from _common.build_commons import (
     parse_num, parse_date, ymd_from_filename, ymd_to_date,
@@ -298,7 +299,8 @@ def build_options_df(files, verbose=True):
         {
             "合约简称": nm,
             "underlying_name": p["underlying_name"],
-            "option_type": p["option_type"],
+            # stats.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT)
+            "option_type": OPTION_TYPE_CODE[p["option_type"]],
             "expiry_month": p["expiry_month"],
             "strike_str": p["strike_str"],
             "strike_price_raw": p["strike_price"],
@@ -521,10 +523,10 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
                                        df["open_interest"] / df["total_oi_underlying"] * 100.0, 0.0)
 
     _grp_keys = ["_date_key", "underlying_code", "strike_price"]
-    call_oi = df[df["option_type"] == "CALL"].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "call_oi"})
-    put_oi = df[df["option_type"] == "PUT"].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "put_oi"})
-    call_vol = df[df["option_type"] == "CALL"].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "call_vol"})
-    put_vol = df[df["option_type"] == "PUT"].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "put_vol"})
+    call_oi = df[df["option_type"] == OPTION_TYPE_CODE["CALL"]].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "call_oi"})
+    put_oi = df[df["option_type"] == OPTION_TYPE_CODE["PUT"]].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "put_oi"})
+    call_vol = df[df["option_type"] == OPTION_TYPE_CODE["CALL"]].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "call_vol"})
+    put_vol = df[df["option_type"] == OPTION_TYPE_CODE["PUT"]].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "put_vol"})
 
     ratios = pd.merge(call_oi, put_oi, on=_grp_keys, how="outer")
     ratios = pd.merge(ratios, call_vol, on=_grp_keys, how="outer")
@@ -539,10 +541,10 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
     df["oi_call_put_ratio"] = df["oi_call_put_ratio"].fillna(0.0)
     df["vol_call_put_ratio"] = df["vol_call_put_ratio"].fillna(0.0)
 
-    df["open_interest_call"] = np.where(df["option_type"] == "CALL", df["open_interest"], 0.0)
-    df["open_interest_put"] = np.where(df["option_type"] == "PUT", df["open_interest"], 0.0)
-    df["volume_call"] = np.where(df["option_type"] == "CALL", df["volume"], 0.0)
-    df["volume_put"] = np.where(df["option_type"] == "PUT", df["volume"], 0.0)
+    df["open_interest_call"] = np.where(df["option_type"] == OPTION_TYPE_CODE["CALL"], df["open_interest"], 0.0)
+    df["open_interest_put"] = np.where(df["option_type"] == OPTION_TYPE_CODE["PUT"], df["open_interest"], 0.0)
+    df["volume_call"] = np.where(df["option_type"] == OPTION_TYPE_CODE["CALL"], df["volume"], 0.0)
+    df["volume_put"] = np.where(df["option_type"] == OPTION_TYPE_CODE["PUT"], df["volume"], 0.0)
 
     call_total = df.groupby(["_date_key", "underlying_code"])["open_interest_call"].transform("sum")
     put_total = df.groupby(["_date_key", "underlying_code"])["open_interest_put"].transform("sum")

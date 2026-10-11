@@ -1,0 +1,68 @@
+{
+  "000052": {
+    "name": "50基本",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FUNDAMENTAL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FUNDAMENTAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000053": {
+    "name": "180基本",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FUNDAMENTAL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FUNDAMENTAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000128": {
+    "name": "380基本",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FUNDAMENTAL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FUNDAMENTAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000925": {
+    "name": "基本面50",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FUNDAMENTAL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FUNDAMENTAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_STRAT_FUNDAMENTAL": {
+    "name": "基本面综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_FUNDAMENTAL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FUNDAMENTAL"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "931992": {
+    "name": "疫苗生物",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "VACCINE",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "VACCINE"
+      },
+      {
+        "sector_id": "HC",
+        "industry_id": "BIOTECH"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_VACCINE": {
+    "name": "疫苗综合指数",
+    "exchange": null,
+    "sector_id": "HC",
+    "industry_id": "VACCINE",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "VACCINE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

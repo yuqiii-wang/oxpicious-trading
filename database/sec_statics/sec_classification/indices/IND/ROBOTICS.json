@@ -1,0 +1,33 @@
+{
+  "DUMMY_ROBOTICS": {
+    "name": "机器人综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "ROBOTICS",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ROBOTICS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30590": {
+    "name": "机器人",
+    "exchange": "HK",
+    "sector_id": "IND",
+    "industry_id": "ROBOTICS",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ROBOTICS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

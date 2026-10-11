@@ -1,0 +1,46 @@
+{
+  "000043": {
+    "name": "超大盘",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_LARGE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_LARGE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "399701": {
+    "name": "深证F60",
+    "exchange": "SZ",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_LARGE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_LARGE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SZSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_STRAT_LARGE": {
+    "name": "大盘综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_LARGE",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_LARGE"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

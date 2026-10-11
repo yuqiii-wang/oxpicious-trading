@@ -1,0 +1,32 @@
+{
+  "930707": {
+    "name": "中证畜牧",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "LIVESTOCK",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "LIVESTOCK"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931946": {
+    "name": "畜牧养殖",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "LIVESTOCK",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "LIVESTOCK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

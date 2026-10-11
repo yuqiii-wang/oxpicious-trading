@@ -1,0 +1,93 @@
+{
+  "000007": {
+    "name": "公用指数",
+    "exchange": "SS",
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_UTIL",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_UTIL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000041": {
+    "name": "上证公用",
+    "exchange": "SS",
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_UTIL",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_UTIL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000079": {
+    "name": "公用等权",
+    "exchange": "SS",
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_UTIL",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_UTIL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000113": {
+    "name": "380公用",
+    "exchange": "SS",
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_UTIL",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_UTIL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000995": {
+    "name": "全指公用",
+    "exchange": "SS",
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_UTIL",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_UTIL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_INFRA_UTIL": {
+    "name": "公用事业综合指数",
+    "exchange": null,
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_UTIL",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_UTIL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

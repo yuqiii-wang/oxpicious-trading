@@ -87,7 +87,7 @@ import {
   type IndustryFilter,
 } from "@/live/features/market-movements/marketMovementsOption";
 import { resolvePrevDayBar } from "@/live/features/market-movements/prevDayOhlc";
-import { isWithinTradingHours } from "@/live/hooks/useSecAllocLivePipeline";
+import { isWithinTradingHours } from "@/shared/datetime";
 
 /** One benchmark option in the dropdown. */
 interface BenchmarkOption {

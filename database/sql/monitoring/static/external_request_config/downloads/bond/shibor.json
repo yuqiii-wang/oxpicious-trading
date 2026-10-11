@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.bond.shibor",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 5,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 120,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "Shibor quotes (shibor.org.cn); fallback proxies also 5.0s. Timeouts (15,120) migrated from the code's SHIBOR_TIMEOUT (shibor.sh.cn POSTs are slow; synced 2026-10-10) - code now reads this row.",
+    "source_ref": "downloads/bond/shibor/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

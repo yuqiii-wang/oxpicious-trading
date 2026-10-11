@@ -29,10 +29,8 @@ import requests
 import pandas as pd
 
 from downloads._common import (
-    DEFAULT_TIMEOUT,
     MIN_VALID_BYTES,
     AntiBotProxy,
-    AntiBotConfig,
     RunStats,
     build_headers_with_referer,
     is_valid_file,
@@ -41,6 +39,10 @@ from downloads._common import (
     setup_logger,
 )
 
+
+# Pacing (sleep/jitter/timeouts/anti-bot toggles) resolves from this service's
+# external_request_config JSON row.
+SERVICE = "downloads.options.sse.price"
 
 SSE_QUERY_URL = "https://query.sse.com.cn/commonQuery.do"
 SSE_REFERER = "https://www.sse.com.cn/assortment/options/disclo/preinfo/"
@@ -73,7 +75,7 @@ def download_options_price_once(
     proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Path]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
 
     ymd = trade_date.strftime("%Y%m%d")
     log_tag = f"[options_price {ymd}]"
@@ -101,7 +103,6 @@ def download_options_price_once(
             SSE_QUERY_URL,
             data=post_data,
             headers=SSE_HEADERS,
-            timeout=DEFAULT_TIMEOUT,
             logger=logger,
             log_tag=log_tag,
         )
@@ -191,9 +192,10 @@ def download_sse_options_price(
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_options_price", out_root)
     sess = session or requests.Session()
-    
-    # Create unified AntiBotProxy
-    proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles).
+    proxy = AntiBotProxy(service=SERVICE)
 
     trade_date = last_business_day()
     ymd = trade_date.strftime("%Y%m%d")
@@ -254,6 +256,8 @@ def main():
     parser = argparse.ArgumentParser(description="Download SSE options price data")
     parser.add_argument("--out_root", type=str, default=None, help="Output directory root")
     args = parser.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     result = download_sse_options_price(out_root=args.out_root)
     logger.info(result)

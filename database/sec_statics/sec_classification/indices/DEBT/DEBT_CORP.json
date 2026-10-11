@@ -1,0 +1,186 @@
+{
+  "000013": {
+    "name": "企债指数",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000022": {
+    "name": "沪公司债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000061": {
+    "name": "沪企债30",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000101": {
+    "name": "5年信用",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000116": {
+    "name": "信用100",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932160": {
+    "name": "AAA科创债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950167": {
+    "name": "沪AAA科创债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950245": {
+    "name": "沪做市公司债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_DEBT_CORP": {
+    "name": "信用债综合指数",
+    "exchange": null,
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H11014": {
+    "name": "中证短融",
+    "exchange": "HK",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "H11098": {
+    "name": "沪城投债",
+    "exchange": "HK",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_CORP",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_CORP"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

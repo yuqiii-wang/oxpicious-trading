@@ -56,10 +56,9 @@ from _common.pre_check_and_load.identity import check_identity
 
 setup_utf8_stdout()
 
-from downloads._common import setup_logger, resolve_out_dir
+from downloads._common import setup_logger, resolve_out_dir, sleep_sec_for
 from downloads.futures.cffex.trend.config import (
     CFFEX_TREND_URL,
-    DOWNLOAD_SLEEP_SEC,
     _last_completed_archive_month,
 )
 from downloads.futures.cffex.trend.paths import (
@@ -74,6 +73,10 @@ from downloads.futures.cffex.trend.downloader import (
 )
 
 logger = setup_logger("cffex_trend")
+
+# Pacing service key — the between-downloads sleep resolves from this
+# service's external_request_config JSON row (request_type "playwright").
+SERVICE = "downloads.futures.cffex.trend"
 
 
 # ---------------------------------------------------------------------------
@@ -269,12 +272,20 @@ def main() -> None:
     parser.add_argument(
         "--sleep",
         type=float,
-        default=DOWNLOAD_SLEEP_SEC,
-        help=f"Sleep seconds between downloads (default: {DOWNLOAD_SLEEP_SEC}).",
+        default=None,
+        help="Sleep seconds between downloads "
+             f"(default: external_request_config JSON for {SERVICE}, "
+             "request_type 'playwright').",
     )
     args = parser.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     t0 = time.time()
+
+    sleep_sec = args.sleep
+    if sleep_sec is None:
+        sleep_sec = sleep_sec_for(SERVICE, "playwright")
 
     start_date = None
     end_date = None
@@ -288,7 +299,7 @@ def main() -> None:
         **{
             "Trend URL": CFFEX_TREND_URL,
             "Date range": f"{start_date or '(auto)'} → {end_date or '(today)'}",
-            "Sleep interval": f"{args.sleep}s",
+            "Sleep interval": f"{sleep_sec}s",
             "Force": args.force,
         }
     )
@@ -397,7 +408,7 @@ def main() -> None:
     result = download_trend_batch(
         missing,
         out_root=args.out_root,
-        sleep_sec=args.sleep,
+        sleep_sec=sleep_sec,
     )
 
     logger.info(f"\n[Done] Download summary:")

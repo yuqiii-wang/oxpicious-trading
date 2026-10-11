@@ -29,8 +29,7 @@ CREATE TABLE IF NOT EXISTS stats.futures_identity (
     product_code              TEXT          NOT NULL,
     contract_month             TEXT          NOT NULL,
     contract_year_month       TEXT          NOT NULL,
-    contract_type             TEXT          NOT NULL
-        CHECK (contract_type IN ('index', 'bond')),
+    contract_type             SMALLINT      NOT NULL,  -- label code (stats.label_dim 'contract_type'): 0=index 1=bond
     name                      TEXT          NOT NULL,
     underlying_code           TEXT          NOT NULL,
     underlying_name           TEXT          NOT NULL,
@@ -50,7 +49,7 @@ COMMENT ON COLUMN stats.futures_identity.code          IS 'Futures contract code
 COMMENT ON COLUMN stats.futures_identity.product_code   IS 'Product prefix extracted from contract code: IC/IF/IH/IM (index) or T/TF/TL/TS (bond).';
 COMMENT ON COLUMN stats.futures_identity.contract_month IS 'YYMM portion of contract code, e.g. "2607" for July 2026.';
 COMMENT ON COLUMN stats.futures_identity.contract_year_month IS 'Normalized "YYYY-MM" contract month, e.g. "2026-07".';
-COMMENT ON COLUMN stats.futures_identity.contract_type IS 'index for stock index futures (IC/IF/IH/IM); bond for treasury bond futures (T/TF/TL/TS).';
+COMMENT ON COLUMN stats.futures_identity.contract_type IS 'Contract class as its stats.label_dim (''contract_type'' domain) SMALLINT code: 0 = index futures (IC/IF/IH/IM), 1 = bond futures (T/TF/TL/TS).';
 COMMENT ON COLUMN stats.futures_identity.name           IS 'Chinese product name, e.g. "中证500股指期货", "10年期国债期货".';
 COMMENT ON COLUMN stats.futures_identity.underlying_code IS 'Underlying asset code: index futures map to ETF/index codes (e.g. IF→000300 for CSI300); bond futures use synthetic codes (e.g. T→T10 for 10Y Treasury).';
 COMMENT ON COLUMN stats.futures_identity.underlying_name IS 'Underlying asset name matching underlying_code (e.g. "沪深300" for 000300, "10年期国债" for T10).';

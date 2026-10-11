@@ -1,0 +1,21 @@
+{
+  "label": "基建",
+  "industries": {
+    "INFRA_CONSTR": {
+      "label": "建筑/基建",
+      "slug": "infra_constr"
+    },
+    "INFRA_UTIL": {
+      "label": "公用事业",
+      "slug": "infra_util"
+    },
+    "WATER": {
+      "label": "水务",
+      "slug": "water"
+    },
+    "GAS": {
+      "label": "燃气",
+      "slug": "gas"
+    }
+  }
+}

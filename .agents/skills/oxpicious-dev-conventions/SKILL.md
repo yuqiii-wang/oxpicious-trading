@@ -5,7 +5,7 @@ description: Repo conventions for the oxpicious-trading quant trading repo — P
 
 # oxpicious-trading dev conventions
 
-Layout: `builds/` and `analyze/` are Python pipelines run as `python -m <pkg>`;
+Layout: `builds/` and `analysis/` are Python pipelines run as `python -m <pkg>`;
 `_common/` is the shared library (never duplicate its helpers);
 `database/sql/` holds SQL; `data_viz/` is the React UI; `temp_scripts/` holds
 throwaway scripts and their outputs.

@@ -1,0 +1,16 @@
+{
+  "DUMMY_EXPRESSWAY": {
+    "name": "高速公路综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "EXPRESSWAY",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "EXPRESSWAY"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

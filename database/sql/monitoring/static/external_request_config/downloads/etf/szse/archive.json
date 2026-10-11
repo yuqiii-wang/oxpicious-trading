@@ -1,0 +1,40 @@
+[
+  {
+    "service": "downloads.etf.szse.archive",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 90,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 30,
+    "timeout_read_sec": 120,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "cninfo quarterly reports (list API + PDF download share the 90s cadence). Timeouts (30,120) migrated from the reports PDF GET's code override (multi-MB PDFs from a throttling CDN; synced 2026-10-10) - code now reads this row.",
+    "source_ref": "downloads/etf/szse/archive/reports.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  },
+  {
+    "service": "downloads.etf.szse.archive",
+    "request_type": "market",
+    "resource_type": 0,
+    "sleep_sec": 5,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "Daily market-archive pagination (market.py) — paces at 5s, unlike the 90s quarterly-reports sweep in the default row; migrated 2026-10-10 from market.py's code constant so both paths read this file.",
+    "source_ref": "downloads/etf/szse/archive/market.py (row written 2026-10-10 when pacing switched to JSON-driven)",
+    "updated_at": "2026-10-10T00:00:00.000000+00:00"
+  }
+]

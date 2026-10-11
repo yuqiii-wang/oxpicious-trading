@@ -33,7 +33,7 @@
 --                              own stocks).
 --
 --  POPULATION
---    analyze.industry_sentiments.attributions (step a6, TRUNCATE + INSERT
+--    analysis.industry_sentiments.attributions (step a6, TRUNCATE + INSERT
 --    ... SELECT from sec_composition + sec_classification). Recomputed on
 --    every attributions run (cheap — only ~235 rows).
 --
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS analysis.industry_member_index_map (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('analysis', 'industry_member_index_map', 8);
 
-COMMENT ON TABLE  analysis.industry_member_index_map IS 'Pre-computed mapping of each industry to its NON-BROAD member indices, with composition-derived shared weights frozen at the latest sec_composition snapshot. Used to fast-track analysis.industry_attributions population (weights are constant across dates; only recomputed when compositions change). Built by analyze.industry_sentiments.attributions (step a6, TRUNCATE + INSERT...SELECT).';
+COMMENT ON TABLE  analysis.industry_member_index_map IS 'Pre-computed mapping of each industry to its NON-BROAD member indices, with composition-derived shared weights frozen at the latest sec_composition snapshot. Used to fast-track analysis.industry_attributions population (weights are constant across dates; only recomputed when compositions change). Built by analysis.industry_sentiments.attributions (step a6, TRUNCATE + INSERT...SELECT).';
 COMMENT ON COLUMN analysis.industry_member_index_map.industry_id IS 'Subject industry_id (from stats.sec_classification type=''index'').';
 COMMENT ON COLUMN analysis.industry_member_index_map.benchmark_code IS 'NON-BROAD member index code of the industry. Broad-market codes are EXCLUDED (already materialized in industry_attributions via the broad-market INSERT).';
 COMMENT ON COLUMN analysis.industry_member_index_map.industry_shared_weight IS 'SUM over other same-industry members N of N''s weight on stocks shared with M. Self-pair (M, M) excluded by subtracting M''s own weight from the industry total. Can exceed 100 (sum of multiple member portfolios).';
@@ -69,7 +69,7 @@ COMMENT ON COLUMN analysis.industry_member_index_map.benchmark_shared_weight IS 
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('industry_member_index_map', 'industry_member_index_map', NULL, NOW(),
-     'Pre-computed mapping of each industry to its NON-BROAD member indices, with composition-derived shared weights (industry_shared_weight, benchmark_shared_weight) frozen at the latest sec_composition snapshot. Used to fast-track analysis.industry_attributions population. Built by analyze.industry_sentiments.attributions (step a6, TRUNCATE + INSERT...SELECT).')
+     'Pre-computed mapping of each industry to its NON-BROAD member indices, with composition-derived shared weights (industry_shared_weight, benchmark_shared_weight) frozen at the latest sec_composition snapshot. Used to fast-track analysis.industry_attributions population. Built by analysis.industry_sentiments.attributions (step a6, TRUNCATE + INSERT...SELECT).')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

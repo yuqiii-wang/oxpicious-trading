@@ -44,15 +44,17 @@ async def fetch_stock_index_mapping(conn) -> Dict[str, List[Tuple[str, float]]]:
 
 
 async def fetch_stock_meta(conn) -> Dict[str, Dict[str, Any]]:
-    """Fetch stock names + coverage from stock_identity (non-NULL close only).
+    """Fetch stock names + coverage + listing venue from stock_identity
+    (non-NULL close only).
 
-    Returns: { code: { "name": ..., "exchange": ..., "n_days": ...,
-                       "first_date": ..., "last_date": ... } }
+    Returns: { code: { "name": ..., "exchange": ..., "board": ...,
+                       "n_days": ..., "first_date": ..., "last_date": ... } }
     """
     rows = await conn.fetch("""
         SELECT si.code,
                MAX(si.name) AS name,
                MAX(si.exchange) AS exchange,
+               MAX(si.board) AS board,
                COUNT(*)     AS n_days,
                MIN(si.date)::text AS first_date,
                MAX(si.date)::text AS last_date
@@ -67,12 +69,13 @@ async def fetch_stock_meta(conn) -> Dict[str, Dict[str, Any]]:
         code: {
             "name": name or "",
             "exchange": exchange or "",
+            "board": board,
             "n_days": int(n_days),
             "first_date": first_date,
             "last_date": last_date,
         }
-        for code, name, exchange, n_days, first_date, last_date in zip(
-            cols["code"], cols["name"], cols["exchange"], cols["n_days"],
-            cols["first_date"], cols["last_date"],
+        for code, name, exchange, board, n_days, first_date, last_date in zip(
+            cols["code"], cols["name"], cols["exchange"], cols["board"],
+            cols["n_days"], cols["first_date"], cols["last_date"],
         )
     }

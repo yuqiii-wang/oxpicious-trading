@@ -1,0 +1,25 @@
+{
+  "label": "海外",
+  "industries": {
+    "OVERSEAS_US": {
+      "label": "美国",
+      "slug": "overseas_us"
+    },
+    "OVERSEAS_JAPAN": {
+      "label": "日本",
+      "slug": "overseas_japan"
+    },
+    "OVERSEAS_EUROPE": {
+      "label": "欧洲",
+      "slug": "overseas_europe"
+    },
+    "OVERSEAS_EMERGING": {
+      "label": "新兴市场",
+      "slug": "overseas_emerging"
+    },
+    "OVERSEAS_ASIA": {
+      "label": "亚太",
+      "slug": "overseas_asia"
+    }
+  }
+}

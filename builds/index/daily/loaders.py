@@ -481,10 +481,10 @@ def load_cnindex_history(verbose: bool = True,
 def load_bse_index_history(verbose: bool = True,
                            code_filter: str | None = None) -> list:
     """Load BSE index daily history CSVs (temps/bse_index_archive) — 北证50
-    (899050) downloaded from the BSE site's own kline endpoint by
-    ``downloads.index.bse.archive`` (serves both the historical archive and
-    the daily trend). See ``_load_csindex_schema_history`` for the shared
-    load contract.
+    (899050) and 北证专精特新 (899601), downloaded from each index's own
+    kline endpoint by ``downloads.index.bse.archive`` (serves both the
+    historical archive and the daily trend). See
+    ``_load_csindex_schema_history`` for the shared load contract.
     """
     return _load_csindex_schema_history(
         BSE_INDEX_ARCHIVE_DIR, "BSE", verbose=verbose, code_filter=code_filter,

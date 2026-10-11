@@ -13,7 +13,7 @@
 --
 --  POPULATION
 --    builds/industry (stats.industry_basic_stats: incremental /
---    --force truncate-then-recompute) then analyze/industry_sentiments
+--    --force truncate-then-recompute) then analysis/industry_sentiments
 --    (downstream steps, truncate-then-recompute on every run).
 -- ============================================================================
 
@@ -59,7 +59,7 @@
 --    matching either direction of the user-selected industry_ids set.
 --
 --  POPULATION
---    analyze.industry_sentiments.correlations (internal step
+--    analysis.industry_sentiments.correlations (internal step
 --    run_correlations, invoked from __main__ — incremental / force).
 -- ============================================================================
 DROP TABLE IF EXISTS analysis.industry_correlations;
@@ -96,7 +96,7 @@ SELECT public.create_hash_partitions('analysis', 'industry_correlations', 32);
 -- Indexes: none beyond the PK (post-indexing not needed — per-pair chart
 -- queries are PK-prefix scans).
 
-COMMENT ON TABLE  analysis.industry_correlations                            IS 'Windowed pairwise Pearson correlation between two industries'' MA curves of mean_close (stats.industry_basic_stats.mean_close, built by builds.industry — former mean_price). One row per (industry_id, benchmark_industry_id, pool_size, start_date, interval). Windows start on the pool calendar grid every `interval` (default 20) trading days; corr_ma{W}_{W}d (W in 20/60/255) correlates the two industries'' MA-W curves over the W trading days starting on start_date. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id (lexicographic) to deduplicate (A,B) vs (B,A). Only same-pool slices materialized (all, small, mid, large). Built by analyze.industry_sentiments.correlations (internal step, incremental / force).';
+COMMENT ON TABLE  analysis.industry_correlations                            IS 'Windowed pairwise Pearson correlation between two industries'' MA curves of mean_close (stats.industry_basic_stats.mean_close, built by builds.industry — former mean_price). One row per (industry_id, benchmark_industry_id, pool_size, start_date, interval). Windows start on the pool calendar grid every `interval` (default 20) trading days; corr_ma{W}_{W}d (W in 20/60/255) correlates the two industries'' MA-W curves over the W trading days starting on start_date. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id (lexicographic) to deduplicate (A,B) vs (B,A). Only same-pool slices materialized (all, small, mid, large). Built by analysis.industry_sentiments.correlations (internal step, incremental / force).';
 COMMENT ON COLUMN analysis.industry_correlations.industry_id                IS 'Subject industry''s industry_id (lexicographically smaller of the two).';
 COMMENT ON COLUMN analysis.industry_correlations.benchmark_industry_id       IS 'Benchmark industry''s industry_id (lexicographically larger of the two).';
 COMMENT ON COLUMN analysis.industry_correlations.pool_size                  IS 'Pool_size slice in which BOTH industries are compared (cross-pool comparisons are not materialized), as its stats.label_dim (''pool_size'' domain) SMALLINT code: 0 small (stock_num<51), 1 mid (51-180), 2 large (>180), 3 all (every member).';
@@ -188,10 +188,10 @@ COMMENT ON COLUMN analysis.industry_correlations.corr_ma255_255d            IS '
 --                                          member stocks + benchmark weights)
 --
 --  POPULATION
---    analyze.industry_sentiments.attributions (internal step
+--    analysis.industry_sentiments.attributions (internal step
 --    run_attributions, invoked from __main__ after correlations). Depends on
 --    analysis.sec_alloc_perf_attribution being populated first (by
---    analyze.sec_alloc_perf_attribution). Truncate-then-recompute on every run.
+--    analysis.sec_alloc_perf_attribution). Truncate-then-recompute on every run.
 --
 --  Register in analysis.analysis_identity (name='industry_attributions').
 -- ============================================================================
@@ -299,7 +299,7 @@ SELECT public.create_hash_partitions('analysis', 'industry_attributions', 16);
 CREATE INDEX IF NOT EXISTS idx_industry_attributions_bench_date_industry
     ON analysis.industry_attributions (benchmark_code, date, industry_id);
 
-COMMENT ON TABLE  analysis.industry_attributions                  IS 'Composition overlap between each industry (group of member indices) and each benchmark index. One row per (date, industry_id, benchmark_code, attribution_type). TWO attribution variants: attribution_type=''trading_amt'' -> industry_shared_weight = SUM(code_sec_shared_weight) across member indices (can exceed 100); attribution_type=''equal'' -> industry_shared_weight = AVG = SUM / N (N = active member index count from stats.sec_classification). benchmark_shared_weight is UNDIVIDED (same for both variants — property of the benchmark composition, not member count), so ALL non_this_industry_* columns are IDENTICAL between variants. HYBRID aggregation: industry_shared_weight = SUM(code_sec_shared_weight) across member indices from analysis.sec_alloc_perf_attribution (each member contributes its OWN weight on shared stocks; can exceed 100; self-pairs excluded). benchmark_shared_weight = benchmark weight on the UNION of industry member stocks from stats.sec_composition (latest snapshot; bounded [0, 100] (percent); no double-counting). Recomputed from sec_composition (NOT summed from sec_alloc_perf_attribution) because a naive SUM of benchmark_sec_shared_weight across members would double-count stocks held by multiple members. Both columns use the LATEST sec_composition snapshot for all dates (temporal extrapolation). Built by analyze.industry_sentiments.attributions (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.';
+COMMENT ON TABLE  analysis.industry_attributions                  IS 'Composition overlap between each industry (group of member indices) and each benchmark index. One row per (date, industry_id, benchmark_code, attribution_type). TWO attribution variants: attribution_type=''trading_amt'' -> industry_shared_weight = SUM(code_sec_shared_weight) across member indices (can exceed 100); attribution_type=''equal'' -> industry_shared_weight = AVG = SUM / N (N = active member index count from stats.sec_classification). benchmark_shared_weight is UNDIVIDED (same for both variants — property of the benchmark composition, not member count), so ALL non_this_industry_* columns are IDENTICAL between variants. HYBRID aggregation: industry_shared_weight = SUM(code_sec_shared_weight) across member indices from analysis.sec_alloc_perf_attribution (each member contributes its OWN weight on shared stocks; can exceed 100; self-pairs excluded). benchmark_shared_weight = benchmark weight on the UNION of industry member stocks from stats.sec_composition (latest snapshot; bounded [0, 100] (percent); no double-counting). Recomputed from sec_composition (NOT summed from sec_alloc_perf_attribution) because a naive SUM of benchmark_sec_shared_weight across members would double-count stocks held by multiple members. Both columns use the LATEST sec_composition snapshot for all dates (temporal extrapolation). Built by analysis.industry_sentiments.attributions (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.';
 COMMENT ON COLUMN analysis.industry_attributions.industry_id           IS 'Subject industry_id (from stats.sec_classification type=''index''). The industry whose member indices'' overlap with the benchmark is aggregated.';
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_code        IS 'Benchmark index code (typically one of the 6 broad-market indices: 000300, 000001, 000852, 399001, 399006, 000688, plus per-industry top-N non-broad indices). Inherited from analysis.sec_alloc_perf_attribution.benchmark_code.';
 COMMENT ON COLUMN analysis.industry_attributions.date                  IS 'Trading date. Inherited from analysis.sec_alloc_perf_attribution (dates where at least one member index has a row for the benchmark). Shared-weight values are constant per (industry_id, benchmark_code) across dates, but the sum can vary when member indices have unequal history lengths.';
@@ -319,7 +319,7 @@ COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_tra
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('industry_attributions', 'industry_attributions', NULL, NOW(),
-     'Composition overlap between each industry (group of member indices) and each benchmark index. One row per (date, industry_id, benchmark_code, attribution_type). TWO attribution variants: trading_amt -> industry_shared_weight = SUM(code_sec_shared_weight) across member indices (can exceed 100); equal -> industry_shared_weight = AVG = SUM / N (N = active member index count). benchmark_shared_weight is UNDIVIDED (same for both variants), so all non_this_industry_* columns are identical between variants. HYBRID aggregation: industry_shared_weight = SUM(code_sec_shared_weight) across member indices from analysis.sec_alloc_perf_attribution (own-weight on shared stocks in percent, can exceed 100, self-pairs excluded); benchmark_shared_weight = benchmark weight on the UNION of industry member stocks from stats.sec_composition (latest snapshot, in percent 0-100, no double-counting, recomputed from compositions to avoid double-counting stocks held by multiple members). Both use LATEST snapshot for all dates. Built by analyze.industry_sentiments.attributions (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.')
+     'Composition overlap between each industry (group of member indices) and each benchmark index. One row per (date, industry_id, benchmark_code, attribution_type). TWO attribution variants: trading_amt -> industry_shared_weight = SUM(code_sec_shared_weight) across member indices (can exceed 100); equal -> industry_shared_weight = AVG = SUM / N (N = active member index count). benchmark_shared_weight is UNDIVIDED (same for both variants), so all non_this_industry_* columns are identical between variants. HYBRID aggregation: industry_shared_weight = SUM(code_sec_shared_weight) across member indices from analysis.sec_alloc_perf_attribution (own-weight on shared stocks in percent, can exceed 100, self-pairs excluded); benchmark_shared_weight = benchmark weight on the UNION of industry member stocks from stats.sec_composition (latest snapshot, in percent 0-100, no double-counting, recomputed from compositions to avoid double-counting stocks held by multiple members). Both use LATEST snapshot for all dates. Built by analysis.industry_sentiments.attributions (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,
@@ -331,7 +331,7 @@ ON CONFLICT (name) DO UPDATE SET
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('industry_correlations', 'industry_correlations', NULL, NOW(),
-     'Windowed pairwise Pearson correlation between two industries'' MA curves of mean_close (stats.industry_basic_stats.mean_close, built by builds.industry — former mean_price, rehooked 2026-08-24). One row per (industry_id, benchmark_industry_id, pool_size, start_date, interval) with corr_ma20_20d / corr_ma60_60d / corr_ma255_255d. Windows start on the pool calendar grid every `interval` (default 20) trading days; corr_ma{W}_{W}d correlates the two industries'' MA-W curves over the W trading days starting on start_date. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id to deduplicate. Only same-pool slices materialized (all, small, mid, large). Built by analyze.industry_sentiments.correlations (internal step, incremental / force).')
+     'Windowed pairwise Pearson correlation between two industries'' MA curves of mean_close (stats.industry_basic_stats.mean_close, built by builds.industry — former mean_price, rehooked 2026-08-24). One row per (industry_id, benchmark_industry_id, pool_size, start_date, interval) with corr_ma20_20d / corr_ma60_60d / corr_ma255_255d. Windows start on the pool calendar grid every `interval` (default 20) trading days; corr_ma{W}_{W}d correlates the two industries'' MA-W curves over the W trading days starting on start_date. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id to deduplicate. Only same-pool slices materialized (all, small, mid, large). Built by analysis.industry_sentiments.correlations (internal step, incremental / force).')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,
@@ -391,7 +391,7 @@ ON CONFLICT (name) DO UPDATE SET
 --    stats.sec_composition (stock_num → pool_size classification)
 --
 --  POPULATION
---    analyze.industry_sentiments.etf_contribution (internal step
+--    analysis.industry_sentiments.etf_contribution (internal step
 --    run_etf_contribution, invoked from __main__ after attributions).
 --    Depends on stats.index_exts (builds.index exts phase) being populated
 --    first. Truncate-then-recompute on every run.
@@ -418,12 +418,12 @@ CREATE TABLE IF NOT EXISTS analysis.industry_etf_contribution (
     industry_etf_trading_amount     NUMERIC(24,4),
 
     -- 5-trading-day moving average of industry_etf_trading_amount.
-    -- Populated by analyze.industry_sentiments.etf_contribution via
+    -- Populated by analysis.industry_sentiments.etf_contribution via
     -- pandas rolling(5).mean() per (industry_id, pool_size) group.
     industry_etf_trading_amount_ma5 NUMERIC(24,4),
 
     -- 20-trading-day moving average of industry_etf_trading_amount.
-    -- Populated by analyze.industry_sentiments.etf_contribution via
+    -- Populated by analysis.industry_sentiments.etf_contribution via
     -- pandas rolling(20).mean() per (industry_id, pool_size) group.
     industry_etf_trading_amount_ma20 NUMERIC(24,4),
 
@@ -442,19 +442,19 @@ CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_industry_pool_date
 CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_date_industry
     ON analysis.industry_etf_contribution (date, industry_id);
 
-COMMENT ON TABLE  analysis.industry_etf_contribution                        IS 'Per-(industry_id, date, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(total_etf_trading_amount) across member indices from stats.index_exts. industry_etf_count = COUNT of member indices with non-NULL ETF amount. Each member index contributes its aggregate ETF turnover (precomputed in stats.index_exts by builds.index exts phase). pool_size: small (stock_num<51), mid (51-180), large (>180), all. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on stats.index_exts being populated first.';
+COMMENT ON TABLE  analysis.industry_etf_contribution                        IS 'Per-(industry_id, date, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(total_etf_trading_amount) across member indices from stats.index_exts. industry_etf_count = COUNT of member indices with non-NULL ETF amount. Each member index contributes its aggregate ETF turnover (precomputed in stats.index_exts by builds.index exts phase). pool_size: small (stock_num<51), mid (51-180), large (>180), all. Built by analysis.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on stats.index_exts being populated first.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.pool_size              IS 'Pool-size slice as its stats.label_dim (''pool_size'' domain) SMALLINT code: 0 small (stock_num<51), 1 mid (51-180), 2 large (>180), 3 all (every member). Classification source: stats.sec_composition (LATEST snapshot per code).';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_count     IS 'Number of distinct member indices with non-NULL total_etf_trading_amount contributing to this (date, industry_id, pool_size) slice on this date.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount     IS 'SUM(total_etf_trading_amount) across member indices in this pool_size slice on this date. Source: stats.index_exts (total_etf_trading_amount = aggregate ETF turnover tracking the member index, built by builds.index exts phase). NULL when no member index has ETF trading amount data on this date.';
-COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma5 IS '5-trading-day moving average of industry_etf_trading_amount. Populated by analyze.industry_sentiments.etf_contribution via pandas rolling(5).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 5-day window.';
-COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma20 IS '20-trading-day moving average of industry_etf_trading_amount. Populated by analyze.industry_sentiments.etf_contribution via pandas rolling(20).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 20-day window. Longer-window smoother than MA5, exposed by the UI "Trading Amt" MA selector.';
+COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma5 IS '5-trading-day moving average of industry_etf_trading_amount. Populated by analysis.industry_sentiments.etf_contribution via pandas rolling(5).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 5-day window.';
+COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma20 IS '20-trading-day moving average of industry_etf_trading_amount. Populated by analysis.industry_sentiments.etf_contribution via pandas rolling(20).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 20-day window. Longer-window smoother than MA5, exposed by the UI "Trading Amt" MA selector.';
 
 -- ----------------------------------------------------------------------------
 --  Register in analysis.analysis_identity
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('industry_etf_contribution', 'industry_etf_contribution', NULL, NOW(),
-     'Per-(date, industry_id, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(code_etf_trading_amount) across member indices from analysis.sec_alloc_perf_attribution (sec_type=''index''). industry_etf_count = COUNT of member indices with non-NULL ETF amount. pool_size: small (stock_num<51), mid (51-180), large (>180), all. industry_etf_trading_amount_ma5 = 5-day MA, industry_etf_trading_amount_ma20 = 20-day MA. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.')
+     'Per-(date, industry_id, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(code_etf_trading_amount) across member indices from analysis.sec_alloc_perf_attribution (sec_type=''index''). industry_etf_count = COUNT of member indices with non-NULL ETF amount. pool_size: small (stock_num<51), mid (51-180), large (>180), all. industry_etf_trading_amount_ma5 = 5-day MA, industry_etf_trading_amount_ma20 = 20-day MA. Built by analysis.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

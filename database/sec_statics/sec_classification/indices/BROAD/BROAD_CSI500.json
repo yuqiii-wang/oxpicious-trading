@@ -1,0 +1,29 @@
+{
+  "000905": {
+    "name": "中证500",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI500",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI500"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_CSI500": {
+    "name": "中证500综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI500",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI500"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

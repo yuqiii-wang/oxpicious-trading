@@ -1,6 +1,6 @@
 """Key-bounded chunked COPY for multi-million-row inserts.
 
-Sibling of ``analyze._common.upsert.batched_copy_by_date`` (which chunks
+Sibling of ``analysis._common.upsert.batched_copy_by_date`` (which chunks
 by ``date`` for the (sec_type, code, date)-PK tables). This variant
 chunks by an ARBITRARY key — the table's PARTITION key (e.g.
 ``industry_id`` / ``code`` on the HASH-partitioned stats/analysis
@@ -32,8 +32,8 @@ SAFE ONLY when the target table has been TRUNCATEd (or is otherwise
 guaranteed conflict-free) — COPY has no ON CONFLICT handling. The
 caller is responsible for truncating first (force mode does this).
 
-Lives in ``_common.db_commons`` (not analyze._common) so BOTH builds.*
-and analyze.* pipelines can share one implementation.
+Lives in ``_common.db_commons`` (not analysis._common) so BOTH builds.*
+and analysis.* pipelines can share one implementation.
 """
 from __future__ import annotations
 
@@ -48,6 +48,7 @@ from ._async_ops import (
     _throttle_between_chunks_async,
     DEFAULT_MAX_REPLICA_LAG_MB,
     DEFAULT_CHUNK_PAUSE_S,
+    resolve_chunk_pause_s,
 )
 from ._helpers import (
     _group_rows_by_key,
@@ -64,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 # ~100K rows per chunk — small enough to bound memory, large enough to
 # amortize per-chunk transaction overhead (matches
-# analyze._common.upsert.DEFAULT_CHUNK_TARGET_ROWS). Each chunk commits
+# analysis._common.upsert.DEFAULT_CHUNK_TARGET_ROWS). Each chunk commits
 # independently, so a replication slot advances between chunks instead of
 # retaining WAL behind one giant transaction.
 DEFAULT_CHUNK_TARGET_ROWS = 100_000
@@ -110,11 +111,12 @@ async def batched_copy_by_key_async(
         return 0
     chunks = _build_chunks(_group_rows_by_key(rows, key), chunk_target_rows)
     n_chunks = len(chunks)
+    pause_s = resolve_chunk_pause_s(n_chunks, chunk_pause_s)
     prefix = f"      {label} " if label else "      "
     total = 0
     for i, chunk in enumerate(chunks, start=1):
         await _throttle_between_chunks_async(
-            conn, max_replica_lag_mb, chunk_pause_s)
+            conn, max_replica_lag_mb, pause_s)
         total += await copy_insert_async(conn, table_name, chunk)
         logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {len(chunk):,} rows "
               f"(cumulative {total:,})")
@@ -247,12 +249,13 @@ async def copy_frame_chunked_async(
             for lo in range(0, n_total, chunk_target_rows)
         ]
     n_chunks = len(bounds)
+    pause_s = resolve_chunk_pause_s(n_chunks, chunk_pause_s)
     cols = list(columns)
     prefix = f"      {label} " if label else "      "
     total = 0
     for i, (lo, hi) in enumerate(bounds, start=1):
         await _throttle_between_chunks_async(
-            conn, max_replica_lag_mb, chunk_pause_s)
+            conn, max_replica_lag_mb, pause_s)
         chunk_df = df.take(order[lo:hi]) if order is not None else df.iloc[lo:hi]
         rows = sanitize_for_db_insert(
             chunk_df, numeric_cols=list(numeric_cols), round_to=round_to,
@@ -298,11 +301,12 @@ async def csv_copy_frame_chunked_async(
     bounds, order = _partition_key_frame_order(df, partition_key,
                                                chunk_target_rows)
     n_chunks = len(bounds)
+    pause_s = resolve_chunk_pause_s(n_chunks, chunk_pause_s)
     prefix = f"      {label} " if label else "      "
     total = 0
     for i, (lo, hi) in enumerate(bounds, start=1):
         await _throttle_between_chunks_async(
-            conn, max_replica_lag_mb, chunk_pause_s)
+            conn, max_replica_lag_mb, pause_s)
         chunk_df = df.take(order[lo:hi]) if order is not None else df.iloc[lo:hi]
         total += await csv_copy_from_frame_async(conn, table_name, chunk_df)
         logger.info(f"{prefix}chunk {i}/{n_chunks}: CSV COPY {hi - lo:,} rows "

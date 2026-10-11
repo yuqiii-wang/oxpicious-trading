@@ -1,0 +1,80 @@
+{
+  "000683": {
+    "name": "科创生物",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "BIOTECH",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "BIOTECH"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000808": {
+    "name": "医药生物",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "BIOTECH",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "BIOTECH"
+      },
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930726": {
+    "name": "CS生医",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "BIOTECH",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "BIOTECH"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930743": {
+    "name": "中证生科",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "BIOTECH",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "BIOTECH"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_BIOTECH": {
+    "name": "生物科技综合指数",
+    "exchange": null,
+    "sector_id": "HC",
+    "industry_id": "BIOTECH",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "BIOTECH"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

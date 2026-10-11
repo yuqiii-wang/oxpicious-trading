@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS stats.stock_identity (
     date                      DATE          NOT NULL,
     code                      TEXT          NOT NULL,
     exchange                  TEXT,
-    board                     TEXT,
+    board                     SMALLINT,  -- label code (stats.label_dim 'board'): 0=MAIN 1=STAR 2=GEM 3=BSE; NULL when the source row carries no board
     name                      TEXT          NOT NULL DEFAULT '',
     is_in_index_or_etf        BOOLEAN       NOT NULL DEFAULT FALSE,
 
@@ -37,24 +37,26 @@ SELECT public.create_hash_partitions('stats', 'stock_identity', 16);
 
 -- Idempotent migration: replace the legacy code_suffix column with the
 -- canonical exchange + board columns (mirroring the canonical source-CSV
--- schema). Existing rows are backfilled from the code suffix / prefix.
+-- schema). Existing rows are backfilled from the code suffix / prefix;
+-- board backfills emit the stats.label_dim code (0 MAIN / 1 STAR /
+-- 2 GEM / 3 BSE — the label-code contract).
 UPDATE stats.stock_identity
    SET exchange = split_part(code, '.', 2)
  WHERE exchange IS NULL OR exchange = '';
 UPDATE stats.stock_identity
    SET board = CASE
-        WHEN exchange = 'SS' AND code LIKE '688%' THEN 'STAR'
-        WHEN exchange = 'SS' AND code LIKE '689%' THEN 'STAR'
-        WHEN exchange = 'SZ' AND code LIKE '30%'  THEN 'GEM'
-        WHEN exchange = 'BJ'                      THEN 'BSE'
-        ELSE 'MAIN'
+        WHEN exchange = 'SS' AND code LIKE '688%' THEN 1
+        WHEN exchange = 'SS' AND code LIKE '689%' THEN 1
+        WHEN exchange = 'SZ' AND code LIKE '30%'  THEN 2
+        WHEN exchange = 'BJ'                      THEN 3
+        ELSE 0
        END
- WHERE board IS NULL OR board = '';
+ WHERE board IS NULL;
 
 COMMENT ON TABLE  stats.stock_identity            IS 'Stock identity: one row per (date, code). PK (code, date) shared by all stock sub-tables. Native HASH partitioned by code. Mirrors etf_identity.';
 COMMENT ON COLUMN stats.stock_identity.code       IS 'Stock ticker with exchange suffix, e.g. "000001.SZ" (Ping An Bank) or "600000.SS" (Pudong Development Bank).';
 COMMENT ON COLUMN stats.stock_identity.exchange   IS 'Exchange of the code suffix: "SZ", "SS", or "BJ". Carried from the canonical source-CSV exchange column; replaces the legacy code_suffix column.';
-COMMENT ON COLUMN stats.stock_identity.board      IS 'Listing board: "MAIN", "STAR" (科创板 688/689.SS), "GEM" (创业板 30xxxx.SZ), or "BSE" (Beijing). Carried from the canonical source-CSV board column.';
+COMMENT ON COLUMN stats.stock_identity.board      IS 'Listing board as its stats.label_dim (''board'' domain) SMALLINT code: 0 = MAIN, 1 = STAR (科创板 688/689.SS), 2 = GEM (创业板 30xxxx.SZ), 3 = BSE (Beijing). Carried from the canonical source-CSV board column (mapped at the write boundary); NULL when the source row carries no board.';
 COMMENT ON COLUMN stats.stock_identity.is_in_index_or_etf  IS 'TRUE when this stock appears in any ETF or index composition (stats.sec_composition source_type in etf/index). Populated by populate_is_in_etf.py; used by stream_szse_price.py to avoid runtime EXISTS subquery.';
 
 -- ----------------------------------------------------------------------------
@@ -145,7 +147,7 @@ CREATE INDEX IF NOT EXISTS idx_stock_basic_stats_date
 --   Mirrors stats.index_tech_stats / stats.etf_tech_stats. MAs are computed
 --   from stats.stock_basic_stats.close by builds/stock/__main__.py (and a
 --   one-time backfill via build_stock_tech_stats.py for existing rows).
---   Consumed by analyze.mov_ave_spread for the 'stock' sec_type branch.
+--   Consumed by analysis.mov_ave_spread for the 'stock' sec_type branch.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stats.stock_tech_stats (
     date                      DATE          NOT NULL,

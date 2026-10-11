@@ -45,6 +45,8 @@ logger = logging.getLogger("board_map")
 # (code, date) PK keeps this an index scan; the fallback reads the code
 # suffix — stats.stock_identity.exchange always equals the suffix
 # (verified 0 mismatches), so NULL-exchange rows are covered too.
+# board is the stats.label_dim SMALLINT code (0 MAIN / 1 STAR / 2 GEM /
+# 3 BSE — the label-code contract); the prefix fallback CASE emits codes.
 _STOCK_BOARD_DROP_SQL = "DROP TABLE IF EXISTS tmp_stock_board;"
 
 _STOCK_BOARD_BUILD_SQL = """
@@ -57,16 +59,16 @@ WITH latest AS (
 )
 SELECT code,
        COALESCE(
-           NULLIF(board, ''),
+           board::smallint,
            CASE
                WHEN code LIKE '%.SS' AND LEFT(code, 3) IN ('688', '689')
-                    THEN 'STAR'
+                    THEN 1
                WHEN code LIKE '%.SZ' AND LEFT(code, 2) = '30'
-                    THEN 'GEM'
+                    THEN 2
                WHEN code LIKE '%.BJ'
-                    THEN 'BSE'
+                    THEN 3
                WHEN code LIKE '%.SS' OR code LIKE '%.SZ'
-                    THEN 'MAIN'
+                    THEN 0
            END
        ) AS board
   FROM latest

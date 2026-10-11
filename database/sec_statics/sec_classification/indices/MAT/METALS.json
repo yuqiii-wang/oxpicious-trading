@@ -1,0 +1,89 @@
+{
+  "000811": {
+    "name": "细分有色",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "METALS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "METALS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000819": {
+    "name": "有色金属",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "METALS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "METALS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000823": {
+    "name": "800有色",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "METALS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "METALS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930708": {
+    "name": "中证有色",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "METALS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "METALS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_METALS": {
+    "name": "有色金属综合指数",
+    "exchange": null,
+    "sector_id": "MAT",
+    "industry_id": "METALS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "METALS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H11059": {
+    "name": "工业有色",
+    "exchange": "HK",
+    "sector_id": "MAT",
+    "industry_id": "METALS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "METALS"
+      },
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

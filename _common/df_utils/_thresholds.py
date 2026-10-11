@@ -66,7 +66,7 @@ world cuDF overhead is higher than micro-benchmarks suggest due to:
 The ``CONSERVATIVE_MULTIPLIER`` (4x) is applied to the theoretical
 breakeven to avoid regressing small-DataFrame performance. The result
 is a practical threshold that still triggers GPU for the 5M+ row
-analyze workloads while keeping small per-subject iterations on CPU.
+analysis workloads while keeping small per-subject iterations on CPU.
 
 VALIDATED AGAINST REAL DB VOLUMES
 ==================================

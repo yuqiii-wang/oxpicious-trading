@@ -23,11 +23,15 @@ import type {
 } from "@/ui/OhlcChart";
 import {
   fetchTradingSignalHistory,
+  type TradingSignal,
   type TradingSignalHistoryResponse,
 } from "@/lib/api-client";
 
-export interface SignalCodeTrendChartProps {
-  /** Security type — selects the baseline endpoint (CodeTrendChart). */
+/** Stable empty default for the marker memo (a fresh [] per render would
+ *  dirty it every render — the notMerge rebuild tax). */
+const NO_SIGNALS: TradingSignal[] = [];
+
+export interface SignalCodeTrendChartProps {  /** Security type — selects the baseline endpoint (CodeTrendChart). */
   secType: CodeTrendSecType;
   /** Security code — suffixed ("000001.SZ") or bare ("000001"). */
   code: string;
@@ -43,6 +47,10 @@ export interface SignalCodeTrendChartProps {
    *  and still loading → renders without markers yet. Omit (undefined)
    *  to let the component fetch the history itself. */
   history?: TradingSignalHistoryResponse | null;
+  /** The marker POPULATION — the parent's toggle-filtered subset of
+   *  `history.signals` (the OHLCV variant + episode-pass picks). Omit to
+   *  mark every row of `history` (the unfiltered record). */
+  population?: TradingSignal[];
   /** The SELECTED signal date — its buy/sell marker renders enlarged
    *  with a glow (the expanded date's emphasis). Null = none. */
   selectedSignalDate?: string | null;
@@ -60,6 +68,7 @@ export default function SignalCodeTrendChart({
   name,
   anchorDate = null,
   history,
+  population,
   selectedSignalDate = null,
   height = 380,
   headerAction,
@@ -88,19 +97,20 @@ export default function SignalCodeTrendChart({
 
   const active = history !== undefined ? history : ownHistory;
 
-  // Chart markers: EVERY history row (all years — the full record). The
+  // Chart markers: the POPULATION rows (the parent's toggle-filtered
+  // subset when given, else every history row — the full record). The
   // memo keeps the [] identity stable while the history is unsettled, so
   // the option memo does not dirty on unrelated parent re-renders.
   const markers: OhlcTradeSignal[] = useMemo(
     () =>
-      (active?.signals ?? []).map((h) => ({
+      (population ?? active?.signals ?? NO_SIGNALS).map((h) => ({
         date: h.date,
         action: h.action,
         signal_type: h.signal_type,
         signal_sub_type: h.signal_sub_type,
         confidence: h.confidence_pct,
       })),
-    [active],
+    [population, active],
   );
 
   return (

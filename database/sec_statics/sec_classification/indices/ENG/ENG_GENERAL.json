@@ -1,0 +1,213 @@
+{
+  "000026": {
+    "name": "180资源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000032": {
+    "name": "上证能源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000066": {
+    "name": "上证商品",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000068": {
+    "name": "上证资源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000070": {
+    "name": "能源等权",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000092": {
+    "name": "资源50",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000104": {
+    "name": "380能源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000145": {
+    "name": "优势资源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000928": {
+    "name": "800能源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000986": {
+    "name": "全指能源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931733": {
+    "name": "绿色能源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      },
+      {
+        "sector_id": "ESG",
+        "industry_id": "GREEN"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931892": {
+    "name": "有色矿业",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      },
+      {
+        "sector_id": "MAT",
+        "industry_id": "METALS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932037": {
+    "name": "央企现代能源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_ENG_GENERAL": {
+    "name": "能源综合指数",
+    "exchange": null,
+    "sector_id": "ENG",
+    "industry_id": "ENG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

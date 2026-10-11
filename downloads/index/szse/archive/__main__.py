@@ -24,7 +24,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from downloads._common import DEFAULT_START_DATE, DEFAULT_SLEEP_SEC
+from downloads._common import DEFAULT_START_DATE
 from downloads._common.exchanges.szse import (
     REFERER_ARCHIVE,
     REFERER_TREND,
@@ -34,6 +34,10 @@ from downloads._common.exchanges.szse import (
 
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("archive")
+
+# Pacing (inter-day sleep, jitter, timeouts, toggles) resolves from this
+# service's external_request_config JSON row inside run_szse_download.
+SERVICE = "downloads.index.szse.archive"
 
 
 INDEX_EXTRA_PARAMS: Dict[str, Optional[str]] = {}
@@ -104,7 +108,7 @@ def download_szse_archive_index(
     out_root: Optional[str] = None,
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
-    sleep_sec: float = DEFAULT_SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
 ) -> dict:
     return run_szse_download(
@@ -121,6 +125,7 @@ def download_szse_archive_index(
         security_types=["index"],
         sleep_sec=sleep_sec,
         session=session,
+        service=SERVICE,
         exchange="SZ",
         code_filter_by_type=CODE_FILTER_BY_TYPE,
         skip_empty_markers=True,
@@ -130,4 +135,6 @@ def download_szse_archive_index(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_szse_archive_index())

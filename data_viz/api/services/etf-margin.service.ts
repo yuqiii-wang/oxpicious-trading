@@ -15,6 +15,7 @@ import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
 import { cachedRows } from "./classification-cache.js";
+import { LABEL_CODE } from "./label-codes.js";
 import type {
   EtfMarginRow,
   EtfBundle,
@@ -470,7 +471,8 @@ export async function getEtfMarginCombined(
       LEFT JOIN stats.etf_adjustment a
         ON a.date = i.date AND a.code = i.code AND a.code ${codePred}
       LEFT JOIN analysis.dividend_est dt
-        ON dt.date = i.date AND dt.code = i.code AND dt.sec_type = 'etf'
+        ON dt.date = i.date AND dt.code = i.code
+        AND dt.sec_type = ${LABEL_CODE.sec_type.etf} -- label_dim code: etf
        AND dt.code ${codePred}
       LEFT JOIN stats.etf_liquidity_margin lm
         ON lm.date = i.date AND lm.code = i.code AND lm.code ${codePred}

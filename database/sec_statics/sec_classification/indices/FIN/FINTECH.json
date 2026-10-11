@@ -1,0 +1,53 @@
+{
+  "930986": {
+    "name": "金融科技",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FINTECH",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FINTECH"
+      },
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      },
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_FINTECH": {
+    "name": "金融科技综合指数",
+    "exchange": null,
+    "sector_id": "FIN",
+    "industry_id": "FINTECH",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FINTECH"
+      },
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      },
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

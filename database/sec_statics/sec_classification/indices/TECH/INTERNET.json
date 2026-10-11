@@ -1,0 +1,138 @@
+{
+  "930604": {
+    "name": "中国互联网30",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "INTERNET",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INTERNET"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930625": {
+    "name": "SHS互联网",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "INTERNET",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INTERNET"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930796": {
+    "name": "全球中国互联网",
+    "exchange": "OVERSEAS",
+    "sector_id": "TECH",
+    "industry_id": "INTERNET",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INTERNET"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931637": {
+    "name": "港股通互联网",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "INTERNET",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INTERNET"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_INTERNET": {
+    "name": "互联网综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "INTERNET",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INTERNET"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H11136": {
+    "name": "中国互联网",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "INTERNET",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INTERNET"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "H30533": {
+    "name": "中国互联网50",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "INTERNET",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "INTERNET"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

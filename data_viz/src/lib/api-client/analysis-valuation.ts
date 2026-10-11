@@ -3,7 +3,7 @@
  * + Stock). The SHARED nav/codes endpoints consumed by BOTH the PE and
  * Dividends pages' SecCodesPageShell (2026-09-29; formerly the pe-named
  * /api/analysis/pe/codes|themes|strategy-themes). analysis.pe and
- * analysis.dividends are built together by analyze.pe_and_dividends over
+ * analysis.dividends are built together by analysis.pe_and_dividends over
  * the same (sec_type, code) universe, so one endpoint set serves both
  * pages. All endpoints require a `sec_type` query param ('etf' | 'index' |
  * 'stock') and rely on the LRU TTL cache only (no version check; the

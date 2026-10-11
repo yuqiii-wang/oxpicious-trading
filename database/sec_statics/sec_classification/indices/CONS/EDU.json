@@ -1,0 +1,37 @@
+{
+  "931456": {
+    "name": "中国教育",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "EDU",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "EDU"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_EDU": {
+    "name": "教育综合指数",
+    "exchange": null,
+    "sector_id": "CONS",
+    "industry_id": "EDU",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "EDU"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

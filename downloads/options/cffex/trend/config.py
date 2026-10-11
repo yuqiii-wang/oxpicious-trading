@@ -41,9 +41,8 @@ VIEWPORT_HEIGHT = 1080
 PAGE_NAVIGATION_TIMEOUT = 30000
 DATA_LOAD_TIMEOUT = 15000
 
-# Sleep interval between day downloads (seconds)
-DOWNLOAD_SLEEP_SEC = 20.0
-SLEEP_JIT_RANGE = 5.0
+# (Per-day sleep pacing lives in the external_request_config JSON row —
+# request_type "playwright", resolved via _common/request_config.)
 
 # ---------------------------------------------------------------------------
 # CSV format (matches archive CSV columns)

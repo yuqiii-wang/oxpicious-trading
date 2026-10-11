@@ -32,6 +32,7 @@ import { stripExchangeSuffix, matchesExchange, codeVariants } from "../../lib/cl
 import { cachedRows } from "../classification-cache.js";
 import { stripped } from "./_shared.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
+import { LABEL_CODE } from "../label-codes.js";
 import type {
   PeSecType,
   ValuationCodeRow,
@@ -130,7 +131,7 @@ interface DbMetaRow extends QueryResultRow {
 //  listValuationCodes — one row per code with first/last date, n_dates,
 //  and the latest snapshot's pe + dividend_yield (for sparkline / sort).
 //  Reads the PRECOMPUTED per-code summary analysis.pe_codes (maintained by
-//  analyze.pe_and_dividends' refresh_pe_codes_summary after every detail
+//  analysis.pe_and_dividends' refresh_pe_codes_summary after every detail
 //  write pass). The former live aggregate — UNION + sort + GROUP BY over
 //  analysis.pe ∪ analysis.dividends (1.3M rows index / 7.1M stock) plus
 //  DISTINCT-ON latest-row and identity-name lookups — took 4.7s index /
@@ -170,7 +171,8 @@ const META_TYPE: Record<PeSecType, string> = {
  *  cacheable per sec_type. */
 async function listPeMetaRows(secType: PeSecType): Promise<DbMetaRow[]> {
   return cachedRows(`pe_meta:${secType}`, () =>
-    queryRows<DbMetaRow>(META_SQL, [secType, META_TYPE[secType]]));
+    queryRows<DbMetaRow>(META_SQL,
+      [LABEL_CODE.sec_type[secType], META_TYPE[secType]]));
 }
 
 /** Meta SQL shared by listValuationThemes() and listValuationStrategyThemes().
@@ -192,7 +194,7 @@ const META_SQL = `
     COALESCE(m.exchange, '')               AS exchange
   FROM analysis.pe_codes c
   LEFT JOIN stats.sec_classification m ON m.code = c.code AND m.type = $2::text
-  WHERE c.sec_type = $1::text
+  WHERE c.sec_type = $1  -- stats.label_dim 'sec_type' code
     AND COALESCE(m.is_active, TRUE) = TRUE
 `;
 
@@ -213,7 +215,8 @@ export async function listValuationCodes(
   const exFilter = (rawExchange ?? "").trim() || null;
   const needMeta = hasClassFilter || !!exFilter;
 
-  const rows = await queryRows<DbCodeRow>(buildCodesSql(), [secType]);
+  const rows = await queryRows<DbCodeRow>(buildCodesSql(),
+    [LABEL_CODE.sec_type[secType]]);
 
   let classMap: Map<string, DbMetaRow> | null = null;
   if (needMeta) {
@@ -426,7 +429,8 @@ export async function listPeStreaks(
   const target = stripped(rawCode);
 
   const [streakRows, nameRows] = await Promise.all([
-    queryRows<DbStreakRow>(buildStreaksSql(), [secType, codeVariants(target)]),
+    queryRows<DbStreakRow>(buildStreaksSql(),
+      [LABEL_CODE.sec_type[secType], codeVariants(target)]),
     queryRows<{ name: string | null }>(buildNameSql(secType), [codeVariants(target)]),
   ]);
 

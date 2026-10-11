@@ -1,7 +1,7 @@
 """Industry-grain builder for stats.cross_stats (sec_type='industry').
 
 Migrated from the MERGED broad-market INSERT of
-analyze.industry_sentiments.attributions.sql_broad_market (2026-09-04).
+analysis.industry_sentiments.attributions.sql_broad_market (2026-09-04).
 Only the CROSS-SECURITY PRIMITIVE migrates here:
 
   • industry_shared_weight   → code_sec_shared_weight

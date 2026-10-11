@@ -1,0 +1,98 @@
+{
+  "000122": {
+    "name": "农业主题",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "AGRI",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "AGRI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000949": {
+    "name": "中证农业",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "AGRI",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "AGRI"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399814": {
+    "name": "大农业",
+    "exchange": "SZ",
+    "sector_id": "CONS",
+    "industry_id": "AGRI",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "AGRI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930662": {
+    "name": "CS现代农",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "AGRI",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "AGRI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930910": {
+    "name": "农牧渔",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "AGRI",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "AGRI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931778": {
+    "name": "农牧主题",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "AGRI",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "AGRI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_AGRI": {
+    "name": "农业综合指数",
+    "exchange": null,
+    "sector_id": "CONS",
+    "industry_id": "AGRI",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "AGRI"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

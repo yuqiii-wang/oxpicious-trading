@@ -27,31 +27,15 @@
 // ---------------------------------------------------------------------------
 import { useEffect } from "react";
 import { runTradingSignals } from "@/lib/api-client";
+import {
+  isShanghaiWeekday,
+  shanghaiNow,
+} from "@/shared/datetime";
 
 const CHECK_MS = 60_000;
 const FIRE_AT_HHMM = 1330; // Asia/Shanghai — after the morning close
 const LAST_FIRED_KEY = "trading-signals:last-fired-date";
 const SEC_TYPES_KEY = "trading-signals:sec-types";
-
-/** True if current Asia/Shanghai time is on a weekday (biz day). */
-function isShanghaiWeekday(): boolean {
-  const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60_000;
-  const sh = new Date(utc + 8 * 60 * 60_000); // Shanghai wall-clock
-  const day = sh.getDay(); // 0=Sun .. 6=Sat
-  return day !== 0 && day !== 6;
-}
-
-/** Current Asia/Shanghai date (YYYY-MM-DD) + HHmm. */
-function shanghaiNow(): { date: string; hhmm: number } {
-  const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60_000;
-  const sh = new Date(utc + 8 * 60 * 60_000);
-  return {
-    date: sh.toISOString().slice(0, 10),
-    hhmm: sh.getHours() * 100 + sh.getMinutes(),
-  };
-}
 
 /** The sec_types the Trading Signals page currently has selected
  *  (persisted there) — the scheduler runs exactly that selection. */

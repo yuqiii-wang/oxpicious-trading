@@ -48,7 +48,7 @@ export function IndustryEtfContributionChart({
       error={error ? `Failed to load ETF contribution: ${error}` : null}
       emptyText={
         data && etfCount === 0
-          ? `No ETF trading data for ${industryId} on ${data.date || "this date"}. Run python -m analyze.industry_sentiments to populate.`
+          ? `No ETF trading data for ${industryId} on ${data.date || "this date"}. Run python -m analysis.industry_sentiments to populate.`
           : "No data"
       }
       height={360}

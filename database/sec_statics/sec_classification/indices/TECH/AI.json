@@ -1,0 +1,89 @@
+{
+  "930713": {
+    "name": "CS人工智",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "AI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "AI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931071": {
+    "name": "人工智能",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "AI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "AI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931487": {
+    "name": "SHS人工智能50",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "AI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "AI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932456": {
+    "name": "科创创业AI",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "AI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "AI"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_GEM"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950180": {
+    "name": "科创AI",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "AI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "AI"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_AI": {
+    "name": "人工智能综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "AI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "AI"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

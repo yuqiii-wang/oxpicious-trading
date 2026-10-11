@@ -1,6 +1,6 @@
 """Vectorized intraday skewness computation for live.options_intraday_skewness.
 
-Same metric semantics as the daily pipeline (analyze.options, skew_type =
+Same metric semantics as the daily pipeline (analysis.options, skew_type =
 'oi_moneyness') and the browser chart it feeds (computeOiWeightedSkew):
 
     E[M](t, g) = SUM(oi * K / S(t)) / SUM(oi)   per expiry group g
@@ -11,7 +11,7 @@ Contract weights: oi(t) = oi_base + cum_volume(t) floored at 1 lot — a
 zero-OI contract must not bias the mean (the daily pipeline floors for
 the same reason). A contract votes only while its expiry is active
 (expiry_date >= the target date); OTM shares use the active rows with
-raw OI > 0. No IV gate — oi_moneyness is IV-free (analyze.options'
+raw OI > 0. No IV gate — oi_moneyness is IV-free (analysis.options'
 canonical oi_moneyness implementation filters nothing else), so venues
 without calibrated greeks (CFFEX) still get a series.
 
@@ -27,6 +27,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from _common.labels import OPTION_TYPE_CODE
 from live.options_intraday_skewness.config import (
     MEAN_EXPIRY,
     MIN_GROUP_ROWS,
@@ -111,7 +112,7 @@ def compute_skewness_frame(
 
     active = grid["expiry_date"] >= trade_date
     # NO IV filter here: oi_moneyness never consumes IV (the metric is
-    # pure OI × strike geometry), and analyze.options/compute/skewness.py
+    # pure OI × strike geometry), and analysis.options/compute/skewness.py
     # — the metric's canonical implementation — filters nothing but the
     # OI floor. (The browser chart's extra IV-validity gate would zero
     # out whole venues — CFFEX rows carry no calibrated IV at all.)
@@ -129,8 +130,10 @@ def compute_skewness_frame(
     agg["em"] = agg["wm_sum"] / agg["w_sum"]
 
     # ---- OTM shares from ALL active rows (valid or not, raw OI > 0) -----
+    # option_type rides as its stats.label_dim SMALLINT code
+    # (0 CALL / 1 PUT) — compare codes, never strings.
     act = grid[active & (grid["oi_t"] > 0)].copy()
-    is_call = act["option_type"] == "CALL"
+    is_call = act["option_type"] == OPTION_TYPE_CODE["CALL"]
     act["c_oi"] = act["oi_t"].where(is_call, 0.0)
     act["c_oi_otm"] = act["oi_t"].where(is_call & (act["strike"] >= act["close"]), 0.0)
     act["p_oi"] = act["oi_t"].where(~is_call, 0.0)

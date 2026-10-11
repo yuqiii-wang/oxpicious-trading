@@ -1,0 +1,183 @@
+{
+  "000004": {
+    "name": "工业指数",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000034": {
+    "name": "上证工业",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000072": {
+    "name": "工业等权",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000102": {
+    "name": "沪投资品",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000106": {
+    "name": "380工业",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000114": {
+    "name": "持续产业",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000146": {
+    "name": "优势制造",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000856": {
+    "name": "500工业",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399803": {
+    "name": "工业4.0",
+    "exchange": "SZ",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      },
+      {
+        "sector_id": "IND",
+        "industry_id": "ADVMFG"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931495": {
+    "name": "工业互联",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      },
+      {
+        "sector_id": "TECH",
+        "industry_id": "IOT"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_THEMED"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_IND_GENERAL": {
+    "name": "工业综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H11054": {
+    "name": "装备产业",
+    "exchange": "HK",
+    "sector_id": "IND",
+    "industry_id": "IND_GENERAL",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      },
+      {
+        "sector_id": "IND",
+        "industry_id": "ADVMFG"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

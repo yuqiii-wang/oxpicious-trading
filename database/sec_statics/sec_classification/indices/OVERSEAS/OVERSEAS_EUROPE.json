@@ -1,0 +1,16 @@
+{
+  "DUMMY_OVERSEAS_EUROPE": {
+    "name": "欧洲综合指数",
+    "exchange": null,
+    "sector_id": "OVERSEAS",
+    "industry_id": "OVERSEAS_EUROPE",
+    "tags": [
+      {
+        "sector_id": "OVERSEAS",
+        "industry_id": "OVERSEAS_EUROPE"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

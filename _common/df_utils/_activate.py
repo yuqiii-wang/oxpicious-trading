@@ -1,6 +1,6 @@
 """One-liner cudf.pandas activation for entry points.
 
-Every ``__main__.py`` in builds/, analyze/, strategy/ that uses
+Every ``__main__.py`` in builds/, analysis/, strategy/ that uses
 pandas for heavy compute should call :func:`activate` at the very top
 (before any module that imports pandas) to ensure the cudf.pandas
 import hook is installed before pandas' first import.

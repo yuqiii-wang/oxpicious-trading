@@ -1,0 +1,37 @@
+{
+  "399997": {
+    "name": "中证白酒",
+    "exchange": "SZ",
+    "sector_id": "CONS",
+    "industry_id": "BAIJIU",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "BAIJIU"
+      },
+      {
+        "sector_id": "CONS",
+        "industry_id": "FOOD_BEV"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_BAIJIU": {
+    "name": "白酒综合指数",
+    "exchange": null,
+    "sector_id": "CONS",
+    "industry_id": "BAIJIU",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "BAIJIU"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

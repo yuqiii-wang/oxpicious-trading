@@ -1,6 +1,6 @@
 """Bulk rolling correlation kernel (pair grain, stride-20 grid).
 
-Ported from analyze.sec_alloc_perf_attribution.compute._gpu_corr (2026-09-04);
+Ported from analysis.sec_alloc_perf_attribution.compute._gpu_corr (2026-09-04);
 only the config import is re-pointed — kernel logic unchanged.
 
 TWO-LAYER GPU ARCHITECTURE

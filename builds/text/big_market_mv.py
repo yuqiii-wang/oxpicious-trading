@@ -15,7 +15,7 @@ series, computed from ``stats.industry_basic_stats`` (``pool_size =
                * Wilder RSI(3) over the mean_close series is pinned at
                  a rail: >= 100 - ``BIG_MV_RSI3_RAIL`` (97) or <=
                  ``BIG_MV_RSI3_RAIL`` (3) — the formula mirrors
-                 ``analyze.mov_ave_spread.steps.rsi`` window 3 (EWM
+                 ``analysis.mov_ave_spread.steps.rsi`` window 3 (EWM
                  alpha=1/3, adjust=False, min_periods=3,
                  ignore_na=True; RSI=100/0 pure-trend overrides). A 3%
                  day with RSI(3) mid-range (one-off spike inside a flat
@@ -106,7 +106,7 @@ QA_FLAG_SQL = f"""
 def _grouped_ewm(s: pd.Series, keys: pd.Series) -> pd.Series:
     """Wilder EWM mean per industry, realigned to s.index.
 
-    Mirrors ``analyze.mov_ave_spread.steps.rsi._grouped_ewm_pandas``
+    Mirrors ``analysis.mov_ave_spread.steps.rsi._grouped_ewm_pandas``
     (the pandas path only — builds.text does not activate cudf.pandas):
     ``groupby(keys).ewm(...)`` returns a MultiIndex Series whose group-key
     levels are stripped before realigning to the original row order.
@@ -124,7 +124,7 @@ def _wilder_rsi(close: pd.Series, keys: pd.Series) -> pd.Series:
     """Wilder RSI(3) per industry over the close series (0..100).
 
     Same formula and edge handling as
-    ``analyze.mov_ave_spread.steps.rsi.compute_rsi``: gain/loss keep NaN
+    ``analysis.mov_ave_spread.steps.rsi.compute_rsi``: gain/loss keep NaN
     where the delta is NaN (null prices skip the smoothing, they do not
     count as flat days), and RSI=100 / 0 override the 0/0 division on
     pure up/down trends. NaN head rows (min_periods) stay NaN and never

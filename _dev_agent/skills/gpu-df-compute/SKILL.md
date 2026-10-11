@@ -1,6 +1,6 @@
 ---
 name: "gpu-df-compute"
-description: "GPU DataFrame compute playbook for this repo: cuDF-supported ops, CuPy fallback for ops cuDF lacks (rolling corr, FFT), CPU final rollback; how to arrange pipeline steps to avoid GPU/CPU transfer churn; NaN/dtype compatibility; partition-key chunking against OOM; key-major bulk COPY writes. Invoke when writing or refactoring builds.*/analyze.* DataFrame pipelines, adding GPU acceleration, or debugging cudf fallback / OOM / slow rolling ops."
+description: "GPU DataFrame compute playbook for this repo: cuDF-supported ops, CuPy fallback for ops cuDF lacks (rolling corr, FFT), CPU final rollback; how to arrange pipeline steps to avoid GPU/CPU transfer churn; NaN/dtype compatibility; partition-key chunking against OOM; key-major bulk COPY writes. Invoke when writing or refactoring builds.*/analysis.* DataFrame pipelines, adding GPU acceleration, or debugging cudf fallback / OOM / slow rolling ops."
 ---
 
 # GPU DataFrame Compute Playbook
@@ -23,7 +23,7 @@ Route every op through this cascade: **cuDF → CuPy → pandas CPU**.
 - **FFT** — not in cuDF scope at all. Route explicitly to CuPy (see "FFT routing" below); `cupyx.scipy.fft` is the SciPy-subset equivalent (DCT/DST, `get_fft_plan()`).
 - Anything needing object-dtype intermediates (see §3).
 
-### FFT routing (validated: `analyze/fourier_freqs/compute.py`)
+### FFT routing (validated: `analysis/fourier_freqs/compute.py`)
 cuDF has no FFT, so the transform is hand-routed; detrend/stride ops (`sliding_window_view`, mean-subtract) stay in the cudf.pandas-chosen array module — ONLY the rfft itself is routed.
 - `_cupy_available()` — cached probe: `import cupy` + `cp.cuda.runtime.getDeviceCount()`; returns False on any error (reuse the `rolling_corr` pattern).
 - `_rfft(windows, axis=1)` cascade:
@@ -48,7 +48,7 @@ Rule: **one wide batched op beats N small ops**. Every cudf.pandas fallback pays
 - **Compute at the widest level, emit at the key level.** Heavy math (corr tensors) runs per POOL (max GPU parallelism); output frames are constructed per partition key (industry_id) for writes. Two-phase: phase 1 = emit masks + base frames (numpy bookkeeping), phase 2 = one batched tensor per window, assign columns by fancy indexing.
 - **Single H2D, single D2H per batch.** `_cupy_tensor` transfers the (T, N) matrix once, does all window algebra on-device (cumsum chains), returns the (T, N, N) tensor once.
 - **Vectorized bookkeeping replaces Python loops:** pairwise overlap counts via ONE boolean matmul `valid.T @ valid`; emit masks via `valid[:, [ai]] & valid[:, b_idx]`; row extraction via `np.nonzero` + fancy indexing.
-- **Serialize GPU jobs.** Two concurrent CUDA processes (e.g. a build + a validation script) each hold VRAM; cuDF's allocator only returns memory to the OS at process exit. Never run validation temp scripts while a build/analyze is running.
+- **Serialize GPU jobs.** Two concurrent CUDA processes (e.g. a build + a validation script) each hold VRAM; cuDF's allocator only returns memory to the OS at process exit. Never run validation temp scripts while a build/analysis is running.
 
 ## 3. NaN and dtype compatibility
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from _common.sec_statics.classification import (
+from database.sec_statics.classification import (
     DEFAULT_SECTOR_ID,
     DEFAULT_SECTOR_LABEL,
     DEFAULT_INDUSTRY_ID,

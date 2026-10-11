@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 
 from .runner import download_cnindex_archive
+from ._config import SERVICE
 
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("cnindex_archive")
@@ -26,8 +27,16 @@ if __name__ == "__main__":
         help="Rewrite the history CSV entirely from the API (default: "
              "append-only merge).",
     )
+    ap.add_argument(
+        "--sleep-sec", type=float, default=None,
+        help="Sleep seconds between requests "
+             f"(default: external_request_config JSON for {SERVICE})",
+    )
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_cnindex_archive(
         index_codes=[args.code] if args.code else None,
         force=args.force,
+        sleep_sec=args.sleep_sec,
     ))

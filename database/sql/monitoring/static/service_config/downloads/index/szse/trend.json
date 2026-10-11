@@ -1,0 +1,9 @@
+{
+  "service": "downloads.index.szse.trend",
+  "max_parallel": 1,
+  "freq": "daily",
+  "schedule": "every A-share trading date from 19:00 (downloads_daily.sh guard), before builds_daily.sh",
+  "notes": null,
+  "source_ref": "scripts/downloads_daily.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

@@ -45,7 +45,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 from downloads._common import (
-    HostStatusTracker,
+    AntiBotProxy,
     resolve_out_dir,
     setup_logger,
 )
@@ -115,16 +115,16 @@ class OptionsStream:
 def refresh_options_universe(
     asset: OptionsStream,
     session: requests.Session,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
     """(Re)discover underlyings, expiry months and the contract-code map.
 
     Called at startup and whenever the trade date rolls over (new contract
     listings / expiries). Returns True when the months map is usable.
     """
-    underlyings = fetch_underlyings(session, host_tracker=host_tracker)
-    months = fetch_expire_months(session, host_tracker=host_tracker)
-    contract_map = fetch_day_contract_map(session)
+    underlyings = fetch_underlyings(session, proxy=proxy)
+    months = fetch_expire_months(session, proxy=proxy)
+    contract_map = fetch_day_contract_map(session, proxy=proxy)
     if not months:
         logger.warning(
             "options universe refresh: no expiry months returned "
@@ -151,11 +151,11 @@ def refresh_options_universe(
 
 def build_options_asset(
     session: requests.Session,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[OptionsStream]:
     """Construct the options asset; None if the universe discovery fails."""
     asset = OptionsStream()
-    if refresh_options_universe(asset, session, host_tracker):
+    if refresh_options_universe(asset, session, proxy):
         return asset
     return None
 
@@ -558,7 +558,7 @@ def backfill_options_asset(conn, asset: OptionsStream, contract_map: Dict[str, T
 def run_options_eod_capture(
     session: requests.Session,
     conn,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[int, int]:
     """Fetch the current tstyle state once and emit the 15:00 EOD bars.
 
@@ -570,12 +570,12 @@ def run_options_eod_capture(
     the source builds.options.sse quotes off). Idempotent: re-running
     upserts the same PK rows. Returns (n_contracts, n_bars).
     """
-    asset = build_options_asset(session, host_tracker)
+    asset = build_options_asset(session, proxy)
     if asset is None:
         return 0, 0
 
     update_dt, snapshot = fetch_options_snapshot(
-        session, asset.months, host_tracker=host_tracker,
+        session, asset.months, proxy=proxy,
         inter_request_sec=TSTYLE_SWEEP_SLEEP_SEC,
     )
     if update_dt is None or not snapshot:

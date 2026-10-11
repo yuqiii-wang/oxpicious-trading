@@ -1,7 +1,7 @@
-"""pre_check_and_load -- missing-data detection for build & analyze scripts.
+"""pre_check_and_load -- missing-data detection for build & analysis scripts.
 
 This package is the single entry point for determining which (date, code)
-pairs still need to be downloaded (build scripts) or computed (analyze
+pairs still need to be downloaded (build scripts) or computed (analysis
 scripts). It is always run at the start of every build_* and analyze_*
 script to avoid redundant work.
 
@@ -13,7 +13,7 @@ Two submodules:
 
   - missing_dates: find_missing_dates / find_missing_keys (build scripts),
     find_missing_analysis_dates / filter_rows_to_missing_dates_async
-    (analyze scripts), and fetch_codes_with_recent_data_async (active-universe
+    (analysis scripts), and fetch_codes_with_recent_data_async (active-universe
     filter).
 
 Migrated from _common/db_commons.py and _common/build_commons.py.

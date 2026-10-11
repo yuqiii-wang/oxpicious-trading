@@ -1,0 +1,46 @@
+{
+  "399976": {
+    "name": "CS新能车",
+    "exchange": "SZ",
+    "sector_id": "NEV",
+    "industry_id": "EV",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "EV"
+      },
+      {
+        "sector_id": "NEV",
+        "industry_id": "NEV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_EV": {
+    "name": "新能源车综合指数",
+    "exchange": null,
+    "sector_id": "NEV",
+    "industry_id": "EV",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "EV"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H11052": {
+    "name": "智能电车",
+    "exchange": "HK",
+    "sector_id": "NEV",
+    "industry_id": "EV",
+    "tags": [
+      {
+        "sector_id": "NEV",
+        "industry_id": "EV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

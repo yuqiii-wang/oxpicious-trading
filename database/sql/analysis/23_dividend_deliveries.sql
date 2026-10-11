@@ -54,7 +54,7 @@
 --  processes the stage (the pe_pct_streaks precedent).
 --
 --  POPULATION
---    analyze.pe_and_dividends --metrics deliveries (Python module; etf +
+--    analysis.pe_and_dividends --metrics deliveries (Python module; etf +
 --    stock stages — the index stage skips with a log line, an index has no
 --    per-share deliveries). Per project rule, ALL INSERTs are in Python —
 --    no raw INSERT...SELECT SQL in this file.
@@ -66,7 +66,7 @@
 --  Table: analysis.dividend_deliveries  (rolling 5y / 1y-stride audit)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.dividend_deliveries (
-    sec_type          TEXT         NOT NULL,  -- 'etf' / 'stock' (index reserved)
+    sec_type          SMALLINT         NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code              TEXT         NOT NULL,
     window_end_date   DATE         NOT NULL,  -- anchor: the year's last data date
     window_start_date DATE         NOT NULL,  -- window_end_date - 5y + 1d
@@ -95,8 +95,8 @@ SELECT public.create_hash_partitions('analysis', 'dividend_deliveries', 16);
 CREATE INDEX IF NOT EXISTS idx_dividend_deliveries_sec_type_window
     ON analysis.dividend_deliveries (sec_type, window_end_date);
 
-COMMENT ON TABLE  analysis.dividend_deliveries IS 'Rolling 5-year (1-year stride) dividend DELIVERY audit per (code, sec_type): one row per annual window anchor (each year''s last data date; current year anchors at the latest close — the open window), aggregating the delivery events'' yield (D/close at the ex-date), eps (basic-stats eps at the ex-date) and stability (the last-year ±20d repeat rule: an event is stable when the same code also delivered within 20 days of the same date one year earlier). Rows only for payer codes and only from the first delivery onward; zero-delivery windows stored with 0 counts and NULL aggregates. Rebuilt wholesale per sec_type on every run that processes the stage (tiny table; past windows immutable, current-year anchor mutable). Built by analyze.pe_and_dividends --metrics deliveries (etf + stock; index skips); all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.dividend_deliveries.sec_type          IS 'Subject security type: etf / stock (index reserved — an index has no per-share deliveries).';
+COMMENT ON TABLE  analysis.dividend_deliveries IS 'Rolling 5-year (1-year stride) dividend DELIVERY audit per (code, sec_type): one row per annual window anchor (each year''s last data date; current year anchors at the latest close — the open window), aggregating the delivery events'' yield (D/close at the ex-date), eps (basic-stats eps at the ex-date) and stability (the last-year ±20d repeat rule: an event is stable when the same code also delivered within 20 days of the same date one year earlier). Rows only for payer codes and only from the first delivery onward; zero-delivery windows stored with 0 counts and NULL aggregates. Rebuilt wholesale per sec_type on every run that processes the stage (tiny table; past windows immutable, current-year anchor mutable). Built by analysis.pe_and_dividends --metrics deliveries (etf + stock; index skips); all INSERTs in Python per project rule.';
+COMMENT ON COLUMN analysis.dividend_deliveries.sec_type          IS 'Subject security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf, 2 = stock (index reserved — an index has no per-share deliveries).';
 COMMENT ON COLUMN analysis.dividend_deliveries.code              IS 'Security code (ETF bare e.g. 510880; stock suffixed e.g. 600000.SS — same convention as analysis.pe / analysis.dividends).';
 COMMENT ON COLUMN analysis.dividend_deliveries.window_end_date   IS 'Window anchor: the calendar year''s LAST data date of the code (current year = latest close date; the open, mutable window). Grid stride is exactly 1 year.';
 COMMENT ON COLUMN analysis.dividend_deliveries.window_start_date IS 'window_end_date - 5 calendar years + 1 day (Feb-29 anchors clamp to Feb-28 five years back).';
@@ -114,7 +114,7 @@ COMMENT ON COLUMN analysis.dividend_deliveries.stability         IS 'stable_even
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('dividend_deliveries', 'dividend_deliveries', NULL, NOW(),
-     'Rolling 5-year (1-year stride) dividend delivery audit per (code, sec_type; etf + stock): per-event yield (D/close at the ex-date), eps (close/pe) and the stability flag (delivered within 20 days of the same date one year earlier), aggregated over each annual window anchor (the year''s last data date). Zero-delivery windows stored with 0 counts / NULL aggregates; payer codes only, from the first delivery onward. Rebuilt wholesale per sec_type on every run (tiny table). Built by analyze.pe_and_dividends --metrics deliveries; all INSERTs in Python per project rule.')
+     'Rolling 5-year (1-year stride) dividend delivery audit per (code, sec_type; etf + stock): per-event yield (D/close at the ex-date), eps (close/pe) and the stability flag (delivered within 20 days of the same date one year earlier), aggregated over each annual window anchor (the year''s last data date). Zero-delivery windows stored with 0 counts / NULL aggregates; payer codes only, from the first delivery onward. Rebuilt wholesale per sec_type on every run (tiny table). Built by analysis.pe_and_dividends --metrics deliveries; all INSERTs in Python per project rule.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

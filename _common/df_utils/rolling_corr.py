@@ -105,7 +105,7 @@ def release_cupy_pool() -> None:
     (rolling-corr tensors, FFT) separated by long CPU/DB-bound phases,
     so without this release each process parks its peak burst working
     set (GBs of (T, N, N) float64 tensors) on the GPU while doing zero
-    GPU work; concurrent analyze processes then exhaust VRAM and
+    GPU work; concurrent analysis processes then exhaust VRAM and
     degrade to the numpy CPU kernel (observed: 3 concurrent jobs filled
     32 GB with near-idle GPU-Util between bursts).
 

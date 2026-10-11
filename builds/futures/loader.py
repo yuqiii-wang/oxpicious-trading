@@ -23,6 +23,7 @@ import pandas as pd
 # Epoch anchor for vectorized days_to_expiry math (no date objects in frames)
 _EPOCH = _date(1970, 1, 1)
 
+from _common.labels import CONTRACT_TYPE_CODE
 from builds.futures.config import (
     COL_MAP,
     PRODUCT_NAMES,
@@ -224,14 +225,19 @@ def build_futures_df(
         except ValueError:
             n_invalid_contracts += 1
             continue
-        contract_type = PRODUCT_TYPES.get(product_code, "unknown")
+        contract_type = PRODUCT_TYPES[product_code]
         expiry_date = compute_expiry_date(contract_month, contract_type)
         meta_rows.append({
             "code": c,
             "product_code": product_code,
             "contract_month": contract_month,
             "contract_year_month": normalize_contract_year_month(contract_month),
-            "contract_type": contract_type,
+            # stats.futures_identity.contract_type stores its stats.label_dim
+            # SMALLINT code (0 index / 1 bond) — map the product-class string
+            # once here at the write boundary (parse_contract_code already
+            # restricted products to PRODUCT_TYPES' keys, so both lookups
+            # raise loudly on anything else).
+            "contract_type": CONTRACT_TYPE_CODE[contract_type],
             "name": PRODUCT_NAMES.get(product_code, product_code),
             "underlying_code": PRODUCT_UNDERLYING.get(product_code, ("", ""))[0],
             "underlying_name": PRODUCT_UNDERLYING.get(product_code, ("", ""))[1],

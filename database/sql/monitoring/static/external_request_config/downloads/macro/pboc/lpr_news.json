@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.macro.pboc.lpr_news",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 5,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": false,
+    "host_block_cooldown_sec": null,
+    "notes": "PBoC LPR news (www.pbc.gov.cn); host tracking OFF — 404 pagination must not block the host.",
+    "source_ref": "downloads/macro/pboc/lpr_news/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

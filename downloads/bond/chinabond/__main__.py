@@ -4,20 +4,21 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import requests
 
 from downloads._common import (
     MIN_VALID_BYTES,
     EMPTY_HTML_MAX_BYTES,
-    DEFAULT_TIMEOUT,
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
     AntiBotProxy,
-    AntiBotConfig,
+    antibot_config_for,
+    sleep_sec_for,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
@@ -34,6 +35,8 @@ from downloads._common import (
     convert_xlsx_to_csv,
 )
 
+
+SERVICE = "downloads.bond.chinabond"
 
 CHINABOND_BASE = "https://yield.chinabond.com.cn"
 YIELD_MAIN = CHINABOND_BASE + "/cbweb-mn/yield_main?locale=zh_CN"
@@ -52,8 +55,9 @@ YC_CFG_BUILTIN: Dict[str, Dict[str, str]] = {
     },
 }
 
-CHINABOND_TIMEOUT: Tuple[int, int] = (20, 180)
-SLEEP_SEC = 5.0
+# Anti-bot sleep between requests — resolved from the service's
+# external_request_config JSON row (sleep_sec).
+SLEEP_SEC = sleep_sec_for(SERVICE)
 
 CHINABOND_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)
 CHINABOND_HEADERS["Referer"] = YIELD_MAIN
@@ -78,12 +82,11 @@ def build_session() -> requests.Session:
 
 def bootstrap_session(session: requests.Session, proxy: Optional[AntiBotProxy] = None) -> bool:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     
     resp = proxy.get(
         session,
         YIELD_MAIN,
-        timeout=CHINABOND_TIMEOUT,
         logger=logger,
         log_tag="[bootstrap]",
     )
@@ -95,12 +98,11 @@ def bootstrap_session(session: requests.Session, proxy: Optional[AntiBotProxy] =
 
 def fetch_yc_tree(session: requests.Session, proxy: Optional[AntiBotProxy] = None) -> list:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     
     resp = proxy.post(
         session,
         API_QUERY_TREE,
-        timeout=CHINABOND_TIMEOUT,
         logger=logger,
         log_tag="[fetch-yc-tree]",
     )
@@ -142,7 +144,7 @@ def download_day_bzqx(
     proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     
     params = {
         "ycDefIds": yc_defid,
@@ -161,7 +163,6 @@ def download_day_bzqx(
         session,
         API_DOWN_BZQX_DETAIL,
         params=params,
-        timeout=CHINABOND_TIMEOUT,
         logger=logger,
         log_tag=tag,
     )
@@ -193,7 +194,7 @@ def download_year_bzqx(
     proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     
     params = (
         f"year={year}&&wrjxCBFlag=0&&zblx=txy&&"
@@ -205,7 +206,6 @@ def download_year_bzqx(
     resp = proxy.get(
         session,
         url,
-        timeout=CHINABOND_TIMEOUT,
         logger=logger,
         log_tag=tag,
     )
@@ -247,7 +247,7 @@ def download_chinabond(
     end_date: Optional[str] = None,
     lookback_years: int = 3,
     curve_keys: Optional[List[str]] = None,
-    sleep_sec: float = SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     db_table: str = "stats.debt_identity",
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "chinabond", out_root)
@@ -277,12 +277,15 @@ def download_chinabond(
     )
 
     session = build_session()
-    
-    # Create unified AntiBotProxy
-    proxy_config = AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-    )
-    proxy = AntiBotProxy(proxy_config)
+
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+    # argument overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
 
     if not bootstrap_session(session, proxy):
         return {"error": "bootstrap failed", "out_dir": str(out_dir)}
@@ -420,4 +423,6 @@ def download_chinabond(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_chinabond())

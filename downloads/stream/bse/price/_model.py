@@ -14,9 +14,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from downloads._common import is_trading_day, setup_logger
+from downloads._common import is_trading_day, poll_interval_sec_for, setup_logger
 
 logger = setup_logger("stream_bse")
+
+SERVICE = "downloads.stream.bse.price"
 
 TRADING_SESSIONS: List[Tuple[time, time]] = [
     (time(9, 30), time(11, 30)),
@@ -25,7 +27,10 @@ TRADING_SESSIONS: List[Tuple[time, time]] = [
 
 CLOSE_TIME = time(15, 0)
 
-DEFAULT_POLL_INTERVAL_SEC = 60
+# Poll-loop cadence — resolved once at import from the service's
+# external_request_config JSON row (request_type "poll"); the old 60s
+# literal stays as the fallback.
+DEFAULT_POLL_INTERVAL_SEC = poll_interval_sec_for(SERVICE, "poll") or 60
 DEFAULT_BAR_WINDOW = 5
 
 # Local CSV archive: one file per trading day, appended on every sweep, under
@@ -225,7 +230,8 @@ def aggregate_index_bars(
     code: str = "899050",
     name: str = "北证50",
 ) -> Tuple[List[dict], List[dict], Optional[time]]:
-    """Aggregate getRealBZ50 per-minute records into 5-minute OHLC bars.
+    """Aggregate getRealBZ50/getRealZJTX per-minute records into 5-min OHLC
+    bars for one BSE index.
 
     One call returns the whole session's minutes, so each poll re-aggregates
     EVERY window and the idempotent upsert refreshes them all — no buffering

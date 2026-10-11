@@ -43,10 +43,8 @@ PAGE_NAVIGATION_TIMEOUT = 30000
 # Timeout for waiting for data to load (ms)
 DATA_LOAD_TIMEOUT = 15000
 
-# Sleep interval between day downloads (seconds)
-# CFFEX is aggressive with anti-bot, so we use a conservative interval
-DOWNLOAD_SLEEP_SEC = 20.0
-SLEEP_JIT_RANGE = 5.0  # ±jitter
+# (Per-day sleep pacing lives in the external_request_config JSON row —
+# request_type "playwright", resolved via _common/request_config.)
 
 # ---------------------------------------------------------------------------
 # Product selection

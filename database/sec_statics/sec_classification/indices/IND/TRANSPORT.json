@@ -1,0 +1,94 @@
+{
+  "000027": {
+    "name": "180运输",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "TRANSPORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "TRANSPORT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000945": {
+    "name": "内地运输",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "TRANSPORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "TRANSPORT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930716": {
+    "name": "CS物流",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "TRANSPORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "TRANSPORT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932420": {
+    "name": "智选船舶产业",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "TRANSPORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "TRANSPORT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932536": {
+    "name": "航运发展",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "TRANSPORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "TRANSPORT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_TRANSPORT": {
+    "name": "运输/物流综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "TRANSPORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "TRANSPORT"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30171": {
+    "name": "运输指数",
+    "exchange": "HK",
+    "sector_id": "IND",
+    "industry_id": "TRANSPORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "TRANSPORT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "service": "downloads.macro.ai_daily",
+  "max_parallel": 1,
+  "freq": "daily",
+  "schedule": "every A-share trading date from 19:00 (downloads_daily.sh guard), before builds_daily.sh",
+  "notes": "ARTIFACT-ONLY (temps/ai_daily/*.json) — never touches the DB; builds.text loads the artifacts into the text.* tables.",
+  "source_ref": "scripts/downloads_daily.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

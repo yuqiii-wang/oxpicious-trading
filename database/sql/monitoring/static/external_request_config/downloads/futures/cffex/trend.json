@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.futures.cffex.trend",
+    "request_type": "playwright",
+    "resource_type": 0,
+    "sleep_sec": 20,
+    "sleep_jitter": 0.25,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 30,
+    "timeout_read_sec": 15,
+    "rotate_browser_profile": false,
+    "add_random_param": false,
+    "enable_host_tracking": false,
+    "host_block_cooldown_sec": null,
+    "notes": "Playwright browser download (NOT AntiBotProxy): jitter is a ±5s range; per-date extra 1+rand(0,2)s; timeouts are page-nav / data-load.",
+    "source_ref": "downloads/futures/cffex/trend/config.py; downloads/futures/cffex/trend/downloader.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

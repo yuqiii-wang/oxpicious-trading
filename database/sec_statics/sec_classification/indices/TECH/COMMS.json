@@ -1,0 +1,170 @@
+{
+  "000040": {
+    "name": "上证通信",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000078": {
+    "name": "通信等权",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000112": {
+    "name": "380通信",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000936": {
+    "name": "800通信",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931079": {
+    "name": "5G通信",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931160": {
+    "name": "通信设备",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931235": {
+    "name": "中证电信",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931271": {
+    "name": "通信设备主题",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931406": {
+    "name": "5G 50",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_COMMS": {
+    "name": "通信综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30318": {
+    "name": "科技传媒通信150",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "COMMS",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "COMMS"
+      },
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "CONS",
+        "industry_id": "MEDIA"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

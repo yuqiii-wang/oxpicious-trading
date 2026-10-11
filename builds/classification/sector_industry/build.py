@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from _common.build_commons import PROJECT_ROOT
-from _common.sec_statics.classification import DEFAULT_SECTOR_ID
+from database.sec_statics.classification import DEFAULT_SECTOR_ID
 
 from builds.classification.sector_industry.catalog import build_catalog
 from builds.classification.sector_industry.csv_loader import find_latest_csv
@@ -58,8 +58,9 @@ async def build_classification(
     ``reclassify_indices`` — when True, ignores the JSON-cached sector_id /
     industry_id / tags for all indices found in CSV/DB and reclassifies them
     from keyword rules.  Manually-added indices (in JSON but not in CSV/DB)
-    are always preserved as-is.  Use this after changing INDEX_RULES to
-    propagate the new rules to existing indices.
+    are always preserved as-is.  Use this after changing the JSON rules
+    (database/sec_statics/classification_rules/*.json) to propagate the new
+    rules to existing indices.
 
     ``owners`` is the list from sec_owners.json; when provided, each ETF is
     matched to an owner_id (via CSV `管理人` full-name or ETF-name alias match)

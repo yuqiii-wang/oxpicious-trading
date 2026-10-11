@@ -1,7 +1,7 @@
 """End-of-run memory release + report for entry points.
 
 Mirror of ``_common.pre_check``: every ``__main__.py`` in builds/,
-analyze/ and strategy/ calls :func:`post_check` as its FINAL step (in a
+analysis/ and strategy/ calls :func:`post_check` as its FINAL step (in a
 ``finally`` so it also runs on exceptions / Ctrl-C / SystemExit) so a
 finished pipeline reports and hands back the memory it borrowed:
 

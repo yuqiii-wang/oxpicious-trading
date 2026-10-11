@@ -418,7 +418,7 @@ const INDEX_TRENDS_SQL = `
          t.rz_buy_vs_trading_amt_ratio
   FROM analysis.margin_changes t
   JOIN industry_codes ic ON ic.code = t.code
-  WHERE t.sec_type = 'index'
+  WHERE t.sec_type = 1 -- stats.label_dim 'sec_type': index
   ORDER BY t.start_date
 `;
 
@@ -435,7 +435,7 @@ const ETF_TRENDS_SQL = `
          t.rz_buy_vs_trading_amt_ratio
   FROM analysis.margin_changes t
   JOIN industry_codes ic ON ic.code = t.code
-  WHERE t.sec_type = 'etf'
+  WHERE t.sec_type = 0 -- stats.label_dim 'sec_type': etf
   ORDER BY t.start_date
 `;
 

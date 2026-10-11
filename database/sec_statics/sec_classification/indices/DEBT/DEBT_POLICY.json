@@ -1,0 +1,37 @@
+{
+  "932200": {
+    "name": "国债及政金债0-3",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_POLICY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_POLICY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_DEBT_POLICY": {
+    "name": "政金债综合指数",
+    "exchange": null,
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_POLICY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_POLICY"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

@@ -2,7 +2,7 @@
  * Shared nav/codes API wiring for the valuation-universe pages (PE +
  * Dividends). Both pages render over SecCodesPageShell with the SAME
  * (sec_type, code) universe — analysis.pe ∪ analysis.dividends, built
- * together by analyze.pe_and_dividends — so the themes sources, the codes
+ * together by analysis.pe_and_dividends — so the themes sources, the codes
  * fetcher, and the refresh cache invalidation are defined ONCE here
  * (2026-09-29; previously each page duplicated an identical THEMES_SOURCES
  * block pointing at the pe-named endpoints).

@@ -2,10 +2,10 @@
 
 Run via ``python -m builds.industry``.
 
-Migrated from analyze/industry_sentiments (2026-08-24): the per-industry
+Migrated from analysis/industry_sentiments (2026-08-24): the per-industry
 BASELINE aggregation is a stats-level table (mirroring builds.index /
 builds.stock); the downstream analysis steps remain in
-analyze.industry_sentiments and read from stats.industry_basic_stats.
+analysis.industry_sentiments and read from stats.industry_basic_stats.
 
 Pipeline
   1. Load (date, code, industry_id, open, high, low, close, pe, stock_num)
@@ -352,9 +352,18 @@ class IndustryBuild(DataBuild):
                 rows = await conn.fetch(LOAD_INDEX_DATA_SQL_FULL)
                 # Trading-day filter (same rationale as the target-date filter
                 # above — cross-border member rows on CN holidays must not
-                # produce partial-coverage industry aggregates).
+                # produce partial-coverage industry aggregates). The SQL
+                # returns date as extract(epoch)::float8, so decode to a
+                # python date host-side before is_trading_day (a raw float
+                # crashed it — epoch → UTC date is exact for PG dates).
                 n_before = len(rows)
-                rows = [r for r in rows if is_trading_day(r["date"])]
+                rows = [
+                    r for r in rows
+                    if is_trading_day(
+                        datetime.date(1970, 1, 1)
+                        + datetime.timedelta(seconds=r["date"])
+                    )
+                ]
                 if n_before != len(rows):
                     logger.info(f"    -> dropped {n_before - len(rows):,} non-trading-"
                           f"day source rows (CN holidays)")
@@ -460,11 +469,16 @@ class IndustryBuild(DataBuild):
 
             # Whole-column extraction; NULLs arrive as None → NaN via float dtype
             amt_df = pd.DataFrame(rec_cols(amt_rows))
-            amt_df["total_trading_amount"] = amt_df["total_trading_amount"].astype(float)
-            # Match the main frame's datetime64[ns] date dtype for a
-            # GPU-native merge (epoch over float8 -> explicit [ns] unit).
-            amt_df["date"] = epoch_col_to_dt64(
-                amt_df["date"], unit="ns", index=amt_df.index)
+            if not amt_df.empty:
+                amt_df["total_trading_amount"] = amt_df["total_trading_amount"].astype(float)
+                # Match the main frame's datetime64[ns] date dtype for a
+                # GPU-native merge (epoch over float8 -> explicit [ns] unit).
+                amt_df["date"] = epoch_col_to_dt64(
+                    amt_df["date"], unit="ns", index=amt_df.index)
+            # An empty amt_rows result builds a frame with NO columns — the
+            # column shaping above would KeyError (2026-10-08 crash when the
+            # index build upstream had failed), so it runs only on rows. The
+            # empty branch below then attaches a NULL total_trading_amount.
 
             # ---- Step 6: merge + upsert ---------------------------------------
             logger.info(f"\n[6/6] Merging index-level + stock-level aggregates, "

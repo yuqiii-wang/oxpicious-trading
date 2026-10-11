@@ -65,13 +65,18 @@ __all__ = [
     # Post-bulk-write planner-statistics refresh
     "analyze_tables_async",
     # Replica replay-lag throttle (pause bulk writers while the standby
-    # falls behind — shared by the chunked writers in analyze/_common)
+    # falls behind — shared by the chunked writers in analysis/_common)
     "DEFAULT_MAX_REPLICA_LAG_MB",
     "_wait_for_replica_lag_async",
     # Fixed between-chunk cool-down (disk duty-cycle relief + replica
-    # replay headroom) — the always-on half of the bulk-write throttle
+    # replay headroom) — the always-on half of the bulk-write throttle.
+    # Large writes (>= LARGE_BULK_CHUNKS chunks) auto-escalate the
+    # default pause to LARGE_BULK_PAUSE_S (3s) via resolve_chunk_pause_s.
     "DEFAULT_CHUNK_PAUSE_S",
     "_throttle_between_chunks_async",
+    "LARGE_BULK_CHUNKS",
+    "LARGE_BULK_PAUSE_S",
+    "resolve_chunk_pause_s",
 ]
 
 # -- Internal helpers (exported for sibling modules) --
@@ -138,6 +143,9 @@ from ._async_ops import (
     _wait_for_replica_lag_async,
     DEFAULT_CHUNK_PAUSE_S,
     _throttle_between_chunks_async,
+    LARGE_BULK_CHUNKS,
+    LARGE_BULK_PAUSE_S,
+    resolve_chunk_pause_s,
 )
 
 # -- Copy-or-upsert split --

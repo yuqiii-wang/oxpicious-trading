@@ -1,0 +1,15 @@
+{
+  "000009": {
+    "name": "上证380",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE380",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE380"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

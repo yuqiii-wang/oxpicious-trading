@@ -1,7 +1,7 @@
 /**
  * Band EVENT markers — read straight from the bands table's ANCHOR-BAND
  * event DATE arrays (analysis.mov_ave_spreads_roof_and_floor_bands,
- * populated by the analyze.mov_ave_spread pipeline): the ANCHOR row's
+ * populated by the analysis.mov_ave_spread pipeline): the ANCHOR row's
  * breach/bounce arrays per window are the stored events of the EXACT
  * band the shade rects draw for that anchor — crossings of the band's
  * NEAR edge (roof bottom / floor top), classified ±1σ py-side (bounce

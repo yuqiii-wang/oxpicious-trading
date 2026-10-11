@@ -1,0 +1,139 @@
+{
+  "000012": {
+    "name": "国债指数",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_TREASURY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931018": {
+    "name": "中证5-10年国债活跃券",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_TREASURY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931552": {
+    "name": "1-3年国债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_TREASURY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950175": {
+    "name": "沪30年国债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_TREASURY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950243": {
+    "name": "沪做市国债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_TREASURY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_DEBT_TREASURY": {
+    "name": "国债综合指数",
+    "exchange": null,
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_TREASURY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H00140": {
+    "name": "5年国债(全)",
+    "exchange": "HK",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_TREASURY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "H11077": {
+    "name": "10年国债",
+    "exchange": "HK",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_TREASURY",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_TREASURY"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

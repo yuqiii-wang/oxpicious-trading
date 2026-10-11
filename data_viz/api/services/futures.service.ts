@@ -13,6 +13,7 @@
  * window.
  */
 import { queryRows, toNum } from "../lib/db.js";
+import { labelDecodeSql } from "./label-codes.js";
 import type { QueryResultRow } from "pg";
 import type {
   FuturesProduct,
@@ -41,7 +42,7 @@ export async function listProducts(): Promise<FuturesProduct[]> {
     SELECT DISTINCT
       product_code,
       name,
-      contract_type,
+      ${labelDecodeSql("contract_type", "contract_type")} AS contract_type,
       underlying_code,
       underlying_name
     FROM stats.futures_identity
@@ -64,7 +65,9 @@ export async function getCombined(
 ): Promise<FuturesCombinedResponse> {
   // Validate product + fetch header info
   const productRow = await queryRows(`
-    SELECT product_code, name, contract_type, underlying_code, underlying_name
+    SELECT product_code, name,
+           ${labelDecodeSql("contract_type", "contract_type")} AS contract_type,
+           underlying_code, underlying_name
     FROM stats.futures_identity
     WHERE product_code = $1
     LIMIT 1

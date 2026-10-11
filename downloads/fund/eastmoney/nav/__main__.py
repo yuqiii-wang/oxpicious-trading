@@ -44,17 +44,21 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from dataclasses import replace
+
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
     RunStats,
+    AntiBotProxy,
+    antibot_config_for,
     build_default_session,
     is_fresh_within,
     resolve_out_dir,
     setup_logger,
 )
-from downloads._common import AntiBotConfig, AntiBotProxy
 
 logger = setup_logger("fund_nav_eastmoney")
+
+SERVICE = "downloads.fund.eastmoney.nav"
 
 CSV_ENCODING = "utf-8-sig"
 FRESH_HOURS = 20 * 24  # monthly cadence freshness guard
@@ -132,7 +136,7 @@ def download_fund_nav(
     *,
     out_root: str | None = None,
     fund_codes: List[str] | None = None,
-    sleep_sec: float = 1.0,
+    sleep_sec: float | None = None,
     max_funds: Optional[int] = None,
     force: bool = False,
 ) -> Dict[str, object]:
@@ -146,7 +150,15 @@ def download_fund_nav(
         return {"out_dir": str(out_dir), "funds": 0}
 
     session = build_default_session()
-    proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=sleep_sec, sleep_jitter=0.3))
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+    # overrides the row's base sleep only.
+    if sleep_sec is None:
+        proxy = AntiBotProxy(service=SERVICE)
+    else:
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
     stats = RunStats()
 
     registry: List[Dict[str, Any]] = []
@@ -207,13 +219,16 @@ if __name__ == "__main__":
                          "the latest etf_feeder_map CSV)")
     ap.add_argument("--out-root", type=str, default=None,
                     help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=1.0,
-                    help="Sleep seconds between requests (default: 1.0)")
+    ap.add_argument("--sleep-sec", type=float, default=None,
+                    help="Sleep seconds between requests "
+                         f"(default: external_request_config JSON for {SERVICE})")
     ap.add_argument("--max-funds", type=int, default=None,
                     help="Limit to first N funds (dev/testing)")
     ap.add_argument("--force", action="store_true",
                     help="Re-download even when the CSV is fresh.")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     fund_codes_arg = None
     if args.fund_codes:

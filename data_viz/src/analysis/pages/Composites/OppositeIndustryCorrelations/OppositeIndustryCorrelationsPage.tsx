@@ -32,7 +32,7 @@
  * selected window's opposite score.
  *
  * Refresh button (and the auto-trigger when a fresh selection has no
- * materialized rows) runs `python -m analyze.analysis_composites
+ * materialized rows) runs `python -m analysis.analysis_composites
  * --industry ... --benchmark ...` in filtered mode (recompute + upsert).
  *
  * Industry selection uses the SAME shared multi-label nav kit as Industry
@@ -472,7 +472,7 @@ export default function OppositeIndustryCorrelationsPage() {
               <Typography variant="body2" color="text.secondary">
                 No offset-correlation data for this selection yet. Click the{" "}
                 <RefreshIcon sx={{ fontSize: 13, verticalAlign: "-2px" }} /> button to
-                compute it, or run <code>python -m analyze.analysis_composites</code>.
+                compute it, or run <code>python -m analysis.analysis_composites</code>.
               </Typography>
             </Box>
           )}

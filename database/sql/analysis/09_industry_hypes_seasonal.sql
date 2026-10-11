@@ -38,7 +38,7 @@
 --    derive from analysis.industry_attributions).
 --
 --  POPULATION
---    analyze.industry_sentiments.hypes_and_drains (internal step, after the
+--    analysis.industry_sentiments.hypes_and_drains (internal step, after the
 --    per-date table is populated). Truncate-then-recompute.
 -- ============================================================================
 DROP TABLE IF EXISTS analysis.industry_hypes_seasonal;
@@ -82,7 +82,7 @@ SELECT public.create_hash_partitions('analysis', 'industry_hypes_seasonal', 8);
 CREATE INDEX IF NOT EXISTS idx_hypes_seasonal_industry
     ON analysis.industry_hypes_seasonal (industry_id, benchmark_code, period_days);
 
-COMMENT ON TABLE  analysis.industry_hypes_seasonal IS 'Seasonal (monthly) top-5 HYPE + bottom-5 DRAIN industry rankings. One row per (benchmark_code, season_qkey, period_days, rank_side, rank). peak_metric_value = MAX (HYPE) or MIN (DRAIN) of the per-date metric_value within the month. Built by analyze.industry_sentiments.hypes_and_drains after the per-date table. The Market Trend chart uses this to determine which industry curves to show (daily plot, seasonal ranking selection with fading/disappearing logic).';
+COMMENT ON TABLE  analysis.industry_hypes_seasonal IS 'Seasonal (monthly) top-5 HYPE + bottom-5 DRAIN industry rankings. One row per (benchmark_code, season_qkey, period_days, rank_side, rank). peak_metric_value = MAX (HYPE) or MIN (DRAIN) of the per-date metric_value within the month. Built by analysis.industry_sentiments.hypes_and_drains after the per-date table. The Market Trend chart uses this to determine which industry curves to show (daily plot, seasonal ranking selection with fading/disappearing logic).';
 
 COMMENT ON COLUMN analysis.industry_hypes_seasonal.season_qkey IS 'Calendar month key, format YYYY-MM (e.g. 2026-08 for August 2026).';
 COMMENT ON COLUMN analysis.industry_hypes_seasonal.season_month IS 'Calendar month number 1..12.';

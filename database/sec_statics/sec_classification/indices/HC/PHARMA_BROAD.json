@@ -1,0 +1,291 @@
+{
+  "000037": {
+    "name": "上证医药",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000075": {
+    "name": "医药等权",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000109": {
+    "name": "380医药",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000121": {
+    "name": "医药主题",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000814": {
+    "name": "细分医药",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000857": {
+    "name": "500医药",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000863": {
+    "name": "CS精准医",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000913": {
+    "name": "300医药",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000933": {
+    "name": "800医卫",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000978": {
+    "name": "医药100",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000991": {
+    "name": "全指医药",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399989": {
+    "name": "中证医疗",
+    "exchange": "SZ",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930965": {
+    "name": "港股通医药C",
+    "exchange": "HK",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931140": {
+    "name": "医药50",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931484": {
+    "name": "CS医药创新",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932069": {
+    "name": "港股通医疗主题",
+    "exchange": "HK",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932217": {
+    "name": "制药指数",
+    "exchange": "SS",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_PHARMA_BROAD": {
+    "name": "医药综合指数",
+    "exchange": null,
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30178": {
+    "name": "医疗保健",
+    "exchange": "HK",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "H30463": {
+    "name": "沪港深500医药",
+    "exchange": "HK",
+    "sector_id": "HC",
+    "industry_id": "PHARMA_BROAD",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SZSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

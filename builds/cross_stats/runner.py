@@ -145,6 +145,33 @@ async def _fetch_map_dates(conn) -> Set[datetime.date]:
     return {r["date"] for r in rows}
 
 
+async def _fetch_dates_with_broad_close(
+    conn, dates: Set[datetime.date],
+) -> Set[datetime.date]:
+    """Which of ``dates`` have BROAD-sector benchmark closes in
+    stats.index_basic_stats.
+
+    The pair grain cannot emit rows for a date without a broad close:
+    the benchmark pool always contains the BROAD-sector indices
+    (fetch.fetch_index_closes) and every subject's related set adds them
+    (compute._orchestrator._related_benchmarks). A date whose broad
+    closes are absent is a holiday placeholder (index_identity carries
+    those) or an EOD download that has not landed yet. index_basic_stats
+    is the small per-index table (~0.5M rows) — the probe is cheap.
+    """
+    rows = await conn.fetch(f"""
+        SELECT DISTINCT b.date
+        FROM stats.index_basic_stats b
+        JOIN stats.sec_classification sc
+            ON sc.code = b.code AND sc.type = 'index'
+        WHERE sc.sector_id = 'BROAD'
+          AND sc.is_active = TRUE
+          AND b.close IS NOT NULL
+          AND b.date = ANY($1::date[])
+    """, sorted(dates))
+    return {r["date"] for r in rows}
+
+
 async def _register_dates(conn, dates: Set[datetime.date]) -> None:
     """Record written dates in the map (idempotent)."""
     if not dates:
@@ -242,8 +269,25 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
         existing = await _fetch_map_dates(conn)
         target_dates = source_dates - existing
         logger.info(f"    -> {len(target_dates)} dates missing from {TABLE} "
-              f"(map has {len(existing)} of {len(source_dates)} source "
-              f"dates)")
+                    f"(map has {len(existing)} of {len(source_dates)} source "
+                    f"dates)")
+        # Drop dates that can never yield pair rows (see the helper) so
+        # the run does not pay the full close fetch + per-subject loop
+        # for them every day. They stay unregistered in the map (step 5
+        # registers only dates with actual pair rows), so an EOD download
+        # landing later is picked up on the next run.
+        if target_dates:
+            actionable = await _fetch_dates_with_broad_close(
+                conn, target_dates
+            )
+            n_phantom = len(target_dates) - len(actionable)
+            if n_phantom:
+                logger.info(
+                    f"    -> {n_phantom} of {len(target_dates)} target dates "
+                    f"have no broad-market closes yet (holiday placeholder / "
+                    f"EOD not downloaded) — unwritable, skipped"
+                )
+            target_dates = actionable
         if not target_dates:
             # No-op run: the summary rollup still needs a refresh when the
             # last data-writing run predates it (or the summary table is
@@ -435,13 +479,26 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
     # ACTUALLY have pair rows (exact probe via the just-created index).
     # Registering planned target dates instead would mask dates whose
     # close data has not landed yet (index_identity races the EOD CSV
-    # publish) — they would never be retried.
-    rows_w = await conn.fetch(
-        f"SELECT DISTINCT date FROM {TABLE} WHERE sec_type = 'index'"
-    )
+    # publish) — they would never be retried. Incremental runs scope the
+    # probe to the target dates — the map already holds every earlier
+    # written date, and the unscoped DISTINCT here seq-scans the full
+    # heap (~19s on the 100M-row table) on every single run. Force mode
+    # re-probes the whole rebuilt table once, as before.
+    if target_dates is not None:
+        rows_w = await conn.fetch(
+            f"SELECT DISTINCT date FROM {TABLE} "
+            f"WHERE sec_type = 'index' AND date = ANY($1::date[])",
+            sorted(target_dates),
+        )
+    else:
+        rows_w = await conn.fetch(
+            f"SELECT DISTINCT date FROM {TABLE} WHERE sec_type = 'index'"
+        )
     written: Set[datetime.date] = {r["date"] for r in rows_w}
     await _register_dates(conn, written)
-    msg = f"    -> map now covers {len(written)} pair-grain written dates"
+    n_map = await conn.fetchval(f"SELECT count(*) FROM {DATES_MAP_TABLE}")
+    msg = (f"    -> registered {len(written)} pair-grain dates with rows; "
+           f"map now covers {int(n_map):,}")
     if target_dates is not None:
         masked = target_dates - written
         if masked:
@@ -453,10 +510,17 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
     # ---- Step 5b: refresh the API-facing code summary -----------------
     # Data was written → membership/dates changed → always refresh. The
     # API (perf-attr codes/themes, intraday benchmark dropdown) reads
-    # stats.cross_stats_code_summary instead of re-aggregating the 70M+
-    # row main table per request.
+    # stats.cross_stats_code_summary instead of re-aggregating the 100M+
+    # row main table per request. A run can also reach here having
+    # written nothing (actionable dates existed but every subject
+    # skipped) — then the refresh only runs when the cheap staleness
+    # probe says the rollup lags; re-aggregating an unchanged 100M-row
+    # table costs minutes for nothing.
     logger.info(f"\n[5/5b] Refreshing {SUMMARY_TABLE}...")
-    await refresh_code_summary(conn)
+    if written or await summary_is_stale(conn):
+        await refresh_code_summary(conn)
+    else:
+        logger.info("    -> no rows written and summary fresh; skipped")
 
     logger.info(f"\n  cross_stats wall time: {time.time() - t0:.1f}s")
 

@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.macro.gov.news",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 90,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": 3,
+    "retry_backoff_sec": 1,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "gov.cn jiedu news JSON; exponential backoff 2^attempt capped 30s.",
+    "source_ref": "downloads/macro/gov/news/__init__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

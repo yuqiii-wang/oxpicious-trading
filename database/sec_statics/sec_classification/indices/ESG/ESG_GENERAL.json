@@ -1,0 +1,145 @@
+{
+  "000691": {
+    "name": "科创ESG",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000970": {
+    "name": "中证ESG40",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931088": {
+    "name": "180 ESG",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931243": {
+    "name": "诚通央企ESG",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931268": {
+    "name": "持续发展",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931382": {
+    "name": "智选300 ESG领先",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931463": {
+    "name": "300 ESG",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931476": {
+    "name": "ESG 120策略",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931554": {
+    "name": "长江保护",
+    "exchange": "SS",
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_ESG_GENERAL": {
+    "name": "ESG综合指数",
+    "exchange": null,
+    "sector_id": "ESG",
+    "industry_id": "ESG_GENERAL",
+    "tags": [
+      {
+        "sector_id": "ESG",
+        "industry_id": "ESG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

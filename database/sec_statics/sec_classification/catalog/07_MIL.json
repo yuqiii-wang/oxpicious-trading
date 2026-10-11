@@ -1,0 +1,9 @@
+{
+  "label": "军工",
+  "industries": {
+    "MIL_DEFENSE": {
+      "label": "国防装备",
+      "slug": "mil_defense"
+    }
+  }
+}

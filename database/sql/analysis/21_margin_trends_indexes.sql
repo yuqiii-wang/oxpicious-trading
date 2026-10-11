@@ -18,7 +18,7 @@
 --  had no index path and every request seq-scanned all 8 partitions
 --  (~360k rows, ~21k matching). Mirrors idx_pe_sec_type_code (20_nav).
 --
---  Write cost on analyze.margins' bulk COPY loads is negligible relative to
+--  Write cost on analysis.margins' bulk COPY loads is negligible relative to
 --  the truncate-then-recompute rebuild.
 -- ============================================================================
 CREATE INDEX IF NOT EXISTS idx_margin_index_series_industry

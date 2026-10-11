@@ -1,0 +1,40 @@
+[
+  {
+    "service": "downloads.stock.sse.dividend",
+    "request_type": "dividend",
+    "resource_type": 0,
+    "sleep_sec": 90,
+    "sleep_jitter": 0.3,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "SSE per-stock dividend detail — aggressive anti-bot at quarterly cadence.",
+    "source_ref": "downloads/stock/sse/dividend/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  },
+  {
+    "service": "downloads.stock.sse.dividend",
+    "request_type": "list",
+    "resource_type": 0,
+    "sleep_sec": 20,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "SSE dividend list endpoint.",
+    "source_ref": "downloads/stock/sse/dividend/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

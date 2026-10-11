@@ -118,6 +118,7 @@ def _read_one_csv(filepath: str) -> Optional[pd.DataFrame]:
 # ---------------------------------------------------------------------------
 
 from _common.df_utils import compute_iv_and_greeks as _compute_iv_and_greeks
+from _common.labels import OPTION_TYPE_CODE
 
 import logging
 logger = logging.getLogger(__name__)
@@ -136,7 +137,8 @@ def compute_iv_and_greeks(options_df: pd.DataFrame) -> pd.DataFrame:
             - strike_price: strike price
             - settle: option settlement price
             - days_to_expiry: calendar days to expiry
-            - option_type: 'CALL' or 'PUT'
+            - option_type: stats.label_dim 'option_type' SMALLINT code
+              (0 = CALL, 1 = PUT — the _common/labels contract)
             - csv_delta: Delta from CFFEX CSV (used as fallback)
 
     Returns:
@@ -336,16 +338,16 @@ def build_options_df(
     )
 
     # Call/Put ratios per strike
-    call_oi = out[out["option_type"] == "CALL"].groupby(
+    call_oi = out[out["option_type"] == OPTION_TYPE_CODE["CALL"]].groupby(
         ["date", "underlying_code", "strike_price"]
     )["open_interest"].sum().reset_index().rename(columns={"open_interest": "call_oi"})
-    put_oi = out[out["option_type"] == "PUT"].groupby(
+    put_oi = out[out["option_type"] == OPTION_TYPE_CODE["PUT"]].groupby(
         ["date", "underlying_code", "strike_price"]
     )["open_interest"].sum().reset_index().rename(columns={"open_interest": "put_oi"})
-    call_vol = out[out["option_type"] == "CALL"].groupby(
+    call_vol = out[out["option_type"] == OPTION_TYPE_CODE["CALL"]].groupby(
         ["date", "underlying_code", "strike_price"]
     )["volume"].sum().reset_index().rename(columns={"volume": "call_vol"})
-    put_vol = out[out["option_type"] == "PUT"].groupby(
+    put_vol = out[out["option_type"] == OPTION_TYPE_CODE["PUT"]].groupby(
         ["date", "underlying_code", "strike_price"]
     )["volume"].sum().reset_index().rename(columns={"volume": "put_vol"})
 
@@ -368,10 +370,10 @@ def build_options_df(
     out["oi_call_put_ratio"] = out["oi_call_put_ratio"].fillna(0.0)
     out["vol_call_put_ratio"] = out["vol_call_put_ratio"].fillna(0.0)
 
-    out["open_interest_call"] = np.where(out["option_type"] == "CALL", out["open_interest"], 0.0)
-    out["open_interest_put"] = np.where(out["option_type"] == "PUT", out["open_interest"], 0.0)
-    out["volume_call"] = np.where(out["option_type"] == "CALL", out["volume"], 0.0)
-    out["volume_put"] = np.where(out["option_type"] == "PUT", out["volume"], 0.0)
+    out["open_interest_call"] = np.where(out["option_type"] == OPTION_TYPE_CODE["CALL"], out["open_interest"], 0.0)
+    out["open_interest_put"] = np.where(out["option_type"] == OPTION_TYPE_CODE["PUT"], out["open_interest"], 0.0)
+    out["volume_call"] = np.where(out["option_type"] == OPTION_TYPE_CODE["CALL"], out["volume"], 0.0)
+    out["volume_put"] = np.where(out["option_type"] == OPTION_TYPE_CODE["PUT"], out["volume"], 0.0)
 
     call_total = out.groupby(["date", "underlying_code"])["open_interest_call"].transform("sum")
     put_total = out.groupby(["date", "underlying_code"])["open_interest_put"].transform("sum")

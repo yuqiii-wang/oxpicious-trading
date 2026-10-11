@@ -1,0 +1,17 @@
+{
+  "label": "ESG",
+  "industries": {
+    "ESG_GENERAL": {
+      "label": "ESG",
+      "slug": "esg_general"
+    },
+    "ESG_RESPONSIBILITY": {
+      "label": "责任",
+      "slug": "esg_responsibility"
+    },
+    "GREEN": {
+      "label": "绿色环保",
+      "slug": "green"
+    }
+  }
+}

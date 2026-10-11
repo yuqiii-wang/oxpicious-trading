@@ -1,0 +1,9 @@
+{
+  "service": "default",
+  "max_parallel": 1,
+  "freq": "on_demand",
+  "schedule": null,
+  "notes": "Repo-wide FALLBACK for services without their own file in this tree: max_parallel cap 1, no fixed schedule (on-demand / ad-hoc runs register ad-hoc by module path). Not a real service — lookups substitute the requesting service's name.",
+  "source_ref": "_common/service_heartbeat.py max_parallel_for",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

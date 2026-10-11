@@ -1,0 +1,20 @@
+{
+  "DUMMY_AIRPORT": {
+    "name": "机场综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "AIRPORT",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "AIRPORT"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "label": "策略",
+  "industries": {
+    "LEVERAGED": {
+      "label": "杠杆/反向",
+      "slug": "leveraged"
+    },
+    "STRAT_THEMED": {
+      "label": "主题",
+      "slug": "strat_themed"
+    },
+    "STRAT_GROWTH": {
+      "label": "成长",
+      "slug": "strat_growth"
+    },
+    "STRAT_LARGE": {
+      "label": "大盘",
+      "slug": "strat_large"
+    },
+    "STRAT_MID_SMALL": {
+      "label": "中小盘",
+      "slug": "strat_mid_small"
+    },
+    "STRAT_MICRO": {
+      "label": "微小盘",
+      "slug": "strat_micro"
+    },
+    "STRAT_VALUE": {
+      "label": "价值",
+      "slug": "strat_value"
+    },
+    "STRAT_FUNDAMENTAL": {
+      "label": "基本面",
+      "slug": "strat_fundamental"
+    },
+    "STRAT_FACTOR": {
+      "label": "因子",
+      "slug": "strat_factor"
+    },
+    "STRAT_BRAND": {
+      "label": "品牌",
+      "slug": "strat_brand"
+    }
+  }
+}

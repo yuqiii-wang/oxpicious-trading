@@ -1,6 +1,6 @@
 """builds.cross_stats.compute — pair-grain transformation pipeline.
 
-Ported from analyze.sec_alloc_perf_attribution.compute (2026-09-04); the
+Ported from analysis.sec_alloc_perf_attribution.compute (2026-09-04); the
 write target is hardwired to stats.cross_stats (config.TABLE). Split into
 single-responsibility modules so steps can be tested/swapped independently:
 

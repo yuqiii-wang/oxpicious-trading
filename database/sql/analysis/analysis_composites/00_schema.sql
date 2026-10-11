@@ -17,7 +17,7 @@
 --      (overall) correlation.
 --
 --  Population convention:
---    `python -m analyze.analysis_composites` computes the tables
+--    `python -m analysis.analysis_composites` computes the tables
 --    incrementally (potential window END dates on the source calendar grid
 --    not yet covered by a computed window end are upserted). `--force`
 --    truncates + recomputes everything; `--industry ID[,ID...]` /
@@ -27,4 +27,4 @@
 
 CREATE SCHEMA IF NOT EXISTS analysis_composites;
 
-COMMENT ON SCHEMA analysis_composites IS 'Composite analyses — multi-factor blends combining several upstream series into single audited views. First table: industry_corr_benchmark_offsets (opposite industry correlations by benchmark offset — industry MA trends offset by ± a broad-market benchmark, prices recomputed from the offset trends, pairwise correlations audited over 20/60/255d windows). Populated by python -m analyze.analysis_composites (incremental / --force / --industry filtered).';
+COMMENT ON SCHEMA analysis_composites IS 'Composite analyses — multi-factor blends combining several upstream series into single audited views. First table: industry_corr_benchmark_offsets (opposite industry correlations by benchmark offset — industry MA trends offset by ± a broad-market benchmark, prices recomputed from the offset trends, pairwise correlations audited over 20/60/255d windows). Populated by python -m analysis.analysis_composites (incremental / --force / --industry filtered).';

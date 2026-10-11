@@ -103,7 +103,7 @@ export function fetchIndustryCorrelations(
 //  Correlation refresh trigger.
 //
 //  POST /api/analysis/industry-correlations/run spawns
-//  `python -m analyze.industry_sentiments.corr --industry ... --code ...`
+//  `python -m analysis.industry_sentiments.corr --industry ... --code ...`
 //  (filtered recompute + upsert for the chosen industries; codes are
 //  resolved to industry_ids Python-side) via the shared py-runner and
 //  waits for it to finish. Drives the refresh button on the Pairwise

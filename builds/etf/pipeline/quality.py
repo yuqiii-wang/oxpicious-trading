@@ -1,11 +1,14 @@
 """Post-step 7 — per-ETF quality metrics upsert into sec_classification."""
 from __future__ import annotations
 
+import datetime
+
 import numpy as np
 import pandas as pd
 
 from _common.build_commons import bulk_upsert_async, rec_cols
 from _common.df_utils import safe_columns
+from _common.labels import SEC_TYPE_CODE
 from builds._commons.row_emission import records_from_frame
 
 import logging
@@ -23,11 +26,16 @@ async def upsert_quality_metrics(conn, uni_df: pd.DataFrame, merged: pd.DataFram
 
     # Existing PKs from sec_classification drive parent_index_code — also a
     # merge.  A code should own one 'etf' classification row; dedupe on it.
+    # exchange rides along for the source-data audit rows below (NOT merged
+    # into the quality upsert — sec_classification.exchange already holds it).
     existing_pk_rows = await conn.fetch(
-        "SELECT DISTINCT ON (code) code, parent_index_code "
+        "SELECT DISTINCT ON (code) code, parent_index_code, exchange "
         "FROM stats.sec_classification WHERE type = 'etf' ORDER BY code"
     )
     parent_df = pd.DataFrame(rec_cols(existing_pk_rows))
+    exchange_by_code: dict = {
+        r["code"]: r["exchange"] for r in existing_pk_rows
+    }
 
     codes_mask = uni_df["code"].str.len() > 0
     out = pd.DataFrame({
@@ -85,3 +93,27 @@ async def upsert_quality_metrics(conn, uni_df: pd.DataFrame, merged: pd.DataFram
         logger.info(f"    [DB] Upserted {inserted:,} ETF quality rows into stats.sec_classification")
     else:
         logger.info("    [DB] No ETF quality rows to insert into stats.sec_classification")
+
+    # Mirror the coverage into the source-data audit (monitor.src_data_audit)
+    # — the per-security n_days / first_date / last_date audit for the
+    # monitoring UI.  quality_rows already carry the three fields as typed
+    # values; only the audit's own key + refresh stamp are added here.
+    audit_rows = [
+        {
+            "sec_type": SEC_TYPE_CODE["etf"],
+            "code": r["code"],
+            "exchange": exchange_by_code.get(r["code"]),
+            "board": None,  # board is a stock_identity concept — ETFs have none
+            "n_days": r["n_days"],
+            "first_date": r["first_date"],
+            "last_date": r["last_date"],
+            "updated_at": datetime.datetime.now(datetime.timezone.utc),
+        }
+        for r in quality_rows
+    ]
+    if audit_rows:
+        inserted = await bulk_upsert_async(
+            conn, "monitor.src_data_audit", audit_rows,
+            ["sec_type", "code"],
+        )
+        logger.info(f"    [DB] Upserted {inserted:,} ETF audit rows into monitor.src_data_audit")

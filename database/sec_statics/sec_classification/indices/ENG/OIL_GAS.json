@@ -1,0 +1,46 @@
+{
+  "931248": {
+    "name": "油气资源",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "OIL_GAS",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "OIL_GAS"
+      },
+      {
+        "sector_id": "ENG",
+        "industry_id": "ENG_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_OIL_GAS": {
+    "name": "油气综合指数",
+    "exchange": null,
+    "sector_id": "ENG",
+    "industry_id": "OIL_GAS",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "OIL_GAS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30198": {
+    "name": "油气产业",
+    "exchange": "HK",
+    "sector_id": "ENG",
+    "industry_id": "OIL_GAS",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "OIL_GAS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

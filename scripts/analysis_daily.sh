@@ -1,10 +1,10 @@
-# analyze, run on every biz date 19:00 (A-share trading day AND hour >= 19),
+# analysis, run on every biz date 19:00 (A-share trading day AND hour >= 19),
 # after builds_daily.sh. Set FORCE_DOWNLOADS=1 to bypass the
 # guard for manual/test runs.
 _is_biz_date=$(python -c "from _common._holidays_and_weekdays import is_trading_day; from datetime import date; print(int(is_trading_day(date.today())))")
 _cur_hm=$(date +%H%M)
 if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_hm" -ge 1900 ]; }; then
-# analyze, run daily. The industry baseline now lives in
+# analysis, run daily. The industry baseline now lives in
 # stats.industry_basic_stats (built by builds.industry in builds_daily.sh);
 # industry_correlations + industry_attributions + industry_etf_contribution
 # are internal steps of industry_sentiments (run automatically reading from
@@ -26,12 +26,12 @@ if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_
 # incremental at window-end granularity (opposite industry correlations by
 # benchmark offset).
 for m in \
-  analyze.industry_sentiments \
-  analyze.mov_ave_spread \
-  analyze.pe_and_dividends \
-  analyze.margins \
-  analyze.futures \
-  analyze.options
+  analysis.industry_sentiments \
+  analysis.mov_ave_spread \
+  analysis.pe_and_dividends \
+  analysis.margins \
+  analysis.futures \
+  analysis.options
 do
   python -m "$m"
 done

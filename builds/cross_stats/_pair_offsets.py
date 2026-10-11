@@ -3,7 +3,7 @@
 THE amount-weighting half of the consolidated benchmark-offset primitive
 (the plain offset itself is computed in the pandas pipeline — see
 compute/_merge.py). Semantics mirror the attribution decomposition in
-analyze.industry_sentiments.attributions.sql_broad_market, where the
+analysis.industry_sentiments.attributions.sql_broad_market, where the
 benchmark's move is split by the shared fraction
 (``non_industry_return = (bench_return − swf × shared_return) / (1 − swf)``)
 and the trading-amount split is materialized as

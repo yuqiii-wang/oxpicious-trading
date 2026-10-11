@@ -5,7 +5,7 @@
  * analysis panel (MA-Spread / PE). Clicking it
  * runs the panel's Python analysis main for THIS security only:
  *
- *   python -m analyze.<module> --sec-type <secType> --code <code>
+ *   python -m analysis.<module> --sec-type <secType> --code <code>
  *
  * and calls `onCompleted` when the run finishes so the parent can
  * invalidate its cache and refetch the panel data.
@@ -31,7 +31,7 @@ import {
 } from "@/lib/api-client";
 
 interface Props {
-  /** Analysis main to run (python -m analyze.<module>). */
+  /** Analysis main to run (python -m analysis.<module>). */
   module: RunnableAnalysisModule;
   /** Security type ('etf' | 'index' | 'stock'). */
   secType: string;
@@ -73,7 +73,7 @@ export default function AnalysisRunButton({
   }, [onCompleted]);
 
   const tag = analysisRunTag(module, secType, code);
-  const cmd = `python -m analyze.${module} --sec-type ${secType} --code ${code}`;
+  const cmd = `python -m analysis.${module} --sec-type ${secType} --code ${code}`;
   const missing = !hasData && !running;
 
   // ---- Mount: restore the spinner if this security's run is already ----

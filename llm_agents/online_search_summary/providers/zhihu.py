@@ -98,12 +98,12 @@ class ZhihuSearchProvider(BaseOnlineSearchProvider):
                         *, max_retries: int = 3) -> Dict[str, Any]:
         """Synchronous anti-bot GET of the zhihu search API (to_thread).
 
-        Mirrors downloads.macro.zhihu.news.search_zhihu: Bearer + timestamp
-        headers, Query/Count params, retry on rate-limit (Code=30001) and
-        transport failure with exponential backoff.
+        Mirrors downloads.macro.zhihu.news.search_zhihu: Bearer auth via the
+        proxy's ``api_key`` injection + request-scoped timestamp header,
+        Query/Count params, retry on rate-limit (Code=30001) and transport
+        failure with exponential backoff.
         """
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
             "X-Request-Timestamp": str(int(time.time())),
             "Content-Type": "application/json",
         }
@@ -113,6 +113,7 @@ class ZhihuSearchProvider(BaseOnlineSearchProvider):
         for attempt in range(1, max_retries + 1):
             resp = proxy.get(self.session, self.SEARCH_URL,
                              params=params, headers=headers,
+                             api_key=self.api_key,
                              logger=logger, log_tag="    ")
             if resp is None:
                 last_err = "request failed"

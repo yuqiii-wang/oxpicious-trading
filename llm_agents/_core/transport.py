@@ -7,6 +7,11 @@ codes in *retry_codes* — while balance/auth errors surface immediately:
 an API error body must never burn retries on the status alone (ZhiPu
 signals quota exhaustion as HTTP 429 + ``{"error": {"code": "1113", …}}``).
 
+Every logical call is audited to ``monitor.external_resource_audit``
+(``_common.external_resource_audit.record_llm`` — one LEAN row per call
+with the FINAL attempt's outcome, fire-and-forget so auditing can never
+perturb the request).
+
 Also home of ``load_project_env`` — the project-root ``.env`` loader the
 providers resolve their API keys through (setdefault only, so real
 environment variables win).
@@ -18,10 +23,11 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import requests
 
+from _common.external_resource_audit import record_llm
 from llm_agents._core.errors import LlmProviderError
 
 logger = logging.getLogger(__name__)
@@ -73,7 +79,36 @@ class RetryingJsonClient:
 
     def post_json(self, url: str, payload: Dict[str, Any],
                   *, timeout: float) -> Dict[str, Any]:
-        """Synchronous retrying JSON POST (run via asyncio.to_thread)."""
+        """Synchronous retrying JSON POST (run via asyncio.to_thread).
+
+        Audits one ``monitor.external_resource_audit`` row per logical
+        call — the FINAL attempt's outcome (retries are not itemized);
+        duration_ms covers the whole logical call, retries + backoff
+        included.
+        """
+        started = time.perf_counter()
+        duration_ms: Optional[float] = None
+        try:
+            data, status_code = self._post_json_with_retries(
+                url, payload, timeout=timeout)
+            duration_ms = (time.perf_counter() - started) * 1000.0
+        except LlmProviderError as e:
+            record_llm(self.name, url, e.status, is_failed=True,
+                       failure_reason=str(e),
+                       duration_ms=(time.perf_counter() - started) * 1000.0)
+            raise
+        except Exception as e:  # noqa: BLE001 — audit, then re-raise as-is
+            record_llm(self.name, url, None, is_failed=True,
+                       failure_reason=f"{type(e).__name__}: {e}",
+                       duration_ms=(time.perf_counter() - started) * 1000.0)
+            raise
+        record_llm(self.name, url, status_code, is_failed=False,
+                   duration_ms=duration_ms)
+        return data
+
+    def _post_json_with_retries(self, url: str, payload: Dict[str, Any],
+                                *, timeout: float) -> Tuple[Dict[str, Any], int]:
+        """The retry loop — returns (parsed JSON, final HTTP status)."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -133,7 +168,7 @@ class RetryingJsonClient:
                 raise LlmProviderError(
                     f"{self.name}: HTTP {resp.status_code} on {url}: "
                     f"{resp.text[:200]!r}", status=resp.status_code)
-            return data
+            return data, resp.status_code
         raise last_exc or LlmProviderError(f"{self.name}: request failed")
 
     def _sleep_backoff(self, attempt: int) -> None:

@@ -15,7 +15,7 @@ Usage::
 Override (for running a module concurrently with a GPU-resident
 module): set the environment variable ``ANALYZE_MIN_GPU_GB`` (and/or
 ``ANALYZE_MIN_SYS_GB``) to lower the VRAM/RAM thresholds for that
-process, e.g. ``ANALYZE_MIN_GPU_GB=2 python -m analyze.futures``.
+process, e.g. ``ANALYZE_MIN_GPU_GB=2 python -m analysis.futures``.
 
 Standalone module: stdlib-only, pandas/cudf-free, safe to call before
 ``_activate.activate()`` and before the first pandas import.

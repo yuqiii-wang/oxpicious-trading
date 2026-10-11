@@ -1,0 +1,116 @@
+{
+  "930914": {
+    "name": "港股通高股息",
+    "exchange": "HK",
+    "sector_id": "DIV",
+    "industry_id": "DIV_HK",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_HK"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_VALUE"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931233": {
+    "name": "港股通央企红利",
+    "exchange": "HK",
+    "sector_id": "DIV",
+    "industry_id": "DIV_HK",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_HK"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_SOE"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931722": {
+    "name": "国新港股通央企红利",
+    "exchange": "HK",
+    "sector_id": "DIV",
+    "industry_id": "DIV_HK",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_HK"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_SOE"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_DIV_HK": {
+    "name": "港股红利综合指数",
+    "exchange": null,
+    "sector_id": "DIV",
+    "industry_id": "DIV_HK",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_HK"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  },
+  "H11140": {
+    "name": "香港红利",
+    "exchange": "HK",
+    "sector_id": "DIV",
+    "industry_id": "DIV_HK",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_HK"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

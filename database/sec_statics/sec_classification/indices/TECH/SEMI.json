@@ -1,0 +1,204 @@
+{
+  "000685": {
+    "name": "科创芯片",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931743": {
+    "name": "半导体材料设备",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      },
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931786": {
+    "name": "中证半导体",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931790": {
+    "name": "中韩半导体",
+    "exchange": "OVERSEAS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931865": {
+    "name": "中证半导",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932066": {
+    "name": "半导体行业精选",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "932087": {
+    "name": "集成电路",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950125": {
+    "name": "科创半导体材料设备",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      },
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950162": {
+    "name": "科创芯片设计",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "990001": {
+    "name": "中华半导体芯片",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_SEMI": {
+    "name": "半导体综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30007": {
+    "name": "芯片产业",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "H30184": {
+    "name": "半导体",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "SEMI",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "SEMI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

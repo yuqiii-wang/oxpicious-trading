@@ -1,6 +1,6 @@
 """DB fetch primitives for builds.cross_stats (pair grain).
 
-Ported from analyze.sec_alloc_perf_attribution.fetch (2026-09-04) with the
+Ported from analysis.sec_alloc_perf_attribution.fetch (2026-09-04) with the
 config import re-pointed; logic unchanged for parity. Reads composition
 shared weights (subject x benchmark pairs), benchmark index closes, and
 subject-pool closes. (ETF-market turnover is NOT fetched here anymore —

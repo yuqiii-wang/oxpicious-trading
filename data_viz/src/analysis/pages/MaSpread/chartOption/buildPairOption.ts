@@ -70,6 +70,7 @@ import {
 import { computePairBollinger, appendBollingerSeries } from "./bollinger";
 import {
   buildRsiArrays,
+  buildRsiFlagArrays,
   rsiTrendLines,
   appendRsiTrendSeries,
   buildRsiRightAxis,
@@ -137,6 +138,8 @@ export interface BuildPairOptionArgs {
    *  to those window lengths; null/empty draws all six. */
   rsiTrendMode?: boolean;
   rsiWindows?: readonly number[] | null;
+  /** The RSI Trends population toggle (null = all days). */
+  rsiPopulation?: "typical" | "re-entry" | null;
   /** Slope/Curvature overlay (the header toggle's two derivative modes):
    *  per-date derivative lines on the right axis, replacing the amt bars
    *  (same exclusive slot as rsiTrendMode) — the panel reads them
@@ -233,6 +236,7 @@ export function buildPairOption({
   tradingAmtMode = "lowkey",
   rsiTrendMode = false,
   rsiWindows = null,
+  rsiPopulation = null,
   derivTrend = null,
   ohlcMode = "absolute",
   roofFloorWindow = null,
@@ -273,7 +277,11 @@ export function buildPairOption({
   // window OHLC) are shared across all pairs — one copy in the chart
   // response's `shared` array, read here at the same index.
   const rsiArrays = buildRsiArrays(shared, n);
-  const rsiTrendSpecs = rsiTrendLines(rsiArrays, rsiWindows);
+  const rsiFlags =
+    rsiPopulation != null ? buildRsiFlagArrays(shared, n) : null;
+  const rsiTrendSpecs = rsiTrendLines(
+    rsiArrays, rsiWindows, rsiPopulation, rsiFlags,
+  );
 
   // ---- derivTrend group --------------------------------------------------
   // One scale SHARED by all the family's lines so their magnitudes stay

@@ -1,0 +1,33 @@
+{
+  "399998": {
+    "name": "中证煤炭",
+    "exchange": "SZ",
+    "sector_id": "ENG",
+    "industry_id": "COAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "COAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_COAL": {
+    "name": "煤炭综合指数",
+    "exchange": null,
+    "sector_id": "ENG",
+    "industry_id": "COAL",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "COAL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

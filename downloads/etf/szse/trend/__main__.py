@@ -28,6 +28,8 @@ from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("trend")
 
 
+SERVICE = "downloads.etf.szse.trend"
+
 TREND_ARCHIVE_DATE = "2025-07-01"
 
 SECURITY_CFGS: Dict[str, Dict[str, str]] = {
@@ -67,9 +69,12 @@ def download_szse_trend_etf(
     out_root: Optional[str] = None,
     end_date: Optional[str] = None,
     start_date: str = "2025-07-01",
-    sleep_sec: float = 5.0,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
 ) -> dict:
+    # Pacing (base sleep, jitter, timeouts, toggles) resolves from the
+    # service's external_request_config JSON row; an explicit *sleep_sec*
+    # overrides just the row's base sleep.
     return run_szse_download(
         caller_file=str(Path(__file__).resolve()),
         out_dirname="szse_trend",
@@ -84,6 +89,7 @@ def download_szse_trend_etf(
         security_types=["etf"],
         sleep_sec=sleep_sec,
         session=session,
+        service=SERVICE,
         exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
         db_exchange="SZ",
@@ -92,4 +98,6 @@ def download_szse_trend_etf(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_szse_trend_etf())

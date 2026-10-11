@@ -1,0 +1,64 @@
+{
+  "defaults": {
+    "sector_id": "OTHER",
+    "sector_label": "其他",
+    "industry_id": "OTHER",
+    "industry_label": "未分类"
+  },
+  "strategy_sector_ids": [
+    "BROAD",
+    "DIV",
+    "OVERSEAS",
+    "REGION",
+    "SOE",
+    "STRATEGY"
+  ],
+  "etf_name_cleaning": {
+    "ib_name_marker": "交易型开放式指数",
+    "suffix_split": "交易型",
+    "lof_markers": [
+      "LOF",
+      "lof",
+      "Lof",
+      "上市开放式基金"
+    ]
+  },
+  "overlapping_catalog": [
+    {
+      "sector_id": "ENG",
+      "sector_label": "能源",
+      "industry_id": "POWER_EQUIP",
+      "industry_label": "电力设备"
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "POWER_EQUIP",
+      "industry_label": "电力设备"
+    },
+    {
+      "sector_id": "NEV",
+      "sector_label": "新能源",
+      "industry_id": "PV",
+      "industry_label": "光伏"
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "PV",
+      "industry_label": "光伏"
+    },
+    {
+      "sector_id": "NEV",
+      "sector_label": "新能源",
+      "industry_id": "BATTERY",
+      "industry_label": "储能/电池"
+    },
+    {
+      "sector_id": "IND",
+      "sector_label": "工业",
+      "industry_id": "BATTERY",
+      "industry_label": "储能/电池"
+    }
+  ]
+}

@@ -50,7 +50,7 @@ export function fetchIndustryCorrOffsetIndustries(): Promise<IndustryCorrOffsetI
 //  Refresh trigger.
 //
 //  POST /api/analysis/industry-corr-offsets/run spawns
-//  `python -m analyze.analysis_composites --industry ... --code ...
+//  `python -m analysis.analysis_composites --industry ... --code ...
 //   --benchmark ...` (filtered recompute + upsert for the chosen
 //  industries) via the shared py-runner and waits for it to finish. Drives
 //  the refresh button on the Composites → Opposite Industry Correlations

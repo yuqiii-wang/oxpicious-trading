@@ -1,0 +1,33 @@
+{
+  "000300": {
+    "name": "沪深300",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI300",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI300"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "benchmark_broadmarket"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_CSI300": {
+    "name": "沪深300综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_CSI300",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI300"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "000134": {
+    "name": "上证银行",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "BANKS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BANKS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000869": {
+    "name": "HK银行",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "BANKS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BANKS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399986": {
+    "name": "中证银行",
+    "exchange": "SZ",
+    "sector_id": "FIN",
+    "industry_id": "BANKS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BANKS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931039": {
+    "name": "银行AH",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "BANKS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BANKS"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_BANKS": {
+    "name": "银行综合指数",
+    "exchange": null,
+    "sector_id": "FIN",
+    "industry_id": "BANKS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BANKS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30022": {
+    "name": "800银行",
+    "exchange": "HK",
+    "sector_id": "FIN",
+    "industry_id": "BANKS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BANKS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

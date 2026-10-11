@@ -1,0 +1,40 @@
+[
+  {
+    "service": "downloads.macro.ai_daily",
+    "request_type": "llm_chat",
+    "resource_type": 1,
+    "sleep_sec": null,
+    "sleep_jitter": null,
+    "poll_interval_sec": null,
+    "max_retries": 3,
+    "retry_backoff_sec": 1,
+    "timeout_connect_sec": null,
+    "timeout_read_sec": 180,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "AI daily summary over llm_agents RetryingJsonClient (ZhiPu): retry on 429/502/503/504 + codes 1701/1234, uniform 1-3s backoff; no inter-request sleep.",
+    "source_ref": "llm_agents/_core/transport.py; llm_agents/_core/base.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  },
+  {
+    "service": "downloads.macro.ai_daily",
+    "request_type": "web_fetch",
+    "resource_type": 0,
+    "sleep_sec": 2,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 20,
+    "timeout_read_sec": 20,
+    "rotate_browser_profile": false,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "online_search_summary page fetches behind the daily preset; fixed Chrome/126 UA; fetch timeout 20s.",
+    "source_ref": "llm_agents/online_search_summary/storage/fetching.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

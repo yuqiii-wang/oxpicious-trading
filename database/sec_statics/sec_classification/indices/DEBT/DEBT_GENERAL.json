@@ -1,0 +1,16 @@
+{
+  "DUMMY_DEBT_GENERAL": {
+    "name": "债券综合指数",
+    "exchange": null,
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

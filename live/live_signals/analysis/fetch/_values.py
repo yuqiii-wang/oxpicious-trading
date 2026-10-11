@@ -21,11 +21,13 @@ HOW a config's value / bar resolve in that space:
                        constant per bucket). None when not derivable
                        (never invented).
 
-mov_rsi is the only signal family since the 2026-10-05 retirement of
-the mov_std / mov_pairs / mov_pairs_ema strategies (their
-derived-fresh bar resolution — the day's Bollinger band / the day's
-cross slow leg — and the is_triggered_once episode machinery went
-with them).
+mov_rsi (rsi{W}_{pct}pct) and bollinger (boll{W}_{k}std — the FIXED ±kσ
+band constant; the current value is the latest close's σ-depth z,
+computed on the fly from the price history) are the signal families.
+(The mov_std / mov_pairs / mov_pairs_ema strategies were retired
+2026-10-05 with their derived-fresh bar resolution — the day's
+Bollinger band / the day's cross slow leg — and the is_triggered_once
+episode machinery; the boll_std → bollinger rebrand is 2026-10-10.)
 
 No numpy, no pandas — plain Python over asyncpg rows.
 """
@@ -37,16 +39,19 @@ from dataclasses import dataclass, field
 # ---- THE value-source map (the live tier's only family knowledge) --------
 #
 # signal_type → the kind of the current value its thresholds live in.
-# mov_rsi's bar is static in its own space (the window's percentile
-# bar, stored on the row); the evaluator needs no per-family logic —
-# only this lookup of WHERE today's value comes from.
+# Both families' bars are static in their own spaces (mov_rsi's window
+# percentile bar / bollinger's FIXED ±kσ band constant, stored on the
+# row); the evaluator needs no per-family logic — only this lookup of
+# WHERE today's value comes from.
 SIGNAL_VALUE_SOURCE: dict[str, str] = {
     "mov_rsi": "rsi",               # latest rsi_{W}days (sub_type rsi{W}_{pct}pct)
+    "bollinger": "boll",            # latest daily z from the closes (sub_type boll{W}_{k}std)
 }
 
-# Source kinds served by the shared RSI-row fetch (fetch_current_values)
-# — the kinds→fetcher routing of _sources.
+# Source kinds served by the shared indicator-row fetchers
+# (fetch_current_values) — the kinds→fetcher routing of _sources.
 _RSI_ROW_KINDS = {"rsi"}
+_BOLL_ROW_KINDS = {"boll"}
 
 
 @dataclass
@@ -56,12 +61,13 @@ class LiveValues:
 
     close: float | None = None             # latest intraday bar close
     rsi: dict[int, float] = field(default_factory=dict)
+    boll: dict[int, float] = field(default_factory=dict)
 
 
 def sub_type_window(sub_type: str) -> int | None:
     """The window rides in the sub_type for the indicator kinds
-    (rsi14): the FIRST integer run. None when the sub_type carries no
-    window."""
+    (rsi14 / boll20): the FIRST integer run. None when the sub_type
+    carries no window."""
     digits = ""
     for ch in sub_type:
         if ch.isdigit():
@@ -72,8 +78,9 @@ def sub_type_window(sub_type: str) -> int | None:
 
 
 def resolve_threshold(sig: dict, values: LiveValues) -> float | None:
-    """One active config's THRESHOLD for this check. mov_rsi's bar is
-    static in its own space: the stored threshold."""
+    """One active config's THRESHOLD for this check. Both families'
+    bars are static in their own spaces (mov_rsi's percentile bar /
+    bollinger's FIXED ±kσ band constant): the stored threshold."""
     return sig["signal_threshold"]
 
 
@@ -89,4 +96,6 @@ def resolve_value(sig: dict, values: LiveValues) -> float | None:
         return None
     if kind == "rsi":
         return values.rsi.get(w)
+    if kind == "boll":
+        return values.boll.get(w)
     return None

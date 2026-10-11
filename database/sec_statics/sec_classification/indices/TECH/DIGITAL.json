@@ -1,0 +1,67 @@
+{
+  "930902": {
+    "name": "中证数据",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "DIGITAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "DIGITAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931529": {
+    "name": "国企数字经济",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "DIGITAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "DIGITAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931582": {
+    "name": "数字经济",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "DIGITAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "DIGITAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_DIGITAL": {
+    "name": "数字经济综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "DIGITAL",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "DIGITAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

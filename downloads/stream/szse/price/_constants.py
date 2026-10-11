@@ -8,9 +8,13 @@ from datetime import time
 
 from downloads._common import (
     DEFAULT_SLEEP_SEC,
-    LONG_SLEEP_INTERVAL,
-    VERY_LONG_SLEEP_INTERVAL,
+    poll_interval_sec_for,
+    sleep_sec_for,
 )
+
+# Dotted service name — keys the external_request_config JSON rows (one row
+# per source request_type) and the resource audit.
+SERVICE = "downloads.stream.szse.price"
 
 # Hourly-mode cutoff: before 15:30 on a trading day the streamer runs in
 # "hourly" mode (3 always-on indices + yesterday's top-500 traded SZSE stocks,
@@ -42,15 +46,21 @@ DEFAULT_GROUPS = 10
 
 # Per-source anti-bot cooldowns between fetches (jittered by
 # async_random_sleep). Sources hit different hosts so cadences are tuned per
-# host aggressiveness: Sina (A) gets LONG_SLEEP, both East Money hosts (C/D)
-# get VERY_LONG_SLEEP. B (szse fallback) keeps --interval (DEFAULT_SLEEP_SEC).
-COOLDOWN_A_SEC: float = LONG_SLEEP_INTERVAL        # akshare  (Sina 1-min)
-COOLDOWN_C_SEC: float = VERY_LONG_SLEEP_INTERVAL   # em_push2his
-COOLDOWN_D_SEC: float = VERY_LONG_SLEEP_INTERVAL   # em_push2
+# host aggressiveness; each resolves once at import from the service's
+# external_request_config JSON row for that source (request_type):
+# Sina (A) sleep=90, both East Money hosts (C/D) sleep=300. B (szse
+# fallback) keeps its poll cadence below.
+COOLDOWN_A_SEC: float = sleep_sec_for(SERVICE, "source_a_sina")      # akshare  (Sina 1-min)
+COOLDOWN_C_SEC: float = sleep_sec_for(SERVICE, "source_c_em_hist")   # em_push2his
+COOLDOWN_D_SEC: float = sleep_sec_for(SERVICE, "source_d_em_quote")  # em_push2
 
 # Default per-fetch cooldown for B (szse fallback) and the index round
-# (same ssjjhq endpoint as B). Overridable via --interval in __main__.py.
-DEFAULT_POLL_INTERVAL_SEC: float = DEFAULT_SLEEP_SEC
+# (same ssjjhq endpoint as B): the source_b_szse row's poll_interval_sec,
+# with the old DEFAULT_SLEEP_SEC (20s) literal as the fallback. Overridable
+# via --interval in __main__.py.
+DEFAULT_POLL_INTERVAL_SEC: float = (
+    poll_interval_sec_for(SERVICE, "source_b_szse") or DEFAULT_SLEEP_SEC
+)
 
 # Hard timeout for worker shutdown on termination signal. Workers stuck inside
 # asyncio.to_thread (e.g. a DB upsert) can't be cancelled — this prevents the

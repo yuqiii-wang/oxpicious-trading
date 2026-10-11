@@ -66,7 +66,7 @@ interface GreekMetricMeta {
   direction: (v: number) => string;
 }
 
-// Mirrors the backend pair-level metrics (analyze/options/compute/
+// Mirrors the backend pair-level metrics (analysis/options/compute/
 // greek_delta.py / greek_gamma.py / greek_vega.py) — see those modules
 // for the industry anchors (PCR refinement / GEX dealer-sign convention /
 // 25Δ risk-reversal OI mirror).
@@ -230,7 +230,7 @@ function buildGreekOption(
   });
 
   // Greek positioning metric — a SINGLE vertical line per panel, mirroring
-  // the backend pair-level metrics (analyze/options/compute/greek_*.py).
+  // the backend pair-level metrics (analysis/options/compute/greek_*.py).
   // Each greek answers a DIFFERENT question about the open book:
   //   delta — direction: delta-weighted put/call ratio dpcr (PCR
   //           refinement; 0.5 = balanced directional book)

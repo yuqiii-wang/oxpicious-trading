@@ -173,7 +173,7 @@ export function MarginTrendsCharts({ industryId, attribution, selectedItemCode }
         error={errorSeries ? `Failed to load series: ${errorSeries}` : null}
         emptyText={
           seriesData
-            ? `No margin data for industry "${industryId}" under ${attribution} attribution. Run the Python build script (analyze.margins) to populate.`
+            ? `No margin data for industry "${industryId}" under ${attribution} attribution. Run the Python build script (analysis.margins) to populate.`
             : "No data"
         }
       >

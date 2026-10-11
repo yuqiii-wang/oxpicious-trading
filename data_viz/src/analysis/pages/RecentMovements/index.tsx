@@ -7,7 +7,9 @@
  *     industry + parallel strategy column + exchange filter row + L3
  *     security-level chips), fully wired from useSecNav
  *   • Content — once a security is picked (code search or L3 chip), the
- *     SignalTrendPanel renders the shared SignalCodeTrendChart (daily
+ *     SignalTrendPanel renders the CURVE overlay panel first (the
+ *     continuous depth-response curves mu(s) per regime), then the
+ *     shared SignalCodeTrendChart (daily
  *     trend via the shared OhlcChart, per sec_type baseline endpoint,
  *     carrying the code's FULL signal history as buy (green ▲ below the
  *     low) / sell (red ▼ above the high) markers — the same treatment as

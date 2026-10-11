@@ -1,7 +1,7 @@
 /**
  * Refresh (filtered recompute) for the Opposite Industry Correlations page
  * — mirrors CorrelationChart: the Refresh button runs
- * `python -m analyze.analysis_composites --industry ... --benchmark ...`
+ * `python -m analysis.analysis_composites --industry ... --benchmark ...`
  * (recompute + upsert) via the API, a 3s run-tag poll keeps the spinner in
  * step (and restores it on mount if a run started elsewhere), and
  * tryAutoRun triggers the same recompute ONCE per selection key when a

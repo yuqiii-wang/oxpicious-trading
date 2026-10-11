@@ -18,7 +18,7 @@ Also provides ``compute_emas`` for exponential moving averages
 parallel-prefix discounted sum — pure multiplication/addition on whole
 columns (no ewm primitive, no per-group loop), so it runs on GPU under
 cudf.pandas (cuDF lacks grouped-ewm; pandas groupby.ewm falls back to
-CPU — see analyze/mov_ave_spread/rsi.py for the same constraint on
+CPU — see analysis/mov_ave_spread/rsi.py for the same constraint on
 Wilder EWM).
 
 GPU ACCELERATION
@@ -340,11 +340,11 @@ def grouped_rolling_agg(
 
     Consolidates the ``groupby(keys)[col].rolling(W, min_periods=P)
     .agg(...).reset_index(level=..., drop=True)`` pattern used across
-    analyze scripts:
+    analysis scripts:
 
-      - analyze.mov_ave_spread.helpers.compute_rolling_stds (std, ddof=0)
-      - analyze.sec_alloc_perf_attribution.compute (MA5 mean)
-      - analyze.industry_sentiments.etf_contribution (MA5 + MA20 mean)
+      - analysis.mov_ave_spread.helpers.compute_rolling_stds (std, ddof=0)
+      - analysis.sec_alloc_perf_attribution.compute (MA5 mean)
+      - analysis.industry_sentiments.etf_contribution (MA5 + MA20 mean)
 
     The ``reset_index(level=..., drop=True)`` step strips the group-key
     levels from the resulting MultiIndex Series so it aligns back to the
@@ -431,7 +431,7 @@ def grouped_rolling_agg(
 
 
 # ---------------------------------------------------------------------------
-#  Grouped (optionally centered) rolling quantile (analyze path)
+#  Grouped (optionally centered) rolling quantile (analysis path)
 # ---------------------------------------------------------------------------
 
 def grouped_rolling_quantile(
@@ -467,7 +467,7 @@ def grouped_rolling_quantile(
     Relocated 2026-09 from builds.market_hypes.compute
     ._grouped_rolling_quantile (the build was retired by the
     market-regime refactor; the helper's consumers live in
-    analyze.mov_ave_spread.high_low_pct and analyze.pe_and_dividends
+    analysis.mov_ave_spread.high_low_pct and analysis.pe_and_dividends
     .pct_bands).
     """
     if isinstance(group_keys, str):

@@ -1228,6 +1228,16 @@ export interface MovAveSpreadSharedMetricsRow {
   rsi_14days: number | null;
   rsi_20days: number | null;
   rsi_60days: number | null;
+  /** Tail-episode population flags per window (analysis.mov_ave_rsi):
+   *  1 = typical (isolated / first-touch tail episode), 0 = re-entry
+   *  (same episode re-qualifying after a <= 5-trading-day exit),
+   *  null = the day's RSI is outside both 25% band tails. */
+  is_typical_3days: number | null;
+  is_typical_6days: number | null;
+  is_typical_10days: number | null;
+  is_typical_14days: number | null;
+  is_typical_20days: number | null;
+  is_typical_60days: number | null;
   /** Fractional daily change of trading_amt_ma{W} — tooltip readout when
    *  the trading-amt display is on (analysis.mov_ave_spreads_detail). */
   trading_amt_ma5_slope: number | null;
@@ -1832,7 +1842,7 @@ export interface PeChartResponse {
 //  Analysis Commons — Dividend Deliveries (analysis.dividend_deliveries)
 //    Rolling 5-year (1-year stride) dividend delivery audit per
 //    (sec_type, code, window_end_date); etf + stock (an index has no
-//    per-share deliveries). Built by analyze.pe_and_dividends
+//    per-share deliveries). Built by analysis.pe_and_dividends
 //    --metrics deliveries; the Dividends page renders it as the
 //    "Dividend Deliveries" table under the baseline code-trend chart
 //    (where the renamed analysis.dividend_est estimation curve stays as
@@ -2304,7 +2314,7 @@ export interface IndustrySentimentsChartResponse {
 //  is disabled when fewer than 2 industries are selected).
 //
 //  Source: analysis.industry_correlations (built by the correlations step
-//  of analyze.industry_sentiments). One row per (start_date, pair,
+//  of analysis.industry_sentiments). One row per (start_date, pair,
 //  pool_size, interval) with corr_ma20_20d / corr_ma60_60d /
 //  corr_ma255_255d: corr_ma{W}_{W}d is the Pearson correlation between
 //  the two industries' MA-W curves over the W trading days starting on
@@ -2388,7 +2398,7 @@ export interface IndustryCorrelationsResponse {
 //      (1 = perfectly opposite once the benchmark is removed).
 //
 //  Source: analysis_composites.industry_corr_benchmark_offsets (built by
-//  python -m analyze.analysis_composites; default benchmark 000300).
+//  python -m analysis.analysis_composites; default benchmark 000300).
 //  Drives the Composites → "Opposite Industry Correlations" page.
 // ----------------------------------------------------------------------------
 /** One benchmark-offset audit row — the pairwise correlation metrics for
@@ -2500,7 +2510,7 @@ export interface IndustryCorrOffsetIndustriesResponse {
 //  shows the attribution bars for ONE selected industry at the clicked date.
 //
 //  Source: analysis.industry_attributions (built by
-//  analyze.industry_sentiments.attributions — truncate-then-recompute).
+//  analysis.industry_sentiments.attributions — truncate-then-recompute).
 // ----------------------------------------------------------------------------
 /** One row per (industry_id, benchmark_code, date) — pre-materialized in
  *  analysis.industry_attributions. */

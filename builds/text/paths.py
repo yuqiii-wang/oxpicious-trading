@@ -32,8 +32,9 @@ ZHIHU_NEWS_DIR = os.path.join(PROJECT_ROOT, "temps", "zhihu_news")
 # embedded movers envelope) plus the per-plan *_movers.json envelopes
 AI_DAILY_DIR = os.path.join(PROJECT_ROOT, "temps", "ai_daily")
 
-# Canonical SEC classification inputs used by keywords.py
-SEC_CLASSIFICATION_JSON = os.path.join(
-    PROJECT_ROOT, "_common", "sec_statics", "sec_classification.json")
+# Canonical SEC classification catalog — read via
+# database.sec_statics.classification_store.load_catalog() from the
+# database/sec_statics/sec_classification/ shard tree (no path constant
+# needed here any more).
 GOV_KEYWORDS_JSON = os.path.join(
     PROJECT_ROOT, "downloads", "macro", "gov", "keywords.json")

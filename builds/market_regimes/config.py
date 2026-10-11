@@ -30,10 +30,17 @@ SPANS_TABLE = "stats.market_regime_spans"
 
 # Regime vocabulary (the taxonomy's exhaustive states, ordinal order).
 # The regime column is SMALLINT (the stats.label_dim contract): the build
-# writes the label's ordinal IN THIS TUPLE, so its order must equal the
+# writes the label's ordinal IN THIS TUPLE, so its order must match the
 # shared mapping's code order — fail fast on drift.
 REGIMES: tuple[str, ...] = ("calm", "hot", "panic", "quiet")
-assert REGIMES == tuple(REGIME_CODE), (
+# The shared mapping appends "all" (the POOLED pseudo-label — signal_curves
+# vocabulary only, never a market_regimes row), so assert the hosted states
+# as the mapping's PREFIX with matching codes: any reorder of the real four
+# still fails fast here.
+assert (
+    tuple(REGIME_CODE)[: len(REGIMES)] == REGIMES
+    and all(REGIME_CODE[r] == i for i, r in enumerate(REGIMES))
+), (
     "builds.market_regimes.REGIMES order drifted from _common.labels.REGIME_CODE"
 )
 

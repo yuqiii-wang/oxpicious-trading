@@ -1,0 +1,13 @@
+{
+  "label": "航空航天",
+  "industries": {
+    "AERO_SPACE": {
+      "label": "航天/卫星",
+      "slug": "aero_space"
+    },
+    "AERO_AVIATION": {
+      "label": "航空",
+      "slug": "aero_aviation"
+    }
+  }
+}

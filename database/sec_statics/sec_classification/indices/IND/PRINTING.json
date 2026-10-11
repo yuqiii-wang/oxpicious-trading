@@ -1,0 +1,20 @@
+{
+  "DUMMY_PRINTING": {
+    "name": "印刷综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "PRINTING",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "PRINTING"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "931238": {
+    "name": "SSH黄金股票",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "PRECIOUS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "PRECIOUS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931407": {
+    "name": "全球金矿",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "PRECIOUS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "PRECIOUS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_PRECIOUS": {
+    "name": "黄金/贵金属综合指数",
+    "exchange": null,
+    "sector_id": "MAT",
+    "industry_id": "PRECIOUS",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "PRECIOUS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

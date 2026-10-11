@@ -1,0 +1,102 @@
+{
+  "399966": {
+    "name": "800证保",
+    "exchange": "SZ",
+    "sector_id": "FIN",
+    "industry_id": "BROKERS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BROKERS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399975": {
+    "name": "证券公司",
+    "exchange": "SZ",
+    "sector_id": "FIN",
+    "industry_id": "BROKERS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BROKERS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930709": {
+    "name": "香港证券",
+    "exchange": "HK",
+    "sector_id": "FIN",
+    "industry_id": "BROKERS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BROKERS"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931402": {
+    "name": "证券先锋",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "BROKERS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BROKERS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931412": {
+    "name": "证券公司30",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "BROKERS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BROKERS"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950105": {
+    "name": "上证证券",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "BROKERS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BROKERS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_BROKERS": {
+    "name": "证券综合指数",
+    "exchange": null,
+    "sector_id": "FIN",
+    "industry_id": "BROKERS",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "BROKERS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

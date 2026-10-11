@@ -1,0 +1,209 @@
+{
+  "000018": {
+    "name": "180金融",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000038": {
+    "name": "上证金融",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000076": {
+    "name": "金融等权",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000110": {
+    "name": "380金融",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000849": {
+    "name": "300非银",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000914": {
+    "name": "300金融",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000934": {
+    "name": "800金地",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000974": {
+    "name": "800金融",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000992": {
+    "name": "金融地产",
+    "exchange": "SS",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      },
+      {
+        "sector_id": "RE",
+        "industry_id": "RE_REAL_ESTATE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931024": {
+    "name": "港股通非银",
+    "exchange": "HK",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_FIN_GENERAL": {
+    "name": "金融综合指数",
+    "exchange": null,
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H11146": {
+    "name": "港股通内地金融",
+    "exchange": "HK",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "H30035": {
+    "name": "300非银",
+    "exchange": "HK",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "H30106": {
+    "name": "港股通金融服务",
+    "exchange": "HK",
+    "sector_id": "FIN",
+    "industry_id": "FIN_GENERAL",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "FIN_GENERAL"
+      },
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

@@ -1,4 +1,4 @@
-"""DataAnalysis — ABC for analyze.* entry points (stats.* → analysis.*).
+"""DataAnalysis — ABC for analysis.* entry points (stats.* → analysis.*).
 
 Extends :class:`_common.data_pipeline.DataPipeline` with the lifecycle
 and steps shared by every analysis script:
@@ -26,7 +26,7 @@ Typical subclass (bootstrap-first layout for big inline pipelines)::
     bootstrap_runtime()          # cudf.pandas hook BEFORE pandas imports
 
     import pandas as pd          # safe: hook installed
-    from analyze.x.config import ANALYSIS_NAME, DESCRIPTION, SEC_TYPES
+    from analysis.x.config import ANALYSIS_NAME, DESCRIPTION, SEC_TYPES
 
     class XAnalysis(DataAnalysis):
         title = "ANALYZE X"
@@ -160,7 +160,10 @@ class DataAnalysis(DataPipeline):
             tables = (tables,)
         for table in tables:
             status = await self.conn.execute(
-                f"DELETE FROM {table} WHERE sec_type = ANY($1::text[])",
+                # No explicit cast: asyncpg infers the array type from the
+                # values, so label-string lists (TEXT sec_type columns) and
+                # stats.label_dim code lists (SMALLINT columns) both bind.
+                f"DELETE FROM {table} WHERE sec_type = ANY($1)",
                 list(sec_types),
             )
             n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
@@ -188,7 +191,7 @@ class DataAnalysis(DataPipeline):
         summary_name: str | None = None,
     ) -> None:
         """Upsert the analysis_identity registry row for one analysis."""
-        from analyze._common import upsert_analysis_identity
+        from analysis._common import upsert_analysis_identity
 
         await upsert_analysis_identity(
             self.conn,

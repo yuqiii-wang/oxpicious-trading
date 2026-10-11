@@ -73,7 +73,7 @@ export function IndustryBenchmarkAttributionChart({
       error={error ? `Failed to load attribution: ${error}` : null}
       emptyText={
         data && data.benchmarks.length === 0
-          ? `No benchmark attribution rows for ${industryId}. Run python -m analyze.industry_sentiments.attributions to populate.`
+          ? `No benchmark attribution rows for ${industryId}. Run python -m analysis.industry_sentiments.attributions to populate.`
           : "No data"
       }
       height={360}

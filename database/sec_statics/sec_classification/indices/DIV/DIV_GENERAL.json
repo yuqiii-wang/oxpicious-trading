@@ -1,0 +1,141 @@
+{
+  "000015": {
+    "name": "红利指数",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000149": {
+    "name": "180红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000150": {
+    "name": "380红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000151": {
+    "name": "上国红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000152": {
+    "name": "上央红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000153": {
+    "name": "上民红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000821": {
+    "name": "300红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000922": {
+    "name": "中证红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "932039": {
+    "name": "央企股东回报",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_DIV_GENERAL": {
+    "name": "红利综合指数",
+    "exchange": null,
+    "sector_id": "DIV",
+    "industry_id": "DIV_GENERAL",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

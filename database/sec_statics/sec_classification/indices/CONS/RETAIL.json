@@ -1,0 +1,29 @@
+{
+  "000005": {
+    "name": "商业指数",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "RETAIL",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "RETAIL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_RETAIL": {
+    "name": "百货/零售综合指数",
+    "exchange": null,
+    "sector_id": "CONS",
+    "industry_id": "RETAIL",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "RETAIL"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

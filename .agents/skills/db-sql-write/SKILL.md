@@ -31,7 +31,7 @@ Curated examples — one per job shape, verified live in the repo:
 | Job shape | Read |
 | --- | --- |
 | One-off study / DDL-apply script | `temp_scripts/apply_confidence_col.py` |
-| Incremental pipeline upsert + force-mode purge | `analyze/mov_ave_spread/steps/rsi.py` |
+| Incremental pipeline upsert + force-mode purge | `analysis/mov_ave_spread/steps/rsi.py` |
 | Build-pipeline copy-or-upsert split | `builds/stock/pipeline/writer.py` |
 | Force rebuild via chunked CSV COPY | `builds/index/daily/db_insert.py` |
 
@@ -83,7 +83,9 @@ bulk_upsert(conn, "stats.my_table", rows, key_columns=["date", "code"])
   the helpers' `_throttle_between_chunks(_async)`: a fixed cool-down
   `DEFAULT_CHUNK_PAUSE_S = 0.1s` before every chunk (breaks up sustained
   fsync-bound write bursts — the reactive lag cap alone only engages once
-  the standby is 4 GB behind), then the replica-lag wait. Defaults
+  the standby is 4 GB behind; large writes of 20+ chunks auto-escalate it
+  to `LARGE_BULK_PAUSE_S = 3s` via `resolve_chunk_pause_s`; an explicit
+  `chunk_pause_s` argument always wins), then the replica-lag wait. Defaults
   (`partition_key="auto"`, `chunk_pause_s=0.1`, `max_replica_lag_mb=4096`)
   are the right call; passing `None` re-creates the max-duty-cycle disk
   saturation and the ~29 GB retained-WAL freeze the rule exists to

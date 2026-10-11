@@ -10,8 +10,10 @@ plumbing so the source modules stay thin.
 Only the list is scraped — detail links are NOT followed (no per-article
 crawling). Anti-bot behaviour (browser-fingerprint rotation, ``random`` query
 param, host-blocking detection, sleep cadence) is provided by the shared
-``AntiBotProxy`` from ``downloads._common``; the inter-request sleep
-defaults to ``LONG_SLEEP_INTERVAL`` (90s) per the project's anti-bot policy.
+``AntiBotProxy`` from ``downloads._common``. Every source passes its *service*
+name so pacing (sleep, jitter, timeouts, toggles) resolves from that
+service's external_request_config JSON row; the ``LONG_SLEEP_INTERVAL``
+(90s) literal remains only as the fallback when a caller skips *service*.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ import csv
 import json
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -39,9 +41,11 @@ from downloads._common import (  # noqa: E402
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
     LONG_SLEEP_INTERVAL,
+    antibot_config_for,
     build_default_session,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 
 logger = setup_logger("gov_main")
@@ -83,13 +87,27 @@ ParseFn = Callable[[List[Dict[str, Any]], date], List[Dict[str, str]]]
 # ----------------------------------------------------------------------------
 # Shared helpers
 # ----------------------------------------------------------------------------
-def make_session_and_proxy(sleep_sec: float) -> Tuple[Any, AntiBotProxy]:
-    """Build a default requests session + an AntiBotProxy with the given sleep."""
+def make_session_and_proxy(
+    sleep_sec: float,
+    service: Optional[str] = None,
+) -> Tuple[Any, AntiBotProxy]:
+    """Build a default requests session + an AntiBotProxy.
+
+    With *service*, pacing (jitter, timeouts, anti-bot toggles) comes from
+    that service's external_request_config JSON row and the explicit
+    *sleep_sec* overrides only the row's base sleep; without one the legacy
+    literal config applies (ndrc — no JSON row yet).
+    """
     session = build_default_session()
-    proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        enable_host_tracking=True,
-    ))
+    if service is not None:
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(service), base_sleep_sec=sleep_sec,
+        ))
+    else:
+        proxy = AntiBotProxy(AntiBotConfig(
+            base_sleep_sec=sleep_sec,
+            enable_host_tracking=True,
+        ))
     return session, proxy
 
 
@@ -208,7 +226,8 @@ def download_source(
     *,
     out_root: Optional[str] = None,
     start_date: Optional[str] = None,
-    sleep_sec: float = LONG_SLEEP_INTERVAL,
+    service: Optional[str] = None,
+    sleep_sec: Optional[float] = None,
     force: bool = False,
 ) -> Dict[str, Any]:
     """Download a source's title list and write it to CSV.
@@ -219,6 +238,10 @@ def download_source(
     the fetcher is told to stop at already-downloaded dates. ``--force`` purges
     the incremental state and does a full backfill to *start_date* instead.
 
+    *service* routes the proxy's pacing to that service's external_request_config
+    JSON row; *sleep_sec* then overrides only the row's base sleep (None → the
+    row's sleep_sec, or the legacy ``LONG_SLEEP_INTERVAL`` without a service).
+
     The raw item list is cached per run-date as ``<name>_raw_<YYYY-MM-DD>.json``
     and re-used on subsequent same-day runs unless *force* is set.
     """
@@ -227,6 +250,9 @@ def download_source(
     today_str = date.today().strftime("%Y-%m-%d")
     raw_path = out_dir / f"{config.name}_raw_{today_str}.json"
     csv_path = out_dir / config.csv_filename
+
+    if sleep_sec is None:
+        sleep_sec = sleep_sec_for(service) if service is not None else LONG_SLEEP_INTERVAL
 
     # Incremental state: latest pub_date already present in the titles CSV.
     existing_rows: List[Dict[str, str]] = []
@@ -242,7 +268,7 @@ def download_source(
         f" (incremental from {csv_floor})" if csv_floor is not None else " (full backfill)",
     )
 
-    session, proxy = make_session_and_proxy(sleep_sec)
+    session, proxy = make_session_and_proxy(sleep_sec, service=service)
 
     raw_items: Optional[List[Dict[str, Any]]] = None
     if not force and is_cached_json(raw_path, config.raw_min_bytes):
@@ -298,13 +324,22 @@ def download_source(
 # ----------------------------------------------------------------------------
 # Shared CLI builder
 # ----------------------------------------------------------------------------
-def build_cli(description: str) -> argparse.ArgumentParser:
-    """Build the common argparse parser used by every source's ``main()``."""
+def build_cli(description: str, service: Optional[str] = None) -> argparse.ArgumentParser:
+    """Build the common argparse parser used by every source's ``main()``.
+
+    *service* names the source's external_request_config row — with it the
+    ``--sleep-sec`` default resolves from the JSON row at runtime; without
+    it the legacy ``LONG_SLEEP_INTERVAL`` default applies."""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--start-date", type=str, default=None,
                         help=f"Floor date YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
-    parser.add_argument("--sleep-sec", type=float, default=LONG_SLEEP_INTERVAL,
-                        help=f"Anti-bot sleep between requests (s). Default: {LONG_SLEEP_INTERVAL}")
+    if service is not None:
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                            help="Anti-bot sleep between requests (s). Default: "
+                                 f"external_request_config JSON for {service}")
+    else:
+        parser.add_argument("--sleep-sec", type=float, default=LONG_SLEEP_INTERVAL,
+                            help=f"Anti-bot sleep between requests (s). Default: {LONG_SLEEP_INTERVAL}")
     parser.add_argument("--out-root", type=str, default=None,
                         help="Output root dir. Default: <project>/temps/<source>")
     parser.add_argument("--force", action="store_true",
@@ -317,13 +352,18 @@ def run_cli(
     fetch_fn: FetchFn,
     parse_fn: ParseFn,
     description: str,
+    service: Optional[str] = None,
 ) -> None:
-    """Parse args and invoke :func:`download_source` — call from source main()."""
-    args = build_cli(description).parse_args()
+    """Parse args and invoke :func:`download_source` — call from source main().
+
+    *service* routes pacing to the source's external_request_config JSON
+    row (sleep_sec still overrides the row's base when passed)."""
+    args = build_cli(description, service=service).parse_args()
     summary = download_source(
         config, fetch_fn, parse_fn,
         out_root=args.out_root,
         start_date=args.start_date,
+        service=service,
         sleep_sec=args.sleep_sec,
         force=args.force,
     )

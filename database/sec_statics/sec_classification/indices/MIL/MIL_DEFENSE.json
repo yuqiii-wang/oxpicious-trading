@@ -1,0 +1,63 @@
+{
+  "399967": {
+    "name": "中证军工",
+    "exchange": "SZ",
+    "sector_id": "MIL",
+    "industry_id": "MIL_DEFENSE",
+    "tags": [
+      {
+        "sector_id": "MIL",
+        "industry_id": "MIL_DEFENSE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399973": {
+    "name": "中证国防",
+    "exchange": "SZ",
+    "sector_id": "MIL",
+    "industry_id": "MIL_DEFENSE",
+    "tags": [
+      {
+        "sector_id": "MIL",
+        "industry_id": "MIL_DEFENSE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931066": {
+    "name": "军工龙头",
+    "exchange": "SS",
+    "sector_id": "MIL",
+    "industry_id": "MIL_DEFENSE",
+    "tags": [
+      {
+        "sector_id": "MIL",
+        "industry_id": "MIL_DEFENSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_MIL_DEFENSE": {
+    "name": "国防装备综合指数",
+    "exchange": null,
+    "sector_id": "MIL",
+    "industry_id": "MIL_DEFENSE",
+    "tags": [
+      {
+        "sector_id": "MIL",
+        "industry_id": "MIL_DEFENSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

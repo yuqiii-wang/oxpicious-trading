@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.index.sse.trend",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 3,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": false,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "SSE index snapshot CSV pages via run_snapshot_download (INTER_PAGE_SLEEP_SEC; pacing resolves from this row via _common/request_config). Rotation stays off: the yunhq list endpoint wants the page's stable header set (build_sse_proxy).",
+    "source_ref": "downloads/_common/exchanges/sse.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

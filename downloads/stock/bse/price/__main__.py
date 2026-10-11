@@ -14,5 +14,11 @@ from downloads._common.exchanges.bjs import download_bse_price
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("price")
 
+SERVICE = "downloads.stock.bse.price"
+
 if __name__ == "__main__":
-    logger.info(download_bse_price())
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
+    # Pacing (sleep/jitter/timeouts) resolves from the service's
+    # external_request_config JSON row inside download_bse_price.
+    logger.info(download_bse_price(service=SERVICE))

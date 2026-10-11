@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -13,11 +13,11 @@ import requests
 from downloads._common import (
     MIN_VALID_BYTES,
     EMPTY_HTML_MAX_BYTES,
-    DEFAULT_TIMEOUT,
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
     AntiBotProxy,
-    AntiBotConfig,
+    antibot_config_for,
+    sleep_sec_for,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
@@ -32,6 +32,8 @@ from downloads._common import (
     convert_xlsx_to_csv,
 )
 
+
+SERVICE = "downloads.bond.shibor"
 
 SHIBOR_BASE = "https://www.shibor.sh.cn"
 
@@ -101,8 +103,10 @@ FORM_HEADERS.update(
     }
 )
 
-SHIBOR_TIMEOUT: Tuple[int, int] = (15, 120)
-SLEEP_SEC = 5.0
+# Anti-bot sleep between requests — resolved from the service's
+# external_request_config JSON row (sleep_sec); the adaptive 0.3x/0.5x
+# multipliers in the download loop scale this base.
+SLEEP_SEC = sleep_sec_for(SERVICE)
 MAX_CHUNK_MONTHS = 12
 RE_DATE_RANGE_IN_NAME = re.compile(r"_(\d{8})_(\d{8})\.xlsx$")
 
@@ -148,13 +152,12 @@ def split_chunks(
 
 def _fetch_member_info(session: requests.Session, proxy: Optional[AntiBotProxy] = None) -> Optional[MemberInfo]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     
     resp = proxy.post(
         session,
         SHIBOR_BASE + API_PNL_BK,
         headers=AJAX_HEADERS,
-        timeout=SHIBOR_TIMEOUT,
         logger=logger,
         log_tag="[member-info]",
     )
@@ -206,7 +209,7 @@ def _check_data(
     proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[bool, str, bool]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     
     s_s, s_e = _ymd(start), _ymd(end)
     tag = f"[check {data_type} {s_s}~{s_e}]"
@@ -218,7 +221,6 @@ def _check_data(
             SHIBOR_BASE + API_CHECK_SHIBOR_HIS,
             params=params,
             headers=AJAX_HEADERS,
-            timeout=SHIBOR_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -238,7 +240,6 @@ def _check_data(
             SHIBOR_BASE + API_CHECK_SHIBOR_PRI,
             data=data,
             headers=AJAX_HEADERS,
-            timeout=SHIBOR_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -254,7 +255,6 @@ def _check_data(
             SHIBOR_BASE + API_CHECK_SHIBOR_MN,
             params=params,
             headers=AJAX_HEADERS,
-            timeout=SHIBOR_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -265,7 +265,6 @@ def _check_data(
             SHIBOR_BASE + API_CHECK_LPR_HIS,
             params=params,
             headers=AJAX_HEADERS,
-            timeout=SHIBOR_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -303,7 +302,7 @@ def _download_excel(
     proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     
     s_s, s_e = _ymd(start), _ymd(end)
     tag = f"[download {data_type} {s_s}~{s_e}]"
@@ -315,7 +314,6 @@ def _download_excel(
             SHIBOR_BASE + API_XLSX_SHIBOR_HIS,
             params=params,
             headers=FORM_HEADERS,
-            timeout=SHIBOR_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -336,7 +334,6 @@ def _download_excel(
             SHIBOR_BASE + API_XLSX_SHIBOR_PRI,
             params=params,
             headers=FORM_HEADERS,
-            timeout=SHIBOR_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -352,7 +349,6 @@ def _download_excel(
             SHIBOR_BASE + API_XLSX_SHIBOR_MN,
             params=params,
             headers=FORM_HEADERS,
-            timeout=SHIBOR_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -363,7 +359,6 @@ def _download_excel(
             SHIBOR_BASE + API_XLSX_LPR_HIS,
             params=params,
             headers=FORM_HEADERS,
-            timeout=SHIBOR_TIMEOUT,
             logger=logger,
             log_tag=tag,
         )
@@ -405,7 +400,7 @@ def download_shibor(
     lookback_years: int = 3,
     data_types: Optional[List[str]] = None,
     chunk_months: int = MAX_CHUNK_MONTHS,
-    sleep_sec: float = SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     tendency_value: str = "",
     db_table: str = "stats.debt_identity",
 ) -> dict:
@@ -433,12 +428,15 @@ def download_shibor(
 
     session = build_session()
     stats = RunStats()
-    
-    # Create unified AntiBotProxy
-    proxy_config = AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-    )
-    proxy = AntiBotProxy(proxy_config)
+
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+    # argument overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
 
     logger.info(
         "Starting SHIBOR download: requested %s -> %s (lookback=%dy). "
@@ -556,4 +554,6 @@ def download_shibor(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_shibor())

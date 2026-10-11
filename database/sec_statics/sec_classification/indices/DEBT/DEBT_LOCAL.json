@@ -1,0 +1,78 @@
+{
+  "930865": {
+    "name": "5年地债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_LOCAL",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_LOCAL"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931161": {
+    "name": "0-4年地债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_LOCAL",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_LOCAL"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950045": {
+    "name": "上证5年期地债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_LOCAL",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_LOCAL"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "950109": {
+    "name": "上证10年地债",
+    "exchange": "SS",
+    "sector_id": "DEBT",
+    "industry_id": "DEBT_LOCAL",
+    "tags": [
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_LOCAL"
+      },
+      {
+        "sector_id": "DEBT",
+        "industry_id": "DEBT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

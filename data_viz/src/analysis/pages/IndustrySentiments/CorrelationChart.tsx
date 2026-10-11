@@ -64,7 +64,7 @@ export function CorrelationChart({
 
   // ---- Refresh (filtered corr recompute for the chosen data) ----
   // POST /industry-correlations/run spawns
-  // `python -m analyze.industry_sentiments.corr --industry ... --code ...`
+  // `python -m analysis.industry_sentiments.corr --industry ... --code ...`
   // and WAITS for it; while waiting the button spins (and polls the tag
   // status so a page refresh restores the spinner). On success the data
   // is refetched (refreshTick bumps the fetch effect's deps).
@@ -191,7 +191,7 @@ export function CorrelationChart({
     if (data.correlations.length === 0) {
       return emptyChartOption(
         themeMode,
-        "No correlation data available — click the ↻ button to recompute, or run python -m analyze.industry_sentiments.corr",
+        "No correlation data available — click the ↻ button to recompute, or run python -m analysis.industry_sentiments.corr",
       );
     }
     const c = axisColors(themeMode);

@@ -23,9 +23,12 @@ from typing import Dict
 
 from downloads._common import (
     COMMON_BASE_HEADERS,
-    DEFAULT_SLEEP_SEC,
     setup_logger,
+    sleep_sec_for,
 )
+
+# Service name for the external_request_config JSON row (pacing source).
+SERVICE = "downloads.index.cnindex.archive"
 
 # CNINDEX-published indices not covered by csindex/SZSE/SSE sources.
 #   399303 = 国证2000, 399311 = 国证1000, 399310 = 国证A50
@@ -38,10 +41,11 @@ CNINDEX_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)
 CNINDEX_HEADERS["Accept"] = "application/json, text/plain, */*"
 CNINDEX_HEADERS["Referer"] = "https://www.cnindex.com.cn/"
 
-# Request timeout (connect, read)
-CNINDEX_TIMEOUT = (15, 60)
-
-SLEEP_SEC = DEFAULT_SLEEP_SEC
+# Anti-bot sleep between requests — resolved from the service's
+# external_request_config JSON row (sleep_sec; the same row also carries
+# the connect/read timeouts and anti-bot toggles), overridable per-run
+# with --sleep-sec.
+SLEEP_SEC = sleep_sec_for(SERVICE)
 
 # Retry backoff for the content-freshness gate (runner.py): when a code's
 # history CSV lacks the newest publishable session, the daily history is

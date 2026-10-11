@@ -2,7 +2,35 @@
 
 Constants (timeouts, sleep cadences, headers, browser profiles), logger
 setup, session builders, host-blocking tracking and the unified
-AntiBotProxy used by every exchange downloader.
+AntiBotProxy behind every external HTTP request — exchange downloaders,
+streamers, macro/news fetchers, and the API-key services (zhihu search).
+Every request outcome through AntiBotProxy is audited to
+monitor.external_resource_audit (_common/external_resource_audit.py —
+fire-and-forget, never blocks).
+
+The proxy is session-agnostic: any object exposing ``get``/``post`` with
+requests-like kwargs works, including ``curl_cffi.requests.Session``
+(TLS-fingerprint sessions — pass per-request session kwargs such as
+``impersonate=...`` or ``stream=True`` through ``request_kwargs``).
+API-key auth is first-class: ``api_key`` + ``api_key_header`` +
+``api_key_scheme`` inject the credential header at request time without
+touching the caller's headers dict.
+
+``llm_agents._core.transport.RetryingJsonClient`` (the LLM providers'
+transport) intentionally does NOT route through the proxy: LLM APIs
+signal quota/auth errors in 4xx BODIES (ZhiPu 429 + error code), which
+the proxy's suppress-on-4xx contract would discard, and it audits each
+logical call's FINAL outcome itself via ``record_llm``.
+
+Pacing values (sleep/jitter/timeouts/anti-bot toggles/blocked-host
+cooldown) resolve at RUNTIME from the static external_request_config
+JSON tree (database/sql/monitoring/static/external_request_config/ —
+_common/request_config.py) whenever a proxy is built with
+``AntiBotProxy(service=...)``; a proxy built with an explicit
+``AntiBotConfig`` keeps every value the caller passed. The DEFAULT_*
+constants below are the last-resort fallback for services with neither
+their own JSON file nor a usable default.json row — and stay exported
+for backward compatibility.
 """
 from __future__ import annotations
 
@@ -14,13 +42,26 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from _common.external_resource_audit import record_http
+from _common.request_config import (
+    FALLBACK_SLEEP_JITTER,
+    FALLBACK_SLEEP_SEC,
+    FALLBACK_TIMEOUT_CONNECT_SEC,
+    FALLBACK_TIMEOUT_READ_SEC,
+    host_block_cooldown_for,
+    request_config_for,
+)
 
-DEFAULT_TIMEOUT: Tuple[int, int] = (15, 60)
+
+DEFAULT_TIMEOUT: Tuple[Optional[float], Optional[float]] = (
+    FALLBACK_TIMEOUT_CONNECT_SEC, FALLBACK_TIMEOUT_READ_SEC,
+)
 
 # Shared default sleep seconds between HTTP requests for anti-bot protection.
-# Centralized here so the project's anti-bot policy can be changed in one place.
-# Individual downloaders may override based on target site's aggressiveness.
-DEFAULT_SLEEP_SEC = 20.0
+# Fallback only — the runtime source is the external_request_config JSON tree
+# (see module docstring); individual downloaders resolve their per-service
+# cadence from it via sleep_sec_for / AntiBotProxy(service=...).
+DEFAULT_SLEEP_SEC = FALLBACK_SLEEP_SEC
 DEFAULT_SHORT_SLEEP_SEC = 8.0
 # Long sleep for aggressive anti-bot sites (e.g. cninfo, SSE dividend endpoint
 # when called at quarterly cadence). 90s between requests makes a full ETF-held
@@ -280,31 +321,37 @@ class HostStatus:
 
 
 class HostStatusTracker:
-    # A 4xx-blocked host is auto-unblocked after this much quiet time, so a
-    # transient rate-limit (e.g. OSS 403 mid-sweep) doesn't poison the whole
-    # process run.  If the retry also 4xx's, record_error re-blocks with a
-    # fresh cooldown timer.
+    # Default auto-unblock delay for a 4xx-blocked host, so a transient
+    # rate-limit (e.g. OSS 403 mid-sweep) doesn't poison the whole process
+    # run.  If the retry also 4xx's, record_error re-blocks with a fresh
+    # cooldown timer. Instances take a per-service override from the
+    # external_request_config JSON (host_block_cooldown_sec) via the
+    # block_cooldown_sec constructor arg.
     BLOCK_COOLDOWN_SEC: float = 600.0
     # HTTP codes that mean genuine anti-bot blocking / rate limiting.  A 404
     # is a legitimate per-resource miss (e.g. an index with no closeweight.xls
     # on the OSS bucket) and must NOT block the whole host.
     BLOCKING_STATUS_CODES: frozenset = frozenset({403, 429})
 
-    def __init__(self):
+    def __init__(self, block_cooldown_sec: Optional[float] = None):
         self._host_status: Dict[str, HostStatus] = {}
+        self.block_cooldown_sec = (
+            self.BLOCK_COOLDOWN_SEC if block_cooldown_sec is None
+            else float(block_cooldown_sec)
+        )
 
     def is_blocked(self, url: str) -> bool:
         host = self._extract_host(url)
         status = self._host_status.get(host)
         if status is None or not status.blocked:
             return False
-        if time.time() - status.last_error_time >= self.BLOCK_COOLDOWN_SEC:
+        if time.time() - status.last_error_time >= self.block_cooldown_sec:
             status.blocked = False
             status.blocked_reason = ""
             logger = setup_logger("host_tracker")
             logger.warning(
                 "Host %s auto-unblocked after %.0fs cooldown, resuming requests",
-                host, self.BLOCK_COOLDOWN_SEC,
+                host, self.block_cooldown_sec,
             )
             return False
         return True
@@ -359,11 +406,33 @@ class AntiBotConfig:
     # Base sleep duration (seconds)
     base_sleep_sec: float = DEFAULT_SLEEP_SEC
     # Jitter factor for sleep (0.0 = no jitter, 1.0 = 100% jitter)
-    sleep_jitter: float = 0.5
+    sleep_jitter: float = FALLBACK_SLEEP_JITTER
     # Track host blocking (4xx errors)
     enable_host_tracking: bool = True
     # Timeout for requests
-    timeout: Tuple[int, int] = DEFAULT_TIMEOUT
+    timeout: Tuple[Optional[float], Optional[float]] = DEFAULT_TIMEOUT
+
+
+def antibot_config_for(
+    service: str, request_type: str = "default"
+) -> AntiBotConfig:
+    """Build an AntiBotConfig from the service's external_request_config
+    JSON row (sleep/jitter/timeouts/anti-bot toggles).
+
+    For proxies that take the row as-is, prefer ``AntiBotProxy(service=...)``.
+    Use this when a call site must override one field (e.g. a computed base
+    sleep) while the rest of the row still applies — construct
+    ``dataclasses.replace(antibot_config_for(SERVICE), base_sleep_sec=x)``.
+    """
+    cfg = request_config_for(service, request_type)
+    return AntiBotConfig(
+        rotate_browser_profile=cfg.rotate_browser_profile,
+        add_random_param=cfg.add_random_param,
+        enable_host_tracking=cfg.enable_host_tracking,
+        base_sleep_sec=cfg.sleep_sec,
+        sleep_jitter=cfg.sleep_jitter,
+        timeout=(cfg.timeout_connect_sec, cfg.timeout_read_sec),
+    )
 
 
 class AntiBotProxy:
@@ -373,14 +442,22 @@ class AntiBotProxy:
     This class provides a single interface for all anti-bot mechanisms, making
     it easy to configure and use across the entire codebase.
 
+    Build proxies with ``service=`` so the pacing values (base sleep,
+    jitter, timeouts, anti-bot toggles, blocked-host cooldown) resolve
+    from the service's external_request_config JSON row at construction
+    time. An explicit ``config`` still wins field-for-field (computed
+    overrides such as an adaptive base sleep keep working) — in that case
+    consider ``antibot_config_for(service)`` + ``dataclasses.replace`` so
+    the untouched fields still come from the JSON.
+
     Example usage:
-        proxy = AntiBotProxy(base_sleep_sec=20.0)
+        proxy = AntiBotProxy(service="downloads.etf.sse.composition")
         session = requests.Session()
 
         # Simple GET with anti-bot protection
         resp = proxy.get(session, url, headers=base_headers)
 
-        # POST with custom sleep
+        # POST with custom sleep (overrides the service row for this call)
         resp = proxy.post(session, url, data=payload, sleep_sec=30.0)
 
         # Manual sleep after processing
@@ -392,9 +469,27 @@ class AntiBotProxy:
             pass
     """
 
-    def __init__(self, config: Optional[AntiBotConfig] = None):
+    def __init__(self, config: Optional[AntiBotConfig] = None,
+                 audit_service: Optional[str] = None,
+                 service: Optional[str] = None,
+                 request_type: str = "default"):
+        # service= resolves the pacing row from the static JSON tree;
+        # an explicitly passed config always wins over it.
+        if config is None and service is not None:
+            config = antibot_config_for(service, request_type)
         self.config = config or AntiBotConfig()
-        self._host_tracker = HostStatusTracker() if self.config.enable_host_tracking else None
+        self._host_tracker = None
+        if self.config.enable_host_tracking:
+            cooldown = (
+                host_block_cooldown_for(service, request_type)
+                if service is not None else None
+            )
+            self._host_tracker = HostStatusTracker(block_cooldown_sec=cooldown)
+        # Service name stamped on this proxy's external_resource_audit rows.
+        # None = the process-resolved name (service_heartbeat registration,
+        # __main__ fallback) — pass it explicitly when the owning pipeline
+        # is known and the process may outlive its code (long-lived runners).
+        self.audit_service = audit_service
 
     def get(
         self,
@@ -406,6 +501,10 @@ class AntiBotProxy:
         timeout: Optional[Tuple[int, int]] = None,
         sleep_sec: Optional[float] = None,
         anti_bot: bool = True,
+        api_key: Optional[str] = None,
+        api_key_header: str = "Authorization",
+        api_key_scheme: str = "Bearer",
+        request_kwargs: Optional[Dict[str, Any]] = None,
         logger: Optional[logging.Logger] = None,
         log_tag: str = "",
     ) -> Optional[requests.Response]:
@@ -414,7 +513,11 @@ class AntiBotProxy:
             session, "get", url,
             params=params, headers=headers, data=None,
             timeout=timeout, sleep_sec=sleep_sec,
-            anti_bot=anti_bot, logger=logger, log_tag=log_tag,
+            anti_bot=anti_bot,
+            api_key=api_key, api_key_header=api_key_header,
+            api_key_scheme=api_key_scheme,
+            request_kwargs=request_kwargs,
+            logger=logger, log_tag=log_tag,
         )
 
     def post(
@@ -428,6 +531,10 @@ class AntiBotProxy:
         timeout: Optional[Tuple[int, int]] = None,
         sleep_sec: Optional[float] = None,
         anti_bot: bool = True,
+        api_key: Optional[str] = None,
+        api_key_header: str = "Authorization",
+        api_key_scheme: str = "Bearer",
+        request_kwargs: Optional[Dict[str, Any]] = None,
         logger: Optional[logging.Logger] = None,
         log_tag: str = "",
     ) -> Optional[requests.Response]:
@@ -436,7 +543,11 @@ class AntiBotProxy:
             session, "post", url,
             params=params, headers=headers, data=data,
             timeout=timeout, sleep_sec=sleep_sec,
-            anti_bot=anti_bot, logger=logger, log_tag=log_tag,
+            anti_bot=anti_bot,
+            api_key=api_key, api_key_header=api_key_header,
+            api_key_scheme=api_key_scheme,
+            request_kwargs=request_kwargs,
+            logger=logger, log_tag=log_tag,
         )
 
     def _request(
@@ -451,6 +562,10 @@ class AntiBotProxy:
         timeout: Optional[Tuple[int, int]] = None,
         sleep_sec: Optional[float] = None,
         anti_bot: bool = True,
+        api_key: Optional[str] = None,
+        api_key_header: str = "Authorization",
+        api_key_scheme: str = "Bearer",
+        request_kwargs: Optional[Dict[str, Any]] = None,
         logger: Optional[logging.Logger] = None,
         log_tag: str = "",
     ) -> Optional[requests.Response]:
@@ -470,15 +585,29 @@ class AntiBotProxy:
         final_headers = dict(headers or {})
         if anti_bot and self.config.rotate_browser_profile:
             final_headers = merge_browser_profile(final_headers)
+        # API-key auth is injected last so a caller-supplied credential
+        # header can never be clobbered by fingerprint rotation.
+        if api_key:
+            value = f"{api_key_scheme} {api_key}" if api_key_scheme else api_key
+            final_headers[api_key_header] = value
 
         # Use custom or configured timeout
         request_timeout = timeout if timeout is not None else self.config.timeout
 
+        # Whole-logical-call wall time (audit duration_ms) — the anti-bot
+        # sleep below lands AFTER the audit record, so it is excluded.
+        started = time.perf_counter()
+        duration_ms: Optional[float] = None
+
         try:
+            extra = dict(request_kwargs or {})
             if method == "get":
-                resp = session.get(url, params=final_params, headers=final_headers, timeout=request_timeout)
+                resp = session.get(url, params=final_params, headers=final_headers,
+                                   timeout=request_timeout, **extra)
             else:
-                resp = session.post(url, params=final_params, data=data, headers=final_headers, timeout=request_timeout)
+                resp = session.post(url, params=final_params, data=data, headers=final_headers,
+                                    timeout=request_timeout, **extra)
+            duration_ms = (time.perf_counter() - started) * 1000.0
 
             # Handle 4xx errors (potential blocking)
             if 400 <= resp.status_code < 500:
@@ -486,9 +615,17 @@ class AntiBotProxy:
                     self._host_tracker.record_error(url, resp.status_code, f"HTTP {resp.status_code}")
                 if logger:
                     logger.error("%sHTTP %d for %s", log_tag, resp.status_code, url)
+                record_http(url, resp.status_code, is_failed=True,
+                            failure_reason=f"HTTP {resp.status_code}",
+                            duration_ms=duration_ms,
+                            service=self.audit_service)
                 return None
 
             resp.raise_for_status()
+
+            record_http(url, resp.status_code, is_failed=False,
+                        duration_ms=duration_ms,
+                        service=self.audit_service)
 
             # Sleep after successful request
             if self.config.enable_sleep:
@@ -502,6 +639,21 @@ class AntiBotProxy:
                 self._host_tracker.record_error(url, status_code, str(e))
             if logger:
                 logger.warning("%sRequest failed: %s", log_tag, e)
+            record_http(url, status_code, is_failed=True,
+                        failure_reason=f"{type(e).__name__}: {e}",
+                        duration_ms=(time.perf_counter() - started) * 1000.0,
+                        service=self.audit_service)
+            return None
+        except Exception as e:  # noqa: BLE001 — non-requests sessions
+            # curl_cffi and other requests-like sessions raise their own
+            # exception types; audit and suppress exactly like above so a
+            # foreign session's failure mode can never differ.
+            if logger:
+                logger.warning("%sRequest failed: %s: %s", log_tag, type(e).__name__, e)
+            record_http(url, None, is_failed=True,
+                        failure_reason=f"{type(e).__name__}: {e}",
+                        duration_ms=(time.perf_counter() - started) * 1000.0,
+                        service=self.audit_service)
             return None
 
     def sleep(self, sleep_sec: Optional[float] = None) -> None:
@@ -569,6 +721,7 @@ def safe_get(
     anti_bot: bool = True,
     logger: Optional[logging.Logger] = None,
     log_tag: str = "",
+    audit_service: Optional[str] = None,
 ) -> Optional[requests.Response]:
     """Backward-compatible wrapper for GET requests with anti-bot protection.
 
@@ -582,7 +735,7 @@ def safe_get(
         enable_host_tracking=host_tracker is not None,
         timeout=timeout,
     )
-    proxy = AntiBotProxy(config)
+    proxy = AntiBotProxy(config, audit_service=audit_service)
 
     # If a host_tracker was provided, use it instead of creating a new one
     if host_tracker is not None:
@@ -610,6 +763,7 @@ def safe_post(
     anti_bot: bool = True,
     logger: Optional[logging.Logger] = None,
     log_tag: str = "",
+    audit_service: Optional[str] = None,
 ) -> Optional[requests.Response]:
     """Backward-compatible wrapper for POST requests with anti-bot protection.
 
@@ -623,7 +777,7 @@ def safe_post(
         enable_host_tracking=host_tracker is not None,
         timeout=timeout,
     )
-    proxy = AntiBotProxy(config)
+    proxy = AntiBotProxy(config, audit_service=audit_service)
 
     # If a host_tracker was provided, use it instead of creating a new one
     if host_tracker is not None:

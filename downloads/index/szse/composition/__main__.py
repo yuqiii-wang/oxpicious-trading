@@ -51,6 +51,7 @@ import logging
 import re
 import sys
 import time
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -59,10 +60,8 @@ import pandas as pd
 import requests
 
 from downloads._common import (
-    DEFAULT_TIMEOUT,
-    DEFAULT_SHORT_SLEEP_SEC,
     AntiBotProxy,
-    AntiBotConfig,
+    antibot_config_for,
     setup_logger,
     resolve_out_dir,
     is_valid_file,
@@ -71,6 +70,7 @@ from downloads._common import (
     random_browser_profile,
     add_exchange_suffix,
     get_exchange_from_code,
+    sleep_sec_for,
 )
 from downloads._common.monthly import is_month_start
 
@@ -80,11 +80,18 @@ SZSE_INDEX_API = (
     "http://www.szse.cn/api/report/ShowReport/data"
 )
 
+# Service name for the external_request_config JSON row (pacing source).
+SERVICE = "downloads.index.szse.composition"
+
 # Default indices to track
 DEFAULT_INDEX_CODES = ["399001", "399006", "399812", "399348", "399346"]
 
-# Sleep between API calls (SZSE API is less aggressive than the report site)
-SLEEP_SEC = DEFAULT_SHORT_SLEEP_SEC
+# Sleep between API calls — resolved from the service's
+# external_request_config JSON row (sleep_sec; the same row also carries
+# sleep_jitter, the connect/read timeouts and the anti-bot toggles),
+# overridable per-run with --sleep-sec. (SZSE API is less aggressive than
+# the report site.)
+SLEEP_SEC = sleep_sec_for(SERVICE)
 PAGE_SIZE = 10
 
 
@@ -223,7 +230,9 @@ def fetch_index_page(
     Returns the parsed JSON response dict, or None on failure.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=SLEEP_SEC))
+        # Pacing (sleep/jitter/timeouts/toggles) from the service's
+        # external_request_config JSON row.
+        proxy = AntiBotProxy(service=SERVICE)
 
     params: Dict[str, Any] = {
         "SHOWTYPE": "JSON",
@@ -241,7 +250,6 @@ def fetch_index_page(
             SZSE_INDEX_API,
             params=params,
             headers=base_headers,
-            timeout=DEFAULT_TIMEOUT,
             logger=logger,
             log_tag=f"[szse-index {index_code} p{page_no}]",
         )
@@ -295,7 +303,9 @@ def fetch_all_pages_for_index(
     Returns None on failure.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=SLEEP_SEC))
+        # Pacing (sleep/jitter/timeouts/toggles) from the service's
+        # external_request_config JSON row.
+        proxy = AntiBotProxy(service=SERVICE)
 
     # Fetch first page to get metadata
     first_page = fetch_index_page(session, index_code, 1, base_headers, proxy)
@@ -357,7 +367,8 @@ def fetch_all_pages_for_index(
 
         logger.info("[%s] p%d/%d: %d rows (cumulative: %d)",
                     index_code, pno, pagecount, len(page_rows), len(all_data))
-        proxy.sleep(SLEEP_SEC)
+        # Base sleep from the proxy's external_request_config JSON row.
+        proxy.sleep()
 
     if not all_data:
         logger.warning("[%s] No constituent data found", index_code)
@@ -479,7 +490,7 @@ def download_szse_index_composition(
     index_codes: Optional[List[str]] = None,
     out_root: Optional[str] = None,
     skip_cached: bool = True,
-    sleep_sec: float = SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     force_month_start: bool = False,
 ) -> dict:
     """Download SZSE index composition data for the given index codes.
@@ -526,8 +537,14 @@ def download_szse_index_composition(
 
     session = build_default_session()
     stats = RunStats()
-    proxy_config = AntiBotConfig(base_sleep_sec=sleep_sec)
-    proxy = AntiBotProxy(proxy_config)
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+    # overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
 
     results: List[Dict[str, Any]] = []
 
@@ -636,10 +653,13 @@ if __name__ == "__main__":
              "monthly refresh flow on any day.",
     )
     ap.add_argument(
-        "--sleep-sec", type=float, default=SLEEP_SEC,
-        help=f"Sleep seconds between downloads (default: {SLEEP_SEC})",
+        "--sleep-sec", type=float, default=None,
+        help="Sleep seconds between downloads "
+             f"(default: external_request_config JSON for {SERVICE})",
     )
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     codes = None
     if args.index_codes:

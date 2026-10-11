@@ -14,10 +14,8 @@ from bs4 import BeautifulSoup
 
 from downloads._common import (
     COMMON_BASE_HEADERS,
-    DEFAULT_TIMEOUT,
     DEFAULT_START_DATE,
     AntiBotProxy,
-    AntiBotConfig,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
@@ -25,6 +23,7 @@ from downloads._common import (
     build_default_session,
     RunStats,
     business_days,
+    sleep_sec_for,
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -51,7 +50,10 @@ CATEGORY_CONFIGS: Dict[str, Dict[str, str]] = {
 RE_PAGING_TAG = re.compile(r"""tagname=(['"])([^'"]*/(\w+)-(\d+)\.html)\1""")
 
 PBOC_MIN_VALID_BYTES = 200
-SLEEP_SEC = 5.0
+# Anti-bot pacing source — the service's external_request_config JSON row
+# (sleep_sec=5, sleep_jitter=0.5).
+SERVICE = "downloads.macro.pboc.repo_news"
+SLEEP_SEC = sleep_sec_for(SERVICE)
 EMPTY_PLACEHOLDER_SUFFIX = "_empty.md"
 
 RE_PUBDATE_META = re.compile(r"(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}:\d{2}")
@@ -970,15 +972,14 @@ def fetch_list_page(
     proxy: Optional[AntiBotProxy] = None,
 ) -> tuple[List[AnnouncementItem], Optional[str]]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
-    
+        proxy = AntiBotProxy(service=SERVICE)
+
     url = list_page_url(category, page, page_prefix_fmt)
     logger.info("Fetching list page %s page=%d (%s)", category, page, url)
 
     resp = proxy.get(
         session,
         url,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[list {category} p{page}]",
     )
@@ -1070,8 +1071,8 @@ def smart_pagination_pages(
     proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[List[int], Optional[str]]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
-    
+        proxy = AntiBotProxy(service=SERVICE)
+
     page_prefix_fmt: Optional[str] = None
 
     items, detected_fmt = fetch_list_page(session, category, 1, page_prefix_fmt, proxy)
@@ -1170,12 +1171,11 @@ def fetch_detail(
     session: requests.Session, item: AnnouncementItem, proxy: Optional[AntiBotProxy] = None
 ) -> bool:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
-    
+        proxy = AntiBotProxy(service=SERVICE)
+
     resp = proxy.get(
         session,
         item.detail_url,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[detail {item.title[:30]}]",
     )
@@ -1230,12 +1230,10 @@ def download_pboc_repo_news(
 
     session = build_session()
     stats = RunStats()
-    
-    # Create unified AntiBotProxy
-    proxy_config = AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-    )
-    proxy = AntiBotProxy(proxy_config)
+
+    # Pacing + anti-bot toggles from the service's external_request_config
+    # JSON row (sleep_sec=5, sleep_jitter=0.5, host tracking ON).
+    proxy = AntiBotProxy(service=SERVICE)
 
     prefixes = [CATEGORY_CONFIGS[c]["file_prefix"] for c in categories]
     cached_dates_by_prefix = scan_present_dates_with_pattern(
@@ -1645,6 +1643,8 @@ if __name__ == "__main__":
     parser.add_argument("--no-build-csv", action="store_true", default=False,
                         help="Skip building combined instruments CSV")
     args = parser.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     convert_csv = args.convert_csv and not args.no_convert_csv
     build_csv = args.build_csv and not args.no_build_csv

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from _common.sec_statics.classification import (
+from database.sec_statics.classification import (
     DEFAULT_SECTOR_ID,
     DEFAULT_INDUSTRY_ID,
     classify_etf_by_name,

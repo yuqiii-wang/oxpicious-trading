@@ -1,0 +1,16 @@
+{
+  "DUMMY_OVERSEAS_US": {
+    "name": "美国综合指数",
+    "exchange": null,
+    "sector_id": "OVERSEAS",
+    "industry_id": "OVERSEAS_US",
+    "tags": [
+      {
+        "sector_id": "OVERSEAS",
+        "industry_id": "OVERSEAS_US"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

@@ -44,7 +44,6 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
     RunStats,
     build_default_session,
     is_fresh_within,
@@ -58,6 +57,8 @@ from downloads.etf.huatai_pb._endpoints import (
 )
 
 logger = setup_logger("huatai_pb_dividends")
+
+SERVICE = "downloads.etf.huatai_pb.dividends"
 
 CSV_ENCODING = "utf-8-sig"
 FRESH_HOURS = 20 * 24  # freshness guard (semi-annual cadence)
@@ -119,7 +120,7 @@ def download_dividends(
     *,
     out_root: str | None = None,
     fund_codes: List[str] | None = None,
-    sleep_sec: float = DEFAULT_SLEEP_SEC,
+    sleep_sec: float | None = None,
     force: bool = False,
 ) -> Dict[str, object]:
     out_dir = resolve_out_dir("", "huatai_pb_dividends", out_root)
@@ -128,7 +129,7 @@ def download_dividends(
     codes = [c.strip() for c in (fund_codes or list(CHECKIN_FUND_CODES)) if c.strip()]
 
     session = build_default_session()
-    proxy = build_proxy(sleep_sec)
+    proxy = build_proxy(SERVICE, sleep_sec)
     stats = RunStats()
 
     for code in codes:
@@ -187,11 +188,14 @@ if __name__ == "__main__":
                          "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
     ap.add_argument("--out-root", type=str, default=None,
                     help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=DEFAULT_SLEEP_SEC,
-                    help=f"Sleep seconds between requests (default: {DEFAULT_SLEEP_SEC})")
+    ap.add_argument("--sleep-sec", type=float, default=None,
+                    help="Sleep seconds between requests "
+                         f"(default: external_request_config JSON for {SERVICE})")
     ap.add_argument("--force", action="store_true",
                     help="Re-download even when the CSV is fresh.")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     fund_codes_arg = None
     if args.fund_codes:

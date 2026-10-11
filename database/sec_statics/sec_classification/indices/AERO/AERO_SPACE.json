@@ -1,0 +1,29 @@
+{
+  "931594": {
+    "name": "卫星产业",
+    "exchange": "SS",
+    "sector_id": "AERO",
+    "industry_id": "AERO_SPACE",
+    "tags": [
+      {
+        "sector_id": "AERO",
+        "industry_id": "AERO_SPACE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_AERO_SPACE": {
+    "name": "航天/卫星综合指数",
+    "exchange": null,
+    "sector_id": "AERO",
+    "industry_id": "AERO_SPACE",
+    "tags": [
+      {
+        "sector_id": "AERO",
+        "industry_id": "AERO_SPACE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

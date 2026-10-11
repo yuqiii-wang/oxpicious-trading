@@ -1,0 +1,19 @@
+{
+  "H30597": {
+    "name": "新材料",
+    "exchange": "HK",
+    "sector_id": "MAT",
+    "industry_id": "NEW_MAT",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "NEW_MAT"
+      },
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

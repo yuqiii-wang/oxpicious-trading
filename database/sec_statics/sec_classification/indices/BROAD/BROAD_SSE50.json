@@ -1,0 +1,19 @@
+{
+  "000016": {
+    "name": "上证50",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SSE50",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE50"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "benchmark_broadmarket"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

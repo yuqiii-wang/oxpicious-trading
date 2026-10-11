@@ -429,7 +429,7 @@ export function PePanel({
           <Alert severity="warning">
             No streak data for {code}. (Streaks are computed by the Python
             build script against the monthly percentile bands — run{" "}
-            <code>python -m analyze.pe_and_dividends</code> to build
+            <code>python -m analysis.pe_and_dividends</code> to build
             analysis.pe_pct_streaks / analysis.dividends_pct_streaks.)
           </Alert>
         )}

@@ -61,25 +61,24 @@ def main() -> None:
                          "is given or when --no-other-only is set (the "
                          "all-active branch already contains LOFs).")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     if args.subcommand == "market":
         from downloads.etf.szse.archive.market import download_szse_archive_etf
-        sleep = args.sleep_sec if args.sleep_sec is not None else 5.0
         result = download_szse_archive_etf(
             out_root=args.out_root,
             end_date=args.end_date,
             start_date=args.start_date,
-            sleep_sec=sleep,
+            sleep_sec=args.sleep_sec,
         )
         logger.info(result)
     elif args.subcommand == "reports":
-        from downloads._common import LONG_SLEEP_INTERVAL
         from downloads.etf.szse.archive.reports import download_szse_etf_reports
-        sleep = args.sleep_sec if args.sleep_sec is not None else LONG_SLEEP_INTERVAL
         result = download_szse_etf_reports(
             out_root=args.out_root,
             etf_codes=args.etf_code,
-            sleep_sec=sleep,
+            sleep_sec=args.sleep_sec,
             extract=not args.no_extract,
             max_etfs=args.max_etfs,
             other_only=not args.no_other_only,

@@ -1,0 +1,92 @@
+{
+  "000097": {
+    "name": "高端装备",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "ADVMFG",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ADVMFG"
+      },
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000687": {
+    "name": "科创高装",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "ADVMFG",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ADVMFG"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930850": {
+    "name": "智能制造",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "ADVMFG",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ADVMFG"
+      },
+      {
+        "sector_id": "IND",
+        "industry_id": "IND_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931521": {
+    "name": "智选航空航天科技",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "ADVMFG",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "TECH_GENERAL"
+      },
+      {
+        "sector_id": "AERO",
+        "industry_id": "AERO_SPACE"
+      },
+      {
+        "sector_id": "AERO",
+        "industry_id": "AERO_AVIATION"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_TECH_INNOV"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_ADVMFG": {
+    "name": "高端制造综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "ADVMFG",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ADVMFG"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

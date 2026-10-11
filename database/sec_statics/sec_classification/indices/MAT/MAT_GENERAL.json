@@ -1,0 +1,110 @@
+{
+  "000033": {
+    "name": "上证材料",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "MAT_GENERAL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000071": {
+    "name": "材料等权",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "MAT_GENERAL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      },
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_FACTOR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000105": {
+    "name": "380材料",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "MAT_GENERAL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000689": {
+    "name": "科创材料",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "MAT_GENERAL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000854": {
+    "name": "500原料",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "MAT_GENERAL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000987": {
+    "name": "全指材料",
+    "exchange": "SS",
+    "sector_id": "MAT",
+    "industry_id": "MAT_GENERAL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_MAT_GENERAL": {
+    "name": "材料综合指数",
+    "exchange": null,
+    "sector_id": "MAT",
+    "industry_id": "MAT_GENERAL",
+    "tags": [
+      {
+        "sector_id": "MAT",
+        "industry_id": "MAT_GENERAL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

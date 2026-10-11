@@ -10,9 +10,7 @@ import requests
 
 from downloads._common import (
     MIN_VALID_BYTES,
-    DEFAULT_SLEEP_SEC,
     AntiBotProxy,
-    AntiBotConfig,
     is_error_html,
     safe_write_bytes,
 )
@@ -20,7 +18,6 @@ from downloads._common import (
 from ._config import (
     API_EXPORT_PERF,
     API_EXPORT_PERF_TESHU,
-    CSINDEX_TIMEOUT,
     EXPORT_HEADERS,
     logger,
     make_proxy,
@@ -50,7 +47,8 @@ def download_export_excel(
     :func:`downloads.index.csindex.quote._history.append_missing_dates_to_csv`).
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+        # Pacing from the service's "export" external_request_config row.
+        proxy = make_proxy("export")
 
     body = json.dumps([
         {"indexCode": index_code, "startDate": ymd(start_date), "endDate": ymd(end_date)}
@@ -65,7 +63,6 @@ def download_export_excel(
             params={"language": "CH"},
             data=body,
             headers=base_headers,
-            timeout=CSINDEX_TIMEOUT,
             logger=logger,
             log_tag=f"  [export {label} {index_code}]",
         )

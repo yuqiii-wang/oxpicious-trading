@@ -1,0 +1,65 @@
+{
+  "label": "科技",
+  "industries": {
+    "SEMI": {
+      "label": "半导体",
+      "slug": "semi"
+    },
+    "AI": {
+      "label": "人工智能",
+      "slug": "ai"
+    },
+    "COMPUTE": {
+      "label": "算力",
+      "slug": "compute"
+    },
+    "CLOUD": {
+      "label": "云计算",
+      "slug": "cloud"
+    },
+    "SOFTWARE": {
+      "label": "软件",
+      "slug": "software"
+    },
+    "COMPUTER": {
+      "label": "计算机",
+      "slug": "computer"
+    },
+    "COMMS": {
+      "label": "通信",
+      "slug": "comms"
+    },
+    "IOT": {
+      "label": "物联网",
+      "slug": "iot"
+    },
+    "INFO_SEC": {
+      "label": "信息安全",
+      "slug": "info_sec"
+    },
+    "VR": {
+      "label": "VR",
+      "slug": "vr"
+    },
+    "INTERNET": {
+      "label": "互联网",
+      "slug": "internet"
+    },
+    "CONSUMER_ELEC": {
+      "label": "消费电子",
+      "slug": "consumer_elec"
+    },
+    "DIGITAL": {
+      "label": "数字经济",
+      "slug": "digital"
+    },
+    "TMT": {
+      "label": "TMT",
+      "slug": "tmt"
+    },
+    "TECH_GENERAL": {
+      "label": "科技",
+      "slug": "tech_general"
+    }
+  }
+}

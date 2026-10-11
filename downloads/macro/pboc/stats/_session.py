@@ -7,7 +7,10 @@ fingerprint and bypasses the block.
 
 This module wraps ``curl_cffi.requests.Session`` with:
   * browser-profile rotation (chrome / chrome110 / chrome120 / edge)
-  * LONG_SLEEP_INTERVAL (90 s) + jitter between requests
+  * sleep + jitter between requests, resolved from the service's
+    external_request_config JSON row (``downloads.macro.pboc.stats``,
+    request_type ``curl_cffi``: sleep 90s, retries 2, linear backoff 30s,
+    blocked-host cooldown 1h)
   * host-blocking detection (4xx → mark host, stop retrying)
   * optional Referer chain (visit parent before child)
 """
@@ -28,10 +31,21 @@ except ImportError as _e:  # pragma: no cover
         "Install with: pip install curl_cffi"
     ) from _e
 
+from _common.request_config import (
+    host_block_cooldown_for,
+    request_config_for,
+    retry_policy_for,
+    sleep_sec_for,
+)
 from downloads._common import LONG_SLEEP_INTERVAL
 
 
 PBOC_BASE = "https://www.pbc.gov.cn"
+
+# Service row in the static external_request_config JSON tree — the runtime
+# source for pacing (sleep, retries/backoff, blocked-host cooldown, timeout).
+SERVICE = "downloads.macro.pboc.stats"
+REQUEST_TYPE = "curl_cffi"
 
 # curl_cffi impersonation targets — rotate to vary TLS fingerprint.
 # All must be supported by the installed curl_cffi version.
@@ -46,7 +60,11 @@ _IMPERSONATE_PROFILES: List[str] = [
 
 @dataclass
 class CffiAntiBotConfig:
-    """Configuration for the curl_cffi anti-bot session."""
+    """Configuration for the curl_cffi anti-bot session.
+
+    Defaults mirror the service's external_request_config JSON row; the
+    live values are resolved from that row in :func:`build_session`.
+    """
     base_sleep_sec: float = LONG_SLEEP_INTERVAL
     sleep_jitter: float = 0.5  # 0..1, multiplied with base_sleep_sec
     enable_sleep: bool = True
@@ -55,6 +73,7 @@ class CffiAntiBotConfig:
     max_retries: int = 2
     retry_backoff_sec: float = 30.0
     timeout: int = 60
+    host_block_cooldown_sec: float = 3600.0
 
 
 @dataclass
@@ -82,7 +101,7 @@ class CffiAntiBotSession:
 
     Wraps ``curl_cffi.requests.Session`` to provide:
       * TLS fingerprint rotation (impersonate parameter)
-      * Sleep with jitter between requests (LONG_SLEEP_INTERVAL default)
+      * Sleep with jitter between requests (external_request_config row)
       * Host-blocking detection
       * Retry with backoff on transient failures
 
@@ -100,7 +119,11 @@ class CffiAntiBotSession:
     ):
         self.config = config or CffiAntiBotConfig()
         self.logger = logger or logging.getLogger("pboc_stats")
-        self._tracker = HostBlockTracker() if self.config.enable_host_tracking else None
+        self._tracker = None
+        if self.config.enable_host_tracking:
+            self._tracker = HostBlockTracker(
+                _block_duration=self.config.host_block_cooldown_sec,
+            )
         self._profile_idx = 0
         # curl_cffi Session persists cookies across requests
         self._session = cffi_requests.Session()
@@ -169,7 +192,15 @@ class CffiAntiBotSession:
         referer: Optional[str] = None,
         sleep_sec: Optional[float] = None,
     ) -> Optional[cffi_requests.Response]:
-        """Perform a GET with retries, profile rotation, and anti-bot sleep."""
+        """Perform a GET with retries, profile rotation, and anti-bot sleep.
+
+        The final outcome of every logical call is audited to
+        ``monitor.external_resource_audit`` via ``record_http`` (retries are
+        not itemized; the anti-bot sleep lands after the audit record, so
+        duration_ms covers only the HTTP attempts).
+        """
+        from _common.external_resource_audit import record_http
+
         if self.is_blocked(url):
             self.logger.warning("  [blocked] host already blocked, skipping: %s", url)
             return None
@@ -180,6 +211,11 @@ class CffiAntiBotSession:
             headers["Sec-Fetch-Site"] = "same-origin"
 
         last_exc: Optional[Exception] = None
+        started = time.perf_counter()
+        # (status, reason, is_failed, resp) of the FINAL outcome — recorded
+        # once, after the retry loop, matching the audit's "retries are not
+        # itemized" convention.
+        final: Optional[Tuple[int, str, bool, Optional[cffi_requests.Response]]] = None
         for attempt in range(self.config.max_retries + 1):
             profile = self._next_profile()
             try:
@@ -205,8 +241,8 @@ class CffiAntiBotSession:
                 continue
 
             if resp.status_code == 200:
-                self._sleep(sleep_sec)
-                return resp
+                final = (200, "", False, resp)
+                break
 
             if self._is_blocked_response(resp.status_code):
                 self.logger.error(
@@ -224,7 +260,8 @@ class CffiAntiBotSession:
                     )
                     time.sleep(backoff)
                     continue
-                return None
+                final = (resp.status_code, f"HTTP {resp.status_code}", True, None)
+                break
 
             # 5xx or other — retry
             self.logger.warning(
@@ -234,10 +271,26 @@ class CffiAntiBotSession:
             if attempt < self.config.max_retries:
                 time.sleep(self.config.retry_backoff_sec)
                 continue
+            final = (resp.status_code, f"HTTP {resp.status_code} after retries",
+                     True, None)
+            break
+
+        if final is None:
+            reason = (f"{type(last_exc).__name__}: {last_exc}"
+                      if last_exc else "all retries exhausted")
+            record_http(url, None, is_failed=True, failure_reason=reason,
+                        duration_ms=(time.perf_counter() - started) * 1000.0)
+            if last_exc:
+                self.logger.error("  [cffi] all retries exhausted: %s", last_exc)
             return None
 
-        if last_exc:
-            self.logger.error("  [cffi] all retries exhausted: %s", last_exc)
+        status, reason, is_failed, resp = final
+        record_http(url, status, is_failed=is_failed,
+                    failure_reason=reason or None,
+                    duration_ms=(time.perf_counter() - started) * 1000.0)
+        if not is_failed:
+            self._sleep(sleep_sec)
+            return resp
         return None
 
 
@@ -246,8 +299,32 @@ def build_session(
     *,
     sleep_sec: Optional[float] = None,
 ) -> CffiAntiBotSession:
-    """Build a CffiAntiBotSession configured for PBoC stats downloads."""
+    """Build a CffiAntiBotSession configured for PBoC stats downloads.
+
+    Pacing (sleep, retries/backoff, request timeout, blocked-host cooldown)
+    resolves from the service's external_request_config JSON row (request_type
+    ``curl_cffi``); the explicit *sleep_sec* CLI override wins for the base
+    sleep only, and the former inline constants are the fallback when the row
+    omits a value.
+    """
+    max_retries, retry_backoff_sec = retry_policy_for(SERVICE, REQUEST_TYPE)
+    read_timeout = request_config_for(SERVICE, REQUEST_TYPE).timeout_read_sec
+    cooldown = host_block_cooldown_for(SERVICE, REQUEST_TYPE)
     config = CffiAntiBotConfig(
-        base_sleep_sec=sleep_sec if sleep_sec is not None else LONG_SLEEP_INTERVAL,
+        base_sleep_sec=(
+            sleep_sec if sleep_sec is not None
+            else sleep_sec_for(SERVICE, REQUEST_TYPE)
+        ),
+        max_retries=max_retries if max_retries is not None else 2,
+        retry_backoff_sec=(
+            retry_backoff_sec if retry_backoff_sec is not None else 30.0
+        ),
+        # The row's timeout_connect_sec is None (no connect timeout) and
+        # timeout_read_sec is 60 — curl_cffi takes one scalar bound here, so
+        # the read timeout applies as the whole-request cap.
+        timeout=int(read_timeout) if read_timeout is not None else 60,
+        host_block_cooldown_sec=(
+            cooldown if cooldown is not None else 3600.0
+        ),
     )
     return CffiAntiBotSession(config=config, logger=logger)

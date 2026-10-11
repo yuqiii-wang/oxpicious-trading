@@ -1,0 +1,42 @@
+{
+  "931994": {
+    "name": "电网设备主题",
+    "exchange": "SS",
+    "sector_id": "ENG",
+    "industry_id": "POWER_GRID",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "POWER_GRID"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_POWER_GRID": {
+    "name": "电力/电网综合指数",
+    "exchange": null,
+    "sector_id": "ENG",
+    "industry_id": "POWER_GRID",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "POWER_GRID"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H30199": {
+    "name": "电力指数",
+    "exchange": "HK",
+    "sector_id": "ENG",
+    "industry_id": "POWER_GRID",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "POWER_GRID"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

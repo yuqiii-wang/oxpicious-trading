@@ -555,7 +555,7 @@ async def main() -> None:
         # these tables), and value-blind prepared-statement readers
         # (node-pg plans before bind values) then misestimate into whole-
         # table seq scans (the 2026-09-29 v_stock_daily ANY-array 35s UI
-        # regression). Same convention as analysis_forecasts --analyze.
+        # regression). Same convention as analysis_forecasts --analysis.
         # ------------------------------------------------------------------
         if getattr(args, "analyze", False):
             from _common.db_commons import analyze_tables_async

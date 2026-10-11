@@ -1,0 +1,37 @@
+{
+  "930633": {
+    "name": "中证旅游",
+    "exchange": "SS",
+    "sector_id": "CONS",
+    "industry_id": "TOURISM",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "TOURISM"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_TOURISM": {
+    "name": "旅游综合指数",
+    "exchange": null,
+    "sector_id": "CONS",
+    "industry_id": "TOURISM",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "TOURISM"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "service": "analysis.options",
+  "max_parallel": 1,
+  "freq": "daily",
+  "schedule": "every A-share trading date from 19:00, after builds_daily.sh (analysis_daily.sh loop order)",
+  "notes": null,
+  "source_ref": "scripts/analysis_daily.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

@@ -1,0 +1,110 @@
+{
+  "000044": {
+    "name": "上证中盘",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_MID_SMALL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_MID_SMALL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000045": {
+    "name": "上证小盘",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_MID_SMALL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_MID_SMALL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000046": {
+    "name": "上证中小",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_MID_SMALL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_MID_SMALL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000091": {
+    "name": "沪财中小",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_MID_SMALL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_MID_SMALL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000867": {
+    "name": "港中小企",
+    "exchange": "SS",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_MID_SMALL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_MID_SMALL"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "399702": {
+    "name": "深证F120",
+    "exchange": "SZ",
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_MID_SMALL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_MID_SMALL"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SZSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_STRAT_MID_SMALL": {
+    "name": "中小盘综合指数",
+    "exchange": null,
+    "sector_id": "STRATEGY",
+    "industry_id": "STRAT_MID_SMALL",
+    "tags": [
+      {
+        "sector_id": "STRATEGY",
+        "industry_id": "STRAT_MID_SMALL"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

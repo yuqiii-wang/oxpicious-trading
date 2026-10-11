@@ -1,0 +1,72 @@
+{
+  "000681": {
+    "name": "科创价格",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_STAR",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000688": {
+    "name": "科创50",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_STAR",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "benchmark_broadmarket"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000698": {
+    "name": "科创100",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_STAR",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000699": {
+    "name": "科创200",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_STAR",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_STAR": {
+    "name": "科创综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_STAR",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

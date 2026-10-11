@@ -6,11 +6,13 @@ refresh), the cache is bypassed and that index is re-downloaded with the
 CSV stamped to today's date.  This catches all month-boundary scenarios
 (1st day, 2nd day after weekend, etc.) without hard-coding day==1.
 
-Default sleep between requests is ``SLEEP_SEC`` = VERY_LONG_SLEEP_INTERVAL (300s).
+Default sleep between requests is ``SLEEP_SEC``, resolved from the service's
+external_request_config JSON row (sleep_sec=300, jitter 0.3).
 """
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,8 +20,8 @@ from typing import Any, Dict, List, Optional
 from downloads._common import (
     MIN_VALID_BYTES,
     AntiBotProxy,
-    AntiBotConfig,
     RunStats,
+    antibot_config_for,
     build_default_session,
     is_valid_file,
     load_classification_indices,
@@ -33,6 +35,7 @@ from ._config import (
     CSINDEX_SKIP_CODES,
     DEBT_SECTOR_ID,
     DEBT_SECTOR_INDUSTRY_IDS,
+    SERVICE,
     SLEEP_SEC,
     logger,
 )
@@ -45,7 +48,7 @@ def download_index_composition(
     index_codes: Optional[List[str]] = None,
     out_root: Optional[str] = None,
     skip_cached: bool = True,
-    sleep_sec: float = SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     force_month_start: bool = False,
 ) -> dict:
     """Download CSI index composition (closeweight) for the given index codes.
@@ -68,10 +71,10 @@ def download_index_composition(
         index_codes = sorted(load_classification_index_names().keys())
 
     if not index_codes:
-        logger.warning("No index codes to download (sec_classification.json has no indices)")
+        logger.warning("No index codes to download (sec_classification cache has no indices)")
         return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
 
-    # Load index metadata from sec_classification.json (replaces _classification.py).
+    # Load index metadata from the sec_classification cache (replaces _classification.py).
     _index_meta = load_classification_indices()
     _index_names = {c: info.get("name", c) for c, info in _index_meta.items()}
 
@@ -92,11 +95,14 @@ def download_index_composition(
     session = build_default_session()
     stats = RunStats()
 
-    proxy_config = AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        sleep_jitter=0.3,
-    )
-    proxy = AntiBotProxy(proxy_config)
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter=0.3, timeouts, anti-bot toggles); an explicit --sleep-sec
+    # overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
 
     results: List[Dict[str, Any]] = []
 
@@ -122,7 +128,7 @@ def download_index_composition(
             # Debt sector indices (国债指数, 企债指数) track bonds, not stocks,
             # so they don't have meaningful composition data. Skip them —
             # daily index OHLCV data (downloaded by download_csindex.py) is
-            # sufficient.  Sector/industry are read from sec_classification.json.
+            # sufficient.  Sector/industry are read from the sec_classification cache.
             idx_info = _index_meta.get(code, {})
             sid = idx_info.get("sector_id")
             iid = idx_info.get("industry_id")

@@ -3,7 +3,8 @@
 Integrates two sources into one keyword taxonomy (the "SEC classification
 study"):
 
-  1. ``_common/sec_statics/sec_classification.json`` — the project's
+  1. ``database/sec_statics/sec_classification/`` (shard tree, read via
+     ``classification_store.load_catalog``) — the project's
      CANONICAL sector/industry catalog (sector_id, industry_id, label, slug).
      Canonical industry ids are UPPERCASE slugs (BANKS, SEMI, …) — the same
      values stored in stats.sec_classification / stats.industry_basic_stats,
@@ -32,7 +33,7 @@ tokens (the denominator of ``text.news_keywords.count_pct``).
 
 Industry assignment: when an article matches several industries, the winner
 is the one appearing FIRST in the catalog (sector rule order — same
-tie-breaking convention as _common.sec_statics.classification). ONE
+tie-breaking convention as database.sec_statics.classification). ONE
 exception, applied only in :func:`extract_for_articles` (the text.news
 tagging path — llm_agents QA tagging keeps the plain rule): a general daily
 broad-market recap item (zhihu 「如何看待…A股市场行情?」 answers, media
@@ -46,6 +47,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from database.sec_statics import classification_store
 from builds.text import paths
 
 logger = logging.getLogger(__name__)
@@ -55,8 +57,7 @@ logger = logging.getLogger(__name__)
 # Taxonomy construction
 # ----------------------------------------------------------------------------
 def _load_catalog() -> Dict[str, Any]:
-    with open(paths.SEC_CLASSIFICATION_JSON, encoding="utf-8") as f:
-        return json.load(f)["catalog"]
+    return classification_store.load_catalog()
 
 
 def _load_news_keywords_json() -> Dict[str, Any]:

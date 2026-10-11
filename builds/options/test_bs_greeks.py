@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from _common.df_utils import compute_iv_and_greeks
+from _common.labels import OPTION_TYPE_CODE
 
 try:
     import QuantLib as ql
@@ -40,6 +41,9 @@ def ql_reference(S, K, T, price, is_call):
 
 
 # ===========================================================================
+import logging
+logger = logging.getLogger(__name__)
+
 logger.info("=" * 64)
 logger.info("TEST 1: Correctness vs QuantLib (SZSE-style scaled inputs)")
 logger.info("=" * 64)
@@ -54,8 +58,6 @@ sigma_true = np.random.uniform(0.08, 0.9, n)
 # Prices from the vectorized pricer itself (self-consistent data)
 from _common.df_utils import bs_price_greeks
 
-import logging
-logger = logging.getLogger(__name__)
 price, *_ = bs_price_greeks(S, K, T, r, sigma_true, is_call)
 # add tiny noise (like real market data)
 price = price * (1 + np.random.normal(0, 0.001, n))
@@ -65,7 +67,7 @@ test_df = pd.DataFrame({
     "strike_price": K * 1000,
     "settle": price * 10000,
     "days_to_expiry": T * 365,
-    "option_type": np.where(is_call, "CALL", "PUT"),
+    "option_type": np.where(is_call, OPTION_TYPE_CODE["CALL"], OPTION_TYPE_CODE["PUT"]),
 })
 
 t0 = time.time()
@@ -93,7 +95,6 @@ for name, a in zip(names, new):
           f"nan_only_new={only_new.sum()}  nan_only_ref={only_ref.sum()}")
 
 # ===========================================================================
-logger.info()
 logger.info("=" * 64)
 logger.info("TEST 2: Performance at scale (1.6M rows, like the real SZSE build)")
 logger.info("=" * 64)
@@ -110,7 +111,7 @@ big_df = pd.DataFrame({
     "strike_price": K2 * 1000,
     "settle": price2 * 10000,
     "days_to_expiry": T2 * 365,
-    "option_type": np.where(is_call2, "CALL", "PUT"),
+    "option_type": np.where(is_call2, OPTION_TYPE_CODE["CALL"], OPTION_TYPE_CODE["PUT"]),
 })
 
 t0 = time.time()
@@ -159,7 +160,6 @@ except Exception as e:
     logger.info(f"GPU test skipped: {type(e).__name__}: {e}")
 
 # ===========================================================================
-logger.info()
 logger.info("=" * 64)
 logger.info("TEST 3: CFFEX-style (no scaling) + csv_delta fallback")
 logger.info("=" * 64)
@@ -174,7 +174,7 @@ cf_df = pd.DataFrame({
     "strike_price": K3,
     "settle": p3,
     "days_to_expiry": T3 * 365,
-    "option_type": np.where(ic3, "CALL", "PUT"),
+    "option_type": np.where(ic3, OPTION_TYPE_CODE["CALL"], OPTION_TYPE_CODE["PUT"]),
     "csv_delta": np.full(n3, 0.5),
 })
 iv3, d3, th3, g3, v3, r3 = compute_iv_and_greeks(
@@ -192,5 +192,4 @@ iv3b, d3b, *_ = compute_iv_and_greeks(
 logger.info(f"with below-intrinsic rows: NaN IV = {np.isnan(iv3b).sum()}, "
       f"csv_delta fallback = {np.isclose(d3b, 0.5).sum()}")
 
-logger.info()
 logger.info("ALL TESTS COMPLETE")

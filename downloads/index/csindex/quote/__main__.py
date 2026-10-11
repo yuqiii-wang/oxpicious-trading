@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 
 from .runner import download_index
+from ._config import SERVICE
 
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("quote")
@@ -28,7 +29,17 @@ if __name__ == "__main__":
             "previous trading day row (fast local check per code)."
         ),
     )
+    ap.add_argument(
+        "--sleep-sec", type=float, default=None,
+        help="Sleep seconds between requests "
+             f"(default: external_request_config JSON for {SERVICE})",
+    )
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(
-        download_index(ensure_prev_trading_day=args.ensure_prev_trading_day)
+        download_index(
+            ensure_prev_trading_day=args.ensure_prev_trading_day,
+            sleep_sec=args.sleep_sec,
+        )
     )

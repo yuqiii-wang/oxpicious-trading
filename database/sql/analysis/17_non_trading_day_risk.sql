@@ -44,7 +44,7 @@
 --      identity row removes its rsi row AND its holiday row instead of
 --      erroring.
 --
---  Populated by the internal holiday step of `analyze.mov_ave_spread`
+--  Populated by the internal holiday step of `analysis.mov_ave_spread`
 --  (see holiday.py). Incremental upsert by missing dates; --force truncates
 --  first.
 --
@@ -60,7 +60,7 @@ DROP TABLE IF EXISTS analysis.mov_ave_rsi_holiday CASCADE;
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi_holiday';
 
 CREATE TABLE analysis.mov_ave_rsi_holiday (
-    sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    sec_type        SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -94,9 +94,8 @@ COMMENT ON TABLE  analysis.mov_ave_rsi_holiday IS
     '(D-1) was a trading day / weekend / holiday / long holiday, the '
     'consecutive non-trading-day count ending on D-1, and today''s '
     'intraday high-low gap and open-close gap. Populated by the internal '
-    'holiday step of analyze.mov_ave_spread (holiday.py).';
-COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.sec_type IS
-    'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+    'holiday step of analysis.mov_ave_spread (holiday.py).';
+COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.sec_type IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.code IS
     'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.date IS

@@ -36,7 +36,7 @@ import {
 import RefreshButton from "@/components/RefreshButton";
 import { DateSelector } from "@/shared/components/date-selector";
 import OiSkewIntradayPanel from "@/live/features/options/OiSkewIntradayPanel";
-import { isWithinTradingHours } from "@/live/hooks/useSecAllocLivePipeline";
+import { isWithinTradingHours } from "@/shared/datetime";
 import {
   fetchLiveOptionsDates,
   fetchLiveOiSkewIntraday,

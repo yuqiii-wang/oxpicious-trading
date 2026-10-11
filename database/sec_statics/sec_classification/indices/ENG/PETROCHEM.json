@@ -1,0 +1,33 @@
+{
+  "DUMMY_PETROCHEM": {
+    "name": "石化综合指数",
+    "exchange": null,
+    "sector_id": "ENG",
+    "industry_id": "PETROCHEM",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "PETROCHEM"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  },
+  "H11057": {
+    "name": "石化产业",
+    "exchange": "HK",
+    "sector_id": "ENG",
+    "industry_id": "PETROCHEM",
+    "tags": [
+      {
+        "sector_id": "ENG",
+        "industry_id": "PETROCHEM"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

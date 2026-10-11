@@ -4,7 +4,7 @@
  * (analysis.dividend_deliveries — per-event yield / eps /
  * ±20d-last-year stability aggregated per annual window). LRU TTL
  * cache only; the analysis schema is recomputed offline by the Python
- * build script (analyze.pe_and_dividends --metrics deliveries).
+ * build script (analysis.pe_and_dividends --metrics deliveries).
  */
 import { fetchJson } from "./_cache";
 import type {

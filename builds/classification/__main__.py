@@ -1,16 +1,16 @@
 """
 build_classification — Build two-level (sector → industry) security
 classification for ETF + Index + Stock, persist INDEX classification to
-sec_classification.json, and upsert all to stats.sec_classification +
+the sec_classification/ shard cache, and upsert all to stats.sec_classification +
 stats.sec_index_tags.
 
 Classification model (hierarchy reflected by the package layout under
 builds/classification/sector_industry/):
 
   1. INDICES (sector_industry/index/) — classification (sector, industry) is
-     loaded directly from sec_classification.json (the authoritative,
-     hand-editable cache).  New indices not yet in the JSON are classified by
-     keyword rules and added to the JSON on the next save.
+     loaded directly from the sec_classification/ shard cache (the
+     authoritative, hand-editable cache).  New indices not yet in the cache
+     are classified by keyword rules and added on the next save.
      parent_index_code = '' (empty string, root of hierarchy).
   2. ETFs (sector_industry/index/etf/) — always recomputed from CSV + index
      inheritance (one-to-one ETF → tracking index).  When the parent index is
@@ -49,7 +49,7 @@ from _common.log_setup import setup_logging
 
 logger = setup_logging("classification")
 
-from builds.classification.sector_industry.paths import CSV_DIR, JSON_PATH  # noqa: E402
+from builds.classification.sector_industry.paths import CSV_DIR, JSON_DIR  # noqa: E402
 from builds.classification.sector_industry.csv_loader import (  # noqa: E402
     find_latest_csv, load_etf_index_csv)
 from builds.classification.sector_industry.json_io import load_json, save_json  # noqa: E402
@@ -71,7 +71,8 @@ class ClassificationBuild(DataBuild):
         parser.add_argument("--reclassify", action="store_true",
                             help="Force reclassification of ALL indices from keyword rules "
                                  "(ignores stale JSON-cached sector_id/industry_id/tags). "
-                                 "Use this after changing INDEX_RULES to propagate new rules.")
+                                 "Use this after changing the JSON rules "
+                                 "(database/sec_statics/classification_rules/*.json) to propagate new rules.")
         self.add_force_arg(parser)
 
     def header_fields(self) -> dict:
@@ -85,7 +86,7 @@ class ClassificationBuild(DataBuild):
         if self.args.reclassify:
             mode_parts.append("reclassify")
         return {
-            "JSON path": JSON_PATH,
+            "JSON dir": JSON_DIR,
             "Today": TODAY_STR,
             "Mode": " + ".join(mode_parts),
         }

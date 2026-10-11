@@ -1,0 +1,65 @@
+{
+  "000824": {
+    "name": "国企红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_SOE",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_SOE"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000825": {
+    "name": "央企红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_SOE",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_SOE"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931132": {
+    "name": "诚通央企红利",
+    "exchange": "SS",
+    "sector_id": "DIV",
+    "industry_id": "DIV_SOE",
+    "tags": [
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_SOE"
+      },
+      {
+        "sector_id": "DIV",
+        "industry_id": "DIV_GENERAL"
+      },
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

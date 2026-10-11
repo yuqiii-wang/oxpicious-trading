@@ -1,0 +1,33 @@
+{
+  "399001": {
+    "name": "深证成指",
+    "exchange": "SZ",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SZSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SZSE"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "benchmark_broadmarket"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_SZSE": {
+    "name": "深证综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_SZSE",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SZSE"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

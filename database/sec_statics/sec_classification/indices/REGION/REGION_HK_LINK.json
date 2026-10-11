@@ -1,0 +1,132 @@
+{
+  "000159": {
+    "name": "沪股通",
+    "exchange": "SS",
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930931": {
+    "name": "港股通50",
+    "exchange": "HK",
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "930957": {
+    "name": "港股通中国100",
+    "exchange": "HK",
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931395": {
+    "name": "沪港深300",
+    "exchange": "HK",
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SZSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "CES100": {
+    "name": "中华港股通精选100",
+    "exchange": "HK",
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_REGION_HK_LINK": {
+    "name": "沪港深/港股通综合指数",
+    "exchange": null,
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  },
+  "H11100": {
+    "name": "香港100",
+    "exchange": "HK",
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H30455": {
+    "name": "沪港深500",
+    "exchange": "HK",
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SZSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "H50069": {
+    "name": "港股通",
+    "exchange": "HK",
+    "sector_id": "REGION",
+    "industry_id": "REGION_HK_LINK",
+    "tags": [
+      {
+        "sector_id": "REGION",
+        "industry_id": "REGION_HK_LINK"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

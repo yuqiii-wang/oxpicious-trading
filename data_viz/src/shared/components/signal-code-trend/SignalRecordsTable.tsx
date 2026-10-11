@@ -9,6 +9,7 @@
  */
 import {
   Box,
+  Chip,
   Paper,
   Table,
   TableBody,
@@ -32,9 +33,11 @@ export interface SignalRecordsTableProps {
   showTime?: boolean;
 }
 
-/** Stable React key for one signal record inside a shared scope. */
+/** Stable React key for one signal record inside a shared scope. The
+ *  population VARIANT rides it: the OHLCV-boost twin shares the plain
+ *  record's (config, day, time). */
 function recordKey(s: TradingSignal): string {
-  return `${s.date}-${s.time}-${s.signal_type}-${s.signal_sub_type}`;
+  return `${s.date}-${s.time}-${s.signal_type}-${s.signal_sub_type}-${s.is_ohlcv_boosted ? "b" : "p"}`;
 }
 
 export default function SignalRecordsTable({
@@ -81,6 +84,24 @@ export default function SignalRecordsTable({
               )}
               <TableCell sx={{ whiteSpace: "nowrap" }}>
                 {s.signal_type} · {s.signal_sub_type}
+                {s.is_ohlcv_boosted && (
+                  <Tooltip
+                    title="The OHLCV-boost twin — the same event with its confidence trust-weighted by the day-0 ohlcv score"
+                    arrow
+                  >
+                    <Chip
+                      size="small"
+                      label="boost"
+                      variant="outlined"
+                      sx={{
+                        ml: 0.5,
+                        height: 18,
+                        fontSize: "0.65rem",
+                        verticalAlign: "middle",
+                      }}
+                    />
+                  </Tooltip>
+                )}
               </TableCell>
               <TableCell>
                 <SignalActionChip action={s.action} confidence={s.confidence} />

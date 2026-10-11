@@ -1,0 +1,40 @@
+[
+  {
+    "service": "downloads.stream.bse.price",
+    "request_type": "page",
+    "resource_type": 0,
+    "sleep_sec": 1.5,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": false,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "BSE streaming pagination. Rotation stays off: the BSE endpoint needs fixed headers that fingerprint rotation would clobber (bjs adapter).",
+    "source_ref": "downloads/stream/bse/price/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  },
+  {
+    "service": "downloads.stream.bse.price",
+    "request_type": "poll",
+    "resource_type": 0,
+    "sleep_sec": null,
+    "sleep_jitter": null,
+    "poll_interval_sec": 60,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "BSE poller loop cadence (DEFAULT_POLL_INTERVAL_SEC).",
+    "source_ref": "downloads/stream/bse/price/_model.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

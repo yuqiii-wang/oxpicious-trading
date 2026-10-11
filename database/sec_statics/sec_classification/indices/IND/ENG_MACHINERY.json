@@ -1,0 +1,59 @@
+{
+  "000693": {
+    "name": "科创机械",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "ENG_MACHINERY",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ENG_MACHINERY"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_STAR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "000812": {
+    "name": "细分机械",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "ENG_MACHINERY",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ENG_MACHINERY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931752": {
+    "name": "工程机械主题",
+    "exchange": "SS",
+    "sector_id": "IND",
+    "industry_id": "ENG_MACHINERY",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ENG_MACHINERY"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_ENG_MACHINERY": {
+    "name": "工程机械综合指数",
+    "exchange": null,
+    "sector_id": "IND",
+    "industry_id": "ENG_MACHINERY",
+    "tags": [
+      {
+        "sector_id": "IND",
+        "industry_id": "ENG_MACHINERY"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

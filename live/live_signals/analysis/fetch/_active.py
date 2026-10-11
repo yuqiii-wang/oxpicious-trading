@@ -12,6 +12,8 @@ import datetime
 
 from asyncpg import Connection
 
+from _common.labels import SEC_TYPE_CODE, SEC_TYPE_LABEL, SIGNAL_TYPE_LABEL
+
 from live.live_signals.config import SIGNALS_TABLE
 
 
@@ -68,9 +70,21 @@ async def fetch_active_signals(
         f"FROM {SIGNALS_TABLE} s "
         f"WHERE s.sec_type = $1 AND s.code = $2 AND s.is_active "
         f"ORDER BY s.signal_type, s.signal_sub_type",
-        sec_type, code,
+        # the stored sec_type / signal_type columns are SMALLINT label
+        # codes (the label-code contract) — the param carries the code
+        # and the returned codes decode to the labels the rest of the
+        # live tier speaks (SIGNAL_VALUE_SOURCE / the live row write)
+        SEC_TYPE_CODE[sec_type], code,
     )
-    return [dict(r) for r in rows]
+    out: list[dict] = []
+    for r in rows:
+        rec = dict(r)
+        rec["sec_type"] = SEC_TYPE_LABEL.get(rec["sec_type"], rec["sec_type"])
+        rec["signal_type"] = SIGNAL_TYPE_LABEL.get(
+            rec["signal_type"], rec["signal_type"],
+        )
+        out.append(rec)
+    return out
 
 
 async def fetch_active_codes(conn: Connection, sec_type: str) -> list[str]:
@@ -79,6 +93,6 @@ async def fetch_active_codes(conn: Connection, sec_type: str) -> list[str]:
     rows = await conn.fetch(
         f"SELECT DISTINCT code FROM {SIGNALS_TABLE} "
         f"WHERE sec_type = $1 AND is_active ORDER BY code",
-        sec_type,
+        SEC_TYPE_CODE[sec_type],
     )
     return [r["code"] for r in rows]

@@ -1,0 +1,25 @@
+{
+  "label": "金融",
+  "industries": {
+    "BANKS": {
+      "label": "银行",
+      "slug": "banks"
+    },
+    "BROKERS": {
+      "label": "证券",
+      "slug": "brokers"
+    },
+    "INSURANCE": {
+      "label": "保险",
+      "slug": "insurance"
+    },
+    "FINTECH": {
+      "label": "金融科技",
+      "slug": "fintech"
+    },
+    "FIN_GENERAL": {
+      "label": "金融",
+      "slug": "fin_general"
+    }
+  }
+}

@@ -60,14 +60,15 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 from downloads._common import (
-    AntiBotConfig,
     AntiBotProxy,
+    antibot_config_for,
     build_headers_with_referer,
 )
 
@@ -171,9 +172,18 @@ def huatai_headers(referer_code: Optional[str] = None) -> Dict[str, str]:
     return _HEADERS
 
 
-def build_proxy(sleep_sec: float) -> AntiBotProxy:
-    """AntiBotProxy with the caller's per-request sleep interval."""
-    return AntiBotProxy(AntiBotConfig(base_sleep_sec=sleep_sec, sleep_jitter=0.3))
+def build_proxy(service: str, sleep_sec: Optional[float] = None) -> AntiBotProxy:
+    """AntiBotProxy for a huatai_pb downloader service.
+
+    Pacing (base sleep, jitter, timeouts, anti-bot toggles) resolves from
+    the service's external_request_config JSON row; a non-None
+    *sleep_sec* overrides only the row's base sleep.
+    """
+    if sleep_sec is None:
+        return AntiBotProxy(service=service)
+    return AntiBotProxy(replace(
+        antibot_config_for(service), base_sleep_sec=sleep_sec,
+    ))
 
 
 def is_listed_etf_code(code: str) -> bool:

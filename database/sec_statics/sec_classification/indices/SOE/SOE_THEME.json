@@ -1,0 +1,158 @@
+{
+  "000042": {
+    "name": "上证央企",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000049": {
+    "name": "上证民企",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000056": {
+    "name": "上证国企",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000861": {
+    "name": "央企创新",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "000865": {
+    "name": "上海国企",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931265": {
+    "name": "民企300",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931372": {
+    "name": "浙江国资",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931823": {
+    "name": "国资央企50",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "950096": {
+    "name": "上海国企",
+    "exchange": "SS",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_SOE_THEME": {
+    "name": "央企/国企综合指数",
+    "exchange": null,
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  },
+  "H11153": {
+    "name": "内地国有",
+    "exchange": "HK",
+    "sector_id": "SOE",
+    "industry_id": "SOE_THEME",
+    "tags": [
+      {
+        "sector_id": "SOE",
+        "industry_id": "SOE_THEME"
+      }
+    ],
+    "is_industry_not_strategy": false
+  }
+}

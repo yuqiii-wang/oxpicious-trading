@@ -33,7 +33,7 @@ from typing import Dict, Tuple
 import numpy as np
 
 from _common.build_commons import rec_col
-from _common.sec_statics.classification import (
+from database.sec_statics.classification import (
     DEFAULT_SECTOR_ID,
     classify_etf_by_name,
     classify_etf_strategy_by_name,

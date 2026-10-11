@@ -53,6 +53,11 @@ interface AppState {
   /** Legacy theme slug — kept for backward compat, mapped to industrySlug. */
   themeSlug: string | null;
   setThemeSlug: (slug: string | null) => void;
+
+  /** Most recent non-Monitor/Config page path — the target when the active
+   *  top-bar Monitor / Config icon button is clicked again (toggle off). */
+  lastMainPath: string;
+  setLastMainPath: (path: string) => void;
 }
 
 const DEFAULT_SNAPSHOTS: SnapshotDate[] = [
@@ -102,4 +107,13 @@ export const useStore = create<AppState>((set) => ({
 
   themeSlug: null,
   setThemeSlug: (slug) => set({ industrySlug: slug }),
+
+  // Session-persisted so un-clicking Monitor/Config still has a page to
+  // return to after a full reload (e.g. F5 while on a Config page).
+  // Default matches the app's "/" redirect in App.tsx.
+  lastMainPath: sessionStorage.getItem("topbar:last-main-path") ?? "/live/market-movements",
+  setLastMainPath: (path) => {
+    sessionStorage.setItem("topbar:last-main-path", path);
+    set({ lastMainPath: path });
+  },
 }));

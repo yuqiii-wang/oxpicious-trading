@@ -32,6 +32,10 @@ from downloads._common.exchanges.szse import (
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("trend")
 
+# Pacing (inter-day sleep, jitter, timeouts, toggles) resolves from this
+# service's external_request_config JSON row inside run_szse_download.
+SERVICE = "downloads.index.szse.trend"
+
 
 TREND_ARCHIVE_DATE = "2025-07-01"
 
@@ -81,7 +85,7 @@ def download_szse_trend_index(
     out_root: Optional[str] = None,
     end_date: Optional[str] = None,
     start_date: str = "2025-07-01",
-    sleep_sec: float = 5.0,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
 ) -> dict:
     return run_szse_download(
@@ -98,6 +102,7 @@ def download_szse_trend_index(
         security_types=["index"],
         sleep_sec=sleep_sec,
         session=session,
+        service=SERVICE,
         exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
         code_filter_by_type=CODE_FILTER_BY_TYPE,
@@ -106,4 +111,6 @@ def download_szse_trend_index(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_szse_trend_index())

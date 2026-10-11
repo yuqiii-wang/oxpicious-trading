@@ -1,0 +1,20 @@
+[
+  {
+    "service": "default",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 60,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "Repo-wide FALLBACK for services without their own file in this tree: pace every request with a 60s anti-bot cooldown (±50% jitter) and the standard AntiBot toggles/timeouts. Not a real service — lookups substitute the requesting service's name.",
+    "source_ref": "downloads/_common/net.py AntiBotConfig defaults (fallback written 2026-10-10)"
+  }
+]

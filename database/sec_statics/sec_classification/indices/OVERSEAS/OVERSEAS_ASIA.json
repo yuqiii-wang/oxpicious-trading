@@ -1,0 +1,16 @@
+{
+  "DUMMY_OVERSEAS_ASIA": {
+    "name": "亚太综合指数",
+    "exchange": null,
+    "sector_id": "OVERSEAS",
+    "industry_id": "OVERSEAS_ASIA",
+    "tags": [
+      {
+        "sector_id": "OVERSEAS",
+        "industry_id": "OVERSEAS_ASIA"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

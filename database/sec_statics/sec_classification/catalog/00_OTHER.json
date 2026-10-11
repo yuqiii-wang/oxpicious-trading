@@ -1,0 +1,9 @@
+{
+  "label": "其他",
+  "industries": {
+    "OTHER": {
+      "label": "未分类",
+      "slug": "other"
+    }
+  }
+}

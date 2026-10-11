@@ -9,16 +9,14 @@
 import { Alert, Box, Chip, Typography } from "@mui/material";
 import { OpenInNew } from "@mui/icons-material";
 import type { NewsSearchItem, NewsSearchResponse } from "@shared/types";
+import { shanghaiDate } from "@/shared/datetime";
 
 /** EditTime (unix seconds, string) → YYYY-MM-DD in Asia/Shanghai. */
-function shanghaiDate(editTime: string | null | undefined): string {
+function editTimeDay(editTime: string | null | undefined): string {
   if (!editTime) return "—";
   const ts = Number(editTime);
   if (!Number.isFinite(ts) || ts <= 0) return "—";
-  // "en-CA" formats as ISO YYYY-MM-DD.
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(
-    new Date(ts * 1000),
-  );
+  return shanghaiDate(new Date(ts * 1000));
 }
 
 interface Props {
@@ -80,7 +78,7 @@ export default function NewsSearchResults({ result, error, onDismiss }: Props) {
             }}
           >
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-              <Chip label={shanghaiDate(it.EditTime)} size="small" variant="outlined" sx={{ fontSize: "0.7rem" }} />
+              <Chip label={editTimeDay(it.EditTime)} size="small" variant="outlined" sx={{ fontSize: "0.7rem" }} />
               {it.AuthorName && (
                 <Chip label={it.AuthorName} size="small" color="secondary" variant="outlined"
                   sx={{ fontSize: "0.7rem", maxWidth: 220 }} />

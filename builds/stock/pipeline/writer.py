@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import copy_or_upsert_split_async, rec_cols
+from _common.labels import BOARD_CODE
 from _common.db_commons import (
     _chunk_keys_by_weight,
     _wait_for_replica_lag_async,
@@ -55,7 +56,10 @@ def build_identity_rows(
             "[STOCK-ID] canonical pipeline lost the `board` column — "
             "loader bug, fix the loader instead of deriving a fallback"
         )
-    _id_df["board"] = combined_db["board"]
+    # board stores its stats.label_dim SMALLINT code (0 MAIN / 1 STAR /
+    # 2 GEM / 3 BSE — the label-code contract); map the CSV's board
+    # strings once at the write boundary.
+    _id_df["board"] = combined_db["board"].map(BOARD_CODE)
     _id_df["name"] = _id_df["name"].where(_id_df["name"].notna(), "")
     _id_df["name"] = _id_df["name"].astype(str)
 

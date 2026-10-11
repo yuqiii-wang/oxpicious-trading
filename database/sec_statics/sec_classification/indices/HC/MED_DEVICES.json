@@ -1,0 +1,19 @@
+{
+  "H30217": {
+    "name": "医疗器械",
+    "exchange": "HK",
+    "sector_id": "HC",
+    "industry_id": "MED_DEVICES",
+    "tags": [
+      {
+        "sector_id": "HC",
+        "industry_id": "MED_DEVICES"
+      },
+      {
+        "sector_id": "HC",
+        "industry_id": "PHARMA_BROAD"
+      }
+    ],
+    "is_industry_not_strategy": true
+  }
+}

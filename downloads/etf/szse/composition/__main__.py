@@ -2,7 +2,6 @@ from __future__ import annotations
 
 
 import logging
-import random
 import re
 import sys
 import time
@@ -12,7 +11,7 @@ try:
 except ImportError:
     tqdm = None
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -23,11 +22,11 @@ import numpy as np
 import pandas as pd
 
 from downloads._common import (
-    DEFAULT_TIMEOUT,
     DEFAULT_START_DATE,
-    DEFAULT_SHORT_SLEEP_SEC,
     AntiBotProxy,
-    AntiBotConfig,
+    antibot_config_for,
+    retry_policy_for,
+    sleep_sec_for,
     setup_logger,
     resolve_out_dir,
     is_valid_file,
@@ -47,7 +46,22 @@ REFERER = "https://www.szse.cn/disclosure/fund/currency/index.html"
 CATALOGID = "sgshqd"
 PAGE_SIZE = 20
 MD_MIN_BYTES = 200
-SLEEP_SEC = DEFAULT_SHORT_SLEEP_SEC
+
+SERVICE = "downloads.etf.szse.composition"
+
+# Base inter-request sleep — resolved from the service's
+# external_request_config JSON row (sleep_sec), overridable per-run with
+# --sleep-sec.
+SLEEP_SEC = sleep_sec_for(SERVICE)
+
+# Retry policy for the list/detail fetch loops — resolved from the
+# service's JSON row (max_retries / retry_backoff_sec); the inline values
+# below are the fallback when the row leaves a field undefined.
+MAX_RETRIES, RETRY_BACKOFF_SEC = retry_policy_for(SERVICE)
+if MAX_RETRIES is None:
+    MAX_RETRIES = 4
+if RETRY_BACKOFF_SEC is None:
+    RETRY_BACKOFF_SEC = 2.0
 
 RE_ENCODE_OPEN = re.compile(r"encode-open=['\"]([^'\"]+)['\"]")
 RE_ETF_CODE_FROM_PATH = re.compile(r"/files/text/etf/ETF(\d{6})(\d{8})\.txt")
@@ -218,8 +232,8 @@ def fetch_list_page(
     proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[int, int, List[EtfCompositionItem]]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
-    
+        proxy = AntiBotProxy(service=SERVICE)
+
     date_str = trade_date.strftime("%Y-%m-%d")
     params: Dict[str, Any] = {
         "SHOWTYPE": "JSON",
@@ -232,21 +246,20 @@ def fetch_list_page(
         params["loading"] = "first"
 
     payload = None
-    for attempt in range(1, 5):
+    for attempt in range(1, MAX_RETRIES + 1):
         resp = proxy.get(
             session,
             LIST_API_URL,
             params=params,
             headers=build_list_headers(base_headers),
-            timeout=DEFAULT_TIMEOUT,
             logger=logger,
             log_tag=f"[list {date_str} p{page_no}]",
         )
         if resp is None:
-            if attempt == 4:
+            if attempt == MAX_RETRIES:
                 logger.error("[list %s p%d] fetch error after %d attempts: request returned None", date_str, page_no, attempt)
                 return 0, 0, []
-            backoff = 2.0 * attempt
+            backoff = RETRY_BACKOFF_SEC * attempt
             logger.warning("[list %s p%d] attempt %d failed; retry in %.1fs", date_str, page_no, attempt, backoff)
             proxy.sleep(backoff)
             continue
@@ -254,10 +267,10 @@ def fetch_list_page(
             payload = resp.json()
             break
         except ValueError as e:
-            if attempt == 4:
+            if attempt == MAX_RETRIES:
                 logger.error("[list %s p%d] json parse error after %d attempts: %s", date_str, page_no, attempt, e)
                 return 0, 0, []
-            backoff = 2.0 * attempt
+            backoff = RETRY_BACKOFF_SEC * attempt
             logger.warning("[list %s p%d] attempt %d failed (json parse error); retry in %.1fs", date_str, page_no, attempt, backoff)
             time.sleep(backoff)
 
@@ -294,8 +307,8 @@ def fetch_all_etfs_for_date(
     proxy: Optional[AntiBotProxy] = None,
 ) -> List[EtfCompositionItem]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
-    
+        proxy = AntiBotProxy(service=SERVICE)
+
     date_str = trade_date.strftime("%Y-%m-%d")
     pagecount, recordcount, first_items = fetch_list_page(session, trade_date, 1, base_headers, proxy)
     if pagecount <= 0 or recordcount <= 0:
@@ -326,7 +339,7 @@ def fetch_all_etfs_for_date(
                 added += 1
         logger.info("[list %s] p%d/%d: page_items=%d new=%d cumulative=%d",
                     date_str, pno, pagecount, len(page_items), added, len(all_items))
-        proxy.sleep(random.uniform(5.0, 6.0))
+        proxy.sleep(SLEEP_SEC)
 
     return all_items
 
@@ -392,8 +405,8 @@ def download_composition(
     proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
-    
+        proxy = AntiBotProxy(service=SERVICE)
+
     if is_valid_file(out_file, min_bytes=MD_MIN_BYTES):
         # Cached MD: ensure the per-file CSV exists too (backfill legacy MDs)
         csv_path = out_file.with_suffix(".csv")
@@ -405,20 +418,19 @@ def download_composition(
         return True
 
     resp = None
-    for attempt in range(1, 5):
+    for attempt in range(1, MAX_RETRIES + 1):
         resp = proxy.get(
             session,
             item.detail_url,
             headers=build_detail_headers(base_headers),
-            timeout=DEFAULT_TIMEOUT,
             logger=logger,
             log_tag=f"[dl {item.etf_code} {item.trade_date}]",
         )
         if resp is None:
-            if attempt == 4:
+            if attempt == MAX_RETRIES:
                 logger.error("[dl %s %s] fetch error after %d attempts: request returned None", item.etf_code, item.trade_date, attempt)
                 return False
-            backoff = 2.0 * attempt
+            backoff = RETRY_BACKOFF_SEC * attempt
             logger.warning("[dl %s %s] attempt %d failed; retry in %.1fs", item.etf_code, item.trade_date, attempt, backoff)
             time.sleep(backoff)
             continue
@@ -706,7 +718,7 @@ def download_szse_etf_composition(
     out_root: Optional[str] = None,
     start_date: Optional[str] = DEFAULT_START_DATE,
     end_date: Optional[str] = None,
-    sleep_sec: float = SLEEP_SEC,
+    sleep_sec: Optional[float] = None,
     max_dates: Optional[int] = None,
     skip_today: bool = True,
     convert_csv: bool = True,
@@ -782,6 +794,11 @@ def download_szse_etf_composition(
     missing_dates = len(target_dates) - len(cached_dates & set(target_dates))
     cache_ratio = (len(cached_dates & set(target_dates))) / len(target_dates) if target_dates else 1.0
 
+    # Base sleep from the service's external_request_config JSON row
+    # (SLEEP_SEC) unless overridden per-run with --sleep-sec.
+    if sleep_sec is None:
+        sleep_sec = SLEEP_SEC
+
     auto_sleep = sleep_sec
     if cache_ratio < 0.3 or missing_dates > 10:
         auto_sleep = sleep_sec * 2.0
@@ -807,11 +824,13 @@ def download_szse_etf_composition(
     session = build_default_session()
     stats = RunStats(skipped_cached=len(saved_filenames))
     
-    # Create unified AntiBotProxy
-    proxy_config = AntiBotConfig(
-        base_sleep_sec=auto_sleep,
-    )
-    proxy = AntiBotProxy(proxy_config)
+    # Create unified AntiBotProxy — pacing from the service's
+    # external_request_config JSON row (sleep_jitter, timeouts, anti-bot
+    # toggles); base sleep is the row's sleep_sec (or --sleep-sec) with
+    # the auto-cooldown multiplier already applied above.
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=auto_sleep,
+    ))
 
     dates_processed = 0
     try:
@@ -946,8 +965,9 @@ if __name__ == "__main__":
                     help="End date for backfill (default: today)")
     ap.add_argument("--out-root", type=str, default=None,
                     help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=SLEEP_SEC,
-                    help=f"Base sleep seconds between requests (default: {SLEEP_SEC})")
+    ap.add_argument("--sleep-sec", type=float, default=None,
+                    help="Base sleep seconds between requests "
+                         f"(default: external_request_config JSON for {SERVICE})")
     ap.add_argument("--max-dates", type=int, default=None,
                     help="Limit to N dates (dev/testing)")
     ap.add_argument("--skip-today", action="store_true", default=True,
@@ -966,6 +986,8 @@ if __name__ == "__main__":
                          "trading day and stamp files with today's date. For testing the "
                          "monthly refresh flow on any day.")
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
 
     skip_today = args.skip_today and not args.no_skip_today
     convert_csv = args.convert_csv and not args.no_convert_csv

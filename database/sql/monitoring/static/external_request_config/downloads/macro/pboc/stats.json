@@ -1,0 +1,21 @@
+[
+  {
+    "service": "downloads.macro.pboc.stats",
+    "request_type": "curl_cffi",
+    "resource_type": 0,
+    "sleep_sec": 90,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": 2,
+    "retry_backoff_sec": 30,
+    "timeout_connect_sec": null,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": 3600,
+    "notes": "curl_cffi TLS impersonation (chrome/chrome110/chrome120/chrome124/edge101); linear backoff 30*(attempt+1); 403 retried on a different profile; host block window 1h.",
+    "source_ref": "downloads/macro/pboc/stats/_session.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

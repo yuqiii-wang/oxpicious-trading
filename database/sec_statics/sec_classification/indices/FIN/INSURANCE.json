@@ -1,0 +1,16 @@
+{
+  "DUMMY_INSURANCE": {
+    "name": "保险综合指数",
+    "exchange": null,
+    "sector_id": "FIN",
+    "industry_id": "INSURANCE",
+    "tags": [
+      {
+        "sector_id": "FIN",
+        "industry_id": "INSURANCE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

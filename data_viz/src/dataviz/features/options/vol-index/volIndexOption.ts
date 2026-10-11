@@ -1,7 +1,7 @@
 /**
  * Vol index chart builder — one line per underlying for the daily 30-day
  * model-free implied-volatility index (analysis.options_vol_index,
- * computed by analyze/options/compute/vix.py with the CBOE VIX
+ * computed by analysis/options/compute/vix.py with the CBOE VIX
  * methodology on settlement prices; see docs/options_vol_smile_study.md).
  *
  * Series are aligned on the sorted union of dates (null where an

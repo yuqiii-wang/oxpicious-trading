@@ -35,6 +35,18 @@ from _common._holidays_and_weekdays import (
 )
 
 # --- HTTP / anti-bot --------------------------------------------------------
+# Pacing values live in the static external_request_config JSON tree
+# (global _common.request_config reads it); net.py's DEFAULT_* constants
+# are the last-resort fallback.
+from _common.request_config import (
+    RequestConfig,
+    clear_request_config_cache,
+    host_block_cooldown_for,
+    poll_interval_sec_for,
+    request_config_for,
+    retry_policy_for,
+    sleep_sec_for,
+)
 from downloads._common.net import (
     BROWSER_PROFILES,
     COMMON_BASE_HEADERS,
@@ -51,6 +63,7 @@ from downloads._common.net import (
     AntiBotProxy,
     HostStatus,
     HostStatusTracker,
+    antibot_config_for,
     build_default_session,
     build_headers_with_referer,
     merge_browser_profile,

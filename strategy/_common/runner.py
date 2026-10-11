@@ -25,6 +25,7 @@ import time
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional
 
+from _common.labels import SEC_TYPE_CODE
 from strategy._common.constants import BATCH_SIZE
 from strategy._common.db import print_build_header, print_wall_time
 from strategy._common.fetch import discover_available_codes
@@ -137,7 +138,8 @@ async def run_one_sec_type(
     horizon = await conn.fetchval(
         "SELECT MAX(date) FROM analysis.mov_ave_spreads_detail "
         "WHERE sec_type = $1",
-        sec_type,
+        # the detail table's sec_type stores its stats.label_dim SMALLINT code
+        SEC_TYPE_CODE[sec_type],
     )
     if horizon is not None:
         logger.info(f"    -> analysis horizon cap: {horizon}")

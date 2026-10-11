@@ -24,7 +24,7 @@ Usage:
 
 Prerequisite: stats.{etf,index,stock}_{identity,basic_stats} +
 {etf,stock}_liquidity_margin (+ stats.etf_adjustment) populated by the
-builds; then re-run analyze.analysis_forecasts / analysis_signals to
+builds; then re-run analysis.analysis_forecasts / analysis_signals to
 re-emit the regime-split rows.
 
 The :class:`MarketRegimesBuild` entry class (a :class:`DataBuild`

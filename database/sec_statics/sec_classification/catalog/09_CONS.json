@@ -1,0 +1,57 @@
+{
+  "label": "消费",
+  "industries": {
+    "BAIJIU": {
+      "label": "白酒",
+      "slug": "baijiu"
+    },
+    "FOOD_BEV": {
+      "label": "食品饮料",
+      "slug": "food_bev"
+    },
+    "AGRI": {
+      "label": "农业",
+      "slug": "agri"
+    },
+    "LIVESTOCK": {
+      "label": "畜牧",
+      "slug": "livestock"
+    },
+    "TOURISM": {
+      "label": "旅游",
+      "slug": "tourism"
+    },
+    "SPORTS": {
+      "label": "体育",
+      "slug": "sports"
+    },
+    "GAMES": {
+      "label": "游戏",
+      "slug": "games"
+    },
+    "MEDIA": {
+      "label": "传媒",
+      "slug": "media"
+    },
+    "DISCRETIONARY": {
+      "label": "可选消费",
+      "slug": "discretionary"
+    },
+    "EDU": {
+      "label": "教育",
+      "slug": "edu"
+    },
+    "CONS_GENERAL": {
+      "label": "消费",
+      "slug": "cons_general"
+    },
+    "RETAIL": {
+      "label": "百货/零售",
+      "slug": "retail"
+    },
+    "HOTEL": {
+      "label": "酒店",
+      "slug": "hotel"
+    }
+  }
+}

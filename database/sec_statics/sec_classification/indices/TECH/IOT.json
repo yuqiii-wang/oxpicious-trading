@@ -1,0 +1,55 @@
+{
+  "930712": {
+    "name": "CS物联网",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "IOT",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "IOT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930725": {
+    "name": "CS车联网",
+    "exchange": "SS",
+    "sector_id": "TECH",
+    "industry_id": "IOT",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "IOT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "931575": {
+    "name": "SHS物联网",
+    "exchange": "HK",
+    "sector_id": "TECH",
+    "industry_id": "IOT",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "IOT"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_IOT": {
+    "name": "物联网综合指数",
+    "exchange": null,
+    "sector_id": "TECH",
+    "industry_id": "IOT",
+    "tags": [
+      {
+        "sector_id": "TECH",
+        "industry_id": "IOT"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

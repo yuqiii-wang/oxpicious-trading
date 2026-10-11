@@ -1,0 +1,42 @@
+{
+  "399006": {
+    "name": "创业板指",
+    "exchange": "SZ",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_GEM",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_GEM"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "931643": {
+    "name": "科创创业50",
+    "exchange": "SS",
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_GEM",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_GEM"
+      }
+    ],
+    "is_industry_not_strategy": false
+  },
+  "DUMMY_BROAD_GEM": {
+    "name": "创业板综合指数",
+    "exchange": null,
+    "sector_id": "BROAD",
+    "industry_id": "BROAD_GEM",
+    "tags": [
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_GEM"
+      }
+    ],
+    "is_industry_not_strategy": false,
+    "is_dummy": true
+  }
+}

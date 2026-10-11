@@ -302,6 +302,8 @@ async def main() -> int:
         ),
     )
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     if args.date and args.force:
         ap.error("--force is not supported with --date (the request path "
                  "must never truncate the table)")

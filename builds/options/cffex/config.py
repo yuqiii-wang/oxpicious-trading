@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from _common.labels import OPTION_TYPE_CODE
+
 # ---------------------------------------------------------------------------
 # Product code definitions
 # ---------------------------------------------------------------------------
@@ -104,8 +106,11 @@ def parse_contract_code(code: str) -> dict:
     """Parse a CFFEX option contract code into its components.
 
     Examples:
-      "IO2607-C-4000" → {product:"IO", month:"2607", type:"CALL", strike:4000}
-      "HO2607-P-2500" → {product:"HO", month:"2607", type:"PUT", strike:2500}
+      "IO2607-C-4000" → {product:"IO", month:"2607", option_type:0, strike:4000}
+      "HO2607-P-2500" → {product:"HO", month:"2607", option_type:1, strike:2500}
+
+    ``option_type`` is the stats.label_dim 'option_type' SMALLINT code
+    (0 = CALL, 1 = PUT — the _common/labels contract).
 
     Returns a dict with keys: product, month, option_type, strike, or
     raises ValueError on invalid input.
@@ -129,7 +134,7 @@ def parse_contract_code(code: str) -> dict:
     return {
         "product": product,
         "month": month,
-        "option_type": "CALL" if cp == "C" else "PUT",
+        "option_type": OPTION_TYPE_CODE["CALL"] if cp == "C" else OPTION_TYPE_CODE["PUT"],
         "strike": strike,
         "strike_str": strike_str,
     }

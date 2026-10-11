@@ -1,0 +1,40 @@
+[
+  {
+    "service": "downloads.stock.sse.archive",
+    "request_type": "dayk",
+    "resource_type": 0,
+    "sleep_sec": 20,
+    "sleep_jitter": 0.3,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "SSE per-stock day kline + list (yunhq.sse.com.cn).",
+    "source_ref": "downloads/stock/sse/archive/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  },
+  {
+    "service": "downloads.stock.sse.archive",
+    "request_type": "trade_stats",
+    "resource_type": 0,
+    "sleep_sec": 8,
+    "sleep_jitter": 0.3,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "SSE trade stats (query.sse.com.cn).",
+    "source_ref": "downloads/stock/sse/archive/__main__.py",
+    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+  }
+]

@@ -16,15 +16,15 @@ pieces:
      (multi-window MA in one GPU pass, used by builds) and
      ``grouped_rolling_agg`` (single-window + single-column with
      configurable agg, used by analyzes). ``grouped_rolling_agg`` is
-     re-exported here from ``analyze/_common/rolling.py``, which
+     re-exported here from ``analysis/_common/rolling.py``, which
      remains as a thin shim for backward compatibility.
 
   3. **Grouped diff / shift helpers** (``groupby``) -
      ``grouped_diff`` and ``grouped_shift`` for batched
      ``groupby().diff()`` / ``groupby().shift()`` on multiple columns
      in a single GPU pass. Previously inlined in
-     ``analyze/mov_ave_spread/helpers.py`` (12 diffs for slopes +
-     curvatures) and ``analyze/mov_ave_spread/rsi.py`` (delta + N-day
+     ``analysis/mov_ave_spread/helpers.py`` (12 diffs for slopes +
+     curvatures) and ``analysis/mov_ave_spread/rsi.py`` (delta + N-day
      shifts).
 
 VALIDATED WORKLOADS (DB row counts at refactor time)

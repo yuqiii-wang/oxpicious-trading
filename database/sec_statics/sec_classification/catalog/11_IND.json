@@ -1,0 +1,73 @@
+{
+  "label": "工业",
+  "industries": {
+    "AUTO": {
+      "label": "汽车",
+      "slug": "auto"
+    },
+    "ROBOTICS": {
+      "label": "机器人",
+      "slug": "robotics"
+    },
+    "ENG_MACHINERY": {
+      "label": "工程机械",
+      "slug": "eng_machinery"
+    },
+    "MACHINE_TOOL": {
+      "label": "机床",
+      "slug": "machine_tool"
+    },
+    "TRANSPORT": {
+      "label": "运输/物流",
+      "slug": "transport"
+    },
+    "ADVMFG": {
+      "label": "高端制造",
+      "slug": "advmfg"
+    },
+    "EXPRESSWAY": {
+      "label": "高速公路",
+      "slug": "expressway"
+    },
+    "ELEC_EQUIP": {
+      "label": "电气设备",
+      "slug": "elec_equip"
+    },
+    "PORT": {
+      "label": "港口",
+      "slug": "port"
+    },
+    "AIRPORT": {
+      "label": "机场",
+      "slug": "airport"
+    },
+    "TEXTILE": {
+      "label": "纺织服装",
+      "slug": "textile"
+    },
+    "PAPER": {
+      "label": "造纸",
+      "slug": "paper"
+    },
+    "PRINTING": {
+      "label": "印刷",
+      "slug": "printing"
+    },
+    "IND_GENERAL": {
+      "label": "工业",
+      "slug": "ind_general"
+    },
+    "POWER_EQUIP": {
+      "label": "电力设备",
+      "slug": "power_equip"
+    },
+    "PV": {
+      "label": "光伏",
+      "slug": "pv"
+    },
+    "BATTERY": {
+      "label": "储能/电池",
+      "slug": "battery"
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "000025": {
+    "name": "180基建",
+    "exchange": "SS",
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_CONSTR",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_CONSTR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "399995": {
+    "name": "基建工程",
+    "exchange": "SZ",
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_CONSTR",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_CONSTR"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "930608": {
+    "name": "中证基建",
+    "exchange": "SS",
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_CONSTR",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_CONSTR"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_INFRA_CONSTR": {
+    "name": "建筑/基建综合指数",
+    "exchange": null,
+    "sector_id": "INFRA",
+    "industry_id": "INFRA_CONSTR",
+    "tags": [
+      {
+        "sector_id": "INFRA",
+        "industry_id": "INFRA_CONSTR"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_SSE"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "service": "builds.index",
+  "max_parallel": 1,
+  "freq": "daily",
+  "schedule": "every A-share trading date from 19:00, after downloads_daily.sh (builds_daily.sh loop order)",
+  "notes": "Three sequential phases — composition (CSI+SZSE) → baseline (CSIndex daily) → exts (stats.index_exts + ETF/exchange trading amt + sec similars); composition before baseline, exts after baseline.",
+  "source_ref": "scripts/builds_daily.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

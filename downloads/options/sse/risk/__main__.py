@@ -17,6 +17,7 @@ from ``_download_szse_sse_commons.py`` and ``_download_commons.py``.
 from __future__ import annotations
 
 
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Optional, Set
@@ -26,11 +27,10 @@ import requests
 from _common.pre_check_and_load import check_identity
 from downloads._common import (
     DEFAULT_START_DATE,
-    DEFAULT_TIMEOUT,
     MIN_VALID_BYTES,
     EMPTY_HTML_MAX_BYTES,
     AntiBotProxy,
-    AntiBotConfig,
+    antibot_config_for,
     RunStats,
     build_headers_with_referer,
     business_days,
@@ -39,8 +39,13 @@ from downloads._common import (
     parse_date_window,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 
+
+# Pacing (sleep/jitter/timeouts/anti-bot toggles) resolves from this service's
+# external_request_config JSON row.
+SERVICE = "downloads.options.sse.risk"
 
 SSE_DOWNLOAD_URL = "https://query.sse.com.cn/derivative/downloadRisk.do"
 SSE_REFERER = "https://www.sse.com.cn/assortment/options/risk/"
@@ -67,7 +72,7 @@ def download_options_risk_once(
     proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Path]:
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(service=SERVICE)
     
     ymd = trade_date.strftime("%Y%m%d")
     params = {
@@ -81,7 +86,6 @@ def download_options_risk_once(
         SSE_DOWNLOAD_URL,
         params=params,
         headers=SSE_HEADERS,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=log_tag,
     )
@@ -123,16 +127,21 @@ def download_sse_options_risk(
     out_root: Optional[str] = None,
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
-    sleep_sec: float = 5.0,
+    sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
     db_table: str = "stats.options_identity",
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_options_risk", out_root)
     sess = session or requests.Session()
 
-    # Create unified AntiBotProxy
-    proxy_config = AntiBotConfig(base_sleep_sec=sleep_sec)
-    proxy = AntiBotProxy(proxy_config)
+    # Pacing from the service's external_request_config JSON row (sleep_sec,
+    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+    # argument overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = sleep_sec_for(SERVICE)
+    proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+    ))
 
     _start, _end = parse_date_window(
         end_date=end_date,
@@ -245,4 +254,6 @@ def download_sse_options_risk(
 
 
 if __name__ == "__main__":
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_sse_options_risk())

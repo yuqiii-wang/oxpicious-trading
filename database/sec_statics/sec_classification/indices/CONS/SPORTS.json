@@ -1,0 +1,33 @@
+{
+  "399804": {
+    "name": "中证体育",
+    "exchange": "SZ",
+    "sector_id": "CONS",
+    "industry_id": "SPORTS",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "SPORTS"
+      },
+      {
+        "sector_id": "BROAD",
+        "industry_id": "BROAD_CSI"
+      }
+    ],
+    "is_industry_not_strategy": true
+  },
+  "DUMMY_SPORTS": {
+    "name": "体育综合指数",
+    "exchange": null,
+    "sector_id": "CONS",
+    "industry_id": "SPORTS",
+    "tags": [
+      {
+        "sector_id": "CONS",
+        "industry_id": "SPORTS"
+      }
+    ],
+    "is_industry_not_strategy": true,
+    "is_dummy": true
+  }
+}

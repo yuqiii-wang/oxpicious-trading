@@ -35,10 +35,11 @@ exist with the ``B_`` prefix but are mostly ``-`` for A-only listings):
   NUM               — 序号
 
 Anti-bot: uses the SAME ``AntiBotProxy`` configuration as the PE requests in
-``downloads/stock/sse/archive/__main__.py`` —
-``rotate_browser_profile=True``, ``add_random_param=True``,
-``enable_host_tracking=True``, ``sleep_jitter=0.3``, base sleep
-``LONG_SLEEP_INTERVAL`` (90s). A mandatory ``Referer`` header pointing to
+``downloads/stock/sse/archive/__main__.py`` — ``rotate_browser_profile=True``,
+``add_random_param=True``, ``enable_host_tracking=True``; pacing
+(sleep/jitter/timeouts) resolves from the service's external_request_config
+JSON row (request_type ``dividend`` — 90s base sleep, matching the old
+``LONG_SLEEP_INTERVAL`` cadence). A mandatory ``Referer`` header pointing to
 the SSE company page is set via ``build_headers_with_referer``.
 
 Outputs one CSV per stock under ``temps/sse_archive/``:
@@ -87,6 +88,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -95,15 +97,13 @@ import requests
 from dateutil.relativedelta import relativedelta
 
 from downloads._common import (
-    DEFAULT_TIMEOUT,
-    LONG_SLEEP_INTERVAL,
-    MIN_VALID_BYTES,
-    AntiBotConfig,
     AntiBotProxy,
+    antibot_config_for,
     build_headers_with_referer,
     is_valid_file,
     resolve_out_dir,
     setup_logger,
+    sleep_sec_for,
 )
 from downloads._common.exchanges.sse import (
     CSV_ENCODING,
@@ -112,6 +112,7 @@ from downloads._common.exchanges.sse import (
 )
 
 # --- Endpoint constants -----------------------------------------------------
+SERVICE = "downloads.stock.sse.dividend"
 # Same JSONP endpoint as the PE/turnover "成交统计" download — only the sqlId
 # and request parameters differ.
 SSE_DIVIDEND_URL = "http://query.sse.com.cn/commonQuery.do"
@@ -277,7 +278,6 @@ def _fetch_dividend_page(
         SSE_DIVIDEND_URL,
         params=params,
         headers=SSE_DIVIDEND_HEADERS,
-        timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[dividend {company_code} p{page_no}]",
     )
@@ -420,7 +420,7 @@ def _read_existing_dividend_rows(path: Path) -> List[Dict[str, Any]]:
 def download_sse_dividends(
     out_root: Optional[str] = None,
     *,
-    sleep_sec: float = LONG_SLEEP_INTERVAL,
+    sleep_sec: Optional[float] = None,
     force: bool = False,
     session: Optional[requests.Session] = None,
     etf_filter: bool = True,
@@ -434,8 +434,9 @@ def download_sse_dividends(
     stock under ``temps/sse_archive/{code}_dividend_{YYYYMMDD}.csv``.
 
     Anti-bot: ``AntiBotProxy`` with ``rotate_browser_profile``,
-    ``add_random_param``, ``enable_host_tracking``, ``sleep_jitter=0.3``,
-    base sleep ``LONG_SLEEP_INTERVAL`` (90s).
+    ``add_random_param``, ``enable_host_tracking``; pacing (sleep/jitter/
+    timeouts) resolves from the service's external_request_config JSON row
+    (request_type ``dividend`` — 90s base sleep).
 
     Resumable: a stock is skipped if (a) a local CSV dated within the last
     6 months exists, or (b) ``stats.stock_dividends`` already has rows for
@@ -472,17 +473,9 @@ def download_sse_dividends(
             raise
     else:
         # Reuse the list-endpoint fetcher from the archive module — it hits
-        # yunhq.sse.com.cn which needs the full 20s cadence, so build a
-        # separate dayk-style proxy for it.
-        from downloads._common import DEFAULT_SLEEP_SEC
-        list_proxy = AntiBotProxy(AntiBotConfig(
-            base_sleep_sec=DEFAULT_SLEEP_SEC,
-            sleep_jitter=0.3,
-            rotate_browser_profile=True,
-            add_random_param=True,
-            enable_host_tracking=True,
-            timeout=DEFAULT_TIMEOUT,
-        ))
+        # yunhq.sse.com.cn on the service's "list" external_request_config
+        # row (its own pacing/timeouts), so build a separate proxy for it.
+        list_proxy = AntiBotProxy(service=SERVICE, request_type="list")
         from downloads.stock.sse.archive.__main__ import _fetch_all_stocks
         stocks = _fetch_all_stocks(sess, list_proxy)
     if not stocks:
@@ -522,16 +515,15 @@ def download_sse_dividends(
         len(stocks), today_suffix,
     )
 
-    # Dividend endpoint (query.sse.com.cn) — quarterly cadence so we use the
-    # long 90s sleep for maximum stealth. AntiBotProxy handles fingerprint
-    # rotation, random param, sleep jitter, and host blocking detection.
-    dividend_proxy = AntiBotProxy(AntiBotConfig(
-        base_sleep_sec=sleep_sec,
-        sleep_jitter=0.3,
-        rotate_browser_profile=True,
-        add_random_param=True,
-        enable_host_tracking=True,
-        timeout=DEFAULT_TIMEOUT,
+    # Dividend endpoint (query.sse.com.cn) — quarterly cadence so it runs on
+    # the service's aggressive "dividend" external_request_config row (90s
+    # base sleep). AntiBotProxy handles fingerprint rotation, random param,
+    # sleep jitter, and host blocking detection; an explicit *sleep_sec*
+    # argument overrides the row's base sleep only.
+    if sleep_sec is None:
+        sleep_sec = sleep_sec_for(SERVICE, "dividend")
+    dividend_proxy = AntiBotProxy(replace(
+        antibot_config_for(SERVICE, "dividend"), base_sleep_sec=sleep_sec,
     ))
 
     stocks_done = 0
@@ -614,8 +606,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(
         description="Download SSE per-stock dividend (利润分配/分红) data. "
                     "Anti-bot: AntiBotProxy with rotate_browser_profile, "
-                    "add_random_param, enable_host_tracking, sleep_jitter=0.3, "
-                    "base sleep LONG_SLEEP_INTERVAL (90s). "
+                    "add_random_param, enable_host_tracking; pacing from the "
+                    "service's external_request_config JSON (dividend row, "
+                    "90s base sleep). "
                     "Output: {code}_dividend_{YYYYMMDD}.csv under temps/sse_archive/. "
                     "Skips stocks with a fresh local CSV or DB rows updated "
                     "within the last 6 months."
@@ -636,6 +629,8 @@ if __name__ == "__main__":
              "last_updated) and re-download all stocks.",
     )
     args = ap.parse_args()
+    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
+    autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(download_sse_dividends(
         force=args.force,
         etf_filter=not args.no_etf_filter,

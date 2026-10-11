@@ -69,7 +69,7 @@
 --    stats.debt_treasury (bond yield curve).
 --
 --  POPULATION
---    analyze.futures (Python module; --force = DELETE + chunked COPY,
+--    analysis.futures (Python module; --force = DELETE + chunked COPY,
 --    default = incremental missing-(date,code) upsert). Per project rule,
 --    ALL INSERTs are in Python — no raw INSERT...SELECT SQL in this file.
 --
@@ -111,7 +111,7 @@ SELECT public.create_hash_partitions('analysis', 'futures_ext', 8);
 CREATE INDEX IF NOT EXISTS idx_futures_ext_underlying_date
     ON analysis.futures_ext (underlying_code, date);
 
-COMMENT ON TABLE  analysis.futures_ext                          IS 'Futures basis and correlation analysis. One row per (code, date) comparing futures price against underlying (index close for index futures, treasury yield-derived bond price for bond futures). gap_price_vs_underlying = (futures_close - underlying_price) / underlying_price (basis). gap_changing_rate = day-over-day change in the basis (1st-order derivative: negative = converging, positive = diverging). corr = 20-day rolling correlation. gap_max_price_vs_underlying_over_Ndays = rolling maximum of the basis over N trailing trading days per contract. gap_ar1_slope_over_60days / gap_half_life_over_60days = rolling AR(1) of the basis over 60 days (slope < 1 = mean-reverting toward the underlying; half-life in trading days). Built by analyze.futures; all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.futures_ext                          IS 'Futures basis and correlation analysis. One row per (code, date) comparing futures price against underlying (index close for index futures, treasury yield-derived bond price for bond futures). gap_price_vs_underlying = (futures_close - underlying_price) / underlying_price (basis). gap_changing_rate = day-over-day change in the basis (1st-order derivative: negative = converging, positive = diverging). corr = 20-day rolling correlation. gap_max_price_vs_underlying_over_Ndays = rolling maximum of the basis over N trailing trading days per contract. gap_ar1_slope_over_60days / gap_half_life_over_60days = rolling AR(1) of the basis over 60 days (slope < 1 = mean-reverting toward the underlying; half-life in trading days). Built by analysis.futures; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.futures_ext.date                     IS 'Trading date.';
 COMMENT ON COLUMN analysis.futures_ext.code                     IS 'Futures contract code, e.g. "IC2607", "T2609". FK -> stats.futures_identity.';
 COMMENT ON COLUMN analysis.futures_ext.underlying_code          IS 'Underlying asset code: index futures map to stock index codes (e.g. IF->000300); bond futures use synthetic codes (e.g. T->T10).';
@@ -139,11 +139,11 @@ COMMENT ON COLUMN analysis.futures_ext.gap_half_life_over_60days IS 'Implied mea
 --  window (the last horizon_days days of the sample) are excluded.
 --  PK: (asof_date, contract_type, horizon_days, quintile); asof_date
 --  stamps each pipeline run, so consecutive runs accumulate snapshots.
---  Rebuilt (upsert on the natural PK) by analyze.futures on every run.
+--  Rebuilt (upsert on the natural PK) by analysis.futures on every run.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.futures_gap_quintiles (
     asof_date                        DATE          NOT NULL,
-    contract_type                    TEXT          NOT NULL,
+    contract_type                    SMALLINT      NOT NULL,  -- label code (stats.label_dim 'contract_type'): 0=index 1=bond
     horizon_days                     INTEGER       NOT NULL,
     quintile                         INTEGER       NOT NULL,
     n_obs                            INTEGER,
@@ -153,9 +153,9 @@ CREATE TABLE IF NOT EXISTS analysis.futures_gap_quintiles (
     CONSTRAINT ck_futures_gap_quintiles_quintile CHECK (quintile BETWEEN 1 AND 5)
 );
 
-COMMENT ON TABLE  analysis.futures_gap_quintiles                    IS 'Basis-convergence quintile summary for analyze.futures. Mean gap (bps) and mean forward gap change over the next horizon_days trading days (bps) per gap quintile (1 = lowest gap, 5 = highest), pooled per contract_type. High-quintile NEGATIVE forward change / low-quintile POSITIVE change = contrarian convergence of the futures basis toward the underlying. asof_date-stamped snapshots, one set per pipeline run. Built by analyze.futures; all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.futures_gap_quintiles                    IS 'Basis-convergence quintile summary for analysis.futures. Mean gap (bps) and mean forward gap change over the next horizon_days trading days (bps) per gap quintile (1 = lowest gap, 5 = highest), pooled per contract_type. High-quintile NEGATIVE forward change / low-quintile POSITIVE change = contrarian convergence of the futures basis toward the underlying. asof_date-stamped snapshots, one set per pipeline run. Built by analysis.futures; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.futures_gap_quintiles.asof_date          IS 'Snapshot date = the latest date in analysis.futures_ext when the run computed the summary.';
-COMMENT ON COLUMN analysis.futures_gap_quintiles.contract_type      IS 'Contract type pooled for the quintiles: ''index'' (IC/IF/IH/IM) or ''bond'' (T/TF/TL/TS).';
+COMMENT ON COLUMN analysis.futures_gap_quintiles.contract_type      IS 'Contract class pooled for the quintiles, as its stats.label_dim (''contract_type'' domain) SMALLINT code: 0 = ''index'' (IC/IF/IH/IM), 1 = ''bond'' (T/TF/TL/TS).';
 COMMENT ON COLUMN analysis.futures_gap_quintiles.horizon_days       IS 'Forward horizon in trading days for the gap change (5 or 20).';
 COMMENT ON COLUMN analysis.futures_gap_quintiles.quintile           IS 'Gap quintile bucket 1..5 (1 = most negative basis, 5 = most positive basis).';
 COMMENT ON COLUMN analysis.futures_gap_quintiles.n_obs              IS 'Number of (date, contract) observations in the quintile with a complete forward window.';
@@ -167,7 +167,7 @@ COMMENT ON COLUMN analysis.futures_gap_quintiles.mean_fwd_chg_bps   IS 'Mean cha
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('futures_gap_quintiles', 'analysis.futures_gap_quintiles', NULL, NOW(),
-     'Basis-convergence quintile summary for analyze.futures. One row per (asof_date, contract_type, horizon_days, quintile): the pooled gap distribution is split into 5 quintiles and each records its mean gap (bps) and mean gap change over the next horizon_days trading days (bps). Quantifies the contrarian convergence of the futures basis (premium quintiles narrow, discount quintiles widen toward zero). asof_date-stamped snapshots accumulate a history of the convergence stats. Rebuilt by analyze.futures on every run; all INSERTs in Python per project rule.')
+     'Basis-convergence quintile summary for analysis.futures. One row per (asof_date, contract_type, horizon_days, quintile): the pooled gap distribution is split into 5 quintiles and each records its mean gap (bps) and mean gap change over the next horizon_days trading days (bps). Quantifies the contrarian convergence of the futures basis (premium quintiles narrow, discount quintiles widen toward zero). asof_date-stamped snapshots accumulate a history of the convergence stats. Rebuilt by analysis.futures on every run; all INSERTs in Python per project rule.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,
@@ -179,7 +179,7 @@ ON CONFLICT (name) DO UPDATE SET
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('futures_ext', 'futures_ext', NULL, NOW(),
-     'Futures basis and correlation analysis. One row per (date, code) comparing each CFFEX futures contract against its underlying: index futures (IC/IF/IH/IM) vs underlying index close; bond futures (T/TF/TL/TS) vs treasury yield curve converted to a zero-coupon bond price proxy (100 / (1 + y/2)^(2*tenor_years)). Stores the basis gap (price + MA5), its 1st-order derivative gap_changing_rate (negative = basis converging toward underlying, positive = diverging), 20-day rolling correlations (price + MA5), rolling maximums of the basis over 20-day and 60-day windows (gap_max_price_vs_underlying_over_Ndays) for identifying historical basis extremes, and a 60-day rolling AR(1) of the basis (gap_ar1_slope_over_60days; slope < 1 = basis mean-reverts toward the underlying, with the implied gap_half_life_over_60days in trading days). Built by analyze.futures (--force = DELETE + chunked COPY; default = incremental missing-(date,code) upsert); all INSERTs in Python per project rule.')
+     'Futures basis and correlation analysis. One row per (date, code) comparing each CFFEX futures contract against its underlying: index futures (IC/IF/IH/IM) vs underlying index close; bond futures (T/TF/TL/TS) vs treasury yield curve converted to a zero-coupon bond price proxy (100 / (1 + y/2)^(2*tenor_years)). Stores the basis gap (price + MA5), its 1st-order derivative gap_changing_rate (negative = basis converging toward underlying, positive = diverging), 20-day rolling correlations (price + MA5), rolling maximums of the basis over 20-day and 60-day windows (gap_max_price_vs_underlying_over_Ndays) for identifying historical basis extremes, and a 60-day rolling AR(1) of the basis (gap_ar1_slope_over_60days; slope < 1 = basis mean-reverts toward the underlying, with the implied gap_half_life_over_60days in trading days). Built by analysis.futures (--force = DELETE + chunked COPY; default = incremental missing-(date,code) upsert); all INSERTs in Python per project rule.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

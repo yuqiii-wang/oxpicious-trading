@@ -5,7 +5,7 @@
 --  REDUCED SCHEMA: this table previously stored ma5/ma20/ma60 + slope + a
 --  battery of slope-derivative columns for both margin_balance and
 --  margin_buy. Only the two columns actually consumed by
---  analyze.margins.changes.detect_trend_episodes survive:
+--  analysis.margins.changes.detect_trend_episodes survive:
 --    margin_balance_slope_ma5      — 5d smoothed balance slope (segmentation
 --                                    signal: sign = UP/DOWN direction)
 --    margin_balance_slope_zscore_20d — z-score of the daily slope vs its
@@ -29,7 +29,7 @@
 --  Table: analysis.margin_tech_stats
 --    PK: (code, sec_type, date)
 --
---  POPULATION: analyze.margins (Python, truncate-then-recompute). Per
+--  POPULATION: analysis.margins (Python, truncate-then-recompute). Per
 --  project rule, ALL INSERTs are in Python — no raw INSERT...SELECT SQL.
 --
 --  Register in analysis.analysis_identity (name='margin_tech_stats').
@@ -37,7 +37,7 @@
 DROP TABLE IF EXISTS analysis.margin_tech_stats;
 
 CREATE TABLE analysis.margin_tech_stats (
-    sec_type        TEXT         NOT NULL,  -- 'etf' | 'stock' | 'index'
+    sec_type        SMALLINT         NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -54,8 +54,8 @@ CREATE TABLE analysis.margin_tech_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
 SELECT public.create_hash_partitions('analysis', 'margin_tech_stats', 16);
 
-COMMENT ON TABLE  analysis.margin_tech_stats IS 'Per-(code, sec_type, date) regime-detection input for analysis.margin_changes trend episode detection. REDUCED to the two columns consumed by detect_trend_episodes: margin_balance_slope_ma5 (5d smoothed rz_balance slope; sign = UP/DOWN segmentation signal) and margin_balance_slope_zscore_20d (slope z-score vs 20d window; magnitude significance filter). sec_type ∈ {etf, stock, index} — ''index'' rows aggregated from the analysis.margin_index_series TABLE. RONGZI (融资) only. Built by analyze.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.margin_tech_stats.sec_type IS 'Subject security type: etf, stock, or index.';
+COMMENT ON TABLE  analysis.margin_tech_stats IS 'Per-(code, sec_type, date) regime-detection input for analysis.margin_changes trend episode detection. REDUCED to the two columns consumed by detect_trend_episodes: margin_balance_slope_ma5 (5d smoothed rz_balance slope; sign = UP/DOWN segmentation signal) and margin_balance_slope_zscore_20d (slope z-score vs 20d window; magnitude significance filter). sec_type ∈ {etf, stock, index} — ''index'' rows aggregated from the analysis.margin_index_series TABLE. RONGZI (融资) only. Built by analysis.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
+COMMENT ON COLUMN analysis.margin_tech_stats.sec_type IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.margin_tech_stats.code IS 'Security ticker: ETF bare e.g. "159001"; stock with exchange suffix e.g. "600008.SS".';
 COMMENT ON COLUMN analysis.margin_tech_stats.date IS 'Trading date.';
 COMMENT ON COLUMN analysis.margin_tech_stats.margin_balance_slope_ma5 IS '5-trading-day rolling mean of the daily rz_balance slope ((X[t]-X[t-1])/X[t-1]) per (sec_type, code). Sign = direction of the smoothed balance move — the segmentation signal for margin_changes trend episodes.';
@@ -63,7 +63,7 @@ COMMENT ON COLUMN analysis.margin_tech_stats.margin_balance_slope_zscore_20d IS 
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('margin_tech_stats', 'margin_tech_stats', NULL, NOW(),
-     'Per-(sec_type, code, date) regime-detection input for analysis.margin_changes trend detection: margin_balance_slope_ma5 (segmentation signal) + margin_balance_slope_zscore_20d (significance filter). sec_type ∈ {etf, stock, index} (''index'' aggregated from analysis.margin_index_series TABLE). RONGZI only. Built by analyze.margins (truncate-then-recompute); all INSERTs in Python.')
+     'Per-(sec_type, code, date) regime-detection input for analysis.margin_changes trend detection: margin_balance_slope_ma5 (segmentation signal) + margin_balance_slope_zscore_20d (significance filter). sec_type ∈ {etf, stock, index} (''index'' aggregated from analysis.margin_index_series TABLE). RONGZI only. Built by analysis.margins (truncate-then-recompute); all INSERTs in Python.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,
@@ -88,7 +88,7 @@ ON CONFLICT (name) DO UPDATE SET
 --  Table: analysis.margin_industry_stats
 --    PK: (industry_id, date)
 --
---  POPULATION: analyze.margins (Python, truncate-then-recompute).
+--  POPULATION: analysis.margins (Python, truncate-then-recompute).
 -- ============================================================================
 DROP TABLE IF EXISTS analysis.margin_industry_stats;
 
@@ -113,7 +113,7 @@ CREATE TABLE analysis.margin_industry_stats (
 -- Native hash partitions (8) keyed by industry_id
 SELECT public.create_hash_partitions('analysis', 'margin_industry_stats', 8);
 
-COMMENT ON TABLE  analysis.margin_industry_stats IS 'Per-(industry_id, date) SUM aggregation of stock AND ETF RONGZI (融资) margin flows: stock/etf margin_balance (SUM rz_balance, yuan) and margin_buy (SUM rz_buy, yuan). Drives the margin-trends themes industry universe. RONGZI only. Built by analyze.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.margin_industry_stats IS 'Per-(industry_id, date) SUM aggregation of stock AND ETF RONGZI (融资) margin flows: stock/etf margin_balance (SUM rz_balance, yuan) and margin_buy (SUM rz_buy, yuan). Drives the margin-trends themes industry universe. RONGZI only. Built by analysis.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.margin_industry_stats.date             IS 'Trading date.';
 COMMENT ON COLUMN analysis.margin_industry_stats.industry_id      IS 'Industry identifier (e.g. BANKS, SEMI). Maps from the primary parent index of each stock / the tracking index of each ETF via stats.sec_classification.';
 COMMENT ON COLUMN analysis.margin_industry_stats.industry_label   IS 'Display label (denormalized from stats.sec_classification.industry_label).';
@@ -124,7 +124,7 @@ COMMENT ON COLUMN analysis.margin_industry_stats.etf_margin_buy       IS 'SUM(st
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('margin_industry_stats', 'margin_industry_stats', NULL, NOW(),
-     'Per-(date, industry_id) SUM aggregation of stock AND ETF RONGZI (融资) margin flows: stock/etf margin_balance + margin_buy. Drives the margin-trends themes industry universe. RONGZI only. Built by analyze.margins (truncate-then-recompute); all INSERTs in Python.')
+     'Per-(date, industry_id) SUM aggregation of stock AND ETF RONGZI (融资) margin flows: stock/etf margin_balance + margin_buy. Drives the margin-trends themes industry universe. RONGZI only. Built by analysis.margins (truncate-then-recompute); all INSERTs in Python.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,
@@ -138,11 +138,11 @@ ON CONFLICT (name) DO UPDATE SET
 --  tracking ETFs.
 --
 --  MATERIALIZED TABLE (was a VIEW): the weighted-average aggregation moved
---  OUT of SQL into Python vectorization (analyze.margins pipeline step
+--  OUT of SQL into Python vectorization (analysis.margins pipeline step
 --  build_margin_index_series). Per project rule, ALL INSERTs are in
 --  Python — this file declares the schema only, no in-SQL computation.
 --
---  Semantics (computed in pandas by analyze.margins.compute.
+--  Semantics (computed in pandas by analysis.margins.compute.
 --  compute_index_margin_series):
 --    index_margin_balance = Σ(rz_balance × w)  [rz_balance > 0]
 --                          / Σ(w)              [rz_balance > 0]
@@ -184,7 +184,7 @@ CREATE TABLE analysis.margin_index_series (
 -- Native hash partitions (8) keyed by index_code
 SELECT public.create_hash_partitions('analysis', 'margin_index_series', 8);
 
-COMMENT ON TABLE  analysis.margin_index_series IS 'Per-(index_code, date) weighted-average RONGZI (融资) margin series MATERIALIZED as a table (was a VIEW — aggregation moved to Python vectorization). Branch 1 (stock-based): Σ(rz_* × parent_index_weight) / Σ(parent_index_weight) for indices with stock constituents. Branch 2 (ETF-proxy): for index codes with NO stock constituents (broad-market / strategy indices), weighted-average margin of their TRACKING ETFs (weight COALESCE 1.0). industry_id denormalized from the index''s own sec_classification row. Source of the ''index'' attribution series for the Margin Trends page + the sec_type=''index'' histories for margin_changes detection. RONQIN (融券) EXCLUDED. Built by analyze.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.margin_index_series IS 'Per-(index_code, date) weighted-average RONGZI (融资) margin series MATERIALIZED as a table (was a VIEW — aggregation moved to Python vectorization). Branch 1 (stock-based): Σ(rz_* × parent_index_weight) / Σ(parent_index_weight) for indices with stock constituents. Branch 2 (ETF-proxy): for index codes with NO stock constituents (broad-market / strategy indices), weighted-average margin of their TRACKING ETFs (weight COALESCE 1.0). industry_id denormalized from the index''s own sec_classification row. Source of the ''index'' attribution series for the Margin Trends page + the sec_type=''index'' histories for margin_changes detection. RONQIN (融券) EXCLUDED. Built by analysis.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.margin_index_series.index_code            IS 'Index code (bare 6-digit, e.g. 000970 for materials, 000300 for CSI300).';
 COMMENT ON COLUMN analysis.margin_index_series.industry_id           IS 'Industry of the index, denormalized from the index''s own sec_classification row (type=''index''). NULL when the index code has no classification row.';
 COMMENT ON COLUMN analysis.margin_index_series.date                  IS 'Trading date from stats.stock_liquidity_margin (stock branch) or stats.etf_liquidity_margin (ETF-proxy branch).';
@@ -195,7 +195,7 @@ COMMENT ON COLUMN analysis.margin_index_series.n_with_balance        IS 'Number 
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('margin_index_series', 'margin_index_series', NULL, NOW(),
-     'Per-(index_code, date) weighted-average RONGZI (融资) margin series MATERIALIZED as a table (was a VIEW). Branch 1 (stock-based): weighted-average over stock constituents; Branch 2 (ETF-proxy): weighted-average over TRACKING ETFs for indices with NO stock constituents (weight COALESCE 1.0). Source of the ''index'' attribution series for the Margin Trends page + sec_type=''index'' histories for margin_changes detection. RONQIN EXCLUDED. Built by analyze.margins (Python vectorization, truncate-then-recompute).')
+     'Per-(index_code, date) weighted-average RONGZI (融资) margin series MATERIALIZED as a table (was a VIEW). Branch 1 (stock-based): weighted-average over stock constituents; Branch 2 (ETF-proxy): weighted-average over TRACKING ETFs for indices with NO stock constituents (weight COALESCE 1.0). Source of the ''index'' attribution series for the Margin Trends page + sec_type=''index'' histories for margin_changes detection. RONQIN EXCLUDED. Built by analysis.margins (Python vectorization, truncate-then-recompute).')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

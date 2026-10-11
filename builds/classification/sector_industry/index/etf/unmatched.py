@@ -14,6 +14,8 @@ no classification in sec_classification, so they show as '未分类' (OTHER).
 This module fetches their codes+names from v_etf_margin and classifies them
 by name using the same keyword rules as ETFs/stocks, then adds them to the
 ``etfs`` dict with type='etf' so they get upserted to sec_classification.
+Funds with no listing venue in stats.etf_identity (OTC — ETF 联接基金
+feeder funds) are skipped: they live in stats.sec_etf_links instead.
 
 Only codes NOT already in the ``etfs`` dict are processed — CSV-mapped ETFs
 take precedence and are never overwritten.
@@ -23,7 +25,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from _common.build_commons import rec_cols
-from _common.sec_statics.classification import (
+from database.sec_statics.classification import (
     DEFAULT_SECTOR_ID,
     DEFAULT_INDUSTRY_ID,
     classify_index,
@@ -118,10 +120,16 @@ def classify_unmatched_funds(
       3. Funds that match neither → sector_id=OTHER (left as-is, but they
          now have a sec_classification row so the UI can at least show them
          with correct name/exchange).
+      4. Funds with NO listing venue in stats.etf_identity (exchange NULL —
+         OTC funds, foremost ETF 联接基金 feeder funds that v_etf_margin
+         picks up through their margin rows) are SKIPPED: sec_classification
+         only accepts real venues (chk_sec_classification_exchange) and
+         feeder funds belong in stats.sec_etf_links instead.
     """
     n_added = 0
     n_classified = 0
     n_other = 0
+    n_skipped = 0
 
     for fund in all_funds:
         code = fund["code"]
@@ -152,13 +160,21 @@ def classify_unmatched_funds(
         # 标普500).  The sector_id check (done above) is the primary signal
         # for OVERSEAS; the name check is a fallback for funds whose
         # classification fell through to OTHER.
-        exchange = fund.get("exchange") or ""
+        exchange = fund.get("exchange")
         if sector_id == "OVERSEAS":
             exchange = "OVERSEAS"
         elif _is_hk_name(name):
             exchange = "HK"
         elif _is_overseas_name(name):
             exchange = "OVERSEAS"
+        if not exchange:
+            # No listing venue — OTC funds (ETF 联接基金 feeder funds
+            # foremost) that v_etf_margin surfaces via their margin rows.
+            # Upcasting NULL to '' used to crash the upsert against
+            # chk_sec_classification_exchange; the correct behavior is the
+            # same skip classify_etfs applies to unknown-exchange CSV rows.
+            n_skipped += 1
+            continue
 
         # When exchange is OVERSEAS, reclassify sector_id/industry_id to
         # OVERSEAS using strategy rules.  Same logic as classify.py: ensures
@@ -189,5 +205,8 @@ def classify_unmatched_funds(
     if verbose and n_added:
         logger.info(f"    [FUND] {n_added} unmatched funds classified by name "
               f"({n_classified} matched, {n_other} → OTHER)")
+    if verbose and n_skipped:
+        logger.info(f"    [FUND] {n_skipped} unmatched funds skipped (no "
+              f"listing venue in stats.etf_identity — OTC/feeder funds)")
 
     return etfs

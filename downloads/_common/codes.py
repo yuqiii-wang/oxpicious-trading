@@ -3,16 +3,18 @@
 Canonical code schema: STOCK/INDEX rows are "NNNNNN.XX" (+ .SS/.SZ/.BJ
 exchange suffix); ETF/fund rows are BARE "NNNNNN" (no exchange suffix —
 2026-09-30 convention; the ``exchange`` column carries the venue). Also
-hosts the exchange-suffix inference helpers and the sec_classification.json
-loader.
+hosts the exchange-suffix inference helpers and the sec_classification
+shard-tree loader (thin wrappers over
+``database.sec_statics.classification_store``).
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+
+from database.sec_statics import classification_store
 
 
 def normalize_code_column(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
@@ -375,19 +377,16 @@ def strip_exchange_suffix(stock_code: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Classification JSON loader — replacement for _classification.ICONIC_INDEXES
+# Classification cache loader — replacement for _classification.ICONIC_INDEXES
 # ---------------------------------------------------------------------------
 
-_CLASSIFICATION_JSON_PATH = (
-    Path(__file__).resolve().parents[2] / "_common" / "sec_statics" / "sec_classification.json"
-)
-
-
 def load_classification_indices() -> Dict[str, Dict[str, Any]]:
-    """Load index classifications from ``sec_classification.json``.
+    """Load index classifications from the ``sec_classification/`` shard tree.
 
-    Returns a dict keyed by index code, where each value is the full index
-    entry from the JSON::
+    Returns a dict keyed by index code, where each value is the index's
+    STATIC classification entry from the cache (the build-time coverage
+    fields — n_days / first_date / last_date — moved to
+    monitor.src_data_audit and are no longer stored here)::
 
         {
             "name": str,
@@ -395,21 +394,13 @@ def load_classification_indices() -> Dict[str, Dict[str, Any]]:
             "sector_id": str,
             "industry_id": str,
             "tags": List[Dict[str, str]],
-            "n_days": int,
-            "first_date": Optional[str],
-            "last_date": Optional[str],
         }
     """
-    import json as _json
-    if not _CLASSIFICATION_JSON_PATH.is_file():
-        return {}
-    with _CLASSIFICATION_JSON_PATH.open("r", encoding="utf-8") as f:
-        state = _json.load(f)
-    return state.get("indices", {})
+    return classification_store.load_indices()
 
 
 def load_classification_index_names() -> Dict[str, str]:
-    """Return a flat ``{code: name}`` dict from ``sec_classification.json``.
+    """Return a flat ``{code: name}`` dict from the classification cache.
 
     Convenience wrapper around :func:`load_classification_indices` for callers
     that only need the code → name mapping (drop-in replacement for

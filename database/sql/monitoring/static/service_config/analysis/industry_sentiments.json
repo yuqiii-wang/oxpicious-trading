@@ -1,0 +1,9 @@
+{
+  "service": "analysis.industry_sentiments",
+  "max_parallel": 1,
+  "freq": "daily",
+  "schedule": "every A-share trading date from 19:00, after builds_daily.sh (analysis_daily.sh loop order)",
+  "notes": "industry_correlations + industry_attributions + industry_etf_contribution are internal steps (read stats.cross_stats + stats.industry_basic_stats).",
+  "source_ref": "scripts/analysis_daily.sh",
+  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+}

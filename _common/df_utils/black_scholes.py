@@ -52,6 +52,8 @@ from __future__ import annotations
 import numpy as np
 from scipy.special import ndtr as _scipy_ndtr
 
+from _common.labels import OPTION_TYPE_CODE
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -302,7 +304,8 @@ def compute_iv_and_greeks(
             - strike_price: strike price
             - settle: option settlement price
             - days_to_expiry: calendar days to expiry
-            - option_type: 'CALL' or 'PUT'
+            - option_type: stats.label_dim 'option_type' SMALLINT code
+              (0 = CALL, 1 = PUT — the _common/labels contract)
         use_gpu: True -> force GPU, False -> force CPU, None -> auto.
         price_scale: divisor for underlying_close / strike_price
             (SZSE = 1000.0, CFFEX = 1.0).
@@ -330,7 +333,7 @@ def compute_iv_and_greeks(
     K = df["strike_price"].values.astype(np.float64) / price_scale
     P = df["settle"].values.astype(np.float64) / opt_scale
     T = df["days_to_expiry"].values.astype(np.float64) / 365.0
-    is_call = (df["option_type"].values == "CALL")
+    is_call = (df["option_type"].values == OPTION_TYPE_CODE["CALL"])
 
     if use_gpu is None:
         use_gpu = should_use_gpu(df, op_type="elementwise", verbose=verbose)

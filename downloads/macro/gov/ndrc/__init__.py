@@ -218,7 +218,8 @@ def parse_ndrc_items(raw_items: List[Dict[str, Any]], start: date) -> List[Dict[
 # ----------------------------------------------------------------------------
 def main() -> None:
     run_cli(CONFIG, fetch_ndrc_pages, parse_ndrc_items,
-            "Download ndrc.gov.cn 新闻发布 news title list to CSV")
+            "Download ndrc.gov.cn 新闻发布 news title list to CSV",
+            service="downloads.macro.gov.ndrc")
 
 
 if __name__ == "__main__":
