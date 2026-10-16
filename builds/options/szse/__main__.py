@@ -299,7 +299,7 @@ def build_options_df(files, verbose=True):
         {
             "合约简称": nm,
             "underlying_name": p["underlying_name"],
-            # stats.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT)
+            # static.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT)
             "option_type": OPTION_TYPE_CODE[p["option_type"]],
             "expiry_month": p["expiry_month"],
             "strike_str": p["strike_str"],

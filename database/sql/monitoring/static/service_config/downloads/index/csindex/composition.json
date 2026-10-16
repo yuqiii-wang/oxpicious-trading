@@ -1,6 +1,8 @@
 {
   "service": "downloads.index.csindex.composition",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "monthly",
   "schedule": "calendar-monthly pass (cron-scheduled; no in-script date guard)",
   "notes": null,

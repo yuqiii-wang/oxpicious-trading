@@ -88,7 +88,8 @@ import type {
   SharedCorridorPoint,
   SharedSkewHighlights,
   SharedSkewMode,
-  SharedWallZones,
+  SharedWallZones,  SharedSkewSignalEvent,
+
 } from "./types";
 import type { ECharts } from "echarts";
 import {
@@ -134,6 +135,23 @@ interface Props {
   /** Optional header action node (rendered in the ChartCard header's
    *  action slot — e.g. the trigger-days chip of the forecast overlay). */
   headerAction?: ReactNode;
+  /** SIGNAL-HISTORY MARKERS (the Options Signals page's marker layer —
+   *  the options_wall family's events from
+   *  analysis_signals.history_signals): when provided, the marker layer
+   *  IS in signal mode (these events on the spot curve: buy ▲ below /
+   *  sell ▼ above, the grey ◆ diamond for the gate-rejected no-action
+   *  records — the retired in-analysis/in-signal toggle's derived rule:
+   *  signal page = signal markers, everyone else = the corridor EXIT
+   *  markers). Keep the array identity STABLE across renders — the
+   *  option memo keys on it. Undefined = the plain panel (other
+   *  consumers unchanged). */
+  signalEvents?: readonly SharedSkewSignalEvent[];
+  /** WALL-SIDE EMPHASIS (the Options Signals panel's config-row
+   *  clicks): "call"/"put" draws that side's dominant wall zone BOLD
+   *  (and dims the other side) — and renders the wall layer even while
+   *  the Bands toggle is Off, so the interaction is self-sufficient.
+   *  Null = no emphasis. */
+  emphasizedWallSide?: "call" | "put" | null;
 }
 
 const GREEK_MODES: GreekSkewMode[] = [
@@ -238,6 +256,8 @@ export default function SharedSkewPanel({
   highlightHorizonDays = 1,
   onHighlightSettled,
   headerAction,
+  signalEvents,
+  emphasizedWallSide = null,
 }: Props) {
   const themeMode = useChartThemeMode();
   const underlyingCode = underlying;
@@ -510,12 +530,15 @@ export default function SharedSkewPanel({
         selectedDate,
         zoom.start,
         zoom.end,
-        showBandEvents ? bandEvents : undefined,
+        signalEvents !== undefined ? undefined
+          : showBandEvents ? bandEvents : undefined,
         showBandEvents ? corridor : undefined,
-        showBandEvents ? wallZones : undefined,
+        showBandEvents || emphasizedWallSide != null ? wallZones : undefined,
         highlights,
+        signalEvents,
+        emphasizedWallSide,
       ),
-    [spec, selectedDate, themeMode, zoom.start, zoom.end, showBandEvents, bandEvents, corridor, wallZones, highlights],
+    [spec, selectedDate, themeMode, zoom.start, zoom.end, showBandEvents, emphasizedWallSide, bandEvents, corridor, wallZones, highlights, signalEvents],
   );
 
   // "Overlay rendered" gate — the option rebuild CARRIES the highlight
@@ -654,6 +677,10 @@ export default function SharedSkewPanel({
         mode,
         convergence: showConvergence ? "shown" : "hidden",
         bandEvents: showBandEvents ? "shown" : "hidden",
+        markers: signalEvents !== undefined
+          ? "signal-history (options_wall)"
+          : "corridor-events",
+        emphasizedWallSide,
         selectedDate,
       },
       notes: [
@@ -662,7 +689,7 @@ export default function SharedSkewPanel({
         "Per-expiry line WIDTH encodes the expiry's absolute open interest (peak daily calls+puts contracts, sqrt-scaled); the plotted values remain ratio-based. Tooltips show each group's pipeline-computed OI stats (analysis.options_oi_stats): OI at the hovered date, its change vs 5/20 sessions (Δ5d/Δ20d, + = positions added / − = closed or rolled) and the trailing-20-session max (current OI at that max = a 20-session OI high). Hovering either chart shows both tooltips.",
       ],
     }),
-    [meta.subtitle, underlyingCode, spec.meanSeriesName, mode, showConvergence, showBandEvents, selectedDate, priceUnit],
+    [meta.subtitle, underlyingCode, spec.meanSeriesName, mode, showConvergence, showBandEvents, emphasizedWallSide, signalEvents, selectedDate, priceUnit],
   );
   const extraOptions = useMemo(() => [convOption] as const, [convOption]);
   const aiAskAddon = useAiAskAddon({

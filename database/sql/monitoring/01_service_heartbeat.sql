@@ -20,9 +20,8 @@
 --  database/sql/monitoring/static/service_config/<dotted.service.path>.json
 --  (tree-root default.json fallback, default cap 1) —
 --  read at registration; the live instance counter (live_parallel) lives
---  on THIS overwritten CURRENT-state row (added by
---  10_static_json_config.sql, migrated from the retired
---  monitor.service_config).
+--  on THIS overwritten CURRENT-state row — a CREATE-body column below
+--  (migrated 2026-10-10 from the retired monitor.service_config).
 --
 --  Scope taxonomy: scope is the top-level pipeline area (downloads, builds,
 --  analysis, strategy, live, database), sub_scope the level below it (e.g.
@@ -62,7 +61,8 @@ CREATE TABLE IF NOT EXISTS monitor.service_heartbeat (
     sub_scope      text,
     stop_reason    text,
     is_normal_exit boolean,
-    stopped_at     timestamptz
+    stopped_at     timestamptz,
+    live_parallel  smallint    NOT NULL DEFAULT 0
 );
 
 COMMENT ON TABLE monitor.service_heartbeat IS
@@ -97,3 +97,11 @@ COMMENT ON COLUMN monitor.service_heartbeat.is_normal_exit IS
 COMMENT ON COLUMN monitor.service_heartbeat.stopped_at IS
     'When the stop was recorded (exit handler, or watchdog detection for '
     'unrecorded deaths).';
+
+COMMENT ON COLUMN monitor.service_heartbeat.live_parallel IS
+    'Instances currently believed alive: +1 on a registration that claims '
+    'a slot past the max_parallel cap (the cap is static JSON config — '
+    'database/sql/monitoring/static/service_config/), -1 (floor 0) on '
+    'a recorded exit, RESET from host pid+cmdline liveness by the '
+    'heartbeat watchdog when a process is detected down without an exit '
+    'record. Migrated 2026-10-10 from monitor.service_config.';

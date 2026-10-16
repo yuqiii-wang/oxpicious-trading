@@ -132,6 +132,45 @@ def feeder_codes_from_map() -> List[str]:
     return [c.strip() for c in df[col] if c.strip()]
 
 
+def order_feeders_by_target_rank(feeder_codes: List[str]) -> List[str]:
+    """Order feeder codes by their target ETF's importance rank 0 -> 9.
+
+    Feeds rank 0 target ETFs (flagship broad) first so a --max-funds slice
+    or an interrupted monthly sweep covers the important feeder families
+    first. Joins stats.sec_etf_links (feeder -> target ETF) with
+    stats.sec_importance_ranks; feeders with no link/rank row sink to the
+    tail (rank default 9). Falls back to the input order when the DB is
+    unreachable — ordering must never fail a download run.
+    """
+    try:
+        from _common.db_commons import get_read_db_connection
+
+        conn = get_read_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT l.feeder_code, r.importance_rank
+                      FROM stats.sec_etf_links l
+                      LEFT JOIN stats.sec_importance_ranks r
+                        ON r.code = l.target_etf_code
+                    """
+                )
+                ranks = {feeder: (int(rank) if rank is not None else 9)
+                         for feeder, rank in cur.fetchall()}
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 — ordering must never fail a run
+        logger.warning("feeder importance ordering unavailable (%s); "
+                       "keeping CSV order", exc)
+        return feeder_codes
+    # Ordering itself rides on the shared helper (rank default 9 + code
+    # tiebreak); only the feeder→target-rank KEY building is local, since it
+    # joins through stats.sec_etf_links.
+    from _common.importance import order_codes_by_importance
+    return order_codes_by_importance(feeder_codes, ranks)
+
+
 def download_fund_nav(
     *,
     out_root: str | None = None,
@@ -141,7 +180,12 @@ def download_fund_nav(
     force: bool = False,
 ) -> Dict[str, object]:
     out_dir = resolve_out_dir("", "fund_nav", out_root)
-    codes = [c.strip() for c in (fund_codes or feeder_codes_from_map()) if c.strip()]
+    if fund_codes is None:
+        # Default universe: CSV row order -> importance rank 0 -> 9 by
+        # target ETF so --max-funds slices keep the important feeders.
+        codes = order_feeders_by_target_rank(feeder_codes_from_map())
+    else:
+        codes = [c.strip() for c in fund_codes if c.strip()]
     if max_funds is not None and max_funds > 0:
         codes = codes[:max_funds]
     if not codes:

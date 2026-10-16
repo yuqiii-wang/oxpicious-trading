@@ -283,7 +283,7 @@ def _grouped_ewm_gpu(s, df, alpha, min_periods, group_bounds):
         )
     import cupy as cp
     from _common.df_utils import host_array
-    from analysis.mov_ave_spread._kernels.ewm import grouped_ewm_mean
+    from _common.df_utils.kernels.ewm import grouped_ewm_mean
 
     x = host_array(
         pd.to_numeric(s, errors="coerce").to_numpy()
@@ -396,9 +396,7 @@ async def run_rsi(
     # Deferred import — rsi_ranks imports RSI_WINDOWS back from this
     # module, so a module-level import would be circular.
     from analysis.mov_ave_spread.steps.rsi_ranks import make_ranks_rebuild_hook
-    from analysis.mov_ave_spread.steps.rsi_typical import (
-        rebuild_rsi_typical_from_table,
-    )
+    from analysis.trends.rsi_episode_days import rebuild_trend_episode_days
 
     await run_table_step(
         conn, df,
@@ -424,11 +422,12 @@ async def run_rsi(
         ),
     )
 
-    # the tail-episode flags AFTER the RSI rows' own write: they read the
-    # ranks table (rebuilt by the hook above) and bulk-upsert onto
-    # mov_ave_rsi — post-write so the upsert never collides with the
-    # force COPY (the in-hook ordering inserted flag-only rows into the
-    # freshly purged table; see steps/rsi_typical.py's module notes)
-    await rebuild_rsi_typical_from_table(
+    # the tail-episode store AFTER the RSI rows' own write: it reads the
+    # ranks table (rebuilt by the hook above) and CSV-COPYs the trends
+    # component's own analysis.trend_episode_days store (wholesale per
+    # sec_type — the retired is_typical columns no longer ride this
+    # table; post-write so the COPY never collides with the RSI rows'
+    # own write)
+    await rebuild_trend_episode_days(
         conn, sec_type=sec_type or "index", code_filter=code_filter,
     )

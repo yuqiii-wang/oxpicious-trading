@@ -20,8 +20,11 @@ the first step of the work:
 - ANY chart component, ECharts option builder, or chart tooltip/colors
   under `data_viz/src` → `ui-charts`
 - ANY verification of `data_viz/` work → `ui-test`
-- analysis_forecasts signal semantics (history vs live) →
-  `signals-live-vs-history`
+- analysis_signals semantics (rule cells, history vs live, the seven
+  families) → `signals-live-vs-history`
+- financial/biz semantics of the mov_rsi / bollinger / ma_cross /
+  options_wall / options_vix / momentum / rf_break signal families
+  (trigger meaning, parameters, sides, evidence) → `signals-biz-logic`
 
 ## cudf preference (short form — the `cudf-dtypes` skill is authoritative)
 

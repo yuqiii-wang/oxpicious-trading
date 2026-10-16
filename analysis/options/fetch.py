@@ -1084,3 +1084,259 @@ async def fetch_missing_spot_dates(
         pass
 
     return _missing_pk_tuples(candidates, existing_pks, pk_columns)
+
+
+# ---- Vol-index vs spot correlation fetchers ----------------------------------
+
+VOL_SPOT_CORR_FETCH_COLUMNS = [
+    "date", "underlying_code", "vol_index_30d", "spot_close",
+]
+
+
+async def fetch_vol_spot_corr_rows(
+    conn,
+    sec_type: str | None = None,
+) -> pd.DataFrame:
+    """Fetch the correlation inputs: every options_vol_index row LEFT-joined
+    to options_spot_daily's close (NaN where the spot day is missing).
+
+    Basis = the vol index's (underlying_code, date) rows — the corr table
+    stride-samples the same ordinals, and dates where the vol index exists
+    but spot does not simply contribute no joint-valid pair. Reads the read
+    models written by pipelines 6 (vol index) and 8 (spot daily).
+
+    Returns a DataFrame with columns:
+        date, underlying_code, vol_index_30d, spot_close
+
+    Dates stay datetime64 (compute boundary).
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT extract(epoch from v.date)::float8 AS date,
+               v.underlying_code,
+               v.vol_index_30d::float8 AS vol_index_30d,
+               s.close::float8 AS spot_close
+        FROM analysis.options_vol_index v
+        LEFT JOIN analysis.options_spot_daily s
+          ON s.underlying_code = v.underlying_code AND s.date = v.date
+        WHERE EXISTS (
+            SELECT 1
+            FROM stats.options_terms t
+            WHERE t.underlying_code = v.underlying_code
+              {sec_filter}
+        )
+        ORDER BY v.underlying_code, v.date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return pd.DataFrame(columns=VOL_SPOT_CORR_FETCH_COLUMNS)
+
+    df = _records_frame(rows, VOL_SPOT_CORR_FETCH_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    return df
+
+
+async def fetch_vol_spot_corr_candidates(
+    conn,
+    sec_type: str | None = None,
+) -> list:
+    """Candidate (underlying_code, date) rows the corr table should hold,
+    as python-date tuples.
+
+    Append-only contract ("existing data is old"): per underlying over its
+    options_vol_index history —
+      • the stride grid: every VOL_SPOT_CORR_STRIDE-th session
+        (row_number() % stride == 0) — the seed for fresh underlyings,
+        immutable once written;
+      • every session STRICTLY AFTER the underlying's latest stored corr
+        date (the daily tail growth — each new trading day adds exactly
+        one row; a multi-day pipeline gap backfills each day);
+      • for fresh underlyings (no stored rows yet): also the latest
+        session (the seed tail).
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    from analysis.options.config import (
+        VOL_SPOT_CORR_PK_COLUMNS,
+        VOL_SPOT_CORR_STRIDE,
+        VOL_SPOT_CORR_TABLE_NAME,
+    )
+
+    sec_filter = _sec_type_where(sec_type)
+    exists_sql = f"""
+        EXISTS (
+            SELECT 1
+            FROM stats.options_terms t
+            WHERE t.underlying_code = v.underlying_code
+              {sec_filter}
+        )
+    """
+    sql = f"""
+        SELECT underlying_code, extract(epoch from date)::float8 AS date FROM (
+            SELECT v.underlying_code, v.date,
+                   row_number() OVER (
+                       PARTITION BY v.underlying_code ORDER BY v.date
+                   ) AS rn
+            FROM analysis.options_vol_index v
+            WHERE {exists_sql}
+        ) x
+        WHERE MOD(x.rn, {VOL_SPOT_CORR_STRIDE}) = 0
+        UNION
+        SELECT v.underlying_code, extract(epoch from v.date)::float8 AS date
+        FROM analysis.options_vol_index v
+        LEFT JOIN (
+            SELECT c.underlying_code, MAX(c.date) AS max_date
+            FROM {VOL_SPOT_CORR_TABLE_NAME} c
+            GROUP BY c.underlying_code
+        ) m ON m.underlying_code = v.underlying_code
+        WHERE m.max_date IS NOT NULL
+          AND v.date > m.max_date
+          AND {exists_sql}
+        UNION
+        SELECT u.underlying_code, extract(epoch from u.date)::float8 AS date
+        FROM (
+            SELECT DISTINCT ON (v.underlying_code) v.underlying_code, v.date
+            FROM analysis.options_vol_index v
+            WHERE {exists_sql}
+            ORDER BY v.underlying_code, v.date DESC
+        ) u
+        ORDER BY underlying_code, date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return []
+
+    df = _records_frame(rows, VOL_SPOT_CORR_PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    # _missing_pk_tuples with an empty existing set = plain tuple
+    # materialization (python dates — set-comparable with the stored keys).
+    return _missing_pk_tuples(
+        df[VOL_SPOT_CORR_PK_COLUMNS].drop_duplicates(),
+        [],
+        VOL_SPOT_CORR_PK_COLUMNS,
+    )
+
+
+async def fetch_stored_max_corr_dates(
+    conn,
+) -> pd.DataFrame:
+    """Per-underlying latest stored corr date (the append-only growth
+    frontier — the compute emits every session strictly after it).
+
+    Returns a DataFrame [underlying_code, max_date] (dates datetime64).
+
+    Args:
+        conn: async DB connection.
+    """
+    from analysis.options.config import VOL_SPOT_CORR_TABLE_NAME
+
+    rows = await conn.fetch(
+        f"SELECT underlying_code, MAX(date) AS max_date "
+        f"FROM {VOL_SPOT_CORR_TABLE_NAME} GROUP BY underlying_code"
+    )
+    columns = ["underlying_code", "max_date"]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    df = _records_frame(rows, columns)
+    df["max_date"] = epoch_col_to_dt64(df["max_date"], index=df.index)
+    return df
+
+
+async def fetch_null_corr5_pairs(
+    conn,
+) -> pd.DataFrame:
+    """Stored (underlying_code, date) pairs whose corr_5d is still NULL —
+    rows written before the column existed (the stride-20 era, and daily
+    rows written by interim runs). The pipeline re-emits them so the
+    upsert fills the new column; every other value is recomputed
+    identically (trailing windows at a fixed date are immutable).
+
+    Returns a DataFrame with the PK columns (dates datetime64).
+
+    Args:
+        conn: async DB connection.
+    """
+    from analysis.options.config import (
+        VOL_SPOT_CORR_PK_COLUMNS,
+        VOL_SPOT_CORR_TABLE_NAME,
+    )
+
+    rows = await conn.fetch(
+        f"SELECT underlying_code, "
+        f"extract(epoch from date)::float8 AS date "
+        f"FROM {VOL_SPOT_CORR_TABLE_NAME} "
+        f"WHERE corr_5d IS NULL"
+    )
+    if not rows:
+        return pd.DataFrame(columns=VOL_SPOT_CORR_PK_COLUMNS)
+
+    df = _records_frame(rows, VOL_SPOT_CORR_PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    return df[VOL_SPOT_CORR_PK_COLUMNS].drop_duplicates()
+
+
+async def fetch_missing_vol_spot_corr_dates(
+    conn,
+    sec_type: str | None = None,
+) -> list:
+    """Fetch (underlying_code, date) pairs missing from
+    options_vol_index_vs_spot_price_corr.
+
+    Candidates = fetch_vol_spot_corr_candidates' append-only sample set:
+    the stride grid seed PLUS every session strictly after each
+    underlying's latest stored corr date — so a new trading day produces
+    exactly one new row per underlying (a multi-day gap backfills each
+    day), while the stored history is never touched. Stored rows whose
+    corr_5d is still NULL (written before the column existed — the
+    stride-20 era) are ALSO returned for re-upsert: they are all stride-5
+    candidates, so the upsert fills the new column without touching any
+    other value.
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    from analysis.options.config import (
+        VOL_SPOT_CORR_PK_COLUMNS,
+        VOL_SPOT_CORR_TABLE_NAME,
+    )
+
+    candidate_set = set(
+        await fetch_vol_spot_corr_candidates(conn, sec_type)
+    )
+    if not candidate_set:
+        return []
+
+    rows = await conn.fetch(
+        f"SELECT underlying_code, "
+        f"extract(epoch from date)::float8 AS date, "
+        f"(corr_5d IS NULL) AS needs_5d "
+        f"FROM {VOL_SPOT_CORR_TABLE_NAME}"
+    )
+    if not rows:
+        return sorted(candidate_set)
+
+    df = _records_frame(
+        rows, VOL_SPOT_CORR_PK_COLUMNS + ["needs_5d"],
+    )
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    # _missing_pk_tuples with an empty existing set = plain tuple
+    # materialization (python dates — same shape as the candidate tuples).
+    stored = set(_missing_pk_tuples(
+        df[VOL_SPOT_CORR_PK_COLUMNS].drop_duplicates(),
+        [],
+        VOL_SPOT_CORR_PK_COLUMNS,
+    ))
+    null_5d = set(_missing_pk_tuples(
+        df.loc[df["needs_5d"], VOL_SPOT_CORR_PK_COLUMNS].drop_duplicates(),
+        [],
+        VOL_SPOT_CORR_PK_COLUMNS,
+    ))
+    return sorted((candidate_set - stored) | null_5d)

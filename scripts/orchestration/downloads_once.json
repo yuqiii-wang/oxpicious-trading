@@ -1,0 +1,9 @@
+{
+  "1": { "script": "downloads.stock.szse.archive", "can_be_parallel": false, "note": "full-history archive seed loads are kept serial: heavy concurrent bulk DB writes (hardware overheat history)" },
+  "2": { "script": "downloads.etf.szse.archive", "can_be_parallel": false },
+  "3": { "script": "downloads.index.szse.archive", "can_be_parallel": false },
+  "4": { "script": "downloads.stock.sse.archive", "can_be_parallel": false },
+  "5": { "script": "downloads.stock.bse.archive", "can_be_parallel": false },
+  "6": { "script": "downloads.futures.cffex.archive", "can_be_parallel": false },
+  "7": { "script": "downloads.etf.huatai_pb.archive", "can_be_parallel": false }
+}

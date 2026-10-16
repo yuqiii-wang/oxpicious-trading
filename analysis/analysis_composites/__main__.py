@@ -19,11 +19,12 @@ database/sql/analysis/analysis_composites/):
 Modes (mirroring analysis.industry_sentiments.corr):
 
   incremental (default):
-    Per benchmark, detects POTENTIAL window END dates on the
-    stats.industry_basic_stats calendar grid not yet covered by a computed
-    window end in analysis_composites.industry_corr_benchmark_offsets
-    (find_missing_offset_window_ends) and (re)upserts only those windows.
-    No truncate.
+    Per benchmark, detects the windows that need (re)computation —
+    MISSING complete stride-grid windows plus the TRAILING windows that
+    end at the latest calendar date (find_missing_offset_window_ends)
+    — and (re)upserts only those. The daily increment therefore only
+    ever touches the span between the last frozen stride point and the
+    latest date. Superseded trailing rows are deleted. No truncate.
 
   --force:
     Truncates the table, then recomputes and inserts ALL rows (full
@@ -166,17 +167,19 @@ class CompositesAnalysis(DataAnalysis):
             for bench in self.benchmarks:
                 logger.info(f"\n[0/1] Detecting missing offset-corr windows for "
                       f"benchmark {bench}...")
-                target_dates = await find_missing_offset_window_ends(
-                    conn, bench,
+                target_dates, load_from = (
+                    await find_missing_offset_window_ends(conn, bench)
                 )
-                logger.info(f"    -> {len(target_dates)} windows missing from "
-                      f"{TABLE_OFFSETS} (benchmark={bench})")
+                logger.info(f"    -> {len(target_dates)} window ends to "
+                      f"(re)compute for {TABLE_OFFSETS} (benchmark={bench})"
+                      + (f"; bounded load from {load_from.isoformat()}"
+                         if load_from else ""))
                 if not target_dates:
                     logger.info(f"    -> benchmark {bench} is up to date; "
                           f"nothing to do.")
                     continue
                 await run_opposite_correlations(
-                    conn, target_dates=target_dates,
+                    conn, target_dates=target_dates, load_from=load_from,
                     benchmarks=(bench,),
                 )
 

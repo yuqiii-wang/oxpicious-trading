@@ -28,7 +28,7 @@
 --  (06_external_resource_stats.sql).
 --
 --  Type columns are SMALLINT label codes (the label-code contract,
---  stats.label_dim + _common/labels.py + data_viz/api/services/
+--  static.label_dim + _common/labels.py + data_viz/api/services/
 --  label-codes.ts):
 --    resource_type — domain 'ext_resource':    0 http | 1 llm
 --    sub_type      — domain 'ext_http_source' when resource_type = 0
@@ -84,8 +84,8 @@ CREATE TABLE IF NOT EXISTS monitor.external_resource_audit (
     -- otherwise lose every audit row to the NOT NULL constraint. New
     -- code always supplies the real name explicitly.
     service        text         NOT NULL DEFAULT 'unknown',  -- writing process's service name (dotted module path; 'unknown' = pre-service or stale-code writer)
-    resource_type  SMALLINT     NOT NULL,  -- label code (stats.label_dim 'ext_resource'): 0 http | 1 llm
-    sub_type       SMALLINT     NOT NULL,  -- label code (stats.label_dim): 'ext_http_source' row when http, 'ext_llm_provider' row when llm
+    resource_type  SMALLINT     NOT NULL,  -- label code (static.label_dim 'ext_resource'): 0 http | 1 llm
+    sub_type       SMALLINT     NOT NULL,  -- label code (static.label_dim): 'ext_http_source' row when http, 'ext_llm_provider' row when llm
     url            text         NOT NULL,  -- scheme://host/path — query string STRIPPED (anti-bot random params are noise)
     status_code    SMALLINT,               -- HTTP status of the final attempt; NULL = no response at all (transport error / timeout)
     is_failed      boolean      NOT NULL,
@@ -116,7 +116,7 @@ COMMENT ON TABLE monitor.external_resource_audit IS
     'external request (final outcome only — status, time, URL, duration, '
     'is_failed / failure_reason; no payloads), keyed (service, id) so '
     'every row names the process that made the request. resource_type / '
-    'sub_type are SMALLINT label codes (stats.label_dim domains '
+    'sub_type are SMALLINT label codes (static.label_dim domains '
     'ext_resource / ext_http_source / ext_llm_provider). Written '
     'fire-and-forget by _common/external_resource_audit.py from '
     'downloads/_common/net.py (AntiBotProxy — every exchange downloader) '
@@ -135,12 +135,12 @@ COMMENT ON COLUMN monitor.external_resource_audit.service IS
     'vocabulary (label-code contract exception). Half of the primary key.';
 
 COMMENT ON COLUMN monitor.external_resource_audit.resource_type IS
-    'The external resource family as its stats.label_dim (''ext_resource'' '
+    'The external resource family as its static.label_dim (''ext_resource'' '
     'domain) SMALLINT code: 0 http (the downloads anti-bot proxy), 1 llm '
     '(llm_agents provider APIs).';
 
 COMMENT ON COLUMN monitor.external_resource_audit.sub_type IS
-    'Further classification within the family, as a stats.label_dim '
+    'Further classification within the family, as a static.label_dim '
     'SMALLINT code — WHICH domain applies is selected by resource_type: '
     'http rows carry an ''ext_http_source'' code (host family: sse / szse '
     '/ bse / cffex / csindex / cnindex / chinabond / shibor / huatai / '

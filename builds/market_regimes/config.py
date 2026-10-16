@@ -29,7 +29,7 @@ TABLE = "stats.market_regimes"
 SPANS_TABLE = "stats.market_regime_spans"
 
 # Regime vocabulary (the taxonomy's exhaustive states, ordinal order).
-# The regime column is SMALLINT (the stats.label_dim contract): the build
+# The regime column is SMALLINT (the static.label_dim contract): the build
 # writes the label's ordinal IN THIS TUPLE, so its order must match the
 # shared mapping's code order — fail fast on drift.
 REGIMES: tuple[str, ...] = ("calm", "hot", "panic", "quiet")

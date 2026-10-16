@@ -224,7 +224,7 @@ def build_industry_change_map(
 
 
 async def fetch_industry_stats_rows(conn) -> List[Any]:
-    # pool_size filters by its stats.label_dim SMALLINT code (3 = 'all').
+    # pool_size filters by its static.label_dim SMALLINT code (3 = 'all').
     return await conn.fetch(
         f'SELECT industry_id, date, mean_close '
         f'FROM stats.industry_basic_stats WHERE pool_size = 3')

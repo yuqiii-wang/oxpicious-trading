@@ -48,7 +48,7 @@ export interface SignalCodeTrendChartProps {  /** Security type — selects the 
    *  to let the component fetch the history itself. */
   history?: TradingSignalHistoryResponse | null;
   /** The marker POPULATION — the parent's toggle-filtered subset of
-   *  `history.signals` (the OHLCV variant + episode-pass picks). Omit to
+   *  `history.signals` (the OHLCV variant pick). Omit to
    *  mark every row of `history` (the unfiltered record). */
   population?: TradingSignal[];
   /** The SELECTED signal date — its buy/sell marker renders enlarged
@@ -109,6 +109,10 @@ export default function SignalCodeTrendChart({
         signal_type: h.signal_type,
         signal_sub_type: h.signal_sub_type,
         confidence: h.confidence_pct,
+        // the rejected no-action record draws the grey diamond instead
+        // of any triangle (is_rejection — options_wall's VRP-declined
+        // put breaches)
+        is_rejection: h.is_rejection ?? false,
       })),
     [population, active],
   );

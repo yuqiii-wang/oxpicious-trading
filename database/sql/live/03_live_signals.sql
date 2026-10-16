@@ -50,16 +50,16 @@ CREATE TABLE IF NOT EXISTS live.live_signals (
     date            DATE          NOT NULL,  -- live date of the breach
     time            TIME          NOT NULL,  -- tick/bar time of the breach (intraday)
 
-    action          SMALLINT      NOT NULL,  -- label code (stats.label_dim 'action'): 1 sell (upward breach, signal_excess > 0) | 0 buy (downward breach, signal_excess < 0)
+    action          SMALLINT      NOT NULL,  -- label code (static.label_dim 'action'): 1 sell (upward breach, signal_excess > 0) | 0 buy (downward breach, signal_excess < 0)
     signal_excess   NUMERIC(18,6) NOT NULL,  -- signal - signal_threshold: > 0 upward breach (above threshold) | < 0 downward breach (below)
     signal_excess_pct NUMERIC(12,4),         -- (signal_excess / |signal_threshold|) * 100 — unitless breach depth pct; NULL when signal_threshold = 0 (guarded by NULLIF)
     signal          NUMERIC(16,4) NOT NULL,  -- the breaching value at this tick (for mov_rsi rows: the RSI value that breached its threshold)
     signal_threshold NUMERIC(14,6) NOT NULL, -- the threshold breached (denormalized from analysis_signals.signal_strategies)
     confidence      INTEGER       NOT NULL DEFAULT 100,  -- the strategy's expected-move confidence in basis points (ROUND(10000 × strategies.confidence); DEFAULT is the legacy pre-2026-09-25 fill)
-    confidence_boost INTEGER,     -- the same bucket's @boost cohort confidence (bp) — add-on context, never a gate; NULL = no child / non-mov_rsi (see 05_live_signals_cohort_confidence.sql)
+    confidence_boost INTEGER,     -- the same bucket's @boost cohort confidence (bp) — add-on context, never a gate; NULL = no child / non-mov_rsi
     confidence_selection INTEGER, -- the same bucket's @selection cohort confidence (bp) — add-on context, never a gate; NULL = no child / bottom-only / non-mov_rsi
     is_day_close_trigger BOOLEAN  NOT NULL DEFAULT FALSE,  -- TRUE = legacy day-close mirror row (time 15:00:00); FALSE = intraday live-monitor breach
-    regime_state    SMALLINT      NOT NULL DEFAULT 0,  -- label code (stats.label_dim 'regime'): the breach bar's DATE regime (0 calm / 1 hot / 2 panic / 3 quiet)
+    regime_state    SMALLINT      NOT NULL DEFAULT 0,  -- label code (static.label_dim 'regime'): the breach bar's DATE regime (0 calm / 1 hot / 2 panic / 3 quiet)
 
     created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),  -- record audit
 
@@ -91,20 +91,22 @@ COMMENT ON COLUMN live.live_signals.signal_type IS 'Breached config''s detection
 COMMENT ON COLUMN live.live_signals.signal_sub_type IS 'Breached config''s indicator + window: rsi{W} for mov_rsi, std{W}_{k} for mov_std — mirrors analysis_signals.signal_strategies.signal_sub_type.';
 COMMENT ON COLUMN live.live_signals.date IS 'The live date on which the breach was observed.';
 COMMENT ON COLUMN live.live_signals.time IS 'The intraday tick/bar time of the breach observation; 15:00:00 on legacy day-close mirror rows (is_day_close_trigger = TRUE).';
-COMMENT ON COLUMN live.live_signals.action IS 'Trading direction of the breached config as its stats.label_dim (''action'' domain) SMALLINT code: 1 sell (top RSI / upper band — upward breach, positive excess) or 0 buy (bottom RSI / lower band — downward breach, negative excess). Denormalized from analysis_signals.signal_thresholds.action for direct filtering.';
+COMMENT ON COLUMN live.live_signals.action IS 'Trading direction of the breached config as its static.label_dim (''action'' domain) SMALLINT code: 1 sell (top RSI / upper band — upward breach, positive excess) or 0 buy (bottom RSI / lower band — downward breach, negative excess). Denormalized from analysis_signals.signal_thresholds.action for direct filtering.';
 COMMENT ON COLUMN live.live_signals.signal_excess IS 'Signed excess of the breaching value over the threshold: signal - signal_threshold (exactly, on the stored columns). Positive = upward breach (signal above signal_threshold), negative = downward breach (below); the sign is correlated with action by convention (sell ↔ positive, buy ↔ negative). Day-close boundary rows (selected within the threshold-rounding tolerance) may carry a tiny opposite-signed excess since signal is stored at 4 decimals.';
 COMMENT ON COLUMN live.live_signals.signal IS 'The value that breached the threshold: the live price at this tick for mov_std rows, the current RSI (analysis.mov_ave_rsi latest row) for mov_rsi rows — RSI thresholds live on the 0-100 scale, so an RSI-vs-threshold breach is recorded in indicator space.';
 COMMENT ON COLUMN live.live_signals.signal_threshold IS 'The threshold the value crossed, denormalized from analysis_signals.signal_strategies.signal_threshold of the config''s active row — the record pins the value it was compared against.';
 
 COMMENT ON COLUMN live.live_signals.confidence IS 'The breached strategy''s expected-move confidence (integer, basis points) = ROUND(10000 × analysis_signals.signal_strategies.confidence) — the chosen rung''s sign-aligned blended mean forward change (dir_ave, a fractional expected move) scaled to bp, copied from the active strategy row at breach time; column DEFAULT 100 only fills legacy rows. (Was the 0-100 percent scale of the removed reverse_prob until 2026-09-25 — pre-rewrite rows keep their old-scale values.)';
 COMMENT ON COLUMN live.live_signals.is_day_close_trigger IS 'TRUE = day-close observation (time 15:00:00): written by the on-demand --date mode (python -m live.live_signals --date D) when the selected date has no intraday bar for the code — the official daily close from stats.{sec_type}_basic_stats, value sources bounded to rows at-or-before D (plus remaining rows of the retired --live day-close mirror writer; the historical record lives in analysis_signals.history_signals); FALSE (default) = intraday-bar breach (live monitor, or the --date mode''s last-intraday-bar replay). The trigger kind of the observation.';
-COMMENT ON COLUMN live.live_signals.regime_state IS 'The breach bar''s DATE regime as its stats.label_dim (''regime'' domain) SMALLINT code (0 calm / 1 hot / 2 panic / 3 quiet — the stats.market_regimes day label), resolved per check by (code, date), so as-of --date replays see exactly the D verdict (daily states are static historical labels, no peeking; shift-1 trailing inputs make every label known at its own day''s close). RECORD, never a gate: the breach still fires; the label marks which regime produced the event and matches the strategy''s own regime split. Replaces the retired is_market_hyped boolean.';
+COMMENT ON COLUMN live.live_signals.regime_state IS 'The breach bar''s DATE regime as its static.label_dim (''regime'' domain) SMALLINT code (0 calm / 1 hot / 2 panic / 3 quiet — the stats.market_regimes day label), resolved per check by (code, date), so as-of --date replays see exactly the D verdict (daily states are static historical labels, no peeking; shift-1 trailing inputs make every label known at its own day''s close). RECORD, never a gate: the breach still fires; the label marks which regime produced the event and matches the strategy''s own regime split. Replaces the retired is_market_hyped boolean.';
 COMMENT ON COLUMN live.live_signals.created_at IS 'Row insertion timestamp (record audit).';
 COMMENT ON COLUMN live.live_signals.signal_excess_pct IS 'Unitless breach depth: (signal_excess / |signal_threshold|) * 100. Signed like signal_excess (positive = upward/sell, negative = downward/buy). Guarded against divide-by-zero with NULLIF — only meaningful when signal_threshold ≠ 0. Stored so the identity signal_excess_pct = signal_excess / |signal_threshold| * 100 holds exactly (computed from the same rounded signal_excess).';
+COMMENT ON COLUMN live.live_signals.confidence_boost IS 'The SAME bucket''s ohlcv_boost cohort confidence (integer basis points) = ROUND(10000 × signal_strategies.confidence) of the @boost child row sharing the breached strategy''s (code, sec_type, signal_type, side, regime_state, start_date, end_date) — the ohlcv-score-trust-weighted measurement of the same trigger days (analysis.analysis_forecasts.ohlcv_boost), its own chosen-rung dir_ave, never blended into the parent confidence. ADD-ON context only: the child rows are permanently is_active = FALSE (never breached, never threshold-set) and this column never gates anything. NULL = no @boost child registered for the bucket, or a family without ohlcv children (mov_std / mov_pairs / mov_pairs_ema).';
+COMMENT ON COLUMN live.live_signals.confidence_selection IS 'The SAME bucket''s ohlcv_selection cohort confidence (integer basis points) = ROUND(10000 × signal_strategies.confidence) of the @selection child row sharing the breached strategy''s identity — the favorable-anatomy subset''s own chosen-rung dir_ave (analysis.analysis_forecasts.ohlcv_selection; the streaks whose day-0 ohlcv score cleared the side''s bar — bottom side only, the top side carries no selection child). ADD-ON context only, same never-a-gate rule as confidence_boost. NULL = no @selection child registered (incl. every top-side breach) or a family without ohlcv children.';
 
 -- ----------------------------------------------------------------------------
 --  label-code migration (2026-10-05): existing TEXT action/regime_state
---  columns convert IN PLACE to their stats.label_dim SMALLINT codes —
+--  columns convert IN PLACE to their static.label_dim SMALLINT codes —
 --  live breach rows are append-only records that cannot be regenerated,
 --  so no truncate. Fresh installs already have the SMALLINT columns
 --  from the CREATE body (this block no-ops). MUST run BEFORE the
@@ -164,6 +166,19 @@ SELECT public.ensure_check_constraint(
     'live.live_signals',
     'chk_live_signals_confidence',
     $chk$confidence BETWEEN 0 AND 10000$chk$);
+-- 2026-09-28 cohort add-on columns: the 0-10000 bp gates on the
+-- denormalized cohort confidences. NULL passes (CHECK semantics) —
+-- non-mov_rsi rows legitimately carry no cohort values.
+SELECT public.ensure_check_constraint(
+    'live.live_signals',
+    'chk_live_signals_conf_boost',
+    $chk$confidence_boost IS NULL
+       OR confidence_boost BETWEEN 0 AND 10000$chk$);
+SELECT public.ensure_check_constraint(
+    'live.live_signals',
+    'chk_live_signals_conf_selection',
+    $chk$confidence_selection IS NULL
+       OR confidence_selection BETWEEN 0 AND 10000$chk$);
 -- label-code vocab gates (fresh installs carry these from the CREATE
 -- body; migrated installs lost them with the dropped TEXT columns).
 SELECT public.ensure_check_constraint(

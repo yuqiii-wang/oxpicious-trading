@@ -294,6 +294,60 @@ VOL_INDEX_NUMERIC_COLS = [
     "var_near", "var_far", "variance_30d", "vol_index_30d",
 ]
 
+# ---- Options vol-index vs spot correlation table ----------------------------
+# Rolling Pearson correlation between the 30d model-free vol index and the
+# underlying spot close (the VIX-vs-spot "fear gauge" relation — CBOE
+# convention: daily spot RETURNS vs daily vol-index CHANGES, never the
+# trending levels): per session x = ln(spot_t/spot_{t-1}) vs
+# y = ln(vol_t/vol_{t-1}); corr over the trailing W sessions on joint-valid
+# pairs (a missing vol or spot session NaNs its return AND the one after —
+# no cross-gap returns). Date-granular — no FK to options_expiry_identity.
+VOL_SPOT_CORR_TABLE_NAME = "analysis.options_vol_index_vs_spot_price_corr"
+VOL_SPOT_CORR_ANALYSIS_NAME = "options_vol_index_vs_spot_price_corr"
+
+VOL_SPOT_CORR_PK_COLUMNS = ["underlying_code", "date"]
+
+# Correlation windows in TRADING sessions: 5/20/60/255 = ~1 week / 1 month
+# / 3 months / 1 year (the repo ma-convention).
+VOL_SPOT_CORR_WINDOWS = [5, 20, 60, 255]
+
+# Row stride: the seed grid — one row every 5th trading session per
+# underlying (its options_vol_index row ordinal % 5 == 0) plus the
+# underlying's latest session, for underlyings with no stored corr
+# history yet. Incremental growth is APPEND-ONLY ("existing data is
+# old"): every session strictly AFTER an underlying's latest stored corr
+# date gets its own row (one per new trading day; a multi-day pipeline
+# gap backfills each day), with each row's windows reaching back up to
+# 255 sessions from its own date. No stored row is ever rewritten or
+# deleted.
+VOL_SPOT_CORR_STRIDE = 5
+
+VOL_SPOT_CORR_DESCRIPTION = (
+    "Rolling correlation between the 30-day model-free implied-volatility "
+    "index (analysis.options_vol_index) and the underlying spot close "
+    "(analysis.options_spot_daily): per trading session x = ln(spot_t/"
+    "spot_{t-1}) (daily log-return) vs y = ln(vol_t/vol_{t-1}) (daily "
+    "log-change); corr_5d/20d/60d/255d = Pearson correlation over the "
+    "trailing 5/20/60/255 sessions, counting only sessions where BOTH "
+    "changes exist (NULL until the window holds W joint-valid pairs). "
+    "Level-vs-level correlation is deliberately NOT stored — spurious on "
+    "trending series. Append-only sampling: fresh underlyings seed the "
+    "5-session stride grid + latest session; every session after an "
+    "underlying's latest stored corr date is added by each incremental "
+    "run (one row per new trading day, windows reaching back up to 255 "
+    "sessions); stored rows are never rewritten. PK (underlying_code, "
+    "date); no FK (date-granular). Built by analysis.options."
+)
+
+VOL_SPOT_CORR_RESULT_COLUMNS = [
+    "date", "underlying_code", "corr_5d", "corr_20d", "corr_60d",
+    "corr_255d",
+]
+
+VOL_SPOT_CORR_NUMERIC_COLS = [
+    "corr_5d", "corr_20d", "corr_60d", "corr_255d",
+]
+
 # ---- Options bands table (v2 — OI-MASS CORRIDOR) ---------------------------
 # The options-bounded region per (underlying_code, date): strikes enclosing
 # the central BANDS_CORRIDOR_MASS of pooled chain OI (all expiries,

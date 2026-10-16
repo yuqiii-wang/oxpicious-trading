@@ -1,6 +1,8 @@
 {
   "service": "downloads.stock.bse.price",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "daily",
   "schedule": "every A-share trading date from 19:00 (downloads_daily.sh guard), before builds_daily.sh",
   "notes": "Daily BSE price download — distinct from the always-on downloads.stream.bse.price poller.",

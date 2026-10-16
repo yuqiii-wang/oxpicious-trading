@@ -1,6 +1,8 @@
 {
   "service": "downloads.stream.bse.price",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "always",
   "schedule": "always-on while the host is up; the stream watchdog restarts it when the beat goes stale",
   "notes": null,

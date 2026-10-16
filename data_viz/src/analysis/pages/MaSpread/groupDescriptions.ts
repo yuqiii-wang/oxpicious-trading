@@ -27,11 +27,13 @@ export type MaSpreadGroupId =
   | "pairsEma"
   | "tradingAmt"
   | "rsiTrends"
+  | "momentum"
   | "roofFloorWindow"
   | "highLowStreaks"
   | "pxVolStates"
   | "ohlcGaps"
-  | "marketRegimes";
+  | "marketRegimes"
+  | "trendBands";
 
 export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
   pairsSimple: {
@@ -86,6 +88,32 @@ export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
       "multi-window confluence; the tooltip's RSI row shows all six " +
       "windows regardless of the days pick.",
   },
+  momentum: {
+    title: "Momentum",
+    description:
+      "Lookback-adaptive momentum (rate of change): momentum[n] = " +
+      "price[t]/price[t-n] − 1 per trading day, from " +
+      "analysis.mov_ave_momentum. Two buttons pick the FIXED anchors " +
+      "(5d = one trading week, 20d = one trading month); three pick the " +
+      "ADAPTIVE short/mid/long terms whose lookback n is chosen " +
+      "SELF-ADAPTIVELY BY VOLATILITY per (code, market regime): " +
+      "n_term = clip(round((target_move/σ)²), lo, hi) with σ = the " +
+      "median EWMA daily vol (sqrt EWMA(ret_1d², span=20), the same vol " +
+      "the regime classification z-scores) over the code's days in that " +
+      "regime — equal-expected-move targeting, so elevated-vol regimes " +
+      "(hot/panic) shorten the lookback toward the 5/20/60 anchors while " +
+      "calm regimes stretch it (a calm index carries ~6/25/100d). " +
+      "Targets: short 3% clip [5,60], mid 6% [20,120], long 12% " +
+      "[60,255]; ordering enforced. Multi-pick draws the picked terms' " +
+      "lines on the offset right axis (band-mapped signed ratios, zero " +
+      "guide; labels in %), replacing the amt bars while the header " +
+      "toggle sits at Amt (RSI Trends/Slopes/Curvatures override). The " +
+      "caption shows the LATEST day's effective lookbacks + regime; the " +
+      "tooltip spells each adaptive term's per-date lookback " +
+      "(short·14d). Indication: positive adaptive momentum = the " +
+      "regime-appropriate trend is up; short term flipping sign ahead " +
+      "of the long = momentum divergence — trend rotation.",
+  },
   roofFloorWindow: {
     title: "Roof/Floor Trendlines",
     description:
@@ -96,26 +124,31 @@ export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
       "(High_w = max High, Low_w = min Low within the window); clicking a " +
       "chart date draws the roof line through the window's top + 2nd highs " +
       "and the floor line through its top + 2nd lows, stopping at that " +
-      "date. The \"shade\" toggle is independent of the period buttons: it " +
-      "shades EVERY window's extreme↔2nd-extreme band at once — light " +
-      "purple from 2nd high to high (roof zone), light blue from low to 2nd " +
-      "low (floor zone), each over its own trailing span; overlapping " +
-      "windows stack, so the deepest tint marks where several windows " +
-      "agree. The shades react to the chosen date: they anchor to the " +
-      "window ending at the clicked chart date (latest by default; click " +
-      "again to clear), re-anchoring like the trendlines and streak " +
-      "windows. The anchor's trailing-20-day CLOSE extremes (max / min " +
-      "close of the last 20 rows) supply two cut lines — a roof's " +
-      "bottom edge is raised to the 20d max close, a floor's top edge " +
-      "lowered to the 20d min close — so bands never cross into the " +
-      "last 20 days' closing range (close-based: an intraday wick " +
-      "cannot wipe a band; at fresh highs the roofs compress to a " +
-      "narrow strip above the top close). Guard: a side left with zero " +
-      "bands draws one from the trailing-60-day extremes (roof = 60d " +
-      "max close → max high, floor = 60d min low → min close). " +
+      "date (latest by default; click again to clear). " +
+      "The Est-levels toggle adds the QUANTITATIVE estimate of the " +
+      "roof/floor levels at the chosen date (analysis.mov_ave_spreads_" +
+      "roof_floor_estimates, per method: trendline = the drawn anchor " +
+      "line extrapolated, donchian = the window's max-high/min-low, " +
+      "quantile = the rolling 90th/10th close percentile, channel = " +
+      "OLS fit ± 2σ, boll = SMA ± 2σ, median = the consensus of the " +
+      "five) as TWO horizontal dashed lines; the method chips pick " +
+      "which method's levels draw. The rebound-audit captions (loaded " +
+      "with the first window pick, from analysis.mov_ave_spreads_roof_" +
+      "floor_rebounds) report, per side at the selected window: how " +
+      "many recorded extremes the code has, how many REBOUNDED ≥5% " +
+      "within 60d and by how much, and how the level fared on retest " +
+      "(held vs broken, bounce/depth amplitudes, holds later broken). " +
+      "The same events draw on the chart as LARGER triangle markers at " +
+      "the qualifying rebounded recorded extremes (roof-orange up / " +
+      "floor-blue down): only events BEFORE the chosen date (the " +
+      "clicked anchor date, latest by default) whose level sits within " +
+      "±5% of their side's median event level (the median roof / " +
+      "median floor of that cohort) draw — events after the chosen " +
+      "date and at far-from-typical levels stay off the chart. " +
       "Clicking a window button is EXCLUSIVE: every other section's " +
       "picks clear (RSI Trends, High/Low Streaks, Px-Vol States, Top-10% " +
-      "OHLC Days, Market Regimes), the header toggle returns to Amt, and " +
+      "OHLC Days, Market Regimes, Trend), the header toggle returns to " +
+      "Amt, and " +
       "an Amt/MA envelope view falls back to Price/MA5 — while the " +
       "trading-amt bars yield the right axis to the enabled window's " +
       "change-since-last-anchor plot: Δ Low(Wd) = close − the LAST low " +
@@ -129,8 +162,7 @@ export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
       "right-axis slot back. " +
       "Indication: a close outside the " +
       "channel = breakout; a falling roof meeting a rising floor = range " +
-      "compression coiling before a directional move; deep shade overlap = " +
-      "confluence strength behind that zone.",
+      "compression coiling before a directional move.",
   },
   highLowStreaks: {
     title: "High/Low Streaks",
@@ -186,5 +218,28 @@ export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
       "spans. Indication: momentum / breakout tactics pay in hot spans; " +
       "panic argues de-risking; quiet flags accumulation or distribution " +
       "awaiting price follow-through.",
+  },
+  trendBands: {
+    title: "Trend (signals tier)",
+    description:
+      "The code's trend phases, from the SIGNALS TIER's per-(code, date) " +
+      "classification (analysis.trend_days via the trend-spans API — the " +
+      "RSI re-entry classifier the rule cells split by; replaced the " +
+      "retired client-side close-vs-MA60 classifier 2026-10-15, whose " +
+      "crash-inflated MA60 kept labeling post-crash recoveries down for " +
+      "months): rise/fall = Wilder RSI(14) momentum episodes (fixed " +
+      "50±7.5 zones, ≤5-row re-entry absorb, MA20-slope agreement; a " +
+      "deep RSI ≤30/≥70 anchor opens a 40-day window in which the " +
+      "midline re-cross flips the trend — the post-crash rebound fix); " +
+      "top/bottom = the price-vs-MA255 gap extremes vs their own " +
+      "trailing q90/q10; unknown = neither episode (the unshaded " +
+      "background). Multi-pick shades each picked phase's date spans " +
+      "(light red top / green bottom / blue rise / amber fall). The " +
+      "shade families share the panel's ONE shade slot: activating any " +
+      "shade row (Trend, RSI pct, High/Low Streaks, Px-Vol, Top-10% " +
+      "OHLC Days, Market Regimes) clears the other rows' picks, so only " +
+      "one family's shades draw at a time. Indication: rise spans = the " +
+      "momentum-long regime (ride them); fall = stand aside / fade weak " +
+      "bounces; top/bottom = the overextended extremes of either side.",
   },
 };

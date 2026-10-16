@@ -109,7 +109,7 @@ def parse_contract_code(code: str) -> dict:
       "IO2607-C-4000" → {product:"IO", month:"2607", option_type:0, strike:4000}
       "HO2607-P-2500" → {product:"HO", month:"2607", option_type:1, strike:2500}
 
-    ``option_type`` is the stats.label_dim 'option_type' SMALLINT code
+    ``option_type`` is the static.label_dim 'option_type' SMALLINT code
     (0 = CALL, 1 = PUT — the _common/labels contract).
 
     Returns a dict with keys: product, month, option_type, strike, or

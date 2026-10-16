@@ -24,6 +24,7 @@
 \ir 18_market_regimes.sql
 \ir 19_sec_etf_links.sql
 \ir 20_fund_nav.sql
-\ir 21_label_dim.sql
+-- label_dim moved to static/ (DDL + purpose-scoped seed INSERTs)
+\ir ../static/label_dim/00_init.sql
 \ir 98_intraday_retention.sql
 \ir 99_reconstruct_views.sql

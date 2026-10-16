@@ -29,7 +29,10 @@ export interface FetchRetryOptions {
   /** Per-attempt timeout in ms (AbortController). Default: resolved from
    *  the per-endpoint table below, falling back to DEFAULT_TIMEOUT_MS. */
   timeoutMs?: number;
-  /** Total attempts (first call + retries). Default 3. */
+  /** Total attempts (first call + retries). Default 5 — sized to ride out
+   *  a full nodemon restart cycle (kill → 1s delay → tsx cold boot of the
+   *  18-route app ≈ 5-8s of bare-500 window; 5 attempts at 1.5s linear
+   *  backoff covers ~15s + request times). */
   attempts?: number;
   /** Backoff base: delay before retry i is baseDelayMs * i. Default 1.5s. */
   baseDelayMs?: number;
@@ -116,6 +119,14 @@ export function formatFetchError(e: unknown): string {
     if (e.status >= 500 && e.body.trim() === "") {
       return "API server unreachable (it may be restarting) — try Refresh in a moment.";
     }
+    // The API's error responses are { success: false, error: "…" } — show
+    // the inner message, not the raw JSON envelope.
+    try {
+      const parsed = JSON.parse(e.body) as { error?: unknown };
+      if (typeof parsed?.error === "string" && parsed.error.trim() !== "") {
+        return parsed.error;
+      }
+    } catch { /* not JSON — fall through to the raw body */ }
     return e.message;
   }
   if (isAbortError(e)) {
@@ -150,7 +161,7 @@ export async function fetchJsonWithRetry<T>(
   url: string,
   opts: FetchRetryOptions = {},
 ): Promise<T> {
-  const attempts = opts.attempts ?? 3;
+  const attempts = opts.attempts ?? 5;
   const baseDelayMs = opts.baseDelayMs ?? 1_500;
   const timeoutMs = opts.timeoutMs ?? resolveTimeoutMs(url);
   let lastErr: unknown;

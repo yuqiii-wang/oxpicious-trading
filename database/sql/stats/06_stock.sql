@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS stats.stock_identity (
     date                      DATE          NOT NULL,
     code                      TEXT          NOT NULL,
     exchange                  TEXT,
-    board                     SMALLINT,  -- label code (stats.label_dim 'board'): 0=MAIN 1=STAR 2=GEM 3=BSE; NULL when the source row carries no board
+    board                     SMALLINT,  -- label code (static.label_dim 'board'): 0=MAIN 1=STAR 2=GEM 3=BSE; NULL when the source row carries no board
     name                      TEXT          NOT NULL DEFAULT '',
     is_in_index_or_etf        BOOLEAN       NOT NULL DEFAULT FALSE,
 
@@ -38,7 +38,7 @@ SELECT public.create_hash_partitions('stats', 'stock_identity', 16);
 -- Idempotent migration: replace the legacy code_suffix column with the
 -- canonical exchange + board columns (mirroring the canonical source-CSV
 -- schema). Existing rows are backfilled from the code suffix / prefix;
--- board backfills emit the stats.label_dim code (0 MAIN / 1 STAR /
+-- board backfills emit the static.label_dim code (0 MAIN / 1 STAR /
 -- 2 GEM / 3 BSE — the label-code contract).
 UPDATE stats.stock_identity
    SET exchange = split_part(code, '.', 2)
@@ -56,7 +56,7 @@ UPDATE stats.stock_identity
 COMMENT ON TABLE  stats.stock_identity            IS 'Stock identity: one row per (date, code). PK (code, date) shared by all stock sub-tables. Native HASH partitioned by code. Mirrors etf_identity.';
 COMMENT ON COLUMN stats.stock_identity.code       IS 'Stock ticker with exchange suffix, e.g. "000001.SZ" (Ping An Bank) or "600000.SS" (Pudong Development Bank).';
 COMMENT ON COLUMN stats.stock_identity.exchange   IS 'Exchange of the code suffix: "SZ", "SS", or "BJ". Carried from the canonical source-CSV exchange column; replaces the legacy code_suffix column.';
-COMMENT ON COLUMN stats.stock_identity.board      IS 'Listing board as its stats.label_dim (''board'' domain) SMALLINT code: 0 = MAIN, 1 = STAR (科创板 688/689.SS), 2 = GEM (创业板 30xxxx.SZ), 3 = BSE (Beijing). Carried from the canonical source-CSV board column (mapped at the write boundary); NULL when the source row carries no board.';
+COMMENT ON COLUMN stats.stock_identity.board      IS 'Listing board as its static.label_dim (''board'' domain) SMALLINT code: 0 = MAIN, 1 = STAR (科创板 688/689.SS), 2 = GEM (创业板 30xxxx.SZ), 3 = BSE (Beijing). Carried from the canonical source-CSV board column (mapped at the write boundary); NULL when the source row carries no board.';
 COMMENT ON COLUMN stats.stock_identity.is_in_index_or_etf  IS 'TRUE when this stock appears in any ETF or index composition (stats.sec_composition source_type in etf/index). Populated by populate_is_in_etf.py; used by stream_szse_price.py to avoid runtime EXISTS subquery.';
 
 -- ----------------------------------------------------------------------------
@@ -263,23 +263,26 @@ CREATE INDEX IF NOT EXISTS idx_stock_intraday_5min_date
 --   the stock rows. SZSE margin detail CSVs likewise contain only stocks
 --   (SZSE ETFs are not margin-eligible, so they don't appear there).
 --
---   margin columns are 0 (not NULL) for stocks with no margin data on a given
---   date — most stocks have no margin activity most days, so the table is
---   sparse-but-non-NULL. trading_shares/trading_amount are populated from the
---   OHLCV source CSVs (szse_archive / szse_trend / sse_trend / bse_trend) and
---   are 0 only when the source row was PE-only (NULL OHLCV).
+--   The 6 margin columns are NULLABLE: NULL = no margin data ingested for
+--   this (date, code) — no CSV row, or the file was missing/empty at build
+--   time (the margin gap detector re-reads the date once the CSV lands).
+--   0 is a REAL zero reported by the exchange. NOT NULL DEFAULT 0 baked
+--   indistinguishable whole-market zero rows on download-failure dates
+--   that poisoned the margin analysis (rz_balance > 0 filters) — the
+--   2026-09/10 margin gap. trading_shares/trading_amount stay NOT NULL
+--   (OHLCV-owned; 0 = suspended / no volume).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stats.stock_liquidity_margin (
     date                      DATE          NOT NULL,
     code                      TEXT          NOT NULL,
     trading_shares            NUMERIC(24,4) NOT NULL DEFAULT 0,
     trading_amount            NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rz_buy                    NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rz_balance                NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rq_sell_qty               NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rq_balance_qty            NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rq_balance_amt            NUMERIC(24,4) NOT NULL DEFAULT 0,
-    total_balance             NUMERIC(24,4) NOT NULL DEFAULT 0,
+    rz_buy                    NUMERIC(24,4),
+    rz_balance                NUMERIC(24,4),
+    rq_sell_qty               NUMERIC(24,4),
+    rq_balance_qty            NUMERIC(24,4),
+    rq_balance_amt            NUMERIC(24,4),
+    total_balance             NUMERIC(24,4),
 
     CONSTRAINT pk_stock_liquidity_margin PRIMARY KEY (code, date),
     CONSTRAINT fk_stock_liquidity_margin_date_code FOREIGN KEY (code, date) REFERENCES stats.stock_identity(code, date)

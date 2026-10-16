@@ -415,7 +415,7 @@ def _rank_top5(part: pd.DataFrame, *, side: int) -> pd.DataFrame:
     """Top-5 rows of one (period, weighting) slice by metric_value —
     the former ranked CTE's ROW_NUMBER per date (DESC for HYPE, ASC for
     DRAIN), scoped here per (benchmark, date). ``side`` is the
-    stats.label_dim 'rank_side' SMALLINT code (0 HYPE / 1 DRAIN).
+    static.label_dim 'rank_side' SMALLINT code (0 HYPE / 1 DRAIN).
 
     Stable sort + groupby cumcount: equal metrics keep input row order
     (the SQL left equal-key order to the planner — see the docstring's

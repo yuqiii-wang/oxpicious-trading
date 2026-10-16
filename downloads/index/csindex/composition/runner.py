@@ -17,6 +17,11 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from _common.importance import (
+    exchange_map_or_empty,
+    order_codes_or_sorted,
+    szse_downloader_codes,
+)
 from downloads._common import (
     MIN_VALID_BYTES,
     AntiBotProxy,
@@ -74,6 +79,12 @@ def download_index_composition(
         logger.warning("No index codes to download (sec_classification cache has no indices)")
         return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
 
+    # Importance rank 0 -> 9 (monthly stats.sec_importance_ranks build):
+    # study/benchmark/broad indices' compositions first so an interrupted
+    # monthly sweep has covered the important codes. Falls back to sorted()
+    # when the rank table is unavailable (fresh install before the first build).
+    index_codes = order_codes_or_sorted(index_codes)
+
     # Load index metadata from the sec_classification cache (replaces _classification.py).
     _index_meta = load_classification_indices()
     _index_names = {c: info.get("name", c) for c, info in _index_meta.items()}
@@ -106,6 +117,15 @@ def download_index_composition(
 
     results: List[Dict[str, Any]] = []
 
+    # Download-service routing by exchange (stats.sec_importance_ranks
+    # via _common.importance, cache-first): codes whose curated exchange
+    # carries the SZSE published-index marker are OWNED by the SZSE
+    # downloader — csindex.com.cn does not serve them. CSINDEX_SKIP_CODES
+    # stays as the legacy fallback for codes with no rank row (fresh
+    # install before the first monthly build).
+    _szse_owned = (set(szse_downloader_codes(exchange_map_or_empty()))
+                   | CSINDEX_SKIP_CODES)
+
     try:
         for code in index_codes:
             code = str(code).strip()
@@ -114,8 +134,8 @@ def download_index_composition(
 
             name = _index_names.get(code, code)
 
-            if code in CSINDEX_SKIP_CODES:
-                logger.info("== Index %s (%s) — skipped (in CSINDEX_SKIP_CODES, handled by SZSE downloader) ==", code, name)
+            if code in _szse_owned:
+                logger.info("== Index %s (%s) — skipped (exchange-routed: SZSE downloader owns it) ==", code, name)
                 stats.skipped_cached += 1
                 results.append({
                     "code": code, "name": name,

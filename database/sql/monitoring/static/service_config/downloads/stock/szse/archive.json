@@ -1,6 +1,8 @@
 {
   "service": "downloads.stock.szse.archive",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "once",
   "schedule": "one-time setup/backfill; no recurring schedule (re-run on demand)",
   "notes": null,

@@ -56,7 +56,7 @@ def build_detail_rows(
         )
 
     # Start with close_df as the base. sec_type rides as its
-    # stats.label_dim SMALLINT code (0 etf / 1 index / 2 stock —
+    # static.label_dim SMALLINT code (0 etf / 1 index / 2 stock —
     # the label-code contract): the analysis.pe/dividends columns
     # store the code, and every downstream group/compare is
     # value-agnostic.

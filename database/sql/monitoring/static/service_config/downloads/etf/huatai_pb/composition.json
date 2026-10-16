@@ -1,6 +1,8 @@
 {
   "service": "downloads.etf.huatai_pb.composition",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "monthly",
   "schedule": "calendar-monthly pass (cron-scheduled; no in-script date guard)",
   "notes": "huatai-pb.com fund-site data (510880 红利ETF): monthly PCF composition snapshot.",

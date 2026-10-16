@@ -93,7 +93,7 @@
 --  Table: analysis.pe  (daily raw PE)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.pe (
-    sec_type        SMALLINT         NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS analysis.pe (
 
     CONSTRAINT pk_pe PRIMARY KEY (code, sec_type, date),
     CONSTRAINT chk_pe_sec_type
-        CHECK (sec_type IN ('stock', 'etf', 'index'))
+        CHECK (sec_type IN (0, 1, 2))  -- label codes: 0=etf 1=index 2=stock
 ) PARTITION BY HASH (code);
 
 SELECT public.create_hash_partitions('analysis', 'pe', 16);
@@ -115,7 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_pe_sec_type_date
     ON analysis.pe (sec_type, date);
 
 COMMENT ON TABLE  analysis.pe        IS 'Per-(code, sec_type, date) RAW price-to-earnings ratio (no smoothing; 2026-09 split from the former combined analysis.pe_and_dividends). Sources per sec_type: index = stats.index_valuation.pe; etf = stats.etf_basic_stats.pe (pre-computed by builds.etf via harmonic-weighted constituent PE); stock = stats.stock_basic_stats.pe (pre-computed by builds.stock). Rows exist only for source days with a valid (strictly positive) PE — invalid (<= 0 / NULL) PE days have NO row. Built by analysis.pe_and_dividends; all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.pe.sec_type IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.pe.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.pe.code     IS 'Security code (bare index code e.g. 000300; ETF bare e.g. 159001; stock ticker with exchange suffix e.g. 600008.SS).';
 COMMENT ON COLUMN analysis.pe.date     IS 'Trading date.';
 COMMENT ON COLUMN analysis.pe.pe       IS 'RAW price-to-earnings ratio, no smoothing (2026-09: replaced the legacy pe_ma20 20-day MA, then the combined table split per metric). Sources per sec_type: index = stats.index_valuation.pe; etf = stats.etf_basic_stats.pe (pre-computed by builds.etf via harmonic-weighted constituent PE); stock = stats.stock_basic_stats.pe (pre-computed by builds.stock).';
@@ -124,7 +124,7 @@ COMMENT ON COLUMN analysis.pe.pe       IS 'RAW price-to-earnings ratio, no smoot
 --  Table: analysis.dividends  (daily trailing-12m dividend yield)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.dividends (
-    sec_type        SMALLINT         NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS analysis.dividends (
 
     CONSTRAINT pk_dividends PRIMARY KEY (code, sec_type, date),
     CONSTRAINT chk_dividends_sec_type
-        CHECK (sec_type IN ('stock', 'etf', 'index'))
+        CHECK (sec_type IN (0, 1, 2))  -- label codes: 0=etf 1=index 2=stock
 ) PARTITION BY HASH (code);
 
 SELECT public.create_hash_partitions('analysis', 'dividends', 16);
@@ -145,7 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_dividends_sec_type_date
     ON analysis.dividends (sec_type, date);
 
 COMMENT ON TABLE  analysis.dividends        IS 'Per-(code, sec_type, date) trailing-12m dividend yield (D/P, fractional ratio; 2026-09 split from the former combined analysis.pe_and_dividends). Close is read live from stats at compute time (NOT stored here). stock: SUM(stock_dividends.dividend_per_share_pre_tax over trailing 365d)/close; etf: SUM(etf_adjustment.implied_dividend_per_share over trailing 365d)/close; index: cap-weighted average of constituent trailing-12m yields (SUM weight_fraction x dps/close, per-share numerator and denominator) using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation). Rows exist only where the yield is defined (strictly positive) — non-payers have NO row (exact 0.0 is never produced). Built by analysis.pe_and_dividends; all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.dividends.sec_type        IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.dividends.sec_type        IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.dividends.code            IS 'Security code (bare index code e.g. 000300; ETF bare e.g. 159001; stock ticker with exchange suffix e.g. 600008.SS).';
 COMMENT ON COLUMN analysis.dividends.date            IS 'Trading date.';
 COMMENT ON COLUMN analysis.dividends.dividend_yield  IS 'Trailing-12m dividend yield (D/P) as a FRACTIONAL ratio (0.035 = 3.5%). Close is read live from stats at compute time (NOT stored in this table). stock: SUM(stats.stock_dividends.dividend_per_share_pre_tax WHERE ex_dividend_date in (date-365d, date]) / close. etf: SUM(stats.etf_adjustment.implied_dividend_per_share over trailing 365d) / close. index: cap-weighted average of constituent trailing-12m yields = SUM(weight_fraction x constituent dps / constituent close) using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation) — per-share numerator and denominator, a true yield (the former weighted-DPS / index-close formula mixed per-share CNY with index POINTS and understated yields ~100x). Strictly positive: rows with an undefined yield (close <= 0 or no dividend data in the trailing 365d window) are NOT inserted.';
@@ -245,7 +245,7 @@ DROP TABLE IF EXISTS analysis.dividends_pct_streaks;
 --    PK: (sec_type, code, date_year_month, period, pct_type)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.pe_pct (
-    sec_type                        SMALLINT          NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type                        SMALLINT          NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code                            TEXT          NOT NULL,
     date_year_month                 DATE          NOT NULL,  -- band month FIRST day
     period                          INTEGER       NOT NULL,  -- 255, 500, 750, 1275
@@ -288,7 +288,7 @@ COMMENT ON COLUMN analysis.pe_pct.low_val       IS 'pct_type-th percentile of th
 --  switches sides, so the end day's own-month band decides exactly).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.pe_pct_streaks (
-    sec_type                        SMALLINT          NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type                        SMALLINT          NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code                            TEXT          NOT NULL,
     date_year_month                 DATE          NOT NULL,  -- the streak's START month FIRST day
     period                          INTEGER       NOT NULL,  -- 255, 500, 750, 1275
@@ -355,7 +355,7 @@ COMMENT ON COLUMN analysis.pe_pct_streaks.std_dev    IS 'Population standard dev
 --    name — latest identity name (from stats.{etf,index,stock}_identity)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.pe_codes (
-    sec_type              SMALLINT         NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type              SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code                  TEXT         NOT NULL,  -- matches pe/dividends.code (ETF bare; stock suffixed)
     name                  TEXT         NOT NULL DEFAULT '',
     first_date            DATE         NOT NULL,

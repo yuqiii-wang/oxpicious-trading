@@ -1,6 +1,8 @@
 {
   "service": "downloads.bond.shibor",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "daily",
   "schedule": "every A-share trading date from 19:00 (downloads_daily.sh guard), before builds_daily.sh",
   "notes": null,

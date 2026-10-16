@@ -22,7 +22,7 @@ interface SignalItem {
 const SIGNALS_ANALYSES: SignalItem[] = [
   {
     slug: "recent-movements",
-    title: "Recent Movements",
+    title: "Short-Term Tech",
     description:
       "Per-security recent price-movement signals. Pick a security via the " +
       "sec_type toggle (ETF / Index / Stock), the CodeSearchBar, or the " +
@@ -30,6 +30,22 @@ const SIGNALS_ANALYSES: SignalItem[] = [
       "strategy → theme column, exchange filter, L3 security chips) and the " +
       "page renders the security's daily price-trend chart (OHLC + MAs).",
     tags: ["ETF", "Index", "Stock", "signal", "classification nav"],
+  },
+  {
+    slug: "options",
+    title: "Options",
+    description:
+      "Options signals — pick the underlying via the venue toggle " +
+      "(ETF · SZSE / ETF · SSE / Index · CFFEX) and the Underlying " +
+      "dropdown: the page renders the OI-weighted Moneyness Skew panel " +
+      "(Underlying Price & Positioning) and the OPTIONS-WALL breach " +
+      "signals' own UI (the signal-marked trend with the grey-diamond " +
+      "no-action markers, and the shared signal-history table with the " +
+      "signal-type / sub-signal-type dropdowns — the family fixed as " +
+      "the type, its sub types narrowing the bars, rows and markers " +
+      "together) — the options_wall family lives here, never mixed " +
+      "into the shared signals pages.",
+    tags: ["ETF", "Index", "signal", "options", "OI skew", "options wall"],
   },
 ];
 

@@ -4,7 +4,7 @@
 --  Usage: psql -d "oxpicious-stats" -f analysis/00_init.sql
 --
 --  FRESH-INIT ONLY: this list contains destructive-refresh files
---  (DROP TABLE + CREATE, e.g. 05/08/09/12/13) — NEVER re-run it against a
+--  (DROP TABLE + CREATE, e.g. 05/08/09/12/13/24) — NEVER re-run it against a
 --  populated database. Ongoing migrations go through the individual files
 --  (all idempotent); the init scripts are only for a new container volume.
 -- ============================================================================
@@ -20,6 +20,8 @@
 \ir mov_ave_spreads/06_mov_ave_trading_amt_ratios.sql
 \ir mov_ave_spreads/07_mov_ave_high_low_pct.sql
 \ir mov_ave_spreads/08_mov_ave_high_low_pct_streaks.sql
+\ir mov_ave_spreads/09_mov_ave_spreads_detail_ohlc_gaps.sql
+\ir mov_ave_spreads/10_mov_ave_spreads_codes.sql
 \ir 05_industry_sentiments.sql
 \ir 06_industry_member_index_map.sql
 \ir 08_industry_hypes_and_drains.sql
@@ -31,12 +33,18 @@
 \ir 16_options.sql
 \ir 17_non_trading_day_risk.sql
 \ir 19_price_vs_amt.sql
--- Analysis Commons: signal strategies + composites. (The forecast
--- buckets schema was REMOVED 2026-10-05 with the forecast layer —
--- the signals tier computes its rsi-pct buckets in-engine.)
--- (02/03 of analysis_signals are $1-parameterized runtime files, applied by
--- the pipeline after every run — not standalone-runnable, excluded here.)
+\ir 20_nav_code_lookup_indexes.sql
+\ir 21_margin_trends_indexes.sql
+\ir 22_dividend_est.sql
+\ir 23_dividend_deliveries.sql
+\ir 24_options_bands.sql
+\ir 25_options_moneyness.sql
+\ir 26_analysis_advice.sql
+-- Analysis Commons: composites + the signal rules tier (redesigned
+-- 2026-10-14 — signal_rules replaces the retired thresholds/curves;
+-- history_signals is populated by replaying the rules).
 \ir analysis_composites/00_schema.sql
 \ir analysis_composites/01_industry_corr_benchmark_offsets.sql
 \ir analysis_signals/00_schema.sql
-\ir analysis_signals/01_signals.sql
+\ir analysis_signals/01_signal_rules.sql
+\ir analysis_signals/02_history_signals.sql

@@ -10,14 +10,18 @@
  * Filter + check tool: the sec_type dropdown (SMALLINT label-code filter,
  * defaults to Index — the classification family this audit was migrated
  * from) narrows server-side, the search box matches code substring or
- * display name (debounced — the full universe is ~20k rows). Rows show
- * their audit refresh stamp (updated_at); a last_date far behind today
- * flags stale or dead source data, n_days = 0 means none at all.
- * Table chrome mirrors the Service Config page (Paper → named header box
- * with the visible/total count + filter + search, small dense table).
+ * display name (debounced — the full universe is ~20k rows). n_days and
+ * first_date are the build-time audit snapshot (rows show their audit
+ * refresh stamp, updated_at); last_date is re-derived per code from the
+ * stats source tables at query time, so a last_date far behind today
+ * flags stale or dead source data even between builds, and n_days = 0
+ * means none at all. Table chrome mirrors the Service Config page
+ * (Paper → named header box with the visible/total count + filter +
+ * search, small dense table).
  *
  * Data: GET /api/monitor/src-data-audit (read replica). No auto-refresh —
- * the table only changes when a build runs; the header button refetches.
+ * the snapshot columns only change when a build runs, but last_date is
+ * re-checked on every fetch; the header button refetches.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -43,6 +47,7 @@ import {
   fetchSrcDataAudit,
   type SrcDataAuditResponse,
 } from "@/lib/api-client/monitor";
+import { formatFetchError } from "@/lib/api-client/_retry";
 
 /** Debounce for the server-side search box (code / name substring). */
 const SEARCH_DEBOUNCE_MS = 300;
@@ -79,7 +84,7 @@ export default function SrcDataAuditPage() {
       setData(resp);
       setError(null);
     } catch (e) {
-      if (seq === reqSeqRef.current) setError(String(e));
+      if (seq === reqSeqRef.current) setError(formatFetchError(e));
     } finally {
       if (seq === reqSeqRef.current) setLoading(false);
     }

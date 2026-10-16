@@ -1,6 +1,8 @@
 {
   "service": "database.db_health",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "always",
   "schedule": "always-on sampler, adopted by main_run.sh like the pollers; the stream watchdog restarts it when its beat goes stale",
   "notes": "DB health sampler (replica state, replay backlog, slot WAL retention, pg_wal dir size); grouped under the stream sub-scope (the always-on services).",

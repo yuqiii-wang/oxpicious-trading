@@ -156,6 +156,20 @@ export interface SharedCorridorPoint {
   high: number | null;
 }
 
+/** One SIGNAL-history event to mark on the spot curve (the options
+ *  page's IN-SIGNAL marker mode — analysis_signals.history_signals,
+ *  the options_wall family): actionable events draw THE shared
+ *  buy/sell triangle; a rejected event (is_rejection — the strategy
+ *  gate's explicit no-action record) draws the grey diamond instead,
+ *  never a triangle. */
+export interface SharedSkewSignalEvent {
+  date: string;
+  /** "buy" / "sell" — the event's recorded action. */
+  action: string;
+  /** TRUE = the VRP-rejected no-action record (the grey diamond). */
+  is_rejection?: boolean;
+}
+
 /** One chain-wide zone wall per (date, side) — the DOMINANT
  *  wall_type='zone' group of analysis.options_walls across all expiry
  *  cohorts that date (same strength ranking the Options Trend OI Bands

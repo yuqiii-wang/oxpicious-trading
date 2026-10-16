@@ -30,6 +30,7 @@ from builds._commons.paths import INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR
 from builds._commons.row_emission import records_from_frame
 from builds._commons.safe_parse import safe_to_numeric
 from _common.df_utils import safe_columns
+from _common.importance import order_codes_or_sorted
 from downloads._common import read_csv_gpu_safe
 
 import logging
@@ -199,6 +200,19 @@ async def filter_comp_files_by_missing(
             continue
         if keys & missing_keys:
             filtered.append(f)
+
+    # Importance rank 0 -> 9 (monthly stats.sec_importance_ranks build):
+    # read the important indices' snapshots first so an interrupted or
+    # throttled composition build has covered them. Falls back to code
+    # order when the rank table is unavailable (fresh install).
+    comp_codes = {os.path.basename(f).split("_", 1)[0] for f in filtered}
+    importance_pos = {code: pos for pos, code in enumerate(
+        order_codes_or_sorted(comp_codes))}
+    filtered.sort(key=lambda f: (
+        importance_pos.get(os.path.basename(f).split("_", 1)[0],
+                           len(importance_pos)),
+        f,
+    ))
 
     logger.info(f"    [{label}] → {len(filtered)} files to read (filtered from {len(files)})")
     return filtered

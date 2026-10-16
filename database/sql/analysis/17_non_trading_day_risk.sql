@@ -60,7 +60,7 @@ DROP TABLE IF EXISTS analysis.mov_ave_rsi_holiday CASCADE;
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi_holiday';
 
 CREATE TABLE analysis.mov_ave_rsi_holiday (
-    sec_type        SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -78,7 +78,7 @@ CREATE TABLE analysis.mov_ave_rsi_holiday (
         REFERENCES analysis.mov_ave_rsi (code, sec_type, date)
         ON DELETE CASCADE,
     CONSTRAINT chk_mov_ave_rsi_holiday_sec_type
-        CHECK (sec_type IN ('etf', 'index', 'stock'))
+        CHECK (sec_type IN (0, 1, 2))  -- label codes: 0=etf 1=index 2=stock
 ) PARTITION BY HASH (code);
 
 -- Native hash partitions (16) keyed by code — created via the shared util
@@ -95,7 +95,7 @@ COMMENT ON TABLE  analysis.mov_ave_rsi_holiday IS
     'consecutive non-trading-day count ending on D-1, and today''s '
     'intraday high-low gap and open-close gap. Populated by the internal '
     'holiday step of analysis.mov_ave_spread (holiday.py).';
-COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.sec_type IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.code IS
     'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.date IS

@@ -165,7 +165,7 @@ index_info AS (
           AND code = cls.code
     ) sc ON true
 ),
--- Generate pool_size rows (stats.label_dim SMALLINT codes: 0 small /
+-- Generate pool_size rows (static.label_dim SMALLINT codes: 0 small /
 -- 1 mid / 2 large / 3 all): 3 (all) for every index, plus the specific
 -- pool based on stock_num.
 pool_rows AS (

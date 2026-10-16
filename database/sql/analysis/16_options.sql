@@ -8,7 +8,7 @@
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS analysis.options_expiry_identity (
     date                      DATE          NOT NULL,
-    option_type               SMALLINT      NOT NULL,  -- label code (stats.label_dim 'option_type'): 0=CALL 1=PUT
+    option_type               SMALLINT      NOT NULL,  -- label code (static.label_dim 'option_type'): 0=CALL 1=PUT
     underlying_code           TEXT          NOT NULL,
     expiry_date               DATE          NOT NULL,
 
@@ -23,7 +23,7 @@ SELECT public.create_hash_partitions('analysis', 'options_expiry_identity', 8);
 
 CREATE TABLE IF NOT EXISTS analysis.options_skewness_stats (
     date                      DATE          NOT NULL,
-    option_type               SMALLINT      NOT NULL,  -- label code (stats.label_dim 'option_type'): 0=CALL 1=PUT
+    option_type               SMALLINT      NOT NULL,  -- label code (static.label_dim 'option_type'): 0=CALL 1=PUT
     underlying_code           TEXT          NOT NULL,
     expiry_date               DATE          NOT NULL,
     skew_type                 TEXT          NOT NULL
@@ -77,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_options_skewness_stats_expiry
 
 COMMENT ON TABLE  analysis.options_skewness_stats              IS 'Per-(underlying_code, date, option_type, expiry_date, skew_type) store of precomputed rolling skewness statistics for option expiry groups, for multiple skew data sources separated by skew_type: oi_moneyness = OI-weighted mean moneyness (strike_price / underlying_close) — a positioning metric; iv_smile = OI-weighted 3rd standardized moment of implied vol across strikes (from stats.options_greeks) — a pricing metric; greek_delta = delta-weighted put/call OI ratio dpcr (whole chain, neutral 0.5); greek_gamma = normalized GEX-style call-minus-put gamma balance (whole chain, neutral 0); greek_vega = OTM-wing vega balance (0<|delta|<0.5 wings, neutral 0 — the open-interest mirror of the 25d risk reversal). The greek_* metrics are PAIR-level CALL-vs-PUT contrasts (CALL and PUT rows of a pair hold the SAME value), weighted by open_interest with zero OI = zero vote; theta/rho have no industry-standard positioning skew and are not computed. Rolling windows (5/20/60 days) compute MA, STD, gap-from-neutral (skewness_MA − neutral; neutral = 1 / 0.5 / 0 by type) and slope of gap. FK -> analysis.options_expiry_identity. Built by analysis.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_skewness_stats.date                    IS 'Trading date.';
-COMMENT ON COLUMN analysis.options_skewness_stats.option_type            IS 'Option type as its stats.label_dim (''option_type'' domain) SMALLINT code: 0 = CALL, 1 = PUT. For pair-level metrics (greek_*, and the OI/IV-skew tables) the CALL and PUT rows of the same group hold the SAME value.';
+COMMENT ON COLUMN analysis.options_skewness_stats.option_type            IS 'Option type as its static.label_dim (''option_type'' domain) SMALLINT code: 0 = CALL, 1 = PUT. For pair-level metrics (greek_*, and the OI/IV-skew tables) the CALL and PUT rows of the same group hold the SAME value.';
 COMMENT ON COLUMN analysis.options_skewness_stats.underlying_code        IS 'Underlying code (unified index codes; SZSE ETF options mapped via ETF->Index, e.g. 159919->000300).';
 COMMENT ON COLUMN analysis.options_skewness_stats.expiry_date            IS 'Exact contract expiry date. CFFEX (3rd Friday) and SZSE (4th Wednesday) expiries differ within a month.';
 COMMENT ON COLUMN analysis.options_skewness_stats.skew_type              IS 'Data source of the skew metric: oi_moneyness = OI-weighted mean moneyness (strike/spot, positioning); iv_smile = OI-weighted 3rd moment of implied vol across strikes (pricing, from stats.options_greeks); greek_delta = delta-weighted put/call OI ratio dpcr (whole chain, neutral 0.5 — the delta-weighted refinement of the plain put/call ratio); greek_gamma = normalized GEX-style call-minus-put gamma balance (whole chain, neutral 0; call gamma positive / put gamma negative per the dealer-positioning sign convention); greek_vega = OTM-wing vega balance (calls 0<delta<0.5 vs puts -0.5<delta<0, neutral 0 — the open-interest mirror of the 25d risk reversal). greek_* rows are PAIR-level: the CALL and PUT rows of the same (date, underlying, expiry) hold the SAME value. greek_theta/greek_rho removed (no industry-standard positioning skew).';
@@ -138,7 +138,7 @@ ALTER TABLE analysis.options_skewness_stats DROP COLUMN IF EXISTS corr_skewness_
 
 CREATE TABLE IF NOT EXISTS analysis.options_oi_stats (
     date                      DATE          NOT NULL,
-    option_type               SMALLINT      NOT NULL,  -- label code (stats.label_dim 'option_type'): 0=CALL 1=PUT
+    option_type               SMALLINT      NOT NULL,  -- label code (static.label_dim 'option_type'): 0=CALL 1=PUT
     underlying_code           TEXT          NOT NULL,
     expiry_date               DATE          NOT NULL,
 
@@ -183,7 +183,7 @@ DELETE FROM analysis.options_oi_stats WHERE oi_total IS NULL;
 
 COMMENT ON TABLE  analysis.options_oi_stats                       IS 'Dedicated per-expiry options OI statistics (per-real-expiry-date — NOT the collapsed open-group convention; see the header note). Per (underlying_code, date, option_type, expiry_date) row: oi_total (calls+puts OI of the expiry group on the date, contracts), oi_delta_5d / oi_delta_20d (change vs 5/20 trading SESSIONS earlier — session offsets index the underlying''s option calendar; NULL when the group had no row at the offset session, e.g. not yet listed), oi_max_20d (max oi_total over the trailing 20 sessions incl. the date; oi_total = oi_max_20d marks a 20-session OI high). CALL and PUT rows hold the SAME value (stats pool calls + puts). No FK to options_expiry_identity (open groups'' real expiry keys are not in the collapsed identity). Built by analysis.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_oi_stats.date                    IS 'Trading date.';
-COMMENT ON COLUMN analysis.options_oi_stats.option_type            IS 'Option type as its stats.label_dim (''option_type'' domain) SMALLINT code: 0 = CALL, 1 = PUT. The CALL and PUT rows of a group hold the SAME value (group-level stats).';
+COMMENT ON COLUMN analysis.options_oi_stats.option_type            IS 'Option type as its static.label_dim (''option_type'' domain) SMALLINT code: 0 = CALL, 1 = PUT. The CALL and PUT rows of a group hold the SAME value (group-level stats).';
 COMMENT ON COLUMN analysis.options_oi_stats.underlying_code         IS 'Underlying code (unified index codes; SZSE ETF options mapped via ETF->Index).';
 COMMENT ON COLUMN analysis.options_oi_stats.expiry_date             IS 'REAL contract expiry date (no open-group collapse). CFFEX and SZSE expiry conventions differ within a month.';
 COMMENT ON COLUMN analysis.options_oi_stats.oi_total                IS 'Total open interest of the expiry group on the date, contracts (sum over ALL active calls + puts). Feeds the per-expiry line-width encoding and the tooltip''s OI figure.';
@@ -193,7 +193,7 @@ COMMENT ON COLUMN analysis.options_oi_stats.oi_max_20d              IS 'Max oi_t
 
 CREATE TABLE IF NOT EXISTS analysis.options_iv_skew_stats (
     date                      DATE          NOT NULL,
-    option_type               SMALLINT      NOT NULL,  -- label code (stats.label_dim 'option_type'): 0=CALL 1=PUT
+    option_type               SMALLINT      NOT NULL,  -- label code (static.label_dim 'option_type'): 0=CALL 1=PUT
     underlying_code           TEXT          NOT NULL,
     expiry_date               DATE          NOT NULL,
 
@@ -279,7 +279,7 @@ COMMENT ON COLUMN analysis.options_iv_skew_stats.corr_rr25_ma60_vs_spot_ma60 IS 
 
 CREATE TABLE IF NOT EXISTS analysis.options_walls (
     date                      DATE          NOT NULL,
-    option_type               SMALLINT      NOT NULL,  -- label code (stats.label_dim 'option_type'): 0=CALL 1=PUT
+    option_type               SMALLINT      NOT NULL,  -- label code (static.label_dim 'option_type'): 0=CALL 1=PUT
     underlying_code           TEXT          NOT NULL,
     expiry_date               DATE          NOT NULL,
     wall_type                 TEXT          NOT NULL
@@ -323,7 +323,7 @@ CREATE INDEX IF NOT EXISTS idx_options_walls_expiry
 
 COMMENT ON TABLE  analysis.options_walls                       IS 'Per-(underlying_code, date, option_type, expiry_date, wall_type) store of precomputed options wall levels. Single wall type: zone (strength-scored OI wall ZONE with lifecycle — see column comments). For CALL walls the wall acts as resistance/cap, for PUT walls as support/floor. FK -> analysis.options_expiry_identity. Built by analysis.options.';
 COMMENT ON COLUMN analysis.options_walls.date                  IS 'Trading date.';
-COMMENT ON COLUMN analysis.options_walls.option_type           IS 'Option type as its stats.label_dim (''option_type'' domain) SMALLINT code: 0 = CALL, 1 = PUT.';
+COMMENT ON COLUMN analysis.options_walls.option_type           IS 'Option type as its static.label_dim (''option_type'' domain) SMALLINT code: 0 = CALL, 1 = PUT.';
 COMMENT ON COLUMN analysis.options_walls.underlying_code       IS 'Underlying code (unified index codes).';
 COMMENT ON COLUMN analysis.options_walls.expiry_date           IS 'Exact contract expiry date.';
 COMMENT ON COLUMN analysis.options_walls.wall_type             IS 'Wall computation method: zone (dominant adjacent-strike OI cluster, strength-scored with lifecycle).';
@@ -419,6 +419,75 @@ COMMENT ON COLUMN analysis.options_vol_index.vol_index_30d   IS '100 * sqrt(vari
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('options_vol_index', 'options_vol_index', NULL, NOW(),
      'Daily 30-day model-free implied-volatility index per underlying (CBOE VIX methodology adapted to settlement prices, r=0.02, calendar-day T): OTM-strip variance replication per expiry, time-interpolated to a constant 30-day maturity, vol_index_30d = 100*sqrt(variance_30d) in vol points. PK (underlying_code, date), no FK (date-granular). Built by analysis.options; all INSERTs in Python per project rule.')
+ON CONFLICT (name) DO UPDATE SET
+    detail_name       = EXCLUDED.detail_name,
+    summary_name      = EXCLUDED.summary_name,
+    last_run_datetime = NOW(),
+    description       = EXCLUDED.description;
+
+
+-- ----------------------------------------------------------------------------
+-- options_vol_index_vs_spot_price_corr — rolling correlation between the
+-- 30d model-free vol index and its underlying's spot price, per underlying
+-- (the VIX-vs-spot "fear gauge" relation: CBOE documents a historically
+-- strong INVERSE relationship between the S&P 500 and VIX, conventionally
+-- measured as daily spot RETURNS vs daily vol-index CHANGES — both
+-- stationary. Correlating the LEVELS would be spurious on trending
+-- series.) Formulation: per trading session t,
+--   x_t = ln(spot_t / spot_{t-1})        daily spot log-return
+--   y_t = ln(vol_t / vol_{t-1})          daily vol-index log-change
+--   corr_Wd_t = Pearson corr of x,y over the trailing W TRADING sessions
+--               (sessions where BOTH x_t and y_t exist; NULL until the
+--               window holds W such joint-valid pairs — honest gaps, a
+--               missing vol-index or spot day NaNs its session AND the
+--               one after, never a cross-gap return)
+-- Windows 5/20/60/255 sessions (≈ 1w / 1m / 3m / 1y, the repo
+-- ma-convention).
+-- A-share daily spot-logret vs vol-logchg typically sits near -0.6..-0.8
+-- (the leverage effect: declines bid up vol faster than rallies deflate
+-- it). Append-only sampling: fresh underlyings seed the 5-session
+-- stride grid (the 5th, 10th, ... row of their options_vol_index
+-- history) + their latest session; each incremental run then adds every
+-- session STRICTLY AFTER the underlying's latest stored corr date (one
+-- row per new trading day, each row's windows reaching back up to 255
+-- sessions) — stored rows are never rewritten or deleted. Spot source:
+-- analysis.options_spot_daily (the options loader's
+-- settlement close — same data family as the vol index; log-returns are
+-- scale-invariant so venue 厘/yuan units cancel). Date-granular — no FK
+-- to options_expiry_identity.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS analysis.options_vol_index_vs_spot_price_corr (
+    date                      DATE          NOT NULL,
+    underlying_code           TEXT          NOT NULL,
+
+    -- stride by 5d, give corr for 5d, 20d, 60d, 255d period
+    corr_5d                   NUMERIC(6,4),     -- Pearson corr of daily spot log-return vs vol-index log-change, trailing 5 sessions (≈ 1 week)
+    corr_20d                  NUMERIC(6,4),     -- trailing 20 sessions (≈ 1 month)
+    corr_60d                  NUMERIC(6,4),     -- trailing 60 sessions (≈ 3 months)
+    corr_255d                 NUMERIC(6,4),     -- trailing 255 sessions (≈ 1 year)
+
+    CONSTRAINT pk_options_vol_index_vs_spot_price_corr
+        PRIMARY KEY (underlying_code, date)
+) PARTITION BY HASH (underlying_code);
+
+-- Native hash partitions (8) keyed on underlying_code — the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07.
+SELECT public.create_hash_partitions('analysis', 'options_vol_index_vs_spot_price_corr', 8);
+
+-- corr_5d added after the table's first release (stride 20d -> 5d at the
+-- same time) — idempotent widen for existing deployments.
+ALTER TABLE analysis.options_vol_index_vs_spot_price_corr
+    ADD COLUMN IF NOT EXISTS corr_5d NUMERIC(6,4);
+
+COMMENT ON TABLE  analysis.options_vol_index_vs_spot_price_corr IS 'Rolling correlation between the 30d model-free vol index (analysis.options_vol_index) and the underlying spot close (analysis.options_spot_daily): per session x = ln(spot_t/spot_{t-1}), y = ln(vol_t/vol_{t-1}); corr_5d/20d/60d/255d = Pearson corr of x,y over the trailing 5/20/60/255 sessions (joint-valid pairs only, NULL until the window is full). Append-only sampling: fresh underlyings seed the 5-session stride grid + latest session; each incremental run adds every session strictly after the underlying''s latest stored corr date (one row per new trading day, windows reaching back up to 255 sessions) — stored rows are never rewritten or deleted. Level-vs-level correlation is deliberately NOT stored (spurious on trending series). PK (underlying_code, date); no FK (date-granular). Built by analysis.options; all INSERTs in Python per project rule.';
+COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_5d  IS 'Pearson corr of daily spot log-return vs daily vol-index log-change over the trailing 5 trading sessions (joint-valid pairs only; NULL until 5 such pairs).';
+COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_20d  IS 'Pearson corr of daily spot log-return vs daily vol-index log-change over the trailing 20 trading sessions (joint-valid pairs only; NULL until 20 such pairs).';
+COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_60d  IS 'Same over the trailing 60 trading sessions.';
+COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_255d IS 'Same over the trailing 255 trading sessions.';
+
+INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
+    ('options_vol_index_vs_spot_price_corr', 'options_vol_index_vs_spot_price_corr', NULL, NOW(),
+     'Rolling correlation between the 30d model-free vol index and the underlying spot close: per session x = ln(spot_t/spot_{t-1}) vs y = ln(vol_t/vol_{t-1}); corr_5d/20d/60d/255d = Pearson corr over the trailing 5/20/60/255 sessions (joint-valid pairs only). Append-only sampling: fresh underlyings seed the 5-session stride grid + latest session; each incremental run adds every session after the underlying''s latest stored corr date. PK (underlying_code, date), no FK (date-granular). Built by analysis.options; all INSERTs in Python per project rule.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

@@ -70,7 +70,7 @@ BIG_MV_RSI3_WINDOW = 3
 BIG_MV_COOLDOWN_BD = 5
 
 # One surviving (industry_id, date): the industry's composite close series.
-# pool_size filters by its stats.label_dim SMALLINT code (3 = 'all').
+# pool_size filters by its static.label_dim SMALLINT code (3 = 'all').
 INDUSTRY_CLOSE_SQL = """
     SELECT industry_id, date, mean_close::float8 AS mean_close
     FROM stats.industry_basic_stats

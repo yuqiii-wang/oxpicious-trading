@@ -14,9 +14,9 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "BSE streaming pagination. Rotation stays off: the BSE endpoint needs fixed headers that fingerprint rotation would clobber (bjs adapter).",
+    "notes": "BSE index-leg pacing (neeqRealController realtime GETs, one per index per EOD cycle). Rotation stays off: the BSE endpoint needs fixed headers that fingerprint rotation would clobber (bjs adapter).",
     "source_ref": "downloads/stream/bse/price/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-12T04:20:00.000000+00:00"
   },
   {
     "service": "downloads.stream.bse.price",
@@ -33,8 +33,27 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "BSE poller loop cadence (DEFAULT_POLL_INTERVAL_SEC).",
+    "notes": "BSE EOD-update retry cadence (DEFAULT_POLL_INTERVAL_SEC): seconds between EOD sweep retries while pending codes remain in the 16:00-17:30 window.",
     "source_ref": "downloads/stream/bse/price/_model.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-12T04:20:00.000000+00:00"
+  },
+  {
+    "service": "downloads.stream.bse.price",
+    "request_type": "eod",
+    "resource_type": 0,
+    "sleep_sec": 2.0,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": false,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "notes": "EOD per-company time-sharing fetches (companyEchartsController getTimeSharingChart, one GET per 北证50/北证专精特新 constituent; ~200 codes x ~2.5s fits well inside the 16:00-17:30 window). Rotation stays off: fixed headers required (bjs adapter).",
+    "source_ref": "downloads/stream/bse/price/__main__.py",
+    "updated_at": "2026-10-12T04:20:00.000000+00:00"
   }
 ]

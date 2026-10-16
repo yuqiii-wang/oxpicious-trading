@@ -1,6 +1,8 @@
 {
   "service": "database.stream_watchdog",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "always",
   "schedule": "always-on supervisor started by scripts/stream_watchdog.sh (wired into main_run.sh)",
   "notes": "Supervises the downloads.stream.* pollers + database.db_health: restarts dead/wedged processes and resets leaked live_parallel from host pid liveness.",

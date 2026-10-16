@@ -64,7 +64,7 @@ async def refresh_codes_summary(
     for st in sec_types:
         t0 = time.time()
         identity = SEC_TYPE_IDENTITY_TABLE[st]
-        # sec_type stores its stats.label_dim SMALLINT code (the
+        # sec_type stores its static.label_dim SMALLINT code (the
         # label-code contract) — both the DELETE and the INSERT bind it.
         if code:
             where, params = "sec_type = $1 AND code = $2", (sec_type_code(st), code)

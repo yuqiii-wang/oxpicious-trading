@@ -31,7 +31,8 @@ to the primary through ``get_db_connection()`` — two rows per pass, plain
 INSERT rung.
 
 Rows live in the DB being sampled: while the primary itself is down the
-pass degrades to [ALERT] log lines (logs/<date>/db_health.log) and
+pass degrades to [ALERT] log lines
+(logs/<date>/database.db_health.log) and
 resumes on recovery — the same degradation the stream watchdog accepts
 for its own decisions.
 

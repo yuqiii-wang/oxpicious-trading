@@ -1,0 +1,7 @@
+{
+  "1": {
+    "script": "builds.classification.importance",
+    "can_be_parallel": false,
+    "note": "Rebuild stats.sec_importance_ranks (per-type 0-9 processing-importance bands). Ranks 0-1 of every sec_type are hand-curated from database/sec_statics/importance_rules/<type>_<rank>_rank.json; the computed ladder fills 2-9 from turnover/composition data. Monthly guard: no-op when as_of is already in the current month; rebuilds on the first run of each month AFTER the daily builds have populated turnover data. Downloads/builds/analysis enumerate codes rank 0->9 from this table (_common.importance)."
+  }
+}

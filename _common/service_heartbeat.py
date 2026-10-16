@@ -55,6 +55,22 @@ stop_reason / is_normal_exit / stopped_at (NULL while running):
     database/stream_watchdog.py detects it (stale beat + dead pid with
     stop_reason IS NULL) and records it, then restarts the service.
 
+Cross-SERVICE parallelism is static JSON config too
+(included_parallel_services / excluded_parallel_services in the same
+service_config/ files — entries are rooted dotted prefixes: a scope
+"downloads", a sub-scope path "downloads.stock", or the full service
+name "downloads.stock.sse.archive"; specificity = segment count, so a
+name beats a sub-scope beats a scope on conflict, and a same-specificity
+tie resolves to excluded): registration checks both directions — the
+starting service's lists against every live service and every live
+service's lists against the starter (a live service = a heartbeat row
+with no stop record and a fresh beat) — and AUTO-EXITS on the first
+conflict, releasing its slot. An empty included list means
+unrestricted; a non-empty one is a whitelist (unlisted services may not
+run in parallel). The UI's run dialog previews the same check (the
+DB-unreachable case skips it — a monitoring outage must not stop
+pipelines).
+
 The thread must never take the service down: a failed beat is logged to
 stderr (captured in the service's nohup log) and retried, rebuilding the
 DB connection after any error.
@@ -112,7 +128,10 @@ HEARTBEAT_INTERVAL_S = 60.0
 
 # A running beat also CLEARs the stop columns: a live process is, by
 # definition, not stopped (this clears stale stop info from a previous
-# life after restart).
+# life after restart). started_at is NOT touched on conflict: the run's
+# start is stamped once by _CLAIM_SQL when the new life takes over the
+# row — updating it here would make started_at tick with every beat and
+# "Last run started" drift forward while the process runs.
 _BEAT_SQL = f"""
 INSERT INTO {HEARTBEAT_TABLE}
     (service, scope, sub_scope, pid, started_at, beat_at,
@@ -122,7 +141,6 @@ ON CONFLICT (service) DO UPDATE
 SET scope = EXCLUDED.scope,
     sub_scope = EXCLUDED.sub_scope,
     pid = EXCLUDED.pid,
-    started_at = EXCLUDED.started_at,
     beat_at = now(),
     stop_reason = NULL,
     is_normal_exit = NULL,
@@ -478,20 +496,25 @@ def _install_exit_hooks() -> None:
 
 
 # ---------------------------------------------------------------------------
-# max_parallel / live_parallel — the concurrency guard
+# max_parallel / live_parallel + the parallel-services lists — the
+# concurrency guard
 # ---------------------------------------------------------------------------
 # The CAP is static JSON config (database/sql/monitoring/static/
 # service_config/ — a per-service DIRECTORY TREE like
 # external_request_config/: the dotted service name is the path, each file
-# one object {service, max_parallel, freq, schedule, notes, source_ref,
+# one object {service, max_parallel, included_parallel_services,
+# excluded_parallel_services, freq, schedule, notes, source_ref,
 # updated_at}; the tree-root default.json is the FALLBACK carrying the
-# repo-wide cap), read at registration; the COUNTER (live_parallel) lives on
-# the service's monitor.service_heartbeat row — the current-state row the
-# claim's conditional UPDATE serializes on. Registration claims a slot
-# past the cap and auto-exits the newcomer; a recorded exit releases it;
-# the stream watchdog resets the counter from pid liveness when a process
-# is detected down without an exit record (a dead process cannot release
-# its own slot).
+# repo-wide cap and the repo-wide parallel lists), read at registration;
+# the COUNTER (live_parallel) lives on the service's monitor.service_heartbeat
+# row — the current-state row the claim's conditional UPDATE serializes on.
+# Registration claims a slot past the cap and auto-exits the newcomer; a
+# recorded exit releases it; the stream watchdog resets the counter from
+# pid liveness when a process is detected down without an exit record (a
+# dead process cannot release its own slot). The two PARALLEL-SERVICES
+# lists (see the module docstring) are read from the same files and
+# checked cross-service right after the cap claim — a conflict releases
+# the just-claimed slot and auto-exits too.
 
 _STATIC_SERVICE_CONFIG_DIR = (
     _REPO_ROOT / "database" / "sql" / "monitoring" / "static"
@@ -538,6 +561,146 @@ def max_parallel_for(service: str) -> int:
             if isinstance(cap, int) and cap >= 1:
                 return cap
     return DEFAULT_MAX_PARALLEL
+
+
+def _clean_parallel_entries(value: object) -> tuple[str, ...]:
+    """JSON list → validated dotted-prefix entries (same segment charset as
+    a service name — [A-Za-z0-9_-]). Anything else in the file is dropped:
+    a malformed entry must never block a pipeline."""
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        v
+        for v in value
+        if isinstance(v, str)
+        and v
+        and all(
+            s and all(c.isalnum() or c in "_-" for c in s)
+            for s in v.split(".")
+        )
+    )
+
+
+def parallel_services_for(
+    service: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The service's (included, excluded) parallel-services lists from the
+    static service_config/ tree — same file-then-default.json chain as
+    max_parallel_for, same tolerance (missing/unreadable → empty). An empty
+    included list means unrestricted; a non-empty one is a whitelist of the
+    services that MAY run in parallel. Entries are rooted dotted prefixes
+    of a service name: a scope ("downloads"), a sub-scope path
+    ("downloads.stock" — two or more segments), or the full service name.
+    """
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            return (
+                _clean_parallel_entries(
+                    doc.get("included_parallel_services")
+                ),
+                _clean_parallel_entries(
+                    doc.get("excluded_parallel_services")
+                ),
+            )
+    return ((), ())
+
+
+def _match_specificity(entry: str, other: str) -> int:
+    """Segment count when ``entry`` matches ``other`` as a rooted dotted
+    prefix, else 0 — the priority order (full name > sub-scope path >
+    scope) IS the count."""
+    e = entry.split(".")
+    return len(e) if other.split(".")[: len(e)] == e else 0
+
+
+def _blocked_by(
+    included: tuple[str, ...],
+    excluded: tuple[str, ...],
+    other: str,
+) -> tuple[str, str] | None:
+    """Pair verdict — (blocking list, matched entry) when ``other`` may NOT
+    run in parallel with the owner of the two lists, else None. A matching
+    exclusion always blocks unless an inclusion matches at STRICTLY higher
+    specificity (service name > sub-scope > scope; a same-specificity tie
+    resolves to excluded — fail-safe). A non-empty included list is a
+    whitelist: an unlisted ``other`` blocks with no single entry ("").
+    """
+    exc_best = max(
+        ((_match_specificity(e, other), e) for e in excluded), default=(0, "")
+    )
+    inc_best = max(
+        ((_match_specificity(e, other), e) for e in included), default=(0, "")
+    )
+    if exc_best[0] > 0 and exc_best[0] >= inc_best[0]:
+        return "excluded_parallel_services", exc_best[1]
+    if inc_best[0] > 0:
+        return None
+    if included:
+        return "included_parallel_services", ""
+    return None
+
+
+_RUNNING_SERVICES_SQL = """
+SELECT service
+FROM monitor.service_heartbeat
+WHERE service <> %s
+  AND stop_reason IS NULL
+  AND beat_at > now() - make_interval(secs => %s)
+"""
+
+
+def _parallel_conflicts(service: str) -> list[str]:
+    """Human-readable parallel-services conflicts for starting ``service``
+    now, both directions: its lists against every live service, and every
+    live service's lists against it (so an exclusion holds regardless of
+    start order). A live service is the UI's definition mirrored — a
+    heartbeat row with no stop record and a beat inside STALE_AFTER_S.
+    A DB problem returns [] (check skipped, run admitted): same contract
+    as the max_parallel claim's "skipped" state."""
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_RUNNING_SERVICES_SQL, (service, STALE_AFTER_S))
+                running = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 — never block on a DB problem
+        print(
+            f"[service_heartbeat] {service}: parallel-services check "
+            f"skipped (DB unreachable: {e})",
+            file=sys.stderr,
+            flush=True,
+        )
+        return []
+    own_inc, own_exc = parallel_services_for(service)
+    conflicts: list[str] = []
+    for other in running:
+        blocked = _blocked_by(own_inc, own_exc, other)
+        if blocked is not None:
+            detail = (
+                f"entry '{blocked[1]}'" if blocked[1]
+                else "whitelist active, service not listed"
+            )
+            conflicts.append(
+                f"{other} (running) — {service}'s {blocked[0]}: {detail}"
+            )
+            continue
+        other_inc, other_exc = parallel_services_for(other)
+        blocked = _blocked_by(other_inc, other_exc, service)
+        if blocked is not None:
+            detail = (
+                f"entry '{blocked[1]}'" if blocked[1]
+                else "whitelist active, service not listed"
+            )
+            conflicts.append(
+                f"{service} — {other}'s (running) {blocked[0]}: {detail}"
+            )
+    return conflicts
 
 
 _CLAIM_SQL = f"""
@@ -713,14 +876,18 @@ def _release_parallel_slot(service: str) -> None:
         )
 
 
-def _enforce_max_parallel(service: str) -> None:
-    """Exit when the service's ``max_parallel`` is already reached.
+def _enforce_parallel_policy(service: str) -> None:
+    """Exit when the service's ``max_parallel`` is already reached, or a
+    parallel-services conflict exists with a live service.
 
-    The check IS the claim (_claim_parallel_slot). Cap reached →
-    SystemExit (BaseException — deliberately NOT swallowed by the
-    best-effort ``except Exception`` wrappers) so the duplicate refuses
-    itself BEFORE any audit row, heartbeat beat or exit hook is installed:
-    it leaves no trace but its stderr line, and no slot to release.
+    The cap check IS the claim (_claim_parallel_slot); the cross-service
+    lists run right after a successful claim — a conflict releases the
+    just-claimed slot and raises SystemExit (BaseException — deliberately
+    NOT swallowed by the best-effort ``except Exception`` wrappers) so the
+    conflicting run refuses itself BEFORE any audit row, heartbeat beat or
+    exit hook is installed: it leaves no trace but its stderr line, and no
+    slot to release. The "skipped" claim state (DB unreachable) skips the
+    cross-check too — admitted uncounted, healed by the watchdog.
     """
     state, live, cap = _claim_parallel_slot(service)
     if state == "refused":
@@ -730,7 +897,18 @@ def _enforce_max_parallel(service: str) -> None:
             "without starting"
         )
     if state == "claimed":
+        # The claim is owned from here on — mark it BEFORE the cross-check
+        # so a conflict's release actually fires (the release pops this
+        # flag and no-ops without it).
         _slots_claimed[service] = True
+        conflicts = _parallel_conflicts(service)
+        if conflicts:
+            _release_parallel_slot(service)
+            raise SystemExit(
+                f"[service_heartbeat] {service}: parallel-services "
+                f"conflict — {'; '.join(conflicts)}; auto-exiting without "
+                "starting"
+            )
 
 
 def register_service(
@@ -748,13 +926,15 @@ def register_service(
     lands as a normal stop record + a closed audit row (a lightweight run
     record).
 
-    Registration first enforces the service's ``max_parallel``
+    Registration first enforces the service's parallel policy
     (static JSON config — database/sql/monitoring/static/
     service_config/<dotted.service.path>.json, tree-root default.json
-    fallback, default 1) by atomically claiming a
-    live_parallel slot on the heartbeat row: a duplicate run auto-exits
-    (SystemExit) instead of double-running, and the slot is released on
-    the recorded exit — see _enforce_max_parallel /
+    fallback): the ``max_parallel`` cap by atomically claiming a
+    live_parallel slot on the heartbeat row, then the
+    included/excluded_parallel_services lists cross-service — a duplicate
+    run auto-exits (SystemExit) instead of double-running, a
+    parallel-conflicting run likewise, and the slot is released on the
+    recorded exit — see _enforce_parallel_policy /
     _release_parallel_slot.
 
     scope/sub_scope default to the MONITORED_SERVICES registry entry; an
@@ -771,7 +951,7 @@ def register_service(
         # Already registered in this process (double execute()) — the
         # first registration owns the heartbeat + audit life.
         return existing
-    _enforce_max_parallel(service)
+    _enforce_parallel_policy(service)
     _install_exit_hooks()
 
     # Open the audit row for this process life BEFORE the beat thread

@@ -3,8 +3,7 @@
   guards       — NUMERIC overflow guards + gap-ratio helpers
   derive       — source-frame column derivations (slopes, σ, trading amt)
   ohlc_vector  — vectorised roof/floor anchor algorithm (sparse-table
-                 argmax host core; shared by the ohlc-lines and bands
-                 steps)
+                 argmax host core; used by the ohlc-lines step)
   steps        — the internal-step pipeline skeleton (run_table_step)
 """
 from analysis.mov_ave_spread._common.guards import (

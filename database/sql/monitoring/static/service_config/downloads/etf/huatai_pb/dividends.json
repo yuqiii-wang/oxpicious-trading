@@ -1,6 +1,8 @@
 {
   "service": "downloads.etf.huatai_pb.dividends",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "semiannually",
   "schedule": "twice-a-year pass (cron-scheduled; no in-script date guard)",
   "notes": "Semi-annual dividend snapshots from the huatai-pb fund site.",

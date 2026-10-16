@@ -29,6 +29,7 @@ connectChartsByGroup("debt");
 connectChartsByGroup("annual-sentiment");
 connectChartsByGroup("industry-sentiments");
 connectChartsByGroup("options-trend");
+connectChartsByGroup("vol-index");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

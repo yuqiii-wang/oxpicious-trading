@@ -72,7 +72,7 @@ interface DbIndustrySeriesRow extends QueryResultRow {
 // ----------------------------------------------------------------------------
 
 // All seasonal rankings for the given (benchmark_code, period, weighting).
-// weighting filters by its stats.label_dim SMALLINT code ($3); rank_side
+// weighting filters by its static.label_dim SMALLINT code ($3); rank_side
 // decodes to its TEXT label in the SELECT (the response stays strings).
 const SEASONAL_RANKINGS_SQL = `
     SELECT season_qkey,

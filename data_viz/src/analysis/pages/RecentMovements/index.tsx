@@ -7,16 +7,18 @@
  *     industry + parallel strategy column + exchange filter row + L3
  *     security-level chips), fully wired from useSecNav
  *   • Content — once a security is picked (code search or L3 chip), the
- *     SignalTrendPanel renders the CURVE overlay panel first (the
- *     continuous depth-response curves mu(s) per regime), then the
- *     shared SignalCodeTrendChart (daily
+ *     SignalTrendPanel renders the shared population controls strip (the
+ *     SIGNAL pick + the OHLCV variant), the RULES panel
+ *     (the code's signal_rules cells — replaced the retired
+ *     depth-response CURVE overlay 2026-10-15), the shared
+ *     SignalCodeTrendChart (daily
  *     trend via the shared OhlcChart, per sec_type baseline endpoint,
  *     carrying the code's FULL signal history as buy (green ▲ below the
  *     low) / sell (red ▼ above the high) markers — the same treatment as
  *     the live Trading Signals row expansion) with the signal-history
- *     table beneath it: one row per signal date, and a chart marker
- *     click expands that date's signals (SignalHistoryTable over the
- *     shared SignalRecordsTable — the live table style).
+ *     panel beneath it (SignalHistoryPanel over the shared
+ *     SignalRecordsTable — the live table style): one row per signal
+ *     date, and a chart marker click expands that date's signals.
  *
  * (The Forecast bucket table section — the shared ForecastCard over the
  * analysis_forecasts mov_* tables — was REMOVED 2026-10-05 with the
@@ -82,7 +84,7 @@ export default function RecentMovementsPage() {
   return (
     <SecNavShell
       nav={nav}
-      title="Recent Movements"
+      title="Short-Term Tech"
       backPath="/analysis/signals"
       backLabel="back to signals"
       subtitle="Per-security recent price-movement signals — pick a security via

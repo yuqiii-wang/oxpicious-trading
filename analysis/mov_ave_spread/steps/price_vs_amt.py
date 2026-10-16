@@ -165,7 +165,7 @@ def classify_price_vs_amt(df: pd.DataFrame) -> pd.DataFrame:
 
     # Host numpy classification (unwrap at the pandas→numpy boundary —
     # the cudf.pandas proxy would dispatch every scalar compare). The
-    # emitted ordinals ARE the stats.label_dim codes (PX_VOL_SPEEDS /
+    # emitted ordinals ARE the static.label_dim codes (PX_VOL_SPEEDS /
     # PX_VOL_VOL_STATES are asserted to match _common.labels order).
     t = df["px_t"].to_numpy(dtype="float64", copy=True)
     z = df["px_z"].to_numpy(dtype="float64", copy=True)

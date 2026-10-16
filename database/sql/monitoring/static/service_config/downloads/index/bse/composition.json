@@ -1,0 +1,11 @@
+{
+  "service": "downloads.index.bse.composition",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "monthly",
+  "schedule": "calendar-monthly pass (cron-scheduled; in-runner monthly-refresh guard: cached month < yesterday's month)",
+  "notes": "\u5317\u8bc150/\u5317\u8bc1\u4e13\u7cbe\u7279\u65b0 composition via the CSI co-published closeweight autofile; writes into temps/csi_index_composition so builds.index.composition ingests it.",
+  "source_ref": "scripts/downloads_monthly.sh",
+  "updated_at": "2026-10-12T03:40:53.558127+00:00"
+}

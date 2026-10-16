@@ -432,10 +432,13 @@ async def _run_index_round(
 # ---------------------------------------------------------------------------
 # Async workers: three primary procs (A=akshare, C=em_push2his, D=em_push2)
 # pull groups from a shared primary queue in parallel; one fallback proc
-# (B=szse) drains the fallback queue first, then the primary. Whoever finishes
-# first takes the next group. On an A/C/D failure the unfinished remainder is
-# handed to the SZSE worker. V8 is only ever touched by the akshare worker, so
-# the partition_address_space.cc race cannot happen.
+# (B=szse) drains the fallback queue first, then the primary. The fallback
+# queue is seeded with the rank-priority slice (highest-ranked codes -> B,
+# see _rounds.split_rank_priority) before circuit-breaker remainders from
+# A/C/D land behind it. Whoever finishes first takes the next group.
+# On an A/C/D failure the unfinished remainder is handed to the SZSE worker.
+# V8 is only ever touched by the akshare worker, so the
+# partition_address_space.cc race cannot happen.
 # ---------------------------------------------------------------------------
 async def _parallel_source_worker(source: str, tag: str, q_primary, q_fallback,
                                   state, session, host_tracker, emitted_map,

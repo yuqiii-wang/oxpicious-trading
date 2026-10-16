@@ -1,24 +1,22 @@
 /**
  * SignalTrendPanel — the Recent Movements content section for one picked
  * security, top to bottom: the shared population controls strip (the
- * SIGNAL pick + the OHLCV variant + episode pass), the CURVE overlay
- * panel (the continuous depth-response curves mu(s) per regime), the
- * shared SignalCodeTrendChart (daily trend + the FULL signal history as
- * buy/sell markers, PE overlay suppressed — the signal overlay above
- * replaces the valuation context), then the signal-history table.
- * (The retired THRESHOLD bars overlay was removed 2026-10-05; the
- * curves subsume it.)
+ * SIGNAL pick + the OHLCV variant), the RULES panel (the
+ * code's signal_rules cells — the self-adaptive prepared bars + measured
+ * evidence per (sub · trend · regime · action); replaced the retired
+ * depth-response CURVE overlay 2026-10-15), the shared
+ * SignalCodeTrendChart (daily trend + the FULL signal history as
+ * buy/sell markers, PE overlay suppressed), then the HISTORY panel (the
+ * events replayed from those rules).
  *
  * TWO panel-level picks drive the WHOLE panel: the SIGNAL pick (the
- * indicator family — mov_rsi / bollinger; lifted OUT of the curve
- * overlay panel 2026-10-11) and the population pick (the OHLCV variant
- * + episode pass). Both select the history events (markers + table)
- * AND the curve overlay's fit above — one pick each for the whole
- * panel ("pass: all" is a history-only pick and keeps the curve's last
- * pass). The Signal options come from the curves response (fetched
- * here — the overlay draws the same curves) unioned with the history's
- * families, so a picker option exists wherever either surface has the
- * family; mov_rsi leads (the flagship family), the rest alphabetical.
+ * indicator family — mov_rsi / bollinger / ma_cross) and the population
+ * pick (the OHLCV variant). Both select the history
+ * events (markers + table) AND the rules rows above — one pick each for
+ * the whole panel. The Signal options come from the rules response
+ * unioned with the history's families, so a picker option exists
+ * wherever either surface has the family; mov_rsi leads (the flagship
+ * family), the rest alphabetical.
  *
  * The history response feeds BOTH halves: the trend chart's markers and
  * the table's per-date groups — through the same signal + population
@@ -39,19 +37,18 @@ import {
 } from "@mui/material";
 import {
   SignalCodeTrendChart,
-  SignalOverlayPanel,
+  SignalHistoryPanel,
   SignalPopulationToggles,
-  useSignalPopulation,
+  SignalRulesPanel,
 } from "@/shared/components/signal-code-trend";
 import type { CodeTrendChartOptions, CodeTrendSecType } from "@/ui/OhlcChart";
 import { stripCodeSuffix } from "@/ui/OhlcChart/codeTrendSources";
 import {
-  fetchSignalCurves,
+  fetchSignalRules,
   fetchTradingSignalHistory,
-  type SignalCurve,
+  type SignalRule,
   type TradingSignalHistoryResponse,
 } from "@/lib/api-client";
-import SignalHistoryTable from "./SignalHistoryTable";
 
 export interface SignalTrendPanelProps {
   secType: CodeTrendSecType;
@@ -68,6 +65,13 @@ const signalTypeOrder = (types: string[]): string[] =>
     a.localeCompare(b),
   );
 
+/** The ma_cross EMA sub types (ma{W}_es{S} / ma{W}_eretest / ma{W}_ed{Q}pct)
+ *  are hidden from this page: threshold/history-only twins of the SMA
+ *  kinds sharing (window, side) pairs (no curve tier), removed from the
+ *  Recent Movements surfaces 2026-10-11 — the SMA kinds keep them. */
+const isHiddenEmaSubType = (subType: string): boolean =>
+  /^ma\d+_e/.test(subType);
+
 export default function SignalTrendPanel({
   secType,
   code,
@@ -77,50 +81,34 @@ export default function SignalTrendPanel({
     null,
   );
   const [error, setError] = useState<string | null>(null);
-  // The expanded signal date in the table (chart marker clicks drive it).
+  // The expanded signal date in the history table (chart marker clicks
+  // drive it) + the expanded rule cell in the rules panel.
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
-  // The history population controls (OHLCV variant + episode pass) —
-  // one of the panel's TWO picks: it drives the curve overlay above
-  // (the fit's variant + pass) as well as the history events (markers
-  // + table).
-  const population = useSignalPopulation();
-  // The episode pass the CURVE draws: typical / re-entry (a curve fit
-  // exists per pass — there is no all-pass fit). "pass: all" is a
-  // history-only pick; the curve keeps its last pass then.
-  const [curvePass, setCurvePass] = useState<"typical" | "re-entry">(
-    "typical",
-  );
-  useEffect(() => {
-    if (population.epPass !== "all") setCurvePass(population.epPass);
-  }, [population.epPass]);
+  const [expandedRule, setExpandedRule] = useState<string | null>(null);
 
-  // The SIGNAL pick (the indicator family) — the panel's other pick,
-  // lifted out of the curve overlay panel: it drives the curve's cell
-  // AND the history events below. Null = nothing chosen yet.
+  // The SIGNAL pick (the indicator family) — the panel's other pick:
+  // it drives the rules rows AND the history events below. Null =
+  // nothing chosen yet.
   const [signalType, setSignalType] = useState<string | null>(null);
 
-  // The code's curves (fetched HERE — the overlay draws them and the
-  // Signal picker's options come from them; cancelled-guard effect).
-  const [curves, setCurves] = useState<SignalCurve[]>([]);
-  const [curvesLoading, setCurvesLoading] = useState(false);
-  const [curvesError, setCurvesError] = useState<string | null>(null);
+  // The code's RULE CELLS (signal_rules — the self-adaptive prepared
+  // params per (sub · trend · regime · action); fetched HERE, the
+  // rules panel draws them and the Signal picker's options union with
+  // them). A failed fetch degrades to the history-only surfaces.
+  const [rules, setRules] = useState<SignalRule[]>([]);
+  const [rulesError, setRulesError] = useState<string | null>(null);
   const bare = stripCodeSuffix(code);
   useEffect(() => {
     let cancelled = false;
-    setCurvesLoading(true);
-    setCurvesError(null);
-    fetchSignalCurves(secType, bare)
-      .then((r) => {
-        if (!cancelled) {
-          setCurves(r.curves);
-          setCurvesLoading(false);
-        }
+    setRules([]);
+    setRulesError(null);
+    setExpandedRule(null);
+    fetchSignalRules(secType, bare)
+      .then((resp) => {
+        if (!cancelled) setRules(resp.rules);
       })
       .catch((e: unknown) => {
-        if (!cancelled) {
-          setCurvesError(String(e));
-          setCurvesLoading(false);
-        }
+        if (!cancelled) setRulesError(String(e));
       });
     return () => {
       cancelled = true;
@@ -147,13 +135,13 @@ export default function SignalTrendPanel({
     };
   }, [secType, code]);
 
-  // The Signal picker's options: the curves' families unioned with the
+  // The Signal picker's options: the rules' families unioned with the
   // history's (a family is pickable wherever either surface has it).
   const signalTypes = useMemo(() => {
-    const set = new Set(curves.map((cv) => cv.signal_type));
+    const set = new Set(rules.map((r) => r.signal_type));
     for (const s of history?.signals ?? []) set.add(s.signal_type);
     return signalTypeOrder([...set]);
-  }, [curves, history]);
+  }, [rules, history]);
   // Keep the pick valid: default to the first option (mov_rsi when
   // present) on first load, a code switch, or a pick the new code
   // lacks; null only while neither surface has any family.
@@ -167,12 +155,31 @@ export default function SignalTrendPanel({
     }
   }, [signalTypes, signalType]);
 
-  // The signal + population-filtered events (chart markers + table rows
-  // together).
+  // A SIGNAL pick switch re-scopes the rule rows — the expanded cell of
+  // the old family is stale (the Options page resets the expansion with
+  // its family pick the same way). The history date orphans clear with
+  // the signals effect below.
+  useEffect(() => {
+    setExpandedRule(null);
+  }, [signalType]);
+
+  // The signal-filtered RULE CELLS (the panel's family pick) with the
+  // hidden EMA sub types dropped, and the signal-filtered events (chart
+  // markers + table rows together; one population since the boost
+  // twins' retirement).
+  const ruleRows = useMemo(
+    () =>
+      rules
+        .filter((r) => signalType == null || r.signal_type === signalType)
+        .filter((r) => !isHiddenEmaSubType(r.signal_sub_type)),
+    [rules, signalType],
+  );
   const signals = useMemo(
-    () => population.apply(history?.signals ?? [])
-      .filter((s) => signalType == null || s.signal_type === signalType),
-    [population, history, signalType],
+    () =>
+      (history?.signals ?? [])
+        .filter((s) => signalType == null || s.signal_type === signalType)
+        .filter((s) => !isHiddenEmaSubType(s.signal_sub_type)),
+    [history, signalType],
   );
 
   // Chart marker/date click → expand that date's signals. Dates without
@@ -189,7 +196,7 @@ export default function SignalTrendPanel({
     [signalDates],
   );
   // Identity-stable chart options (the skill's memo rule) — showPe
-  // false: the threshold/curve panel above replaces the PE overlay.
+  // false: the rules/history panels above replace the PE overlay.
   const chartOptions = useMemo<CodeTrendChartOptions>(
     () => ({ onDateClick: handleDateClick, showPe: false }),
     [handleDateClick],
@@ -201,31 +208,32 @@ export default function SignalTrendPanel({
 
   return (
     <Stack spacing={2}>
-      {/* the panel's picks — the SIGNAL pick (curve cell + history
-          events) and the population pick (fit variant + pass + history
-          events) drive the curve overlay AND the trend chart's markers
-          and the history table below */}
+      {/* the panel's pick — the SIGNAL pick drives the rules panel, the
+          trend chart's markers and the history table below */}
       {history !== null && (
         <SignalPopulationToggles
-          population={population}
           count={signals.length}
           signalType={signalType}
           signalTypeOptions={signalTypes}
           onSignalTypeChange={setSignalType}
+          advice={{ secType, code, signalType }}
         />
       )}
       <Paper variant="outlined" sx={{ px: 1.5, py: 1 }}>
         <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-          Signal overlay — depth-response curves μ(s)
+          Signal rules — self-adaptive cells
         </Typography>
-        <SignalOverlayPanel
-          boost={population.boost}
-          epPass={curvePass}
-          signalType={signalType}
-          curves={curves}
-          curvesLoading={curvesLoading}
-          curvesError={curvesError}
-        />
+        {rulesError ? (
+          <Alert severity="warning" sx={{ mb: 1 }}>
+            Failed to load {code} signal rules: {rulesError}
+          </Alert>
+        ) : (
+          <SignalRulesPanel
+            rules={ruleRows}
+            expandedKey={expandedRule}
+            onExpandedKeyChange={setExpandedRule}
+          />
+        )}
       </Paper>
       <SignalCodeTrendChart
         secType={secType}
@@ -245,7 +253,7 @@ export default function SignalTrendPanel({
           <CircularProgress size={24} />
         </Box>
       ) : (
-        <SignalHistoryTable
+        <SignalHistoryPanel
           signals={signals}
           expandedDate={expandedDate}
           onExpandedDateChange={setExpandedDate}

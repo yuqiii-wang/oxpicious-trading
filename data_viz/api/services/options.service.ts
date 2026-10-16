@@ -38,6 +38,8 @@ import type {
   IvSkewResponse,
   VolIndexRow,
   VolIndexResponse,
+  VolIndexCorrRow,
+  VolIndexCorrResponse,
 } from "../../shared/types.js";
 
 export interface OptionsQuery {
@@ -99,7 +101,7 @@ interface DbOptionsRow extends QueryResultRow {
   contract_name: string;
   underlying_code: string;
   underlying_name: string;
-  /** stats.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT). */
+  /** static.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT). */
   option_type: number;
   expiry_month: string;
   expiry_date: Date | string;
@@ -386,7 +388,7 @@ export async function getOptionsCombined(
 
 interface DbOptionsWallRow extends QueryResultRow {
   date: Date | string;
-  /** stats.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT). */
+  /** static.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT). */
   option_type: number;
   underlying_code: string;
   expiry_date: Date | string;
@@ -993,6 +995,142 @@ export async function getOptionsVolIndex(
     variance_30d: toNum(r.variance_30d),
     vol_index_30d: toNum(r.vol_index_30d),
   }));
+
+  return { underlying_code: underlying ?? null, rows: transformed };
+}
+
+// ----------------------------------------------------------------------------
+//  Vol-index vs spot rolling corr — analysis.options_vol_index_vs_spot_price_corr
+// ----------------------------------------------------------------------------
+interface DbVolIndexCorrRow extends QueryResultRow {
+  date: Date | string;
+  underlying_code: string;
+  corr_5d: number | string | null;
+  corr_20d: number | string | null;
+  corr_60d: number | string | null;
+  corr_255d: number | string | null;
+}
+
+/**
+ * Rolling correlation between the 30d model-free vol index and the
+ * underlying spot close (analysis.options_vol_index_vs_spot_price_corr):
+ * Pearson corr of daily log-changes over trailing 5/20/60/255 sessions.
+ * The STORED table samples a 5-session stride grid through history plus
+ * the daily tail; this endpoint LINEARLY INTERPOLATES each window onto
+ * every session of the underlying's vol-index calendar (in session-
+ * ordinal space, inside the stored span only — leading/trailing gaps
+ * stay null). Display/signal-read parity: the options_vix signal engine
+ * interpolates the same convention in-frame, and nothing is written
+ * back to the DB.
+ */
+export async function getOptionsVolIndexCorr(
+  underlying?: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<VolIndexCorrResponse> {
+  const where: string[] = [];
+  const calParams: unknown[] = [];
+  let i = 1;
+
+  if (underlying) {
+    where.push(`underlying_code = $${i++}`);
+    calParams.push(stripExchangeSuffix(underlying).trim());
+  }
+
+  // The interpolation calendar: every stored vol-index session per
+  // underlying (the same basis the corr table was sampled on).
+  const calSql = `
+    SELECT date, underlying_code
+    FROM analysis.options_vol_index
+    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY underlying_code ASC, date ASC
+  `;
+  const calRows = await queryRows<
+    QueryResultRow & { date: Date | string; underlying_code: string }
+  >(calSql, calParams);
+
+  const rowParams: unknown[] = [...calParams];
+  const sd = toDateParam(startDate);
+  const ed = toDateParam(endDate);
+
+  // The stored samples load WITHOUT date bounds: interpolation inside
+  // [start, end] needs the surrounding samples, so the window filters
+  // the OUTPUT rows, not the fetch.
+  const sql = `
+    SELECT date, underlying_code, corr_5d, corr_20d, corr_60d, corr_255d
+    FROM analysis.options_vol_index_vs_spot_price_corr
+    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY date ASC, underlying_code ASC
+  `;
+
+  const rows = await queryRows<DbVolIndexCorrRow>(sql, rowParams);
+
+  // Per underlying: stored samples keyed by their calendar index, each
+  // window interpolated independently (a window's own NULL span stays
+  // null — e.g. corr_255d fills long after corr_5d).
+  const CORR_KEYS = ["corr_5d", "corr_20d", "corr_60d", "corr_255d"] as const;
+  const calIdx = new Map<string, string[]>();
+  for (const r of calRows) {
+    const list = calIdx.get(r.underlying_code) ?? [];
+    list.push(formatDate(r.date));
+    calIdx.set(r.underlying_code, list);
+  }
+  const storedByCode = new Map<string, DbVolIndexCorrRow[]>();
+  for (const r of rows) {
+    const list = storedByCode.get(r.underlying_code) ?? [];
+    list.push(r);
+    storedByCode.set(r.underlying_code, list);
+  }
+
+  const transformed: VolIndexCorrRow[] = [];
+  for (const [code, cal] of calIdx) {
+    const datePos = new Map(cal.map((d, idx) => [d, idx]));
+    const stored = (storedByCode.get(code) ?? [])
+      .map((r) => ({
+        pos: datePos.get(formatDate(r.date)),
+        vals: CORR_KEYS.map((k) => toNum(r[k])),
+      }))
+      .filter((p): p is { pos: number; vals: (number | null)[] } =>
+        p.pos != null)
+      .sort((a, b) => a.pos - b.pos);
+    if (stored.length === 0) continue;
+
+    // interpolated window curves, evaluated lazily per window via a
+    // two-pointer sweep over that window's non-null sample points
+    const interp = cal.map(() => CORR_KEYS.map(() => null as number | null));
+    for (let w = 0; w < CORR_KEYS.length; w++) {
+      const pts = stored.filter((p) => p.vals[w] != null);
+      if (pts.length === 0) continue;
+      let k = -1; // pts[k] is the last sample at or before the cursor
+      for (let j = 0; j < cal.length; j++) {
+        while (k + 1 < pts.length && pts[k + 1].pos <= j) k++;
+        if (k < 0) continue; // before the window's first sample
+        const prev = pts[k];
+        const v = prev.vals[w] as number;
+        if (prev.pos === j || k + 1 >= pts.length) {
+          // the sample itself, or the trailing span (inside-only)
+          interp[j][w] = prev.pos === j ? v : null;
+          continue;
+        }
+        const next = pts[k + 1];
+        const nx = next.vals[w] as number;
+        const t = (j - prev.pos) / (next.pos - prev.pos);
+        interp[j][w] = v + t * (nx - v);
+      }
+    }
+    for (let j = 0; j < cal.length; j++) {
+      const d = cal[j];
+      if ((sd != null && d < sd) || (ed != null && d > ed)) continue;
+      transformed.push({
+        date: d,
+        underlying_code: code,
+        corr_5d: interp[j][0],
+        corr_20d: interp[j][1],
+        corr_60d: interp[j][2],
+        corr_255d: interp[j][3],
+      });
+    }
+  }
 
   return { underlying_code: underlying ?? null, rows: transformed };
 }

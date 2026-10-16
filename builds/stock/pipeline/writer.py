@@ -56,7 +56,7 @@ def build_identity_rows(
             "[STOCK-ID] canonical pipeline lost the `board` column — "
             "loader bug, fix the loader instead of deriving a fallback"
         )
-    # board stores its stats.label_dim SMALLINT code (0 MAIN / 1 STAR /
+    # board stores its static.label_dim SMALLINT code (0 MAIN / 1 STAR /
     # 2 GEM / 3 BSE — the label-code contract); map the CSV's board
     # strings once at the write boundary.
     _id_df["board"] = combined_db["board"].map(BOARD_CODE)

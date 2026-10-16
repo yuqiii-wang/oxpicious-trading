@@ -113,11 +113,11 @@ async def fetch_margin_history(
             "code": [r["code"] for r in rows],
             "date": [r["date"] for r in rows],
             "rz_balance": [
-                float(r["rz_balance"]) if r["rz_balance"] is not None else None
+                float(r["rz_balance"]) if r["rz_balance"] is not None else float("nan")
                 for r in rows
             ],
             "rz_buy": [
-                float(r["rz_buy"]) if r["rz_buy"] is not None else None
+                float(r["rz_buy"]) if r["rz_buy"] is not None else float("nan")
                 for r in rows
             ],
         }
@@ -168,11 +168,11 @@ async def fetch_index_margin_series(conn) -> pd.DataFrame:
             "code": [r["code"] for r in rows],
             "date": [r["date"] for r in rows],
             "rz_balance": [
-                float(r["rz_balance"]) if r["rz_balance"] is not None else None
+                float(r["rz_balance"]) if r["rz_balance"] is not None else float("nan")
                 for r in rows
             ],
             "rz_buy": [
-                float(r["rz_buy"]) if r["rz_buy"] is not None else None
+                float(r["rz_buy"]) if r["rz_buy"] is not None else float("nan")
                 for r in rows
             ],
         }
@@ -236,11 +236,11 @@ async def fetch_index_series_raw(
                 "code": [r["code"] for r in rows],
                 "date": [r["date"] for r in rows],
                 "rz_balance": [
-                    float(r["rz_balance"]) if r["rz_balance"] is not None else None
+                    float(r["rz_balance"]) if r["rz_balance"] is not None else float("nan")
                     for r in rows
                 ],
                 "rz_buy": [
-                    float(r["rz_buy"]) if r["rz_buy"] is not None else None
+                    float(r["rz_buy"]) if r["rz_buy"] is not None else float("nan")
                     for r in rows
                 ],
             }

@@ -44,11 +44,35 @@ Pipeline
       analysis.mov_ave_spreads_detail_
       ohlc_gaps (see steps/ohlc_gaps.py). Reuses the same DB connection +
       source DataFrame.
+  8c. INTERNAL STEP: compute the quantitative roof/floor LEVEL
+      ESTIMATES (one row per (code, date, period, method): the
+      estimated resistance/support level at the date under trendline /
+      donchian / quantile / channel / boll / median — see the
+      roof_floor_estimate step package) from the SAME source data ->
+      analysis.mov_ave_spreads_roof_floor_estimates. Reuses the same
+      DB connection + source DataFrame.
+  8d. INTERNAL STEP: compute the roof/floor REBOUND AUDIT (one row per
+      recorded extreme event: rebound frequency/amplitude + retest
+      hold/break outcomes with bounce/break-depth amplitudes — see the
+      roof_floor_rebound step package) from the SAME source data ->
+      analysis.mov_ave_spreads_roof_floor_rebounds. WHOLESALE rebuild
+      per sec_type (outcomes depend on post-event data). Reuses the
+      same DB connection + source DataFrame.
   9. INTERNAL STEP: compute trading-amount liquidity-impact ratios
      (6 slope ratios + range ratio + overnight-gap ratio + MA5 versions)
      from the SAME source data -> analysis.mov_ave_trading_amt_ratios
      (see steps/trading_amt_ratios.py). Reuses the same DB connection +
      source DataFrame.
+  9b. INTERNAL STEP: compute lookback-adaptive momentum (fixed 5/20d
+      anchors + three volatility-adaptive short/mid/long lookbacks
+      derived per (code, regime) from the stats.market_regimes vol
+      evidence via equal-expected-move targeting) from the SAME source
+      data -> analysis.mov_ave_momentum (see steps/momentum.py).
+      Reuses the same DB connection + source DataFrame (plus one scoped
+      market_regimes fetch). The per-(code, regime) sigma is full-
+      history, so past lookbacks shift with new data — WHOLESALE
+      rebuild per sec_type on every run that computes (rsi_ranks
+      precedent).
   10. INTERNAL STEP: compute multi-period high/low price percentile
      BANDS (one row per security x calendar month x period x pct_type
      1/5/10: low_val = the pct_type-th percentile of daily lows,
@@ -112,10 +136,10 @@ from _common.db_commons import chunked_purge_async
 from _common.labels import SEC_TYPE_CODE
 from analysis.mov_ave_spread.config import (
     ANALYSIS_NAME,
-    BANDS_TABLE,
     DETAIL_TABLE,
     DESCRIPTION,
     EMA_DETAIL_TABLE,
+    ESTIMATE_TABLE,
     HIGH_LOW_PCT_STREAKS_TABLE,
     HIGH_LOW_PCT_TABLE,
     HOLIDAY_TABLE,
@@ -123,6 +147,7 @@ from analysis.mov_ave_spread.config import (
     OHLC_TABLE,
     PAIRS,
     PRICE_VS_AMT_TABLE,
+    REBOUND_TABLE,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
     TRADING_AMT_RATIOS_TABLE,
@@ -132,6 +157,7 @@ from analysis.mov_ave_spread.fetch import fetch_source_data
 from analysis.mov_ave_spread.steps import (
     RSI_RANKS_TABLE,
     RSI_TABLE,
+    MOMENTUM_TABLE,
     build_detail_frame,
     find_missing_high_low_pct_pairs,
     find_ohlc_repair_dates,
@@ -140,14 +166,17 @@ from analysis.mov_ave_spread.steps import (
     run_high_low_pct,
     run_high_low_pct_streaks,
     run_holiday,
+    run_momentum,
     run_ohlc,
     run_ohlc_gaps,
     run_price_vs_amt,
     run_rsi,
-    run_roof_floor_bands,
+    run_roof_floor_estimates,
+    run_roof_floor_rebounds,
     run_trading_amt,
     run_trading_amt_ratios,
 )
+from analysis.trends.rsi_episode_days import TREND_EPISODE_DAYS_TABLE
 
 from _common.log_setup import setup_logging
 from _common.data_analysis import DataAnalysis
@@ -251,13 +280,21 @@ async def _process_one_sec_type(
     await run_ohlc(conn, df, force=force, pool=pool,
                    max_concurrent=max_concurrent, sec_type=st)
 
-    # ---- Roof/floor bands step (shade edges + breaches; same source) --
-    await run_roof_floor_bands(conn, df, force=force, pool=pool,
-                               max_concurrent=max_concurrent, sec_type=st)
-
     # ---- OHLC-gaps step (reuses same source DataFrame) ----------------
     await run_ohlc_gaps(conn, df, force=force, pool=pool,
                         max_concurrent=max_concurrent, sec_type=st)
+
+    # ---- Roof/floor level-estimate step (reuses same source
+    #      DataFrame; quantitative per-method levels) ------------------
+    await run_roof_floor_estimates(conn, df, force=force, pool=pool,
+                                   max_concurrent=max_concurrent,
+                                   sec_type=st)
+
+    # ---- Roof/floor rebound-audit step (reuses same source DataFrame;
+    #      wholesale rebuild — outcomes depend on post-event data) ----
+    await run_roof_floor_rebounds(conn, df, force=force, pool=pool,
+                                  max_concurrent=max_concurrent,
+                                  sec_type=st)
 
     # ---- Trading-amount detail step (reuses same source DataFrame) ---
     await run_trading_amt(conn, df, force=force, pool=pool,
@@ -266,6 +303,11 @@ async def _process_one_sec_type(
     # ---- Trading-amount ratios step (reuses same source DataFrame) --
     await run_trading_amt_ratios(conn, df, force=force, pool=pool,
                                  max_concurrent=max_concurrent, sec_type=st)
+
+    # ---- Momentum step (reuses same source DataFrame + one scoped
+    #      market_regimes fetch; wholesale rebuild per sec_type) ------
+    await run_momentum(conn, df, force=force, pool=pool,
+                       max_concurrent=max_concurrent, sec_type=st)
 
     # ---- Price-vs-amt state registry step (reuses same source
     #      DataFrame; the px_vol family's date-level source of truth) --
@@ -320,10 +362,12 @@ async def _process_single_code(
     for table in (
         HOLIDAY_TABLE, RSI_TABLE, RSI_RANKS_TABLE, DETAIL_TABLE,
         EMA_DETAIL_TABLE,
-        OHLC_TABLE, OHLC_GAPS_TABLE, TRADING_AMT_TABLE,
+        OHLC_TABLE, OHLC_GAPS_TABLE, ESTIMATE_TABLE,
+        REBOUND_TABLE, TRADING_AMT_TABLE,
         TRADING_AMT_RATIOS_TABLE,
         PRICE_VS_AMT_TABLE, HIGH_LOW_PCT_TABLE,
-        HIGH_LOW_PCT_STREAKS_TABLE, BANDS_TABLE,
+        HIGH_LOW_PCT_STREAKS_TABLE, MOMENTUM_TABLE,
+        TREND_EPISODE_DAYS_TABLE,
     ):
         status = await conn.execute(
             f"DELETE FROM {table} WHERE sec_type = $1 AND code = $2",
@@ -367,18 +411,24 @@ async def _process_single_code(
     await run_ohlc(conn, df, force=False, pool=pool,
                    max_concurrent=max_concurrent, sec_type=st,
                    code_filter=code)
-    await run_roof_floor_bands(conn, df, force=False, pool=pool,
-                               max_concurrent=max_concurrent, sec_type=st,
-                               code_filter=code)
     await run_ohlc_gaps(conn, df, force=False, pool=pool,
                         max_concurrent=max_concurrent, sec_type=st,
                         code_filter=code)
+    await run_roof_floor_estimates(conn, df, force=False, pool=pool,
+                                   max_concurrent=max_concurrent,
+                                   sec_type=st, code_filter=code)
+    await run_roof_floor_rebounds(conn, df, force=False, pool=pool,
+                                  max_concurrent=max_concurrent,
+                                  sec_type=st, code_filter=code)
     await run_trading_amt(conn, df, force=False, pool=pool,
                           max_concurrent=max_concurrent, sec_type=st,
                           code_filter=code)
     await run_trading_amt_ratios(conn, df, force=False, pool=pool,
-                                 max_concurrent=max_concurrent, sec_type=st,
-                                 code_filter=code)
+                                 max_concurrent=max_concurrent,
+                                 sec_type=st, code_filter=code)
+    await run_momentum(conn, df, force=False, pool=pool,
+                       max_concurrent=max_concurrent, sec_type=st,
+                       code_filter=code)
     await run_price_vs_amt(conn, df, force=False, pool=pool,
                            max_concurrent=max_concurrent, sec_type=st,
                            code_filter=code)
@@ -462,7 +512,7 @@ class MovAveSpreadAnalysis(DataAnalysis):
                     DETAIL_TABLE, TRADING_AMT_TABLE,
                     TRADING_AMT_RATIOS_TABLE, HOLIDAY_TABLE,
                     PRICE_VS_AMT_TABLE, HIGH_LOW_PCT_TABLE,
-                    OHLC_GAPS_TABLE,
+                    OHLC_GAPS_TABLE, MOMENTUM_TABLE, ESTIMATE_TABLE,
                 ))
                 logger.info("    -> truncated; will recompute all rows")
             else:
@@ -477,7 +527,8 @@ class MovAveSpreadAnalysis(DataAnalysis):
                               PRICE_VS_AMT_TABLE,
                               HIGH_LOW_PCT_TABLE,
                               HIGH_LOW_PCT_STREAKS_TABLE,
-                              OHLC_GAPS_TABLE):
+                              OHLC_GAPS_TABLE, MOMENTUM_TABLE,
+                              ESTIMATE_TABLE, REBOUND_TABLE):
                     await chunked_purge_async(
                         conn, table,
                         where_sql="sec_type = ANY($1::smallint[])",
@@ -490,10 +541,14 @@ class MovAveSpreadAnalysis(DataAnalysis):
             ta_missing_per_st = {}
             ta_ratios_missing_per_st = {}
             ohlc_missing_per_st = {}
+            est_missing_per_st = {}
             hl_pct_missing_per_st = {}
-            # Force mode rebuilds the streaks table wholesale inside
-            # _process_one_sec_type; nothing to diff here.
+            # Force mode rebuilds the streaks + rebound-audit tables
+            # wholesale inside _process_one_sec_type; nothing to diff
+            # here.
             streaks_missing_per_st = {}
+            rb_missing_per_st = {}
+            mo_missing_per_st = {}
         else:
             logger.info("\n[0/4] Detecting missing dates PER-sec_type "
                   "(etf_identity vs detail[etf], index_identity vs "
@@ -502,8 +557,11 @@ class MovAveSpreadAnalysis(DataAnalysis):
             ta_missing_per_st: dict = {}
             ta_ratios_missing_per_st: dict = {}
             ohlc_missing_per_st: dict = {}
+            est_missing_per_st: dict = {}
             hl_pct_missing_per_st: dict = {}
             streaks_missing_per_st: dict = {}
+            rb_missing_per_st: dict = {}
+            mo_missing_per_st: dict = {}
             for st in sec_types:
                 src_tbl = SEC_TYPE_IDENTITY_TABLE[st]
                 td_st = await find_missing_analysis_dates(
@@ -536,6 +594,18 @@ class MovAveSpreadAnalysis(DataAnalysis):
                 ohlc_missing_per_st[st] = td_oh
                 if td_oh:
                     logger.info(f"    -> {st}: ohlc {len(td_oh)} missing/repair dates")
+                # Also check the roof/floor level-estimate table
+                # independently (one row per (code, date, period,
+                # method) — plain missing-date detection; the table is
+                # new so no repair hook applies).
+                td_est = await find_missing_analysis_dates(
+                    conn, ESTIMATE_TABLE, [src_tbl],
+                    sec_type=SEC_TYPE_CODE[st],
+                )
+                est_missing_per_st[st] = td_est
+                if td_est:
+                    logger.info(f"    -> {st}: roof_floor_estimates "
+                          f"{len(td_est)} missing dates")
                 # The high-low-pct table is keyed by (code, month,
                 # pct_type) — missing data is detected at (code, month)
                 # pair granularity (see high_low_pct.
@@ -565,6 +635,30 @@ class MovAveSpreadAnalysis(DataAnalysis):
                 if streaks_empty:
                     logger.info(f"    -> {st}: high_low_pct_streaks empty "
                           f"(no streaks yet)")
+                # The rebound-audit table rebuilds wholesale per sec_type
+                # (the streaks precedent) — only flag COMPLETELY EMPTY
+                # scopes so the pipeline runs at least once.
+                rb_empty = not await conn.fetchval(
+                    f"SELECT EXISTS (SELECT 1 FROM "
+                    f"{REBOUND_TABLE} WHERE sec_type = $1)",
+                    SEC_TYPE_CODE[st],
+                )
+                rb_missing_per_st[st] = rb_empty
+                if rb_empty:
+                    logger.info(f"    -> {st}: roof_floor_rebounds empty "
+                          f"(no audit rows yet)")
+                # The momentum table rebuilds wholesale per sec_type
+                # whenever it has missing dates (the rsi_ranks precedent
+                # — per-(code, regime) sigma is full-history), so plain
+                # missing-date detection is the right trigger here.
+                td_mo = await find_missing_analysis_dates(
+                    conn, MOMENTUM_TABLE, [src_tbl],
+                    sec_type=SEC_TYPE_CODE[st],
+                )
+                mo_missing_per_st[st] = td_mo
+                if td_mo:
+                    logger.info(f"    -> {st}: momentum {len(td_mo)} "
+                          f"missing dates")
             total_missing = sum(
                 len(s) for s in target_dates_per_st.values()
             )
@@ -577,28 +671,40 @@ class MovAveSpreadAnalysis(DataAnalysis):
             total_ohlc_missing = sum(
                 len(s) for s in ohlc_missing_per_st.values()
             )
+            total_est_missing = sum(
+                len(s) for s in est_missing_per_st.values()
+            )
             total_hl_pct_missing = sum(
                 len(s) for s in hl_pct_missing_per_st.values()
+            )
+            total_mo_missing = sum(
+                len(s) for s in mo_missing_per_st.values()
             )
             if (
                 total_missing == 0
                 and total_ta_missing == 0
                 and total_ta_ratios_missing == 0
                 and total_ohlc_missing == 0
+                and total_est_missing == 0
                 and total_hl_pct_missing == 0
+                and total_mo_missing == 0
             ):
                 logger.info("    -> DB is up to date; nothing to do.")
                 return
             # For sec_types where only trading_amt / trading_amt_ratios /
-            # OHLC / high_low_pct needs updates, set target_dates to
-            # None so the detail step is skipped but the internal steps
-            # (which have their own checks) still run.
+            # OHLC / estimates / high_low_pct needs updates, set
+            # target_dates to None so the detail step is skipped but the
+            # internal steps (which have their own checks) still run.
             for st in sec_types:
                 if not target_dates_per_st.get(st) and (
                     ta_missing_per_st.get(st)
                     or ta_ratios_missing_per_st.get(st)
                     or ohlc_missing_per_st.get(st)
+                    or est_missing_per_st.get(st)
                     or hl_pct_missing_per_st.get(st)
+                    or streaks_missing_per_st.get(st)
+                    or rb_missing_per_st.get(st)
+                    or mo_missing_per_st.get(st)
                 ):
                     target_dates_per_st[st] = None
 
@@ -620,6 +726,9 @@ class MovAveSpreadAnalysis(DataAnalysis):
             oh_st = (
                 ohlc_missing_per_st.get(st) if ohlc_missing_per_st else None
             )
+            est_st = (
+                est_missing_per_st.get(st) if est_missing_per_st else None
+            )
             hl_st = (
                 hl_pct_missing_per_st.get(st)
                 if hl_pct_missing_per_st else None
@@ -628,9 +737,16 @@ class MovAveSpreadAnalysis(DataAnalysis):
                 streaks_missing_per_st.get(st)
                 if streaks_missing_per_st else None
             )
+            rb_st = (
+                rb_missing_per_st.get(st) if rb_missing_per_st else None
+            )
+            mo_st = (
+                mo_missing_per_st.get(st) if mo_missing_per_st else None
+            )
             if td_st is not None and len(td_st) == 0 and not args.force:
                 if not ta_st and not ta_ratio_st and not oh_st \
-                        and not hl_st and not sk_st:
+                        and not est_st and not hl_st and not sk_st \
+                        and not rb_st and not mo_st:
                     logger.info(f"\n  [{st}] up to date; skipping.")
                     continue
             n_detail = await _process_one_sec_type(

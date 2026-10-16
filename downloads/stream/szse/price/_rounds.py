@@ -3,8 +3,10 @@
 Extracted from ``__main__.py``: both hourly and full modes dispatch the same
 worker set (A=akshare, C=em_push2his, D=em_pull primary queue; B=szse fallback
 queue), so the queue/state/task construction and the shutdown protocol are
-shared here. Cancellation (Ctrl-C) propagates up to the caller after reaping
-the worker tasks.
+shared here. The highest-ranked stocks (list head) are seeded onto B's queue
+so the official SZSE source fetches them with priority (split_rank_priority);
+cancellation (Ctrl-C) propagates up to the caller after reaping the worker
+tasks.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ from downloads._common import HostStatusTracker, is_trading_day, setup_logger
 
 from ._constants import (
     AFTERNOON_START,
+    B_PRIORITY_TOP_N,
     COOLDOWN_A_SEC,
     COOLDOWN_C_SEC,
     COOLDOWN_D_SEC,
@@ -48,6 +51,28 @@ def next_afternoon_start(biz_day) -> datetime:
     return datetime.combine(next_day, AFTERNOON_START)
 
 
+def split_rank_priority(
+    stocks: List[Tuple[str, str]],
+    b_top_n: int,
+    n_groups: int,
+) -> Tuple[List[List[Tuple[str, str]]], List[List[Tuple[str, str]]]]:
+    """Partition ``stocks`` into (B priority groups, primary groups).
+
+    The list head is the highest rank (hourly mode orders by yesterday's
+    trading_amount DESC), so the first ``b_top_n`` stocks become B's
+    exclusive slice, kept as ONE group to preserve strict rank order. The
+    remainder is round-robin split into ``n_groups`` groups for A/C/D.
+    ``b_top_n <= 0`` disables the split (everything goes to the primary
+    queue — the original behavior).
+    """
+    if b_top_n > 0:
+        b_groups = split_groups(stocks[:b_top_n], 1)
+        rest = stocks[b_top_n:]
+    else:
+        b_groups, rest = [], stocks
+    return b_groups, split_groups(rest, n_groups)
+
+
 async def run_stock_round(
     unfinished: List[Tuple[str, str]],
     n_groups: int,
@@ -58,27 +83,40 @@ async def run_stock_round(
     latest_bar_time: Dict[str, Optional[object]],
     conns: StreamConns,
     poll_interval_b: float,
+    b_top_n: int = B_PRIORITY_TOP_N,
 ) -> RoundState:
     """Run ONE round of the 4 parallel source workers over ``unfinished``.
 
-    Splits the stocks into groups on the primary queue; A/C/D pull groups and
-    hand failures back through q_fallback for B (szse) to resume. Bars are
-    upserted per-stock inside the workers; returns the round state dict with
-    accumulated "identity" / "bars" lists for CSV archiving + summaries.
+    Rank-priority: the highest-ranked ``b_top_n`` unfinished stocks (list
+    head) are seeded onto q_fallback so B (szse) fetches them first and
+    exclusively — A/C/D never see them; A/C/D circuit-breaker remainders
+    handed to q_fallback later queue behind that slice (FIFO). The rest is
+    split onto q_primary; A/C/D pull groups and hand failures back through
+    q_fallback for B to resume, and B helps on the primary queue once the
+    priority slice is done. Bars are upserted per-stock inside the workers;
+    returns the round state dict with accumulated "identity" / "bars" lists
+    for CSV archiving + summaries.
 
     On Ctrl-C/cancellation: sets state["stop"], cancels all tasks, waits up to
     SHUTDOWN_TIMEOUT_SEC for them to finish, then re-raises.
     """
-    round_groups = split_groups(unfinished, n_groups)
+    b_priority_groups, round_groups = split_rank_priority(unfinished, b_top_n, n_groups)
+    logger.info(
+        "rank-priority: top %d codes -> B (szse) exclusive slice; %d stocks -> %d primary groups (A/C/D)",
+        sum(len(g) for g in b_priority_groups), len(unfinished) - sum(len(g) for g in b_priority_groups),
+        len(round_groups),
+    )
     q_primary: asyncio.Queue = asyncio.Queue()
     q_fallback: asyncio.Queue = asyncio.Queue()
+    for g in b_priority_groups:
+        q_fallback.put_nowait(g)
     for g in round_groups:
         q_primary.put_nowait(g)
     state: RoundState = {
         "identity": [],
         "bars": [],
         "latest_bar_time": latest_bar_time,
-        "n_outstanding": len(round_groups),
+        "n_outstanding": len(round_groups) + len(b_priority_groups),
         "stop": False,
     }
 

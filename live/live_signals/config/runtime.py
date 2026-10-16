@@ -14,7 +14,7 @@ PIPELINE_DESCRIPTION = (
     "Live breach check of the analysis_signals threshold set (the "
     "LIVE signal tier): fetch the code's latest intraday close "
     "(stats.*_intraday_5min; 404 when none) and compare every active "
-    "analysis_signals.signal_thresholds config's CURRENT value (per "
+    "analysis_signals.signal_rules cell's CURRENT value (per "
     "the declarative value-source map — the current RSI row) against "
     "the row's bar — static in the value's own space (the mov_rsi "
     "percentile bar) — "

@@ -20,10 +20,12 @@ back to inception, so this module both:
 Output per snapshot (COMBINED_COLS schema — byte-compatible with the
 szse/sse composition CSVs so ``builds.etf.pipeline`` loads them directly):
 
-  ``temps/huatai_etf_composition/huatai_etf_comp_<YYYYMMDD>_<code>.json``
-      raw response archive
   ``temps/huatai_etf_composition/huatai_etf_comp_<YYYYMMDD>_<code>.csv``
-      per-file finished CSV — the file the build's composition loader globs
+      per-file finished CSV — the ONLY artifact persisted, matching the
+      szse/sse composition modules whose build-loaded artifact is likewise
+      the per-file CSV (the former raw ``.json`` response archive was
+      removed 2026-10-12: nothing consumed it, and the endpoint serves the
+      exact-day PCF back to inception, so any re-derivation can re-fetch).
 
 Column mapping (COMBINED_COLS):
   trade_date     ← maxDate (the PCF's trading day, ISO)
@@ -53,7 +55,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -143,15 +144,18 @@ def pcf_to_combined_rows(payload: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
     return trade_day, rows
 
 
-def _snapshot_paths(out_dir: Path, trade_ymd: str, code: str) -> Tuple[Path, Path]:
-    base = f"huatai_etf_comp_{trade_ymd}_{code}"
-    return out_dir / f"{base}.json", out_dir / f"{base}.csv"
+def _snapshot_csv_path(out_dir: Path, trade_ymd: str, code: str) -> Path:
+    return out_dir / f"huatai_etf_comp_{trade_ymd}_{code}.csv"
 
 
 def _save_snapshot(
     out_dir: Path, payload: Dict[str, Any], code: str,
 ) -> Tuple[bool, str]:
-    """Persist one PCF payload as raw JSON + per-file CSV.
+    """Persist one PCF payload as the per-file finished CSV.
+
+    CSV-only (no raw JSON archive) — same final-artifact contract as the
+    szse/sse composition modules, whose build-loaded artifact is likewise
+    the per-file CSV.
 
     Returns (ok, status) with status ∈ {"downloaded", "empty"}.
     """
@@ -159,10 +163,9 @@ def _save_snapshot(
     if not rows:
         return False, "empty"
     trade_ymd = trade_day.replace("-", "")
-    json_path, csv_path = _snapshot_paths(out_dir, trade_ymd, code)
+    csv_path = _snapshot_csv_path(out_dir, trade_ymd, code)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     df = pd.DataFrame(rows, columns=COMBINED_COLS)
     df.to_csv(csv_path, index=False, encoding=CSV_ENCODING)
     return True, "downloaded"
@@ -193,7 +196,7 @@ def download_composition(
                     logger.warning("[backfill %s] host blocked, stopping", code)
                     break
                 ymd = day.strftime("%Y%m%d")
-                _, csv_cached = _snapshot_paths(out_dir, ymd, code)
+                csv_cached = _snapshot_csv_path(out_dir, ymd, code)
                 if is_valid_file(csv_cached, min_bytes=64):
                     stats.skipped_cached += 1
                     continue
@@ -224,7 +227,7 @@ def download_composition(
             trade_day, rows = pcf_to_combined_rows(payload)
             if not rows:
                 continue
-            _, csv_cached = _snapshot_paths(
+            csv_cached = _snapshot_csv_path(
                 out_dir, trade_day.replace("-", ""), code)
             if is_valid_file(csv_cached, min_bytes=64):
                 stats.skipped_cached += 1

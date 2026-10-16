@@ -36,6 +36,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from _common._holidays_and_weekdays import last_business_day
+from _common.importance import (
+    exchange_map_or_empty,
+    order_codes_or_sorted,
+    szse_downloader_codes,
+)
 
 from downloads._common import (
     MIN_VALID_BYTES,
@@ -114,6 +119,12 @@ def download_index(
         )
         index_codes = [c for c in index_codes if not c.startswith("DUMMY_")]
 
+    # Importance rank 0 -> 9 (stats.sec_importance_ranks, monthly build):
+    # study/benchmark/broad indices first so an interrupted or throttled
+    # sweep has covered the important codes. Falls back to sorted() when
+    # the rank table is unavailable (fresh install before the first build).
+    index_codes = order_codes_or_sorted(index_codes)
+
     # Load index names from the sec_classification cache (replaces _classification.py).
     _index_names = load_classification_index_names()
 
@@ -164,11 +175,23 @@ def download_index(
     )
 
     try:
+        # Download-service routing by exchange (stats.sec_importance_ranks
+        # via _common.importance, cache-first): codes whose curated
+        # exchange carries the SZSE published-index marker are OWNED by
+        # the SZSE downloader — csindex.com.cn does not serve them.
+        # CSINDEX_SKIP_CODES stays as the legacy fallback for codes with
+        # no rank row (fresh install before the first monthly build).
+        _szse_owned = (set(szse_downloader_codes(exchange_map_or_empty()))
+                       | CSINDEX_SKIP_CODES)
+        if _szse_owned:
+            logger.info("Exchange routing: %d codes owned by the SZSE "
+                        "downloader (skipped here): %s",
+                        len(_szse_owned), sorted(_szse_owned))
         for code in index_codes:
             name = _index_names.get(code, code)
 
-            if code in CSINDEX_SKIP_CODES:
-                logger.info("== Index %s (%s) — skipped (in CSINDEX_SKIP_CODES, handled by SZSE downloader) ==", code, name)
+            if code in _szse_owned:
+                logger.info("== Index %s (%s) — skipped (exchange-routed: SZSE downloader owns it) ==", code, name)
                 stats.skipped_cached += 1
                 continue
 

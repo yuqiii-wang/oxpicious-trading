@@ -13,6 +13,7 @@ import {
   getOptionsBands,
   getOptionsIvSkew,
   getOptionsVolIndex,
+  getOptionsVolIndexCorr,
   getOptionsDates,
   getOptionsSnapshotRows,
   getOptionsSnapshotAxes,
@@ -302,6 +303,25 @@ router.get("/vol-index", async (req: Request, res: Response) => {
     res.json(data);
   } catch (err) {
     console.error("[szse-options/vol-index] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/vol-index-corr", async (req: Request, res: Response) => {
+  try {
+    // underlying optional — omitting it returns every underlying's series.
+    const underlying =
+      typeof req.query.underlying === "string" && req.query.underlying
+        ? req.query.underlying
+        : undefined;
+    const data = await getOptionsVolIndexCorr(
+      underlying,
+      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+    );
+    res.json(data);
+  } catch (err) {
+    console.error("[szse-options/vol-index-corr] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

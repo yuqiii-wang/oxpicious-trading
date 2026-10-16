@@ -136,13 +136,14 @@ def build_http_stack() -> Tuple[object, HostStatusTracker]:
     return session, host_tracker
 
 
-def describe_startup(hourly_count: int, full_count: int, poll_interval: float, once: bool) -> None:
+def describe_startup(hourly_count: int, full_count: int, poll_interval: float,
+                     once: bool, b_top_n: int) -> None:
     """Log the one-line stream configuration summary."""
     logger.info(
         "[startup] stream_szse_price started: hourly=%d stocks (top-%d by amt), "
         "full=%d stocks (ETF members); %d always-on indices=%s; "
-        "cutoff=%s; cooldown=%.0fs once=%s",
+        "cutoff=%s; cooldown=%.0fs once=%s b_top_n=%d",
         hourly_count, TOP_TRADED_N, full_count,
         len(INDEX_ALWAYS_CODES), INDEX_ALWAYS_CODES,
-        HOURLY_MODE_CUTOFF.strftime("%H:%M"), poll_interval, once,
+        HOURLY_MODE_CUTOFF.strftime("%H:%M"), poll_interval, once, b_top_n,
     )

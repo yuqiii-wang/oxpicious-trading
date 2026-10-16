@@ -1,6 +1,8 @@
 {
   "service": "builds.market_regimes",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "daily",
   "schedule": "every A-share trading date from 19:00, after downloads_daily.sh (builds_daily.sh loop order)",
   "notes": "Wholesale per-scope rebuild of the sec_types' basic_stats close + amount — after the basic_stats builds, BEFORE the analysis tier (a lagging table silently defaults daily states to 'calm').",

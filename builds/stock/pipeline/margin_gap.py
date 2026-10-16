@@ -116,7 +116,11 @@ async def detect_margin_gaps(
 
     force mode reloads margin for all missing_dates; otherwise four
     checks run against the DB:
-      1) all-zero margin dates (every stock has 0 margin)
+      1) all-NULL/zero margin dates (every stock has NULL or 0 margin —
+         COALESCE treats the two alike: NULL is a baked "no data" row from
+         a download-failure date, 0 a zero reported by the exchange; both
+         mean the date has no usable margin and is worth re-reading once
+         the CSV carries data)
       2) partial-margin dates (CSV has more stock codes than the DB has
          codes with non-zero margin)
       3) dates in identity but missing from liquidity_margin — GATED:
@@ -150,12 +154,12 @@ async def detect_margin_gaps(
             WHERE slm.date = ANY($1::date[])
               {_code_where}
             GROUP BY slm.date
-            HAVING MAX(slm.rz_balance) = 0
-               AND MAX(slm.rz_buy) = 0
-               AND MAX(slm.rq_sell_qty) = 0
-               AND MAX(slm.rq_balance_qty) = 0
-               AND MAX(slm.rq_balance_amt) = 0
-               AND MAX(slm.total_balance) = 0
+            HAVING COALESCE(MAX(slm.rz_balance), 0) = 0
+               AND COALESCE(MAX(slm.rz_buy), 0) = 0
+               AND COALESCE(MAX(slm.rq_sell_qty), 0) = 0
+               AND COALESCE(MAX(slm.rq_balance_qty), 0) = 0
+               AND COALESCE(MAX(slm.rq_balance_amt), 0) = 0
+               AND COALESCE(MAX(slm.total_balance), 0) = 0
             """,
             sorted(margin_available_dates),
         )

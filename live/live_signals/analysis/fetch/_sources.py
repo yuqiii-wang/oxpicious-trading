@@ -29,8 +29,9 @@ from _common.labels import SEC_TYPE_CODE
 from analysis.mov_ave_spread.config.price_sources import PRICE_SOURCE
 from analysis.mov_ave_spread.steps.rsi import RSI_WINDOWS
 from analysis.analysis_signals.config import (
-    BOLL_SIGMA_FLOOR,
     BOLL_WINDOWS,
+    RSI_BAR_MIN_PERIODS,
+    RSI_BAR_WINDOW_DAYS,
 )
 
 from live.live_signals.config import RSI_TABLE
@@ -40,6 +41,12 @@ from live.live_signals.analysis.fetch._values import (
     SIGNAL_VALUE_SOURCE,
     LiveValues,
 )
+
+# degenerate-σ guard of the on-the-fly boll z (the retired
+# analysis_signals.BOLL_SIGMA_FLOOR constant went with the old boll
+# value-source table; the engine's own compute guards the same case —
+# a zero-σ window has no depth to measure)
+BOLL_SIGMA_FLOOR = 1e-12
 
 
 async def _fetch_latest_indicators(
@@ -55,7 +62,7 @@ async def _fetch_latest_indicators(
         f"WHERE sec_type = $1 AND code = $2 "
         f"  AND ($3::date IS NULL OR date <= $3::date) "
         f"ORDER BY date DESC LIMIT 1",
-        # analysis.mov_ave_rsi.sec_type stores its stats.label_dim
+        # analysis.mov_ave_rsi.sec_type stores its static.label_dim
         # SMALLINT code (the label-code contract) — the run's sec_type
         # label maps once here.
         SEC_TYPE_CODE[sec_type], code, as_of,
@@ -102,18 +109,77 @@ async def _fetch_latest_boll(
     return out
 
 
+def _linear_quantile(sorted_vals: list[float], q: float) -> float:
+    """Linear-interpolated quantile over a pre-sorted list — pandas'
+    default (the engine's grouped_rolling_quantile semantics)."""
+    pos = q * (len(sorted_vals) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = pos - lo
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
+
+
+async def fetch_rsi_tail_bars(
+    conn: Connection, sec_type: str, code: str,
+    windows: set[int], pcts: set[int],
+    as_of: datetime.date | None = None,
+) -> dict[tuple[int, int, str], float]:
+    """The mov_rsi per-code ADAPTIVE bars for this check, keyed
+    (window, tail_pct, 'buy' | 'sell'): for each (window, pct, side)
+    the trailing RSI_BAR_WINDOW_DAYS (2550) quantile SHIFTED one row —
+    fetched as the newest 2551 daily rsi rows at-or-before ``as_of``,
+    DROPPING the newest (the current value's anchor row, mirroring the
+    engine's shift so the bar never includes the day it gates), then
+    the linear-interpolated quantile over the rest (min_periods=255;
+    thinner windows carry no bar — never invented)."""
+    if not windows or not pcts:
+        return {}
+    cols = ", ".join(f"rsi_{w}days::float8" for w in sorted(windows))
+    rows = await conn.fetch(
+        f"SELECT {cols} FROM {RSI_TABLE} "
+        f"WHERE sec_type = $1 AND code = $2 "
+        f"  AND ($3::date IS NULL OR date <= $3::date) "
+        f"ORDER BY date DESC LIMIT {RSI_BAR_WINDOW_DAYS + 1}",
+        SEC_TYPE_CODE[sec_type], code, as_of,
+    )
+    if len(rows) < RSI_BAR_MIN_PERIODS + 1:
+        return {}
+    # rows are DESC (newest first): drop the NEWEST (the current value's
+    # anchor row, mirroring the engine's shift so the bar never includes
+    # the day it gates), then ascending oldest .. newest
+    bar_rows = list(reversed(rows[1:]))
+    out: dict[tuple[int, int, str], float] = {}
+    for w in sorted(windows):
+        vals = sorted(
+            r[f"rsi_{w}days"] for r in bar_rows
+            if r[f"rsi_{w}days"] is not None
+        )
+        if len(vals) < RSI_BAR_MIN_PERIODS:
+            continue
+        for pct in sorted(pcts):
+            q = pct / 100.0
+            out[(w, pct, "buy")] = _linear_quantile(vals, q)
+            out[(w, pct, "sell")] = _linear_quantile(vals, 1.0 - q)
+    return out
+
+
 async def fetch_current_values(
     conn: Connection,
     sec_type: str,
     code: str,
     signal_types: set[str],
     as_of: datetime.date | None = None,
+    rsi_bar_windows: set[int] | None = None,
+    rsi_bar_pcts: set[int] | None = None,
 ) -> LiveValues:
     """The code's current values for the given active signal types —
     each source queried at most once (the source kinds derived from
     THE value-source map; only what the active types consume is
     queried). ``as_of`` bounds every source to its latest row at-or-
-    before D (the on-demand replay basis)."""
+    before D (the on-demand replay basis). When the active mov_rsi
+    cells need their ADAPTIVE bars, pass the (window, pct) sets — the
+    trailing-quantile bars ride the same LiveValues (fetch once,
+    shared by every cell)."""
     kinds = {SIGNAL_VALUE_SOURCE[t] for t in signal_types
              if t in SIGNAL_VALUE_SOURCE}
     values = LiveValues()
@@ -121,6 +187,11 @@ async def fetch_current_values(
         values.rsi = await _fetch_latest_indicators(
             conn, sec_type, code, as_of,
         )
+        if rsi_bar_windows and rsi_bar_pcts:
+            values.rsi_bars = await fetch_rsi_tail_bars(
+                conn, sec_type, code, rsi_bar_windows, rsi_bar_pcts,
+                as_of,
+            )
     if kinds & _BOLL_ROW_KINDS:
         values.boll = await _fetch_latest_boll(
             conn, sec_type, code, as_of,

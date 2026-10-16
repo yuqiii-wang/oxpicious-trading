@@ -1,0 +1,4 @@
+{
+  "1": { "script": "database.monitoring", "can_be_parallel": false, "note": "default health check = replica state + replay backlog + slot WAL retention + pg_wal dir size + downloads-stream heartbeat liveness; alert-only: failures do not prevent the scheduled work" },
+  "2": { "script": "database.monitoring", "args": ["--schema-drift"], "can_be_parallel": false }
+}

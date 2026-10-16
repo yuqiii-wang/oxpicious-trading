@@ -51,11 +51,14 @@ import {
 import TimeSlider from "@/shared/components/time-slider/TimeSlider";
 import OhlcChart from "./OhlcChart";
 import IndustryTrendChart from "./IndustryTrendChart";
+import { stripCodeSuffix } from "./codeTrendSources";
 import type { ECharts } from "echarts";
 import {
   fetchIndustrySentimentsChart,
   fetchMarketRegimeSpans,
   fetchSecBoardMap,
+  fetchTrendSpans,
+  type TrendSpan,
 } from "@/lib/api-client";
 import { shadedRegimeSpans } from "@/shared/charts/regimeBands";
 import type { OhlcMode } from "@/lib/ohlc";
@@ -84,6 +87,7 @@ import { CodeTrendAiAsk } from "./codeTrendAiAsk";
  * (measured 2026-09) — the props must stay identity-stable when their
  * CONTENT is unchanged. */
 const NO_SPANS: Partial<MarketRegimeSpans> = {};
+const NO_TREND_SPANS: Record<string, TrendSpan[]> = {};
 const NO_DIVIDENDS: StockDividend[] = [];
 
 export default class CodeTrendChart extends React.Component<
@@ -108,6 +112,9 @@ export default class CodeTrendChart extends React.Component<
     showRegimes: false,
     regimeSpans: null,
     regimesLoading: false,
+    showTrend: false,
+    trendSpans: null,
+    trendLoading: false,
     boardTags: [],
   };
 
@@ -126,6 +133,9 @@ export default class CodeTrendChart extends React.Component<
         showRegimes: false,
         regimeSpans: null,
         regimesLoading: false,
+        showTrend: false,
+        trendSpans: null,
+        trendLoading: false,
       });
       this.load();
     }
@@ -201,6 +211,11 @@ export default class CodeTrendChart extends React.Component<
             ? shadedRegimeSpans(this.state.regimeSpans)
             : NO_SPANS
         }
+        trendSpans={
+          this.state.showTrend
+            ? this.state.trendSpans ?? NO_TREND_SPANS
+            : NO_TREND_SPANS
+        }
         onChartReady={(c) => {
           this.chartInstance = c;
           chartOptions?.onChartReady?.(c);
@@ -266,6 +281,9 @@ export default class CodeTrendChart extends React.Component<
         showRegimes={this.state.showRegimes}
         regimesLoading={this.state.regimesLoading}
         onRegimesToggle={this.handleRegimesToggle}
+        showTrend={this.state.showTrend}
+        trendLoading={this.state.trendLoading}
+        onTrendToggle={this.handleTrendToggle}
       />
     );
   }
@@ -370,6 +388,30 @@ export default class CodeTrendChart extends React.Component<
           // on with empty shading; clearing regimeSpans refetches on
           // retry.
           this.setState({ regimeSpans: {}, regimesLoading: false });
+        });
+    }
+  };
+
+  /** Toggle the TREND shading (the signal rules tier's own per-(code,
+   *  date) classification); the first enable fetches the code's spans
+   *  once and caches them (per code — reset on code change). */
+  private handleTrendToggle = () => {
+    const showTrend = !this.state.showTrend;
+    this.setState({ showTrend });
+    if (showTrend && this.state.trendSpans == null && !this.state.trendLoading) {
+      const seq = ++this.loadSeq;
+      this.setState({ trendLoading: true });
+      fetchTrendSpans(this.props.secType, stripCodeSuffix(this.props.code))
+        .then((d) => {
+          if (seq !== this.loadSeq) return;
+          this.setState({ trendSpans: d.spans, trendLoading: false });
+        })
+        .catch(() => {
+          if (seq !== this.loadSeq) return;
+          // No trend data (endpoint error / pipeline never ran) — toggle
+          // stays on with empty shading; clearing trendSpans refetches
+          // on retry.
+          this.setState({ trendSpans: {}, trendLoading: false });
         });
     }
   };

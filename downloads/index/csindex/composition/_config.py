@@ -46,8 +46,11 @@ SLEEP_SEC: float = sleep_sec_for(SERVICE)
 # Skip-sets
 # ---------------------------------------------------------------------------
 
-# SZSE indices that must NOT be downloaded from csindex.com.cn (they are
-# covered by SZSE-specific downloaders).
+# Legacy fallback for codes with no importance-rank exchange row (fresh
+# install before the first monthly build). The primary routing is the
+# exchange column of stats.sec_importance_ranks (see runner: codes marked
+# SZSE are owned by the SZSE downloader; csindex.com.cn does not serve
+# them).
 CSINDEX_SKIP_CODES = {"399001", "399006", "399348", "399346"}
 
 # Bond-market indices track bonds (not stocks), so they don't have meaningful

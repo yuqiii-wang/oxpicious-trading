@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from io import BytesIO
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 
@@ -85,11 +85,20 @@ def _normalize_stock_code(row: pd.Series) -> str:
     return add_exchange_suffix(code, market=exchange)
 
 
-def normalize_closeweight_df(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+def normalize_closeweight_df(
+    df: pd.DataFrame,
+    allowed_suffixes: Tuple[str, ...] = (".SZ", ".SS"),
+) -> Optional[pd.DataFrame]:
     """Normalize the parsed DataFrame into the final CSV schema.
 
     Returns a DataFrame with columns:
       snapshot_date, index_code, index_name, stock_code, stock_name, weight_pct
+
+    ``allowed_suffixes``: exchange suffixes a stock_code may carry (the
+    file's exchange column decides the suffix via ``add_exchange_suffix``).
+    The default covers the CSI closeweight corpus; the BSE co-published
+    indices (899050/899601, downloaded by downloads.index.bse.composition)
+    pass ``(".BJ",)``.
     """
     df = _normalize_columns(df)
     if df.empty:
@@ -120,8 +129,9 @@ def normalize_closeweight_df(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         df["stock_name"] = ""
     df["stock_name"] = df["stock_name"].astype(str).str.strip()
 
-    # Filter out rows with invalid stock codes (must be 6-digit + .SS/.SZ suffix)
-    df = df[df["stock_code"].str.match(r"^\d{6}\.(?:SZ|SS)$", na=False)].copy()
+    # Filter out rows with invalid stock codes (6-digit + allowed suffix)
+    suffix_alt = "|".join(re.escape(s.lstrip(".")) for s in allowed_suffixes)
+    df = df[df["stock_code"].str.match(rf"^\d{{6}}\.(?:{suffix_alt})$", na=False)].copy()
     if df.empty:
         logger.warning("[parse] no valid stock codes after normalization")
         return None

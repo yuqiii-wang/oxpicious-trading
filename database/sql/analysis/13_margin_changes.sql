@@ -49,7 +49,7 @@ DROP TABLE IF EXISTS analysis.margin_changes;
 
 CREATE TABLE analysis.margin_changes (
     code                       TEXT          NOT NULL,
-    sec_type                   SMALLINT          NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type                   SMALLINT          NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
 
     start_date                 DATE          NOT NULL,
     end_date                   DATE          NOT NULL,
@@ -61,7 +61,12 @@ CREATE TABLE analysis.margin_changes (
     new_buy                    NUMERIC(24,4),
 
     -- Σ rz_buy / Σ trading_amount over [start_date, end_date].
-    rz_buy_vs_trading_amt_ratio NUMERIC(14,4),
+    -- NUMERIC(12,10): the ratio never approaches 100 (study 2026-10-12:
+    -- max 6.30 across all sec_types; index attribution shares run
+    -- 0.00004-0.003 = 0.4-30‱). The former NUMERIC(14,4) quantized to
+    -- integer per-ten-thousand steps and ZEROED 392 index episodes with a
+    -- true share below 0.5‱; 10dp gives 1e-4‱ resolution.
+    rz_buy_vs_trading_amt_ratio NUMERIC(12,10),
 
     CONSTRAINT pk_margin_changes PRIMARY KEY (code, sec_type, start_date, end_date)
 ) PARTITION BY HASH (code);
@@ -72,13 +77,13 @@ SELECT public.create_hash_partitions('analysis', 'margin_changes', 8);
 
 COMMENT ON TABLE  analysis.margin_changes IS 'Per-(sec_type, code, trend) summary of SIGNIFICANT margin balance TRENDS (sustained UP or DOWN moves) on the RONGZI (融资) margin balance curve. One row per trend episode: [start_date, end_date] span with direction (is_trend_up_not_down), span length (days_of_trend), new_buy (rz_buy on end_date, yuan FLOW), and rz_buy_vs_trading_amt_ratio (Σ rz_buy / Σ trading_amount — fraction of turnover from rongzi buys; plotted on the Margin Trends Buy chart). sec_type ∈ {etf, stock, index} — ''index'' rows aggregated from the margin_index_series TABLE. RONQIN (融券 / sec borrow) EXCLUDED. Trend detection: contiguous run of same-sign 5-day smoothed balance slope (margin_balance_slope_ma5 > 0 = UP, < 0 = DOWN), min 3 days, gap bridging <= 3 days, majority zscore significance. Built by analysis.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.margin_changes.code                  IS 'Security ticker: ETF bare e.g. "159001"; stock with exchange suffix e.g. "600008.SS". For sec_type=''index'': bare 6-digit index code (e.g. 000300) whose margin series is aggregated from the margin_index_series TABLE.';
-COMMENT ON COLUMN analysis.margin_changes.sec_type             IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.margin_changes.sec_type             IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.margin_changes.start_date           IS 'Trend episode start date (inclusive). First date of the sustained UP or DOWN move on the rz_balance series.';
 COMMENT ON COLUMN analysis.margin_changes.end_date             IS 'Trend episode end date (inclusive). Last date of the sustained move.';
 COMMENT ON COLUMN analysis.margin_changes.days_of_trend        IS 'Span length in TRADING days (inclusive of both endpoints).';
 COMMENT ON COLUMN analysis.margin_changes.is_trend_up_not_down IS 'Trend direction. TRUE = balance ACCUMULATING (traders adding leveraged longs — rz_balance rising). FALSE = balance UNWINDING (traders cutting leverage — rz_balance falling).';
 COMMENT ON COLUMN analysis.margin_changes.new_buy              IS 'rz_buy (融资买入额) on the trend end_date — the episode''s last day of fresh rongzi BUY amount (yuan, FLOW). NULL when the end-date rz_buy is 0 / unavailable (no rongzi buy flow that day).';
-COMMENT ON COLUMN analysis.margin_changes.rz_buy_vs_trading_amt_ratio IS 'Σ rz_buy over [start_date, end_date] / Σ trading_amount over the same window. Fraction of total market turnover represented by rongzi (融资) buy activity. NULL when trading_amount is unavailable or 0. NUMERIC(14,4).';
+COMMENT ON COLUMN analysis.margin_changes.rz_buy_vs_trading_amt_ratio IS 'Σ rz_buy over [start_date, end_date] / Σ trading_amount over the same window. Fraction of total market turnover represented by rongzi (融资) buy activity. NULL when trading_amount is unavailable or 0. NUMERIC(12,10) — per-ten-thousand-resolution (index shares are sub-1%).';
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('margin_changes', 'margin_changes', NULL, NOW(),

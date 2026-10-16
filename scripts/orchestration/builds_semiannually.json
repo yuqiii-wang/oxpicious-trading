@@ -1,0 +1,3 @@
+{
+  "1": { "script": "builds.stock.dividends", "can_be_parallel": false, "note": "dividends rebuild from the dividend files fetched by downloads_semiannually.json" }
+}

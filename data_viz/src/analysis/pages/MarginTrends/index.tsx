@@ -5,18 +5,28 @@
  *   • Header — title + subtitle + Refresh
  *   • SecClassificationNav — single-select industry (no multi-select, no L3
  *     code chips). Only ONE industry can be selected at a time.
- *   • MarginTrendsCharts — the plot for the selected industry:
- *       Margin trends — one line per security (indices or ETFs); toggle
- *       Index | ETF attribution, Balance | Buy series. Selected securities
- *       are highlighted; the rest are muted background lines. Trend-episode
- *       shades + per-episode rz_buy_vs_trading_amt_ratio (Buy mode).
+ *   • MarginTrendsCharts (components/) — the plot for the selected industry:
+ *       TOP grid — margin lines (Index | ETF attribution, Balance | Buy),
+ *       selected highlighted, rest muted. BOTTOM grid —
+ *       volatility-amplification view: daily return bars saturated by
+ *       margin-buy-share tercile (drained → hyped), trailing-20d vol line.
+ *       Below it, one HypedVsDrained regime chart per selected security.
+ *
+ * Module layout (decoupled):
+ *   hooks/useMarginData          — fetch + selection state
+ *   chart/derive                 — pure derivation (returns, vol, buyShare
+ *                                  terciles, regime×tercile bins)
+ *   chart/trendChartOption       — main composite option builder
+ *   chart/trendTooltip           — tooltip builder
+ *   chart/hypedDrainedOption     — companion regime-chart option builder
+ *   components/*                 — controls, charts, composition
  *
  * Backed by:
  *   analysis.margin_index_series (TABLE) — 'index' series (weighted-avg
  *                                          constituent-stock margin, built
  *                                          by Python vectorization)
  *   stats.etf_liquidity_margin           — 'etf' series
- *   analysis.margin_changes              — trend episodes
+ *   stats.market_regimes                 — per-day regime label on each row
  *
  * RONGZI (融资 / cash-borrow) only — RONQIN (融券 / sec borrow) EXCLUDED.
  */
@@ -43,7 +53,7 @@ import type {
   SectorNode,
   StrategyNode,
 } from "@shared/types";
-import { MarginTrendsCharts } from "./MarginTrendsCharts";
+import { MarginTrendsCharts } from "./components/MarginTrendsCharts";
 import type { MarginAttribution } from "./constants";
 
 export default function MarginTrendsPage() {
@@ -198,8 +208,8 @@ export default function MarginTrendsPage() {
           <Typography variant="body2" color="text.secondary">
             Single-industry RONGZI (融资 / cash-borrow) margin flows:
             per-security margin trends (toggle Index | ETF, Balance | Buy)
-            with trend-episode shades and per-episode rz_buy / trading-amount
-            ratio (Buy mode). RONQIN (融券 / sec borrow) is excluded.
+            with daily returns shaded by margin-buy-share intensity.
+            RONQIN (融券 / sec borrow) is excluded.
             Select ONE industry to begin.
           </Typography>
         </Box>

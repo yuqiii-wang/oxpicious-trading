@@ -1,19 +1,16 @@
 /**
  * AuditTable — the shared ExpandedTable for the Opposite Industry
  * Correlations page's latest-window audit: layered group headers Overall /
- * Offset / Score over the 20d/60d/255d sub-columns, per-column header
- * filters, zebra rows. Score cells >= 0.7 are highlighted (strongly
- * opposite once the benchmark factor is removed).
+ * Benchmark Offset over the 20d/60d/255d sub-columns, per-column header
+ * filters, zebra rows. (The DB's opposite_score_* = (1 − offset) / 2 is not
+ * shown — a pure rescale of the Benchmark Offset columns; most-opposite
+ * rows sort first.)
  */
-import { Box } from "@mui/material";
 import ExpandedTable, { type ExpandedTableColumn } from "@/shared/components/ExpandedTable";
-import { UP_COLOR } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { IndustryCorrOffsetRow } from "@shared/types";
 import { METRIC_COLS, METRIC_LABELS, WINDOWS, pairLabel, rowVal } from "./constants";
 import type { CorrWindow, OffsetMetric } from "./constants";
-
-const SCORE_HIGHLIGHT = 0.7;
 
 /** One window sub-column per metric group (shared shape). */
 function windowCol(
@@ -29,13 +26,6 @@ function windowCol(
     render: (r) => {
       const v = rowVal(r, METRIC_COLS[metric][w]);
       if (v == null || !Number.isFinite(v)) return <>—</>;
-      if (metric === "score" && v >= SCORE_HIGHLIGHT) {
-        return (
-          <Box component="span" sx={{ color: UP_COLOR, fontWeight: 600 }}>
-            {fmtNum(v, 3)}
-          </Box>
-        );
-      }
       return <>{fmtNum(v, 3)}</>;
     },
     filter: { type: "range", value: (r) => rowVal(r, METRIC_COLS[metric][w]) },
@@ -57,7 +47,7 @@ export default function AuditTable({
       render: (r) => pairLabel(r),
       filter: { type: "ticks", value: (r) => pairLabel(r) },
     },
-    ...(["overall", "sub", "score"] as OffsetMetric[]).flatMap((m) =>
+    ...(["overall", "sub"] as OffsetMetric[]).flatMap((m) =>
       WINDOWS.map((w) => windowCol(m, w)),
     ),
   ];

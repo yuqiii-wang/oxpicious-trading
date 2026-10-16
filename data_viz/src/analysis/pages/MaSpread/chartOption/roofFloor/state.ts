@@ -1,18 +1,14 @@
 /**
  * Roof/floor group state — everything the Roof/Floor Trendlines row's
  * overlays need, built once per option render: the rolling envelope +
- * trendlines + anchor markers (the period buttons), the extreme↔2nd-
- * extreme shade zones (the "shade" toggle), the band EVENT markers, and
- * the dashed anchor mark line. Series assembly lives in series.ts; the
- * tooltip rows read `roofFloorWinArrays` through the TooltipContext.
+ * trendlines + anchor markers (the period buttons) and the dashed anchor
+ * mark line. Series assembly lives in series.ts; the tooltip rows read
+ * `roofFloorWinArrays` through the TooltipContext.
  */
-import type { MovAveSpreadBandsRow, MovAveSpreadOhlcRow } from "@shared/types";
-import type { StreakMarkAreaDatum } from "@/shared/charts/streakBands";
+import type { MovAveSpreadOhlcRow } from "@shared/types";
 import type { TooltipContext } from "../_common";
 import { pickRoofFloorWinFields } from "./winFields";
 import { rollingExtremes, trendlineSegment } from "./envelope";
-import { buildExtremeShades } from "./shades";
-import { readBandEvents, type BandEventItems } from "./eventMarkers";
 import { ROOF_COLOR, FLOOR_COLOR } from "./colors";
 
 /** Per-anchor scatter items: filled marker for the top extreme, hollow for
@@ -25,8 +21,7 @@ export interface RoofFloorAnchorItem {
 }
 
 /** Vertical "stop" line at the clicked date — the roof/floor trendlines
- *  converge toward and stop at this line; also marks the shade anchor.
- *  Attached to the long-MA series. */
+ *  converge toward and stop at this line. Attached to the long-MA series. */
 export interface AnchorMarkLine {
   markLine: {
     silent: true;
@@ -51,17 +46,12 @@ export interface RoofFloorState {
   /** Per-date OHLC extrema arrays for the enabled window — null when
    *  the overlay is off (consumed by the tooltip rows). */
   roofFloorWinArrays: TooltipContext["roofFloorWinArrays"];
-  shadeOn: boolean;
-  shadeTopData: StreakMarkAreaDatum[];
-  shadeBottomData: StreakMarkAreaDatum[];
-  events: BandEventItems;
   anchorMarkLine: AnchorMarkLine | null;
 }
 
 export interface RoofFloorBuildArgs {
   n: number;
   dates: string[];
-  shorts: Array<number | null>;
   highs: Array<number | null>;
   lows: Array<number | null>;
   /** Enabled rolling-OHLC window (trading days) — null/undefined = off. */
@@ -72,19 +62,14 @@ export interface RoofFloorBuildArgs {
   roofFloorClickIdx: number | null;
   /** Rolling-window OHLC extrema rows (index-aligned with the rows). */
   roofFloorRows: MovAveSpreadOhlcRow[] | null;
-  /** Roof/floor shade-band rows from the bands table (index-aligned). */
-  bandRows: MovAveSpreadBandsRow[] | null;
-  /** "shade" toggle windows — non-empty shades EVERY listed window. */
-  roofFloorShadeWindows: readonly number[] | null;
   /** Theme text color (the dashed anchor mark line). */
   textColor: string;
 }
 
 export function buildRoofFloorState(args: RoofFloorBuildArgs): RoofFloorState {
   const {
-    n, dates, shorts, highs, lows,
-    roofFloorWindow, roofFloorClickIdx, roofFloorRows, bandRows,
-    roofFloorShadeWindows, textColor,
+    n, dates, highs, lows,
+    roofFloorWindow, roofFloorClickIdx, roofFloorRows, textColor,
   } = args;
 
   // ---- Roof/floor-window overlay (rolling envelope + trendlines) --------
@@ -163,24 +148,9 @@ export function buildRoofFloorState(args: RoofFloorBuildArgs): RoofFloorState {
     }
   }
 
-  // ---- Extreme↔2nd-extreme zone shades ("shade" toggle) ------------------
-  const shades = buildExtremeShades({
-    dates, shorts, highs, lows,
-    roofFloorClickIdx, roofFloorRows, bandRows, roofFloorShadeWindows,
-  });
-
-  // ---- Band EVENT markers (the bands table's anchor-band events) -------
-  const events = readBandEvents({
-    n, dates, bandRows,
-    shadeAnchorIdx: shades.shadeAnchorIdx,
-    drawnRoofBot: shades.drawnRoofBot,
-    drawnFloorTop: shades.drawnFloorTop,
-    shadeWindows: roofFloorShadeWindows,
-  });
-
   // Dashed vertical mark line at the clicked date.
   const anchorMarkLine: AnchorMarkLine | null =
-    (rfAligned || shades.shadeOn) && roofFloorClickIdx != null && roofFloorClickIdx >= 0 && roofFloorClickIdx < n
+    rfAligned && roofFloorClickIdx != null && roofFloorClickIdx >= 0 && roofFloorClickIdx < n
       ? {
           markLine: {
             silent: true,
@@ -201,10 +171,6 @@ export function buildRoofFloorState(args: RoofFloorBuildArgs): RoofFloorState {
     floorSeg,
     anchorItems,
     roofFloorWinArrays,
-    shadeOn: shades.shadeOn,
-    shadeTopData: shades.shadeTopData,
-    shadeBottomData: shades.shadeBottomData,
-    events,
     anchorMarkLine,
   };
 }

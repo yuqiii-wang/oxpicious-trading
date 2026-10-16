@@ -137,7 +137,7 @@ def compute_iv_and_greeks(options_df: pd.DataFrame) -> pd.DataFrame:
             - strike_price: strike price
             - settle: option settlement price
             - days_to_expiry: calendar days to expiry
-            - option_type: stats.label_dim 'option_type' SMALLINT code
+            - option_type: static.label_dim 'option_type' SMALLINT code
               (0 = CALL, 1 = PUT — the _common/labels contract)
             - csv_delta: Delta from CFFEX CSV (used as fallback)
 

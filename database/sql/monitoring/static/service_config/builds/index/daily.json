@@ -1,6 +1,8 @@
 {
   "service": "builds.index.daily",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "daily",
   "schedule": "every A-share trading date from 19:00, after downloads_daily.sh (builds_daily.sh loop order)",
   "notes": "Internal baseline phase of builds.index (CSIndex daily history); registers its own heartbeat when run standalone — scheduled daily through builds.index.",

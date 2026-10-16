@@ -36,7 +36,7 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_ema';
 --  ema.py). Incremental upsert by missing dates; --force truncates first.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_spreads_detail_ema (
-    sec_type          SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type          SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code              TEXT         NOT NULL,
     date              DATE         NOT NULL,
 
@@ -76,7 +76,7 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ema (
 SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail_ema', 16);
 
 COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ema              IS 'EMA-spread detail (WIDE format): one row per (code, sec_type, date) with 9 EMA gap columns (5 Price/EMA + 4 EMA6/EMA) + 2 EMA slope + 2 EMA curvature columns (windows 6/20, direct diffs of the EMA line) + 5 rolling σ columns. sec_type ∈ {etf, index, stock}. Source: stats.{etf,index,stock}_tech_stats.ema{6,20,60,120,255}.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.sec_type     IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.sec_type     IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.code         IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.date         IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.price_vs_ema6   IS '(price - ema6) / ema6 — signed fractional gap (NULL when either is NULL/invalid).';

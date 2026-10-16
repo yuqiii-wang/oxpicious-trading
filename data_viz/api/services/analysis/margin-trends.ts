@@ -23,12 +23,14 @@
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { buildStrategyThemesFromRows } from "../_shared.js";
+import { labelDecodeSql } from "../label-codes.js";
 import type {
   MarginIndustrySeriesResponse,
   MarginTrendsShadeResponse,
   MarginSeriesRow,
   MarginSecurity,
   MarginAttributionType,
+  MarketRegime,
   SectorNode,
   IndustryNode,
   StrategyNode,
@@ -52,6 +54,8 @@ interface DbIndexSeriesRow extends QueryResultRow {
   index_margin_balance: string | number | null;
   index_margin_buy: string | number | null;
   close: string | number | null;
+  trading_amount: string | number | null;
+  regime: string | null;
 }
 
 interface DbEtfSeriesRow extends QueryResultRow {
@@ -60,12 +64,21 @@ interface DbEtfSeriesRow extends QueryResultRow {
   rz_balance: string | number | null;
   rz_buy: string | number | null;
   close: string | number | null;
+  trading_amount: string | number | null;
+  regime: string | null;
 }
 
 interface DbSecurityRow extends QueryResultRow {
   industry_id: string;
   code: string;
   name: string;
+}
+
+/** Narrow a decoded regime label to the closed MarketRegime vocabulary
+ *  (labelDecodeSql returns TEXT; anything else becomes null). */
+const REGIME_LABEL_SET = new Set(["calm", "hot", "panic", "quiet"]);
+function toRegime(v: string | null): MarketRegime | null {
+  return v != null && REGIME_LABEL_SET.has(v) ? (v as MarketRegime) : null;
 }
 
 // ----------------------------------------------------------------------------
@@ -261,13 +274,19 @@ export async function listMarginTrendStrategyThemes(): Promise<StrategyNode[]> {
 // ----------------------------------------------------------------------------
 const INDEX_SERIES_SQL = `
   SELECT s.index_code, s.date, s.index_margin_balance, s.index_margin_buy,
-         ib.close
+         ib.close, ib.trading_amount, mr.regime
   FROM analysis.margin_index_series s
   LEFT JOIN LATERAL (
-    SELECT close FROM stats.index_basic_stats b
+    SELECT close, trading_amount FROM stats.index_basic_stats b
     WHERE b.code = s.index_code AND b.date = s.date
     LIMIT 1
   ) ib ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT ${labelDecodeSql("regime", "r.regime")} AS regime
+    FROM stats.market_regimes r
+    WHERE r.code = s.index_code AND r.date = s.date AND r.sec_type = 'index'
+    LIMIT 1
+  ) mr ON TRUE
   WHERE s.industry_id = $1::text
   ORDER BY s.index_code, s.date
 `;
@@ -296,13 +315,20 @@ const ETF_SECURITIES_SQL = `
 `;
 
 const ETF_SERIES_SQL = `
-  SELECT e.code, e.date, e.rz_balance, e.rz_buy, eb.close
+  SELECT e.code, e.date, e.rz_balance, e.rz_buy, e.trading_amount, eb.close,
+         mr.regime
   FROM stats.etf_liquidity_margin e
   LEFT JOIN LATERAL (
     SELECT close FROM stats.etf_basic_stats b
     WHERE b.code = e.code AND b.date = e.date
     LIMIT 1
   ) eb ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT ${labelDecodeSql("regime", "r.regime")} AS regime
+    FROM stats.market_regimes r
+    WHERE r.code = e.code AND r.date = e.date AND r.sec_type = 'etf'
+    LIMIT 1
+  ) mr ON TRUE
   WHERE e.code IN (
     SELECT sc.code FROM stats.sec_classification sc
     WHERE sc.type = 'etf'
@@ -342,6 +368,8 @@ export async function getMarginIndustrySeries(
       balance: toNum(r.index_margin_balance),
       buy: toNum(r.index_margin_buy),
       close: toNum(r.close),
+      trading_amount: toNum(r.trading_amount),
+      regime: toRegime(r.regime),
     }));
 
     // Recover industry_label from the first index's sec_classification row.
@@ -368,6 +396,8 @@ export async function getMarginIndustrySeries(
       balance: toNum(r.rz_balance),
       buy: toNum(r.rz_buy),
       close: toNum(r.close),
+      trading_amount: toNum(r.trading_amount),
+      regime: toRegime(r.regime),
     }));
 
     if (securities.length > 0) {
@@ -418,7 +448,7 @@ const INDEX_TRENDS_SQL = `
          t.rz_buy_vs_trading_amt_ratio
   FROM analysis.margin_changes t
   JOIN industry_codes ic ON ic.code = t.code
-  WHERE t.sec_type = 1 -- stats.label_dim 'sec_type': index
+  WHERE t.sec_type = 1 -- static.label_dim 'sec_type': index
   ORDER BY t.start_date
 `;
 
@@ -435,7 +465,7 @@ const ETF_TRENDS_SQL = `
          t.rz_buy_vs_trading_amt_ratio
   FROM analysis.margin_changes t
   JOIN industry_codes ic ON ic.code = t.code
-  WHERE t.sec_type = 0 -- stats.label_dim 'sec_type': etf
+  WHERE t.sec_type = 0 -- static.label_dim 'sec_type': etf
   ORDER BY t.start_date
 `;
 

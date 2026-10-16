@@ -2,248 +2,129 @@
 
 Run via ``python -m analysis.analysis_signals``.
 
-Signal STRATEGIES + history signals computed IN-ENGINE off the RSI
-percentile data (see database/sql/analysis/analysis_signals/
-00_schema.sql and 01_signals.sql). The forecast layer was REMOVED
-2026-10-05 (tables dropped, package + SQL files deleted) — the signals
-tier computes its own rsi-pct buckets from analysis.mov_ave_rsi +
-prices, and the plain gate at the per-side robustness floors is the
-whole gate:
+The redesigned SIGNAL RULES tier (2026-10-14): six detection
+families, each a set of RuleEntry engines (engines/signal_families) —
+they measure SELF-ADAPTIVE per-(code, sub signal type, trend, regime,
+action) cells on each code's own history and write
 
-  - A bucket (code × stat_date snapshot M × config, trailing
-    10-year window (M - 10y, M]) whose DELAY-0 blended mixed-row stats
-    pass the plain rule — the sign-aligned blended mean forward change
-    (dir_ave) > its side's gate bar (buy 0.75% / sell 0% —
-    GATE_DIR_AVE_MIN / GATE_DIR_AVE_MIN_SELL) over >= 4 (buy) / 3
-    (sell) of the window's
-    qualifying streaks — IS a signal strategy: ONE
-    analysis_signals.signal_thresholds row over the bucket's window
-    period (start_date .. end_date = the snapshot key — the ROLLING
-    LATEST snapshot is keyed at the sec_type's latest available RSI
-    data date). The trigger is each qualifying streak's FIRST day
-    (delay 0 — the 0..5 delay ladder + the optimal-entry selection
-    were REMOVED 2026-10-05); the row carries the bucket's
-    confidence-scale model (confidence_base = the sign-aligned dir_ave
-    — the expected favorable blended move ON the bar — plus
-    scale_method/scale_base/scale_factor: the breach depth amplifies
-    the base) and the breach bar in the RSI's own space (the side's
-    own percentile bar — bottom q(p/100) / top q(1−p/100); the live
-    tier's threshold set)
-    and the bucket's
-    OWN side as a STORED column.
+  analysis_signals.signal_rules     the rule cells (the engine entry +
+                                    the prepared rule_params; the family
+                                    knowledge lives in
+                                    static.analysis_signal_docs)
+  analysis_signals.history_signals  the history populated by REPLAYING
+                                    those rules (episode first days)
 
-  - The bucket's trigger days (the qualifying streaks' first days)
-    INSIDE the snapshot key's calendar year M are its history signals: ONE
-    analysis_signals.history_signals row per day (the day's value, the
-    bar it crossed, the excess — a structural clone of
-    live.live_signals; one snapshot owns each date, so no
-    cross-snapshot PK conflicts).
+Modes:
+  incremental (default): a family whose every requested code already
+    reaches its data horizon with a live rules scope is skipped.
+  --force: purges the sec_type's rows in both tables and re-emits.
 
-  - Emission slice: mov_rsi pct in {1, 2, 3} (top → sell / bottom →
-    buy), every regime split, PLUS the boll_std family (2026-10-07,
-    signal_type 'bollinger' + in-engine values since 2026-10-10):
-    the FIXED-σ Bollinger band breaches computed off the fetched
-    prices (z = (price − SMA_W)/σ_W) — k in {2, 2.5, 3}σ, sub_type
-    boll{W}_{k}std, the bar the ±k constant in the z space, the
-    breach excess depth |z| − k in σ units (NO percentile logic: the
-    excess depth over the bands replaces the pct axis; the curve tier
-    reads s = |z| directly as the Gaussian depth score). NO CASE/WHEN
-    anywhere in the SQL: side is stored, and every other conditional
-    lives in this package's vectorized cudf.pandas engines.
-
-Pipeline per sec_type (index / etf / stock), every step owned by the
-family's engine (engines/signal_families/mov_rsi/ — dispatched through
-the registry; see engines/_base):
-  1. Resolve the target snapshots over the engine's OWN snapshot grid
-     (the last N year-ends + the ROLLING LATEST key, config.grid):
-     those missing from signal_thresholds, plus the MUTABLE SCOPE
-     (config.mutable_dates — the rolling latest, always re-emitted;
-     the newest year-end while its 20d forward windows realize).
-     Retired keys (yesterday's rolling-latest date) are SWEPT from
-     both tables before the resolution. ``--force`` purges the
-     sec_type's family rows and re-emits every present snapshot.
-  2. Per run: fetch the input frame ONCE (price + RSI windows, the
-     first dates, the market-regime labels; in-engine forward
-     changes) → per snapshot: compute the rsi-pct buckets + the
-     delay-0 mixed stats (in-buckets) → plain gate at the sample
-     floor → vectorized
-     strategy/history frames → ONE transaction: purge the snapshot,
-     COPY both tables.
-  3. After every run: refresh is_active (each config's latest
-     end_date — run/pipeline.refresh_is_active) and the engine upserts
-     its own analysis.analysis_identity row.
+Universe: --sec-type index (default) with the 10 study indices; the
+options families run their OWN universe — the sec_type's option
+underlyings from stats.options_terms
+(fetch/inputs.resolve_options_universe; options_wall drops the SSE ETF
+underlyings, whose chain OI is an accumulated-volume estimator).
+Bootstrap-first layout: the runtime setup runs before this module's
+imports.
 """
 from __future__ import annotations
 
 import argparse
-import logging
-import time
+import asyncio
 
-# cudf.pandas activation — must run before pandas first import. The
-# _common helpers imported below (build_commons → db_commons →
-# _batched_copy) transitively import pandas at module level, so activating
-# any later would silently skip the cudf proxy ("pandas already imported").
-from _common.df_utils._activate import activate  # noqa: E402
-activate()
+from _common.data_pipeline import bootstrap_runtime
 
-from _common.build_commons import (
-    add_force_arg,
-    get_db_connection_async,
-    print_build_header,
-    print_wall_time,
-    setup_utf8_stdout,
+bootstrap_runtime()
+
+from _common.log_setup import setup_logging
+
+from analysis.analysis_signals import config as cfg
+from analysis.analysis_signals.engines.signal_families import (
+    OPTIONS_FAMILIES,
+    SIGNAL_FAMILY_ENTRIES,
+    family_label,
 )
-from _common.db_commons import analyze_tables_async  # noqa: E402
-
-setup_utf8_stdout()
-
-from _common.log_setup import setup_logging  # noqa: E402
-
-from analysis.analysis_signals.config import SEC_TYPES  # noqa: E402
-from analysis.analysis_signals.config import (  # noqa: E402
-    STAGE_NAMES,
+from analysis.analysis_signals.fetch import resolve_options_universe
+from analysis.analysis_signals.run import (
+    HISTORY_TABLE,
+    RULES_TABLE,
+    run_family,
 )
-from analysis.analysis_signals.engines import (  # noqa: E402
-    RunStats,
-    engines_for,
-)
-from analysis.analysis_signals.run import process_sec_type  # noqa: E402
 
 logger = setup_logging("analysis_signals")
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Analysis Signals (signal strategies + history "
-                    "signals, computed in-engine over each family's "
-                    "value source): one signal_thresholds row per bucket "
-                    "whose delay-0 blended mixed-row stats pass the "
-                    "plain gate (sign-aligned blended mean forward "
-                    "change > its side's bar: buy 0.75% / sell 0%) at "
-                    "the sample floor (4 buys / 3 sells), covering the "
-                    "bucket's window period (the trailing 10-year "
-                    "snapshot key), plus the bucket's trigger days "
-                    "(each qualifying episode's first day) inside its "
-                    "own snapshot year as history_signals rows. "
-                    "Families: mov_rsi (RSI percentile buckets, pct "
-                    "{1, 2, 3}) + boll_std (fixed-σ Bollinger band "
-                    "breaches, k in {2, 2.5, 3} — no percentile logic, "
-                    "the excess σ-depth over the bands); every regime "
-                    "split.",    )
-    ap.add_argument(
-        "--sec-type", choices=SEC_TYPES, default=None,
-        help="Process only this sec_type (for testing). Default: all.",
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        prog="python -m analysis.analysis_signals",
+        description="Populate the signal rules tier (signal_rules + "
+                    "history_signals) for the detection families.",
     )
-    ap.add_argument(
-        "--metrics", type=str, default=None,
-        help="Comma-separated signal families to run (choices: "
-             f"{', '.join(STAGE_NAMES)}). Default: all.",
-    )
-    ap.add_argument(
-        "--snapshots", type=int, default=None, metavar="N",
-        help="Cap the target stat_dates to the newest N on the "
-             "snapshot grid (default: all present snapshots).",
-    )
-    ap.add_argument(
-        "--codes", type=str, default=None, metavar="CSV",
-        help="Comma-separated codes scoping the universe (the study-"
-             "scope rule: analysis runs write only the 10 study "
-             "indices unless explicitly widened). Default: the "
-             "sec_type's full active universe.",
-    )
-    ap.add_argument(
-        "--analyze", action="store_true",
-        help="ANALYZE the written tables after the build (planner-"
-             "statistics refresh; debugging / performance testing only "
-             "— default OFF: bulk builds skip it and leave the tables "
-             "to autovacuum.)",
-    )
-    add_force_arg(ap)
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    force = args.force
+    p.add_argument("--force", action="store_true",
+                   help="purge the sec_type's rows in both tables and "
+                        "re-emit everything")
+    p.add_argument("--sec-type", default="index",
+                   choices=("index", "etf", "stock"),
+                   help="security type scope (default: index)")
+    p.add_argument("--families", default=",".join(SIGNAL_FAMILY_ENTRIES),
+                   help="comma-separated family labels (default: all)")
+    p.add_argument("--codes", default=",".join(cfg.STUDY_INDEX_CODES),
+                   help="comma-separated codes (default: the 10 study "
+                        "indices; ignored for the options families — "
+                        "their universe resolves per sec_type from "
+                        "stats.options_terms)")
+    p.add_argument("--analyze", action="store_true",
+                   help="run ANALYZE on the two tables after the writes")
+    p.add_argument("--no-boost", action="store_true",
+                   help="force the ohlcv boost off (the A/B switch; "
+                        "default = each family's OHLCV_BOOST class flag)")
+    return p.parse_args()
 
-    if args.metrics:
-        requested = {s.strip() for s in args.metrics.split(",")
-                     if s.strip()}
-        unknown = requested - set(STAGE_NAMES)
-        if unknown:
-            ap.error(f"--metrics: unknown family(ies) {sorted(unknown)} "
-                     f"(choices: {', '.join(STAGE_NAMES)})")
-        metrics = frozenset(requested)
-    else:
-        metrics = None
 
-    sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
-    codes = (
-        frozenset(c.strip() for c in args.codes.split(",") if c.strip())
-        if args.codes else None
+async def amain() -> None:
+    args = _parse_args()
+    labels = [family_label(s.strip()) for s in args.families.split(",")
+              if s.strip()]
+    unknown = [l for l in labels if l not in SIGNAL_FAMILY_ENTRIES]
+    if unknown:
+        raise SystemExit(f"unknown families: {unknown} "
+                         f"(known: {sorted(SIGNAL_FAMILY_ENTRIES)})")
+    codes = [c.strip() for c in args.codes.split(",") if c.strip()]
+
+    from _common.db_commons import (
+        analyze_tables_async,
+        get_db_connection_async,
     )
-
-    t0 = time.time()
-    print_build_header(
-        "ANALYZE SIGNALS (rsi-pct signal strategies + history signals, "
-        "computed in-engine over analysis.mov_ave_rsi)",
-        tables="analysis_signals.signal_thresholds, "
-               "analysis_signals.history_signals",
-        sec_types=", ".join(sec_types),
-        metrics=", ".join(sorted(metrics)) if metrics else "all",
-        mode="FORCE (purge + re-emit every present snapshot)" if force
-        else "incremental (missing snapshots + the mutable scope: "
-             "the rolling latest snapshot and the newest year-end "
-             "while its 20d forward windows realize)",
-    )
-
     conn = await get_db_connection_async()
     try:
-        totals = {"thresholds": 0, "history": 0, "curves": 0}
-        for st in sec_types:
-            stats = await process_sec_type(
-                conn, st, force=force, metrics=metrics,
-                snapshots=args.snapshots, codes=codes,
+        totals = {"rules": 0, "history": 0}
+        for label in labels:
+            if label in OPTIONS_FAMILIES:
+                fam_codes = await resolve_options_universe(
+                    conn, label, args.sec_type,
+                )
+            else:
+                fam_codes = codes
+            if not fam_codes:
+                logger.warning(f"[{label}] empty code scope — skip")
+                continue
+            n_rules, n_hist = await run_family(
+                conn, label, args.sec_type, fam_codes, force=args.force,
+                boost=False if args.no_boost else None,
             )
-            for engine in engines_for(metrics):
-                run = stats.get(engine.stage_key, RunStats(0, 0, 0))
-                totals["thresholds"] += run.thresholds
-                totals["history"] += run.history
-                totals["curves"] += run.curves
-
-        if totals["thresholds"] == 0 and totals["history"] == 0 \
-                and totals["curves"] == 0 and not force:
-            logger.info("\n  DB is up to date; nothing to do.")
-            print_wall_time(t0)
-            return
-
-        logger.info(
-            f"\n  TOTAL: {totals['thresholds']:,} signal_thresholds + "
-            f"{totals['history']:,} history_signals + "
-            f"{totals['curves']:,} signal_curves rows written "
-            f"(is_active refreshed per sec_type)",
-        )
-        # Post-bulk-write ANALYZE — same rationale as the forecasts
-        # build: stale primary statistics after a rewrite turn every
-        # value-blind prepared-statement read (node-pg) into whole-
-        # table seq scans until autovacuum gets to the table.
-        # OPT-IN (--analyze): debugging / performance testing only —
-        # routine builds skip it.
-        if args.analyze:
-            await analyze_tables_async(conn, (
-                "analysis_signals.signal_thresholds",
-                "analysis_signals.history_signals",
-                "analysis_signals.signal_curves",
-            ))
-        else:
-            logger.info(
-                "  skipping post-build ANALYZE (--analyze to refresh "
-                "planner statistics — debugging / performance testing "
-                "only)")
-        print_wall_time(t0)
+            totals["rules"] += n_rules
+            totals["history"] += n_hist
+        if args.analyze and (totals["rules"] or totals["history"]):
+            await analyze_tables_async(conn, [RULES_TABLE, HISTORY_TABLE])
+        logger.info(f"done: {totals['rules']} rule cells, "
+                    f"{totals['history']} history events")
     finally:
         await conn.close()
 
 
-if __name__ == "__main__":
-    import asyncio
+def main() -> None:
+    asyncio.run(amain())
 
-    asyncio.run(main())
+
+if __name__ == "__main__":
+    main()

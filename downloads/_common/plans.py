@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 # (a recent "no data" response is often just an export that wasn't
 # published yet when first requested — retrying keeps per-security loaded
 # dates aligned; old markers stay skipped as confirmed no-data dates).
-EMPTY_MARKER_RETRY_DAYS: int = 3
+# 10d (was 3d): anti-bot blocks / publication delays can string several
+# nightly failures together across weekends + holidays; a 3d window made
+# those markers permanent holes the builds then baked in as zero margin.
+EMPTY_MARKER_RETRY_DAYS: int = 10
 
 # Shared default start date for all downloaders. Centralized here so the
 # project's historical backfill horizon can be changed in one place.

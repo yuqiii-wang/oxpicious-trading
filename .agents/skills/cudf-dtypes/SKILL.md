@@ -37,6 +37,7 @@ the compute:
 | Whole-frame pandas | grouped rolling / shift / diff via the shared helpers (`grouped_rolling_agg`, `grouped_shift`, `groupby().diff()`), elementwise `where`-chains on frame columns | GPU — the DEFAULT for every new compute; prefer ONE whole-frame grouped pass over per-group loops |
 | Sanctioned host core | ONE per-group numpy block for gather/index algorithms — positional gathers, doubling/sparse tables, row×day 2D grids, PostgreSQL array-literal building; unwrap once via `host_array` at entry, materialize via the REAL DataFrame ctor (`pd.DataFrame._fsproxy_slow`) at exit | host — allowed ONLY where no cuDF-native formulation exists; document the boundary in the module docstring |
 | Mid-flow hybrid | `pd.Series(host_ndarray, index=...)`, `Series.take(host_positions)`, host-built masks between GPU ops | BANNED — cudf.pandas 26.08 returns garbage-length Series in this flow (probes: temp_scripts/probe_take.py + dbg_len3.py, 2026-10-02); the ctor class banned in the table below |
+| Family-shared calibration classes | base class owns the frame pipeline (population frame in, artifact out), family subclass owns population loading + response/depth wiring; ONE scipy-LS host boundary (design columns unwrapped once via `host_array`) | procedural numpy-vector derivations — positional coefficient vectors, ndarray population math, per-row loops (see the derivation-class section below) |
 
 Hard rules from the same refactor:
 
@@ -69,9 +70,11 @@ Hard rules from the same refactor:
 | Flag / indicator column riding a frame | plain `int64` 0/1 (`frame.assign(flag=np.int64(0))`) | nullable `boolean` — `<NA>` masks poison the frame into object dtype |
 | Boolean masks in compute | PURE `bool` after filling nulls BEFORE comparing: `ta.fillna(0.0) > 0`, `(rb.fillna(-1.0) == 0) & ta_pos` | comparing nullable `<NA>`-yielding series; then storing the mask back into the frame |
 | Bool values in arithmetic (`flag * price`, `mask + 1`) | cast first: `mask.astype("float64")` or `astype("int64")` | direct bool×numeric ops — cuDF raises `Common type of bool with numeric dtypes is not supported` |
+| numpy ufuncs / `np.where` / `np.isfinite` on a **Series** | all cuDF-native, verified 2026-10-11 (probe: `temp_scripts/study_cudf_np_ops.py`, 2M rows, zero fallback lines): `np.ceil/floor/abs(s)`, `np.maximum/np.minimum(s, s2)` AND `(s, scalar)`, `np.where(mask, s, 0.0)` in every arg shape (Series, python int, `np.int16`), `np.isfinite(s)`, `-s`, `s.round/fillna/astype/rank(pct=True)`, `s.map(dict)` | none of these — the skill's older np.isfinite warning applies to PROXY NDARRAYS only, not Series |
+| Per-row clamp of one column by another | `np.maximum(s, lower)` / `np.minimum(s, upper)` (the verified-native form) | `s.clip(lower=other_series)` — cuDF clip rejects Series bounds ("Length of lower and upper should be equal") and drops to CPU pandas; SCALAR-bounds `.clip(lo, hi)` IS native |
 | Nullable ints at the emit/writer boundary only | `astype("Int64")` (or `to_numpy(dtype="object", na_value=None)`) just before row materialization | `Int64` in the long compute frame (Kleene `<NA>` semantics poison grouped ops) |
 | Ids / codes (`code`, `sec_type`, `industry_id`) | string columns as groupby/merge/sort keys only (hash ops are cuDF-native) | numeric arithmetic on them (`NumericalColumn * StringColumn`); `series.unique().tolist()` → use `host_unique`; cupy has no str support — unwrap to host numpy first |
-| Closed-vocab labels (`regime`, `side`, `action`, `weighting`, `rank_side`, `pool_size`) | the DB column is SMALLINT (its `stats.label_dim` code, mirrored by `_common.labels` + `data_viz/api/services/label-codes.ts`); frames carry the int16 code end-to-end, TS decodes at the API boundary (`labelDecodeSql`) | label STRINGS inside any cudf frame — they are the cuDF 26.08 string host-transfer fault class (cudaErrorIllegalAddress after sort/merge/concat); log lines decode via the `*_LABEL` maps |
+| Closed-vocab labels (`regime`, `side`, `action`, `weighting`, `rank_side`, `pool_size`) | the DB column is SMALLINT (its `static.label_dim` code, mirrored by `_common.labels` + `data_viz/api/services/label-codes.ts`); frames carry the int16 code end-to-end, TS decodes at the API boundary (`labelDecodeSql`) | label STRINGS inside any cudf frame — they are the cuDF 26.08 string host-transfer fault class (cudaErrorIllegalAddress after sort/merge/concat); log lines decode via the `*_LABEL` maps |
 | Frame-only label passengers (`sec_type` attached per loop, `industry_id` in margins) | attach as int16 frame code (`np.int16(SEC_TYPE_CODE[st])` / `_industry_code_frame` factorize), compute on the code, re-materialize the TEXT at the write boundary from the loop constant or the small code frame (`materialize_sec_type_text` in mov_ave_spread steps) | a constant string column riding a big frame through sort/merge/concat then `host_array` transfer (the `rsi.py` `_host_group_bounds` crash site pre-2026-10-05) |
 | Python dates for asyncpg DATE / row dicts | `to_py_dates(df, cols)` or `sanitize_for_db_insert(date_cols=…)` at the FINAL step | object-date columns anywhere upstream — one such column makes every later frame op (even unrelated numeric access) pay MixedTypeError |
 | Iteration / membership / dtype probes | `safe_columns`, `column_subset`, `host_dtypes`, `host_isna`, `host_unique`, `host_array` (all in `_common.df_utils`) | `c in df.columns`, `len(df)` in loops, per-column `pd.api.types.is_*_dtype`, `pd.isna(ndarray)`, `.tolist()` on proxied values |
@@ -138,6 +141,66 @@ and non-`[ns]` datetime units raise `Unsupported dtype` on it.
 - NaN-containing EMA inputs: `compute_emas` falls back to pandas on purpose
   (the discounted-sum CUDA kernel would propagate NaN) — pre-clean or accept
   the logged fallback.
+
+## Family-shared calibration classes (the derivation pattern)
+
+Established 2026-10-11 by the ohlcv-boost derivation
+(`analysis_signals/engines/ohlcv_boost/_calib.py` +
+`boll_std/_derive.py`) — the pattern for family-varying calibration
+code, verified bit-identical against its numpy-vector predecessor
+with zero fallback lines:
+
+- **Class-based + inheritance over if/else**: `BoostDerivationBase`
+  owns the family-agnostic pipeline (frames in → measured ladders →
+  bounded trust fit → per-year-sign axis retention → K → ship gates →
+  artifact out); each family subclass owns ONLY its population loader,
+  response/depth wiring and bucket identity. A new family's derivation
+  = a new subclass, never a branch in shared code.
+- **Pandas frames end-to-end**: ONE population frame whose column
+  vocabulary the base owns (`y_bp` the response, `*_code` the day-0
+  axes, `depth_z`, `eo/ev/er` the applied edges, `score`); ladders =
+  `groupby().agg(["mean","size"])` + evidence floors; per-year slopes
+  = groupby cov/var identities (assign the `_x/_y/_xy/_x2` product
+  columns, then ONE grouped sum pass — never per-row or per-group
+  python loops); K = `Series.quantile`; weights/gates = column
+  arithmetic + `clip`. Loops only over structural iterables (sides,
+  years, bootstrap replications).
+- **Coefficients travel as NAMED dicts** (`{"beta_ohlc", "beta_vol",
+  "beta_rsi", "gamma"}`) — positional coefficient vectors are a
+  real off-by-one bug class (the first derivation scored with the
+  intercept as β_ohlc; nothing downstream caught it until the gates
+  saw an all-zero score).
+- **ONE host-numpy boundary per fit**: `scipy.optimize.lsq_linear` +
+  its month-cluster bootstrap unwrap the design columns once via
+  `host_array` and stay numpy-side (column_stack / argsort /
+  percentile inside the boundary only) — the `engines/_curve_fit`
+  precedent extended to calibration code.
+- **cudf-safe details**: month keys as `dt.year * 12 + dt.month`
+  (NEVER `.dt.to_period` — per-element fallbacks); bool×numeric still
+  banned inside accumulators (init as `col * 0.0`, never
+  `notna() * 0.0`; cast `notna().astype("float64")` before weighting).
+- **DB-boundary date rule (bit us 2026-10-11)**: epoch-extracting SQL
+  frames convert epoch→datetime64 AT the frame boundary
+  (`pd.to_datetime(arr * 1e9)`); joining a raw-date frame against an
+  epoch-float frame silently matches NOTHING (all axis rows missed →
+  ladders empty → the fit pinned β at 0 — a plausible-looking wrong
+  answer, not an error). Also: `mov_ave_price_vs_amt` stores
+  vol_state/px_speed SMALLINT codes DIRECTLY — label-map only TEXT
+  stores (`ohlc_gaps.pattern`); mapping ints through the label dict
+  silently NaNs the whole axis.
+- **Verify IN-PIPELINE, not standalone**: the same derivation logged
+  0 fallbacks standalone and 62 inside the signals pipeline — the
+  engine imports initialize `numba.cuda`, after which cudf's udf
+  `.map` path fails to compile ("user defined function compilation
+  failed"). Two resulting rules: `Series.map(callable)` on a string
+  column is a numba state lottery — parse python-string grammars
+  HOST-side (`host_array` + a list comprehension over the small
+  frame); label→code on string columns goes through a MERGE with a
+  tiny lookup frame (cuDF-native hash join), never `.map(dict)` when
+  the engine may have touched numba.
+- **A derivation refactor is DONE when** the regenerated config
+  artifact is bit-identical (values + gate outcomes) AND the
+  IN-PIPELINE run logs zero `[cudf fallback]` lines.
 
 ## Misdiagnosis guard — these are NOT dtype problems
 

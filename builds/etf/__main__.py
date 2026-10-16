@@ -81,8 +81,9 @@ class EtfBuild(DataBuild):
     def apply_args(self) -> None:
         # --date: reject the --date + --force combo and validate the value
         # BEFORE any work starts (SystemExit 2 on misuse); the pipeline
-        # consumes args.forced_date.
-        self.apply_date_force_args()
+        # consumes args.forced_date (pipeline.main reads the Namespace, not
+        # the DataBuild — without this the flag silently ran incremental).
+        self.args.forced_date = self.apply_date_force_args()
         # Resolve once so pipeline stages share the canonical BARE code
         # (ETF codes carry no exchange suffix — 2026-09-30 convention).
         self.args.resolved_code = self.resolve_code_filter(strip_suffix=True)

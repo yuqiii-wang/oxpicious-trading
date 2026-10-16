@@ -27,14 +27,46 @@ HOURLY_MODE_CUTOFF = time(15, 30)
 # by other streamers; we focus on post-close data.
 AFTERNOON_START = time(16, 0)
 
-# SZSE indices always streamed every hour during hourly mode. These are the
-# flagship SZSE indices that were missing from live data (399001 深证成指,
-# 399006 创业板指).
-INDEX_ALWAYS_CODES: list = ["399001", "399006"]
+# SZSE indices always streamed every hour during hourly mode — the
+# flagship SZSE-published indices (399001 深证成指, 399006 创业板指).
+# Derived from the importance-rank exchange map (codes whose
+# download-service exchange carries the SZSE published-index marker —
+# stats.sec_importance_ranks, written by the monthly build from the
+# curated importance_rules JSONs; cache-file read only, no DB at import).
+# The literal list is the fresh-install fallback before the first
+# monthly build writes the cache.
+
+
+def _resolve_index_always_codes() -> list:
+    try:
+        from _common.importance import (
+            load_exchange_map_cache,
+            szse_downloader_codes,
+        )
+        codes = szse_downloader_codes(load_exchange_map_cache())
+        if codes:
+            return codes
+    except Exception:  # noqa: BLE001 — routing must never fail startup
+        pass
+    return ["399001", "399006"]
+
+
+INDEX_ALWAYS_CODES: list = _resolve_index_always_codes()
 
 # Number of top-traded SZSE stocks (by yesterday's trading_amount) to sample
 # each hour during hourly mode.
 TOP_TRADED_N = 500
+
+# Number of HIGHEST-RANK stocks assigned to source B (szse) each round, taken
+# from the head of the active stock list (rank = list order: hourly mode is
+# yesterday's trading_amount DESC; full mode is code order). Those codes are
+# seeded onto B's queue so the official SZSE host — the shortest cadence
+# (poll_interval_sec) of the four sources — fetches them first and
+# exclusively; A/C/D never see them. B still helps A/C/D on the rest of the
+# list afterwards, and circuit-breaker remainders queue behind the priority
+# slice (FIFO). 0 disables the priority split (B reverts to pure
+# fallback/overflow duty). Overridable via --b-top-n.
+B_PRIORITY_TOP_N = 100
 
 # When a round completes but no stock advanced (e.g. pre-open or lunch break),
 # back off this long before the next round instead of hammering the API.

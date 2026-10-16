@@ -457,6 +457,29 @@ export interface VolIndexResponse {
   rows: VolIndexRow[];
 }
 
+/** Stride-sampled rolling correlation between the 30d model-free vol
+ *  index and the underlying spot close (one row every 20th trading
+ *  session; windows count only joint-valid daily log-change pairs). */
+export interface VolIndexCorrRow {
+  date: string;
+  underlying_code: string;
+  /** Pearson corr of daily spot log-return vs vol-index log-change over
+   *  the trailing 5 sessions (null until 5 joint-valid pairs). */
+  corr_5d: number | null;
+  /** Same over the trailing 20 sessions. */
+  corr_20d: number | null;
+  /** Same over the trailing 60 sessions. */
+  corr_60d: number | null;
+  /** Same over the trailing 255 sessions. */
+  corr_255d: number | null;
+}
+
+export interface VolIndexCorrResponse {
+  /** null when the request was for ALL underlyings. */
+  underlying_code: string | null;
+  rows: VolIndexCorrRow[];
+}
+
 export interface EtfOhlcvResponse {
   dates: string[];
   code: string;
@@ -1228,10 +1251,12 @@ export interface MovAveSpreadSharedMetricsRow {
   rsi_14days: number | null;
   rsi_20days: number | null;
   rsi_60days: number | null;
-  /** Tail-episode population flags per window (analysis.mov_ave_rsi):
-   *  1 = typical (isolated / first-touch tail episode), 0 = re-entry
-   *  (same episode re-qualifying after a <= 5-trading-day exit),
-   *  null = the day's RSI is outside both 25% band tails. */
+  /** Tail-episode population flags per window (LEFT JOINed from
+   *  analysis.trend_episode_days — the consolidated trends component's
+   *  store; a missing row = out-of-band): 1 = typical (the side's
+   *  quality pass — bottom: isolated first-touch capitulation / top:
+   *  re-test double top), 0 = the noisy population pass, null = the
+   *  day's RSI is outside both 25% band tails. */
   is_typical_3days: number | null;
   is_typical_6days: number | null;
   is_typical_10days: number | null;
@@ -1597,19 +1622,124 @@ export interface MovAveSpreadPriceVsAmtDay {
 
 /** Which optional metric group the /extras endpoint loads. Each group feeds
  *  one of the MA-Spread panel's on-demand control sections:
- *    amt     — the 5 Trading Amt/MA pair series (Amt/MA chips → envelope view)
- *    ohlc    — rolling-window OHLC extrema (Roof/Floor Trendlines buttons →
- *              high/low envelope + roof/floor trendlines)
- *    bands   — roof/floor shade-band edges + per-date breach/bounce
- *              EVENT flags (analysis.mov_ave_spreads_roof_and_floor_bands
- *              → the "shade" toggle's rectangles + event markers)
- *    streaks — band-break streaks (High/Low Streaks buttons' availability)
- *    pxvol   — per-date Price × Trading-Amount states (Px-Vol States shading)
- *    rsiranks — per-date RSI history ranks (RSI Trends' Top-% shades) */
-export type MovAveSpreadMetric = "amt" | "ohlc" | "bands" | "streaks" | "pxvol" | "gaps" | "rsiranks";
+ *    amt      — the 5 Trading Amt/MA pair series (Amt/MA chips → envelope view)
+ *    ohlc     — rolling-window OHLC extrema (Roof/Floor Trendlines buttons →
+ *               high/low envelope + roof/floor trendlines)
+ *    rfest    — quantitative roof/floor LEVEL estimates per method (the
+ *               Roof/Floor section's Est-levels toggle → the two horizontal
+ *               estimated roof/floor lines at the chosen date)
+ *    rfaudit  — the roof/floor REBOUND AUDIT events (recorded extremes →
+ *               rebound frequency/amplitude + retest hold/break → the
+ *               Roof/Floor section's audit captions)
+ *    streaks  — band-break streaks (High/Low Streaks buttons' availability)
+ *    pxvol    — per-date Price × Trading-Amount states (Px-Vol States shading)
+ *    rsiranks — per-date RSI history ranks (RSI Trends' Top-% shades)
+ *    momentum — per-date lookback-adaptive momentum (Momentum overlay lines) */
+export type MovAveSpreadMetric = "amt" | "ohlc" | "rfest" | "rfaudit" | "streaks" | "pxvol" | "gaps" | "rsiranks" | "momentum";
 
 /** All metric groups, in canonical order (used to normalize the query param). */
-export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "bands", "streaks", "pxvol", "gaps", "rsiranks"] as const;
+export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "rfest", "rfaudit", "streaks", "pxvol", "gaps", "rsiranks", "momentum"] as const;
+
+/** The quantitative roof/floor estimate methods (static.label_dim
+ *  'roof_floor_method' codes 0..5; analysis.mov_ave_spreads_roof_floor_
+ *  estimates). Registry order; "median" is the cross-method consensus of
+ *  the five methods before it. */
+export const ROOF_FLOOR_ESTIMATE_METHODS = [
+  "trendline", "donchian", "quantile", "channel", "boll", "median",
+] as const;
+export type RoofFloorEstimateMethod = (typeof ROOF_FLOOR_ESTIMATE_METHODS)[number];
+
+/** The estimate windows (trading days) — the roof/floor windows (the 20d
+ *  window is not a roof/floor window). */
+export const ROOF_FLOOR_ESTIMATE_WINDOWS = [60, 120, 255, 500, 750, 1275] as const;
+export type RoofFloorEstimateWindow = (typeof ROOF_FLOOR_ESTIMATE_WINDOWS)[number];
+
+/** One row of the "rfest" extras group: the estimated roof/floor (resistance/
+ *  support) LEVEL AT `date` under every method × window — the table is LONG
+ *  (one row per (code, sec_type, date, period, method)); the API pivots it
+ *  back to one row per date with `roof_{method}_{W}d` / `floor_{method}_{W}d`
+ *  fields, index-aligned with the chart response's pair rows.
+ *  Methods: trendline (the anchor-line extrapolation of the roof/floor
+ *  lines table), donchian (window max high / min low), quantile (rolling
+ *  90th/10th close percentile), channel (OLS fit ± 2σ residual), boll
+ *  (SMA ± 2 population σ), median (consensus of the five). NULL where a
+ *  method has no level for that (date, window). */
+export interface MovAveSpreadRoofFloorEstimateRow
+  extends Record<
+    | `roof_${RoofFloorEstimateMethod}_${RoofFloorEstimateWindow}d`
+    | `floor_${RoofFloorEstimateMethod}_${RoofFloorEstimateWindow}d`,
+    number | null
+  > {
+  date: string;
+}
+
+/** The side of a roof/floor rebound-audit event. */
+export type RoofFloorSide = "floor" | "roof";
+
+/** The rebound-audit funnel outcome of a recorded extreme
+ *  (static.label_dim 'rf_rebound_outcome'): no_rebound → never_retested
+ *  → held / broken / unresolved. */
+export type RfReboundOutcome =
+  | "no_rebound"
+  | "never_retested"
+  | "held"
+  | "broken"
+  | "unresolved";
+
+/** One recorded-extreme event of the "rfaudit" extras group
+ *  (analysis.mov_ave_spreads_roof_floor_rebounds): the episode extreme
+ *  of fresh period-day extremes (close[t] is the min/max of
+ *  close[t-period+1, t+10]; candidates within 40 trading days cluster
+ *  into one episode) with its REBOUND (a close at level*(1±5%) within
+ *  60 trading days) and RETEST outcome — held (a close 5% back away
+ *  before any close 1% beyond the level) / broken (the reverse) /
+ *  unresolved (censored). Amplitudes are fractions: reboundPct signed
+ *  (+ floor / − roof), bouncePct / breakDepthPct positive. Durability:
+ *  cleanBreak (still beyond the level 20d after the break), laterBreak
+ *  (a held level eventually exceeded on a later retest), retestEpisodes
+ *  (zone-touch runs separated by ≥10 out-of-zone days). */
+export interface MovAveSpreadRoofFloorRebound {
+  eventDate: string;
+  side: RoofFloorSide;
+  /** The event scale (trailing-window W in trading days). */
+  period: number;
+  /** The recorded extreme CLOSE on eventDate. */
+  level: number;
+  outcome: RfReboundOutcome;
+  reboundDate: string | null;
+  retestDate: string | null;
+  daysToRetest: number | null;
+  reboundPct: number | null;
+  bouncePct: number | null;
+  breakDepthPct: number | null;
+  daysToBreak: number | null;
+  cleanBreak: boolean | null;
+  laterBreak: boolean | null;
+  retestEpisodes: number | null;
+}
+
+/** One row of the "momentum" extras group: analysis.mov_ave_momentum, one
+ *  row per source-price day. momentum[n] = price[t]/price[t-n] - 1 (signed
+ *  fractional). The two fixed anchors (5/20 trading days) plus the three
+ *  ADAPTIVE terms whose lookback n is chosen per (code, regime) by
+ *  volatility — lb_short/lb_mid/lb_long record the day's effective
+ *  lookbacks, so the adaptive values must be read together with them.
+ *  regime is the decoded market-regime label; vol_regime the sigma the
+ *  lookbacks were derived from. NULL momentum = insufficient history at
+ *  that lookback. */
+export interface MovAveSpreadMomentumDay {
+  date: string;
+  regime: MarketRegime;
+  vol_regime: number | null;
+  lb_short: number;
+  lb_mid: number;
+  lb_long: number;
+  momentum_5days: number | null;
+  momentum_20days: number | null;
+  momentum_short: number | null;
+  momentum_mid: number | null;
+  momentum_long: number | null;
+}
 
 /** One row of the "rsiranks" extras group: the code's per-date RSI history
  *  ranks (analysis.mov_ave_rsi_ranks, one row per mov_ave_rsi row). Per
@@ -1627,72 +1757,6 @@ export interface MovAveSpreadRsiRankDay {
   rank_rsi_14days: number | null;
   rank_rsi_20days: number | null;
   rank_rsi_60days: number | null;
-}
-
-/** One row of the "bands" extras group: the roof/floor shade-band edges +
- * the ANCHOR-BAND event DATE arrays per window (all 6), index-aligned
- * with the chart response's pair rows (all pairs share one date axis).
- *
- * Edges: analysis.mov_ave_spreads_roof_and_floor_bands stores min/max of
- * the window's two anchors per side (the pair is date-ordered); NULL when
- * either anchor is absent. Event arrays (σ = population std of the daily
- * close changes over the trailing 20 trading rows ending at i-1): the
- * breach/bounce days of THAT DATE'S OWN band inside its own trailing
- * window — exactly the band the shade toggle draws anchored at that date
- * (crossings of the band's NEAR edge; bounce = poke within +1σ +
- * next-day turn-back, breach = beyond +1σ; mutually exclusive). The UI
- * reads the anchor row's arrays directly as its marker set — no
- * client-side recomputation or windowing. */
-export interface MovAveSpreadBandsRow {
-  date: string;
-  upper_band_low_60d: number | null;
-  upper_band_high_60d: number | null;
-  lower_band_low_60d: number | null;
-  lower_band_high_60d: number | null;
-  upper_breach_dates_60d: string[] | null;
-  lower_breach_dates_60d: string[] | null;
-  upper_bounce_dates_60d: string[] | null;
-  lower_bounce_dates_60d: string[] | null;
-  upper_band_low_120d: number | null;
-  upper_band_high_120d: number | null;
-  lower_band_low_120d: number | null;
-  lower_band_high_120d: number | null;
-  upper_breach_dates_120d: string[] | null;
-  lower_breach_dates_120d: string[] | null;
-  upper_bounce_dates_120d: string[] | null;
-  lower_bounce_dates_120d: string[] | null;
-  upper_band_low_255d: number | null;
-  upper_band_high_255d: number | null;
-  lower_band_low_255d: number | null;
-  lower_band_high_255d: number | null;
-  upper_breach_dates_255d: string[] | null;
-  lower_breach_dates_255d: string[] | null;
-  upper_bounce_dates_255d: string[] | null;
-  lower_bounce_dates_255d: string[] | null;
-  upper_band_low_500d: number | null;
-  upper_band_high_500d: number | null;
-  lower_band_low_500d: number | null;
-  lower_band_high_500d: number | null;
-  upper_breach_dates_500d: string[] | null;
-  lower_breach_dates_500d: string[] | null;
-  upper_bounce_dates_500d: string[] | null;
-  lower_bounce_dates_500d: string[] | null;
-  upper_band_low_750d: number | null;
-  upper_band_high_750d: number | null;
-  lower_band_low_750d: number | null;
-  lower_band_high_750d: number | null;
-  upper_breach_dates_750d: string[] | null;
-  lower_breach_dates_750d: string[] | null;
-  upper_bounce_dates_750d: string[] | null;
-  lower_bounce_dates_750d: string[] | null;
-  upper_band_low_1275d: number | null;
-  upper_band_high_1275d: number | null;
-  lower_band_low_1275d: number | null;
-  lower_band_high_1275d: number | null;
-  upper_breach_dates_1275d: string[] | null;
-  lower_breach_dates_1275d: string[] | null;
-  upper_bounce_dates_1275d: string[] | null;
-  lower_bounce_dates_1275d: string[] | null;
 }
 
 /**
@@ -1759,10 +1823,13 @@ export interface MovAveSpreadExtrasResponse {
   /** Rolling-window OHLC extrema (all 7 windows), index-aligned with the
    *  chart response's pair rows. */
   ohlc?: MovAveSpreadOhlcRow[];
-  /** Roof/floor shade-band edges + per-date breach EVENT flags (all 7
-   *  windows, analysis.mov_ave_spreads_roof_and_floor_bands), index-aligned
-   *  with the chart response's pair rows — drives the "shade" toggle. */
-  roofFloorBands?: MovAveSpreadBandsRow[];
+  /** Quantitative roof/floor level estimates per method × window
+   *  (rfest group), index-aligned with the chart response's pair rows. */
+  rfEstimates?: MovAveSpreadRoofFloorEstimateRow[];
+  /** Roof/floor rebound-audit events (rfaudit group) — the code's
+   *  recorded extremes with rebound/retest outcomes, ascending by
+   *  eventDate. */
+  rfRebounds?: MovAveSpreadRoofFloorRebound[];
   /** High/low band-BREAK excursion streaks, flat across all (period,
    *  pctType) combos — gates the High/Low Streaks buttons. */
   highLowStreaks?: MovAveSpreadHighLowStreak[];
@@ -1776,6 +1843,9 @@ export interface MovAveSpreadExtrasResponse {
   /** Per-date RSI history ranks (analysis.mov_ave_rsi_ranks) — drives
    *  the RSI Trends overlay's Top-% vertical shades. */
   rsiRanks?: MovAveSpreadRsiRankDay[];
+  /** Per-date lookback-adaptive momentum (analysis.mov_ave_momentum) —
+   *  drives the Momentum overlay's fixed + adaptive term lines. */
+  momentum?: MovAveSpreadMomentumDay[];
 }
 
 /** One day's OHLC gap anatomy row (the gaps store's wide row, trimmed
@@ -2021,6 +2091,20 @@ export interface MarginSeriesRow {
   buy: number | null;
   /** Underlying security close price (from index/etf_basic_stats). */
   close: number | null;
+  /** Underlying security turnover (成交金额, yuan). Index rows read
+   *  stats.index_basic_stats.trading_amount (whole-index turnover); ETF rows
+   *  read stats.etf_liquidity_margin.trading_amount. With `buy` this yields
+   *  the margin-buy share of turnover (买入占比) — the margin-intensity
+   *  regime variable. NOTE for index attribution the share is scale-offset
+   *  (weighted-AVG constituent rz_buy vs WHOLE-index turnover), which is
+   *  fine for RANK-based (tercile) regime bucketing. */
+  trading_amount: number | null;
+  /** The day's canonical market-regime label (stats.market_regimes:
+   *  calm/hot/panic/quiet — the vol_z × amt_z cross, trailing shift-1)
+   *  for the security's own sec_type; null when no regime row exists.
+   *  Feeds the regime×tercile amplification split of the companion
+   *  chart. */
+  regime: MarketRegime | null;
 }
 
 /** Response for GET /api/analysis/margin-trends/industry-series.
@@ -2394,8 +2478,8 @@ export interface IndustryCorrelationsResponse {
 //      curves (same semantics as IndustryCorrelationRow.corr_ma{W}_{W}d).
 //    offset_sub_corr_ma{W}_{W}d — correlation of the benchmark-offset
 //      SUBTRACTED recomputed prices (common market factor removed).
-//    opposite_score_ma{W}_{W}d  — (1 − offset_sub_corr) / 2 in [0, 1]
-//      (1 = perfectly opposite once the benchmark is removed).
+//      (The table's derived opposite_score_ma{W}_{W}d = (1 − offset)/2 is
+//      DB-side audit storage only — not exposed; trivially derivable.)
 //
 //  Source: analysis_composites.industry_corr_benchmark_offsets (built by
 //  python -m analysis.analysis_composites; default benchmark 000300).
@@ -2418,6 +2502,12 @@ export interface IndustryCorrOffsetRow {
   benchmark_code: string;
   /** Start date of the compute window on the calendar grid (YYYY-MM-DD). */
   start_date: string;
+  /** END date of each window on the trading calendar (start + W − 1
+   *  trading days; NULL when that window is not full) — the date the
+   *  audit value was knowable through, and the chart's x key. */
+  end_ma20_20d: string | null;
+  end_ma60_60d: string | null;
+  end_ma255_255d: string | null;
   /** Stride in trading days between consecutive window starts (default
    *  20). */
   interval: number;
@@ -2434,12 +2524,6 @@ export interface IndustryCorrOffsetRow {
   offset_sub_corr_ma20_20d: number | null;
   offset_sub_corr_ma60_60d: number | null;
   offset_sub_corr_ma255_255d: number | null;
-  /** Opposite-correlation score = (1 − offset_sub_corr) / 2 in [0, 1]:
-   *  1 = perfectly opposite after removing the benchmark component, 0.5 =
-   *  uncorrelated residual, 0 = perfectly co-moving residual. */
-  opposite_score_ma20_20d: number | null;
-  opposite_score_ma60_60d: number | null;
-  opposite_score_ma255_255d: number | null;
 }
 
 /** Response for GET /api/analysis/industry-corr-offsets?industry_ids=...

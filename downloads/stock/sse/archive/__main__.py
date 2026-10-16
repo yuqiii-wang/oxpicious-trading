@@ -394,6 +394,10 @@ def load_target_stocks(conn) -> List[Tuple[str, str]]:
 
         # Materialize the distinct ETF-held stock_codes first, then merge-join
         # with stock_identity filtered to the latest date + exchange='SS'.
+        # Ordered by importance rank 0 -> 9 (stats.sec_importance_ranks,
+        # monthly build) then code: index-heavyweight stocks are archived
+        # first so an interrupted sweep has covered the important codes
+        # (LEFT JOIN: codes missing from the rank table sink to the tail).
         cur.execute(
             """
             WITH etf_targets AS (
@@ -405,9 +409,10 @@ def load_target_stocks(conn) -> List[Tuple[str, str]]:
             SELECT si.code, si.name
               FROM stats.stock_identity si
               JOIN etf_targets t ON t.stock_code = si.code
+              LEFT JOIN stats.sec_importance_ranks r ON r.code = si.code
              WHERE si.exchange = 'SS'
                AND si.date = %s
-             ORDER BY si.code
+             ORDER BY r.importance_rank ASC NULLS LAST, si.code
             """,
             (latest_snapshot, latest_id_date),
         )

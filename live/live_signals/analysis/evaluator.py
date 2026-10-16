@@ -1,27 +1,32 @@
 """AnalysisEvaluator — the GENERIC live breach check.
 
-A live signal IS a breach of an active
-analysis_signals.signal_thresholds threshold — never a detection, and
-with NO per-family logic: each active config row carries its own
-decision (action 'sell' or 'buy') and its own confidence-scale model.
-The bar is resolved per check (fetch.resolve_threshold): mov_rsi's RSI
-percentile bar is static in its own space — the stored threshold (the
-derived-bar families — mov_std's band, the cross slow legs — were
-RETIRED with their strategies 2026-10-05, and with them the
-is_triggered_once once-per-episode machinery: mov_rsi is a STATE
-family that keeps flagging on every qualifying observation while the
-breach persists). The evaluator only
+A live signal IS a breach of an active analysis_signals.signal_rules
+RULE CELL's bar (the rules-era rewire, 2026-10-15 — signal_thresholds
+was dropped with the 2026-10-14 redesign) — never a detection, and
+with NO per-family logic. Each active cell row carries its own
+decision (action 'sell' or 'buy'), its own bar definition
+(rule_params.bar_def — resolved per check by fetch.resolve_threshold:
+bollinger's fixed ±kσ constant; mov_rsi's per-code adaptive percentile
+tail computed from the trailing RSI history) and its own confidence
+scale (rule_params.confidence). The DAY-CONTEXT MATCH is the rules-era
+gate: only the cell whose (trend, regime) equals the day's own trend
+(the signal rules tier's analysis.trend_days classification) and market
+regime (stats.market_regimes) may fire — the same population the cell
+measured. mov_rsi is a STATE family that keeps flagging on every
+qualifying observation while the breach persists. The evaluator only
 
-  1. resolves the config's CURRENT value (the declarative
+  1. resolves the cell's CURRENT value (the declarative
      SIGNAL_VALUE_SOURCE map in fetch — data access, not logic),
-  2. compares: sell → value > threshold, buy → value < threshold
-     (direction by the row's action — the sign convention of
-     signal_excess: sell > 0 > buy),
+  2. compares: sell → value > bar, buy → value < bar (direction by the
+     row's action — the sign convention of signal_excess: sell > 0 >
+     buy),
   3. records the breach with the row's OWN action and the SCALED
-     confidence (config.breach.scaled_confidence_bp — the breach depth
-     amplifies the row's confidence_base).
+     confidence (config.breach.rules_confidence_bp — the normalized
+     breach depth amplifies the cell's measured base_pct; the identical
+     formula the history writer applies).
 
-Missing current value / underivable bar ⇒ skipped, never invented.
+Missing current value / underivable bar / no trend context ⇒ skipped,
+never invented.
 
 AS-OF MODE (as_of=D — the on-demand --date path): the evaluated bar is
 the LAST intraday bar ON D when one exists (end-of-day replay of the
@@ -44,6 +49,7 @@ from live.live_signals.analysis.fetch import (
     fetch_daily_close_on,
     fetch_intraday_bar_on,
     fetch_regime_state,
+    fetch_trend_state,
     resolve_threshold,
     resolve_value,
 )
@@ -53,7 +59,7 @@ from live.live_signals.config import (
     INTRADAY_TABLES,
     SIGNAL_PCT_SCALE,
     SIGNAL_SCALE,
-    scaled_confidence_bp,
+    rules_confidence_bp,
 )
 
 from _common.labels import ACTION_LABEL
@@ -153,31 +159,69 @@ class AnalysisEvaluator:
         if not sigs:
             return [], True
         if verbose:
-            logger.info(f"  [{sec_type}] {code}: {len(sigs)} active signal configs")
+            logger.info(f"  [{sec_type}] {code}: {len(sigs)} active rule cells")
 
         # The bar date's market regime (one point probe against the
         # daily states table — recorded regime context on every breach
-        # row, never a gate: a hot/panic-day breach still fires,
-        # labeled).
+        # row AND the cell-match input; calm when the day has no row,
+        # the engine's own regime-join default).
         regime_state = await fetch_regime_state(
             self._conn, sec_type, code, bar_date,
         )
+        # The day's TREND from the signal rules tier's own store (the
+        # latest analysis.trend_days row at-or-before the bar date) — the
+        # other cell-match input. No trend row (pipeline never ran /
+        # code too young) ⇒ no cell can match.
+        trend_state = await fetch_trend_state(
+            self._conn, sec_type, code, bar_date,
+        )
+
+        # THE RULES-ERA GATE — the day-context cell match: only the
+        # cells whose (trend, regime) equals the day's own context may
+        # fire (the same population the cell measured on history).
+        cells = [
+            sig for sig in sigs
+            if trend_state is not None
+            and sig["trend"] == trend_state
+            and sig["regime_state"] == regime_state
+        ]
+        if verbose and len(cells) < len(sigs):
+            logger.info(f"  [{sec_type}] {code}: day context "
+                        f"trend={trend_state} regime={regime_state} — "
+                        f"{len(cells)}/{len(sigs)} cells match")
+        if not cells:
+            return [], True
 
         # The code's current values — fetched ONCE, shared by every
-        # config (only the sources the active types actually consume
-        # are queried). as_of bounds every source to its latest row
-        # at-or-before D (the replay never peeks at later data).
+        # cell (only the sources the active types actually consume are
+        # queried), plus the mov_rsi cells' adaptive percentile bars
+        # (the trailing-2550d quantiles, one fetch keyed by the cells'
+        # (window, tail_pct) needs). as_of bounds every source to its
+        # latest row at-or-before D (the replay never peeks at later
+        # data).
+        rsi_bar_windows: set[int] = set()
+        rsi_bar_pcts: set[int] = set()
+        for sig in cells:
+            bar_def = sig.get("bar_def") or {}
+            if bar_def.get("kind") != "rolling_quantile":
+                continue
+            if sig.get("window") is not None:
+                rsi_bar_windows.add(int(sig["window"]))
+            rsi_bar_pcts.add(int(bar_def["tail_pct"]))
         values = await fetch_current_values(
             self._conn, sec_type, code,
-            {sig["signal_type"] for sig in sigs}, as_of,
+            {sig["signal_type"] for sig in cells}, as_of,
+            rsi_bar_windows=rsi_bar_windows or None,
+            rsi_bar_pcts=rsi_bar_pcts or None,
         )
         values.close = close
 
         records: list[dict] = []
-        for sig in sigs:
+        for sig in cells:
             value = resolve_value(sig, values)
-            # THE bar: mov_rsi's percentile bar is static in its own
-            # space — the stored threshold.
+            # THE bar: resolved from the cell's own bar_def
+            # (fetch.resolve_threshold — bollinger's fixed ±kσ /
+            # mov_rsi's adaptive percentile tail).
             threshold = resolve_threshold(sig, values)
             if value is None or threshold is None:
                 if verbose:
@@ -185,8 +229,8 @@ class AnalysisEvaluator:
                           f"{sig['signal_sub_type']}: not comparable "
                           f"(no current value)")
                 continue
-            # THE decision — the row's own action CODE against its own
-            # threshold (sell (1) breaches above, buy (0) below).
+            # THE decision — the cell's own action CODE against its own
+            # bar (sell (1) breaches above, buy (0) below).
             triggered = (
                 value > threshold
                 if sig["action"] == ABOVE_ACTION
@@ -208,19 +252,17 @@ class AnalysisEvaluator:
             signal_excess: float = signal_val - threshold
             # signal_excess_pct = signal_excess / |threshold| * 100.
             # Guarded against threshold = 0 (a pure safety net — the
-            # static bars are RSI values: none is 0 in practice;
+            # bars are RSI values / σ depths: none is 0 in practice;
             # NULLIF-equivalent to SQL's safety net).
             signal_excess_pct: float | None = (
                 round(signal_excess / abs(threshold) * 100,
                       SIGNAL_PCT_SCALE)
                 if threshold != 0 else None
             )
-            # action + the SCALED confidence come from the analysis
-            # row's own scale model: the breach depth |signal_excess|
-            # amplifies confidence_base (scale_base at zero excess +
-            # scale_factor per excess unit, linear) — ROUND(10000 ×
-            # confidence_base × scale), the identical formula the
-            # history writer applies.
+            # action + the SCALED confidence come from the cell's own
+            # confidence scale (rule_params.confidence): the NORMALIZED
+            # breach depth amplifies the cell's measured base_pct —
+            # the identical formula the history writer applies.
             records.append({
                 "code": sig["code"],
                 "sec_type": sig["sec_type"],
@@ -233,7 +275,7 @@ class AnalysisEvaluator:
                 "signal_excess_pct": signal_excess_pct,
                 "signal": signal_val,
                 "signal_threshold": threshold,
-                "confidence": scaled_confidence_bp(sig, signal_excess),
+                "confidence": rules_confidence_bp(sig, signal_excess),
                 # TRUE only on the on-demand mode's daily-close fallback
                 # rows (time 15:00); FALSE on every intraday-bar
                 # observation (live monitor AND as-of replay).

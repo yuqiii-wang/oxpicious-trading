@@ -299,7 +299,7 @@ def build_contract_meta_df(files, verbose=True):
             "contract_name": df["合约简称"].astype(str).str.strip(),
             "trade_code": df["合约交易代码"].astype(str).str.strip(),
             # 认购 = right to buy → CALL; 认沽 → PUT — stored as the
-            # stats.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT)
+            # static.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT)
             "option_type": np.where(
                 df["类型"].astype(str).str.strip().eq("认购"),
                 OPTION_TYPE_CODE["CALL"], OPTION_TYPE_CODE["PUT"],

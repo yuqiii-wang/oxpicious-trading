@@ -61,7 +61,7 @@ import {
   emphasizeSignalMarker,
 } from "@/shared/charts/signalMarker";
 
-function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, regimeSpans, tradeSignals = NO_TRADE_SIGNALS, selectedSignalDate = null, showPe, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, highlightAction = null, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: OhlcChartProps) {
+function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, regimeSpans, trendSpans, tradeSignals = NO_TRADE_SIGNALS, selectedSignalDate = null, showPe, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, highlightAction = null, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: OhlcChartProps) {
   const themeMode = useStore((s) => s.themeMode);
 
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -100,6 +100,7 @@ function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dat
       dataZoomEnd,
       dividends,
       regimeSpans,
+      trendSpans,
       tradeSignals,
       showPe,
       triggerAnchorRef,
@@ -107,7 +108,7 @@ function OhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dat
       streakInfoByDateRef,
       forecastActionByDateRef,
     }),
-    [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, regimeSpans, tradeSignals, showPe],
+    [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, regimeSpans, trendSpans, tradeSignals, showPe],
   );
 
   // ---- Forecast trigger-day overlay (imperative incremental update) -----

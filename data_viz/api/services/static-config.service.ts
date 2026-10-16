@@ -16,14 +16,21 @@
  *     The service's dotted name IS the path:
  *     downloads/stream/szse/price.json ← "downloads.stream.szse.price".
  *     Each file holds that service's ONE config object:
- *     { service, max_parallel, freq, schedule, notes, source_ref (the
+ *     { service, max_parallel, included_parallel_services,
+ *     excluded_parallel_services, freq, schedule, notes, source_ref (the
  *     config's code/script location(s) as RELATIVE FILE PATHS only —
  *     never line numbers; ';'-separated when several), updated_at }.
  *     max_parallel is the concurrency CAP (read at registration by
  *     _common/service_heartbeat.py — keep the shape compatible); freq is
  *     the SUPPOSED-RUN cadence mirrored from scripts/*.sh (always |
  *     daily | monthly | semiannually | once | occasionally), shown on
- *     the Service Monitor page's Pipeline processes table.
+ *     the Service Monitor page's Pipeline processes table. The two
+ *     parallel-services lists gate CROSS-service parallelism (empty
+ *     included = unrestricted; non-empty = whitelist; excluded = denylist;
+ *     entries are rooted dotted prefixes — a scope, a sub-scope path, or
+ *     the full service name; more specific wins on conflict, name >
+ *     sub-scope > scope, ties to excluded) — enforced at registration by
+ *     _common/service_heartbeat.py and previewed by the UI run guard.
  *
  *     default.json (tree ROOT, not part of the inventory) is the
  *     FALLBACK for services without their own file: max_parallel cap 1
@@ -103,10 +110,16 @@ export const DEFAULT_SERVICE_FREQ = "on_demand";
 // ---------------------------------------------------------------------------
 
 /** One service_config/ tree entry — a service's concurrency cap + its
- *  supposed-run cadence mirrored from scripts/*.sh. */
+ *  supposed-run cadence mirrored from scripts/*.sh + its cross-service
+ *  parallel-services lists (included = whitelist, empty = unrestricted;
+ *  excluded = denylist; entries are rooted dotted prefixes — scope,
+ *  sub-scope path, or full service name; more specific wins on conflict,
+ *  ties to excluded; same contract as _common/service_heartbeat.py). */
 export interface ServiceConfigEntry {
   service: string;
   max_parallel: number;
+  included_parallel_services: string[];
+  excluded_parallel_services: string[];
   /** always | daily | monthly | semiannually | once | occasionally
    *  (default.json fallback: on_demand). */
   freq: string;
@@ -118,7 +131,7 @@ export interface ServiceConfigEntry {
 }
 
 /** One external-request config row (snake_case = the retired
- *  table's columns; resource_type is still the stats.label_dim
+ *  table's columns; resource_type is still the static.label_dim
  *  'ext_resource' SMALLINT code — 0 http | 1 llm). */
 export interface ExtRequestConfigRow {
   service: string;
@@ -151,7 +164,9 @@ interface CacheEntry<T> {
 
 const cache = new Map<string, CacheEntry<unknown>>();
 
-function readJsonCached<T>(file: string, fallback: T): T {
+/** mtime-cached JSON read — shared with orchestration.service (the
+ *  scripts/orchestration/ step files use the same read discipline). */
+export function readJsonCached<T>(file: string, fallback: T): T {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(file);
@@ -183,12 +198,49 @@ function readJsonCached<T>(file: string, fallback: T): T {
 const SERVICE_ENTRY_FALLBACK: ServiceConfigEntry = {
   service: "",
   max_parallel: DEFAULT_MAX_PARALLEL,
+  included_parallel_services: [],
+  excluded_parallel_services: [],
   freq: DEFAULT_SERVICE_FREQ,
   schedule: null,
   notes: null,
   source_ref: "",
   updated_at: "",
 };
+
+/** A valid parallel-services entry: a rooted dotted prefix of a service
+ *  name (scope / sub-scope path / full name — same segment charset). */
+const DOTTED_PREFIX_RE = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
+
+/** JSON value → sanitized parallel-services list: string entries matching
+ *  the dotted-prefix pattern are kept (deduped, first occurrence wins),
+ *  anything else dropped — a malformed entry must never block a read. */
+export function normalizeParallelServices(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const v of value) {
+    if (typeof v === "string" && DOTTED_PREFIX_RE.test(v) && !out.includes(v)) {
+      out.push(v);
+    }
+  }
+  return out;
+}
+
+/** Every valid parallel-services entry, derived from the EXISTING
+ *  service_config/ inventory: split each service name on "." and hash
+ *  every dotted prefix — one segment = a scope ("downloads"), two or more
+ *  = a sub-scope path ("downloads.stock"), the full name = a service.
+ *  The write path (PUT /api/config/service) rejects entries outside this
+ *  set, so a list can only ever name real scopes / services. */
+export function validParallelServiceEntries(): Set<string> {
+  const entries = new Set<string>();
+  for (const { service } of readServiceConfig()) {
+    const segments = service.split(".");
+    for (let i = 1; i <= segments.length; i++) {
+      entries.add(segments.slice(0, i).join("."));
+    }
+  }
+  return entries;
+}
 
 function normalizeServiceEntry(doc: unknown, service: string): ServiceConfigEntry {
   const d = (
@@ -202,6 +254,12 @@ function normalizeServiceEntry(doc: unknown, service: string): ServiceConfigEntr
       d.max_parallel >= 1
         ? d.max_parallel
         : DEFAULT_MAX_PARALLEL,
+    included_parallel_services: normalizeParallelServices(
+      d.included_parallel_services,
+    ),
+    excluded_parallel_services: normalizeParallelServices(
+      d.excluded_parallel_services,
+    ),
     freq: typeof d.freq === "string" && d.freq !== "" ? d.freq : DEFAULT_SERVICE_FREQ,
     schedule: typeof d.schedule === "string" ? d.schedule : null,
     notes: typeof d.notes === "string" ? d.notes : null,

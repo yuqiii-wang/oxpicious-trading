@@ -16,11 +16,15 @@
  *
  * The stats payload is fetched whole (small by construction: days ×
  * services × statuses) and pivoted client-side; only the audit drill-down
- * hits the network per bucket.
+ * hits the network per bucket. The header's refresh button re-runs the
+ * aggregation itself (python -m database.external_resource_stats, via
+ * POST /api/monitor/ext-resources/refresh) — the stats table is COMPUTED,
+ * so that is how a new day shows up before the next scheduled run.
  */
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Alert, Box, Typography } from "@mui/material";
 import { useChartData } from "@/shared/charts/base-chart";
+import { invalidateCacheForPrefix } from "@/lib/api-client";
 import {
   fetchExtResourceStats,
   type ExtResourceStatEntry,
@@ -28,6 +32,7 @@ import {
 import { fmtDateTimeShanghai } from "@/shared/datetime";
 import ExtResourceTrendChart from "./ExtResourceTrendChart";
 import DateBreakdownTable from "./DateBreakdownTable";
+import StatsRefreshButton from "./StatsRefreshButton";
 import { serviceGroup, serviceGroups } from "./serviceGroups";
 
 const DAYS = 30;
@@ -38,10 +43,19 @@ const NO_ROWS: ExtResourceStatEntry[] = [];
 
 export default function ExternalResourcesPage() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const { data, loading, error } = useChartData(
+  const { data, loading, error, refresh } = useChartData(
     () => fetchExtResourceStats(DAYS),
     [],
   );
+
+  // After a stats rerun: the client LRU caches the stats URL for 10 min
+  // with no version check (/api/monitor/** has no latest-date source),
+  // so the refetch must drop the cached window first or the rerun's
+  // fresh rows would stay invisible until the TTL lapses.
+  const onStatsRefreshed = useCallback(() => {
+    invalidateCacheForPrefix("/api/monitor/ext-resources/stats");
+    refresh();
+  }, [refresh]);
 
   const dates = data?.dates ?? NO_DATES;
   const services = data?.services ?? NO_SERVICES;
@@ -104,6 +118,7 @@ export default function ExternalResourcesPage() {
             ? ` · stats computed ${fmtDateTimeShanghai(computedAt)}`
             : " · stats never computed"}
         </Typography>
+        <StatsRefreshButton onCompleted={onStatsRefreshed} />
       </Box>
 
       {error && <Alert severity="error">{String(error)}</Alert>}

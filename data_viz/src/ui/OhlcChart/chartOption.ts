@@ -41,6 +41,14 @@ import {
   SHADED_REGIMES,
   regimeSpansToMarkArea,
 } from "@/shared/charts/regimeBands";
+import {
+  SHADED_TRENDS,
+  TREND_ACCENT_COLORS,
+  TREND_LABELS,
+  TREND_SHADE_COLORS,
+  trendSpansToMarkArea,
+} from "@/shared/charts/trendBands";
+import type { TrendSpan } from "@/lib/api-client";
 import type {
   ForecastActionByDateRef,
   OhlcTradeSignal,
@@ -52,7 +60,11 @@ import { TRIGGER_ACTION_SERIES_ID, TRIGGER_SERIES_ID } from "./types";
 import type { OhlcMode } from "@/lib/ohlc";
 import type { ThemeMode } from "@/store/filters";
 import type { MarketRegimeSpans } from "@shared/types";
-import { signalMarkerSpec } from "@/shared/charts/signalMarker";
+import {
+  REJECTION_MARK_NAME,
+  rejectionMarkerSpec,
+  signalMarkerSpec,
+} from "@/shared/charts/signalMarker";
 import type { SignalMarkPointData } from "@/shared/charts/signalMarker";
 
 /** Stable id of the MA20 series that hosts the dividend + trade-signal
@@ -73,6 +85,9 @@ export interface OhlcOptionArgs {
   dataZoomEnd?: number;
   dividends: StockDividend[];
   regimeSpans?: Partial<MarketRegimeSpans>;
+  /** TREND spans to shade per trend (the signal rules tier's
+   *  classification; flat never shades — the background). */
+  trendSpans?: Record<string, TrendSpan[]>;
   tradeSignals: OhlcTradeSignal[];
   /** FALSE suppresses the PE twin-axis overlay even when the rows
    *  carry PE (the Recent Movements code-trend: the signal overlays
@@ -92,7 +107,7 @@ export interface OhlcOptionArgs {
 
 export function buildOhlcOption({
   rows, ohlcMode, themeMode, dataZoomStart, dataZoomEnd,
-  dividends, regimeSpans, tradeSignals, showPe,
+  dividends, regimeSpans, trendSpans, tradeSignals, showPe,
   triggerAnchorRef, markPointDataRef, streakInfoByDateRef, forecastActionByDateRef,
 }: OhlcOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
@@ -238,29 +253,43 @@ export function buildOhlcOption({
   // --- Trade-signal markers (buy below the low, sell above the high) ---
   // Same markPoint host as the dividends. Anchors use the rebased low /
   // high so the markers hug the bar in both OHLC modes, falling back to
-  // the close when the row has no low/high. Same-(date, action) signals
-  // share ONE marker — the axis tooltip lists each day's signals. The
-  // symbol geometry is THE shared buy/sell triangle (signalMarker.ts).
+  // the close when the row has no low/high. Same-(date, action, flag)
+  // signals share ONE marker — the axis tooltip lists each day's
+  // signals. The symbol geometry is THE shared buy/sell triangle
+  // (signalMarker.ts); a REJECTED signal (is_rejection — the gate's
+  // explicit no-action record) draws the grey diamond ON the close
+  // instead of any triangle.
   const signalsByDate = new Map<string, OhlcTradeSignal[]>();
   if (tradeSignals.length > 0) {
     const byDateAction = new Map<string, OhlcTradeSignal>();
     for (const s of tradeSignals) {
-      const buy = s.action === "buy";
-      const sell = s.action === "sell";
-      if (!buy && !sell) continue;
+      const rejected = s.is_rejection === true;
+      const buy = !rejected && s.action === "buy";
+      const sell = !rejected && s.action === "sell";
+      if (!buy && !sell && !rejected) continue;
       const idx = dateToCloseIdx.get(s.date);
       if (idx === undefined) continue; // signal day not in visible window
-      const anchor = (buy ? broken.arrays[2][idx] : broken.arrays[1][idx])
-        ?? broken.arrays[3][idx]; // arrays[2]=low, [1]=high, [3]=close
+      const anchor = rejected
+        ? broken.arrays[3][idx] // the rejected diamond centers on the close
+        : (buy ? broken.arrays[2][idx] : broken.arrays[1][idx])
+          ?? broken.arrays[3][idx]; // arrays[2]=low, [1]=high, [3]=close
       if (anchor == null || !Number.isFinite(anchor)) continue;
-      const key = `${s.date}|${s.action}`;
+      const key = `${s.date}|${s.action}|${rejected ? "rej" : "act"}`;
       if (!byDateAction.has(key)) {
         byDateAction.set(key, s);
-        markPointData.push({
-          name: buy ? "Buy" : "Sell",
-          coord: [s.date, anchor],
-          ...signalMarkerSpec(s.action),
-        });
+        markPointData.push(
+          rejected
+            ? {
+                name: REJECTION_MARK_NAME,
+                coord: [s.date, anchor],
+                ...rejectionMarkerSpec(),
+              }
+            : {
+                name: buy ? "Buy" : "Sell",
+                coord: [s.date, anchor],
+                ...signalMarkerSpec(s.action),
+              },
+        );
       }
       const list = signalsByDate.get(s.date) ?? [];
       list.push(s);
@@ -472,6 +501,30 @@ export function buildOhlcOption({
           data: regimeSpansToMarkArea(spans, REGIME_SHADE_COLORS[r]),
         },
         itemStyle: { color: REGIME_ACCENT_COLORS[r], opacity: 0.45 },
+        z: 0,
+      });
+    }
+  }
+
+  // --- Trend shading (per-trend full-height bands) ---------------------
+  // The same empty-data series + markArea pattern for the signal rules
+  // tier's TREND classification (top/bottom/rise/fall; unknown is the
+  // background) — shades GRADED by trend class (the extremes deepest),
+  // each trend's legend entry toggles its shade.
+  if (trendSpans) {
+    for (const t of SHADED_TRENDS) {
+      const spans = trendSpans[t];
+      if (!spans || spans.length === 0) continue;
+      series.push({
+        type: "line",
+        name: TREND_LABELS[t],
+        yAxisIndex: 0,
+        data: [],
+        markArea: {
+          silent: true,
+          data: trendSpansToMarkArea(spans, TREND_SHADE_COLORS[t]),
+        },
+        itemStyle: { color: TREND_ACCENT_COLORS[t], opacity: 0.45 },
         z: 0,
       });
     }

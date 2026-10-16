@@ -43,14 +43,28 @@ COMPUTATION ARRANGEMENT (window component sums — no per-pair loops)
   and ~87 grid starts per window the working set is ~10-100 MB —
   comfortably host-side.
 
+WINDOW GRID + TRAILING WINDOW
+  Frozen stride windows: starts every INTERVAL_DAYS (20) trading days
+  anchored at calendar index 0 — identical to
+  analysis.industry_sentiments.correlations; once complete they are
+  never recomputed. Trailing window: per W, the ONE window ENDING at the
+  pool calendar's latest date (start index t_len − W); it is NOT on the
+  stride grid and carries ONLY its own W's metrics (the stride row
+  packing keeps the other W columns NULL there). It is recomputed on
+  every run, so the audit always includes a live data point at the
+  current frontier; the previous run's trailing rows (non-stride start
+  dates that are no longer current trailing starts) are deleted so
+  exactly ONE trailing row per (pair, W) exists at any time.
+
 Incremental mode (``target_dates`` non-empty — see
-find_missing_offset_window_ends): only rows whose window END date
-(start_date + W - 1 for some W with a non-NULL metric) is in
-``target_dates`` are upserted. Full history is still loaded so the MA
-curves are correct. No truncate.
+find_missing_offset_window_ends): only windows whose END date is in
+``target_dates`` are upserted — the missing complete stride windows plus
+the trailing windows (end = latest calendar date). Superseded trailing
+rows are deleted. Full history is still loaded so the MA curves are
+correct. No truncate.
 
 Force mode (``force=True``): truncates the table first, then recomputes
-and inserts all rows.
+and inserts all rows (stride + trailing).
 
 Filtered mode (``industry_ids`` non-empty): recomputes ALL windows for
 the pairs among these industries only and upserts them (driven by the UI
@@ -72,7 +86,7 @@ from _common.build_commons import (
     rec_cols,
 )
 from _common.db_commons import batched_copy_by_key_async
-from _common.df_utils import epoch_col_to_dt64
+from _common.df_utils import epoch_col_to_dt64, host_array
 from _common.labels import POOL_SIZE_LABEL
 from analysis._common import upsert_analysis_identity
 from analysis.industry_sentiments.correlations import (
@@ -103,55 +117,76 @@ logger = logging.getLogger(__name__)
 async def find_missing_offset_window_ends(
     conn,
     benchmark_code: str,
-) -> Set[datetime.date]:
-    """Return the set of source dates that are POTENTIAL window END dates
-    on the calendar grid but not yet covered by a computed window end for
-    ``benchmark_code``.
+) -> tuple[Set[datetime.date], Optional[datetime.date]]:
+    """Return ``(target_end_dates, load_from_date)`` for ``benchmark_code``
+    — the incremental daily scope:
 
-    Identical residue logic to
-    analysis.industry_sentiments.correlations.find_missing_corr_window_ends
-    (the table is keyed by window START dates which lag the source calendar
-    by design), with the covered-ends union reading THIS table filtered to
-    the benchmark — a window end is covered when the row for the window
-    that ends on it carries ANY non-NULL metric for that W.
+      * MISSING COMPLETE STRIDE WINDOWS: stride-grid starts (calendar
+        index % INTERVAL_DAYS == 0) whose W-day window now fits inside
+        the calendar but the table carries no non-NULL metric for that
+        W at the start date. These materialize once and stay frozen.
+      * TRAILING WINDOW: per W, the window ending at the calendar's
+        LATEST date (start index t_len − W). It is a LIVE value — the
+        latest date is ALWAYS a target so every run refreshes it (and
+        the run deletes the superseded trailing rows).
+
+    ``load_from_date`` bounds the incremental LOAD (not just the emit):
+    the earliest calendar date any targeted window's MA curves need —
+    ``cal[min(s − W + 1)]`` over the targeted windows — so the daily
+    increment fetches only the tail span (typically ~2.1 years for the
+    255d trailing window) instead of full history.
+
+    A stride/trailing start is "covered" when ANY row at its start_date
+    carries a non-NULL metric for that W (table-grain coverage).
     """
-    min_w_by_res: dict[int, int] = {}
+    cov_sql = f"""
+        SELECT start_date,
+               (overall_corr_ma20_20d IS NOT NULL
+                OR offset_sub_corr_ma20_20d IS NOT NULL) AS c20,
+               (overall_corr_ma60_60d IS NOT NULL
+                OR offset_sub_corr_ma60_60d IS NOT NULL) AS c60,
+               (overall_corr_ma255_255d IS NOT NULL
+                OR offset_sub_corr_ma255_255d IS NOT NULL) AS c255
+        FROM {TABLE_OFFSETS}
+        WHERE benchmark_code = $1
+    """
+    cal_rows = await conn.fetch(
+        f"SELECT DISTINCT date FROM {BASELINE_TABLE} ORDER BY date"
+    )
+    cov_rows = await conn.fetch(cov_sql, benchmark_code)
+    cal: list[datetime.date] = [r["date"] for r in cal_rows]
+    t_len = len(cal)
+    if t_len == 0:
+        return set(), None
+    cov: dict[datetime.date, dict[int, bool]] = {
+        r["start_date"]: {20: r["c20"], 60: r["c60"], 255: r["c255"]}
+        for r in cov_rows
+    }
+
+    def covered(start: datetime.date, w: int) -> bool:
+        return cov.get(start, {}).get(w, False)
+
+    targets: Set[datetime.date] = set()
+    need_idx: list[int] = []          # earliest calendar index to LOAD
     for w in WINDOWS:
-        r = (w - 1) % INTERVAL_DAYS
-        min_w_by_res[r] = min(min_w_by_res.get(r, w), w)
-    pot_conds = " OR ".join(
-        f"(idx % {INTERVAL_DAYS}) = {r} AND "
-        f"idx >= {(-(-(w - 1) // INTERVAL_DAYS)) * INTERVAL_DAYS + w - 1}"
-        for r, w in sorted(min_w_by_res.items())
-    )
-    # Covered end of a row = the calendar date at (calendar index of
-    # start_date) + W - 1 — TRADING-day arithmetic (a plain start_date +
-    # (W - 1) adds CALENDAR days and lands on the wrong date).
-    cov_selects = " UNION ".join(
-        f"SELECT c2.date AS d FROM {TABLE_OFFSETS} t "
-        f"JOIN cal c1 ON c1.date = t.start_date "
-        f"JOIN cal c2 ON c2.idx = c1.idx + {w - 1} "
-        f"WHERE t.benchmark_code = $1 AND ("
-        f"t.overall_corr_ma{w}_{w}d IS NOT NULL "
-        f"OR t.offset_sub_corr_ma{w}_{w}d IS NOT NULL)"
-        for w in WINDOWS
-    )
-    sql = f"""
-        WITH cal AS (
-            SELECT date, ROW_NUMBER() OVER (ORDER BY date) - 1 AS idx
-            FROM (SELECT DISTINCT date FROM {BASELINE_TABLE}) s
-        ),
-        pot AS (
-            SELECT DISTINCT date FROM cal WHERE {pot_conds}
-        ),
-        cov AS ({cov_selects})
-        SELECT p.date
-        FROM pot p
-        LEFT JOIN cov c ON c.d = p.date
-        WHERE c.d IS NULL
-    """
-    rows = await conn.fetch(sql, benchmark_code)
-    return {r["date"] for r in rows}
+        # Frozen stride windows complete under the current calendar. Skip
+        # starts shorter than w-1: the MA-W curve needs w-1 prior dates,
+        # so those windows can NEVER be valid for any industry (the
+        # calendar itself starts at index 0) — targeting them would pin
+        # load_from to the calendar start forever.
+        first = -(-(w - 1) // INTERVAL_DAYS) * INTERVAL_DAYS
+        for s_idx in range(first, t_len - w + 1, INTERVAL_DAYS):
+            if not covered(cal[s_idx], w):
+                targets.add(cal[s_idx + w - 1])
+                need_idx.append(max(0, s_idx - w + 1))
+        # Trailing window (LIVE — always refreshed). Skip when it IS a
+        # stride start: then it is a frozen stride window handled above.
+        pos = t_len - w
+        if pos >= 0 and pos % INTERVAL_DAYS != 0:
+            targets.add(cal[t_len - 1])
+            need_idx.append(max(0, pos - w + 1))
+    load_from = cal[min(need_idx)] if need_idx else None
+    return targets, load_from
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +217,7 @@ cls AS (
 ),
 member_pool AS (
     -- Pool buckets mirror builds.industry.classify_pool_vectorized
-    -- (stats.label_dim SMALLINT codes: 0 small / 1 mid / 2 large):
+    -- (static.label_dim SMALLINT codes: 0 small / 1 mid / 2 large):
     -- small < 51 constituent stocks, mid <= 180, large otherwise;
     -- compositionless members contribute to the 'all' (3) pool only.
     SELECT cls.code, cls.industry_id,
@@ -212,16 +247,40 @@ GROUP BY mp.industry_id, p.pool_size, cs.date
 """
 
 
-async def fetch_offset_curves(conn, benchmark_code: str) -> pd.DataFrame:
+async def fetch_offset_curves(
+    conn,
+    benchmark_code: str,
+    industry_ids: Optional[Set[str]] = None,
+    from_date: Optional[datetime.date] = None,
+) -> pd.DataFrame:
     """(industry_id, pool_size, date, offset_pts) rows for one benchmark.
 
     The consolidated per-member daily offsets
     (stats.cross_stats.code_price_with_benchmark_offset) averaged over
-    each industry's member indices per pool bucket. Always full history —
-    the sliding windows need it; filtered (industry_ids) mode slices in
-    pandas.
+    each industry's member indices per pool bucket. ``industry_ids``
+    (filtered mode) and ``from_date`` (bounded incremental loads) are
+    applied INSIDE the SQL: cross_stats is ~300M rows and the
+    unfiltered/unbounded load seq-scans every partition (~20 s), while
+    the filtered join reads only the selected industries' member codes
+    (~2 s for 3 industries) and the date bound prunes to the tail span
+    the targeted windows actually need (2026-10-12 probes).
     """
-    rows = await conn.fetch(_OFFSET_CURVES_SQL, benchmark_code)
+    where_parts: list[str] = []
+    params: list = [benchmark_code]
+    if industry_ids:
+        params.append(sorted(industry_ids))
+        where_parts.append(f"mp.industry_id = ANY(${len(params)})")
+    if from_date is not None:
+        params.append(from_date)
+        where_parts.append(f"cs.date >= ${len(params)}")
+    where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    rows = await conn.fetch(
+        _OFFSET_CURVES_SQL.replace(
+            "GROUP BY mp.industry_id, p.pool_size, cs.date",
+            f"{where}\nGROUP BY mp.industry_id, p.pool_size, cs.date",
+        ),
+        *params,
+    )
     return pd.DataFrame(
         rec_cols(rows),
         columns=["industry_id", "pool_size", "date", "offset_pts"],
@@ -236,6 +295,7 @@ async def run_opposite_correlations(
     conn,
     *,
     target_dates: Optional[Set[datetime.date]] = None,
+    load_from: Optional[datetime.date] = None,
     force: bool = False,
     industry_ids: Optional[Set[str]] = None,
     benchmarks: Sequence[str] = ("000300",),
@@ -247,16 +307,21 @@ async def run_opposite_correlations(
     Pipeline
       1. Load all (date, industry_id, pool_size, mean_close) rows from
          stats.industry_basic_stats (non-NULL mean) — full history so the
-         MA curves are correct.
-      2. Load benchmark closes from stats.index_basic_stats.
+         MA curves are correct. In incremental mode ``load_from`` bounds
+         the load to the tail span the targeted windows need; each
+         pool's pivot is re-anchored onto its FULL calendar (cheap
+         DISTINCT query) so the stride grid keeps the historical
+         index-0 anchor.
+      2. Load per-benchmark consolidated offset curves (date-bounded in
+         incremental mode).
       3. Per pool: pivot to a (date x industry) matrix, compute the
-         MA-{W} curves + grid starts + full-window validity (shared with
-         the correlations step), then per benchmark reindex the benchmark
-         close onto the pool calendar and emit the audit stacks:
-         overall (reused _window_corr_stack) and the benchmark-removed
-         offset (component-sum algebra), plus the derived
-         opposite score = (1 - offset) / 2.
-      4. Truncate (force) + ONE key-batched write; upsert analysis_identity.
+         MA-{W} curves + stride/trailing starts + full-window validity
+         (shared kernel with the correlations step), then per benchmark
+         emit the audit stacks: overall (reused _window_corr_stack) and
+         the benchmark-removed offset (component-sum algebra), plus the
+         derived opposite score = (1 - offset) / 2.
+      4. Delete superseded trailing rows (non-force) + truncate (force)
+         + ONE key-batched write; upsert analysis_identity.
     """
     t0 = time.time()
     logger.info("\n" + "=" * 78)
@@ -275,6 +340,7 @@ async def run_opposite_correlations(
     incremental = (not force and not filtered
                    and target_dates is not None
                    and len(target_dates) > 0)
+    bounded = incremental and load_from is not None
     if force:
         logger.info("    mode: FORCE (full recompute)")
     elif filtered:
@@ -282,12 +348,38 @@ async def run_opposite_correlations(
               f"recompute all their windows, upsert)")
     elif incremental:
         logger.info(f"    mode: incremental ({len(target_dates)} target "
-              f"window-end dates)")
+              f"window-end dates"
+              + (f", bounded load from {load_from.isoformat()})"
+                 if bounded else ")"))
     logger.info(f"    benchmarks: {', '.join(benchmarks)}")
 
     # ---- Step 1: load mean_close series (same query as correlations) ----
+    # In bounded incremental mode the FULL per-pool calendars come from a
+    # cheap DISTINCT query — the pivots re-anchor onto them so t_len and
+    # the stride grid (index % INTERVAL_DAYS) stay identical to a
+    # full-history run.
+    pool_cal: dict[int, pd.DatetimeIndex] = {}
+    if bounded:
+        cal_rows = await conn.fetch(f"""
+            SELECT DISTINCT pool_size, date FROM {BASELINE_TABLE}
+            WHERE mean_close IS NOT NULL
+            ORDER BY pool_size, date
+        """)
+        for r in cal_rows:
+            pool_cal.setdefault(r["pool_size"], []).append(r["date"])
+        # Pin [ns]: a default-resolution DatetimeIndex (cudf.pandas picks
+        # the backend default) does not match the pivot's [ns] index — the
+        # reindex would match nothing and blank the whole frame (2026-10-13
+        # probe: "0 pairs (overlap >= 20)" + to_numpy NaN fallbacks).
+        pool_cal = {
+            p: pd.DatetimeIndex(np.asarray(dates, dtype="datetime64[ns]"))
+            for p, dates in pool_cal.items()
+        }
     logger.info("\n[o1/4] Loading (date, industry_id, pool_size, mean_close) "
-          f"from {BASELINE_TABLE} (non-NULL mean only)...")
+          f"from {BASELINE_TABLE} (non-NULL mean only"
+          + (f", from {load_from.isoformat()}" if bounded else "") + ")...")
+    date_bound = "AND date >= $1" if bounded else ""
+    bound_args = [load_from] if bounded else []
     if filtered:
         rows = await conn.fetch(f"""
             SELECT extract(epoch from date)::float8 AS date,
@@ -303,13 +395,18 @@ async def run_opposite_correlations(
                    industry_id, pool_size, mean_close
             FROM {BASELINE_TABLE}
             WHERE mean_close IS NOT NULL
+              {date_bound}
             ORDER BY industry_id, pool_size, date
-        """)
+        """, *bound_args)
     if not rows:
         logger.info("      -> no industry data; skipping.")
         return
     df = pd.DataFrame(rec_cols(rows))
-    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    # unit="ns" pins the resolution (cudf.pandas default is [us]) — the
+    # bounded-mode reindex joins this index against the [ns] pool
+    # calendar; a mixed-resolution join matches NOTHING (2026-10-13
+    # probe: all-NaN frame, "0 pairs (overlap >= 20)").
+    df["date"] = epoch_col_to_dt64(df["date"], unit="ns", index=df.index)
     df["mean_close"] = df["mean_close"].astype(float)
     logger.info(f"      -> {len(rows):,} rows")
 
@@ -317,13 +414,18 @@ async def run_opposite_correlations(
     # Per benchmark: (industry, pool, date) mean-of-member daily offsets.
     offset_curves: dict[str, pd.DataFrame] = {}
     for bench_code in benchmarks:
-        odf = await fetch_offset_curves(conn, bench_code)
+        odf = await fetch_offset_curves(
+            conn, bench_code,
+            industry_ids=industry_ids if filtered else None,
+            from_date=load_from if bounded else None,
+        )
         if odf.empty:
             logger.warning(f"      -> WARNING: no cross_stats offset rows "
                            f"for benchmark '{bench_code}' — all its offset "
                            f"columns will be NULL; skipping it.")
             continue
-        odf["date"] = epoch_col_to_dt64(odf["date"], index=odf.index)
+        odf["date"] = epoch_col_to_dt64(odf["date"], unit="ns",
+                                        index=odf.index)
         odf["offset_pts"] = odf["offset_pts"].astype(float)
         offset_curves[bench_code] = odf
     benchmarks = tuple(b for b in benchmarks if b in offset_curves)
@@ -341,6 +443,10 @@ async def run_opposite_correlations(
         np.asarray(sorted(target_dates), dtype="datetime64[D]")
         if incremental else np.array([], dtype="datetime64[D]")
     )
+    # Stride + current-trailing start dates across processed pool
+    # calendars — the keep set for the superseded-trailing-row delete.
+    keep_dates: set = set()
+    processed_pools: list[int] = []
 
     for pool in POOL_SIZES:
         sub = df[df["pool_size"] == pool]
@@ -349,20 +455,55 @@ async def run_opposite_correlations(
         wide = sub.pivot(
             index="date", columns="industry_id", values="mean_close"
         ).sort_index()
+        if bounded and pool in pool_cal:
+            # Re-anchor onto the pool's FULL calendar — rows before the
+            # load bound become all-NaN, so t_len and the stride grid
+            # (index % INTERVAL_DAYS == 0) stay identical to a
+            # full-history run.
+            wide = wide.reindex(index=pool_cal[pool])
         t_len, n_ind = wide.shape
         if n_ind < 2:
             continue
         ids: np.ndarray = np.asarray(wide.columns)
-        valid: np.ndarray = wide.notna().to_numpy()      # (T, N) bool
-        sd_d: np.ndarray = np.asarray(wide.index).astype("datetime64[D]")
+        # host_array unwrap at the pandas->numpy boundary (repo
+        # convention): without it every downstream numpy op in the
+        # shared kernels dispatches through the cudf proxy and pays a
+        # fast->slow fallback (2026-10-13 probe: 28 [cudf fallback]
+        # lines per run vs zero).
+        valid: np.ndarray = host_array(wide.notna().to_numpy())  # (T, N)
+        sd_d: np.ndarray = host_array(
+            np.asarray(wide.index)).astype("datetime64[D]")
         overlap: np.ndarray = (
             valid.astype(np.int64).T @ valid.astype(np.int64)
         )
+        # Frozen stride starts + the per-W trailing starts (windows
+        # ending at the pool calendar's latest date). A trailing start
+        # that coincides with a stride start dedupes; an off-grid
+        # trailing start emits ONLY its own W (allowed_sw).
         starts: np.ndarray = _grid_start_indices(t_len)
+        trailing_idx = {t_len - w for w in WINDOWS if t_len - w >= 0}
+        extra = sorted(trailing_idx - set(starts.tolist()))
+        if extra:
+            starts = np.sort(np.concatenate(
+                [starts, np.asarray(extra, dtype=np.int64)]
+            ))
+        allowed_sw: np.ndarray = np.zeros(
+            (starts.size, len(WINDOWS)), dtype=bool
+        )
+        allowed_sw[starts % INTERVAL_DAYS == 0, :] = True
+        for wi, w in enumerate(WINDOWS):
+            pos = t_len - w
+            if pos >= 0:
+                allowed_sw[starts == pos, wi] = True
         pair_ok: np.ndarray = np.triu(overlap >= MIN_OVERLAP, k=1)
+        keep_dates.update(sd_d[starts].tolist())
+        processed_pools.append(pool)
 
         ma: dict[int, np.ndarray] = {
-            w: wide.rolling(w, min_periods=w).mean().to_numpy()
+            # na_value explicit + host_array unwrap: raw host ndarrays
+            # keep the shared kernels in plain numpy (see sanitize.host_array).
+            w: host_array(wide.rolling(w, min_periods=w).mean().to_numpy(
+                dtype=np.float64, na_value=np.nan))
             for w in WINDOWS
         }
         col_ok: dict[int, np.ndarray] = {
@@ -372,10 +513,9 @@ async def run_opposite_correlations(
         for bench_code in benchmarks:
             # Consolidated offset matrix on the pool calendar: rows =
             # pool dates, cols = industries (aligned to the mean_close
-            # pivot), values = mean-of-member daily offsets.
+            # pivot), values = mean-of-member daily offsets. In filtered
+            # mode the SQL already restricted the rows to the selection.
             odf = offset_curves[bench_code]
-            if filtered:
-                odf = odf[odf["industry_id"].isin(industry_ids)]
             sub_off = odf[odf["pool_size"] == pool]
             if sub_off.empty:
                 offset_mat = np.full((t_len, n_ind), np.nan)
@@ -385,29 +525,32 @@ async def run_opposite_correlations(
                                   values="offset_pts")
                     .reindex(index=wide.index, columns=ids)
                 )
-                offset_mat = off_wide.to_numpy(dtype=np.float64)
+                offset_mat = host_array(
+                    off_wide.to_numpy(dtype=np.float64, na_value=np.nan)
+                )
             col_ok_off: dict[int, np.ndarray] = {
                 w: _window_col_ok(offset_mat, starts, w) for w in WINDOWS
             }
 
             # 3D emit mask (S, N, N): upper-triangle pairs where BOTH
-            # industries' windows are valid (benchmark-gated offset /
-            # score cells are NaN-masked inside _offset_corr_stack).
+            # industries' windows are valid for SOME W allowed at that
+            # start (benchmark-gated offset / score cells are
+            # NaN-masked inside _offset_corr_stack).
             emit3: np.ndarray = np.zeros(
                 (starts.size, n_ind, n_ind), dtype=bool
             )
-            for w in WINDOWS:
-                ok = col_ok[w]                           # (S, N)
+            for wi, w in enumerate(WINDOWS):
+                ok = col_ok[w] & allowed_sw[:, wi:wi + 1]   # (S, N)
                 emit3 |= ok[:, :, None] & ok[:, None, :]
             emit3 &= pair_ok[None, :, :]
             if incremental:
                 touch3: np.ndarray = np.zeros_like(emit3)
-                for w in WINDOWS:
+                for wi, w in enumerate(WINDOWS):
                     ends = starts + w - 1
                     in_cal = ends < t_len
                     end_dates = sd_d[np.minimum(ends, t_len - 1)]
                     end_in_target = in_cal & np.isin(end_dates, tgt64)
-                    ok = col_ok[w]
+                    ok = col_ok[w] & allowed_sw[:, wi:wi + 1]
                     touch3 |= (
                         (ok[:, :, None] & ok[:, None, :])
                         & end_in_target[:, None, None]
@@ -427,9 +570,13 @@ async def run_opposite_correlations(
             overall_vals: dict[int, np.ndarray] = {}
             sub_vals: dict[int, np.ndarray] = {}
             score_vals: dict[int, np.ndarray] = {}
-            for w in WINDOWS:
+            for wi, w in enumerate(WINDOWS):
                 stack = _window_corr_stack(ma[w], starts, w, col_ok[w])
-                overall_vals[w] = stack[s_idx, ai_idx, bi_idx]
+                sel = allowed_sw[s_idx, wi]
+                # Off-grid trailing rows carry ONLY their own W's metrics.
+                overall_vals[w] = np.where(
+                    sel, stack[s_idx, ai_idx, bi_idx], np.nan
+                )
                 # Offset-sub: windowed Pearson of the CONSOLIDATED offset
                 # curves (cumulated from the window start — equivalent to
                 # levels under Pearson). Cells whose offset window is
@@ -437,7 +584,9 @@ async def run_opposite_correlations(
                 sub_stack = _window_corr_stack(
                     offset_mat, starts, w, col_ok_off[w],
                 )
-                sub_vals[w] = sub_stack[s_idx, ai_idx, bi_idx]
+                sub_vals[w] = np.where(
+                    sel, sub_stack[s_idx, ai_idx, bi_idx], np.nan
+                )
                 # Opposite score = (1 - offset) / 2 on the FINITE offsets.
                 s = sub_vals[w]
                 score = (1.0 - s) / 2.0
@@ -493,6 +642,40 @@ async def run_opposite_correlations(
     if not out_rows:
         logger.info("      -> no rows to write; skipping.")
         return
+
+    # ---- Step 3b: delete superseded trailing rows (non-force) ------------
+    # Rows at start dates that are neither a stride point nor a current
+    # trailing start of ANY processed pool calendar are yesterday's
+    # trailing windows — replaced by this run's rows, so exactly ONE
+    # trailing row per (pair, W) remains. Scoped to the run's benchmarks
+    # (+ selected industries in filtered mode).
+    if not force:
+        pair_scope = "AND industry_id = ANY(${n})" \
+                     " AND benchmark_industry_id = ANY(${n})"
+        fetch_scope = (pair_scope.format(n=3) if filtered else "")
+        del_scope = (pair_scope.format(n=4) if filtered else "")
+        for bench in benchmarks:
+            exist_rows = await conn.fetch(
+                f"SELECT DISTINCT start_date FROM {TABLE_OFFSETS} "
+                f"WHERE benchmark_code = $1 "
+                f"AND pool_size = ANY($2::smallint[]){fetch_scope}",
+                bench, processed_pools,
+                *( [sorted(industry_ids)] if filtered else [] ),
+            )
+            stale = [r["start_date"] for r in exist_rows
+                     if r["start_date"] not in keep_dates]
+            if stale:
+                status = await conn.execute(
+                    f"DELETE FROM {TABLE_OFFSETS} "
+                    f"WHERE benchmark_code = $1 "
+                    f"AND pool_size = ANY($2::smallint[]) "
+                    f"AND start_date = ANY($3::date[]){del_scope}",
+                    bench, processed_pools, stale,
+                    *( [sorted(industry_ids)] if filtered else [] ),
+                )
+                logger.info(f"      -> deleted {int(status.split()[-1]):,} "
+                            f"superseded trailing rows ({len(stale)} stale "
+                            f"start dates, benchmark {bench})")
 
     # ---- Step 4: truncate (force only) + write ---------------------------
     if force:

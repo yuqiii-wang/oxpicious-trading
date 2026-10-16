@@ -53,6 +53,12 @@ export interface BaseChartProps
    * the existing panels.
    */
   children?: ReactNode;
+  /**
+   * Companion content rendered AFTER the chart body, inside the same card
+   * (or bare layout) — e.g. a second hover-synced chart stacked under the
+   * primary one. Rendered in EVERY state, like `children`.
+   */
+  footer?: ReactNode;
 
   // --- async lifecycle states, rendered by the shared placeholders ---
 

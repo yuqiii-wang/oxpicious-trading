@@ -21,8 +21,11 @@ from downloads._common import (
     sleep_sec_for,
 )
 
-# SZSE indices that must NOT be downloaded from csindex.com.cn
-# (they are covered by download_szse_trend.py via East Money API)
+# Legacy fallback for codes with no importance-rank exchange row (fresh
+# install before the first monthly build). The primary routing is the
+# exchange column of stats.sec_importance_ranks (see runner: codes marked
+# SZSE are owned by the SZSE downloader; csindex.com.cn does not serve
+# them — download_szse_trend.py / the SZSE archive cover them).
 CSINDEX_SKIP_CODES = {"399001", "399006", "399348", "399346"}
 
 CSINDEX_BASE = "https://www.csindex.com.cn"

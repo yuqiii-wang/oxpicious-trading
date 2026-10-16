@@ -194,7 +194,7 @@ const META_SQL = `
     COALESCE(m.exchange, '')               AS exchange
   FROM analysis.pe_codes c
   LEFT JOIN stats.sec_classification m ON m.code = c.code AND m.type = $2::text
-  WHERE c.sec_type = $1  -- stats.label_dim 'sec_type' code
+  WHERE c.sec_type = $1  -- static.label_dim 'sec_type' code
     AND COALESCE(m.is_active, TRUE) = TRUE
 `;
 

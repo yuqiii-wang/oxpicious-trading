@@ -47,6 +47,16 @@ Pipeline:
      spot close into analysis.options_spot_daily — the precomputed read
      model behind /api/szse-options/oi-moneyness-series (exact parity
      with the former live 5-way-join SQL; both no FK).
+  9. Compute the rolling correlation between the 30d model-free vol
+     index and the underlying spot close (daily log-return vs
+     log-change, windows 5/20/60/255 sessions) into
+     analysis.options_vol_index_vs_spot_price_corr (PK (underlying_code,
+     date), no FK — reads the options_vol_index + options_spot_daily
+     read models, so it runs after pipelines 6+8). Append-only
+     incremental: fresh underlyings seed the 5-session stride grid +
+     latest session; each new trading day (a session after the
+     underlying's latest stored corr date) adds one row per new session
+     — stored rows are never rewritten.
 """
 from __future__ import annotations
 
@@ -106,6 +116,12 @@ from analysis.options.config import (  # noqa: E402
     VOL_INDEX_NUMERIC_COLS,
     VOL_INDEX_PK_COLUMNS,
     VOL_INDEX_RESULT_COLUMNS,
+    VOL_SPOT_CORR_TABLE_NAME,
+    VOL_SPOT_CORR_ANALYSIS_NAME,
+    VOL_SPOT_CORR_DESCRIPTION,
+    VOL_SPOT_CORR_NUMERIC_COLS,
+    VOL_SPOT_CORR_PK_COLUMNS,
+    VOL_SPOT_CORR_RESULT_COLUMNS,
     BANDS_TABLE_NAME,
     BANDS_ANALYSIS_NAME,
     BANDS_DESCRIPTION,
@@ -139,6 +155,10 @@ from analysis.options.fetch import (  # noqa: E402
     fetch_moneyness_rows,
     fetch_missing_moneyness_groups,
     fetch_missing_spot_dates,
+    fetch_vol_spot_corr_rows,
+    fetch_stored_max_corr_dates,
+    fetch_null_corr5_pairs,
+    fetch_missing_vol_spot_corr_dates,
 )
 from analysis.options.compute import (  # noqa: E402
     compute_options_skewness_stats,
@@ -147,6 +167,7 @@ from analysis.options.compute import (  # noqa: E402
     compute_options_iv_skew_stats,
     compute_options_iv_smile_corr_stats,
     compute_options_vol_index,
+    compute_options_vol_spot_corr,
     compute_options_moneyness_series,
     GREEK_SKEW_COMPUTERS,
 )
@@ -257,10 +278,12 @@ async def _write_rows(
     # (see 16_options.sql).
     # options_moneyness_series / options_spot_daily are exempt too:
     # month-group and date-granular keys (no FK — see
-    # 25_options_moneyness.sql).
+    # 25_options_moneyness.sql). options_vol_index_vs_spot_price_corr is
+    # exempt for the mirror reason (date-granular, no FK).
     if table_name not in (
         EXPIRY_IDENTITY_TABLE, VOL_INDEX_TABLE_NAME, OI_TABLE_NAME,
         BANDS_TABLE_NAME, MONEYNESS_TABLE_NAME, SPOT_TABLE_NAME,
+        VOL_SPOT_CORR_TABLE_NAME,
     ):
         result_df = await _fk_filter(conn, result_df)
 
@@ -366,6 +389,7 @@ async def _run_expiry_identity_pipeline(
         await conn.execute("DELETE FROM analysis.options_bands")
         await conn.execute("DELETE FROM analysis.options_moneyness_series")
         await conn.execute("DELETE FROM analysis.options_spot_daily")
+        await conn.execute("DELETE FROM analysis.options_vol_index_vs_spot_price_corr")
 
     rows = await fetch_expiry_identity_rows(conn, sec_type)
     logger.info(f"    {len(rows):,} distinct expiry groups")
@@ -940,14 +964,85 @@ async def _run_moneyness_pipeline(
     return n_groups + n_spot
 
 
+async def _run_vol_spot_corr_pipeline(
+    conn,
+    force: bool,
+    sec_type: str | None = None,
+) -> int:
+    """Run the options_vol_index_vs_spot_price_corr pipeline.
+
+    Rolling Pearson correlation (5/20/60/255 trading sessions) between the
+    30d model-free vol index and the underlying spot close — daily
+    log-return vs log-change (the CBOE VIX-vs-spot convention; see
+    compute/vol_spot_corr.py). Append-only incremental ("existing data is
+    old"): for a new day — any session after the underlying's latest
+    stored corr date — the run computes a row for EACH new session
+    (windows reach back up to 255 sessions from their own date); stored
+    rows are never rewritten or deleted. Fresh underlyings seed the
+    5-session stride grid + their latest session. Reads the
+    options_vol_index + options_spot_daily read models, so it MUST run
+    after pipelines 6 and 8.
+    Returns number of rows written.
+    """
+    target_pairs: set | None = None
+    stored_max: pd.DataFrame | None = None
+    backfill: pd.DataFrame | None = None
+    if not force:
+        logger.info("\n  Detecting missing (underlying, date) pairs for "
+              "vol-index vs spot corr...")
+        target_pairs = set(
+            await fetch_missing_vol_spot_corr_dates(conn, sec_type)
+        )
+        logger.info(f"    -> {len(target_pairs):,} missing pairs")
+        if len(target_pairs) == 0:
+            logger.info("    -> DB is up to date; nothing to do.")
+            return 0
+        stored_max = await fetch_stored_max_corr_dates(conn)
+        backfill = await fetch_null_corr5_pairs(conn)
+
+    logger.info("\n  [1/3] Fetching vol index + spot daily rows...")
+    df = await fetch_vol_spot_corr_rows(conn, sec_type)
+    logger.info(f"    {len(df):,} (underlying, date) input rows")
+    if df.empty:
+        logger.info("    no data; skipping.")
+        return 0
+
+    logger.info("\n  [2/3] Computing rolling vol-vs-spot correlations...")
+    result_df = compute_options_vol_spot_corr(df, stored_max, backfill)
+    logger.info(f"    {len(result_df):,} sampled result rows "
+          f"(stride seed + sessions after the stored frontier + "
+          f"corr_5d backfill)")
+
+    logger.info("\n  [3/3] Writing vol-index vs spot corr to DB...")
+    n = await _write_rows(
+        conn, result_df,
+        table_name=VOL_SPOT_CORR_TABLE_NAME,
+        numeric_cols=VOL_SPOT_CORR_NUMERIC_COLS,
+        force=force,
+        target_pairs=target_pairs,
+        pk_columns=VOL_SPOT_CORR_PK_COLUMNS,
+        round_to=4,
+    )
+
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
+    await upsert_analysis_identity(
+        conn,
+        name=VOL_SPOT_CORR_ANALYSIS_NAME,
+        detail_name="options_vol_index_vs_spot_price_corr",
+        description=VOL_SPOT_CORR_DESCRIPTION,
+    )
+
+    return n
+
+
 class OptionsAnalysis(DataAnalysis):
-    """``python -m analysis.options`` — eight sequential sub-pipelines.
+    """``python -m analysis.options`` — nine sequential sub-pipelines.
 
     There is no per-sec_type loop here: the single --sec-type filter
     (or None = all) is threaded into every sub-pipeline.
     """
 
-    title = "ANALYZE OPTIONS (expiry-group skewness + OI stats + walls + IV skew + bands + moneyness series)"
+    title = "ANALYZE OPTIONS (expiry-group skewness + OI stats + walls + IV skew + bands + moneyness series + vol-vs-spot corr)"
     component = "options"
 
     def add_arguments(self, parser) -> None:
@@ -964,7 +1059,8 @@ class OptionsAnalysis(DataAnalysis):
             "tables": (f"{EXPIRY_IDENTITY_TABLE}, {SKEWNESS_TABLE_NAME}, "
                        f"{OI_TABLE_NAME}, {WALLS_TABLE_NAME}, "
                        f"{IV_SKEW_TABLE_NAME}, {BANDS_TABLE_NAME}, "
-                       f"{MONEYNESS_TABLE_NAME}, {SPOT_TABLE_NAME}"),
+                       f"{MONEYNESS_TABLE_NAME}, {SPOT_TABLE_NAME}, "
+                       f"{VOL_SPOT_CORR_TABLE_NAME}"),
             "sec_type": self.args.sec_type or "all",
             "mode": "FORCE (full recompute)" if self.args.force
                     else "incremental (missing groups only)",
@@ -1029,12 +1125,18 @@ class OptionsAnalysis(DataAnalysis):
         logger.info("=" * 60)
         n8 = await _run_moneyness_pipeline(conn, force, sec_type)
 
-        total = n_id + n1 + n2 + n3 + n4 + n5 + n6 + n7 + n8
+        # ---- Pipeline 9: vol index vs spot correlation -------------------
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 9: options_vol_index_vs_spot_price_corr")
+        logger.info("=" * 60)
+        n9 = await _run_vol_spot_corr_pipeline(conn, force, sec_type)
+
+        total = n_id + n1 + n2 + n3 + n4 + n5 + n6 + n7 + n8 + n9
         logger.info(f"\n  TOTAL: {total:,} rows written "
               f"(expiry_identity={n_id:,}, "
               f"skewness={n1:,}, oi={n2:,}, walls={n3:,}, "
               f"iv_skew={n4:,}, greek_skew={n5:,}, vol_index={n6:,}, "
-              f"bands={n7:,}, moneyness={n8:,})")
+              f"bands={n7:,}, moneyness={n8:,}, vol_spot_corr={n9:,})")
 
 
 if __name__ == "__main__":

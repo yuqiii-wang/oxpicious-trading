@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS analysis.industry_hypes_seasonal (
     season_end        DATE          NOT NULL,  -- calendar month end
     benchmark_code    TEXT          NOT NULL,
     period_days       INTEGER       NOT NULL,  -- 5 | 20 | 60 | 120 | 255 | 500
-    weighting         SMALLINT      NOT NULL DEFAULT 0,  -- label code (stats.label_dim 'weighting'): 0=equal 1=amt
-    rank_side         SMALLINT      NOT NULL,  -- label code (stats.label_dim 'rank_side'): 0=HYPE 1=DRAIN
+    weighting         SMALLINT      NOT NULL DEFAULT 0,  -- label code (static.label_dim 'weighting'): 0=equal 1=amt
+    rank_side         SMALLINT      NOT NULL,  -- label code (static.label_dim 'rank_side'): 0=HYPE 1=DRAIN
     rank              SMALLINT      NOT NULL,  -- 1 | 2 | 3 | 4 | 5
     industry_id       TEXT          NOT NULL,
     industry_label    TEXT          NOT NULL DEFAULT '',

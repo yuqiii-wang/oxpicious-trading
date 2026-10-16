@@ -21,7 +21,7 @@
 --  resumes when it recovers.
 --
 --  Type columns are SMALLINT label codes (the label-code contract,
---  stats.label_dim + _common/labels.py + data_viz/api/services/
+--  static.label_dim + _common/labels.py + data_viz/api/services/
 --  label-codes.ts):
 --    instance          — domain 'db_instance': 0 primary | 1 replica
 --    replication_state — domain 'db_replication_state': the WAL shipping
@@ -39,7 +39,7 @@
 
 CREATE TABLE IF NOT EXISTS monitor.db_health (
     id                   bigserial    PRIMARY KEY,
-    instance             SMALLINT     NOT NULL,  -- label code (stats.label_dim 'db_instance'): 0 primary | 1 replica
+    instance             SMALLINT     NOT NULL,  -- label code (static.label_dim 'db_instance'): 0 primary | 1 replica
     checked_at           timestamptz  NOT NULL DEFAULT now(),
     healthy              boolean      NOT NULL,  -- reachable AND WAL shipping state = streaming
     connect_ms           integer,                -- connect + vitals query round-trip; NULL when unreachable
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS monitor.db_health (
     db_size_bytes        bigint,                 -- pg_database_size(current_database())
     cache_hit_ratio      numeric(7,6),           -- pg_stat_database blks_hit/(blks_hit+blks_read), cumulative since start
     xact_commit          bigint,                 -- pg_stat_database.xact_commit, cumulative (rate = diff between samples)
-    replication_state    SMALLINT,               -- label code (stats.label_dim 'db_replication_state'), instance-relative
+    replication_state    SMALLINT,               -- label code (static.label_dim 'db_replication_state'), instance-relative
     replay_backlog_bytes bigint,                 -- primary: standby replay backlog (pg_wal_lsn_diff to replay_lsn); replica: pg_last_wal_receive_lsn vs pg_last_wal_replay_lsn gap
     wal_dir_bytes        bigint,                 -- total size of THIS instance's pg_wal directory (pg_ls_waldir sum); NULL when unreachable
     cpu_pct              numeric(6,2),           -- docker stats CPUPerc of the instance's container; NULL when Docker is unavailable
@@ -71,11 +71,11 @@ COMMENT ON TABLE monitor.db_health IS
     'cache hit, xact_commit, WAL shipping state + replay backlog) and '
     'container CPU/memory from docker stats. Unreachable instances are '
     'sampled too (healthy=false + error) so outages leave a trail. '
-    'instance / replication_state are SMALLINT label codes (stats.label_dim '
+    'instance / replication_state are SMALLINT label codes (static.label_dim '
     'domains db_instance / db_replication_state).';
 
 COMMENT ON COLUMN monitor.db_health.instance IS
-    'The sampled instance as its stats.label_dim (''db_instance'' domain) '
+    'The sampled instance as its static.label_dim (''db_instance'' domain) '
     'SMALLINT code: 0 primary (oxpicious-db :9876), 1 replica '
     '(oxpicious-db-replica :9877). Skipped when no replica is configured '
     '(SUPABASE_REPLICA_HOST unset).';
@@ -111,7 +111,7 @@ COMMENT ON COLUMN monitor.db_health.xact_commit IS
 
 COMMENT ON COLUMN monitor.db_health.replication_state IS
     'The WAL shipping state AS SEEN FROM THE SAMPLED INSTANCE, as a '
-    'stats.label_dim (''db_replication_state'' domain) SMALLINT code: on '
+    'static.label_dim (''db_replication_state'' domain) SMALLINT code: on '
     'the primary the standby''s pg_stat_replication.state, on the replica '
     'pg_stat_wal_receiver.status. 99 none = no standby attached (primary) '
     'or no WAL receiver (replica) — both alert-worthy. NULL when '

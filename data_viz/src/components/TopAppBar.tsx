@@ -100,6 +100,7 @@ const APPS: Record<AppKey, AppConfig> = {
       { label: "Service", path: "/config/service" },
       { label: "External Resources", path: "/config/external" },
       { label: "Security Classification", path: "/config/security" },
+      { label: "Orchestration", path: "/config/orchestration" },
     ],
   },
 };

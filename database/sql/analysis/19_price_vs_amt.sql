@@ -57,13 +57,13 @@
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analysis.mov_ave_price_vs_amt (
-    sec_type        SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,  -- the state day
 
-    px_speed        SMALLINT     NOT NULL,  -- label code (stats.label_dim 'px_speed'): 0=sharp_dn 1=slow_dn 2=flat 3=slow_up 4=sharp_up
-    vol_state       SMALLINT     NOT NULL,  -- label code (stats.label_dim 'vol_state'): 0=shrink 1=normal 2=heavy
-    side            SMALLINT     NOT NULL,  -- label code (stats.label_dim 'side'): 0=top (up speeds) | 1=bottom (down speeds) | 2=flat
+    px_speed        SMALLINT     NOT NULL,  -- label code (static.label_dim 'px_speed'): 0=sharp_dn 1=slow_dn 2=flat 3=slow_up 4=sharp_up
+    vol_state       SMALLINT     NOT NULL,  -- label code (static.label_dim 'vol_state'): 0=shrink 1=normal 2=heavy
+    side            SMALLINT     NOT NULL,  -- label code (static.label_dim 'side'): 0=top (up speeds) | 1=bottom (down speeds) | 2=flat
 
     -- Recorded state values (the category's evidence, no look-ahead).
     px_t            DOUBLE PRECISION NOT NULL,  -- ret_1d / px_sigma (σ-standardized price speed)
@@ -93,7 +93,7 @@ SELECT public.create_hash_partitions('analysis', 'mov_ave_price_vs_amt', 16);
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis.mov_ave_price_vs_amt IS 'Per-(code, date) Price × Trading-Amount state registry (mov_ave_spread internal step): every day with valid inputs joins exactly ONE of the 15 px_speed × vol_state categories — σ-standardized 1-day price change (t = ret_1d / rolling-255 σ_ret ddof=1, min 60, shifted 1 row; σ floor 0.005 excludes bond-like codes) × z-scored log trading-amount LEVEL (z vs rolling-255 moments of log(trading_amount), shifted 1 row — a LEVEL statement vs the code''s own trailing-year amount distribution). The px_vol family''s date-level record; the MA-Spread UI shading reads this table. Same price convention as the parent analysis (ETF = COALESCE(adj_close, close)). Populated by python -m analysis.mov_ave_spread (price_vs_amt.py step, wholesale per sec_type).';
-COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.sec_type IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.code IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.date IS 'The state day. States are backward-looking (all rolling stats shifted 1 row), but rows are rebuilt wholesale per sec_type because ETF adj_close back-adjustments rewrite price history.';
 COMMENT ON COLUMN analysis.mov_ave_price_vs_amt.px_speed IS 'Price-speed state: t = ret_1d / σ_ret(code, 255 rows ending t-1, min 60, ddof=1). sharp_up t > 2.0; slow_up 1.26 < t <= 2.0; flat -1.29 <= t <= 1.26; slow_dn -2.0 <= t < -1.29; sharp_dn t < -2.0. Never fires when σ_ret is NaN or below sigma_floor (0.005).';

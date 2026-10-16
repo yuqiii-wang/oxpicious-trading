@@ -122,7 +122,7 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
     # proxy fallback per row): price = 100 / (1 + yield/2)^(2·tenor).
     # Rows with a missing yield or yield <= -100% stay NaN (the former
     # None), as do non-bond rows and unknown product codes.
-    # contract_type rides as its stats.label_dim SMALLINT code
+    # contract_type rides as its static.label_dim SMALLINT code
     # (0 index / 1 bond) — compare codes, never strings.
     bond_mask = df["contract_type"] == CONTRACT_TYPE_CODE["bond"]
     if bool(bond_mask.any()):

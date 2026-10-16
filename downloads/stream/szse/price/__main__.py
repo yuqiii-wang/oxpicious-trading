@@ -33,7 +33,12 @@ Architecture (split across this package):
                              a DIFFERENT host from C).
       proc B (szse)        — SZSE ``/api/market/ssjjhq/getTimeData``.
     A, C, D all pull from the primary queue; B drains the fallback queue first
-    then the primary. Whoever finishes a group first takes the next group
+    then the primary. The fallback queue is SEEDED with the highest-ranked
+    B_PRIORITY_TOP_N unfinished stocks (list head; hourly mode = top-traded
+    rank) so the official SZSE source — the shortest cadence of the four —
+    fetches them with priority and A/C/D never see them; circuit-breaker
+    remainders handed back later queue behind that slice (FIFO). Whoever
+    finishes a group first takes the next group
     (dynamic dispatch). Each worker applies its own anti-bot cooldown between
     fetches; the four hit different hosts (Sina, push2his.eastmoney.com,
     push2.eastmoney.com, szse.cn) so they don't contend on rate limits.
@@ -76,6 +81,7 @@ Usage:
   python -m downloads.stream.szse.price --once       # one round then exit
   python -m downloads.stream.szse.price --groups 5   # 5 groups (sequential, dev)
   python -m downloads.stream.szse.price --interval 1 # 1s cooldown between fetches (dev)
+  python -m downloads.stream.szse.price --b-top-n 0  # disable the B rank-priority slice
 """
 from __future__ import annotations
 
@@ -91,6 +97,7 @@ from downloads._common import setup_logger
 from _common.service_heartbeat import register_service
 
 from ._constants import (
+    B_PRIORITY_TOP_N,
     COOLDOWN_A_SEC,
     COOLDOWN_C_SEC,
     COOLDOWN_D_SEC,
@@ -138,11 +145,15 @@ def main() -> None:
                          f"(default: external_request_config JSON for {SERVICE}).")
     ap.add_argument("--groups", type=int, default=DEFAULT_GROUPS,
                     help=f"Number of groups to split stocks into (default {DEFAULT_GROUPS}).")
+    ap.add_argument("--b-top-n", type=int, default=None, dest="b_top_n",
+                    help="Number of highest-ranked stocks (list head; hourly mode = "
+                         "top-traded rank) assigned to worker B (szse) with priority; "
+                         f"0 disables the priority split (default {B_PRIORITY_TOP_N}).")
     ap.add_argument("--once", action="store_true",
                     help="Run one round then exit (dev/test).")
     args = ap.parse_args()
-    logger.info("[startup] args parsed (interval=%.1f groups=%d once=%s) in %.2fs; calling asyncio.run(stream)...",
-                args.interval, args.groups, args.once, _time.time() - t_main)
+    logger.info("[startup] args parsed (interval=%.1f groups=%d once=%s b_top_n=%s) in %.2fs; calling asyncio.run(stream)...",
+                args.interval, args.groups, args.once, args.b_top_n, _time.time() - t_main)
     # Liveness heartbeat for database/stream_watchdog.py — long-running
     # mode only; --once exits before a beat would matter.
     if not args.once:
@@ -152,6 +163,7 @@ def main() -> None:
             poll_interval=args.interval,
             n_groups=max(1, args.groups),
             once=args.once,
+            b_top_n=args.b_top_n,
         ))
     except KeyboardInterrupt:
         pass

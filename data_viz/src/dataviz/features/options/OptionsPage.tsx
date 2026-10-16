@@ -15,7 +15,8 @@
  *   • VolSmilePanel — IV smile snapshot for the selected date
  *   • SpotSkewTrendPanel — smile chronology: spot vs ATM IV level vs
  *     25Δ/10Δ risk-reversal skew over time (see docs/options_vol_smile_study.md)
- *   • VolIndexPanel — 30d model-free vol index for the selected underlying (VIX-style)
+ *   • VolIndexPanel — 30d model-free vol index for the selected underlying
+ *     (VIX-style) + the underlying spot close on a right-hand axis
  *   • SharedSkewPanel (oi_moneyness) — OI-wtd moneyness skew over time
  *   • MarketInterestWallPanel — OI wall by expiry for the selected snapshot date
  *   • OptionsTrendPanel — OI bands + P/C Ratio + Total OI (merged card)

@@ -21,12 +21,18 @@ def filter_missing_rows(
     in_range: np.ndarray,
     pe_null_hit: np.ndarray,
     forced_mask: np.ndarray | None = None,
+    margin_stale_mask: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, int]:
-    """Keep = missing ∪ corp-resync ∪ PE-backfill rows (∩ date range).
+    """Keep = missing ∪ corp-resync ∪ PE-backfill ∪ margin-stale rows (∩ date range).
 
     With ``forced_mask`` (--date mode) every masked row is kept as well —
-    existing rows for the forced date are refreshed through the upsert
-    write path (no deletes, no truncation).
+    existing rows for the forced date are refreshed through the upsert write
+    path (no deletes, no truncation).
+
+    ``margin_stale_mask`` marks dates whose stored margin is all-NULL/zero
+    while the day's margin CSV carries data — those rows are re-upserted so
+    late-arriving margin files repair the stored values (they used to stay
+    baked as zeros forever because OHLCV-existence gated the write).
 
     PE-null rows are kept only when the incremental PE computation actually
     produced a value.  Dates stay datetime64 here — Python dates are
@@ -48,12 +54,19 @@ def filter_missing_rows(
     if pe_null_hit.any():
         logger.info(f"    [PE-BACKFILL] {int(pe_null_hit.sum()):,} existing rows with NULL PE "
               f"— re-upserting those that got a value")
+    n_margin_stale = int(margin_stale_mask.sum()) \
+        if margin_stale_mask is not None else 0
+    if n_margin_stale:
+        logger.info(f"    [MARGIN-STALE] {n_margin_stale:,} rows on dates with "
+              f"all-NULL/zero stored margin but data in the CSV — re-upserting")
 
     keep = (~exists | split_mask) & in_range
     if forced_mask is not None:
         # --date mode: forced-date rows are always write candidates —
         # existing rows are refreshed via the upsert write path.
         keep |= forced_mask & in_range
+    if margin_stale_mask is not None:
+        keep |= margin_stale_mask & in_range
     # host unwrap once (proxy-subclass .to_numpy() dispatches every numpy op)
     keep |= pe_null_hit & host_array(merged["pe"].notna()) & in_range
 
@@ -124,9 +137,13 @@ async def write_split_tables(conn, merged_missing: pd.DataFrame, force: bool) ->
 
     liq_cols = ["trading_shares", "trading_amount", "rz_buy", "rz_balance",
                 "rq_sell_qty", "rq_balance_qty", "rq_balance_amt", "total_balance"]
-    for c in liq_cols:
+    for c in ("trading_shares", "trading_amount"):
         if c in cols:
-            src[c] = src[c].fillna(0.0)  # semantic: missing margin = 0
+            src[c] = src[c].fillna(0.0)  # OHLCV volume cols are NOT NULL
+    # margin cols ride as NaN → NULL at emission (records_from_frame):
+    # NULL = no margin data for this (date, code); 0 is a real exchange
+    # zero. Never bake missing margin as 0 — the margin analysis filters
+    # on rz_* > 0 and a baked 0 poisoned it (2026-09/10 margin gap).
     liq_rows = _emit_rows(
         ["date", "code"] + [c for c in liq_cols if c in cols])
 

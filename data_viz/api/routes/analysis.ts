@@ -235,12 +235,13 @@ router.get("/mov-ave-spread/chart/shared", async (req: Request, res: Response) =
 
 // ---- MA-Spread on-demand metric groups ----
 // GET /api/analysis/mov-ave-spread/extras?sec_type=etf&code=510050&metrics=amt,ohlc
-//   metrics = comma-separated subset of amt | ohlc | bands | streaks | pxvol |
-//   gaps | rsiranks. Only the requested groups are queried and present in the
-//   response. The panel fetches a group the first time one of its control
-//   buttons is picked (Amt/MA chips, Roof/Floor Trendlines, High/Low Streaks,
-//   Px-Vol States, Top-10% OHLC Days, the RSI Trends Top-% select) so the
-//   default page load carries just the pair series.
+//   metrics = comma-separated subset of amt | ohlc | rfest | rfaudit |
+//   streaks | pxvol | gaps | rsiranks. Only the requested groups are queried
+//   and present in the response. The panel fetches a group the first time one
+//   of its control buttons is picked (Amt/MA chips, Roof/Floor Trendlines +
+//   Est levels + the rebound audit, High/Low Streaks, Px-Vol States, Top-10%
+//   OHLC Days, the RSI Trends Top-% select) so the default page load carries
+//   just the pair series.
 router.get("/mov-ave-spread/extras", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);

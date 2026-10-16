@@ -162,7 +162,7 @@ class DataAnalysis(DataPipeline):
             status = await self.conn.execute(
                 # No explicit cast: asyncpg infers the array type from the
                 # values, so label-string lists (TEXT sec_type columns) and
-                # stats.label_dim code lists (SMALLINT columns) both bind.
+                # static.label_dim code lists (SMALLINT columns) both bind.
                 f"DELETE FROM {table} WHERE sec_type = ANY($1)",
                 list(sec_types),
             )

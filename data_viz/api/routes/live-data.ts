@@ -35,9 +35,8 @@ import {
 import { runPythonModule, getPythonProcessStatus, isPythonProcessRunning } from "../services/py-runner.service.js";
 import { getSecAllocLiveAttribution } from "../services/sec-alloc-live-attribution.service.js";
 import {
-  fetchSignalCurves,
-  fetchSignalRsiSeries,
-  fetchSignalThresholds,
+  fetchSignalRules,
+  fetchTrendSpans,
   fetchTradingSignalConfigs,
   fetchTriggeredSignals,
   fetchTradingSignalDates,
@@ -409,8 +408,8 @@ router.get("/sec-alloc-live/run/status", async (req: Request, res: Response) => 
 });
 
 // ---------------------------------------------------------------------------
-//  Trading Signals (analysis scheme) — live breach records for the
-//  analysis_signals.signal_thresholds threshold set.
+//  Trading Signals (analysis scheme) — the signals tier: signal_rules
+//  (the rule cells) + the history/live breach records they replay into.
 // ---------------------------------------------------------------------------
 
 /** Asia/Shanghai "biz today" (YYYY-MM-DD) — UTC+8 year-round, so the
@@ -429,7 +428,7 @@ const TRADING_SIGNALS_RUN_ANALYSIS_TAG = "trading-signals:run-analysis";
 /** POST /api/live-data/trading-signals/run
  *  body: { sec_types?: string[] } — spawns
  *  `python -m live.live_signals --sec-type <csv>` (batch mode: every code
- *  with ACTIVE analysis_signals.signal_thresholds configs of the given
+ *  with ACTIVE analysis_signals.signal_rules rule cells of the given
  *  sec_types; codes
  *  without intraday price are skipped server-side). Fired by the page's
  *  Refresh button and the once-per-biz-day 13:30 scheduler. Deduped by
@@ -466,9 +465,8 @@ router.post("/trading-signals/run", async (req: Request, res: Response) => {
 /** POST /api/live-data/trading-signals/run-analysis
  *  body: { sec_types?: string[] } — spawns
  *  `python -m analysis.analysis_signals --sec-type <csv>`: the signals
- *  pipeline (re-emits analysis_signals.signal_thresholds +
- *  analysis_signals.history_signals for the missing months plus the
- *  newest refresh months, from the analysis_forecasts buckets).
+ *  pipeline (re-measures the sec_type's signal_rules cells on each
+ *  code's own history and replays them into history_signals).
  *  Fired by the page's old-date refresh when no intraday data exists
  *  for that date. Deduped by process-id-tag. */
 router.post("/trading-signals/run-analysis", async (req: Request, res: Response) => {
@@ -518,7 +516,7 @@ router.get("/trading-signals/run/status", async (_req: Request, res: Response) =
 
 /** GET /api/live-data/trading-signals/configs?sec_type=index
  *  → { sec_type, configs: [{signal_type, signal_sub_type, n_configs}] } —
- *  the ACTIVE analysis_signals.signal_thresholds configs (signal menu;
+ *  the ACTIVE analysis_signals.signal_rules rule cells (signal menu;
  *  default = all). */
 router.get("/trading-signals/configs", async (req: Request, res: Response) => {
   try {
@@ -584,13 +582,17 @@ router.get("/trading-signals/history", async (req: Request, res: Response) => {
   }
 });
 
-/** GET /api/live-data/trading-signals/curves?sec_type=index&code=000001
- *  → { sec_type, code, end_date, curves: [...] } — the code's LATEST
- *  depth-response curves (one row per rsi_window x side x regime at
- *  the newest snapshot): mu(s) = mu_center + slope * (s - s_center)
- *  over the Gaussian depth score, plus the tail_bars s -> RSI-value
- *  mapping. The Recent Movements code-trend's CURVE overlay. */
-router.get("/trading-signals/curves", async (req: Request, res: Response) => {
+/** GET /api/live-data/trading-signals/rules?sec_type=index&code=000001
+ *  → { sec_type, code, rules: [...] } — the code's RULE CELLS
+ *  (analysis_signals.signal_rules, the 2026-10-15 rules tier): one row
+ *  per (sub signal, trend, regime, action) with the engine entry, the
+ *  SELF-ADAPTIVE prepared params (bar def, gate, measured evidence)
+ *  and the family knowledge document (static.analysis_signal_docs,
+ *  joined per family). The Recent Movements
+ *  code-trend's
+ *  RULES panel; the history events below are populated by REPLAYING
+ *  these cells. (Replaces the retired /curves + /thresholds overlays.) */
+router.get("/trading-signals/rules", async (req: Request, res: Response) => {
   try {
     const secType = typeof req.query.sec_type === "string"
       ? req.query.sec_type : "index";
@@ -600,26 +602,28 @@ router.get("/trading-signals/curves", async (req: Request, res: Response) => {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    const curves = await fetchSignalCurves(secType, code);
+    const rules = await fetchSignalRules(secType, code);
     res.json({
       sec_type: sec_type_valid(secType),
       code,
-      end_date: curves[0]?.end_date ?? null,
-      curves,
+      rules,
     });
   } catch (err) {
     const status = (err as { status?: number })?.status ?? 500;
-    console.error("[live-data/trading-signals/curves] error:", err);
+    console.error("[live-data/trading-signals/rules] error:", err);
     res.status(status).json({ error: String(err) });
   }
 });
 
-/** GET /api/live-data/trading-signals/thresholds?sec_type=index&code=000001
- *  → { sec_type, code, thresholds: [...] } — the code's ACTIVE signal
- *  thresholds (each config's latest end_date row; the bars in the
- *  RSI's own space). The Recent Movements code-trend's THRESHOLD
- *  overlay. */
-router.get("/trading-signals/thresholds", async (req: Request, res: Response) => {
+/** GET /api/live-data/trading-signals/trend-spans?sec_type=index&code=000001
+ *  [&window_days=1095]
+ *  → { sec_type, code, window_days, spans: { top|bottom|rise|fall|unknown:
+ *  [{start_date, end_date, span_days}] } } — the code's CONTIGUOUS
+ *  same-TREND runs (gaps-and-islands over analysis.trend_days, the
+ *  rule tier's per-(code, date) classification; default window the
+ *  last 3y). The shared CodeTrendChart's Trend toggle shades these
+ *  spans per trend — the regime-bands precedent. */
+router.get("/trading-signals/trend-spans", async (req: Request, res: Response) => {
   try {
     const secType = typeof req.query.sec_type === "string"
       ? req.query.sec_type : "index";
@@ -629,38 +633,13 @@ router.get("/trading-signals/thresholds", async (req: Request, res: Response) =>
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    const thresholds = await fetchSignalThresholds(secType, code);
-    res.json({
-      sec_type: sec_type_valid(secType),
-      code,
-      thresholds,
-    });
+    const windowDays = typeof req.query.window_days === "string"
+      && /^\d+$/.test(req.query.window_days)
+      ? Number(req.query.window_days) : null;
+    res.json(await fetchTrendSpans(secType, code, windowDays));
   } catch (err) {
     const status = (err as { status?: number })?.status ?? 500;
-    console.error("[live-data/trading-signals/thresholds] error:", err);
-    res.status(status).json({ error: String(err) });
-  }
-});
-
-/** GET /api/live-data/trading-signals/rsi?sec_type=index&code=000001
- *  → { sec_type, code, rows: [{date, rsi_3, .., rsi_60}] } — the
- *  code's FULL daily RSI series (every mov_ave_rsi window column,
- *  ascending). The threshold overlay's lines. */
-router.get("/trading-signals/rsi", async (req: Request, res: Response) => {
-  try {
-    const secType = typeof req.query.sec_type === "string"
-      ? req.query.sec_type : "index";
-    const code = typeof req.query.code === "string"
-      ? req.query.code.trim() : "";
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    const rows = await fetchSignalRsiSeries(secType, code);
-    res.json({ sec_type: sec_type_valid(secType), code, rows });
-  } catch (err) {
-    const status = (err as { status?: number })?.status ?? 500;
-    console.error("[live-data/trading-signals/rsi] error:", err);
+    console.error("[live-data/trading-signals/trend-spans] error:", err);
     res.status(status).json({ error: String(err) });
   }
 });
@@ -698,10 +677,11 @@ router.get("/trading-signals", async (req: Request, res: Response) => {
       && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
       ? req.query.date
       : shanghaiToday();
-    let [signals, availableDates] = await Promise.all([
+    const [fetchedSignals, availableDates] = await Promise.all([
       fetchTriggeredSignals(secType, dateParam),
       fetchTradingSignalDates(secType),
     ]);
+    let signals = fetchedSignals;
     if (
       signals.length === 0
       && dateParam <= shanghaiToday()

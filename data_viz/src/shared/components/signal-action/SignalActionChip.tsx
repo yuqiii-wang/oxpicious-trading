@@ -16,24 +16,39 @@ export interface SignalActionChipProps {
   /** Override the success/error hue (e.g. the Singleton last-day-sell
    *  purple) while keeping the confidence treatment. */
   color?: string;
+  /** TRUE = the WAIT record (is_rejection — the owning strategy's gate
+   *  declined or the cell is not trading yet): the chip goes NEUTRAL
+   *  GREY and the label says WAIT instead of BUY/SELL — a not-yet
+   *  condition is documentation, never a call. */
+  rejected?: boolean;
   size?: "small" | "medium";
 }
 
 /** The shared outlined buy/sell chip. Label = uppercased action
- *  ("BUY"/"SELL") so every consumer reads identically. */
+ *  ("BUY"/"SELL") so every consumer reads identically; a wait record
+ *  reads "WAIT" in the neutral grey. */
 export default function SignalActionChip({
   action,
   confidence = null,
   color,
+  rejected = false,
   size = "small",
 }: SignalActionChipProps) {
   const theme = useTheme();
+  const main = rejected
+    ? theme.palette.text.secondary
+    : (color ?? undefined);
   return (
     <Chip
       size={size}
-      label={action.toUpperCase()}
+      label={rejected ? "WAIT" : action.toUpperCase()}
       variant="outlined"
-      sx={actionChipSx(action, confidence ?? 100, theme, color)}
+      sx={actionChipSx(
+        rejected ? "neutral" : action,
+        rejected ? 100 : (confidence ?? 100),
+        theme,
+        main,
+      )}
     />
   );
 }

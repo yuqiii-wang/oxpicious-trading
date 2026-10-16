@@ -1,6 +1,6 @@
 ---
 name: db-smallint-type-codes
-description: Closed-vocabulary TYPE columns in this repo's PostgreSQL DB are SMALLINT label codes (the stats.label_dim contract) — never TEXT or PG enums. Use whenever creating or altering ANY table that has a type / kind / state / side / family / sub_type / resource_type style column (analysis, stats, monitor, live, strategy schemas alike), when adding or changing a label vocabulary domain, or when writing Python/TypeScript that reads or writes such a column.
+description: Closed-vocabulary TYPE columns in this repo's PostgreSQL DB are SMALLINT label codes (the static.label_dim contract) — never TEXT or PG enums. Use whenever creating or altering ANY table that has a type / kind / state / side / family / sub_type / resource_type style column (analysis, stats, monitor, live, strategy schemas alike), when adding or changing a label vocabulary domain, or when writing Python/TypeScript that reads or writes such a column.
 ---
 
 # db-smallint-type-codes — type columns are SMALLINT label codes
@@ -12,7 +12,7 @@ mapping lives in ONE place with three identical mirrors:
 
 | Mirror | File | Who reads it |
 | --- | --- | --- |
-| DB source of truth | `database/sql/stats/21_label_dim.sql` (`stats.label_dim`) | SQL decode joins |
+| DB source of truth | `database/sql/static/label_dim/01_label_dim.sql` (`static.label_dim`) | SQL decode joins |
 | Python | `_common/labels.py` (`LABEL_MAPS` / `XXX_CODE` dicts) | pipelines, writers |
 | TypeScript | `data_viz/api/services/label-codes.ts` (`LABEL_CODE`) | API decode/params |
 
@@ -53,16 +53,20 @@ will fail that check.
 
 ## Adding a domain (the 4 steps)
 
-1. `database/sql/stats/21_label_dim.sql`: add the rows to the INSERT
-   block (and the domain to the header's converted list). This file is
-   the fresh-install source of truth.
+1. `database/sql/static/`: add the rows to the domain's purpose-scoped
+   INSERT file (10_market_state / 20_signal_detection /
+   30_industry_aggregation / 40_security_identity / 50_trading /
+   60_monitoring_infra — `01_label_dim.sql`'s header lists which
+   domains live where; add new domains there too). These files are the
+   fresh-install source of truth.
 2. `_common/labels.py`: add `XXX_CODE`, register it in `LABEL_MAPS` and
    `LABEL_ORDER` (the `*_LABEL` exports derive automatically).
 3. `data_viz/api/services/label-codes.ts`: extend the `LabelDomain` union
    and `LABEL_CODE`.
 4. Apply to the live DB from a `temp_scripts/` script with
-   `INSERT ... ON CONFLICT (domain, code) DO NOTHING` (do NOT re-run the
-   whole 21_label_dim.sql on live — it DROPs the table), then run
+   `INSERT ... ON CONFLICT (domain, code) DO NOTHING` (do NOT re-run
+   static/00_init.sql on live — 01_label_dim.sql DROPs the table), then
+   run
    `temp_scripts/check_label_dim.py` through WSL and see `OK`.
 
 ## Do NOT convert (keep TEXT — deliberate exceptions)
@@ -71,6 +75,6 @@ API-facing identity and filter columns (`sec_type` outside the analysis
 schema's converted tables, `industry_id`, `sector_id`, `exchange`,
 `signal_type` / `signal_sub_type`), open-ended vocabularies (a value set
 that grows without a code change — URLs, reasons, free-form tags), and
-the `text.*` LLM-layer enums. These are listed in 21_label_dim.sql's
+the `text.*` LLM-layer enums. These are listed in 01_label_dim.sql's
 "NOT converted" header; when unsure, keep TEXT and add the domain as
 PENDING vocabulary instead of half-converting a column.

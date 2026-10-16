@@ -15,10 +15,11 @@ HOW a config's value / bar resolve in that space:
                        rsi{W}_{pct}pct).
   resolve_value      — one config's current value in its threshold's
                        space.
-  resolve_threshold  — one config's bar for THIS check: the static
-                       bar families compare against the stored
-                       threshold (mov_rsi's RSI percentile bar is
-                       constant per bucket). None when not derivable
+  resolve_threshold  — one rule cell's bar for THIS check, from its
+                       OWN bar_def (rule_params.bar_def): bollinger's
+                       FIXED ±kσ constant; mov_rsi's per-code ADAPTIVE
+                       percentile tail (the trailing-2550d quantile the
+                       fetch layer computes). None when not derivable
                        (never invented).
 
 mov_rsi (rsi{W}_{pct}pct) and bollinger (boll{W}_{k}std — the FIXED ±kσ
@@ -34,6 +35,8 @@ No numpy, no pandas — plain Python over asyncpg rows.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from _common.labels import ACTION_CODE
 
 
 # ---- THE value-source map (the live tier's only family knowledge) --------
@@ -57,11 +60,17 @@ _BOLL_ROW_KINDS = {"boll"}
 @dataclass
 class LiveValues:
     """The code's CURRENT values, one source kind each (fetched once
-    per code and shared by every active config)."""
+    per code and shared by every active config), plus the mov_rsi
+    ADAPTIVE bars (the trailing-2550d percentile tails keyed
+    (window, tail_pct, side) — fetched once per code, shared by every
+    rsi cell)."""
 
     close: float | None = None             # latest intraday bar close
     rsi: dict[int, float] = field(default_factory=dict)
     boll: dict[int, float] = field(default_factory=dict)
+    rsi_bars: dict[tuple[int, int, str], float] = field(
+        default_factory=dict,
+    )
 
 
 def sub_type_window(sub_type: str) -> int | None:
@@ -78,10 +87,38 @@ def sub_type_window(sub_type: str) -> int | None:
 
 
 def resolve_threshold(sig: dict, values: LiveValues) -> float | None:
-    """One active config's THRESHOLD for this check. Both families'
-    bars are static in their own spaces (mov_rsi's percentile bar /
-    bollinger's FIXED ±kσ band constant): the stored threshold."""
-    return sig["signal_threshold"]
+    """One active RULE CELL's bar for this check, resolved from its OWN
+    bar_def (rule_params.bar_def — the self-adaptive prepared bar the
+    engine measured on the code's history):
+
+      fixed_sigma      bollinger's FIXED ±kσ constant (buy breaches
+                       below −k, sell above +k)
+      rolling_quantile mov_rsi's per-code ADAPTIVE percentile tail —
+                       the trailing-2550d quantile computed at fetch
+                       time (values.rsi_bars, keyed (window, tail_pct,
+                       side))
+
+    None when the def kind is unknown or its bar is not derivable —
+    never invented."""
+    bar_def = sig.get("bar_def") or {}
+    kind = bar_def.get("kind")
+    # the cell's action rides as its static.label_dim SMALLINT code
+    # (0 buy / 1 sell) — the same convention the evaluator compares by
+    sell = sig.get("action") == ACTION_CODE["sell"]
+    if kind == "fixed_sigma":
+        k = float(bar_def["k"])
+        return k if sell else -k
+    if kind == "rolling_quantile":
+        pct = int(bar_def["tail_pct"])
+        w = sig.get("window")
+        if w is None:
+            w = sub_type_window(sig["signal_sub_type"])
+        if w is None:
+            return None
+        return values.rsi_bars.get(
+            (int(w), pct, "sell" if sell else "buy"),
+        )
+    return None
 
 
 def resolve_value(sig: dict, values: LiveValues) -> float | None:

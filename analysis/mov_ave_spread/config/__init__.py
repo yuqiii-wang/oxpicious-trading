@@ -5,7 +5,6 @@ One file per table family:
   pipeline            — core detail-table + sec-type + numeric bounds
   ema                 — EMA detail table
   ohlc                — roof/floor LINES table (anchor windows + schema)
-  bands               — roof/floor SHADE BANDS table
   ohlc_gaps           — intraday OHLC gap table
   trading_amt         — trading-amount metric table + column names
   trading_amt_ratios  — liquidity-impact ratio table
@@ -63,18 +62,38 @@ from analysis.mov_ave_spread.config.ohlc import (
     ohlc_second_gap_td,
     ohlc_wide_columns,
 )
-from analysis.mov_ave_spread.config.bands import (
-    BANDS_ANALYSIS_NAME,
-    BANDS_BOUNCE_MIN_SEPARATION_SIGMA,
-    BANDS_COLUMNS,
-    BANDS_CUT_WINDOW,
-    BANDS_DESCRIPTION,
-    BANDS_EDGE_COLUMNS,
-    BANDS_EVENT_SIGMA_WINDOW,
-    BANDS_MIN_HEIGHT_FACTOR,
-    BANDS_TABLE,
-    BANDS_WIDE_COLUMNS,
-    bands_wide_columns,
+from analysis.mov_ave_spread.config.roof_floor_estimate import (
+    ESTIMATE_ANALYSIS_NAME,
+    ESTIMATE_BOLL_K,
+    ESTIMATE_CHANNEL_K,
+    ESTIMATE_CHANNEL_MIN_OBS,
+    ESTIMATE_COLUMNS,
+    ESTIMATE_DESCRIPTION,
+    ESTIMATE_METHOD_ORDER,
+    ESTIMATE_QUANTILE_HI,
+    ESTIMATE_QUANTILE_LO,
+    ESTIMATE_TABLE,
+    ESTIMATE_WIDE_COLUMNS,
+    ESTIMATE_WINDOWS,
+    estimate_wide_columns,
+)
+from analysis.mov_ave_spread.config.roof_floor_rebound import (
+    REBOUND_ANALYSIS_NAME,
+    REBOUND_BREAK_TAU,
+    REBOUND_CLEAN_BREAK_DAYS,
+    REBOUND_COLUMNS,
+    REBOUND_CONFIRM_K,
+    REBOUND_DESCRIPTION,
+    REBOUND_EPISODE_GAP,
+    REBOUND_PCT,
+    REBOUND_RESOLVE_PCT,
+    REBOUND_RETEST_GAP_DAYS,
+    REBOUND_SIDE_BOTTOM,
+    REBOUND_SIDE_TOP,
+    REBOUND_TABLE,
+    REBOUND_WINDOWS,
+    REBOUND_WITHIN,
+    REBOUND_ZONE_TAU,
 )
 from analysis.mov_ave_spread.config.ohlc_gaps import (
     OHLC_GAPS_ANALYSIS_NAME,
@@ -165,12 +184,18 @@ __all__ = [
     "OHLC_NUMERIC_COLUMNS", "OHLC_TABLE", "OHLC_WINDOWS",
     "OHLC_WIDE_COLUMNS", "OHLC_WIDE_DATE_COLUMNS",
     "OHLC_WIDE_NUMERIC_COLUMNS", "ohlc_second_gap_td", "ohlc_wide_columns",
-    # bands
-    "BANDS_ANALYSIS_NAME", "BANDS_BOUNCE_MIN_SEPARATION_SIGMA",
-    "BANDS_COLUMNS", "BANDS_CUT_WINDOW",
-    "BANDS_DESCRIPTION", "BANDS_EDGE_COLUMNS", "BANDS_EVENT_SIGMA_WINDOW",
-    "BANDS_MIN_HEIGHT_FACTOR", "BANDS_TABLE", "BANDS_WIDE_COLUMNS",
-    "bands_wide_columns",
+    # roof/floor level estimates
+    "ESTIMATE_ANALYSIS_NAME", "ESTIMATE_BOLL_K", "ESTIMATE_CHANNEL_K",
+    "ESTIMATE_CHANNEL_MIN_OBS", "ESTIMATE_COLUMNS", "ESTIMATE_DESCRIPTION",
+    "ESTIMATE_METHOD_ORDER", "ESTIMATE_QUANTILE_HI", "ESTIMATE_QUANTILE_LO",
+    "ESTIMATE_TABLE", "ESTIMATE_WIDE_COLUMNS", "ESTIMATE_WINDOWS",
+    "estimate_wide_columns",
+    # roof/floor rebound audit
+    "REBOUND_ANALYSIS_NAME", "REBOUND_BREAK_TAU", "REBOUND_CLEAN_BREAK_DAYS",
+    "REBOUND_COLUMNS", "REBOUND_CONFIRM_K", "REBOUND_DESCRIPTION",
+    "REBOUND_EPISODE_GAP", "REBOUND_PCT", "REBOUND_RESOLVE_PCT",
+    "REBOUND_RETEST_GAP_DAYS", "REBOUND_SIDE_BOTTOM", "REBOUND_SIDE_TOP",
+    "REBOUND_TABLE", "REBOUND_WINDOWS", "REBOUND_WITHIN", "REBOUND_ZONE_TAU",
     # ohlc gaps
     "OHLC_GAPS_ANALYSIS_NAME", "OHLC_GAPS_COLUMNS",
     "OHLC_GAPS_EXCLUDE_FLAG_COLUMNS", "OHLC_GAPS_TABLE",

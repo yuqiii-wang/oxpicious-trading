@@ -17,6 +17,7 @@ import type {
   SkewnessSeriesResponse,
   IvSkewResponse,
   VolIndexResponse,
+  VolIndexCorrResponse,
   SkewType,
 } from "@shared/types";
 
@@ -316,5 +317,22 @@ export function fetchOptionsVolIndex(
   const qs = params.toString();
   return fetchJson<VolIndexResponse>(
     `/api/szse-options/vol-index${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Rolling corr of the vol index vs spot log-changes (20/60/255d windows,
+ *  stride-sampled every 20th session) — omit `underlying` for all. */
+export function fetchOptionsVolIndexCorr(
+  underlying?: string | null,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<VolIndexCorrResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<VolIndexCorrResponse>(
+    `/api/szse-options/vol-index-corr${qs ? `?${qs}` : ""}`,
   );
 }

@@ -26,7 +26,7 @@
 --    name — latest identity name (from stats.{etf,index,stock}_identity)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS analysis.mov_ave_spreads_codes (
-    sec_type        SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,  -- matches detail.code (ETF bare; stock suffixed)
     name            TEXT         NOT NULL DEFAULT '',
     first_date      DATE         NOT NULL,

@@ -85,6 +85,7 @@ import pandas as pd
 from analysis._common.sanitize import sanitize_for_db_insert
 from _common.df_utils import to_dt64
 from _common.df_utils.sanitize import host_unique, safe_columns
+from _common.importance import order_codes_or_sorted_async
 from analysis.pe_and_dividends._common import build_detail_rows
 from analysis.pe_and_dividends._common.codes_summary import (
     refresh_pe_codes_summary,
@@ -179,7 +180,7 @@ async def _process_index(
     else:
         logger.info(f"\n  [{st}] Fetching active codes...")
         codes = await fetch_active_codes(conn, st)
-        code_list = sorted(codes)
+        code_list = await order_codes_or_sorted_async(conn, codes)
         logger.info(f"  [{st}]   {len(code_list):,} active codes")
         if not code_list:
             logger.info(f"  [{st}]   no active codes; skipping.")
@@ -297,7 +298,7 @@ async def _process_etf(
     else:
         logger.info(f"\n  [{st}] Fetching active codes...")
         codes = await fetch_active_codes(conn, st)
-        code_list = sorted(codes)
+        code_list = await order_codes_or_sorted_async(conn, codes)
         logger.info(f"  [{st}]   {len(code_list):,} active codes")
         if not code_list:
             logger.info(f"  [{st}]   no active codes; skipping.")
@@ -423,7 +424,7 @@ async def _process_stock(
     else:
         logger.info(f"\n  [{st}] Fetching active codes...")
         codes = await fetch_active_codes(conn, st)
-        code_list = sorted(codes)
+        code_list = await order_codes_or_sorted_async(conn, codes)
         logger.info(f"  [{st}]   {len(code_list):,} active codes")
         if not code_list:
             logger.info(f"  [{st}]   no active codes; skipping.")

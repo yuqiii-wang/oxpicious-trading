@@ -37,6 +37,8 @@ INSERT_COLUMNS = [
 ]
 
 # Numeric columns that need rounding / NaN→NULL sanitization before INSERT.
+# Rounding is to 8dp: the ratio column is NUMERIC(12,10) and index
+# attribution shares are sub-1‱ (1e-4) — 4dp would quantize them away.
 NUMERIC_COLS = [
     "new_buy", "rz_buy_vs_trading_amt_ratio",
 ]

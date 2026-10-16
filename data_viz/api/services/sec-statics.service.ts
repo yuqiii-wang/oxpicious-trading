@@ -6,6 +6,11 @@
  *   classification_rules/    hand-edited rule configs (config.json,
  *                            industry.json, strategy.json) consumed by
  *                            builds.classification's rule matcher.
+ *   importance_rules/        hand-edited curated top-rank code lists
+ *                            (<sec_type>_<rank>_rank.json) — ranks 0-1 of
+ *                            every sec_type for builds.classification.
+ *                            importance (read via
+ *                            database/sec_statics/importance_rules_store).
  *   sec_owners.json          hand-edited curated owner registry
  *                            ("Hand-editable cache loaded by
  *                            build_classification.py").
@@ -43,7 +48,13 @@ const SEC_STATICS_DIR = path.resolve(
 /** Which slice of the sec_statics tree a file belongs to — the UI's
  *  left-panel grouping. `generated` marks files wholesale-rewritten by
  *  builds.classification on every run. */
-export type SecStaticsArea = "rules" | "owners" | "catalog" | "indices" | "meta";
+export type SecStaticsArea =
+  | "rules"
+  | "importance"
+  | "owners"
+  | "catalog"
+  | "indices"
+  | "meta";
 
 export interface SecStaticsFile {
   /** Tree-relative POSIX path ("classification_rules/config.json") — the
@@ -54,14 +65,42 @@ export interface SecStaticsFile {
   generated: boolean;
   sizeBytes: number;
   updatedAt: string;
+  /** importance_rules rank files only — curated code-list summary parsed
+   *  from the file itself (never the DB): the path table shows these
+   *  inline so ranks 0-1 are visible without opening the file. */
+  codesCount?: number;
+  sampleCodes?: string[];
 }
 
 function areaFor(relPath: string): SecStaticsArea {
   if (relPath === "sec_owners.json") return "owners";
   if (relPath.startsWith("classification_rules/")) return "rules";
+  if (relPath.startsWith("importance_rules/")) return "importance";
   if (relPath === "sec_classification/meta.json") return "meta";
   if (relPath.startsWith("sec_classification/catalog/")) return "catalog";
   return "indices";
+}
+
+/** Curated code-list summary parsed from an importance_rules JSON —
+ *  {codes:[…]} shape per importance_rules_store; null when the file is
+ *  unreadable, malformed, or carries no codes. */
+function importanceCodesInfo(abs: string): {
+  codesCount: number;
+  sampleCodes: string[];
+} | null {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(abs, "utf-8"));
+    const raw = Array.isArray((parsed as { codes?: unknown[] }).codes)
+      ? ((parsed as { codes: unknown[] }).codes as unknown[])
+      : [];
+    const codes = raw.filter(
+      (c): c is string => typeof c === "string" && c.trim() !== "",
+    ).map((c) => c.trim());
+    if (codes.length === 0) return null;
+    return { codesCount: codes.length, sampleCodes: codes.slice(0, 5) };
+  } catch {
+    return null;
+  }
 }
 
 function walkJsonFiles(dir: string, out: string[]): void {
@@ -99,29 +138,33 @@ function resolveTreePath(relPath: string): string {
 
 /** Every *.json file under database/sec_statics/ (the whole tree IS the
  *  editable surface — __pycache__ and the .py modules are filtered by
- *  extension), tree-relative paths sorted rules → owners → the generated
- *  sec_classification shards. */
+ *  extension), tree-relative paths sorted rules → importance → owners →
+ *  the generated sec_classification shards. */
 export function listSecStaticsFiles(): SecStaticsFile[] {
   const files: string[] = [];
   walkJsonFiles(SEC_STATICS_DIR, files);
   const AREA_ORDER: Record<SecStaticsArea, number> = {
     rules: 0,
-    owners: 1,
-    meta: 2,
-    catalog: 3,
-    indices: 4,
+    importance: 1,
+    owners: 2,
+    meta: 3,
+    catalog: 4,
+    indices: 5,
   };
   return files
     .map((file) => {
       const relPath = path.relative(SEC_STATICS_DIR, file).split(path.sep).join("/");
       const area = areaFor(relPath);
       const stat = fs.statSync(file);
+      const codes =
+        area === "importance" ? importanceCodesInfo(file) : undefined;
       return {
         path: relPath,
         area,
-        generated: area !== "rules" && area !== "owners",
+        generated: area !== "rules" && area !== "importance" && area !== "owners",
         sizeBytes: stat.size,
         updatedAt: stat.mtime.toISOString(),
+        ...(codes ?? {}),
       };
     })
     .sort(

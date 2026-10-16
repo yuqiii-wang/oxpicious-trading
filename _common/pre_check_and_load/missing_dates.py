@@ -138,7 +138,7 @@ async def find_missing_analysis_dates(
         date_column: date column name (default "date").
         sec_type: optional stored value of the target table's ``sec_type``
             column to scope the existing-date query (analysis table only) —
-            the label string for TEXT tables, the stats.label_dim SMALLINT
+            the label string for TEXT tables, the static.label_dim SMALLINT
             code for SMALLINT-coded tables (the analysis.mov_ave* family).
             Source identity tables are NOT filtered (each table already
             represents one sec_type). When omitted, all sec_types in the

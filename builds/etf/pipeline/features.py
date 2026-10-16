@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 
+import numpy as np
 import pandas as pd
 
 from _common.build_commons import rec_col
@@ -43,13 +44,14 @@ def prepare_features(
         merged = ohlcv_df.merge(margin_df, on=["date", "code"], how="left", validate="m:1")
     else:
         merged = ohlcv_df.copy()
-        for c in MARGIN_VALUE_COLS:
-            merged[c] = 0.0
     for c in MARGIN_VALUE_COLS:
-        if c in safe_columns(merged):
-            # margin columns are float64 at every source (CSV dtype maps +
-            # SQL ::float8 casts) — only the left-join NaNs need filling
-            merged[c] = merged[c].fillna(0.0)
+        if c not in safe_columns(merged):
+            merged[c] = np.nan
+        # else: keep the column as-is — left-join misses stay NaN and NaN
+        # sweeps to NULL at the write boundary (records_from_frame). The DB
+        # margin columns are nullable and "no data" must stay NULL, NOT 0
+        # (a baked 0 is indistinguishable from a real exchange zero and the
+        # margin analysis filters on rz_* > 0).
 
     _fill_sse_rq_balance_amt(merged)
 
@@ -85,8 +87,8 @@ def _fill_sse_rq_balance_amt(merged: pd.DataFrame) -> None:
         return
     missing_rq_amt = (
         merged["exchange"].eq("SS")
-        & (merged["rq_balance_amt"] == 0)
-        & (merged["rq_balance_qty"] > 0)
+        & (merged["rq_balance_amt"].fillna(0) == 0)
+        & (merged["rq_balance_qty"].fillna(0) > 0)
     )
     if missing_rq_amt.any():
         mid_price = (merged["open"] + merged["close"]) / 2.0

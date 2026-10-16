@@ -138,7 +138,7 @@ async def run_one_sec_type(
     horizon = await conn.fetchval(
         "SELECT MAX(date) FROM analysis.mov_ave_spreads_detail "
         "WHERE sec_type = $1",
-        # the detail table's sec_type stores its stats.label_dim SMALLINT code
+        # the detail table's sec_type stores its static.label_dim SMALLINT code
         SEC_TYPE_CODE[sec_type],
     )
     if horizon is not None:

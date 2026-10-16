@@ -22,7 +22,7 @@ families, both funneled through ONE fire-and-forget writer:
 resource_type / sub_type are SMALLINT label codes (the label-code
 contract): domains ``ext_resource``, ``ext_http_source`` (host family,
 suffix-matched from the URL), ``ext_llm_provider`` (provider name) —
-registered in stats.label_dim and mirrored in _common/labels.py and
+registered in static.label_dim and mirrored in _common/labels.py and
 data_viz/api/services/label-codes.ts. ``service`` stays TEXT on
 purpose (open-ended vocabulary): resolved from the service_heartbeat
 registration (peeked through sys.modules so an unregistered process

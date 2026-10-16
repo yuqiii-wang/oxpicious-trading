@@ -58,7 +58,7 @@ async def upsert_owners(
     owner_rows = [{
         "owner_id": o["owner_id"],
         "name": o.get("name", ""),
-        # type stores its stats.label_dim SMALLINT code (the
+        # type stores its static.label_dim SMALLINT code (the
         # label-code contract) — map the JSON's string once here.
         "type": SEC_OWNER_TYPE_CODE.get(o.get("type")),
         "aliases": list(o.get("aliases", [])),

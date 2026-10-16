@@ -1,0 +1,55 @@
+{
+ "1": {
+  "script": "builds.stock",
+  "can_be_parallel": false,
+  "note": "includes tech_stats (MA/EMA) as an internal final step; writes the stock board-tag slices"
+ },
+ "2": {
+  "script": "builds.etf",
+  "can_be_parallel": false,
+  "note": "--force truncates etf_identity CASCADE; writes the ETF board-tag mixes (slices are refreshed inside each build, no standalone build). Incremental missing-detection keys on stats.etf_basic_stats data presence, NOT etf_identity: the SSE price stream pre-writes etf_identity rows for the whole streamed universe each session (2026-10-12: all 1,063 SSE ETFs' EOD rows were skipped because their identity rows already existed)."
+ },
+ "3": {
+  "script": "builds.etf.feeder_nav",
+  "can_be_parallel": false,
+  "note": "must run right after builds.etf: reloads the feeder NAV rows the CASCADE truncate wiped (daily trend snapshots + archives)"
+ },
+ "4": {
+  "script": "builds.index",
+  "can_be_parallel": false,
+  "note": "three sequential internal phases: composition (CSI+SZSE) -> baseline (CSIndex daily) -> exts (stats.index_exts + ETF/exchange trading amt + sec similars); exts must follow baseline (exchange_trading_amt is driven by index_basic_stats); writes the index board-tag mixes"
+ },
+ "5": {
+  "script": "builds.industry",
+  "can_be_parallel": false,
+  "note": "must run after builds.index: aggregates index baseline OHLC across member indices per industry (stats.industry_basic_stats)"
+ },
+ "6": {
+  "script": "builds.cross_stats",
+  "can_be_parallel": false,
+  "note": "reads builds.index exts' stats.index_exts.total_etf_trading_amount; feeds analysis.industry_sentiments' etf_contribution"
+ },
+ "7": {
+  "script": "builds.market_regimes",
+  "can_be_parallel": false,
+  "note": "wholesale rebuild reading sec_types basic_stats close + amount; must stay after the basic_stats builds and before the analysis tier (a lagging table silently defaults daily states and live_signals breaches to 'calm')"
+ },
+ "8": {
+  "script": "builds.bond",
+  "can_be_parallel": false
+ },
+ "9": {
+  "script": "builds.options",
+  "can_be_parallel": false,
+  "note": "finality gate needs the >=15:00 SSE options EOD sample captured by downloads_daily step 21"
+ },
+ "10": {
+  "script": "builds.futures",
+  "can_be_parallel": false
+ },
+ "11": {
+  "script": "builds.text",
+  "can_be_parallel": false,
+  "note": "loads the temps/ai_daily/*.json artifacts written by downloads.macro.ai_daily: answers + reference hits -> text.news, Q&A -> text.llm_qa (+ llm_qa_refs / news-group provenance)"
+ }
+}

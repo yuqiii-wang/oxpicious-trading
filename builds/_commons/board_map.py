@@ -45,7 +45,7 @@ logger = logging.getLogger("board_map")
 # (code, date) PK keeps this an index scan; the fallback reads the code
 # suffix — stats.stock_identity.exchange always equals the suffix
 # (verified 0 mismatches), so NULL-exchange rows are covered too.
-# board is the stats.label_dim SMALLINT code (0 MAIN / 1 STAR / 2 GEM /
+# board is the static.label_dim SMALLINT code (0 MAIN / 1 STAR / 2 GEM /
 # 3 BSE — the label-code contract); the prefix fallback CASE emits codes.
 _STOCK_BOARD_DROP_SQL = "DROP TABLE IF EXISTS tmp_stock_board;"
 

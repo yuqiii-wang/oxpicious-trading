@@ -36,7 +36,10 @@ import {
   UP_COLOR,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
-import { signalMarkerSpec } from "@/shared/charts/signalMarker";
+import {
+  rejectionMarkerSpec,
+  signalMarkerSpec,
+} from "@/shared/charts/signalMarker";
 import {
   CALL_ZONE_SERIES_NAME,
   PUT_ZONE_SERIES_NAME,
@@ -46,6 +49,7 @@ import type {
   SharedBandEvent,
   SharedCorridorPoint,
   SharedSkewHighlights,
+  SharedSkewSignalEvent,
   SharedSkewSpec,
   SharedWallZone,
   SharedWallZones,
@@ -130,6 +134,95 @@ export const BAND_EVENT_SERIES_NAMES = [
   "Corridor Re-enter",
 ] as const;
 
+/** Series names of the SIGNAL-history marker classes (the options page's
+ *  in-signal marker mode; legend order). */
+export const SIGNAL_MARKER_SERIES_NAMES = [
+  "Signal Buy",
+  "Signal Sell",
+  "Signal No-Action",
+] as const;
+
+/**
+ * SIGNAL-history scatter markers on the spot curve (the options page's
+ * IN-SIGNAL marker mode — analysis_signals.history_signals, the
+ * options_wall family, fetched with signal_type=options_wall): the
+ * actionable events draw THE shared buy/sell triangle (buy below the
+ * line, sell above), and a REJECTED event (is_rejection — the
+ * strategy gate's explicit no-action record, e.g. the VRP-declined
+ * put-wall breach) draws the GREY DIAMOND on the line instead — an
+ * inaction must never read as a trade. One scatter series per class
+ * (only classes with >=1 event are emitted) so the legend toggles
+ * classes individually.
+ */
+const SIGNAL_NO_ACTION_SPEC = rejectionMarkerSpec();
+
+function signalEventSeries(
+  events: readonly SharedSkewSignalEvent[],
+  spotByDate: Map<string, number>,
+): SeriesOption[] {
+  const classes: Array<{
+    key: "buy" | "sell" | "rej";
+    name: string;
+    symbol: string;
+    symbolSize: [number, number];
+    symbolOffset: [number, number];
+    color: string;
+  }> = [
+    {
+      key: "buy",
+      name: SIGNAL_MARKER_SERIES_NAMES[0],
+      symbol: SIGNAL_BUY_SPEC.symbol,
+      symbolSize: SIGNAL_BUY_SPEC.symbolSize,
+      symbolOffset: SIGNAL_BUY_SPEC.symbolOffset,
+      color: SIGNAL_BUY_SPEC.itemStyle.color,
+    },
+    {
+      key: "sell",
+      name: SIGNAL_MARKER_SERIES_NAMES[1],
+      symbol: SIGNAL_SELL_SPEC.symbol,
+      symbolSize: SIGNAL_SELL_SPEC.symbolSize,
+      symbolOffset: SIGNAL_SELL_SPEC.symbolOffset,
+      color: SIGNAL_SELL_SPEC.itemStyle.color,
+    },
+    {
+      key: "rej",
+      name: SIGNAL_MARKER_SERIES_NAMES[2],
+      symbol: SIGNAL_NO_ACTION_SPEC.symbol,
+      symbolSize: SIGNAL_NO_ACTION_SPEC.symbolSize,
+      symbolOffset: SIGNAL_NO_ACTION_SPEC.symbolOffset,
+      color: SIGNAL_NO_ACTION_SPEC.itemStyle.color,
+    },
+  ];
+  const out: SeriesOption[] = [];
+  for (const cls of classes) {
+    const data: Array<[string, number]> = [];
+    for (const ev of events) {
+      const rej = ev.is_rejection === true;
+      const isBuy = !rej && ev.action === "buy";
+      const isSell = !rej && ev.action === "sell";
+      const match = cls.key === "rej" ? rej
+        : cls.key === "buy" ? isBuy : isSell;
+      if (!match) continue;
+      const y = spotByDate.get(ev.date);
+      if (y == null || !Number.isFinite(y)) continue;
+      data.push([ev.date, y]);
+    }
+    if (data.length === 0) continue;
+    out.push({
+      type: "scatter" as const,
+      name: cls.name,
+      data,
+      symbol: cls.symbol,
+      symbolSize: cls.symbolSize,
+      symbolOffset: cls.symbolOffset,
+      itemStyle: { color: cls.color, borderColor: "#fff", borderWidth: 1 },
+      z: 5,
+      tooltip: { show: false },
+    });
+  }
+  return out;
+}
+
 /**
  * Corridor-event scatter markers on the spot curve (analysis.options_bands
  * v2): fresh crosses of the OI-mass corridor vs the prior session's
@@ -149,6 +242,8 @@ export const BAND_EVENT_SERIES_NAMES = [
  */
 const EXIT_LOW_SPEC = signalMarkerSpec("buy");
 const EXIT_HIGH_SPEC = signalMarkerSpec("sell");
+const SIGNAL_BUY_SPEC = signalMarkerSpec("buy");
+const SIGNAL_SELL_SPEC = signalMarkerSpec("sell");
 
 function bandEventSeries(
   events: readonly SharedBandEvent[],
@@ -318,6 +413,7 @@ const WALL_ZONE_FILL_OPACITY: Record<string, number> = {
 function buildWallZoneRenderItem(
   points: (SharedWallZone | null)[],
   color: string,
+  emphasis: "emph" | "dim" | "none" = "none",
 ) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (params: any, api: any) => {
@@ -334,6 +430,19 @@ function buildWallZoneRenderItem(
     const breached = p.state === "BREACHED";
     const lineOpacity = breached ? 0.3 : 0.5;
     const lineDash = breached ? [3, 3] : undefined;
+    // the config-click emphasis (the Options Signals panel's row
+    // clicks): the selected config's own wall side draws BOLD (fill +
+    // line widths amplified, a soft glow), the opposite side dims to a
+    // whisper — the breach bar's wall stands out of the layer
+    const emphK = emphasis === "emph" ? 2.2 : emphasis === "dim" ? 0.3 : 1;
+    const fillOpacity = Math.min(
+      (p.state ? WALL_ZONE_FILL_OPACITY[p.state]
+        : WALL_ZONE_FILL_OPACITY.ACTIVE) * emphK,
+      0.85,
+    );
+    const glow = emphasis === "emph"
+      ? { shadowBlur: 6, shadowColor: color }
+      : {};
     return {
       type: "group" as const,
       children: [
@@ -347,25 +456,24 @@ function buildWallZoneRenderItem(
           },
           style: {
             fill: color,
-            opacity: p.state
-              ? WALL_ZONE_FILL_OPACITY[p.state]
-              : WALL_ZONE_FILL_OPACITY.ACTIVE,
+            opacity: fillOpacity,
+            ...glow,
           },
         },
         {
           type: "line" as const,
           shape: { x1: cx - half, y1: yHigh, x2: cx + half, y2: yHigh },
-          style: { stroke: color, lineWidth: 1, opacity: lineOpacity * 0.55, lineDash },
+          style: { stroke: color, lineWidth: 1 * emphK, opacity: lineOpacity * 0.55 * emphK, lineDash, ...glow },
         },
         {
           type: "line" as const,
           shape: { x1: cx - half, y1: yLow, x2: cx + half, y2: yLow },
-          style: { stroke: color, lineWidth: 1, opacity: lineOpacity * 0.55, lineDash },
+          style: { stroke: color, lineWidth: 1 * emphK, opacity: lineOpacity * 0.55 * emphK, lineDash, ...glow },
         },
         {
           type: "line" as const,
           shape: { x1: cx - half, y1: cy, x2: cx + half, y2: cy },
-          style: { stroke: color, lineWidth: 1.4, opacity: lineOpacity, lineDash },
+          style: { stroke: color, lineWidth: 1.4 * emphK, opacity: lineOpacity * emphK, lineDash, ...glow },
         },
       ],
     };
@@ -376,10 +484,11 @@ function buildWallZoneRenderItem(
 function wallZoneSeries(
   wallZones: SharedWallZones,
   axisDates: string[],
+  emphasize?: "call" | "put" | null,
 ): SeriesOption[] {
-  const sides: Array<{ name: string; color: string; byDate: Map<string, SharedWallZone> }> = [
-    { name: CALL_ZONE_SERIES_NAME, color: UP_COLOR, byDate: wallZones.call },
-    { name: PUT_ZONE_SERIES_NAME, color: DOWN_COLOR, byDate: wallZones.put },
+  const sides: Array<{ key: "call" | "put"; name: string; color: string; byDate: Map<string, SharedWallZone> }> = [
+    { key: "call", name: CALL_ZONE_SERIES_NAME, color: UP_COLOR, byDate: wallZones.call },
+    { key: "put", name: PUT_ZONE_SERIES_NAME, color: DOWN_COLOR, byDate: wallZones.put },
   ];
   const out: SeriesOption[] = [];
   for (const side of sides) {
@@ -388,13 +497,16 @@ function wallZoneSeries(
       (d) => side.byDate.get(d) ?? null,
     );
     if (!points.some(Boolean)) continue;
+    const emphasis = emphasize == null
+      ? "none"
+      : emphasize === side.key ? "emph" : "dim";
     out.push({
       type: "custom",
       name: side.name,
       // series-level color only drives the legend swatch — the custom
       // renderItem styles its own shapes
       color: side.color,
-      renderItem: buildWallZoneRenderItem(points, side.color),
+      renderItem: buildWallZoneRenderItem(points, side.color, emphasis),
       data: points.map((p, xi) => (p ? { value: [xi, p.center] } : null)),
       encode: { x: 0, y: 1 },
       clip: true,
@@ -510,6 +622,8 @@ export function buildSharedSkewOption(
   corridor?: readonly SharedCorridorPoint[],
   wallZones?: SharedWallZones,
   highlights?: SharedSkewHighlights,
+  signalEvents?: readonly SharedSkewSignalEvent[],
+  emphasizedWallSide?: "call" | "put" | null,
 ): EChartsOption {
   const c = axisColors(mode);
   const textColor = c.textColor;
@@ -722,10 +836,19 @@ export function buildSharedSkewOption(
       spotByDate.set(d.date, d.spot);
     }
   }
-  const markerSeries = bandEvents ? bandEventSeries(bandEvents, spotByDate) : [];
+  // the MARKER layer's two modes (the options page's toggle): in-signal
+  // (signalEvents — the signal history) replaces the corridor-event
+  // markers; both never draw together
+  const markerSeries = signalEvents
+    ? signalEventSeries(signalEvents, spotByDate)
+    : bandEvents
+      ? bandEventSeries(bandEvents, spotByDate)
+      : [];
   const zoneSeries =
     corridor && axisDates.length > 0 ? corridorSeries(corridor, axisDates) : [];
-  const wallSeries = wallZones ? wallZoneSeries(wallZones, axisDates) : [];
+  const wallSeries = wallZones
+    ? wallZoneSeries(wallZones, axisDates, emphasizedWallSide ?? null)
+    : [];
   // Forecast trigger-day overlay (Options Bands signal page row clicks):
   // pinpoints scatter + the spot series' full-height markArea bands.
   const hl = highlights

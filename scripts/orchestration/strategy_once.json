@@ -1,0 +1,3 @@
+{
+  "1": { "script": "strategy.singleton_trading", "can_be_parallel": false, "note": "discovers available securities, backtests them, then calculates run risk metrics" }
+}

@@ -9,6 +9,9 @@ implementation in ``stream()``:
   * FULL MODE (at/after 15:30): the full ETF-member stock list, rounds until
     every stock reaches CLOSE_TIME (15:00).
 
+Both modes assign the highest-ranked B_PRIORITY_TOP_N codes (list head) to
+source B (szse) with priority — see ``_rounds.split_rank_priority``.
+
 Afternoon-only start (16:00, post-close); no intraday-session fetching. See ``__main__.py``
 for the full architecture description (worker layout, aggregation, anti-bot).
 """
@@ -23,6 +26,7 @@ from downloads._common import is_trading_day, setup_logger
 
 from ._constants import (
     AFTERNOON_START,
+    B_PRIORITY_TOP_N,
     DEFAULT_GROUPS,
     DEFAULT_POLL_INTERVAL_SEC,
     HOURLY_MODE_CUTOFF,
@@ -50,6 +54,7 @@ async def stream(
     poll_interval: Optional[float] = None,
     n_groups: int = DEFAULT_GROUPS,
     once: bool = False,
+    b_top_n: Optional[int] = None,
 ) -> None:
     """Run the SZSE price streamer until cancelled (Ctrl-C) or --once."""
     t_stream = _time.time()
@@ -59,6 +64,10 @@ async def stream(
     # poll_interval_sec resolved in _constants.py).
     if poll_interval is None:
         poll_interval = DEFAULT_POLL_INTERVAL_SEC
+    # Same pattern for the rank-priority slice size (None = CLI default =
+    # B_PRIORITY_TOP_N; 0 explicitly disables the priority split).
+    if b_top_n is None:
+        b_top_n = B_PRIORITY_TOP_N
 
     # --- Startup: DB connections, target lists, heavy modules, HTTP stack ---
     conns: StreamConns = open_db_connections()
@@ -74,7 +83,7 @@ async def stream(
         conns.close()
         return
 
-    describe_startup(len(hourly_stocks), len(full_stocks), poll_interval, once)
+    describe_startup(len(hourly_stocks), len(full_stocks), poll_interval, once, b_top_n)
     import_heavy_modules()
     session, host_tracker = build_http_stack()
     logger.info("[startup] total startup time: %.2fs; entering main loop.", _time.time() - t_stream)
@@ -155,7 +164,8 @@ async def stream(
                 should_continue = await hourly_cycle(
                     now, today, trading_today, current_biz_day,
                     active_stocks, latest_bar_time, emitted_map, emitted_map_idx,
-                    session, host_tracker, conns, n_groups, poll_interval, once,
+                    session, host_tracker, conns, n_groups, poll_interval,
+                    b_top_n, once,
                 )
                 if should_continue == "continue":
                     continue
@@ -168,7 +178,8 @@ async def stream(
             # ================================================================
             should_break = await full_cycle(
                 active_stocks, latest_bar_time, emitted_map, current_biz_day,
-                session, host_tracker, conns, n_groups, poll_interval, once,
+                session, host_tracker, conns, n_groups, poll_interval,
+                b_top_n, once,
             )
             if should_break:
                 break

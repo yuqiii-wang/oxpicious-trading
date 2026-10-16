@@ -15,7 +15,8 @@
  * the mounted chart's zoom / tooltip state — or, with `freezeOnLoading`, a
  * full-cover translucent backdrop with a centered spinner that freezes the
  * plot by swallowing pointer events). `children` (controls) render in
- * every state.
+ * every state; `footer` renders after the body in every state (companion
+ * content, e.g. a stacked hover-synced chart).
  *
  * Also owns the AI Ask "?" beside the title (card variant): captures the
  * echarts instance through a composed onReady, derives plot info from the
@@ -40,6 +41,7 @@ export default function BaseChart({
   aiAsk,
   headerAction,
   children,
+  footer,
   loading = false,
   freezeOnLoading = false,
   error = null,
@@ -153,6 +155,7 @@ export default function BaseChart({
       <Box sx={{ width: "100%" }}>
         {children}
         {body}
+        {footer}
       </Box>
     );
   }
@@ -170,6 +173,7 @@ export default function BaseChart({
     >
       {children}
       {body}
+      {footer}
     </ChartCard>
   );
 }

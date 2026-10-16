@@ -1,47 +1,42 @@
 -- ============================================================================
 --  Schema: analysis_signals
 --
---  The SIGNAL THRESHOLD tier — computed entirely in-engine
---  (analysis/analysis_signals) off analysis.mov_ave_rsi + prices +
---  stats.market_regimes (the forecast layer was REMOVED 2026-10-05):
+--  The SIGNAL RULES tier (redesigned 2026-10-14): the former table set
+--  (signals / signal_thresholds / signal_curves) was RETIRED — the
+--  family knowledge now lives in ONE rules table and the event history
+--  is POPULATED BY RUNNING THOSE RULES:
 --
---    - signal_thresholds: one row per in-engine bucket (code × stat_date
---      snapshot M × config) whose blended MIXED row (the fixed
---      5d 0.50 / 3d 0.15 / 10d 0.15 / next 0.10 / 20d 0.10 horizon mix over the
---      triggers' valid anchors) passes the plain gate (sign-aligned
---      blended mean forward change > 0.75%) at the per-side sample
---      floor (4 buys / 3 sells). A strategy IS its delay-0 profile —
---      the trigger is each qualifying streak's FIRST day. The
---      threshold covers the bucket's window period (start_date ..
---      end_date = the snapshot stat_date; the trailing 10-year window)
---      and stores the breach bar in the underlying value's own space
---      plus the
---      confidence-scale parameters: confidence_base (the on-bar
---      sign-aligned dir_ave) + scale_method/scale_base/scale_factor —
---      the breach depth amplifies the base,
---      confidence(bps) = ROUND(10000 × confidence_base × scale(|excess|)).
---      side is a STORED column (top/bottom) so no consumer ever
---      derives it.
---    - history_signals: one row per qualifying trigger day INSIDE the
---      strategy's own snapshot M (one snapshot owns each date →
---      no cross-snapshot PK conflicts) — the event record (value, bar,
---      excess, scaled confidence), a structural clone of live.live_signals.
---
---  Emission slice (current build): mov_rsi pct in {1, 2, 3} (top →
---  sell / bottom → buy), every regime_state split.
+--    - signal_rules (01): one row per (code, sec_type, signal_type,
+--      signal_sub_type, trend, regime_state, action) — the rule CELL.
+--      document carries the family knowledge doc (the repo's
+--      static/example.*.json template stamped with the cell's measured
+--      performance); rule_entry names the engine entry class that runs
+--      the rule; rule_params the SELF-ADAPTIVE prepared parameters the
+--      engine measured on the code's own history for THAT cell (the
+--      breach bar, episode merge, gate + scale numbers).
+--    - history_signals (02): one row per qualifying trigger day, the
+--      event record (value, bar, scaled confidence) emitted by
+--      replaying the rules over history.
+--    - code_trend_days (03): one row per (code, date) — the TREND
+--      classification of the prepared frame (trends.attach_trend),
+--      shared by the trend-spans API (chart shading) and the live
+--      tier's day-context rule-cell matching.
 --
 --  Population convention:
 --    - `python -m analysis.analysis_signals` runs incrementally at
---      snapshot granularity (only snapshots missing from
---      signal_thresholds are emitted, plus the MUTABLE SCOPE — the
---      rolling-latest snapshot and the newest year-end whose forward
---      windows realize — re-emitted every run; each snapshot's
---      threshold + history rows are written atomically in one
---      transaction).
+--      (code, signal_type) granularity — reads filter on the target
+--      tables' primary keys; only stale scopes re-emit.
 --    - `--force` deletes the sec_type's rows in both tables and
---      re-emits every snapshot on the engine's snapshot grid.
+--      re-emits everything.
 -- ============================================================================
 
 CREATE SCHEMA IF NOT EXISTS analysis_signals;
 
-COMMENT ON SCHEMA analysis_signals IS 'Signal threshold tier (computed in-engine off analysis.mov_ave_rsi + prices — the forecast layer was removed 2026-10-05): signal_thresholds (one row per gate-passing bucket — the fixed setup over its window period, with the live breach bar and the confidence-scale parameters) and history_signals (one row per qualifying trigger day inside the bucket''s own snapshot — the event record). Populated incrementally by python -m analysis.analysis_signals; mov_rsi pct = 1/2/3 only.';
+-- The retired tiers (2026-10-14): thresholds + curves superseded by
+-- signal_rules; `signals` the long-dead predecessor. Destructive —
+-- fresh-init / migration only, never re-run on a populated database.
+DROP TABLE IF EXISTS analysis_signals.signals CASCADE;
+DROP TABLE IF EXISTS analysis_signals.signal_thresholds CASCADE;
+DROP TABLE IF EXISTS analysis_signals.signal_curves CASCADE;
+
+COMMENT ON SCHEMA analysis_signals IS 'Signal rules tier (redesigned 2026-10-14): signal_rules (one row per code x config x trend x regime x action cell — the family knowledge document, the engine entry, and the self-adaptive prepared params measured on the code''s own history) and history_signals (one row per qualifying trigger day, populated by replaying the rules). Populated by python -m analysis.analysis_signals.';

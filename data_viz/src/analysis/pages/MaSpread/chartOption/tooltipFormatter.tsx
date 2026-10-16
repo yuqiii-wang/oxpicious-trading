@@ -24,9 +24,11 @@ import {
   tooltipAxisValue,
 } from "./_common";
 import type { TooltipContext, TooltipFmtHelpers } from "./_common";
+import { findTrendSpanAt } from "./trendBands";
 import { appendBollingerRows } from "./bollinger";
 import { appendRsiRow } from "./rsiTrend";
 import { appendDerivTrendRows } from "./derivTrend";
+import { appendMomentumTrendRows } from "./momentumTrend";
 import {
   appendTradingAmtRow,
   appendAmtSlopeRow,
@@ -76,8 +78,8 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     ohlcHighs,
     ohlcLows,
     roofFloorWindow,
-    trendBands,
-    hasTrendBands,
+    trendSpans,
+    hasTrendSpans,
     pair,
     isPricePair,
     sName,
@@ -183,39 +185,43 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     // Slopes/Curvatures overlay (derivTrend group).
     appendDerivTrendRows(children, ctx, idx, helpers);
 
+    // Momentum overlay (momentumTrend group).
+    appendMomentumTrendRows(children, ctx, idx);
+
     // Bollinger band values (bollinger group).
     appendBollingerRows(children, ctx, idx, helpers);
 
     // Wilder RSI (rsiTrend group).
     appendRsiRow(children, ctx, idx);
 
-    // Trend classification (tooltip-only — computed from the pair data).
-    if (hasTrendBands) {
-      const band = trendBands.find(
-        (b) => idx >= b.startIdx && idx <= b.endIdx,
-      );
-      if (band) {
+    // Trend classification (tooltip-only — the signals tier's spans,
+    // analysis.trend_days via the trend-spans API; the hovered DATE
+    // resolves inside a contiguous same-trend span).
+    if (hasTrendSpans && idx >= 0 && idx < dates.length) {
+      const hit = findTrendSpanAt(trendSpans, dates[idx]);
+      if (hit) {
         const trendLabels: Record<string, string> = {
-          downward: "▼ Downward",
-          flat: "▬ Flat",
-          upward: "▲ Upward",
+          top: "▲ Top",
+          bottom: "▼ Bottom",
+          rise: "▲ Rise",
+          fall: "▼ Fall",
         };
         const trendColors: Record<string, string> = {
-          downward: "#E53935",
-          flat: "#FFB300",
-          upward: "#43A047",
+          top: "#E53935",
+          bottom: "#43A047",
+          rise: "#2196F3",
+          fall: "#FFA726",
         };
-        const periodStart = dates[band.startIdx];
-        const periodEnd = dates[band.endIdx];
-        const nDays = band.endIdx - band.startIdx + 1;
-        const periodText = periodStart === periodEnd
-          ? `${periodStart} (${nDays}d)`
-          : `${periodStart} → ${periodEnd} (${nDays}d)`;
+        const { span } = hit;
+        const nDays = span.span_days;
+        const periodText = span.start_date === span.end_date
+          ? `${span.start_date} (${nDays}d)`
+          : `${span.start_date} → ${span.end_date} (${nDays}d)`;
         children.push(
           React.createElement(Row, {
             key: "trend",
-            style: { marginTop: "2px", color: trendColors[band.trend], fontWeight: 600 },
-          }, `Trend: ${trendLabels[band.trend]} · ${periodText}`),
+            style: { marginTop: "2px", color: trendColors[hit.trend], fontWeight: 600 },
+          }, `Trend: ${trendLabels[hit.trend]} · ${periodText}`),
         );
       }
     }

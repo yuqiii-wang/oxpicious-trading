@@ -1,0 +1,4 @@
+{
+  "1": { "script": "builds.classification", "can_be_parallel": false },
+  "2": { "script": "builds.sec_info", "can_be_parallel": false, "note": "consumes the classification build output of step 1" }
+}

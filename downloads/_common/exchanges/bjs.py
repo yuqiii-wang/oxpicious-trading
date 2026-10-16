@@ -100,6 +100,21 @@ BSE_KLINE_HEADERS = build_headers_with_referer(
     extra={"Accept": "*/*", "X-Requested-With": "XMLHttpRequest"},
 )
 
+# Per-company time-sharing (分时) chart data — GET apiHost +
+# "/companyEchartsController/getTimeSharingChart/list/{code}.do" (the chart
+# behind company_time_sharing.html?companyCode=<code>&typename=G) with
+# ``begin=0&end=-1``: today's per-minute series. Row fields:
+#   HQGXSJ 更新时间 HHMMSS, HQJSRQ 交易日 YYYYMMDD, HQJRKP 今开,
+#   HQZGCJ 当日最高, HQZDCJ 当日最低, HQZRSP 昨收, HQZJCJ 最新价,
+#   HQCJSL 成交量(股, PER-minute), HQCJJE 成交额(元, PER-minute).
+# Rows arrive UNSORTED (the page's JS sorts by time); the last-by-time row
+# carries the day's final running open/high/low.
+BSE_TIMESHARING_URL = (
+    "https://www.bse.cn/companyEchartsController/getTimeSharingChart/list/{code}.do"
+)
+BSE_TIMESHARING_REFERER = BSE_KLINE_REFERER
+BSE_TIMESHARING_HEADERS = BSE_KLINE_HEADERS
+
 # Output column schema (mirrors sse_trend_stock / szse_trend_stock CSV).
 COLUMNS: List[str] = [
     "交易日期",
@@ -850,6 +865,67 @@ def fetch_bse_kline(
                      code, payload.get("status"), payload.get("msg"))
         return None
     return payload.get("data") or []
+
+
+def fetch_bse_company_timesharing(
+    session: requests.Session,
+    code: str,
+    *,
+    proxy: Optional[AntiBotProxy] = None,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Fetch one stock's per-minute time-sharing (分时) series for TODAY.
+
+    ``begin=0&end=-1`` makes the endpoint return the whole session so far;
+    post-close this is the day's final minute series (the page behind
+    company_time_sharing.html, see ``BSE_TIMESHARING_URL``). Returns the raw
+    ``data.line`` record list (UNSORTED — callers sort by ``HQGXSJ``), ``[]``
+    when the code has no trades today (suspended / no published series), or
+    None on request/parse failure or when the endpoint reports an error.
+
+    Same WAF cookie challenge as ``fetch_bse_kline``; the shared session
+    passes it transparently.
+    """
+    if proxy is None:
+        if service is not None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+        else:
+            proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False))
+
+    resp = proxy.get(
+        session,
+        BSE_TIMESHARING_URL.format(code=code),
+        params={"begin": 0, "end": -1},
+        headers=BSE_TIMESHARING_HEADERS,
+        timeout=timeout,
+        logger=logger,
+        log_tag=f"[timesharing {code}] ",
+    )
+    if resp is None:
+        return None
+    try:
+        payload = _parse_jsonp(resp.text)
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.error("[timesharing %s] failed to parse response: %s", code, e)
+        return None
+    if not isinstance(payload, dict) or "data" not in payload:
+        logger.error("[timesharing %s] unexpected payload shape: %s",
+                     code, str(payload)[:200])
+        return None
+    if payload.get("status") not in (0, "0"):
+        logger.error("[timesharing %s] endpoint error status=%r msg=%r",
+                     code, payload.get("status"), payload.get("msg"))
+        return None
+    data = payload.get("data") or {}
+    line = data.get("line") if isinstance(data, dict) else None
+    if line is None:
+        logger.error("[timesharing %s] response missing data.line: %s",
+                     code, str(payload)[:200])
+        return None
+    return line
 
 
 def parse_bse_kline_row(

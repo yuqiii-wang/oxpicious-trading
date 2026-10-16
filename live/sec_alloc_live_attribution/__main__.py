@@ -97,6 +97,7 @@ from _common.build_commons import (  # noqa: E402
     print_wall_time,
     add_force_arg,
 )
+from _common.db_commons import chunked_purge_async  # noqa: E402
 
 from live.sec_alloc_live_attribution.config import (  # noqa: E402
     TICK_TABLE,

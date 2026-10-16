@@ -14,10 +14,16 @@
 // ---------------------------------------------------------------------------
 
 /** One service_config/ tree entry: a service's concurrency cap +
- *  supposed-run cadence (mirrored from scripts/*.sh). */
+ *  supposed-run cadence (mirrored from scripts/*.sh) + its cross-service
+ *  parallel-services lists (included = whitelist, empty = unrestricted;
+ *  excluded = denylist; entries are rooted dotted prefixes — a scope, a
+ *  sub-scope path, or the full service name; more specific wins on
+ *  conflict, name > sub-scope > scope, ties to excluded). */
 export interface ServiceConfigEntry {
   service: string;
   maxParallel: number;
+  includedParallelServices: string[];
+  excludedParallelServices: string[];
   /** always | daily | monthly | semiannually | once | occasionally |
    *  on_demand (the default.json fallback's value). */
   freq: string;
@@ -128,7 +134,13 @@ export function fetchExtRequestConfig(): Promise<ExtRequestConfigResponse> {
 //  Security classification statics (database/sec_statics/ tree)
 // ---------------------------------------------------------------------------
 
-export type SecStaticsArea = "rules" | "owners" | "catalog" | "indices" | "meta";
+export type SecStaticsArea =
+  | "rules"
+  | "importance"
+  | "owners"
+  | "catalog"
+  | "indices"
+  | "meta";
 
 export interface SecStaticsFile {
   /** Tree-relative POSIX path — the read/write key. */
@@ -138,6 +150,10 @@ export interface SecStaticsFile {
   generated: boolean;
   sizeBytes: number;
   updatedAt: string;
+  /** importance_rules rank files only — curated code-list summary parsed
+   *  from the file (shown inline in the path table). */
+  codesCount?: number;
+  sampleCodes?: string[];
 }
 
 export function fetchSecStaticsFiles(): Promise<{
@@ -174,4 +190,40 @@ export function saveSecStaticsFile(
     if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
     return body;
   });
+}
+
+// ---------------------------------------------------------------------------
+//  Orchestration steps (scripts/orchestration/ tree — read-only)
+// ---------------------------------------------------------------------------
+
+/** One orchestration step: the runner executes a tier's steps one by
+ *  one in step-number order (strictly serial — canBeParallel is false
+ *  for every step today). */
+export interface OrchestrationStep {
+  step: number;
+  script: string;
+  args: string[];
+  canBeParallel: boolean;
+  note: string | null;
+}
+
+/** One tier script's steps (<tier>.json ↔ scripts/<tier>.sh). */
+export interface OrchestrationTier {
+  /** File stem, e.g. "builds_daily". */
+  tier: string;
+  /** Leading segment of the tier name, e.g. "builds". */
+  domain: string;
+  /** Trailing cadence segment, e.g. "daily" ("" when the name carries
+   *  no known freq suffix). */
+  freq: string;
+  sourceRef: string;
+  steps: OrchestrationStep[];
+}
+
+export function fetchOrchestrationConfig(): Promise<{
+  success: true;
+  generatedAt: string;
+  tiers: OrchestrationTier[];
+}> {
+  return fetch("/api/config/orchestration").then((r) => r.json());
 }

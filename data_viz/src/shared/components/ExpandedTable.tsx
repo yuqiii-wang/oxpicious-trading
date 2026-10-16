@@ -40,9 +40,14 @@
  * A row can carry INLINE expansion rows beneath it (expandedRows +
  * expandedRowKey — extra rows sharing the same columns and headers, no
  * click handler; the caller owns the expanded state and typically
- * toggles it from onRowClick).
+ * toggles it from onRowClick) and/or ONE full-width content row
+ * (expandedContent — arbitrary caller JSX in a colSpan cell beneath the
+ * same expanded row: knowledge blocks, nested detail tables). An
+ * expandedRowKey CHANGE scrolls its row into view (block nearest), so
+ * an expansion driven from OUTSIDE the table (a chart marker click)
+ * lands visible.
  */
-import { Fragment, memo, useMemo, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   Box,
   Table,
@@ -152,6 +157,12 @@ export interface ExpandedTableProps<T> {
    *  turns pointer when set) — e.g. mark the clicked delay rung's own
    *  trigger days on a chart. The main rows keep onRowClick. */
   onExpandedRowClick?: (row: T) => void;
+  /** Arbitrary full-width expansion CONTENT: when set, the row whose
+   *  rowKey === `expandedRowKey` renders this block in ONE colSpan cell
+   *  directly beneath it (after any inline expandedRows) — knowledge
+   *  blocks, nested detail tables. The caller owns the expansion state
+   *  (onRowClick toggle) exactly like the inline variant. */
+  expandedContent?: (row: T) => ReactNode;
 }
 
 /** Top header-row height (px) — fixed so the sub-header row's sticky top
@@ -195,6 +206,9 @@ function cellText<T>(
 
 interface BodyRowProps<T> {
   row: T;
+  /** The row's stable key — mirrored into data-row-key (the expansion
+   *  scroll target). */
+  rowKey: string;
   columns: ExpandedTableColumn<T>[];
   /** column key → filter value fn (feeds default cell text). */
   valueByKey: Map<string, (r: T) => string | number | null>;
@@ -217,9 +231,10 @@ const unifiedBodyRowSx = {
  *  instead of the whole 100+ row body (the tint render measured ~0.9 s
  *  on the Recent Movements forecast table, 2026-09). All props stay
  *  identity-stable for untouched rows (memoized columns in callers). */
-function BodyRowImpl<T>({ row, columns, valueByKey, selected, idx, zebra, onRowClick }: BodyRowProps<T>) {
+function BodyRowImpl<T>({ row, rowKey, columns, valueByKey, selected, idx, zebra, onRowClick }: BodyRowProps<T>) {
   return (
     <TableRow
+      data-row-key={rowKey}
       onClick={onRowClick ? () => onRowClick(row) : undefined}
       sx={{
         ...(zebra ? expandedTableBodyRowSx(idx) : unifiedBodyRowSx),
@@ -253,6 +268,7 @@ export function ExpandedTableImpl<T>({
   expandedRows,
   expandedRowKey,
   onExpandedRowClick,
+  expandedContent,
 }: ExpandedTableProps<T>) {
   // Filters are opt-in via enableFilters (default false — "explicitly said
   // to set up filter args from backend"). Column defs alone are not enough.
@@ -295,6 +311,17 @@ export function ExpandedTableImpl<T>({
     onEndMonthChange,
   );
 
+  // An expandedRowKey CHANGE brings its row into view — an expansion
+  // driven from OUTSIDE the table (a chart marker click) must land
+  // visible; a click-driven one already is (block nearest = no-op).
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (expandedRowKey == null) return;
+    containerRef.current
+      ?.querySelector(`[data-row-key="${CSS.escape(expandedRowKey)}"]`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [expandedRowKey]);
+
   if (rows.length === 0 && emptyState != null) {
     return <>{emptyState}</>;
   }
@@ -329,7 +356,7 @@ export function ExpandedTableImpl<T>({
   const defByKey = new Map(filterDefs.map((d) => [d.key, d]));
 
   return (
-    <TableContainer sx={expandedTableContainerSx(maxHeight)}>
+    <TableContainer ref={containerRef} sx={expandedTableContainerSx(maxHeight)}>
       <Table size="small" stickyHeader>
         <TableHead>
           <TableRow>
@@ -392,6 +419,7 @@ export function ExpandedTableImpl<T>({
                 <Fragment key={key}>
                   <BodyRow<T>
                     row={row}
+                    rowKey={key}
                     columns={columns}
                     valueByKey={valueByKey}
                     selected={selectedRowKey != null && key === selectedRowKey}
@@ -419,6 +447,19 @@ export function ExpandedTableImpl<T>({
                       ))}
                     </TableRow>
                   ))}
+                  {expandedContent != null && key === expandedRowKey && (
+                    // The arbitrary full-width expansion row — the caller
+                    // block owns its padding; zero here so nested outlined
+                    // tables sit flush.
+                    <TableRow key={`${key}-xc`}>
+                      <TableCell
+                        colSpan={columns.length}
+                        sx={{ p: 0, border: "none", bgcolor: "action.hover" }}
+                      >
+                        {expandedContent(row)}
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </Fragment>
               );
             })

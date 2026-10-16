@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
+
 from _common.build_commons import (
     get_db_or_exit, print_build_header, print_wall_time, TODAY_STR,
     forced_date_scope,
 )
+from _common.df_utils import host_array
 
 from builds.etf.paths import (
     SZSE_ARCHIVE_DIR, SZSE_TREND_DIR,
@@ -15,11 +18,12 @@ from builds.etf.paths import (
 from builds.etf.pipeline.discover import discover_source_files
 from builds.etf.pipeline.scope import (
     purge_existing_data,
-    fetch_existing_identity_keys,
+    fetch_existing_data_keys,
     fetch_per_code_day_stats,
     compute_dates_to_read,
+    fetch_margin_stale_dates,
 )
-from builds.etf.pipeline.load import load_source_frames
+from builds.etf.pipeline.load import load_source_frames, _csv_has_data_row
 from builds.etf.pipeline.features import prepare_features, load_composition
 from builds.etf.pipeline.pe_scope import build_pe_scope
 from builds.etf.pipeline.universe import build_universe
@@ -79,10 +83,10 @@ async def run(args) -> None:
             existing_keys: set = set()
             existing_dates: set = set()
         else:
-            existing_keys, existing_dates = await fetch_existing_identity_keys(
+            existing_keys, existing_dates = await fetch_existing_data_keys(
                 conn, code_filter, force=False)
 
-        logger.info(f"    [DB] {len(existing_keys):,} existing (date, code) pairs in stats.etf_identity")
+        logger.info(f"    [DB] {len(existing_keys):,} existing (date, code) pairs in stats.etf_basic_stats")
         if args.force:
             missing_ohlcv_dates = available_dates - existing_dates
             recent_refresh_dates: set = set()
@@ -103,11 +107,40 @@ async def run(args) -> None:
         logger.info(f"    [DB] {len(missing_ohlcv_dates)} dates missing "
               f"(out of {len(available_dates)} available)")
 
+        # (2b) Margin-stale repair dates: incremental mode only (force
+        # purges everything; --date refreshes its own date). Dates whose
+        # stored margin is all-NULL/zero are re-read + re-upserted once
+        # their margin detail files actually carry data — a late-arriving
+        # CSV repairs the date instead of the zeros staying baked forever.
+        margin_stale_dates: set = set()
+        if not args.force and not forced:
+            stale_candidates = await fetch_margin_stale_dates(
+                conn, available_dates, code_filter)
+            if stale_candidates:
+                stale_ymd = {d.strftime("%Y%m%d") for d in stale_candidates}
+                margin_files = files.get("szse", []) + files.get("sse", [])
+                data_dates: set = set()
+                for f in margin_files:
+                    base = f.replace("\\", "/").rsplit("/", 1)[-1]
+                    if any(ymd in base for ymd in stale_ymd) \
+                            and _csv_has_data_row(f):
+                        for ymd in stale_ymd:
+                            if ymd in base:
+                                data_dates.add(ymd)
+                margin_stale_dates = {
+                    d for d in stale_candidates
+                    if d.strftime("%Y%m%d") in data_dates
+                }
+                if margin_stale_dates:
+                    logger.info(f"    [DB] {len(margin_stale_dates)} margin-stale dates "
+                          f"have CSV data — scheduled for margin repair")
+
         # (3) Read ONLY missing-date source CSVs + query DB for history
         ohlcv_df, margin_df, adj_seeds = await load_source_frames(
             conn, files,
             force=args.force, code_filter=code_filter,
-            dates_to_read=missing_ohlcv_dates | recent_refresh_dates,
+            dates_to_read=missing_ohlcv_dates | recent_refresh_dates
+            | margin_stale_dates,
         )
 
         # (4) Merge OHLCV + margin, apply corp-action adjustment + MAs
@@ -132,10 +165,18 @@ async def run(args) -> None:
         uni_df = build_universe(merged, comp_universe, day_stats, pe.exists)
 
         # (6) Filter to write candidates and insert OHLCV/margin tables
+        # margin-stale rows: host-side datetime64[D] isin (same idiom as
+        # pe_scope's forced_mask — no per-row pandas comparisons).
+        margin_stale_mask = None
+        if margin_stale_dates:
+            dates_d = np.asarray(host_array(merged["date"])).astype("datetime64[D]")
+            ref = np.array(sorted(margin_stale_dates), dtype="datetime64[D]")
+            margin_stale_mask = np.isin(dates_d, ref)
         merged_missing, _n_resync = filter_missing_rows(
             merged,
             exists=pe.exists, split_mask=pe.split_mask, in_range=pe.in_range,
             pe_null_hit=pe.pe_null_hit, forced_mask=pe.forced_mask,
+            margin_stale_mask=margin_stale_mask,
         )
         await write_split_tables(conn, merged_missing, force=args.force)
 

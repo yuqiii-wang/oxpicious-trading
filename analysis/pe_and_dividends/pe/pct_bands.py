@@ -41,20 +41,21 @@ month). Bands are sampled MONTHLY (at the month-end observation anchor)
 and stored under the month's FIRST day (date_year_month). Two
 consequences drive the rebuild semantics (identical to the price bands):
 
-1. TRAILING window (backward-only) — a completed month's trailing
+1. TRAILING window (backward-only) — a COMPLETED month's trailing
    percentile is IMMUTABLE once computed. Per-(code, month) INCREMENTAL
-   upserts are therefore exact: missing triples are detected against the
-   table's PK ((sec_type, code, date_year_month, period, pct_type) —
-   detected at (code, month) granularity, where a triple counts as
-   present only when all PE_PCT_ROWS_PER_TRIPLE (12) rows exist — a
-   crash-consistency guard that recomputes partially-inserted triples),
-   computed, and CSV-COPY inserted; no historical row ever needs
-   refreshing.
+   upserts are therefore exact for completed months: missing triples are
+   detected against the table's PK ((sec_type, code, date_year_month,
+   period, pct_type) — detected at (code, month) granularity, where a
+   triple counts as present only when all PE_PCT_ROWS_PER_TRIPLE (12)
+   rows exist — a crash-consistency guard that recomputes
+   partially-inserted triples), computed, and CSV-COPY inserted; no
+   historical row ever needs refreshing.
 
-2. IN-PROGRESS months are SKIPPED — a month is only banded once a
-   LATER month with observations exists for that code (the month-end
-   anchor must be the month's true last observation row). A month is
-   banded on the first run after the next month's data arrives.
+2. The IN-PROGRESS last month IS banded — anchored on its latest
+   observation to date (not a month-end). Its anchor advances with every
+   new observation, so its band values move daily; the detection
+   therefore re-flags that month on EVERY run (its previous rows are
+   wiped and re-inserted), while completed months stay incremental.
 
 Detection also requires PE_PCT_MIN_PERIODS (255) cumulative non-NULL pe
 observations through the month's end — fewer rows yield no band
@@ -81,8 +82,8 @@ GPU note: the trailing percentiles use pandas ``groupby(...).rolling
 ().quantile()`` via the shared _grouped_rolling_quantile helper (cuDF
 lacks rolling-quantile support — CPU fallback under cudf.pandas, the
 market_hypes / high_low_pct precedent; one CPU pass per (period,
-pct_type) = 12 per frame). The month keys, anchor detection
-(shift-compare) and per-group max months stay on GPU-native column ops;
+pct_type) = 12 per frame). The month keys and anchor detection
+(shift-compare) stay on GPU-native column ops;
 the final band frame is assembled from host numpy arrays — the CSV COPY
 render downstream is host-side regardless.
 """
@@ -144,16 +145,19 @@ async def _find_missing_triples(
         yield no band — the truncated window cannot satisfy min_periods;
         all periods share this minimum, so the expectation is
         period-independent), and
-      - the month is COMPLETE: strictly earlier than the code's last
-        month WITH pe observations (the in-progress month has no true
-        month-end anchor yet).
+      - any month through the code's LAST month WITH pe observations —
+        including that last (in-progress) month, whose band anchors on
+        its latest observation instead of a month-end.
 
     A present-but-INCOMPLETE pair (fewer than PE_PCT_ROWS_PER_TRIPLE
     rows — e.g. a chunk COPY aborted mid-run) is returned as missing
     too: the PK makes a re-computation of the whole triple conflict-free
     only if the stale rows are gone, and the caller wipes the triple's
     rows before insert (see _delete_incomplete_triples). COMPLETE
-    triples are skipped.
+    triples are skipped — EXCEPT the in-progress last month, which is
+    ALWAYS returned: its anchor moves with every new observation, so
+    the previous run's rows are stale by definition and must be
+    recomputed (the caller wipes + re-inserts them).
 
     The check is one set-query (CTE window sums + LEFT JOIN + GROUP
     BY/HAVING) over the expected pairs — no per-triple round-trips.
@@ -183,10 +187,11 @@ async def _find_missing_triples(
             GROUP BY code
         ),
         expected AS (
-            SELECT h.code, h.ym
+            SELECT h.code, h.ym,
+                   (h.ym = lo.last_ym) AS in_progress
             FROM hist h JOIN last_obs lo ON lo.code = h.code
             WHERE h.upto >= $3
-              AND h.ym < lo.last_ym
+              AND h.ym <= lo.last_ym
         )
         SELECT e.code, e.ym
         FROM expected e
@@ -196,6 +201,7 @@ async def _find_missing_triples(
          AND t.date_year_month = e.ym
         GROUP BY e.code, e.ym
         HAVING COUNT(*) < $4
+            OR bool_or(e.in_progress)
         """,
         SEC_TYPE_CODE[sec_type], sorted(codes),
         PE_PCT_MIN_PERIODS, PE_PCT_ROWS_PER_TRIPLE,
@@ -242,7 +248,7 @@ _BAND_COLS = (
 
 
 def compute_pe_pct_bands(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute the month-end anchored multi-period percentile bands of the
+    """Compute the month-anchored multi-period percentile bands of the
     pe series for one sec_type's detail frame.
 
     Args:
@@ -253,10 +259,10 @@ def compute_pe_pct_bands(df: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
       Long frame with _BAND_COLS — one row per (sec_type, code,
-      complete month, period, pct_type); month-anchors whose window has
-      fewer than PE_PCT_MIN_PERIODS non-NULL observations are dropped
-      for that (period, pct_type) band, as is the code's in-progress
-      last month.
+      month incl. the in-progress last month, period, pct_type);
+      month-anchors whose window has fewer than PE_PCT_MIN_PERIODS
+      non-NULL observations are dropped for that (period, pct_type)
+      band. The in-progress month anchors on its latest observation.
 
     The heavy percentiles run through _grouped_rolling_quantile (CPU
     fallback under cudf.pandas — see the module docstring); only the
@@ -298,10 +304,13 @@ def _bands(mdf: pd.DataFrame) -> pd.DataFrame:
     mdf: the pe observation frame (see _pe_frame) — non-NULL values
     only, sorted by (sec_type, code, date), reset index.
     """
-    # ---- Month-end anchors: last observation row of each (sec_type,
+    # ---- Month anchors: last observation row of each (sec_type,
     # code, month). Rows are sorted, so a row is its month's last
     # observation row iff the NEXT row changes group or month (the final
-    # row is always an anchor — its shifted comparators are NULL).
+    # row is always an anchor — its shifted comparators are NULL). The
+    # IN-PROGRESS last month anchors on its latest observation to date —
+    # the detection re-flags it every run, so the anchor advances as the
+    # month grows.
     mdf["_pd_ym"] = (
         mdf["date"].dt.year.astype("int64") * 100
         + mdf["date"].dt.month.astype("int64")
@@ -317,21 +326,11 @@ def _bands(mdf: pd.DataFrame) -> pd.DataFrame:
     if anchor_pos.size == 0:
         return pd.DataFrame(columns=list(_BAND_COLS))
 
-    # ---- Drop the in-progress last month: complete iff a LATER month
-    # with observations exists for the code (anchor month < the code's
-    # max-observation month).
-    grp_max = mdf.groupby(["sec_type", "code"])["date"].transform("max")
-    grp_max_host = host_array(grp_max.to_numpy())
+    sec_vals = host_array(mdf["sec_type"].to_numpy())[anchor_pos]
+    code_vals = host_array(mdf["code"].to_numpy())[anchor_pos]
     dates_host = host_array(mdf["date"].to_numpy())
-    anchor_ym_m = dates_host[anchor_pos].astype("datetime64[M]")
-    complete = anchor_ym_m < grp_max_host[anchor_pos].astype("datetime64[M]")
-    pos = anchor_pos[complete]
-    if pos.size == 0:
-        return pd.DataFrame(columns=list(_BAND_COLS))
-
-    sec_vals = host_array(mdf["sec_type"].to_numpy())[pos]
-    code_vals = host_array(mdf["code"].to_numpy())[pos]
-    ym_start = dates_host[pos].astype("datetime64[M]").astype("datetime64[ns]")
+    ym_start = dates_host[anchor_pos].astype("datetime64[M]").astype("datetime64[ns]")
+    pos = anchor_pos
 
     # ---- Trailing percentiles per (period, pct_type) -------------------
     # One CPU rolling-quantile pass per (period, pct_type) — the window
@@ -472,20 +471,23 @@ async def run_pe_pct_bands(
 
     Reuses the caller's DB connection and the in-memory detail DataFrame
     (the pe column — no second DB fetch of source values). The frame
-    must contain the FULL per-code history so each month-end anchor's
-    trailing windows see up to 1275 prior observations.
+    must contain the FULL per-code history so each month anchor's
+    trailing windows see up to 1275 prior observations. The in-progress
+    last month anchors on its latest observation and is re-computed on
+    every run (the detection always re-flags it).
 
     Pipeline
       0. Scope wipe / missing-triple detection. --force: DELETE the
          sec_type's rows upfront (the parent's --force only truncates
          the detail tables, so this step wipes its own scope);
          single-code: DELETE that code's rows; incremental: detect
-         missing / incomplete (code, month) triples (PK-driven, scoped
-         to the frame's codes) — when nothing is missing, return before
-         any compute.
-      1. Compute the month-end anchored bands over the FULL history
-         (trailing windows are immutable — only missing triples are
-         inserted, but the rolling windows need the prior observations).
+         missing / incomplete (code, month) triples — the in-progress
+         last month always counts as stale — scoped to the frame's
+         codes; when nothing is missing, return before any compute.
+      1. Compute the month-anchored trailing pe percentile bands over
+         the FULL history (trailing windows are immutable — only missing
+         triples are inserted, but the rolling windows need the prior
+         observations).
       2. Wipe incomplete triples' stale rows, filter to the missing
          triples, CSV-COPY insert in chunks.
       3. Upsert analysis.analysis_identity registry.
@@ -549,7 +551,7 @@ async def run_pe_pct_bands(
             return
 
     # ---- Step 1: compute bands over the full history -------------------
-    logger.info(f"\n[b1/3] Computing month-end trailing pe percentile bands "
+    logger.info(f"\n[b1/3] Computing month-anchored trailing pe percentile bands "
           f"for periods "
           f"{', '.join(str(p) for p in PE_PCT_PERIODS)} observations at "
           f"pct_type {', '.join(str(p) for p in PE_PCT_TYPES)} "

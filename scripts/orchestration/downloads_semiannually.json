@@ -1,0 +1,6 @@
+{
+  "1": { "script": "downloads.stock.sse.dividend", "can_be_parallel": false },
+  "2": { "script": "downloads.stock.szse.dividend", "can_be_parallel": false },
+  "3": { "script": "downloads.etf.szse.archive", "args": ["reports"], "can_be_parallel": false },
+  "4": { "script": "downloads.etf.huatai_pb.dividends", "can_be_parallel": false }
+}

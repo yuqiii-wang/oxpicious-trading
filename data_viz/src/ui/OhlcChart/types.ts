@@ -9,6 +9,7 @@ import type { ECharts } from "echarts";
 import type { CodeTrendStreakInfo } from "@/shared/charts/CodeTrendTooltip";
 import type { SignalMarkPointData, SignalMarkerSpec } from "@/shared/charts/signalMarker";
 import type { OhlcMode } from "@/lib/ohlc";
+import type { TrendSpan } from "@/lib/api-client";
 import type {
   MarketRegimeSpans,
   StockDailyRow,
@@ -29,6 +30,11 @@ export interface OhlcTradeSignal {
   /** The signal's expected-move confidence as a % of price (the live
    *  basis-point confidence / 100) — tooltip text only. */
   confidence: number;
+  /** TRUE = the condition FIRED and the owning strategy's gate
+   *  explicitly DECLINED it (the is_rejection no-action record —
+   *  options_wall's VRP-rejected put breaches): the day draws the
+   *  grey diamond INSTEAD of any triangle. Default false. */
+  is_rejection?: boolean;
 }
 
 /** The clicked forecast bucket's registered signal action (the Recent
@@ -149,6 +155,12 @@ export interface OhlcChartProps {
    *  dropped by the shared regimeBands helper). One chart series per
    *  regime. Empty/omitted = no shading. */
   regimeSpans?: Partial<MarketRegimeSpans>;
+  /** TREND spans to shade per trend (the signal rules tier's per-(code,
+   *  date) classification — top/bottom/rise/fall; flat is the background),
+   *  as the trend-spans endpoint's span map (TrendSpan lists keyed by
+   *  trend label). One chart series per trend, graded shades (the
+   *  extremes deepest). Empty/omitted = no shading. */
+  trendSpans?: Record<string, TrendSpan[]>;
   /** Historical trade signals to mark: green up-triangle (buy) below the
    *  low / red down-triangle (sell) above the high, and a per-day signal
    *  block in the axis tooltip. Same (date, action) pairs share a marker. */

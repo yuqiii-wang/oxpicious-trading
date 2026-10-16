@@ -153,12 +153,18 @@ CREATE TABLE IF NOT EXISTS stats.etf_liquidity_margin (
     code                      TEXT          NOT NULL,
     trading_shares            NUMERIC(24,4) NOT NULL DEFAULT 0,
     trading_amount            NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rz_buy                    NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rz_balance                NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rq_sell_qty               NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rq_balance_qty            NUMERIC(24,4) NOT NULL DEFAULT 0,
-    rq_balance_amt            NUMERIC(24,4) NOT NULL DEFAULT 0,
-    total_balance             NUMERIC(24,4) NOT NULL DEFAULT 0,
+    -- The 6 margin columns are NULLABLE: NULL = no margin data ingested for
+    -- this (date, code) — no CSV row, or the file was missing/empty at
+    -- build time (the margin-stale repair re-reads it once the CSV lands).
+    -- 0 is a REAL zero reported by the exchange. NOT NULL DEFAULT 0 baked
+    -- indistinguishable whole-market zero rows that poisoned the margin
+    -- analysis (rz_balance > 0 filters) — the 2026-09/10 margin gap.
+    rz_buy                    NUMERIC(24,4),
+    rz_balance                NUMERIC(24,4),
+    rq_sell_qty               NUMERIC(24,4),
+    rq_balance_qty            NUMERIC(24,4),
+    rq_balance_amt            NUMERIC(24,4),
+    total_balance             NUMERIC(24,4),
 
     CONSTRAINT pk_etf_liquidity_margin PRIMARY KEY (code, date),
     CONSTRAINT fk_etf_liquidity_margin_date_code FOREIGN KEY (code, date) REFERENCES stats.etf_identity(code, date)

@@ -4,33 +4,39 @@ tables, config/runtime, config/breach) plus the semantics doc here.
 The historical ``live.live_signals.config.X`` import path keeps
 working: this package re-exports every public constant.
 
-Live breach check of the analysis_signals threshold set (the LIVE
-signal tier — a breach of an active threshold IS the live signal):
+Live breach check of the analysis_signals RULE CELLS (the LIVE signal
+tier — a breach of an active rule cell's bar IS the live signal; the
+rules-era rewire 2026-10-15, after signal_thresholds was dropped with
+the 2026-10-14 redesign):
 
-  - The current threshold set = the ``is_active`` rows of
-    analysis_signals.signal_thresholds (each config's LATEST
-    end_date — the freshest snapshot owning it).
+  - The current threshold set = the analysis_signals.signal_rules rows
+    of the LIVE-WIRED families (the SIGNAL_VALUE_SOURCE keys): one row
+    per (code, sub, trend, regime, action) CELL, each carrying its own
+    action, bar definition (rule_params.bar_def) and confidence scale
+    (rule_params.confidence).
   - The check is GENERIC — no per-family logic anywhere in the live
-    tier. Every active row carries its own decision and evidence:
+    tier. Every active cell carries its own decision and evidence:
     action ('sell' | 'buy') → the breach direction (sell breaches
-    above its threshold, buy below), signal_threshold (stored in the
-    underlying value's own space — the mov_rsi percentile bar is
-    SIGNED BY SIDE at the analysis layer), confidence_base + the
-    scale model (the SCALED breach confidence is computed over the
-    breach depth and recorded). The only family knowledge left is the declarative
+    above its bar, buy below), the bar resolved from the cell's OWN
+    bar_def (bollinger's fixed ±kσ constant; mov_rsi's per-code
+    adaptive percentile tail, computed from the trailing RSI history
+    at check time), confidence base_pct + depth scale (the SCALED
+    breach confidence is computed over the normalized breach depth and
+    recorded — the identical formula the history writer applies). The
+    DAY-CONTEXT MATCH is the rules-era gate: only the cell whose
+    (trend, regime) equals the day's own context (the signal rules
+    tier's analysis.trend_days classification + stats.market_regimes) may
+    fire. The only family knowledge left is the declarative
     SIGNAL_VALUE_SOURCE map (live_signals/analysis/fetch) saying WHERE
-    the family's current value comes from (the current RSI row).
-    mov_rsi's bar is static in its own space — the stored threshold
-    (the derived-bar families mov_std / the crosses and their
-    once-per-episode machinery were RETIRED with their strategies
-    2026-10-05).
-  - Triggered configs are recorded in live.live_signals (PK upsert —
+    the family's current value comes from (the current RSI row / the
+    on-the-fly σ-depth z).
+  - Triggered cells are recorded in live.live_signals (PK upsert —
     re-running the same (bar date, time) observation updates in
-    place). Missing current value ⇒ not comparable ⇒ skipped, never
-    invented.
+    place). Missing current value / underivable bar / no trend context
+    ⇒ not comparable ⇒ skipped, never invented.
 
 --signal-scheme selects the threshold source: 'analysis' (the only
-scheme implemented) reads analysis_signals.signal_thresholds;
+scheme implemented) reads analysis_signals.signal_rules;
 'strategy' is reserved for a future strategy.*-sourced threshold set.
 """
 from __future__ import annotations

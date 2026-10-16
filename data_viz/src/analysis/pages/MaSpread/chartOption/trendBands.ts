@@ -1,171 +1,76 @@
 /**
- * Trend classification logic for the MA-Spread chart.
+ * Trend vocabulary adapter for the MA-Spread chart — the SIGNALS
+ * TIER's per-(code, date) trend classification (analysis.trend_days,
+ * fetched via GET /api/live-data/trading-signals/trend-spans).
  *
- * downward_trend: close < MA60, with <5 day interruptions bridged.
- * flat_trend:     weak rebound — an upward band whose closes never reach
- *                 MA60 + σ (the former MA60-slope bar was removed with the
- *                 MA60 slope column, 2026-09).
- * upward_trend:   everything else
+ * REPLACES the retired client-side close-vs-MA60 phase classifier
+ * (2026-10-15): the MA60 leg identified turns months late (after the
+ * 2020-03 crash, close stayed below its crash-inflated MA60 all April
+ * — a rising month shaded "down"). The signals tier's RSI re-entry
+ * classifier (Wilder RSI(14) zones + the deep-anchor turn) is
+ * server-side, shared with the rule cells, and already rebuilt daily
+ * — this module only adapts its vocabulary and span format for the
+ * pair chart's tooltip readout and the Trend section's shades.
+ *
+ * The spans are DATE ranges, so no index alignment with the pair rows
+ * is needed (the CodeTrendChart precedent); unknown is the unshaded
+ * background.
  */
+import type { TrendSpan } from "@/lib/api-client";
+import {
+  SHADED_TRENDS,
+  TREND_ACCENT_COLORS,
+  TREND_LABELS,
+  TREND_SHADE_COLORS,
+} from "@/shared/charts/trendBands";
 
-// ---- Trend classification constants (Price/MA60 pair only) --------------
-export const TREND_MAX_INTERRUPTION = 5;
-export const TREND_DOWN_COLOR = "rgba(229, 57, 53, 0.07)"; // light red
-export const TREND_FLAT_COLOR = "rgba(255, 193, 7, 0.07)"; // light amber
-export const TREND_UP_COLOR = "rgba(76, 175, 80, 0.05)";   // light green
+/** The pickable trend phases (unknown = the unshaded background). */
+export type TrendType = "top" | "bottom" | "rise" | "fall";
 
-export type TrendType = "downward" | "flat" | "upward";
+/** Canonical button order of the Trend section's phase chips. */
+export const TREND_TYPES: readonly TrendType[] =
+  SHADED_TRENDS as readonly TrendType[];
 
-export interface TrendBand {
-  startIdx: number;
-  endIdx: number;
-  trend: TrendType;
-}
+/** Chip / legend label per trend type. */
+export const TREND_TYPE_LABELS: Record<TrendType, string> = {
+  top: TREND_LABELS.top,
+  bottom: TREND_LABELS.bottom,
+  rise: TREND_LABELS.rise,
+  fall: TREND_LABELS.fall,
+};
 
-/**
- * Compute trend classification bands from Price/MA60 pair data.
- */
-export function computeTrendBands(
-  shorts: Array<number | null>,
-  longs: Array<number | null>,
-  longStds: Array<number | null>,
-): TrendBand[] {
-  const n = shorts.length;
-  if (n === 0) return [];
+/** The picked chips' / legend accents (the shared trend palette). */
+export const TREND_ACCENTS: Record<TrendType, string> = {
+  top: TREND_ACCENT_COLORS.top,
+  bottom: TREND_ACCENT_COLORS.bottom,
+  rise: TREND_ACCENT_COLORS.rise,
+  fall: TREND_ACCENT_COLORS.fall,
+};
 
-  const belowMA60: boolean[] = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    const s = shorts[i];
-    const l = longs[i];
-    if (s != null && l != null && Number.isFinite(s) && Number.isFinite(l)) {
-      belowMA60[i] = s < l;
-    }
+/** The trend-spans record as the API returns it (label -> spans). */
+export type TrendSpansRecord = Record<string, TrendSpan[]>;
+
+/** Translucent shade fill per trend (the shared graded palette). */
+export const TREND_SHADES: Record<TrendType, string> = {
+  top: TREND_SHADE_COLORS.top,
+  bottom: TREND_SHADE_COLORS.bottom,
+  rise: TREND_SHADE_COLORS.rise,
+  fall: TREND_SHADE_COLORS.fall,
+};
+
+/** The trend span containing ``date`` (ISO), or null. */
+export function findTrendSpanAt(
+  spans: TrendSpansRecord | null,
+  date: string,
+): { trend: TrendType; span: TrendSpan } | null {
+  if (spans == null) return null;
+  for (const t of TREND_TYPES) {
+    const list = spans[t];
+    if (!list) continue;
+    const s = list.find((x) => date >= x.start_date && date <= x.end_date);
+    if (s) return { trend: t, span: s };
   }
-
-  const isDownward: boolean[] = new Array(n).fill(false);
-  let i = 0;
-  while (i < n) {
-    if (!belowMA60[i]) {
-      i++;
-      continue;
-    }
-    let runEnd = i;
-    let j = i + 1;
-    while (j < n) {
-      if (belowMA60[j]) {
-        runEnd = j;
-        j++;
-      } else {
-        let gapLen = 0;
-        let k = j;
-        while (k < n && !belowMA60[k]) {
-          gapLen++;
-          k++;
-        }
-        if (gapLen < TREND_MAX_INTERRUPTION && k < n && belowMA60[k]) {
-          runEnd = k;
-          j = k + 1;
-        } else {
-          break;
-        }
-      }
-    }
-    for (let m = i; m <= runEnd; m++) {
-      isDownward[m] = true;
-    }
-    i = runEnd + 1;
-  }
-
-  const rawBands: TrendBand[] = [];
-  let curTrend: TrendType | null = null;
-  let curStart = 0;
-  for (let idx = 0; idx < n; idx++) {
-    const t: TrendType = isDownward[idx] ? "downward" : "upward";
-    if (t === curTrend) {
-      // same trend as the previous row — the run simply continues
-    } else {
-      if (curTrend !== null) {
-        rawBands.push({ startIdx: curStart, endIdx: idx - 1, trend: curTrend });
-      }
-      curTrend = t;
-      curStart = idx;
-    }
-  }
-  if (curTrend !== null) {
-    rawBands.push({ startIdx: curStart, endIdx: n - 1, trend: curTrend });
-  }
-
-  // Weak-rebound reclassification
-  const bands = rawBands.map((b) => ({ ...b }));
-  for (let bi = 0; bi < bands.length; bi++) {
-    if (bands[bi].trend !== "upward") continue;
-
-    let allWeak = true;
-    for (let idx = bands[bi].startIdx; idx <= bands[bi].endIdx; idx++) {
-      const s = shorts[idx];
-      const l = longs[idx];
-      const sd = longStds[idx];
-      if (s == null || l == null || sd == null ||
-          !Number.isFinite(s) || !Number.isFinite(l) || !Number.isFinite(sd)) {
-        allWeak = false;
-        break;
-      }
-      if (s >= l + sd) {
-        allWeak = false;
-        break;
-      }
-    }
-    if (!allWeak) continue;
-
-    let hasNonFlatBefore = false;
-    for (let bj = 0; bj < bi; bj++) {
-      if (bands[bj].trend === "downward" || bands[bj].trend === "upward") {
-        hasNonFlatBefore = true;
-        break;
-      }
-    }
-    if (!hasNonFlatBefore) continue;
-
-    let hasNonFlatAfter = false;
-    for (let bj = bi + 1; bj < bands.length; bj++) {
-      if (bands[bj].trend === "downward" || bands[bj].trend === "upward") {
-        hasNonFlatAfter = true;
-        break;
-      }
-    }
-    if (!hasNonFlatAfter) continue;
-
-    bands[bi].trend = "flat";
-  }
-
-  const merged: TrendBand[] = [];
-  for (const b of bands) {
-    if (merged.length > 0 && merged[merged.length - 1].trend === b.trend) {
-      merged[merged.length - 1].endIdx = b.endIdx;
-    } else {
-      merged.push({ ...b });
-    }
-  }
-  return merged;
-}
-
-/** Convert trend bands to ECharts markArea data format. */
-export function trendBandsToMarkArea(
-  bands: TrendBand[],
-  dates: string[],
-): Array<[{ xAxis: string; itemStyle: { color: string } }, { xAxis: string }]> {
-  const colorMap: Record<TrendType, string> = {
-    downward: TREND_DOWN_COLOR,
-    flat: TREND_FLAT_COLOR,
-    upward: TREND_UP_COLOR,
-  };
-  return bands.map((b) => [
-    {
-      xAxis: dates[b.startIdx],
-      itemStyle: { color: colorMap[b.trend] },
-    },
-    { xAxis: dates[b.endIdx] },
-  ]);
+  return null;
 }
 
 /** Short-series label, e.g. "Price", "MA5", or "EMA6". */

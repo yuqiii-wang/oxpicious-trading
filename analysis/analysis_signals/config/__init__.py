@@ -1,369 +1,262 @@
-"""Configuration for analysis.analysis_signals — the cross-family
-constants here plus the mov_rsi family file (config/mov_rsi).
+"""analysis.analysis_signals.config — the RULE-TIER constants.
 
-Tables, THE gate constants (the plain blended-row rule, identical for
-every family), the confidence-scale defaults, the refresh window and
-the write column/PK layouts. The snapshot grid + horizon constants
-were PORTED from the retired analysis.analysis_forecasts config when
-the forecast layer was removed (2026-10-05) — the signals tier owns
-its grid, windows and the RSI window vocabulary (re-exported from
-mov_ave_spread's rsi step, the owner of analysis.mov_ave_rsi).
+The redesigned tier (2026-10-14): signal_rules (the engine entry +
+the SELF-ADAPTIVE per-cell rule_params) populates history_signals by
+replay. The constants here are the shared
+evaluation contract (gates, floors, the forward blend, the episode
+merge) and the family parameter grids the engines measure candidate
+cells against; per-family trigger semantics live in each family's
+engine module, the family knowledge in static.analysis_signal_docs.
+
+Fetch-layer vocabulary (the surviving fetch/ package reads these):
+SEC_TYPE_IDENTITY_TABLE / UNCLASSIFIED_CLASS / RSI_WINDOWS /
+BOLL_WINDOWS.
 """
 from __future__ import annotations
 
-import datetime
+# ---------------------------------------------------------------------------
+# fetch-layer vocabulary (fetch/inputs/_shared.py + family fetchers)
+# ---------------------------------------------------------------------------
+SEC_TYPE_IDENTITY_TABLE = {
+    "etf": "stats.etf_identity",
+    "index": "stats.index_identity",
+    "stock": "stats.stock_identity",
+}
+UNCLASSIFIED_CLASS = "UNCLASSIFIED"
 
-from .grid import (  # noqa: F401
-    SEC_TYPES,
-    SEC_TYPE_IDENTITY_TABLE,
-    N_YEARS,
-    WINDOW_YEARS,
-    LOOKBACK_PERIOD,
-    window_lower,
-    mutable_dates,
-    build_stat_specs,
+RSI_WINDOWS = (3, 6, 10, 14, 20, 60)
+BOLL_WINDOWS = (5, 20, 60)
+MA_WINDOWS = (20, 60, 120, 255)
+
+# ---------------------------------------------------------------------------
+# the shared evaluation contract (how a rule cell is judged)
+# ---------------------------------------------------------------------------
+# dir_ave: the FIXED forward blend — next 0.10 / 3d 0.15 / 5d 0.50 /
+# 10d 0.15 / 20d 0.10 (fractions of the trading-day horizon, % space)
+FORWARD_BLEND_DAYS = (0, 3, 5, 10, 20)
+FORWARD_BLEND_WEIGHTS = (0.10, 0.15, 0.50, 0.15, 0.10)
+
+# the equity asymmetry IS the design: sharp falls revert (the buy needs
+# a measured edge), sharp rises continue (the sell is EXIT TIMING for
+# longs — any non-negative edge qualifies); sells are structurally
+# thinner under positive drift. LOOSENED 2026-10-16 (the moderate step,
+# user-directed): buy bar 0.75% -> 0.25%, floors 4/3 -> 3/2 — measured
+# graduation on the starved watchlist ~176 cells at index scope, plus
+# the previously measured-out cells between 0.25% and 0.75% the bar cut
+# re-admits; the buy still requires a positive measured edge — the
+# asymmetry stands, at a lower bar
+GATE_DIR_AVE_MIN = {"buy": 0.0025, "sell": 0.0}
+SAMPLE_FLOOR = {"buy": 3, "sell": 2}
+
+# the POOLED EVIDENCE TIER (2026-10-16): the per-cell floors cannot
+# reach statistical significance — a typical index's per-event blend
+# sigma is ~2.6%, so n=3 gives SE ~1.5% and the 0.25% cell bar is
+# ~0.16 SE (a zero-edge cell passes ~44% of the time; reaching t=2 at
+# that bar needs n~450 per cell, unreachable). The BUY side's edge
+# claim therefore lives at the (sub_type, action) POOLED population —
+# every winning cell's measurable triggers across codes, judged by
+# t-stat + expanding-year sign consistency (the graduation studies'
+# discipline, formalized into the gate). SELL stays cell-gated only
+# (exit timing — the equity asymmetry). A pooled FAILURE drops the
+# buy side's trading rows and replayed history for that run
+# (measured-out semantics); the starved wait population is unchanged.
+POOLED_DIR_AVE_MIN = 0.0025   # the pooled bar mirrors the cell bar
+POOLED_T_STAT_MIN = 1.0       # one-sided ~84% — honest at small n
+POOLED_MIN_N = 10             # below this the side has no claim to test
+POOLED_YEAR_MIN_N = 5         # a year counts toward sign consistency
+
+# one signal per EPISODE: the episode anatomy constants
+# (REENTRY_EXIT_DAYS and the tail-episode parameters) moved 2026-10-15
+# into the consolidated analysis.trends component
+# (analysis.trends.episodes) — import them from there. The trend
+# classifier's parameters likewise (analysis.trends.trend_state).
+
+# the confidence scale's unit is PERCENT (rule_params.confidence.
+# base_pct — the cell's measured dir_ave); the history/live record
+# columns stay on the INTEGER basis-point scale (×100), so the pct cap
+# mirrors CONFIDENCE_CAP_BP / 100
+CONFIDENCE_CAP_PCT = 100.0
+CONFIDENCE_CAP_BP = 10_000
+
+# ---------------------------------------------------------------------------
+# mov_rsi — the RSI percentile family
+# ---------------------------------------------------------------------------
+# bars are PER-CODE ADAPTIVE percentile quantiles over the trailing
+# window (never fixed 30/70); the tail pcts are the nested carving grid
+# (3% ⊃ 2% ⊃ 1% — a deep breach counts once, at its deepest claim)
+RSI_TAIL_PCTS = (1, 2, 3)
+RSI_BAR_WINDOW_DAYS = 2550   # trailing 10y
+RSI_BAR_MIN_PERIODS = 255
+# the rules-era ENTRY grid: 14 the Wilder classic + 10 the measured
+# best buy window (2026-10-15 window study, temp_scripts/
+# rsi_window_study/: rsi10_1pct +1.91% @72.2% pooled vs rsi14_1pct
+# +1.68% @66.1%; positive 8/10 codes, 5/6 years) + 6 the study's
+# runner-up, added 2026-10-16 after the rules-era reproduction
+# (temp_scripts/subrule_candidates_study.py: rsi6_1pct pooled buy
+# +1.78% @71.2 hit — the study's own number — and gate-passing buy
+# cells at every tail pct; the sell side stays pooled-negative and
+# the per-cell sell gate keeps it exit-timing only). The fetch
+# layer's RSI_WINDOWS (3, 6, 10, 14, 20, 60) stays the data superset.
+RSI_ENTRY_WINDOWS = (14, 10, 6)
+
+# ---------------------------------------------------------------------------
+# boll_std — the Bollinger fixed-σ family
+# ---------------------------------------------------------------------------
+# bars are FIXED ±kσ (population σ, ddof=0 — z already IS the Gaussian
+# depth score); the ks are the nested carving grid (3σ ⊃ 2.5σ ⊃ 2σ — a
+# deep breach counts once, at its deepest claim)
+BOLL_KS = (2.0, 2.5, 3.0)
+
+# ---------------------------------------------------------------------------
+# ma_cross — the price-vs-MA event family
+# ---------------------------------------------------------------------------
+# cross (buy): the first close back ABOVE the MA conditioned on the
+# CROSS EXCESS — the signed discount at the last below-day; the engine
+# picks the per-(code, trend) bar from the candidates
+MA_CROSS_EXCESS_CANDIDATES = (-0.01, -0.02, -0.03)
+# gdepth (buy ONLY): the raw-gap band breach below the MA; NO top side
+# (deep above the MA is momentum — the measured asymmetry)
+MA_GDEPTH_BAR_CANDIDATES = (-0.03, -0.05, -0.08)
+# retest (sell): an MA breakdown closing a re-test rally whose
+# above-episode started within the window of the previous episode's end
+MA_RETEST_WINDOW = 20
+
+# ---------------------------------------------------------------------------
+# momentum — the log-return momentum family
+# ---------------------------------------------------------------------------
+# Value axis: the LOG-RETURN ln(1 + momentum) of analysis.mov_ave_momentum
+# (the mov_ave_spread momentum step) — the log transform maps the
+# bounded-below (-100%) / unbounded-above ROC to a symmetric additive
+# space where per-code percentile bars adapt cleanly across codes and
+# volatility regimes. Axes: the two FIXED anchors (5/20d) + the three
+# VOL-ADAPTIVE lookbacks (short/mid/long — themselves self-adjusted per
+# (code, regime) by the momentum step). Bars are PER-CODE ADAPTIVE
+# percentile quantiles over the trailing window (the multi-level
+# threshold grid: the tail pcts are the nested carving 3% > 2% > 1% —
+# a deep breach counts once, at its deepest claim); the confidence
+# depth is normalized by the axis's OWN trailing sigma (self-adaptive
+# across axes — a 5d and a 100d axis breach compare in sigma units).
+MOMENTUM_AXES = ("5days", "20days", "short", "mid", "long")
+MOMENTUM_TAIL_PCTS = (1, 2, 3)
+MOMENTUM_BAR_WINDOW_DAYS = 2550   # trailing 10y
+MOMENTUM_BAR_MIN_PERIODS = 255
+
+# ---------------------------------------------------------------------------
+# options_wall — the VRP-gated OI-wall family
+# ---------------------------------------------------------------------------
+OW_BREACH_WIDTH_PCT = 0.25      # the meaningful-breach bar (pct of the wall)
+OW_VRP_PCTL_MIN = 0.80          # implied vol30 in its trailing top quintile vs realized
+OW_VRP_REALIZED_WINDOW = 20     # the realized-vol leg (rolling σ of spot returns)
+OW_VRP_PCTL_WINDOW = 255        # the VRP ratio's trailing percentile window
+OW_REENTRY_EXIT_DAYS = 0        # strict consecutive-day episodes
+
+# ---------------------------------------------------------------------------
+# options_vix — the vol-spike-in-fear-regime family
+# ---------------------------------------------------------------------------
+# The corr axis is the PUBLISHED series (analysis.
+# options_vol_index_vs_spot_price_corr corr_20d — Pearson of daily spot
+# log-return vs vol-index log-change over the trailing 20 joint-valid
+# sessions; a 5-session stride grid through history + the daily tail),
+# linearly interpolated per code onto every session IN-ENGINE — never
+# stored back to the DB. The stored grid never feeds a day-over-day
+# crossing directly.
+OVIX_CORR_BAR = -0.80           # the deep-fear corr20 tail (~5th pctile)
+OVIX_CORR_WINDOW = 20           # the published corr_20d session window
+OVIX_SPIKE_SLOPE = 0.10         # 5d vol slope > +10% (the panic spike)
+OVIX_HIVOL_Z = 1.0              # the vol-level z252 leg of the interaction
+OVIX_UNWIND_CORR = -0.50        # the sell's corr normalization bar
+OVIX_UNWIND_WITNESS = 40        # sessions of deep-fear witness the sell requires
+OVIX_Z_WINDOW = 252
+OVIX_SLOPE_WINDOWS = (3, 5)
+OVIX_REENTRY_EXIT_DAYS = 8      # crisis regimes fire daily; dedup at the regime scale
+# ovix_panic_peak — the vol30-value-space PEAK leg (2026-10-15): vol
+# escalates past its prior 120-session max by >= 5% while slope5 is
+# still > +10% AND spot sits below its 5-sessions-ago close (downside
+# fear, not upside euphoria). Measured (options index universe,
+# EpisodeDetector K=8 + the plain gate): fires a FRESH episode at the
+# crisis's new extreme — 000852/000300 2024-02-05 (the 000852 Feb-2024
+# crisis the corr axis never reached: its interp corr bottomed -0.74 vs
+# the -0.80 bar) — pooled n=14 dir_ave +3.55% hit 86%; per-code
+# 000852 n=5 +4.85% @80, 000300 n=4 +2.32% @75.
+OVIX_PEAK_ATH_WINDOW = 120      # the escalation lookback (prior max)
+OVIX_PEAK_ATH_MARGIN = 0.05     # the meaningful-new-extreme margin
+OVIX_PEAK_DN_WINDOW = 5         # the downside leg's slope-matched window
+
+# ---------------------------------------------------------------------------
+# rf_break — the roof/floor breakout family (2026-10-16)
+# ---------------------------------------------------------------------------
+# The breakout bar is STRUCTURAL (the prior day's roof/floor level from
+# analysis.mov_ave_spreads_roof_floor_estimates), not a percentile
+# tail: the 2024-09-30 / 2026-10-15 studies showed the per-code tail
+# bars and the (trend, regime) cell grid starving exactly at the
+# extreme corners where significant highs/lows land, while the
+# options-wall family's FIXED 0.25% wall bar caught the same days. The
+# trigger day's own level never sets its own bar (the level is shifted
+# one row). NO cross-window carving — each (method, window) breach is
+# that sub type's own population (the windows are different claim
+# strengths; the carve-out variant starved the mid windows' cells).
+# Methods: donchian (the window's raw max intraday high / min low,
+# method 1) and median (the NaN-skipping median of the five estimate
+# methods per (date, period) — the cross-method CONSENSUS level,
+# method 5).
+RF_BREAK_WINDOWS = (60, 120, 255, 500)
+# (label infix, static.label_dim 'roof_floor_method' code) — the infix
+# joins the sub_type label: rf{W}_{side} donchian, rf{W}_med_{side}
+# median
+RF_BREAK_METHODS = (("", 1), ("_med", 5))
+
+# ---------------------------------------------------------------------------
+# ohlcv boost — the turnover-climax axis (2026-10-16)
+# ---------------------------------------------------------------------------
+# The day-0 amount axis: trading_amount / its own trading_amt_ma255,
+# bucketed into the int8 climax code (0 normal / 1 heavy / 2 climax).
+# The volume/turnover-climax literature (buying climax at blow-off
+# tops, capitulation volume at lows) as a TRUST-WEIGHTED boost axis —
+# never a gate (the boost invariant). Source: the sec_type's raw
+# amount table x analysis.mov_ave_spreads_detail.trading_amt_ma255.
+AMT_CLIMAX_HEAVY = 1.5       # ratio >= 1.5x the 255d turnover average
+AMT_CLIMAX_EXTREME = 2.5     # ratio >= 2.5x — the climax grade
+
+# ---------------------------------------------------------------------------
+# options_vix — the volatility-expansion (ATR) breakout leg (2026-10-16)
+# ---------------------------------------------------------------------------
+# ovix_atr_break BUY: the spot day-return in close-to-close ATR units
+# beyond the k bar while the vol index slope5 fires — the 2026-10-15
+# grind-down class (fast vol repricing from a LOW base, where the corr
+# leg (-0.80) and the vol-ATH leg (+5% over the 120d max) both stay
+# unmet). The ATR is close-to-close (analysis.options_spot_daily has no
+# OHLC); k is SELF-ADAPTIVE per cell from the candidate grid.
+OVIX_ATR_WINDOW = 20         # the |ret| mean window (the ATR analog)
+OVIX_ATR_KS = (2.0, 2.5, 3.0)
+
+# ---------------------------------------------------------------------------
+# ma_cross — the market-level breadth rules (2026-10-16)
+# ---------------------------------------------------------------------------
+# Zweig Breadth Thrust (BUY): the 10d EMA of adv/(adv+dec) over the
+# sec_type's own universe rises from below 0.40 to above 0.615 within
+# 10 sessions — the rare thrust that has historically marked major
+# bottoms (2024-09-24/26 class). 9:1 up/down days: adv >= 9x dec (BUY)
+# / dec >= 9x adv (SELL, exit timing). Market-level states joined per
+# date onto every code's frame; each code's cell measures its own
+# forward blend of the same market day.
+BREADTH_EMA_SPAN = 10
+BREADTH_THRUST_FROM = 0.40
+BREADTH_THRUST_TO = 0.615
+BREADTH_THRUST_WITHIN = 10   # sessions the from->to crossing may span
+BREADTH_MIN_CODES = 50       # the day's adv+dec floor for a valid state
+BREADTH_9TO1_RATIO = 9.0
+
+# ---------------------------------------------------------------------------
+# population universes
+# ---------------------------------------------------------------------------
+# the mandatory study scope (analysis/strategy: industries + these 10
+# indices only)
+STUDY_INDEX_CODES = (
+    "000001", "931743", "931160", "931071", "000015", "930708",
+    "931994", "931594", "000683", "000991",
 )
-from .horizons import (  # noqa: F401
-    FORWARD_HORIZONS,
-    PERIOD_FOR_HORIZON,
-    MIXED_HORIZON_WEIGHTS,
-)
-from .mov_rsi import (
-    RSI_PCTS_EMIT,
-    RSI_REENTRY_EXIT_DAYS,
-    RSI_SIDES,
-    RSI_WINDOWS,
-)
-from .boll_std import (
-    BOLL_CURVE_FIT_S_GRID,
-    BOLL_CURVE_DEEP_ARM_S,
-    BOLL_SCALE_FACTOR_DEFAULT,
-    BOLL_SIGMA_FLOOR,
-    BOLL_STDS_EMIT,
-    BOLL_SIDES,
-    BOLL_TYPICAL_BAND_S,
-    BOLL_WINDOWS,
-    boll_sub_type,
-    format_std,
-)
-
-from _common.labels import ACTION_CODE, SIDE_CODE  # noqa: F401 (re-exported)
-
-# ---- Tables -------------------------------------------------------------------
-
-TABLE_THRESHOLDS = "analysis_signals.signal_thresholds"
-TABLE_HISTORY = "analysis_signals.history_signals"
-TABLE_CURVES = "analysis_signals.signal_curves"
-
-# ---- The continuous depth-response curve (mov_rsi curve/) -------------------
-#
-# The 2026-10 RSI depth-response study's formulation, emitted beside
-# the thresholds (no gate — the confidence MODEL, not a strategy):
-# per (code, audit_window, side, regime_state, snapshot) curve(s) =
-# mu_center + interp(fit_curve, s) over the Gaussian depth score
-# s = Phi^-1(1 - q) of the day's tail probability. The 2026-10-06
-# tails change: the fit population is EVERY tail-episode day
-# (mov_ave_rsi.typical_ep_size_{W}days non-NULL — registrations AND
-# the gap-1 continuations), each day weighted 1/episode_size (the fit
-# counts EPISODES, not days; registration-only populations sit at the
-# band edge by construction and leave the deep tail unmeasured). The
-# shape is the pooled (index_class, side, regime) WEIGHTED ISOTONIC
-# (the 2026-10-06 study: the response is a deep-tail reversion STEP at
-# q <= 1-2% over a shallow plateau — a probit-linear fit smears the
-# step and extrapolates the unmeasured deep half). See curve/_curves.py
-# and the signal_curves block in 01_signals.sql.
-
-# (CURVE_TAIL_Q retired 2026-10-06: band membership moved to the rsi
-# analysis layer — mov_ave_rsi.is_typical_{W}days, computed by
-# mov_ave_spread steps/rsi_typical.py at the 25% full-history band.
-# The 2026-10-06 episode population consumes that layer's
-# typical_ep_size_{W}days the same way.)
-# The denormalized tail bars' pct grid (the s -> RSI-value mapping) —
-# mirrors the fit population: bars at every grid pct inside the band.
-CURVE_TAIL_PCTS = (1, 2, 3, 5, 10, 15, 20, 25)
-# A curve cell's minimum in-band day count over the window (the emit
-# floor — aligns with BUY_SAMPLE_FLOOR).
-CURVE_MIN_TRIGGERS = 4
-# The pooled (index_class, side, regime) shape's significance gate: the
-# weighted Spearman's cluster-adjusted t (t = rho * sqrt((n_ep - 2) /
-# (1 - rho^2)), n_ep = the pool's EPISODE count — within-episode days
-# are correlated, so the effective sample is episodes). A
-# non-significant shape is band noise, not a depth response — those
-# cells store fit_curve flat (all-zero offsets; the cell draws at its
-# mu_center). The pool is the code's OWN stats.sec_classification
-# industry_id (the 2026-10-06 per-index-class refinement: the
-# universe-wide pool borrowed gradients across unlike families — the
-# 10 big indices' sell x hot is flat/reversed, rho=-0.011 and -0.356
-# for 000001, while the universe-wide slope looked significant at
-# t=+39.7; 2026-10-07: the key moved from the L1 sector_id to the L2
-# industry_id — pool within the industry, not the sector). The buy
-# side keeps the retired linear fit's >= 0 guard: a
-# NEGATIVE buy rho stores the flat payload (the response runs against
-# the side); sell shapes follow the pool's rho sign.
-CURVE_SLOPE_MIN_T = 2.0
-# The stored fit_curve's s grid (lo, hi, step): the pooled isotonic
-# step function sampled for the JSON payload — consumers interpolate
-# offsets linearly between grid points. Covers the drawn tail (the 25%
-# band edge 0.6745 .. past the 1% band center 2.58).
-CURVE_FIT_S_GRID = (0.66, 2.62, 0.02)
-# The curve pooling class for codes without a
-# stats.sec_classification row (they pool together and their shape
-# stands or falls on its own significance).
-UNCLASSIFIED_CLASS = "unclassified"
-# The per-CODE pool's minimum EPISODES before its own fit is trusted
-# (2026-10-07 two-tier fit: the class pooling exists ONLY to buy
-# statistical significance for thin codes, so it stays OPTIONAL — a
-# code whose own (windows x days) pool carries >= this many episodes
-# AND clears CURVE_SLOPE_MIN_T on its own fits ITS OWN shape and never
-# borrows the industry-class gradient; below it the
-# (industry_class, side, regime, pass) pool is the fallback, exactly
-# the pre-2026-10-07 behavior). Aligns with CURVE_MIN_TRIGGERS.
-CURVE_OWN_POOL_MIN_EPISODES = 4
-# (CURVE_REENTRY_EXIT_DAYS retired 2026-10-06: the re-entry
-# invalidation window lives at the rsi analysis layer —
-# mov_ave_spread steps/rsi_typical.py RSI_REENTRY_EXIT_DAYS = 5.)
-
-# signal_curves columns in write order (PK first; created_at left to
-# its DEFAULT). is_typical is the cell's episode-PASS population (PK
-# member, the recovered boolean — replaces the 0/1/2 population
-# smallint 2026-10-07), SIDE-MIRRORED (the amplified tail event
-# differs by side): TRUE = buy side the ISOLATED first-touch passes'
-# days (typical — e.g. RSI isolated ups/downs; an episode starting >
-# 20 trading days after the previous same-side band day — the
-# capitulation) / sell side the RE-TEST passes' days (a fresh episode
-# whose previous overbought episode ended <= 20 days ago — the double
-# top), FALSE = the re-entry passes' days (flicker re-qualifications,
-# falling knives, isolated breakouts — the noisy population);
-# is_ohlcv_boosted
-# is the population VARIANT (PK member): FALSE = the plain
-# episode-weighted fit, TRUE = the boost twin (the same days, episode
-# x ohlcv-score weight-blended).
-# The mu_{n}d columns are the horizon path beside the blend (NULLable
-# — a leg is NULL when no day carries it); fit_curve is the pooled
-# isotonic shape JSON (gated by fit_t), s_lo/s_hi the cell's MEASURED
-# s range (draw the fit only inside it — no extrapolation); band_curve
-# is the cell's EMPIRICAL 1%-stride depth response over the whole tail.
-CURVE_COLUMNS = [
-    "code", "sec_type", "signal_type", "audit_window",
-    "side", "regime_state",
-    "start_date", "end_date", "is_ohlcv_boosted", "is_typical",
-    "n", "n_episodes", "mu_center", "s_center",
-    "fit_curve", "fit_rho", "fit_t", "s_lo", "s_hi",
-    "mu_1d", "mu_3d", "mu_5d", "mu_10d", "mu_20d",
-    "tail_bars", "band_curve",
-]
-
-# ---- Sides & actions (SMALLINT label codes — the label-code contract) -----
-#
-# side / action / regime_state ride cudf frames and the DB columns as
-# their stats.label_dim SMALLINT codes end-to-end (strings never enter a
-# compute frame — the cuDF 26.08 string host-transfer fault class);
-# decode only at the API boundary / for display. The sides whose breach
-# is an UPWARD crossing (the live tier's ABOVE action): top extremes →
-# sell (1 — the measured reversal is downward). Every other side → buy
-# (0). Single source for the engines' action mapping.
-
-SELL_SIDE_CODES = (SIDE_CODE["top"],)          # (0,)'s sell side: top
-ABOVE_ACTION_CODE = ACTION_CODE["sell"]        # 1
-BELOW_ACTION_CODE = ACTION_CODE["buy"]         # 0
-
-# ---- The gate (the plain blended-row rule, every family) ----------------
-#
-# On the bucket's blended MIXED row (the FIXED-weight blend of the
-# next/5d/20d horizon means — 5d 0.65 / next 0.25 / 20d 0.10, computed
-# in-engine over the triggers' valid anchors): the sign-aligned blended
-# mean forward change (dir_ave — top negated, bottom as-is; the sign
-# alignment happens in the engine) > the side's gate bar below.
-#
-# confidence_base = dir_ave — the bucket's sign-aligned blended mean
-# forward change (the expected favorable move ON the bar). Breach
-# records denormalize the SCALED confidence: ROUND(10000 x
-# confidence_base x scale(|excess|)) integer basis points — see the
-# confidence-scale block below.
-
-GATE_DIR_AVE_MIN = 0.0075
-
-# The SELL side's gate bar (buys keep GATE_DIR_AVE_MIN): 0 — a sell
-# needs ANY measured reversal edge (the average forward move after the
-# overbought extreme must be a decline), not a buy-sized 0.75% edge.
-# Per-side since 2026-10-06: overbought extremes are MOMENTUM for
-# drift-up names (000001's top cells average a sign-aligned −0.5%), so
-# the flat 0.75% bar withheld nearly every index sell while the buy
-# side cleared it routinely — the bar tested the wrong hypothesis on
-# the sell side, where the signal's job is exit timing, not short
-# entry. dir_ave > 0 still guarantees positive expectancy — the gate
-# admits a thin edge, never an expected loser. (Supersedes the
-# 2026-09 note that lowering the bar adds nothing: that study measured
-# the retired forecast-era funnel — analysis_forecasts tables, the
-# claim-profile gate and the delay ladder, all removed 2026-10-05;
-# under the current funnel the sell bar re-opens.)
-GATE_DIR_AVE_MIN_SELL = 0.0
-
-# ---- Entry timing -------------------------------------------------------------
-#
-# The delay ladder (anchors at delays 0..5 + the optimal-entry argmax
-# + the ladder-stability floor) was REMOVED 2026-10-05 at the user's
-# direction: a strategy IS its delay-0 profile — the rung over each
-# qualifying streak's FIRST day (the moment the signal becomes
-# observable). signal_delay_days stays in the history schema, written 0.
-
-# ---- The confidence scale (the breach-depth amplifier) --------------------
-#
-# A threshold row carries the scale model the breach depth applies to
-# confidence_base (the on-bar sign-aligned dir_ave):
-#
-#     scale(|excess|) = scale_base + scale_factor * |excess|   -- linear
-#     confidence(bps) = ROUND(10000 * confidence_base * scale)
-#
-# SCALE_METHOD / SCALE_BASE / SCALE_FACTOR are the values every emitted
-# row is STAMPED with (the per-row columns exist so a row can carry a
-# tuned model without a code change; the readers — the history writer
-# here, live.live_signals' evaluator — interpret the ROW's values).
-# scale_base anchors the curve at zero excess (the signal exactly on
-# the bar → exactly its base confidence); the linear slope amplifies
-# confidence as the breach deepens (the more extreme the RSI beyond
-# its percentile tail, the stronger the measured reversal). Negative
-# scales clamp to 0 — a pathological factor must never invert the
-# confidence. (scale_method 'linear' is the only method the build
-# stamps; (linear, log, exponential) are reserved. Readers fall back
-# to scale_base on an unknown method — never invent a curve.)
-
-SCALE_METHOD_DEFAULT = "linear"
-SCALE_BASE_DEFAULT = 1.0
-SCALE_FACTOR_DEFAULT = 0.05
-
-# ---- The robustness floors (the 2026-09 quality-v2 calibration) ---------
-#
-# Applied at CANDIDACY in detect (the plain gate), they kill the
-# small-sample cells the gate alone would register:
-#
-#   - *_SAMPLE_FLOOR: the bucket's occurrence_count minimum — the
-#     number of 10-year-window qualifying streaks behind the stats.
-#     Below it the gate's dir_ave is selection noise (winner's bias).
-#
-# Per-SIDE calibration (2026-09 v2.1 fine-tune, measured in
-# temp_scripts/study_sell_floors.py): a SELL's evidence is structurally
-# thinner in positive-drift markets — overbought extremes continue
-# often enough that the persistence-conditioned direction flips sign at
-# the early rungs — so the floors admit a sell on a slightly thinner
-# sample (3 vs 4), while buys keep the stricter bar. (The gate bar is
-# per-side too — see GATE_DIR_AVE_MIN_SELL above.)
-
-BUY_SAMPLE_FLOOR = 4
-SELL_SAMPLE_FLOOR = 3
-
-# ---- Stage keys (--metrics) ------------------------------------------------------
-
-STAGE_NAMES = ("rsi", "boll")
-
-# ---- Record layouts ---------------------------------------------------------------
-
-# signal_thresholds columns in write order (PK first). is_ohlcv_boosted
-# is the bucket's ohlcv-boost verdict (engines/ohlcv_boost) — an
-# analysis marker, NOT a PK member, never a gate.
-THRESHOLD_COLUMNS = [
-    "code", "sec_type", "signal_type", "signal_sub_type",
-    "is_ohlcv_boosted",
-    "side", "regime_state",
-    "start_date", "end_date",
-    "action", "signal_threshold",
-    "scale_method", "scale_base", "scale_factor", "confidence_base",
-    "reason",
-    "is_active",
-]
-THRESHOLD_PK = [
-    "code", "sec_type", "signal_type", "signal_sub_type", "side",
-    "regime_state",
-    "start_date", "end_date",
-]
-
-# history_signals columns in write order (PK first; created_at left to
-# its DEFAULT). is_ohlcv_boosted is the event's population VARIANT (PK
-# member): FALSE = the plain event, TRUE = the boost twin (the same
-# trigger, w-scaled confidence — engines/ohlcv_boost). is_typical is
-# the event's episode-PASS ATTRIBUTE (non-PK; the trigger day's own
-# window's is_typical flag — TRUE the typical pass, FALSE the re-entry
-# pass; the UI history pass toggle filters on it).
-HISTORY_COLUMNS = [
-    "code", "sec_type", "signal_type", "signal_sub_type",
-    "is_ohlcv_boosted",
-    "date", "time",
-    "signal_delay_days",
-    "action", "signal_excess", "signal_excess_pct", "signal",
-    "signal_threshold", "confidence", "is_day_close_trigger",
-    "regime_state", "is_typical",
-]
-HISTORY_PK = [
-    "code", "sec_type", "signal_type", "signal_sub_type", "date", "time",
-]
-
-# History rows are day-close records.
-HISTORY_TIME = datetime.time(15, 0)
-
-# Decimal scales of the history record's numerics (mirror live's
-# convention: signal rounds BEFORE the excess identity is computed so
-# signal_excess = signal - signal_threshold holds exactly).
-SIGNAL_SCALE = 4
-THRESHOLD_SCALE = 6
-EXCESS_SCALE = 6
-EXCESS_PCT_SCALE = 4
-
-__all__ = [
-    "TABLE_THRESHOLDS",
-    "TABLE_HISTORY",
-    "TABLE_CURVES",
-    "CURVE_TAIL_PCTS",
-    "CURVE_MIN_TRIGGERS",
-    "CURVE_SLOPE_MIN_T",
-    "CURVE_FIT_S_GRID",
-    "CURVE_OWN_POOL_MIN_EPISODES",
-    "UNCLASSIFIED_CLASS",
-    "CURVE_COLUMNS",
-    "SELL_SIDE_CODES",
-    "ABOVE_ACTION_CODE",
-    "BELOW_ACTION_CODE",
-    "SIDE_CODE",
-    "ACTION_CODE",
-    "GATE_DIR_AVE_MIN",
-    "GATE_DIR_AVE_MIN_SELL",
-    "SCALE_METHOD_DEFAULT",
-    "SCALE_BASE_DEFAULT",
-    "SCALE_FACTOR_DEFAULT",
-    "BUY_SAMPLE_FLOOR",
-    "SELL_SAMPLE_FLOOR",
-    "RSI_PCTS_EMIT",
-    "BOLL_STDS_EMIT",
-    "BOLL_SIDES",
-    "BOLL_WINDOWS",
-    "BOLL_TYPICAL_BAND_S",
-    "BOLL_CURVE_FIT_S_GRID",
-    "BOLL_CURVE_DEEP_ARM_S",
-    "BOLL_SCALE_FACTOR_DEFAULT",
-    "BOLL_SIGMA_FLOOR",
-    "boll_sub_type",
-    "format_std",
-    "STAGE_NAMES",
-    "THRESHOLD_COLUMNS",
-    "THRESHOLD_PK",
-    "HISTORY_COLUMNS",
-    "HISTORY_PK",
-    "HISTORY_TIME",
-    "SIGNAL_SCALE",
-    "THRESHOLD_SCALE",
-    "EXCESS_SCALE",
-    "EXCESS_PCT_SCALE",
-    "SEC_TYPES",
-    "SEC_TYPE_IDENTITY_TABLE",
-    "N_YEARS",
-    "WINDOW_YEARS",
-    "LOOKBACK_PERIOD",
-    "window_lower",
-    "mutable_dates",
-    "build_stat_specs",
-    "FORWARD_HORIZONS",
-    "PERIOD_FOR_HORIZON",
-    "MIXED_HORIZON_WEIGHTS",
-    "RSI_WINDOWS",
-    "RSI_SIDES",
-    "RSI_REENTRY_EXIT_DAYS",
-]
+# the options families' universe is DATA-DRIVEN — the sec_type's option
+# underlyings from stats.options_terms, resolved per family at run time
+# (fetch/inputs._shared.resolve_options_universe; options_wall drops the
+# SSE ETF underlyings, whose chain OI is an accumulated-volume
+# estimator). The study indices carry no options data.

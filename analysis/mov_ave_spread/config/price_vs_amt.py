@@ -69,7 +69,7 @@ PX_VOL_SIGMA_FLOOR = 0.005
 
 # Speed-state names in PX_VOL_SPEEDS order and volume states in
 # PX_VOL_VOL_STATES order (the 15 = 5 × 3 categories). The order IS the
-# stats.label_dim code order (px_speed: sharp_dn=0..sharp_up=4,
+# static.label_dim code order (px_speed: sharp_dn=0..sharp_up=4,
 # vol_state: shrink=0..heavy=2) — the classify emits each state's INDEX
 # directly as the stored SMALLINT code (the label-code contract; guard
 # asserts keep this file in lockstep with _common.labels).
@@ -88,7 +88,7 @@ assert PX_VOL_VOL_STATES == tuple(_VS), (
 )
 
 # Reversal side per speed (recorded on the registry's side column as its
-# stats.label_dim 'side' code): the up speeds expect reversal DOWN
+# static.label_dim 'side' code): the up speeds expect reversal DOWN
 # (top), the down speeds reversal UP (bottom); flat carries flat — no
 # directional claim.
 PX_VOL_SPEED_SIDE: dict[str, str] = {

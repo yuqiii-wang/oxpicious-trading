@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-
-python -m downloads.stock.szse.archive
-python -m downloads.etf.szse.archive
-python -m downloads.index.szse.archive
-python -m downloads.stock.sse.archive
-python -m downloads.stock.bse.archive
-python -m downloads.futures.cffex.archive
-python -m downloads.etf.huatai_pb.archive
+# One-time downloads tier (full-history archive seeds) — steps live in
+# scripts/orchestration/downloads_once.json; run_steps.sh runs them one
+# by one (serial: heavy concurrent bulk DB writes).
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+bash "$SCRIPT_DIR/run_steps.sh" "$SCRIPT_DIR/orchestration/downloads_once.json"

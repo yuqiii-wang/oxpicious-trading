@@ -40,12 +40,15 @@ _SELECT_COLS = """
         b.pct_change::float8 AS pct_change,
         COALESCE(l.trading_shares, 0)::float8 AS trading_shares,
         COALESCE(l.trading_amount, 0)::float8 AS trading_amount,
-        COALESCE(l.rz_buy, 0)::float8       AS rz_buy,
-        COALESCE(l.rz_balance, 0)::float8   AS rz_balance,
-        COALESCE(l.rq_sell_qty, 0)::float8  AS rq_sell_qty,
-        COALESCE(l.rq_balance_qty, 0)::float8 AS rq_balance_qty,
-        COALESCE(l.rq_balance_amt, 0)::float8 AS rq_balance_amt,
-        COALESCE(l.total_balance, 0)::float8  AS total_balance
+        -- The 6 margin columns are NOT coalesced: NULL = no margin data,
+        -- and it must reach the frame as NaN (→ NULL at re-emission), not
+        -- as a baked 0. Normalized to NaN right after the frame build.
+        l.rz_buy::float8       AS rz_buy,
+        l.rz_balance::float8   AS rz_balance,
+        l.rq_sell_qty::float8  AS rq_sell_qty,
+        l.rq_balance_qty::float8 AS rq_balance_qty,
+        l.rq_balance_amt::float8 AS rq_balance_amt,
+        l.total_balance::float8  AS total_balance
     FROM stats.etf_identity i
     JOIN stats.etf_basic_stats b ON b.date = i.date AND b.code = i.code
     LEFT JOIN stats.etf_liquidity_margin l ON l.date = i.date AND l.code = i.code
@@ -68,12 +71,12 @@ _SELECT_SEED_COLS = """
         b.pct_change::float8 AS pct_change,
         COALESCE(l.trading_shares, 0)::float8 AS trading_shares,
         COALESCE(l.trading_amount, 0)::float8 AS trading_amount,
-        COALESCE(l.rz_buy, 0)::float8       AS rz_buy,
-        COALESCE(l.rz_balance, 0)::float8   AS rz_balance,
-        COALESCE(l.rq_sell_qty, 0)::float8  AS rq_sell_qty,
-        COALESCE(l.rq_balance_qty, 0)::float8 AS rq_balance_qty,
-        COALESCE(l.rq_balance_amt, 0)::float8 AS rq_balance_amt,
-        COALESCE(l.total_balance, 0)::float8  AS total_balance,
+        l.rz_buy::float8       AS rz_buy,
+        l.rz_balance::float8   AS rz_balance,
+        l.rq_sell_qty::float8  AS rq_sell_qty,
+        l.rq_balance_qty::float8 AS rq_balance_qty,
+        l.rq_balance_amt::float8 AS rq_balance_amt,
+        l.total_balance::float8  AS total_balance,
         a.cum_split_factor::float8      AS cum_split_factor,
         a.cum_dividend_per_share::float8 AS cum_dividend_per_share
     FROM stats.etf_identity i
@@ -155,6 +158,14 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True, code=None):
         if verbose:
             logger.info("    [DB] No existing OHLCV data found")
         return pd.DataFrame(), pd.DataFrame(), adj_seeds
+
+    # The 6 margin columns are no longer COALESCEd in SQL: asyncpg float8
+    # NULL lands as None inside the column lists. Normalize to NaN float64
+    # ONCE here so every downstream op (comparisons, merges, the NaN→None
+    # emission sweep) sees plain NaN instead of cudf nulls.
+    for _c in ("rz_buy", "rz_balance", "rq_sell_qty",
+               "rq_balance_qty", "rq_balance_amt", "total_balance"):
+        df[_c] = pd.to_numeric(df[_c], errors="coerce").astype("float64")
 
     ohlcv_cols = ["date", "code", "name", "exchange", "prev_close", "open",
                   "high", "low", "close", "pct_change", "trading_shares",

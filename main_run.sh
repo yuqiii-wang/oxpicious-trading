@@ -19,6 +19,10 @@ bash "$SCRIPT_DIR/scripts/downloads_once.sh"
 bash "$SCRIPT_DIR/scripts/builds_daily.sh"
 bash "$SCRIPT_DIR/scripts/builds_semiannually.sh"
 bash "$SCRIPT_DIR/scripts/builds_once.sh"
+# Monthly builds (importance ranks) run AFTER the daily/once builds whose
+# turnover outputs feed them; the build's monthly guard makes non-first
+# runs of the month a no-op.
+bash "$SCRIPT_DIR/scripts/builds_monthly.sh"
 
 # Analysis consumes the daily build outputs; strategy runs after analysis.
 bash "$SCRIPT_DIR/scripts/analysis_daily.sh"

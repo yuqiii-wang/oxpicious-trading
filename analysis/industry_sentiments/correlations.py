@@ -133,7 +133,7 @@ ANALYSIS_DESCRIPTION = (
 
 # Same-pool slices materialized. Cross-pool comparisons (e.g. corr(A.small,
 # B.large)) are intentionally NOT materialized — see module docstring.
-# Values are the stats.label_dim SMALLINT codes (0 small / 1 mid / 2 large /
+# Values are the static.label_dim SMALLINT codes (0 small / 1 mid / 2 large /
 # 3 all) — pool_size rides frames, row dicts and the table as int
 # end-to-end; POOL_SIZE_LABEL decodes for the log lines only.
 POOL_SIZES = [POOL_SIZE_CODE[p] for p in ("small", "mid", "large", "all")]

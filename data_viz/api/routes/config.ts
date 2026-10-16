@@ -1,7 +1,7 @@
 /**
  * Config API routes — READ + WRITE over the repo's static JSON config
- * trees (the Config page's three tabs; every underlying datum is a JSON
- * file under database/, no DB tables involved).
+ * trees (the Config page's four tabs; every underlying datum is a JSON
+ * file under database/ or scripts/, no DB tables involved).
  *
  *   Service tab — database/sql/monitoring/static/service_config/ (one
  *   file per service; default.json is the tree-root fallback). Writes
@@ -14,13 +14,19 @@
  *   anti-bot cooldown). Writes one service's WHOLE row list per call
  *   (the dialog edits rows client-side, then saves the service's file);
  *   resource_type crosses the boundary DECODED ("http" | "llm" — the
- *   stats.label_dim SMALLINT contract applies inside the files only).
+ *   static.label_dim SMALLINT contract applies inside the files only).
  *
  *   Security Classification tab — database/sec_statics/ (hand-edited
- *   classification_rules/*.json + sec_owners.json, plus the GENERATED
- *   sec_classification/ shard tree). Raw-text per-file GET/PUT; only
- *   files already in the tree are writable (JSON-validated, verbatim
- *   write) — shard creation stays with builds.classification.
+ *   classification_rules/*.json + importance_rules/*.json curated top
+ *   ranks + sec_owners.json, plus the GENERATED sec_classification/
+ *   shard tree). Raw-text per-file GET/PUT; only files already in the
+ *   tree are writable (JSON-validated, verbatim write) — shard creation
+ *   stays with builds.classification.
+ *
+ *   Orchestration tab — READ-ONLY over scripts/orchestration/ (one
+ *   step JSON per tier script; see orchestration.service). The files
+ *   are git-reviewed edits like every other static config, so the tab
+ *   only displays: no write route.
  *
  * All writes go through the static-config / sec-statics services
  * (updated_at stamping where the file shape has it, canonical shape,
@@ -35,6 +41,7 @@ import {
   readDefaultServiceConfig,
   readExternalRequestConfig,
   readServiceConfig,
+  validParallelServiceEntries,
   writeExtRequestRowsFor,
   writeServiceConfigEntry,
   type ExtRequestConfigRow,
@@ -46,6 +53,7 @@ import {
   writeSecStaticsFile,
   type SecStaticsFile,
 } from "../services/sec-statics.service.js";
+import { readOrchestrationTiers } from "../services/orchestration.service.js";
 
 const router = Router();
 
@@ -68,6 +76,8 @@ const FREQ_VALUES = [
 export interface ServiceConfigPayload {
   service: string;
   maxParallel: number;
+  includedParallelServices: string[];
+  excludedParallelServices: string[];
   freq: string;
   schedule: string | null;
   notes: string | null;
@@ -79,6 +89,8 @@ function toServicePayload(e: ServiceConfigEntry): ServiceConfigPayload {
   return {
     service: e.service,
     maxParallel: e.max_parallel,
+    includedParallelServices: e.included_parallel_services,
+    excludedParallelServices: e.excluded_parallel_services,
     freq: e.freq,
     schedule: e.schedule,
     notes: e.notes,
@@ -122,6 +134,52 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
   if (!(FREQ_VALUES as readonly string[]).includes(freq)) {
     throw new Error(`freq must be one of: ${FREQ_VALUES.join(" | ")}`);
   }
+  // Parallel-services lists: arrays of rooted dotted prefixes that must
+  // NAME a real scope / sub-scope path / service — the valid-entry set is
+  // derived from the existing service_config/ inventory (every dotted
+  // prefix of every service name), so a typo'd entry is a 400 instead of
+  // a list the runtime guards silently never match.
+  const validEntries = validParallelServiceEntries();
+  const parseParallelList = (v: unknown, field: string): string[] => {
+    if (v == null) return [];
+    if (!Array.isArray(v) || v.some((e) => typeof e !== "string")) {
+      throw new Error(`${field} must be an array of dotted names`);
+    }
+    const out: string[] = [];
+    for (const e of v as string[]) {
+      const entry = e.trim();
+      if (entry === "") continue;
+      if (!/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(entry)) {
+        throw new Error(
+          `${field} entries must be dotted names (scope, sub-scope path, or full service name), got '${entry}'`,
+        );
+      }
+      if (!validEntries.has(entry)) {
+        throw new Error(
+          `${field} entry '${entry}' matches no scope, sub-scope path, or service in the service_config tree`,
+        );
+      }
+      if (!out.includes(entry)) out.push(entry);
+    }
+    return out;
+  };
+  const included = parseParallelList(
+    b.includedParallelServices,
+    "includedParallelServices",
+  );
+  const excluded = parseParallelList(
+    b.excludedParallelServices,
+    "excludedParallelServices",
+  );
+  // A service runs in parallel iff it is included AND not excluded — one
+  // entry cannot be in both lists (the UI dropdowns already enforce this;
+  // this is the non-UI backstop).
+  const both = included.filter((e) => excluded.includes(e));
+  if (both.length > 0) {
+    throw new Error(
+      `entries cannot be in both parallel lists: ${both.join(", ")}`,
+    );
+  }
   const strOrNull = (v: unknown, field: string): string | null => {
     if (v == null) return null;
     if (typeof v !== "string") throw new Error(`${field} must be a string or null`);
@@ -134,6 +192,8 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
   return {
     service,
     max_parallel: maxParallel,
+    included_parallel_services: included,
+    excluded_parallel_services: excluded,
     freq,
     schedule: strOrNull(b.schedule, "schedule"),
     notes: strOrNull(b.notes, "notes"),
@@ -384,6 +444,26 @@ router.put("/sec-statics/file", (req: Request, res: Response) => {
   } catch (err) {
     console.error("[config/sec-statics/file PUT] error:", err);
     res.status(400).json({ success: false, error: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+//  Orchestration steps — scripts/orchestration/ tree (read-only)
+// ---------------------------------------------------------------------------
+
+/** GET /api/config/orchestration — every tier's step list (tiers in
+ *  main_run.sh run order, steps by step number). No write route: the
+ *  files are git-reviewed edits. */
+router.get("/orchestration", (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      tiers: readOrchestrationTiers(),
+    });
+  } catch (err) {
+    console.error("[config/orchestration GET] error:", err);
+    res.status(500).json({ success: false, error: String(err) });
   }
 });
 

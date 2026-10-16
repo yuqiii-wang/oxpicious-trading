@@ -41,7 +41,7 @@ _NO_POOL = -1
 def classify_pool_vectorized(stock_num: pd.Series) -> pd.Series:
     """Vectorized pool_size classification (no per-row apply/lambda).
 
-    Emits the stats.label_dim SMALLINT codes (0 small / 1 mid / 2
+    Emits the static.label_dim SMALLINT codes (0 small / 1 mid / 2
     large); NULL stock_num -> _NO_POOL (index only contributes to the
     'all' slice, excluded from every bucket filter
     ``pool_size == bucket``).
@@ -106,7 +106,7 @@ def aggregate_by_pool(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate rebased OHLC / raw PE per (date, industry_id, pool_size).
 
     For each (date, industry_id) emits 4 rows — one per pool_size slice
-    (the stats.label_dim SMALLINT codes):
+    (the static.label_dim SMALLINT codes):
       3 (all) = every member index on that date.
       0/1/2 (small/mid/large) = only indices whose stock_num classifies
                                 into that bucket (NULL stock_num -> 'all'

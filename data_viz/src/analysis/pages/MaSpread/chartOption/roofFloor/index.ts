@@ -1,16 +1,11 @@
 /**
- * Roof/Floor Trendlines group (the row's period buttons + the "shade"
- * toggle) — window-field picking, the rolling-envelope/trendline math,
- * the extreme↔2nd-extreme shade zones, the band event markers, the
- * group state builder, the series, and the tooltip rows.
+ * Roof/Floor Trendlines group (the row's period buttons) — window-field
+ * picking, the rolling-envelope/trendline math, the group state builder,
+ * the series, and the tooltip rows.
  */
 export {
   ROOF_COLOR,
   FLOOR_COLOR,
-  OHLC_SHADE_TOP_FILL,
-  OHLC_SHADE_BOTTOM_FILL,
-  OHLC_SHADE_TOP_NAME,
-  OHLC_SHADE_BOTTOM_NAME,
 } from "./colors";
 export {
   EMPTY_ROOF_FLOOR_WIN,
@@ -18,11 +13,6 @@ export {
   type RoofFloorWinFields,
 } from "./winFields";
 export { trendlineSegment, rollingExtremes } from "./envelope";
-export { buildExtremeShades, type ExtremeShades } from "./shades";
-export {
-  readBandEvents,
-  type BandEventItems,
-} from "./eventMarkers";
 export {
   buildRoofFloorState,
   type RoofFloorState,
@@ -30,7 +20,21 @@ export {
   type AnchorMarkLine,
 } from "./state";
 export {
-  appendRoofFloorShadeSeries,
+  buildRoofFloorEstimateState,
+  type RoofFloorEstimateState,
+  type EstimateMarkLine,
+} from "./estimate";
+export {
+  aggregateReboundAudit,
+  type ReboundAuditStats,
+} from "./reboundAudit";
+export {
+  buildReboundAuditMarks,
+  appendReboundAuditSeries,
+  type ReboundAuditMarks,
+  type ReboundMarkItem,
+} from "./auditMarks";
+export {
   appendRoofFloorTrendSeries,
 } from "./series";
 export {

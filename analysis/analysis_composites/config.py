@@ -1,6 +1,8 @@
 """Configuration for analysis.analysis_composites (composite analyses)."""
 from __future__ import annotations
 
+from _common.labels import POOL_SIZE_CODE
+
 # ---------------------------------------------------------------------------
 #  Table / identity
 # ---------------------------------------------------------------------------
@@ -29,7 +31,11 @@ ANALYSIS_DESCRIPTION_OFFSETS = (
     "(1 = perfectly opposite once the benchmark factor is removed). One "
     "row per (industry_id, benchmark_industry_id, pool_size, "
     "benchmark_code, start_date, interval); window grid identical to "
-    "analysis.industry_correlations (stride 20). Default benchmark 000300. "
+    "analysis.industry_correlations (frozen stride-20 starts) PLUS one "
+    "TRAILING window per W ending at the latest calendar date — "
+    "recomputed on every run and carrying only its own W's metrics, so "
+    "the audit always has a live point at the data frontier (superseded "
+    "trailing rows are deleted). Default benchmark 000300. "
     "Sources: stats.industry_basic_stats.mean_close + "
     "stats.cross_stats.code_price_with_benchmark_offset (built by "
     "builds.cross_stats). Built by python -m analysis.analysis_composites "
@@ -41,8 +47,11 @@ ANALYSIS_DESCRIPTION_OFFSETS = (
 # ---------------------------------------------------------------------------
 
 # Same-pool slices materialized (cross-pool comparisons intentionally not
-# materialized — see analysis/industry_sentiments/correlations.py).
-POOL_SIZES = ["small", "mid", "large", "all"]
+# materialized — see analysis/industry_sentiments/correlations.py). Pool
+# values are static.label_dim SMALLINT codes: industry_basic_stats.pool_size
+# stores codes (0 small / 1 mid / 2 large / 3 all), so the frame filter
+# must compare against codes, never label strings.
+POOL_SIZES = [POOL_SIZE_CODE[p] for p in ("small", "mid", "large", "all")]
 
 # Window lengths in trading days: *_ma{W}_{W}d audits the W-day window
 # starting on start_date over the W-day MA curves.

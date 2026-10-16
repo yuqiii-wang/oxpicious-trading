@@ -130,7 +130,7 @@ def compute_skewness_frame(
     agg["em"] = agg["wm_sum"] / agg["w_sum"]
 
     # ---- OTM shares from ALL active rows (valid or not, raw OI > 0) -----
-    # option_type rides as its stats.label_dim SMALLINT code
+    # option_type rides as its static.label_dim SMALLINT code
     # (0 CALL / 1 PUT) — compare codes, never strings.
     act = grid[active & (grid["oi_t"] > 0)].copy()
     is_call = act["option_type"] == OPTION_TYPE_CODE["CALL"]

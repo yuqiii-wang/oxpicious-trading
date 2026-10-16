@@ -304,7 +304,7 @@ def compute_iv_and_greeks(
             - strike_price: strike price
             - settle: option settlement price
             - days_to_expiry: calendar days to expiry
-            - option_type: stats.label_dim 'option_type' SMALLINT code
+            - option_type: static.label_dim 'option_type' SMALLINT code
               (0 = CALL, 1 = PUT — the _common/labels contract)
         use_gpu: True -> force GPU, False -> force CPU, None -> auto.
         price_scale: divisor for underlying_close / strike_price

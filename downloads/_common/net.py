@@ -283,7 +283,8 @@ def random_sleep_range(min_sec: float, max_sec: float) -> None:
 
 def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     # Delegates to the central setup so every downloader gets console +
-    # logs/<YYYY-MM-DD>/<name>.log file output; the first caller names the file.
+    # logs/<YYYY-MM-DD>/<entry-module>.log file output — ONE file per
+    # (date, service); `name` only names the logger, never the file.
     from _common.log_setup import setup_logging
 
     return setup_logging(name, level=level)

@@ -54,7 +54,7 @@
 --  Table: analysis.dividend_est  (daily dividend est curve)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.dividend_est (
-    sec_type        SMALLINT         NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS analysis.dividend_est (
 
     CONSTRAINT pk_dividend_est PRIMARY KEY (code, sec_type, date),
     CONSTRAINT chk_dividend_est_sec_type
-        CHECK (sec_type IN ('stock', 'etf', 'index'))
+        CHECK (sec_type IN (0, 1, 2))  -- label codes: 0=etf 1=index 2=stock
 ) PARTITION BY HASH (code);
 
 SELECT public.create_hash_partitions('analysis', 'dividend_est', 16);
@@ -83,7 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_dividend_est_sec_type_date
     ON analysis.dividend_est (sec_type, date);
 
 COMMENT ON TABLE  analysis.dividend_est IS 'Per-(code, sec_type, date) dividend price ESTIMATION curve (2026-10-03, ETF scope only for now): a smooth cum-dividend fair-value line anchored on the post-drop close of each ex-dividend date, growing exponentially to the next cum-dividend level (close(next ex) + next D) by the next ex-date — the ex-dividend sawtooth pricing scheme (record-date full value, next-day minus dividend, exponential regrowth). Open tail after the last ex-date grows at ln(1 + D_last/close(anchor))/freq_days (freq = median of the last up-to-3 inter-ex-date gaps, 365 when only one event). div_est_price is in RAW price units; the API converts to adjusted space for the chart overlay. Rows only from the code''s first ex-date onward; non-payers have no rows. Tail rows are mutable (recomputed when the next ex-date lands) — the pipeline re-upserts from the stored tail''s seg_start_date onward plus missing dates. Built by analysis.pe_and_dividends --metrics tech; all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.dividend_est.sec_type       IS 'Subject security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (index/stock reserved for later extension — no rows carry them yet).';
+COMMENT ON COLUMN analysis.dividend_est.sec_type       IS 'Subject security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (index/stock reserved for later extension — no rows carry them yet).';
 COMMENT ON COLUMN analysis.dividend_est.code           IS 'Security code (bare ETF code e.g. 510880; same convention as analysis.pe / analysis.dividends).';
 COMMENT ON COLUMN analysis.dividend_est.date           IS 'Trading date.';
 COMMENT ON COLUMN analysis.dividend_est.div_est_price  IS 'Dividend price estimation curve value in RAW price units: completed segment = close(ex_i) * exp(r_i * days since ex_i) with r_i = ln((close(ex_{i+1}) + D_{i+1}) / close(ex_i)) / days(ex_{i+1} - ex_i - 1 calendar day) — the curve reaches the full cum-dividend level exactly on the record date; open tail = close(ex_last) * exp(r_tail * days since ex_last) with r_tail = ln(1 + D_last / close(ex_last)) / freq_days.';

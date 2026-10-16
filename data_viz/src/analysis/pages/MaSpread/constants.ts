@@ -11,14 +11,30 @@ export const PAGE_SIZE = 1;
 
 /**
  * The Roof/Floor Trendlines row's windows (trading days) — the clickable
- * period buttons AND the "shade" toggle's window set (every window's
- * extreme↔2nd-extreme band at once, anchored to the clicked chart date,
- * latest by default). The 20d is NOT a roof/floor window (too short: its
+ * period buttons. The 20d is NOT a roof/floor window (too short: its
  * top + 2nd extrema sit almost on the same bar, so the trendlines
- * degenerate) — it lives only in the DB tables (the shared tooltip
+ * degenerate) — it lives only in the DB table (the shared tooltip
  * metrics' 20d pivot reads the same lines table).
  */
 export const ROOF_FLOOR_WINDOWS = [60, 120, 255, 500, 750, 1275] as const;
+
+/**
+ * Chip labels of the Roof/Floor section's Est-levels method picker — one
+ * chip per estimate method of analysis.mov_ave_spreads_roof_floor_
+ * estimates (ROOF_FLOOR_ESTIMATE_METHODS in shared/types; median = the
+ * cross-method consensus and the default pick).
+ */
+export const RF_ESTIMATE_METHOD_LABELS: Record<string, string> = {
+  median: "Median",
+  trendline: "Trendline",
+  donchian: "Donchian",
+  quantile: "Quantile",
+  channel: "Channel",
+  boll: "Boll",
+};
+
+/** The default estimate method (the cross-method consensus). */
+export const RF_ESTIMATE_DEFAULT_METHOD = "median";
 
 /**
  * High/low band-BREAK streak lookback buttons (trading rows) — the first
@@ -56,3 +72,15 @@ export const RSI_WINDOWS = [3, 6, 10, 14, 20, 60] as const;
  * only; no day picked walks any window. Off via the row's Off entry.
  */
 export const RSI_TOP_PCTS = [0.01, 0.02, 0.03, 0.05, 0.1] as const;
+
+/**
+ * The Momentum section's term buttons — the two fixed-anchor lookbacks
+ * (5/20 trading days) plus the three ADAPTIVE terms whose lookback n is
+ * derived per (code, market regime) from the regime slice's median
+ * volatility via equal-expected-move targeting (analysis.mov_ave_
+ * momentum's lb_short / lb_mid / lb_long columns record each day's
+ * effective lookback). Multi-pick; the picked terms' lines replace the
+ * amt bars on the right axis (below RSI Trends / Slopes / Curvatures in
+ * the slot's precedence).
+ */
+export const MOMENTUM_TERMS = ["5d", "20d", "short", "mid", "long"] as const;

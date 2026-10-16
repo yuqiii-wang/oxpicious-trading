@@ -11,7 +11,7 @@
 --            all constituents with a known board) * 100).
 --    index — same as etf (bare 6-digit code).
 --
---  Board values mirror stats.stock_identity.board — the stats.label_dim
+--  Board values mirror stats.stock_identity.board — the static.label_dim
 --  'board' domain SMALLINT code (the label-code contract):
 --    0 MAIN — SSE/SZSE main board (incl. former SME board 002/003)
 --    1 STAR — 科创板 (688/689.SS)
@@ -42,7 +42,7 @@
 CREATE TABLE IF NOT EXISTS stats.sec_board_map (
     code                      TEXT          NOT NULL,
     sec_type                  TEXT          NOT NULL DEFAULT '',
-    board                     SMALLINT      NOT NULL,  -- label code (stats.label_dim 'board'): 0=MAIN 1=STAR 2=GEM 3=BSE
+    board                     SMALLINT      NOT NULL,  -- label code (static.label_dim 'board'): 0=MAIN 1=STAR 2=GEM 3=BSE
     pct                       NUMERIC(8,4)  NOT NULL DEFAULT 0,
     n_stocks                  INTEGER       NOT NULL DEFAULT 0,
     snapshot_date             DATE,
@@ -58,7 +58,7 @@ SELECT public.create_hash_partitions('stats', 'sec_board_map', 8);
 COMMENT ON TABLE  stats.sec_board_map               IS 'Listing-board identity/mix per security: stocks carry exactly ONE row (pct=100, own listing board); ETFs/indices carry one row per board present in their LATEST composition snapshot, pct = composition-weight share. Populated by builds.board_map; consumed by the code-trend header board tag.';
 COMMENT ON COLUMN stats.sec_board_map.code          IS 'Security code — stock WITH exchange suffix (000001.SZ), ETF bare 6-digit (510050), index bare 6-digit (000300). Matches sec_classification.code / sec_composition.code conventions.';
 COMMENT ON COLUMN stats.sec_board_map.sec_type      IS 'Security type discriminator: stock, etf, or index. Carried so the API can filter without a classification join.';
-COMMENT ON COLUMN stats.sec_board_map.board         IS 'Listing board as its stats.label_dim (''board'' domain) SMALLINT code: 0 = MAIN (SSE/SZSE main board), 1 = STAR (科创板 688/689.SS), 2 = GEM (创业板 30xxxx.SZ), 3 = BSE (Beijing).';
+COMMENT ON COLUMN stats.sec_board_map.board         IS 'Listing board as its static.label_dim (''board'' domain) SMALLINT code: 0 = MAIN (SSE/SZSE main board), 1 = STAR (科创板 688/689.SS), 2 = GEM (创业板 30xxxx.SZ), 3 = BSE (Beijing).';
 COMMENT ON COLUMN stats.sec_board_map.pct           IS 'Board share, percent. Stock rows: always 100. ETF/index rows: SUM(weight_pct of the board''s constituents) / SUM(weight_pct of ALL constituents with a known board) * 100 — the denominator EXCLUDES constituents whose board is unknown, so rows sum to ~100. Rounded to 2dp.';
 COMMENT ON COLUMN stats.sec_board_map.n_stocks      IS 'Number of constituent stocks of this board backing the pct (ETF/index rows). Stock rows: 1.';
 COMMENT ON COLUMN stats.sec_board_map.snapshot_date IS 'Composition snapshot_date the mix was computed from (ETF/index rows). NULL for stock rows (identity-derived, not composition-derived). Staleness marker for the incremental run: a code is recomputed when its source max(snapshot_date) exceeds the stored one.';

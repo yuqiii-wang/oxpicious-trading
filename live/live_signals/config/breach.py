@@ -1,8 +1,9 @@
 """Breach semantics + record numerics of live.live_signals (config).
 
-THE rule's direction convention, the confidence scale the breach depth
-applies to the row's confidence_base, and the decimal scales that keep
-the stored identity signal_excess = signal - signal_threshold exact.
+THE rule's direction convention, the rules-era confidence scale the
+breach depth applies to the cell's measured base, and the decimal
+scales that keep the stored identity signal_excess = signal -
+signal_threshold exact.
 """
 from __future__ import annotations
 
@@ -13,56 +14,65 @@ from _common.labels import ACTION_CODE
 # THE rule's direction convention: the analysis row's action CODE whose
 # breach is an UPWARD crossing (value > threshold → signal_excess >
 # 0). Every other action (buy, 0) breaches below (signal_excess < 0).
-# action rides the threshold rows and the live records as its
-# stats.label_dim SMALLINT code end-to-end (decode only for display).
+# action rides the rule rows and the live records as its
+# static.label_dim SMALLINT code end-to-end (decode only for display).
 ABOVE_ACTION = ACTION_CODE["sell"]
 
-# ---- The confidence scale (the breach-depth amplifier) -----------------------
+# ---- The confidence scale (the rules-era breach-depth amplifier) -------------
 #
-# An active threshold row carries its own scale model — scale_method /
-# scale_base / scale_factor + confidence_base (the ON-BAR confidence,
-# the bucket's sign-aligned dir_ave). The recorded breach confidence:
+# An active RULE CELL carries its own confidence scale in
+# rule_params.confidence — base_pct (the cell's measured on-bar
+# sign-aligned dir_ave, in PERCENT) amplified LINEARLY over the
+# normalized breach depth by depth_factor, capped at depth_cap:
 #
-#     scale(|excess|) = scale_base + scale_factor * |excess|   -- linear
-#     confidence(bps) = ROUND(10000 * confidence_base * scale)
+#     confidence(pct) = base_pct × (1 + depth_factor × min(depth, cap))
 #
-# (The same formula the history writer applies — the breach depth
-# amplifies the base: the more extreme the RSI beyond its percentile
-# tail, the stronger the measured reversal. scale_base anchors the
-# curve at zero excess, so a row sitting exactly on its bar carries
-# exactly its base confidence. 'linear' is the only method the
-# analysis build stamps; (linear, log, exponential) are reserved — an
-# unknown method falls back to scale_base, the anchored on-bar point,
-# never an invented curve. Negative scales clamp to 0.)
-CONF_SCALE_METHOD_LINEAR = "linear"
+# — the IDENTICAL formula the history writer (rule_base.confidence_pct)
+# applies, so the two breach tiers stay comparable. The depth
+# normalization unit rides the bar_def kind (the engines' own scales):
+#
+#     rolling_quantile  |excess| / 10  (RSI points — mov_rsi's
+#                          _DEPTH_SCALE 10.0; a 10-point pierce = 1.0)
+#     fixed_sigma       |excess| / 1   (σ units — bollinger's depth is
+#                          the raw σ excess past ±k)
+#
+# Negative amplification clamps to 0; the record stores the INTEGER
+# basis-point scale (×100), clamped to [0, 10000]
+# (CONFIDENCE_CAP_BP).
+DEPTH_NORM_UNITS: dict[str, float] = {
+    "rolling_quantile": 10.0,
+    "fixed_sigma": 1.0,
+}
 
 
-def resolve_scale(sig: dict, excess: float) -> float:
-    """One active row's confidence scale at its breach depth |excess|,
-    per the row's OWN scale_method. Unknown method → scale_base (the
-    anchored on-bar point; logged context upstream if ever hit)."""
-    method = sig.get("scale_method")
-    base = float(sig.get("scale_base") or 0.0)
-    if method != CONF_SCALE_METHOD_LINEAR:
-        return base
-    factor = float(sig.get("scale_factor") or 0.0)
-    return max(base + factor * abs(excess), 0.0)
+def breach_depth_norm(sig: dict, excess: float) -> float:
+    """One rule cell's NORMALIZED breach depth: |excess| in the cell's
+    own depth unit (per its bar_def kind). Unknown kinds normalize by
+    1.0 (raw excess)."""
+    unit = DEPTH_NORM_UNITS.get(
+        (sig.get("bar_def") or {}).get("kind"), 1.0,
+    )
+    return abs(excess) / unit
 
 
-def scaled_confidence_bp(sig: dict, excess: float) -> int:
-    """One active row's SCALED breach confidence in integer basis
-    points: ROUND(10000 x confidence_base x scale(|excess|)). The
-    history writer (analysis.analysis_signals) applies the identical
-    formula — the two breach tiers stay comparable."""
-    conf_base = float(sig.get("confidence_base") or 0.0)
-    scale = resolve_scale(sig, excess)
-    return round(10_000 * conf_base * scale)
-
+def rules_confidence_bp(sig: dict, excess: float) -> int:
+    """One rule cell's SCALED breach confidence on the INTEGER
+    basis-point record scale: base_pct × (1 + depth_factor ×
+    min(depth_norm, depth_cap)) percent over the normalized breach
+    depth — the history writer's identical formula
+    (rule_base.confidence_pct) converted ×100, clamped to [0, 10000]."""
+    conf = sig.get("confidence") or {}
+    base_pct = float(conf.get("base_pct") or 0.0)
+    factor = float(conf.get("depth_factor") or 0.0)
+    cap = float(conf.get("depth_cap") or 2.0)
+    depth = min(breach_depth_norm(sig, excess), cap)
+    return int(min(max(round(base_pct * (1.0 + factor * depth) * 100.0),
+                       0), 10_000))
 
 # ---- Record defaults ---------------------------------------------------------
 
-# (confidence is NOT a default anymore: writers store the SCALED breach
-# confidence — scaled_confidence_bp above — on the live INTEGER
+# (confidence is NOT a default: writers store the SCALED breach
+# confidence — rules_confidence_bp above — on the live INTEGER
 # basis-point scale. live.live_signals.confidence keeps DEFAULT 100 (a
 # legacy pre-2026-09-25 fill).)
 
@@ -80,9 +90,9 @@ SIGNAL_PCT_SCALE = 4
 
 __all__ = [
     "ABOVE_ACTION",
-    "CONF_SCALE_METHOD_LINEAR",
-    "resolve_scale",
-    "scaled_confidence_bp",
+    "DEPTH_NORM_UNITS",
+    "breach_depth_norm",
+    "rules_confidence_bp",
     "SIGNAL_SCALE",
     "SIGNAL_PCT_SCALE",
 ]

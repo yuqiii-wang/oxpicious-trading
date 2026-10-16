@@ -45,17 +45,20 @@ import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
 import type {
   MovAveSpreadOhlcRow,
-  MovAveSpreadBandsRow,
   MovAveSpreadOhlcGapDay,
   MovAveSpreadPairSeries,
+  MovAveSpreadRoofFloorEstimateRow,
+  MovAveSpreadRoofFloorRebound,
   MovAveSpreadSharedMetricsRow,
+  RoofFloorEstimateMethod,
 } from "@shared/types";
 import {
-  computeTrendBands,
   shortLabel,
+  type TrendSpansRecord,
 } from "./trendBands";
 import type {
   DerivTrendSpec,
+  MomentumTrendSpec,
   SeriesList,
   ShadeOverlay,
   TooltipContext,
@@ -92,8 +95,6 @@ import type {
   LongBandStreak,
 } from "@/shared/charts/streakBands";
 import {
-  OHLC_SHADE_TOP_NAME,
-  OHLC_SHADE_BOTTOM_NAME,
   changeSinceLowName,
   changeSinceHighName,
   appendChangeSinceSeries,
@@ -102,8 +103,10 @@ import {
 } from "./roofFloor";
 import {
   buildRoofFloorState,
-  appendRoofFloorShadeSeries,
+  buildRoofFloorEstimateState,
   appendRoofFloorTrendSeries,
+  buildReboundAuditMarks,
+  appendReboundAuditSeries,
 } from "./roofFloor";
 import {
   computeStreakShading,
@@ -111,6 +114,7 @@ import {
   appendStreakSeries,
 } from "./streaks";
 import { buildGapInfo } from "./ohlcGaps";
+import { appendMomentumTrendSeries, buildMomentumRightAxis } from "./momentumTrend";
 import { buildPairTooltipFormatter } from "./tooltipFormatter";
 
 export interface BuildPairOptionArgs {
@@ -153,6 +157,14 @@ export interface BuildPairOptionArgs {
    *  axis (zero pinned mid-band) so the lines hug the bottom quarter;
    *  tick labels read back in original units. */
   derivTrend?: DerivTrendSpec | null;
+  /** Momentum overlay (the section's button row): the picked terms'
+   *  per-date lookback-adaptive momentum lines on the right axis,
+   *  replacing the amt bars (same exclusive slot, below rsiTrend /
+   *  derivTrend in the precedence). Null when off. Values are signed
+   *  fractional ratios drawn through the derivTrend-style band offset
+   *  (one shared full-series scale, zero pinned mid-band) so the lines
+   *  hug the bottom quarter of the fixed 0-400 right axis. */
+  momentumTrend?: MomentumTrendSpec | null;
   /** Display mode for price-derived series. */
   ohlcMode?: OhlcMode;
   /** Enabled rolling-OHLC window (trading days) — null/undefined = off.
@@ -165,36 +177,19 @@ export interface BuildPairOptionArgs {
   roofFloorClickIdx?: number | null;
   /** Rolling-window OHLC extrema rows (index-aligned with pair.rows). */
   roofFloorRows?: MovAveSpreadOhlcRow[] | null;
-  /** Roof/floor shade-band rows from the bands table
-   *  (analysis.mov_ave_spreads_roof_and_floor_bands, index-aligned with
-   *  pair.rows) — when present AND index-aligned, the shade rectangles'
-   *  edges come straight from the table (upper/lower_band_low/high) and
-   *  the band EVENT markers read the ANCHOR row's stored breach/bounce
-   *  DATE arrays (anchor-band events, computed py-side — the UI only
-   *  renders them); when a window's anchor row is absent (code not yet
-   *  rebuilt / table rebuilding), that window's edges fall back to the
-   *  client-side min↔max derivation from the roofFloorRows anchors
-   *  (and carry no event markers). */
-  bandRows?: MovAveSpreadBandsRow[] | null;
-  /** "shade" toggle windows — when non-empty (and roofFloorRows are
-   *  index-aligned), EVERY listed window shades the flat band between the
-   *  EXTREME and 2ND EXTREME of the window ending at the anchor date
-   *  (roofFloorClickIdx, latest row when null): light purple between that
-   *  window's 2nd high and high (top), light blue between its low and 2nd
-   *  low (bottom), each drawn over the window's own trailing span. The
-   *  trailing-20-row CLOSE extremes at the anchor (max / min close of
-   *  the last 20 rows) provide TWO CUT LINES: a roof's bottom edge is
-   *  raised to the 20d max close and a floor's top edge lowered to the
-   *  20d min close, so no band crosses into the last 20 days' closing
-   *  range (close-based on purpose — a wick cannot wipe a band; at
-   *  fresh-high anchors roofs compress to a narrow strip). GUARD: when a
-   *  side ends with ZERO bands at the anchor (all emptied or absent),
-   *  one band draws from the trailing-60-row extremes — roof = [60d max
-   *  close → 60d max high], floor = [60d min low → 60d min close] — so a
-   *  side is never blank. Independent of `roofFloorWindow`
-   *  (the period buttons) — the shades show for all windows regardless of
-   *  which one is selected, and re-anchor with the clicked date. */
-  roofFloorShadeWindows?: readonly number[] | null;
+  /** Roof/floor LEVEL-ESTIMATE rows (the "rfest" extras group,
+   *  index-aligned with pair.rows) — read at roofFloorClickIdx (latest
+   *  row when null) when roofFloorEstMethod is set. */
+  roofFloorEstRows?: MovAveSpreadRoofFloorEstimateRow[] | null;
+  /** The picked estimate method (the Est-levels toggle) — null/undefined
+   *  = the estimate overlay is off. */
+  roofFloorEstMethod?: RoofFloorEstimateMethod | null;
+  /** Roof/floor REBOUND-AUDIT events (the "rfaudit" extras group) —
+   *  when a window is enabled, its cohort's events draw as larger
+   *  triangle markers at the rebounded recorded extremes — only the
+   *  ones before the chosen date and near that side's median event
+   *  level (the median roof/floor). */
+  roofFloorRebounds?: MovAveSpreadRoofFloorRebound[] | null;
   /** The anchor window's WHOLE-WINDOW long horizontal break streaks (one
    *  per side, or null when that side has no streak starting in the
    *  window) — the window's same-side DB streaks merged into one span,
@@ -226,6 +221,11 @@ export interface BuildPairOptionArgs {
   ohlcGapRows?: MovAveSpreadOhlcGapDay[] | null;
   /** A Top-10% OHLC Days toggle is on. */
   ohlcGapActive?: boolean;
+  /** The code's TREND spans (analysis.trend_days via the trend-spans
+   *  API — the signals tier's RSI re-entry classification, shared with
+   *  the rule cells) for the tooltip's per-date trend readout. Null
+   *  while loading / on fetch failure — the tooltip row is omitted. */
+  trendSpans?: TrendSpansRecord | null;
 }
 
 export function buildPairOption({
@@ -238,12 +238,14 @@ export function buildPairOption({
   rsiWindows = null,
   rsiPopulation = null,
   derivTrend = null,
+  momentumTrend = null,
   ohlcMode = "absolute",
   roofFloorWindow = null,
   roofFloorClickIdx = null,
   roofFloorRows = null,
-  bandRows = null,
-  roofFloorShadeWindows = null,
+  roofFloorEstRows = null,
+  roofFloorEstMethod = null,
+  roofFloorRebounds = null,
   longStreaks = null,
   streakPeriod = null,
   streakPct = null,
@@ -252,6 +254,7 @@ export function buildPairOption({
   regimeShades = null,
   ohlcGapRows = null,
   ohlcGapActive = false,
+  trendSpans = null,
 }: BuildPairOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -303,13 +306,14 @@ export function buildPairOption({
   const ohlcHighs = rows.map((_, i) => sharedNum(shared, i, `high_${pair.ma_long}d` as keyof MovAveSpreadSharedMetricsRow));
   const ohlcLows = rows.map((_, i) => sharedNum(shared, i, `low_${pair.ma_long}d` as keyof MovAveSpreadSharedMetricsRow));
 
-  // Trend classification (60d ma/ema pairs) — tooltip readout ONLY since
-  // the trend background shades were removed from the UI (the py-side
-  // classification is untouched; trendBandsToMarkArea stays available in
-  // trendBands.ts for a future reintroduction).
-  const isMA60Pair = pair.ma_long === 60;
-  const trendBands = isMA60Pair ? computeTrendBands(shorts, longs, longStds) : [];
-  const hasTrendBands = trendBands.length > 0;
+  // The code's TREND spans (analysis.trend_days — the signals tier's
+  // RSI re-entry classification) for the tooltip's per-date readout;
+  // the Trend section's SHADES arrive via regimeShades (the shared
+  // shade-overlay path). REPLACES the retired client-side close-vs-MA60
+  // classifier (2026-10-15 — the MA60 leg identified turns months
+  // late).
+  const hasTrendSpans = trendSpans != null
+    && Object.keys(trendSpans).length > 0;
 
   // ---- Percentage mode base --------------------------------------------
   const base = pctBaseOf(shorts);
@@ -363,16 +367,36 @@ export function buildPairOption({
   const roofFloor = buildRoofFloorState({
     n,
     dates,
-    shorts,
     highs,
     lows,
     roofFloorWindow,
     roofFloorClickIdx,
     roofFloorRows,
-    bandRows,
-    roofFloorShadeWindows,
     textColor: c.textColor,
   });
+
+  // ---- roofFloor estimate overlay (the Est-levels toggle) ------------------
+  // The chosen date's estimated roof/floor levels under the picked method,
+  // drawn as two horizontal dashed lines (markLine entries merged with the
+  // anchor mark line onto the long-MA series below).
+  const rfEstimate = buildRoofFloorEstimateState({
+    n,
+    roofFloorWindow,
+    roofFloorClickIdx,
+    estRows: roofFloorEstRows ?? null,
+    estMethod: roofFloorEstMethod ?? null,
+    fmtValue: fmtPrice,
+  });
+  const estMarkData = rfEstimate.markLine?.markLine.data ?? [];
+  const anchorMarkData = roofFloor.anchorMarkLine?.markLine.data ?? [];
+  const longMarkData = [...anchorMarkData, ...estMarkData];
+
+  // ---- roofFloor rebound-audit marks (the window's event cohort) ----------
+  // Larger triangles at the qualifying rebounded extremes: strictly
+  // before the chosen date and near that side's median event level.
+  const rfAuditMarks = roofFloorWindow != null
+    ? buildReboundAuditMarks(roofFloorRebounds ?? null, roofFloorWindow, n, dates, roofFloorClickIdx)
+    : null;
 
   // ---- roofFloor change-since plot -----------------------------------------
   // The enabled window's change-since-last-anchor lines own the right-axis
@@ -410,6 +434,8 @@ export function buildPairOption({
     legendData.push(...rsiTrendSpecs.map((s) => s.name));
   } else if (derivTrend != null) {
     legendData.push(...derivTrend.lines.map((l) => l.name));
+  } else if (momentumTrend != null) {
+    legendData.push(...momentumTrend.lines.map((l) => l.name));
   } else if (changeSinceActive && roofFloor.rfW != null) {
     // The roof/floor window's change-since-last-anchor plot owns the
     // right-axis slot (replaces the amt bars).
@@ -423,8 +449,6 @@ export function buildPairOption({
   if (streakData != null) {
     legendData.push(`High ${streakLabel}`, `Low ${streakLabel}`);
   }
-  if (roofFloor.shadeTopData.length > 0) legendData.push(OHLC_SHADE_TOP_NAME);
-  if (roofFloor.shadeBottomData.length > 0) legendData.push(OHLC_SHADE_BOTTOM_NAME);
   const shadeOverlays: ShadeOverlay[] = [
     ...(pxVolShade != null ? [pxVolShade] : []),
     ...(regimeShades ?? []),
@@ -458,7 +482,25 @@ export function buildPairOption({
     symbol: "none",
     lineStyle: { color: lColor, width: 1.4 },
     z: 5,
-    ...(roofFloor.anchorMarkLine != null ? roofFloor.anchorMarkLine : {}),
+    // One shared markLine block: the roof/floor anchor date line (xAxis;
+    // textColor) + the estimate level lines (yAxis; per-item lineStyle +
+    // value labels override the block defaults).
+    ...(longMarkData.length > 0
+      ? {
+          markLine: {
+            silent: true,
+            symbol: ["none", "none"],
+            label: { show: false },
+            lineStyle: {
+              type: "dashed",
+              color: c.textColor,
+              width: 1,
+              opacity: 0.75,
+            },
+            data: longMarkData,
+          },
+        }
+      : {}),
   });
 
   echartsSeries.push({
@@ -491,15 +533,18 @@ export function buildPairOption({
     z: 2,
   });
 
-  // Extreme↔2nd-extreme zone shades + band EVENT markers (roofFloor
-  // group) — one carrier series per side plus the four event scatters.
-  appendRoofFloorShadeSeries(echartsSeries, roofFloor);
-
   // Bollinger envelope (bollinger group).
   appendBollingerSeries(echartsSeries, boll);
 
   // Roof/floor-window overlay series (roofFloor group).
   appendRoofFloorTrendSeries(echartsSeries, roofFloor);
+
+  // Rebound-audit marks (roofFloor group — larger triangles at the
+  // rebounded extremes before the chosen date and near the median
+  // roof/floor; the enabled window's event cohort).
+  if (roofFloorWindow != null) {
+    appendReboundAuditSeries(echartsSeries, rfAuditMarks, roofFloorWindow);
+  }
 
   // Per-side high/low streak shading series (streaks group) — same
   // toggle-per-legend-entry pattern as the shade overlays below. Both
@@ -527,6 +572,10 @@ export function buildPairOption({
   } else if (derivTrend != null) {
     // Slope/Curvature overlay (derivTrend group).
     appendDerivTrendSeries(echartsSeries, derivTrend, derivMaxAbs, c.axisLineColor);
+  } else if (momentumTrend != null) {
+    // Momentum overlay (momentumTrend group) — same exclusive right-axis
+    // slot, below rsiTrend/derivTrend in the precedence.
+    appendMomentumTrendSeries(echartsSeries, momentumTrend, c.axisLineColor);
   } else if (changeSinceActive) {
     // The enabled roof/floor window's change-since-last-anchor lines
     // (roofFloor group) — Δ Low above / Δ High below the pinned zero
@@ -570,8 +619,8 @@ export function buildPairOption({
     roofFloorWindow: roofFloor.rfAligned ? roofFloor.rfW : null,
     roofFloorWinArrays: roofFloor.roofFloorWinArrays,
     ohlcGapInfo,
-    trendBands,
-    hasTrendBands,
+    trendSpans,
+    hasTrendSpans,
     hasBase: base.hasBase,
     baseVal: base.baseVal,
     showBoll,
@@ -585,6 +634,7 @@ export function buildPairOption({
     tradingAmtMode,
     ohlcMode,
     derivTrend,
+    momentumTrend,
   };
 
   // Shared preamble (transparent bg, animations off, themed fragments) via
@@ -628,9 +678,12 @@ export function buildPairOption({
         ? buildRsiRightAxis(c)
         : derivTrend != null
           ? buildDerivRightAxis(c, derivTrend.mode, derivMaxAbs)
-          : changeSinceActive
-            ? buildChangeSinceRightAxis(c, changeSinceMaxAbs)
-            : buildAmtRightAxis(c),
+          : momentumTrend != null
+            ? buildMomentumRightAxis(
+                c, derivMaxAbsOf(momentumTrend.lines))
+            : changeSinceActive
+              ? buildChangeSinceRightAxis(c, changeSinceMaxAbs)
+              : buildAmtRightAxis(c),
     ],
     series: echartsSeries,
   });

@@ -140,10 +140,19 @@ export {
 export { fetchSecBaseline } from "./sec-baseline";
 
 export {
+  fetchAnalysisAdvice,
+  type AdviceTableColumn,
+  type AdviceJustificationTable,
+  type AdviceImplication,
+  type AdviceSignificance,
+  type AnalysisAdvice,
+  type AnalysisAdviceResponse,
+} from "./analysis-advice";
+
+export {
   fetchMarginTrendThemes,
   fetchMarginTrendStrategyThemes,
   fetchMarginIndustrySeries,
-  fetchMarginTrends,
 } from "./analysis-margin-trends";
 
 export { fetchFuturesExt } from "./analysis-futures";
@@ -230,21 +239,20 @@ export {
   fetchTradingSignalConfigs,
   fetchTradingSignals,
   fetchTradingSignalHistory,
-  fetchSignalCurves,
-  fetchSignalThresholds,
-  fetchSignalRsiSeries,
+  fetchSignalRules,
+  fetchTrendSpans,
   type TradingSignalsRunResponse,
   type TradingSignalConfig,
   type TradingSignalConfigsResponse,
   type TradingSignal,
   type TradingSignalsResponse,
   type TradingSignalHistoryResponse,
-  type SignalCurve,
-  type SignalCurvesResponse,
-  type SignalThreshold,
-  type SignalThresholdsResponse,
-  type SignalRsiRow,
-  type SignalRsiResponse,
+  type SignalRule,
+  type SignalRuleParams,
+  type SignalRuleDocument,
+  type SignalRulesResponse,
+  type TrendSpan,
+  type TrendSpansResponse,
 } from "./trading-signals";
 
 export {

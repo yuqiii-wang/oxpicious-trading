@@ -1,6 +1,8 @@
 {
   "service": "database.monitoring",
   "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
   "freq": "occasionally",
   "schedule": "no fixed cadence — scheduled passes run it before heavy writes; also on demand via the Stream Monitor health-check button",
   "notes": "Point-in-time health check (replica sync, replay backlog, slot WAL retention, pg_wal dir size vs max_wal_size, downloads-stream liveness); the --schema-drift variant runs in the same pass. Alert-only: a monitoring failure does not prevent the scheduled work.",

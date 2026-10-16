@@ -135,7 +135,7 @@ export async function getIndustryCorrelations(
       AND (industry_id, benchmark_industry_id) IN (${pairPlaceholders})
     ORDER BY start_date ASC, industry_id, benchmark_industry_id
   `;
-  // pool_size crosses as its stats.label_dim SMALLINT code.
+  // pool_size crosses as its static.label_dim SMALLINT code.
   const params = [...pairParams, encodeLabelParam("pool_size", poolSize)];
 
   const [rows, labelMap] = await Promise.all([

@@ -25,7 +25,7 @@
 --  scans an index-only path.
 --
 --  Type columns are SMALLINT label codes (the label-code contract,
---  stats.label_dim + _common/labels.py + data_viz/api/services/
+--  static.label_dim + _common/labels.py + data_viz/api/services/
 --  label-codes.ts):
 --    sec_type — domain 'sec_type' (the analysis.mov_ave family contract,
 --               REUSED here): 0 etf | 1 index | 2 stock
@@ -40,10 +40,10 @@
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS monitor.src_data_audit (
-    sec_type    SMALLINT    NOT NULL CHECK (sec_type IN (0, 1, 2)),  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type    SMALLINT    NOT NULL CHECK (sec_type IN (0, 1, 2)),  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code        TEXT        NOT NULL,
     exchange    TEXT,
-    board       SMALLINT,   -- label code (stats.label_dim 'board'): 0=MAIN 1=STAR 2=GEM 3=BSE; stock rows only, NULL otherwise
+    board       SMALLINT,   -- label code (static.label_dim 'board'): 0=MAIN 1=STAR 2=GEM 3=BSE; stock rows only, NULL otherwise
     n_days      INTEGER     NOT NULL DEFAULT 0,
     first_date  DATE,
     last_date   DATE,
@@ -53,10 +53,10 @@ CREATE TABLE IF NOT EXISTS monitor.src_data_audit (
 );
 
 COMMENT ON TABLE  monitor.src_data_audit             IS 'Per-security source-data coverage audit: n_days / first_date / last_date per (sec_type, code). Migrated out of the security classification JSON cache (build-time data never belonged in the hand-editable static shards). Written by builds.classification (index from stats.index_identity, stock from stats.stock_identity) and builds.etf (etf rows from its OHLCV universe); the monitoring UI reads it via GET /api/monitor/src-data-audit.';
-COMMENT ON COLUMN monitor.src_data_audit.sec_type    IS 'Security type the coverage belongs to — SMALLINT label code, domain ''sec_type'' (stats.label_dim; the analysis.mov_ave family contract, reused): 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity). PK component — the UI''s type filter hits this.';
+COMMENT ON COLUMN monitor.src_data_audit.sec_type    IS 'Security type the coverage belongs to — SMALLINT label code, domain ''sec_type'' (static.label_dim; the analysis.mov_ave family contract, reused): 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity). PK component — the UI''s type filter hits this.';
 COMMENT ON COLUMN monitor.src_data_audit.code        IS 'Security code, same convention as stats.sec_classification: index/etf bare 6-digit (000300 / 510050), stock WITH exchange suffix (000001.SZ). Synthetic DUMMY_* indices are never written. PK component — the UI''s code search hits this index.';
 COMMENT ON COLUMN monitor.src_data_audit.exchange    IS 'Listing venue when one applies — TEXT (the deliberate label-code exception, same values as stats.sec_classification.exchange: SS / SZ / GEM / STAR / BJ / HK / OVERSEAS). index → derived from code prefix + name/sector (never stored on index_identity); stock → stats.stock_identity.exchange (code suffix); etf → stats.sec_classification.exchange. NULL = no venue applies (OTC feeder funds).';
-COMMENT ON COLUMN monitor.src_data_audit.board       IS 'Listing board — SMALLINT label code, domain ''board'' (stats.label_dim): 0 = MAIN, 1 = STAR, 2 = GEM, 3 = BSE. Stock rows only, carried from stats.stock_identity.board; NULL for index/etf rows (the board concept does not apply).';
+COMMENT ON COLUMN monitor.src_data_audit.board       IS 'Listing board — SMALLINT label code, domain ''board'' (static.label_dim): 0 = MAIN, 1 = STAR, 2 = GEM, 3 = BSE. Stock rows only, carried from stats.stock_identity.board; NULL for index/etf rows (the board concept does not apply).';
 COMMENT ON COLUMN monitor.src_data_audit.n_days      IS 'Days of source data: COUNT(*) of the security''s identity-table rows (index/stock) or OHLCV-universe days (etf, same value as stats.sec_classification.n_days).';
 COMMENT ON COLUMN monitor.src_data_audit.first_date  IS 'Earliest source-data date (MIN of identity / OHLCV dates). NULL = no source data.';
 COMMENT ON COLUMN monitor.src_data_audit.last_date   IS 'Latest source-data date (MAX of identity / OHLCV dates) — a last_date far behind today flags stale / dead data for the security. NULL = no source data.';

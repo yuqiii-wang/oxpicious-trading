@@ -1,7 +1,7 @@
 """Shared internal-step plumbing for analysis.mov_ave_spread.
 
 Every internal step (rsi / holiday / ema / ohlc lines / ohlc gaps /
-trading_amt / trading_amt_ratios / roof_floor_bands) repeats the SAME
+trading_amt / trading_amt_ratios) repeats the SAME
 pipeline skeleton around its step-specific compute + sanitize:
 
   0. column-select the needed source columns, resolve sec_types,
@@ -17,7 +17,7 @@ pipeline skeleton around its step-specific compute + sanitize:
   3. upsert analysis.analysis_identity
 
 run_table_step() is that skeleton, parameterized. Steps with custom
-detection (repair dates, last-date bounce confirmation) pass an async
+detection (repair dates) pass an async
 ``detect_fn`` hook; steps with wholly custom flows (wholesale registries,
 pair-keyed bands, streaks) keep their own run_* and reuse the smaller
 helpers (infer_sec_types, filter_target_dates).
@@ -65,7 +65,7 @@ def infer_sec_types(
 
 def sec_type_code(sec_type: str) -> int:
     """The stored value of the mov_ave-family sec_type columns: its
-    stats.label_dim ('sec_type' domain) SMALLINT code — the DB-side
+    static.label_dim ('sec_type' domain) SMALLINT code — the DB-side
     contract since the 2026-10-06 smallint conversion (SQL params and
     frames both carry the code; the label string stays the loop/log
     vocabulary)."""

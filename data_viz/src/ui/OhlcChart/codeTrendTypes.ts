@@ -6,6 +6,7 @@
  */
 import type React from "react";
 import type { OhlcMode } from "@/lib/ohlc";
+import type { TrendSpan } from "@/lib/api-client";
 import type {
   IndustrySentimentsIndex,
   MarketRegimeSpans,
@@ -128,6 +129,15 @@ export interface CodeTrendChartState {
   showRegimes: boolean;
   regimeSpans: Partial<MarketRegimeSpans> | null;
   regimesLoading: boolean;
+  /** TREND SPAN shading toggle (analysis.trend_days — the signal rules
+   *  tier's own classification) — graded per-trend bands (top red /
+   *  bottom green deepest, rise blue / fall amber lighter; unknown the
+   *  background). Off by default; the first enable fetches the code's
+   *  spans once (GET /api/live-data/trading-signals/trend-spans) and
+   *  caches them per code. */
+  showTrend: boolean;
+  trendSpans: Record<string, TrendSpan[]> | null;
+  trendLoading: boolean;
   /** Board tag(s) beside the header title (stats.sec_board_map via
    *  GET /api/sec-board): a stock's single listing board, or an
    *  ETF/index's composition-weighted board mix. Fetched in parallel

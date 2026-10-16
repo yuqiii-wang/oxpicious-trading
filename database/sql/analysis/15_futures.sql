@@ -143,7 +143,7 @@ COMMENT ON COLUMN analysis.futures_ext.gap_half_life_over_60days IS 'Implied mea
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.futures_gap_quintiles (
     asof_date                        DATE          NOT NULL,
-    contract_type                    SMALLINT      NOT NULL,  -- label code (stats.label_dim 'contract_type'): 0=index 1=bond
+    contract_type                    SMALLINT      NOT NULL,  -- label code (static.label_dim 'contract_type'): 0=index 1=bond
     horizon_days                     INTEGER       NOT NULL,
     quintile                         INTEGER       NOT NULL,
     n_obs                            INTEGER,
@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS analysis.futures_gap_quintiles (
 
 COMMENT ON TABLE  analysis.futures_gap_quintiles                    IS 'Basis-convergence quintile summary for analysis.futures. Mean gap (bps) and mean forward gap change over the next horizon_days trading days (bps) per gap quintile (1 = lowest gap, 5 = highest), pooled per contract_type. High-quintile NEGATIVE forward change / low-quintile POSITIVE change = contrarian convergence of the futures basis toward the underlying. asof_date-stamped snapshots, one set per pipeline run. Built by analysis.futures; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.futures_gap_quintiles.asof_date          IS 'Snapshot date = the latest date in analysis.futures_ext when the run computed the summary.';
-COMMENT ON COLUMN analysis.futures_gap_quintiles.contract_type      IS 'Contract class pooled for the quintiles, as its stats.label_dim (''contract_type'' domain) SMALLINT code: 0 = ''index'' (IC/IF/IH/IM), 1 = ''bond'' (T/TF/TL/TS).';
+COMMENT ON COLUMN analysis.futures_gap_quintiles.contract_type      IS 'Contract class pooled for the quintiles, as its static.label_dim (''contract_type'' domain) SMALLINT code: 0 = ''index'' (IC/IF/IH/IM), 1 = ''bond'' (T/TF/TL/TS).';
 COMMENT ON COLUMN analysis.futures_gap_quintiles.horizon_days       IS 'Forward horizon in trading days for the gap change (5 or 20).';
 COMMENT ON COLUMN analysis.futures_gap_quintiles.quintile           IS 'Gap quintile bucket 1..5 (1 = most negative basis, 5 = most positive basis).';
 COMMENT ON COLUMN analysis.futures_gap_quintiles.n_obs              IS 'Number of (date, contract) observations in the quintile with a complete forward window.';

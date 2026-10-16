@@ -27,11 +27,13 @@ import { formatPriceValue, type OhlcMode } from "@/lib/ohlc";
 import {
   DIVIDEND_COLOR,
   DOWN_COLOR,
+  NEUTRAL_FILL,
   PE_COLOR,
   TRIGGER_STREAK_COLOR,
   UP_COLOR,
 } from "@/theme/chart-palette";
 import type { StockDividend } from "@shared/types";
+import { signalRecordName } from "@/shared/components/signal-code-trend/families";
 import type { OhlcForecastAction, OhlcTradeSignal } from "@/ui/OhlcChart/types";
 
 /** One forecast signal streak period, as reported on hover — the
@@ -177,9 +179,26 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
       ], { marginBottom: 4 }));
     }
 
-    // Trade-signal rows — one per live_signals record of the day.
+    // Trade-signal rows — one per live_signals record of the day. A
+    // REJECTED record (is_rejection — the gate's explicit no-action)
+    // renders the grey ◆ NO ACTION row, never a buy/sell triangle row.
     const daySignals = ctx.signalsByDate?.get(dateStr) ?? [];
     for (const s of daySignals) {
+      if (s.is_rejection === true) {
+        children.push(makeRow([
+          React.createElement(
+            "span", { style: { color: NEUTRAL_FILL } }, "◆"),
+          " ",
+          React.createElement(
+            tooltipComponents.Bold,
+            { style: { color: NEUTRAL_FILL } },
+            "NO ACTION",
+          ),
+          ` · ${signalRecordName(s.signal_type, s.signal_sub_type)}`,
+          " (rejected by the strategy's gate)",
+        ]));
+        continue;
+      }
       const buy = s.action === "buy";
       const color = buy ? UP_COLOR : DOWN_COLOR;
       children.push(makeRow([
@@ -190,7 +209,7 @@ export function makeCodeTrendTooltipFormatter(ctx: CodeTrendTooltipContext) {
           { style: { color } },
           buy ? "BUY" : "SELL",
         ),
-        ` · ${s.signal_type} · ${s.signal_sub_type}`,
+        ` · ${signalRecordName(s.signal_type, s.signal_sub_type)}`,
         ` (conf ${s.confidence}%)`,
       ]));
     }

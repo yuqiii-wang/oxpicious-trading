@@ -12,10 +12,12 @@
  *   const result = await runPythonModule("strategy.singleton_trading",
  *     ["--sec-type", "index", "--codes", "000970", "--force"]);
  *
- * Long-lived service starters (their nohup'd children must SURVIVE the
- * spawn) cannot go through a transient wsl.exe — a session's children
- * die with its client — so they run via a Task Scheduler task instead:
- * see api/routes/monitor.ts POST /stream-always + scripts/ui_stream_always.cmd.
+ * Long-lived keepers (starters whose nohup'd children must SURVIVE) go
+ * through the same spawn as any run — a WSL session's children die only
+ * when its wsl.exe client exits, and this API server holds the client for
+ * the keeper's whole life (runWslScript, e.g. the stream-always keeper in
+ * api/routes/monitor.ts POST /stream-always). The flip side: the keeper's
+ * lifetime is the API server's lifetime.
  */
 import { spawn } from "child_process";
 
@@ -177,4 +179,27 @@ export function runPythonModule(
   const argStr = args.join(" ");
   const cmd = `${WSL_PREAMBLE} && cd ${WSL_PROJECT_ROOT} && python -m ${module} ${argStr}`;
   return runWslCommand(cmd, `python -m ${module}`, opts);
+}
+
+/**
+ * Spawn ONE repo shell command via WSL and resolve when it exits — the
+ * generic form of runPythonModule (same conda preamble + cd, any command).
+ *
+ * Also the home of long-lived keepers: the spawned wsl.exe stays
+ * connected for as long as the command runs (windowsHide — no console
+ * window), so a session that parks on `sleep infinity` holds its nohup'd
+ * children alive for the lifetime of THIS API server.
+ *
+ * @param command Full bash command after the preamble (the cd is appended).
+ * @param label   What runs, for the process registry.
+ * @param opts    processIdTag dedupes concurrent runs of the same logical
+ *                process (see RunPythonModuleOptions).
+ */
+export function runWslScript(
+  command: string,
+  label: string,
+  opts: RunPythonModuleOptions = {},
+): Promise<RunScriptResult> {
+  const cmd = `${WSL_PREAMBLE} && cd ${WSL_PROJECT_ROOT} && ${command}`;
+  return runWslCommand(cmd, label, opts);
 }

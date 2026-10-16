@@ -48,7 +48,13 @@
 --  downloads/stream/szse/price.json ← downloads.stream.szse.price; the
 --  tree-root default.json is each tree's fallback for services without
 --  their own file). service_config/ holds each service's max_parallel
---  concurrency cap + its supposed-run freq mirrored from scripts/*.sh
+--  concurrency cap, its included/excluded_parallel_services cross-service
+--  parallel-run lists (rooted dotted prefixes: a scope, a sub-scope path,
+--  or the full service name; more specific wins on conflict — name >
+--  sub-scope > scope; ties to excluded; empty included = unrestricted,
+--  non-empty = whitelist — enforced at registration by
+--  _common/service_heartbeat.py, previewed by the UI run guard) + its
+--  supposed-run freq mirrored from scripts/*.sh
 --  (shown on the Stream Monitor page's Pipeline processes table);
 --  external_request_config/ holds the per-(service, request_type)
 --  pacing / anti-bot request inventory — since 2026-10-10 it is the

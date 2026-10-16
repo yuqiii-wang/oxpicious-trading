@@ -26,6 +26,7 @@ from _common.build_commons import (
     rec_cols,
 )
 from _common.df_utils import epoch_col_to_dt64, to_dt64
+from _common.importance import order_codes_or_sorted_async
 from _common.labels import SEC_TYPE_CODE
 
 from analysis.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
@@ -305,7 +306,11 @@ async def fetch_source_data(
           f"dates")
 
     sql = _fetch_sql_for_sec_type(sec_type)
-    rows = await conn.fetch(sql, sorted(active_codes))
+    # Importance rank 0 -> 9 (stats.sec_importance_ranks, monthly build):
+    # bind the universe most-important-first (whole-frame compute is
+    # order-invariant; this drives logs + any future batching/slicing).
+    rows = await conn.fetch(
+        sql, await order_codes_or_sorted_async(conn, active_codes))
     if not rows:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",

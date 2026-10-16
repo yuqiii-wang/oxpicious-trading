@@ -1,0 +1,19 @@
+{
+  "comment": "Rank 0 indices — the analysis study mandate (10 named) + the benchmark_broadmarket flagships (000001/000016/000300/000688/399001). Hand-curated: edit this list, not the builder.",
+  "codes": {
+    "000001": "SS",
+    "000015": "SS",
+    "000016": "SS",
+    "000300": "SS",
+    "000683": "SS",
+    "000688": "SS",
+    "000991": "SS",
+    "399001": "SZSE",
+    "930708": "SS",
+    "931071": "SS",
+    "931160": "SS",
+    "931594": "SS",
+    "931743": "SS",
+    "931994": "SS"
+  }
+}

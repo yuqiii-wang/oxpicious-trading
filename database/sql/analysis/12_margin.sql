@@ -37,7 +37,7 @@
 DROP TABLE IF EXISTS analysis.margin_tech_stats;
 
 CREATE TABLE analysis.margin_tech_stats (
-    sec_type        SMALLINT         NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -55,7 +55,7 @@ CREATE TABLE analysis.margin_tech_stats (
 SELECT public.create_hash_partitions('analysis', 'margin_tech_stats', 16);
 
 COMMENT ON TABLE  analysis.margin_tech_stats IS 'Per-(code, sec_type, date) regime-detection input for analysis.margin_changes trend episode detection. REDUCED to the two columns consumed by detect_trend_episodes: margin_balance_slope_ma5 (5d smoothed rz_balance slope; sign = UP/DOWN segmentation signal) and margin_balance_slope_zscore_20d (slope z-score vs 20d window; magnitude significance filter). sec_type ∈ {etf, stock, index} — ''index'' rows aggregated from the analysis.margin_index_series TABLE. RONGZI (融资) only. Built by analysis.margins (truncate-then-recompute); all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.margin_tech_stats.sec_type IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.margin_tech_stats.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.margin_tech_stats.code IS 'Security ticker: ETF bare e.g. "159001"; stock with exchange suffix e.g. "600008.SS".';
 COMMENT ON COLUMN analysis.margin_tech_stats.date IS 'Trading date.';
 COMMENT ON COLUMN analysis.margin_tech_stats.margin_balance_slope_ma5 IS '5-trading-day rolling mean of the daily rz_balance slope ((X[t]-X[t-1])/X[t-1]) per (sec_type, code). Sign = direction of the smoothed balance move — the segmentation signal for margin_changes trend episodes.';

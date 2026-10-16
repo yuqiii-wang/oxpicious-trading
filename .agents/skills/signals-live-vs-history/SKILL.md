@@ -1,381 +1,371 @@
 ---
 name: signals-live-vs-history
 description: >
-  How the oxpicious-trading repo differentiates HISTORY signals from LIVE
-  signals: analysis_signals computes its OWN RSI percentile (rsi pct)
-  buckets in-engine (the analysis_forecasts layer was REMOVED 2026-10-05)
-  over analysis.mov_ave_rsi + prices; the plain gate (sign-aligned blended
-  mean reversal > its side's bar (buy 0.75% / sell 0%) at the per-side
-  sample floor; the delay ladder /
-  optimal-entry selection / SignalQuality gate were REMOVED 2026-10-05)
-  turns gate-passing buckets into SIGNAL STRATEGIES
-  (analysis_signals.signal_strategies — one row per bucket over its
-  window period, delay 0, with the live breach bar) whose snapshot-owned
-  trigger days (each qualifying streak's FIRST day) are the HISTORY
-  signals (analysis_signals.history_signals); live signals are ONLY
-  breaches of the strategies' active bars recorded in live.live_signals.
-  Use for ANY work touching analysis_signals, live_signals, the emit
-  gate, signal thresholds, or the mov_rsi family, even when the user
-  does not mention signals explicitly.
+  How the oxpicious-trading repo differentiates HISTORY signals from
+  LIVE signals in the RULES era (2026-10-14 redesign, consolidated
+  2026-10-15, trend rebuild 2026-10-16): analysis.analysis_signals
+  measures SEVEN detection families (mov_rsi / bollinger / ma_cross /
+  options_wall / options_vix / momentum / rf_break) as SELF-ADAPTIVE per-(code,
+  sub signal, trend, regime, action) RULE CELLS written to
+  analysis_signals.signal_rules (rule_params = the prepared bar +
+  measured evidence + gate + confidence scale), populates
+  analysis_signals.history_signals by REPLAYING those cells (episode
+  FIRST days, delay 0), and stamps the family-agnostic
+  analysis.trend_days store (the consolidated analysis.trends
+  component's RSI-re-entry classifier). The live tier NEVER detects:
+  it breaches the rule cells' bars (mov_rsi / bollinger live-wired)
+  under a day-context (trend, regime) match. Use for ANY work touching
+  analysis_signals, signal_rules, history_signals, trend_days,
+  live.live_signals, the emit gate, rule parameters, or the six
+  families' engines — even when the user does not mention signals
+  explicitly.
 ---
 
-# Live signals vs history signals
+# Live signals vs history signals (rules era)
 
-The repo has TWO signal tiers with a strict one-way dependency. Never blur
-them: the live tier NEVER re-detects or re-computes anything — it only
-breaches the bars the strategy tier already wrote.
+The repo has TWO signal tiers with a strict one-way dependency:
 
-2026-10-05 removals (three legs, same day):
-1. The forecast layer is GONE — `analysis/analysis_forecasts` (package,
-   SQL files, UI Forecast table + API endpoints), the
-   `analysis_forecasts` schema (DROP CASCADE,
-   temp_scripts/_drop_forecast_schema.py) and the ohlcv boost/selection
-   derived populations. The signals tier computes its own rsi-pct
-   buckets in-engine; strategies are the plain rsi-pct population only.
-   (2026-10-06: the boost returned as a MARKER, not a population —
-   see the ohlcv-boost block below.)
-2. The SignalQuality claim-profile gate (engines/_quality.py) is gone —
-   the plain gate at the per-side sample floor is the whole gate.
-3. The DELAY LADDER is gone — no anchors at days 1..5, no
-   optimal-entry argmax, no ladder-stability floor. A strategy IS its
-   delay-0 profile: each qualifying streak's FIRST day is the trigger;
-   `signal_delay_days` stays in the schema, written 0.
+- **analysis.analysis_signals** — the strategy tier: measures rule
+  cells on each code's own history, writes `signal_rules` (the cells)
+  + `history_signals` (the cells' triggers replayed) + `trend_days`
+  (the per-(code, date) trend classification every cell splits on).
+- **live.live_signals** — the live tier: NEVER re-detects or
+  re-computes anything. It reads the ACTIVE rule cells and records
+  breaches of their bars under the day-context match.
 
-## Study scope for analysis & strategy (MANDATORY)
+Timeline of the era: 2026-10-14 the threshold/curve tables were
+dropped and the rule-cell tier landed; 2026-10-15 the OOP
+consolidation (rule_base ABC + evaluation/boost/trends siblings), the
+regime-join bug fix, the rules-era live rewire, the momentum family,
+and the consolidated `analysis.trends` classifier (RSI(10) re-entry
+zones + Kaufman guard + deep-anchor turn); 2026-10-16 the trend-update
+force rebuild (216 cells / 1,458 events at index scope) and the rsi6
+entry-window addition. The financial semantics of the six families
+live in the sibling skill `signals-biz-logic`; this file stays on
+architecture.
 
-To do study in analysis and strategy, only check by industries and
-indices (no etf and stocks unless explicitly said), only these 10 indices
-(000001, 931743, 931160, 931071, 000015, 930708, 931994, 931594, 000683,
-000991), and only write the 10 indices to DB table, unless otherwise
-explicitly instructed then run all indices.
+## The pipeline (`python -m analysis.analysis_signals`)
 
-```
-analysis.mov_ave_rsi (the RSI value source — Wilder RSI per window,
-  owned by analysis.mov_ave_spread's rsi step) + prices (the
-  mov_ave_spread price convention) + stats.market_regimes (day labels)
-  + the day-level tail-episode flags is_typical_{W}days + episode
-  sizes typical_ep_size_{W}days (SAME table; THE re-entry semantics
-  live at that layer — mov_ave_spread steps/rsi_typical.py computes
-  them on every ranks rebuild from mov_ave_rsi_ranks' full-history
-  ranks: NULL out-of-band / TRUE the TYPICAL pass's days —
-  SIDE-MIRRORED (2026-10-07 isolated split + same-day sell mirror:
-  the amplified tail event differs by side; equity asymmetry — sharp
-  falls revert, sharp rises continue): BUY = the ISOLATED first
-  touches (an episode starting > RSI_TYPICAL_ISOLATED_DAYS (20)
-  trading days after the previous same-side band day — the
-  capitulation; buy-side rebounds rise monotonically with absence
-  length, -0.55% blended at gap 7-10 vs +2.36% at 31-60), SELL = the
-  RE-TESTS (a fresh episode whose previous overbought episode ended
-  within the 20-day window — the double top, the amplified sell;
-  isolated overbought breakouts after calm are momentum ignitions
-  where the sell backfires) / FALSE the re-entry passes' days (flicker
-  re-qualifications within K=5 exit days, buy-side continuation
-  starts, sell-side isolated breakouts + their continuations — the
-  noisy population) at the 25% band; the two-state flags cover every
-  in-band day (continuations inherit their pass's registration flag —
-  the UI's typical/re-entry populations draw the deep days); both
-  signal tiers' population rides the EPISODE SIZES — non-NULL =
-  in-band, and the deep days the percentile bars select are exactly
-  the gap-1 continuations)
-        │
-        ▼  in-engine, per (sec_type, snapshot), on cudf.pandas frames
-analysis.analysis_signals (THE SIGNALS TIER — python -m analysis.analysis_signals)
-  TWO families (SignalEngine ABC in engines/_base.py; one package each
-  under engines/signal_families/; dispatched via the
-  engines.ENGINES registry — never if/else): mov_rsi (the RSI
-  percentile family) and boll_std (2026-10-07: the fixed-σ Bollinger
-  band-breach family — IN-ENGINE values since 2026-10-10, signal_type
-  'bollinger' in the DB: z = (price − SMA_W)/σ_W per W ∈ {5, 20, 60}
-  computed on the fetched price frame by boll_std/_compute (the classic
-  trailing SMA + population σ + the episode layer; the grid is the
-  parent's MA_WINDOWS subset — the 10-day band was replaced by the
-  5-day and the analysis.mov_ave_boll value-source table DROPPED with
-  the mov_ave_spread boll step); NO percentile logic: the bars are
-  the FIXED ±k constants, k ∈ {2, 2.5, 3}σ (sub_type boll{W}_{k}std,
-  2σ the classic default — the rsi14 analog), the breach excess depth
-  |z| − k in σ units replaces the pct axis, and the curve tier reads
-  s = |z| DIRECTLY as the Gaussian depth score (the Gaussian tail of
-  |z| gives Φ^-1(1-q) == |z|); the episode layer rides the SAME frame
-  at the FIXED 0.6745σ band (the Gaussian 25% tail — the RSI rank-band
-  analog; z is trailing so the flags never shift retroactively, no
-  ranks table, computed in the same in-engine pass through the shared
-  SIDE-MIRRORED classifier mov_ave_spread steps/rsi_typical.py);
-  the boll curve's band_curve bins the QUARTER-σ stride (keys 0.75..3.5,
-  edges aligned with the 2/2.5/3σ bars) and tail_bars carries the σ
-  bars themselves; the fit core is SHARED (engines/_curve_fit.py —
-  moved verbatim from mov_rsi/curve; fit_payload takes the family
-  grid, boll's (0.66, 3.10) extends past its 3σ bar; the SIDE-AWARE
-  fit since 2026-10-11: the SELL side keeps the rank-gated isotonic
-  (pooled_iso — its measured response IS rank-monotone), the BUY side
-  fits deep_arm_iso — the strict increasing PAVA (loosely monotone
-  plateau → deep-rise shape) gated by the PRE-REGISTERED ≥
-  BOLL_CURVE_DEEP_ARM_S (2.5σ) deep-arm vs-rest contrast at
-  CURVE_SLOPE_MIN_T (day-divisor SE, permutation-null calibrated ~5%
-  false-draw) — the global rank correlation read ~0-to-negative on the
-  measured U-shaped buy response and stored the flat payload
-  everywhere; fit_t = the arm contrast t on buy rows); the shared
-  BucketContext machinery is subclassed by boll_std/_buckets.py with
-  fixed-bar detection; each engine resolves its OWN rolling-latest
-  key via the latest_data_date hook on SnapshotSelection — boll's is
-  the sec_type's latest PRICE-data date). All
-  computation is
-  vectorized cudf.pandas; all frames are NATIVE-dtype only (no object
-  columns, no datetime64[D] casts, no pd.Timestamp compares — they
-  poison cudf frames; typed EMPTY frames matter too — object-dtype
-  empties turn every numeric op into a [cudf fallback]). NO CASE/WHEN
-  in any SQL: side is a STORED column, every conditional lives in the
-  engine. The label columns store their stats.label_dim SMALLINT codes
-  end-to-end (side / action / regime_state; since 2026-10-10 also
-  sec_type 0=etf/1=index/2=stock and signal_type 0=mov_rsi/1=bollinger
-  — the row dicts carry codes from the emit boundary, the SQL params
-  carry codes; the live tier decodes at its active-set fetch, the API
-  at the SQL boundary via labelDecodeSql).
-  Snapshot grid (config/grid.py — ported from the retired forecast
-  config): the last 10 completed year-ends PLUS the ROLLING LATEST
-  snapshot keyed at the sec_type's LATEST AVAILABLE RSI DATA DATE
-  (analysis.mov_ave_rsi max(date)), each a trailing 10-year window
-  (S − 10y, S].
-  Per run (engines/signal_families/mov_rsi/_buckets.py): fetch the
-  input frame ONCE (price + rsi_{W} columns + first dates + regime
-  labels, bounded to the earliest target window start, no upper bound
-  — forward changes need post-snapshot prices; fetch/inputs.py), then
-  per snapshot: the side's OWN percentile bar per (code, rsi_window,
-  pct) — bottom = the window's q(p/100), top = q(1−p/100)
-  interpolated quantile (the classic percentile construction the
-  {pct}pct sub_type names; RESTORED 2026-10-07 — the 2026-10-05
-  symmetric-in-space median-centered band landed one or both bars
-  outside a bounded high-variance indicator's reach (an RSI(3) top
-  bar past 100) and collapsed bucket occurrence below the sample
-  floors: 35,868 → 3,370 anchor-carrying buckets on the index rolling
-  snapshot; side fairness lives at the gate layer now — per-side gate
-  bars + sample floors; _buckets._tail_quantile_bars) → nested
-  per-side tail
-  tests (top/bottom pct% {1,2,3}) → streak-merge (2026-10-07 TIER
-  ALIGNMENT: qualifying runs on each code's OWN traded-day ordinals
-  with the analysis layer's K=5 re-entry exit absorbed — ONE signal
-  per EPISODE, triggered at its FIRST day, delay 0; the old
-  union-calendar axis carried other codes' holiday dates, split runs
-  at every closure the code did not trade and manufactured phantom
-  re-opening triggers, and the 0-day debounce counted bar re-crossing
-  wiggles as fresh occurrences — occurrence was inflated vs the curve
-  tier's episode count and thin-regime buckets passed gates the
-  curve floor rightly dropped) → per-bucket blended stats (the FIXED
-  5d 0.50 / 3d 0.15 / 10d 0.15 / next 0.10 / 20d 0.10 mix over the triggers' valid
-  anchors, renormalized
-  over the horizons with stats; occurrence = the MIN positive leg
-  count = the window's EPISODE count — the population the curve
-  tier's mu is measured over) + the bucket's
-  window-end trigger (bar recovery).
-  THE GATE (engines/_frame.py detect): the sign-aligned blended mean
-  forward change (dir_ave — top negated) > the side's bar
-  (buy GATE_DIR_AVE_MIN 0.75% / sell GATE_DIR_AVE_MIN_SELL 0) on
-  occurrence_count >= 4 buys / 3 sells
-  (BUY/SELL_SAMPLE_FLOOR — a thinner bucket measures selection noise;
-  sells get the looser bar, their evidence is structurally thinner
-  under positive drift). That is the WHOLE gate.
-  The write is CHUNKED BY PARTITION KEY (engines/_store.py — the
-  bulk-write rule): records grouped by code into ~100K-row chunks,
-  each chunk ONE transaction (purge that code set's snapshot scope
-  from BOTH tables + COPY its records), replica-lag throttle between
-  chunks:
-    signal_strategies ← ONE row per gate-passing bucket over its
-    window period (start_date = window_lower(stat_date) ..
-    end_date = stat_date). confidence = the bucket's sign-aligned
-    dir_ave (FLOAT; INTEGER ROUND(10000 x) basis points on
-    history/live rows). signal_threshold in the RSI's own space (the
-    side's own percentile bar — bottom q(p/100) / top q(1−p/100),
-    recovered as
-    rsi(window-end trigger) − trigger_excess). side stored
-    (top/bottom), action sell/buy, signal_delay_days = 0. PK includes
-    side AND regime_state. The parameter rides IN the sub_type —
-    rsi{W}_{pct}pct ("1pct"/"2pct"/"3pct") — so each (window, pct,
-    side, regime) is its own strategy.
-    history_signals ← the buckets' trigger days (the qualifying
-    streaks' first days) INSIDE the snapshot key's CALENDAR YEAR (the
-    1-year-stride ownership rule: a year-end snapshot owns year Y;
-    the rolling latest owns [Jan 1, its key]; one snapshot owns each
-    date → no cross-snapshot PK conflicts). Structural clone of
-    live.live_signals; time 15:00:00, is_day_close_trigger = TRUE.
-  Incremental (config.mutable_dates): snapshots MISSING from
-  signal_strategies plus the MUTABLE SCOPE re-emitted every run — the
-  ROLLING LATEST snapshot (always; its forward legs complete late)
-  and the newest completed year-end while its 20-trading-day forward
-  windows are unrealized (~5 weeks after New Year; then it freezes).
-  Retired keys (yesterday's rolling-latest date) are SWEPT from both
-  tables before the resolution (SnapshotSelection.
-  sweep_stale_snapshots — chunked deletes). (The forecast-identities
-  snapshot gating + the snapshot_emissions partial-backfill attempts
-  registry went with the forecast layer; coverage resolves at
-  snapshot granularity, and the 04 table stays in the schema,
-  unwritten.)
-  --force purges the sec_type's family rows first; --metrics rsi
-  scopes the family. Post-run: 02_is_active.sql (is_active = each
-  (code, sec_type, type, sub_type)'s LATEST end_date — the live
-  threshold set) + run/rank.py (the GPU confidence-DESC signal_order
-  pass; 03_signal_order_rank.sql is its guarded write-back).
-        │
-        │  is_active = TRUE rows
-        ▼  = THE CURRENT THRESHOLD SET
-live.live_signals (LIVE signals = breaches)
-  python -m live.live_signals (intraday): latest stats.*_intraday_5min
-  close + the current rsi_{W} value vs every active strategy bar —
-  a breach IS the live signal; one row per (code, sec_type,
-  signal_type, signal_sub_type, date, time), PK upsert. THE GENERIC
-  RULE (evaluator.py): the row's OWN action decides the direction
-  (sell → value > threshold, buy → value <), the record carries the
-  row's OWN action + confidence and signal_excess = signal −
-  signal_threshold. The current value comes from the declarative
-  SIGNAL_VALUE_SOURCE map (analysis/fetch/_values.py: mov_rsi → "rsi"
-  (latest rsi_{W}days from analysis.mov_ave_rsi), bollinger → "boll"
-  (the latest close's σ-depth z computed ON THE FLY from the code's
-  last closes — 2026-10-10, no source table; sub_type
-  boll{W}_{k}std, window = the first integer run); the
-  bar is the STORED percentile threshold). Missing current value ⇒
-  skipped, never invented. is_day_close_trigger = TRUE rows are the
-  on-demand --date daily-close fallback (the old day-close mirror
-  writer is RETIRED — history_signals is the historical record).
-  (The confidence_boost / confidence_selection cohort add-on columns
-  went with the forecast layer — both stay in the schema, unwritten.)
+CLI: `--force` (purge the sec_type's rows in both tables and
+re-emit), `--sec-type {index,etf,stock}` (default index),
+`--families` (comma list; `boll_std` aliases `bollinger`),
+`--codes` (default the 10 study indices; ignored for the options
+families — their universe resolves per sec_type from
+stats.options_terms, options_wall dropping the SSE ETF underlyings
+whose chain OI is an accumulated-volume estimator), `--analyze`,
+`--no-boost` (the ohlcv-boost A/B switch; default = each family's
+OHLCV_BOOST class flag).
 
-THE OHLCV BOOST (2026-10-06 — population VARIANTS, not cohorts): the
-GENERAL formula lives in `engines/ohlcv_boost/` (family-agnostic;
-score_bp = β_ohlc·ê_ohlc + β_vol·ê_vol + β_rsi·ê_rsi + γ·ê_ohlc·ê_vol/
-100 over the day-0 anchor's stored axes — the ohlc_gaps `pattern`
-label, the price_vs_amt (vol_state, px_speed) amount/price-speed cell,
-and the tail depth past the bar — through per-side measured ladders in
-`_configs.py`, reusing the retired 2026-09-27/28 fused-score
-calibration verbatim). The engine fetches the axes (fetch/inputs.py
-LEFT JOINs the two stores; pattern maps to an int8 code at the
-boundary) and scores the day-0 anchors in `_apply_boost`. The flag is
-a PK POPULATION VARIANT on history + curves — every event/cell emits
-TWICE: FALSE = the plain record, TRUE = the BOOST twin (the SAME
-trigger days, contributions weight-blended by w = max(1 + score/K,
-floor): history confidence w-scaled, curve stats weight-blended incl.
-pooled slopes — 06_boost_population_pk.sql). signal_thresholds keeps
-the flag as the bucket VERDICT marker (non-PK, one row). The UI
-Recent-Movements curve overlay's OHLCV none/boost toggle picks the
-curve variant; the history service reads the PLAIN population only.
-Never a gate, never part of is_active / the live threshold set; no
-@boost child rows, no confidence_boost denormalization — the retired
-cohort machinery stays retired.
-```
+`run.py` orchestrates per family:
+
+- **signal_rules is CURRENT-STATE**: the family's scope
+  (sec_type, signal_type) is DELETEd then freshly inserted every run —
+  cells that stopped passing the gate must not linger.
+- **history_signals**: force purges the scope then COPYs;
+  incremental `copy_or_upsert_split_async` past the table's max date
+  (idempotent re-emission).
+- **trend_days**: the first family run whose frame outdates the store
+  writes the prepared frame's per-(code, date) trend rows, per-code
+  horizon check (a universe growth writes the newcomer even when the
+  veterans are fresh); purge + COPY per stale code.
+- **Incremental skip**: a family is skipped when every requested
+  code's history already reaches the family's VALUE-SOURCE horizon
+  (per-family max-date SQL in `_source_horizon_sql`) AND the rules
+  scope is non-empty (its max created_at IS the build time). NOTE:
+  the skip never detects a TREND-CLASSIFIER change — after editing
+  `analysis.trends` you must `--force` to re-stamp cells and history.
+- Post-`--analyze`: ANALYZE both tables.
+
+## The RuleEntry architecture
+
+- `engines/rule_base.py` — the ABC every family engine implements.
+  Class flags: `FAMILY` / `PACKAGE` / `SUB_TYPES` (identity),
+  `REGIME_FREE` (stamp pooled regime 4, no split), `USES_TREND_SPLIT`
+  (False → pooled trend 4), `TREND_AWARE_REENTRY` (the K-absorb
+  merges only SAME-trend re-entries; a re-entry in a different trend
+  is a FRESH episode in that trend's cell — mov_rsi only), and
+  `OHLCV_BOOST` (the trust-score collaborator, disabled by default).
+  Hooks: `fetch_frame` (delegates to the fetch/ layer) and `run`
+  (builds per-(sub_type, action) CANDIDATE trigger masks, then calls
+  `run_cells`).
+- `prepare_frame` = fetch → `attach_trend` (the code's own trend
+  classification) → the regime join (`stats.market_regimes`, missing
+  days default calm 0 — the fetch already returns datetime64[us]
+  dates; NEVER re-convert through epoch_col_to_dt64, that was the
+  2026-10-15 all-calm degenerate-split bug) → the fixed forward blend
+  (`_blend` = 0.10/0.15/0.50/0.15/0.10 over 0/3/5/10/20d;
+  `_blend_ok` marks rows whose full 20d future is realized — only
+  those are measured, the newest triggers still replay with their
+  cell's prepared confidence).
+- `run_cells` — the shared SELF-ADAPTIVE cell loop: per candidate,
+  episode FIRST days (`EpisodeDetector`, K-absorb on the code's own
+  traded rows, trend-aware when the family opts in) → per-cell
+  measurement (`cell_stats`: n episodes, sign-aligned dir_ave + std
+  + t-stat, hit) → gate (`CellGate`: buy ≥ 0.25% @ n ≥ 3; sell ≥ 0 @
+  n ≥ 2 — the equity asymmetry IS the design; LOOSENED 2026-10-16
+  from 0.75% @ 4 / 0 @ 3, the moderate user-directed step) → per cell
+  the WINNING candidate (gate-passing, best dir_ave; ties → the
+  first/widest bar) → the POOLED EVIDENCE TIER (2026-10-16: the
+  (sub_type, action) pooled population of the winning cells'
+  measurable triggers, judged by pooled t-stat ≥ 1 @ n ≥ 10 +
+  expanding-year sign majority — a BUY side whose pooled evidence
+  FAILS is demoted to measured-out: no trading rules rows, no
+  history replay that run, the starved wait replay untouched; SELL
+  records the block ungated, exit timing) → the cell's signal_rules
+  row + history rows for the winning cells' triggers. `rule_params`
+  carry: axis, episode_merge_days, reentry_trend_split, gate digest,
+  measure (n/dir_ave_pct/dir_std_pct/t_stat/hit_rate), `pooled`
+  (n/t/hit + the per-horizon decay curve + the expanding-year legs,
+  stamped on trading rows), confidence (base_pct = the measured
+  dir_ave, depth_factor, cap 2), plus the candidate's own
+  bar_def/params. `ungated=True` marks
+  observational twins (options_wall's VRP-fail `_rej`, action
+  wait 2 — never a trading row). STARVED cells (episodes but
+  below the sample floor, 2026-10-16; label RENAMED no_action →
+  wait the same day) are the WAIT population: their history
+  triggers ALWAYS replay as wait events (the extreme-event
+  monotone guarantee — a deepest-claim breach never vanishes
+  because its cell is under-floored) and upsert to the real
+  action once the cell graduates (action is no history PK
+  member); the signal_rules WAIT row is SELECTIVE — only cells
+  blocked SOLELY by the floor (n = floor−1 with dir_ave already
+  at the side's bar: one confirming episode from trading; gate
+  .starved + gate.intended_action; one row per rules PK, twin
+  sides dedup). Measured-out cells (n ≥ floor, dir_ave below the
+  bar) still emit NOTHING — that is the gate rejecting on
+  evidence. Wait rows never feed the ohlcv-boost derivation.
+- `engines/evaluation.py` — `CellGate` (the plain gate +
+  depth-scaled confidence: base_pct × (1 + factor × min(depth, 2))),
+  `cell_stats` (n / dir_ave / dir_std / hit) and `pooled_evidence`
+  (the TWO-TIER gate's statistical layer: the (sub_type, action)
+  pooled n / dir_ave / t-stat / hit, the per-horizon decay curve,
+  the expanding-year legs with their train means — a HOST-numpy
+  boundary over run_cells' staged facts). The gate constants come
+  from `config.GATE_DIR_AVE_MIN` / `SAMPLE_FLOOR`; the pooled tier's
+  from `config.POOLED_*` (bar 0.25%, t ≥ 1, floor 10, year n ≥ 5).
+- `engines/boost.py` — `OhlcvBoost`, the merged trust-score
+  collaborator: collects each fired row's day-0 anatomy facts (OHLC
+  pattern + (vol_state, px_speed) cell + tail depth + the cell keys +
+  the blend_ok flag), derives its coefficients SELF-ADAPTIVELY per run
+  from that anchor population (host-pandas frame, one scipy boundary;
+  ship gates G1 improv / G2 expanding-year OOS / G3 top-quintile), and
+  stamps the per-cell TRUST-WEIGHTED CONFIDENCE BASE onto the rule
+  rows — `signal_rules.ohlcv_boost_conf` = sum(w·y)/sum(w) over the
+  cell's MEASURABLE triggers, w = max(1 + score/K, 0.5), NULL where
+  the side boosted nothing. NEVER a gate; history carries ONE
+  population per event (the boost-twin rows were retired 2026-10-16 —
+  only confidence is tuned, and it lives on the rule cell). Opt-ins:
+  RsiTailEntry / BollBandEntry / MomentumTailEntry / RoofFloorEntry.
+
+## The consolidated trends component (`analysis/trends/`)
+
+Package-level, imported by the signals tier AND by
+mov_ave_spread's rsi_typical step (so it cannot live under
+engines/). Family-agnostic:
+
+- `trend_state.attach_trend` stamps each (code, date) row an int8
+  `trend` (0 top / 1 bottom / 2 rise / 3 fall / 5 unknown; 4 'all' is
+  the POOLED stamp of sparse families' rule rows, never a day state):
+  - **top/bottom** = the price_vs_ma255 gap beyond its own TRAILING
+    255d q90/q10 (shifted, no look-ahead) with a matching 20d MA
+    slope — the overextended extremes.
+  - **rise/fall** = RSI RE-ENTRY episodes: Wilder RSI(TREND_RSI_WINDOW
+    = 10) vs the FIXED 50 ± TREND_RSI_ZONE_SPREAD (12.5) momentum
+    zones (fixed, not per-code percentiles — RSI is bounded and its
+    trailing quantiles collapse onto hair-trigger or unreachable
+    edges), alive through ≤ REENTRY_EXIT_DAYS (5) out-of-band traded
+    rows, the LATEST band touch owning the day, AND the EFFICIENCY
+    GUARD agreeing — the sign of the Kaufman net change over
+    TREND_GUARD_WINDOW (10) rows (the 2026-10-15 measured replacement
+    of the MA20-slope guard).
+  - **the DEEP-ANCHOR TURN**: a deep RSI touch (≤ 30 / ≥ 70) opens a
+    40-row window in which the midline re-cross with the guard flips
+    the trend — the post-crash-rebound fix (000001's Apr-2020
+    recovery flipped 2020-04-07; the plain zones and the retired
+    MA60 rule never rose that April).
+  - unknown = neither episode alive (mid-band, dissolved momentum,
+    warmup head). The RSI is computed INLINE (the mov_ave_spread
+    rsi contract — Wilder ewm alpha=1/W through the fused CUDA
+    kernel) because the options/ma_cross frames carry no RSI columns.
+  - Consumers: every family's prepare_frame, the pipeline's
+    trend_days write (the chart's trend band shading via the
+    trend-spans API + the live tier's day-context match both read the
+    STORE, not the classifier).
+- `episodes.py` — the shared episode anatomy: REENTRY_EXIT_DAYS = 5
+  (> K out-of-band TRADED rows ends an episode; 1..K re-qualifies it
+  as the same episode), TYPICAL_ISOLATED_DAYS = 5, and
+  `EpisodeDetector.triggers(df, mask, trend=...)` — breach-run FIRST
+  days, whole-frame grouped ops, optional trend-aware splitting (the
+  (pos, trend) pair packed pos*8 + trend + 1 in one cummax).
+
+## The seven families (engines/signal_families/, registry in order)
+
+| family | entries | sub types | cells | K | live |
+|---|---|---|---|---|---|
+| mov_rsi | RsiTailEntry | rsi{14,10,6}_{1,2,3}pct buy/sell | code×trend×regime, trend-aware absorb | 5 | rsi |
+| bollinger | BollBandEntry | boll20_{2,2.5,3}std buy/sell (window 20 ONLY) | code×trend×regime | 5 | boll |
+| ma_cross | MaCrossReclaimEntry (ma20/60_cross buy, cross-excess {1,2,3}%), MaRetestEntry (ma20_retest sell), MaGdepthEntry (ma120/255_gap buy ONLY, {3,5,8}%), MaBreadthEntry (ma_breadth_thrust buy, ma_9to1_up buy / ma_9to1_dn sell — the MARKET-LEVEL breadth rules over the sec_type's own universe, joined per date onto every code) | kind×window grids | code×trend (regime 4) | 5 | no |
+| options_wall | WallBreachEntry | ow_put_025pct (buy, VRP-gated), ow_put_025pct_rej (wait twin), ow_call_025pct (sell) | code (trend 4, regime 4) | 0 | no |
+| options_vix | OvixSpikeEntry (ovix_spike, ovix_spike_hivol), OvixPanicPeakEntry (ovix_panic_peak), OvixAtrBreakEntry (ovix_atr_break buy — the spot day-return in close-to-close ATR units past the self-adaptive {2,2.5,3} bar while slope5 fires; the 2026-10-15 low-base repricing class), OvixFearUnwindEntry (ovix_fear_unwind sell) | multi-axis detects | code (trend 4, regime 4) | 8 | no |
+| momentum | MomentumTailEntry | mom{5,20,short,mid,long}_{1,2,3}pct buy/sell (log-return ln(1+momentum) of analysis.mov_ave_momentum; the vol-adaptive lookbacks + fixed 5/20d anchors) | code×trend×regime, plain absorb | 5 | no |
+| rf_break | RoofFloorEntry | rf{60,120,255,500}_roof buy / rf{60,120,255,500}_floor sell + the rf{W}_med_{roof,floor} twins — the close vs the PRIOR day's roof/floor level per (method, window): donchian (method 1, the window extreme) and median (method 5, the five-method consensus) from analysis.mov_ave_spreads_roof_floor_estimates; a STRUCTURAL bar, not a percentile tail; NO cross-window carving (each window its own population) | code×trend (regime 4) | 5 | no |
+
+Nested widest-first carving everywhere: the deeper tail claims first,
+a deep breach counts once at its deepest claim (3σ ⊃ 2.5σ ⊃ 2σ;
+3% ⊃ 2% ⊃ 1%). mov_rsi / momentum bars are PER-CODE ADAPTIVE trailing
+quantiles (window 2550d, min 255, shifted one row — never fixed
+levels); bollinger bars are FIXED ±kσ (population σ, ddof=0). The
+confidence depth normalizer is family-local (RSI points / σ / axis
+sigma / gap pct). ma_cross's is_typical split = the uninterrupted-run
+whipsaw split; trigger-time-observable state only.
+
+## The live tier (live/live_signals, intraday + as-of)
+
+A live signal IS a breach of an active `signal_rules` CELL's bar —
+never a detection, no per-family logic (the rules-era rewire of
+2026-10-15; the 67k threshold-era rows were truncated then):
+
+- The active set = the LIVE-WIRED families' cells
+  (`SIGNAL_VALUE_SOURCE` in `analysis/fetch/_values.py`: mov_rsi →
+  "rsi", bollinger → "boll" — the boll z computed on the fly from the
+  code's last closes, no source table). A family without an entry is
+  not live. wait rows are EXCLUDED from the set (the VRP twin +
+  the starved cells since 2026-10-16) — not-trading-yet records are
+  never a live bar.
+- Each cell carries its own action, bar_def (resolved per check:
+  bollinger's fixed ±kσ constant; mov_rsi's per-code ADAPTIVE
+  trailing-2550d percentile tail recomputed at check time over the
+  rows strictly before the value anchor — bit-parity verified against
+  history_signals.signal_reference) and confidence scale (the history
+  writer's identical formula).
+- THE DAY-CONTEXT MATCH is the gate: only the cell whose (trend,
+  regime) equals the day's own trend (`analysis.trend_days`) and
+  regime (stats.market_regimes, calm default) may fire — the same
+  population the cell measured.
+- The evaluator compares sell value > bar / buy value < bar (the
+  row's OWN action decides direction; signal_excess = value − bar);
+  missing value / underivable bar / no trend context ⇒ skipped,
+  never invented. mov_rsi is a STATE family — it keeps flagging
+  while the breach persists.
+- AS-OF MODE (--date): the last intraday bar on D when one exists
+  (is_day_close_trigger FALSE), else the official daily close
+  (15:00, TRUE). Live rows UNION into the history endpoint; the
+  history panel shows them with engine-identical bars.
 
 ## The invariants (break none of them)
 
-1. **mov_rsi's live bar is the STORED percentile threshold** (constant
-   per bucket). mov_rsi is a STATE family that keeps flagging on every
-   qualifying observation while the breach persists. (When both sides
-   of one config breach the same bar, the record keeps the STRONGER
-   breach — the live PK has no side.)
-2. **The buckets + the gate are ENGINE logic in cudf, NOT SQL.** No
-   CASE/WHEN anywhere in the signals SQL — side is a stored column on
-   signal_strategies, and the fetch SQL is plain SELECTs only. Values
-   are read at exactly the strategy/window trigger dates
-   (value_points), never whole windows.
-3. **A strategy covers exactly its snapshot window**
-   (start_date .. end_date = stat_date, the trailing 10y). No
-   strategy row → no history events → no live breaches for that
-   config.
-4. **Thresholds are denormalized into the breach record** so each
-   live.live_signals row is self-contained; the source of truth stays
-   analysis_signals.signal_strategies. confidence rides the row:
-   strategies store the fractional dir_ave; live rows ROUND(10000 x).
-5. **Snapshots are write-once per run.** A snapshot's strategy +
-   history rows are written in whole-code chunked transactions
-   (delete snapshot scope + COPY both tables), only when the snapshot
-   is missing or inside the refresh window (or after --force).
-6. **After every run:** refresh is_active + re-rank signal_order
-   (02 SQL + run/rank.py, executed by the pipeline with $1 =
-   sec_type).
-7. **No UI component changes for signals.** The live page's config
-   menu reads signal_strategies WHERE is_active; the history/expansion
-   panels read live.live_signals + history_signals. React components
-   render whatever the API returns. (The Recent Movements Forecast
-   table + the forecast endpoints were REMOVED 2026-10-05 — that page
-   is the trend chart alone now.)
+1. One signal per EPISODE, first day, delay 0 — the K-absorb runs on
+   the code's OWN traded days, never a union calendar.
+2. The buckets + the gate are ENGINE logic in cudf, NOT SQL. No
+   CASE/WHEN anywhere in the signals SQL; side/action/trend/regime
+   are stored SMALLINT label codes (static.label_dim, mirrored by
+   _common.labels + data_viz label-codes.ts) end-to-end; the live
+   tier and the API decode at their boundaries.
+3. A cell's rule_params are SELF-ADAPTIVE per PK — the same sub
+   signal measures different bars per (trend, regime); identical bars
+   across all trends of one sub signal would be a red flag.
+4. signal_rules is wiped + reinserted per run (current-state);
+   history is append/upsert; trend_days is per-code horizon-gated.
+5. The live tier NEVER writes a bar the strategy tier didn't stamp.
+6. Sparse options families POOL at the gate (per-code cells, trend 4
+   / regime 4); the VRP-fail twin is wait, never live.
+7. The boost is a TRUST-WEIGHTED MEASUREMENT, never a gate: it stamps
+   the per-cell `ohlcv_boost_conf` (NULL where the side boosted
+   nothing) and never touches the history population — the plain rows
+   are the population of record.
+8. STARVED cells RECORD (2026-10-16, tightened + renamed to WAIT the
+   same day): a cell with episodes below the sample floor replays
+   ALL its triggers into history as wait events, graduating to the
+   real action in place once the gate passes — an extreme event's
+   deepest claim never vanishes. The signal_rules wait row is
+   SELECTIVE (floor-blocked imminent cells only, n = floor−1 at the
+   bar). Measured-out cells still emit nothing, and wait rows never
+   fire live.
+9. After any run that wrote: ANALYZE the tables; verify by row counts
+   per signal_type/sub_type, the trading-signals API, and the UI.
 
 ## Where things live
 
-- In-engine bucket computation: `analysis/analysis_signals/engines/
-  signal_families/mov_rsi/_buckets.py` (percentile bars, streak-merge
-  delay-0 triggers, forward changes, the blended per-bucket stats +
-  typed empty frames).
-- Strategy/history pipeline: `analysis/analysis_signals/` — `__main__.py`
-  (cudf activate, --sec-type/--metrics/--snapshots/--force),
-  `config/` (tables, gate constant 0.0075, sample floors, the snapshot
-  grid in `grid.py` + horizon weights in `horizons.py`, the mov_rsi
-  slice package, STRATEGY/HISTORY column layouts),
-  `engines/_base.py` (SignalEngine ABC: identity + prepare/buckets/
-  values_long/build phases + emit_snapshot template + the run entry),
-  `engines/_frame.py` (detect — the plain gate at the sample floor — /
-  snapshot_triggers / value_points), `engines/_store.py` (snapshot
-  write — partition-key-chunked transactions, calendar-year history
-  ownership — + chunked force purge), `engines/_snapshots.py`
-  (SnapshotSelection: grid-based incremental resolution via
-  config.mutable_dates + chunked stale-key sweep),
-  `engines/_primitives.py` (action_of / frame_records),
-  `engines/ohlcv_boost/` (the GENERAL boost formula — _score.py
-  anchor_scores/bucket_flags, _config.py the config dataclass,
-  _configs.py the per-side measured ladders, _axes.py the axis code
-  vocab; imported by the rsi family, NOT an ENGINES registry entry),
-  `engines/signal_families/mov_rsi/` (_engine identity + phases,
-  _strategies, _history — mov_rsi is the only family),
-  `fetch/` (inputs.py — the input frame + universe/first-dates/latest
-  loaders; regimes.py — the daily market-regime labels),
-  `run/pipeline.py` (per-sec_type pipeline + post-run refresh),
-  `run/rank.py` (the GPU signal_order rank).
-- Price/amount source maps (PRICE_SOURCE / AMT_SOURCE /
-  OHL_EST_FILTER) live in `analysis/mov_ave_spread/config/
-  price_sources.py` (re-homed from the retired forecast package).
-- Tables: `database/sql/analysis/analysis_signals/00_schema.sql`
-  (schema), `01_signals.sql` (signal_strategies + history_signals,
-  16 hash partitions each), `02_is_active.sql`,
-  `03_signal_order_rank.sql`, `04_snapshot_emissions.sql` (retired
-  attempts registry — kept in the schema, unwritten). NOTE: the
-  00/01 COMMENTs still describe the retired forecast-backed flow —
-  the files were intentionally left untouched; treat the comments as
-  historical.
-- Live tier: `live/live_signals/` — `analysis/evaluator.py` (the ONE
-  generic breach check), `analysis/fetch/` (`_values.py`
-  SIGNAL_VALUE_SOURCE map (mov_rsi → rsi, bollinger → boll) +
-  resolve_value/resolve_threshold,
-  `_sources.py` the current-RSI fetcher (mov_ave_rsi) + the boll
-  z-from-prices fetcher (the mov_ave_spread PRICE_SOURCE convention;
-  windows single-sourced from the signals config's BOLL_WINDOWS),
-  `_bars.py`
-  as-of bar resolution,
-  `_active.py` the active-set fetchers), `config/` (`tables.py`
-  SIGNALS_TABLE + the record layout, `runtime.py` intraday/daily
-  sources, `breach.py` scales). Schema
-  `database/sql/live/03_live_signals.sql` +
-  `05_live_signals_cohort_confidence.sql` (the retired cohort add-on
-  columns — left in place, unwritten).
+- Config (grids, gates, floors, blend, K): `analysis/
+  analysis_signals/config/__init__.py`
+- Engines: `engines/rule_base.py` (ABC + run_cells),
+  `engines/evaluation.py`, `engines/boost.py`, and one package per
+  family under `engines/signal_families/` (+ the registry in
+  `engines/signal_families/__init__.py`)
+- Trends/episodes: `analysis/trends/` (trend_state, episodes, the rsi
+  episode-days module mov_ave_spread's rsi_typical step consumes)
+- Fetch: `fetch/inputs/` (one module per family + _shared: universe
+  resolution, first dates, the finalize step — epoch float8 →
+  datetime64[us] + boost axes as int8 codes)
+- Pipeline: `run.py` + `__main__.py`; regimes: `fetch/regimes.py`
+- Tables: `database/sql/analysis/analysis_signals/` — 00_schema.sql,
+  01_signal_rules.sql, 02_history_signals.sql (headers/COMMENTs are
+  the tables' documentation; keep them current). trend_days:
+  `database/sql/analysis/trends/`
+- Live: `live/live_signals/` — `analysis/evaluator.py` (the ONE
+  generic breach check), `analysis/fetch/` (_values the
+  SIGNAL_VALUE_SOURCE map, _sources value fetchers, _bars as-of bar
+  resolution, _active the active-set fetchers), `config/` (tables,
+  runtime sources, breach scales)
+- Studies/proposals: `docs/sub_rules_proposal_2026-10-16.md` (the
+  measured graduate/reject digest), `temp_scripts/
+  subrule_candidates_study.py` (the measurement harness — reuse it
+  for any new candidate)
 
-## Conventions for this area
+## Conventions
 
-- Every `__main__.py` starts with the cudf.pandas activation
-  (`from _common.df_utils._activate import activate; activate()`)
-  before the first pandas import, and configures logging via
-  `_common.log_setup.setup_logging`.
-- All DB reads land in cudf.pandas frames (::float8 casts at the SQL
-  source, epoch→datetime64 at the boundary). Frames stay
-  native-dtype — including EMPTY frames (typed constructors in
-  _buckets; object-dtype empties turn the machinery's numeric ops
-  into [cudf fallback] lines). The python-date conversions
-  (value_points / frame_records) are the sanctioned scalar
-  materializations. The bar is ZERO `[cudf fallback]` lines —
-  `CUDF_FALLBACK_TRACE=1 python -m analysis.analysis_signals
-  --sec-type index` pinpoints any regressor's caller.
-- New signal families = a new engine package + slice constants (+ a
-  SIGNAL_VALUE_SOURCE entry if live-wired). Dispatch through the
-  ENGINES registry — no if/else ladders. A family without strategies
-  naturally has no breaches.
-- Testing: `--sec-type index --snapshots 1` first (the rolling
-  snapshot — fast), full grid for real runs. Verify by row counts per
-  signal_type/side, `SELECT DISTINCT signal_delay_days` (= 0),
-  the is_ohlcv_boosted distribution per table (history + curves ≈ half
-  TRUE — the boost twins; thresholds a small verdict TRUE mix on
-  index/etf), the trading-signals API + UI, not just by reading code.
-- Verification: analysis_signals row counts per sec_type +
-  is_active/signal_order stamps; live.live_signals breach rows; the
-  live page config menu + row rendering.
+- Every `__main__.py` starts with the cudf activation before any
+  pandas import; frames stay native-dtype (typed empties included);
+  the bar is ZERO `[cudf fallback]` lines outside the sanctioned
+  boundary helpers (`CUDF_FALLBACK_TRACE=1 ... --sec-type index`
+  pinpoints regressors).
+- Whole-frame grouped ops only; python loops only over structural
+  iterables (candidates, sub types, the small measured-cell frames,
+  the row materialization).
+- New family = new engine package + registry entry (+ label_dim rows
+  in all three mirrors + a SIGNAL_VALUE_SOURCE entry if live-wired);
+  dispatch through the registry, never if/else.
+- Study scope: the 10 study indices only (config.STUDY_INDEX_CODES);
+  the options families' universe is data-driven (stats.options_terms).
+- Testing: `--sec-type index --families <one>` first, `--force` for
+  real rebuilds; verify row counts per signal_type/sub_type, the
+  rules + history API arrays, and the UI panels.
+
+## Architecture history (what died, and why — keep it that way)
+
+- 2026-10-05: the forecast layer (analysis_forecasts package, schema,
+  UI) was dropped; the signals tier computes its own populations.
+- 2026-10-07..11: snapshot-grid/threshold-era machinery — episode
+  alignment on own traded days, side fairness at the gate layer,
+  in-engine boll values, the shared episode classifier.
+- 2026-10-14: signal_thresholds + signal_curves DROPPED (bollinger's
+  monotonicity was weak, ma_cross's negative; the fitted-curve claims
+  replaced by per-cell measured evidence); the rule-cell tier landed
+  (signal_rules + history_signals).
+- 2026-10-15: OOP consolidation (rule_base/evaluation/boost/trends),
+  the regime-join double-conversion fix, the rules-era live rewire,
+  the momentum family, the RSI-re-entry trend classifier.
+- 2026-10-16: trend-update force rebuild; RSI_ENTRY_WINDOWS (14,10)
+  → (14,10,6) after the rules-era reproduction (mov_rsi 37 cells /
+  167 events at index scope). LATER the same day, the event-study
+  additions: the rf_break family (the 7th), the ovix_atr_break leg,
+  the ma_cross breadth rules (thrust / 9:1), and the ohlcv boost's
+  TURNOVER-CLIMAX 4th axis (bollinger + momentum + rf_break opt in —
+  bollinger's top side ships, +158 twins at index scope). LAST, the
+  TWINS RETIREMENT: the boost's only product is confidence, so the
+  twin history rows were dropped for `signal_rules.ohlcv_boost_conf`
+  (the per-cell trust-weighted base; the 158 twins purged, the UI
+  population toggle removed — bollinger top 26 cells stamped, the
+  other families' sides honestly NULL). LAST: the STARVED-CELL
+  OBSERVATIONAL EMISSION — under-floored cells record as WAIT
+  (renamed from no_action the same day; every starved cell's
+  history triggers replay, the rules watchlist row only for
+  floor-blocked imminent cells; live excludes wait cells). LAST
+  (still 2026-10-16): the TWO-TIER GATE / POOLED EVIDENCE TIER — the
+  per-cell floors cannot reach statistical significance (blend sigma
+  ~2.6% → n=3 SE ~1.5%, the 0.25% bar ~0.16 SE), so the BUY edge
+  claim moved to the (sub_type, action) pooled population: pooled
+  t-stat ≥ 1 @ n ≥ 10 + expanding-year sign majority, a failing BUY
+  side demoted to measured-out (no rows that run); cell_stats gained
+  dir_std/t_stat; every trading rule row carries rule_params.pooled
+  (the decay curve + the expanding-year legs, the boost-G2 lift).

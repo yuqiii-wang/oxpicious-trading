@@ -9,6 +9,7 @@ import { Box, ToggleButton } from "@mui/material";
 import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import type { OhlcMode } from "@/lib/ohlc";
 import { REGIME_ACCENT_COLORS } from "@/shared/charts/regimeBands";
+import { TREND_ACCENT_COLORS } from "@/shared/charts/trendBands";
 import type { SecBoardTag } from "@shared/types";
 import type {
   CodeTrendChartProps,
@@ -143,9 +144,12 @@ export function CodeTrendIndustrySubtitle({
   );
 }
 
-/** Header actions (card variant) — mode toggle + Regimes toggle +
- *  prop extras. The Regimes toggle sits beside the Absolute / % Change
- *  toggle so every page's code trend can shade the market-regime spans. */
+/** Header actions (card variant) — mode toggle + Regimes toggle + Trend
+ *  toggle + prop extras. The Regimes toggle shades the market-regime
+ *  spans; the Trend toggle shades the signal rules tier's per-(code,
+ *  date) TREND classification (top/bottom/rise/fall — graded shades,
+ *  the extremes deepest) — both sit beside the Absolute / % Change
+ *  toggle so every page's code trend can shade either. */
 export function CodeTrendHeaderActions({
   showModeToggle = true,
   headerAction,
@@ -154,6 +158,9 @@ export function CodeTrendHeaderActions({
   showRegimes,
   regimesLoading,
   onRegimesToggle,
+  showTrend,
+  trendLoading,
+  onTrendToggle,
 }: {
   showModeToggle?: boolean;
   headerAction?: React.ReactNode;
@@ -162,6 +169,9 @@ export function CodeTrendHeaderActions({
   showRegimes: boolean;
   regimesLoading: boolean;
   onRegimesToggle: () => void;
+  showTrend: boolean;
+  trendLoading: boolean;
+  onTrendToggle: () => void;
 }) {
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
@@ -191,6 +201,27 @@ export function CodeTrendHeaderActions({
         }}
       >
         {regimesLoading ? "Regimes…" : "Regimes"}
+      </ToggleButton>
+      <ToggleButton
+        value="trend"
+        size="small"
+        selected={showTrend}
+        onChange={onTrendToggle}
+        title="Trend — shade the signal rules tier's own trend classification (top red / bottom green deepest, rise blue / fall amber lighter; analysis.trend_days — the RSI re-entry episodes, unknown the background)"
+        sx={{
+          px: 1,
+          py: 0.25,
+          fontSize: "0.7rem",
+          ...(showTrend
+            ? {
+                color: TREND_ACCENT_COLORS.top,
+                borderColor: TREND_ACCENT_COLORS.top,
+                bgcolor: "rgba(229, 57, 53, 0.10)",
+              }
+            : {}),
+        }}
+      >
+        {trendLoading ? "Trend…" : "Trend"}
       </ToggleButton>
       {headerAction}
     </Box>

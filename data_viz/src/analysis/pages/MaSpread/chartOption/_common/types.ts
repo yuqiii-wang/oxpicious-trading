@@ -6,7 +6,7 @@
 import { axisColors } from "@/theme/chart-palette";
 import type { MovAveSpreadPairSeries } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
-import type { TrendBand } from "../trendBands";
+import type { TrendSpansRecord } from "../trendBands";
 
 /** The axis color tokens axisColors(mode) resolves for the theme. */
 export type AxisColors = ReturnType<typeof axisColors>;
@@ -45,6 +45,36 @@ export interface DerivTrendSpec {
   mode: "slope" | "curvature";
   /** Drawn lines — name matches the legend entry. */
   lines: Array<{ name: string; data: Array<number | null>; color: string }>;
+}
+
+/** One momentum line term: the two fixed anchors plus the three
+ *  volatility-adaptive terms (see MovAveSpreadMomentumDay). */
+export type MomentumTerm = "5d" | "20d" | "short" | "mid" | "long";
+
+/** The Momentum section's overlay: per-date lookback-adaptive momentum
+ *  lines drawn on the pair chart's right axis (fixed 5/20d anchors +
+ *  adaptive short/mid/long whose lookback varies by the day's market
+ *  regime). Built by the panel from the "momentum" extras rows aligned
+ *  to the pair's dates; consumed by buildPairOption (series + axis) and
+ *  the tooltip (one compact readout row that spells each adaptive
+ *  term's effective lookback). */
+export interface MomentumTrendSpec {
+  /** Drawn lines — one per picked term; name matches the legend entry,
+   *  term identifies the momentum column. */
+  lines: Array<{
+    name: string;
+    term: MomentumTerm;
+    data: Array<number | null>;
+    color: string;
+  }>;
+  /** The ADAPTIVE terms' effective lookback per date (index-aligned with
+   *  dates) — the tooltip's "short·14d" suffixes. Optional: absent when
+   *  only fixed-anchor lines are drawn. */
+  lbs?: {
+    short: Array<number | null>;
+    mid: Array<number | null>;
+    long: Array<number | null>;
+  };
 }
 
 /** Context shared by the pair chart's tooltip sections (built by
@@ -113,8 +143,8 @@ export interface TooltipContext {
     lw: Array<number | null>;
     pattern: Array<string | null>;
   } | null;
-  trendBands: TrendBand[];
-  hasTrendBands: boolean;
+  trendSpans: TrendSpansRecord | null;
+  hasTrendSpans: boolean;
   hasBase: boolean;
   baseVal: number | null;
   showBoll: boolean;
@@ -130,4 +160,7 @@ export interface TooltipContext {
   /** Slopes/Curvatures overlay lines — null when that header toggle is
    *  off (see DerivTrendSpec). */
   derivTrend: DerivTrendSpec | null;
+  /** Momentum overlay lines — null when the section is off or its
+   *  extras group has not landed (see MomentumTrendSpec). */
+  momentumTrend: MomentumTrendSpec | null;
 }

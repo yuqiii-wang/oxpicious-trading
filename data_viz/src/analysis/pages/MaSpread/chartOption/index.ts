@@ -21,10 +21,19 @@ export { buildPairOption, type BuildPairOptionArgs } from "./buildPairOption";
 export { buildAmtEnvelopeOption, type BuildAmtEnvelopeOptionArgs } from "./buildAmtEnvelopeOption";
 
 // ---- Shared plumbing (types the panel consumes) --------------------------
-export type { TradingAmtMode, DerivTrendSpec, ShadeOverlay } from "./_common";
+export type { TradingAmtMode, DerivTrendSpec, MomentumTrendSpec, MomentumTerm, ShadeOverlay } from "./_common";
 
-// ---- Trend classification (tooltip-only, no button group) ----------------
-export { shortLabel, computeTrendBands, type TrendBand, type TrendType } from "./trendBands";
+// ---- Trend classification (tooltip readout + the Trend section's shades)
+export {
+  shortLabel,
+  findTrendSpanAt,
+  TREND_TYPES,
+  TREND_TYPE_LABELS,
+  TREND_ACCENTS,
+  TREND_SHADES,
+  type TrendSpansRecord,
+  type TrendType,
+} from "./trendBands";
 
 // ---- Px-Vol States group --------------------------------------------------
 export {
@@ -41,3 +50,9 @@ export {
   type PxVolDayState,
   type PxVolRun,
 } from "./pxVol";
+
+// ---- Momentum group --------------------------------------------------------
+export { appendMomentumTrendSeries, buildMomentumRightAxis } from "./momentumTrend";
+
+// ---- Roof/Floor rebound-audit aggregation (the section's captions) --------
+export { aggregateReboundAudit, type ReboundAuditStats } from "./roofFloor";

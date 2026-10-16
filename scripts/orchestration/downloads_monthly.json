@@ -1,0 +1,11 @@
+{
+  "1": { "script": "downloads.etf.sse.composition", "can_be_parallel": false },
+  "2": { "script": "downloads.etf.szse.composition", "can_be_parallel": false },
+  "3": { "script": "downloads.index.csindex.composition", "can_be_parallel": false },
+  "4": { "script": "downloads.index.szse.composition", "can_be_parallel": false },
+  "5": { "script": "downloads.index.bse.composition", "can_be_parallel": false, "note": "北证50/北证专精特新 closeweight (CSI co-published autofile, .BJ suffixes)" },
+  "6": { "script": "downloads.etf.csindex.linked_etf", "can_be_parallel": false },
+  "7": { "script": "downloads.macro.pboc.stats", "can_be_parallel": false },
+  "8": { "script": "downloads.etf.huatai_pb.composition", "can_be_parallel": false, "note": "huatai-pb.com fund site (510880 红利ETF): monthly PCF composition snapshot" },
+  "9": { "script": "downloads.etf.huatai_pb.intro", "can_be_parallel": false, "note": "基金概况 intro (NAV 成立以来 = archive once, trend daily, dividends semi-annual)" }
+}

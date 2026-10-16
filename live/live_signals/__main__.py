@@ -3,34 +3,32 @@
 Run via ``python -m live.live_signals --code 000300 [--signal-scheme analysis]``
 or ``python -m live.live_signals --sec-type index [--date YYYY-MM-DD]``.
 
-LIVE breach check of the threshold set for ONE code (the LIVE signal
-tier — a breach of an active analysis_signals.signal_thresholds
-threshold IS the
-live signal; never a re-detection):
+LIVE breach check of the RULE CELLS for ONE code (the LIVE signal
+tier — a breach of an active analysis_signals.signal_rules cell's bar
+IS the live signal; never a re-detection):
 
   1. Fetch the code's CURRENT intraday close — the latest
      stats.{sec_type}_intraday_5min bar (date, time, close). The
      sec_type is derived from whichever intraday table holds the code.
      NO intraday price → print ``404`` and exit 404.
-  2. Load the code's ACTIVE signal configs (``is_active`` rows of
-     analysis_signals.signal_thresholds — all signal types / sub
-     types of the
-     resolved sec_type) and apply ONE GENERIC rule per config — the
-     row's OWN action vs its OWN signal_threshold, direction by the
-     action (sell breaches above, buy below), confidence copied from
-     the row; NO per-family logic. The current value per config comes
-     from the declarative SIGNAL_VALUE_SOURCE map
-     (live_signals/analysis/fetch): the latest
-     analysis.mov_ave_rsi RSI column (mov_rsi — the only family
-     since the 2026-10-05 retirement of the mov_std / pair-cross
-     strategies).
-  3. Triggered configs are recorded in live.live_signals (one row per
+  2. Load the code's ACTIVE RULE CELLS (the analysis_signals.
+     signal_rules rows of the live-wired families — one per (sub,
+     trend, regime, action), each carrying its own action, bar_def
+     and confidence scale) and apply ONE GENERIC rule per cell — the
+     DAY-CONTEXT MATCH (the day's own trend + market regime pick
+     which cells may fire) then the cell's OWN action vs its OWN bar
+     (bollinger's fixed ±kσ; mov_rsi's adaptive percentile tail),
+     direction by the action (sell breaches above, buy below); NO
+     per-family logic. The current value per family comes from the
+     declarative SIGNAL_VALUE_SOURCE map (live_signals/analysis/
+     fetch): the latest analysis.mov_ave_rsi RSI column (mov_rsi) /
+     the on-the-fly σ-depth z (bollinger).
+  3. Triggered cells are recorded in live.live_signals (one row per
      (code, sec_type, signal_type, signal_sub_type, date, time); PK
      upsert so re-running the same bar updates in place). Every
-     config's evaluation (triggered or not) is printed. mov_rsi is a
+     cell's evaluation (triggered or not) is printed. mov_rsi is a
      STATE family: it keeps flagging on every qualifying observation
-     while the breach persists (the pair-cross once-per-episode
-     machinery was RETIRED with those families).
+     while the breach persists.
   4. Upsert live.live_identity.
 
 ON-DEMAND AS-OF MODE (--date D — invoked by the Trading Signals API

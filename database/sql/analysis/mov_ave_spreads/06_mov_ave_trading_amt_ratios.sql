@@ -74,7 +74,7 @@
 -- ----------------------------------------------------------------------------
 
 CREATE TABLE analysis.mov_ave_trading_amt_ratios (
-    sec_type        SMALLINT     NOT NULL,  -- label code (stats.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -100,7 +100,7 @@ CREATE TABLE analysis.mov_ave_trading_amt_ratios (
 SELECT public.create_hash_partitions('analysis', 'mov_ave_trading_amt_ratios', 16);
 
 COMMENT ON TABLE  analysis.mov_ave_trading_amt_ratios              IS 'Liquidity-impact ratios (WIDE format): one row per (sec_type, code, date) with 10 capital-per-movement ratio columns — 6 slope ratios ((trading_amt or trading_amt_maW) / 1M yuan) / (price_slope or maW_slope), matching-timescale) + range ratio ((trading_amt / 1M) / (high - low)) + overnight-gap ratio ((trading_amt / 1M) / (open - prev close)) + MA5 versions of both. Reciprocal of the Amihud illiquidity measure: higher = deeper market. sec_type ∈ {etf, index, stock}. Built by analysis.mov_ave_spread (trading_amt_ratios.py).';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.sec_type   IS 'Security type as its stats.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.sec_type   IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.code         IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.date         IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_vs_price_slope_ratio       IS 'Liquidity-impact proxy: (trading_amount / 1,000,000) / price_slope — today''s capital (millions of yuan) per unit of NET close-to-close price change. Reciprocal of the Amihud illiquidity measure: higher = deeper market. Signed: negative = the daily move was downward. price_slope=0 auto-set to 1.0 (stored value = capital in millions). NULL when trading_amount or price_slope is NULL.';

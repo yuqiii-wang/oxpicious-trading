@@ -1,0 +1,10 @@
+{
+  "1": { "script": "analysis.industry_sentiments", "can_be_parallel": false, "note": "internal steps: industry_correlations + industry_attributions + industry_etf_contribution; reads stats.industry_basic_stats (builds.industry) + stats.cross_stats (builds.cross_stats); incremental at window-end granularity" },
+  "2": { "script": "analysis.mov_ave_spread", "can_be_parallel": false, "note": "internal steps: detail + peaks_and_floors repopulation, then rsi_typical on the same DB connection and source price DataFrame" },
+  "3": { "script": "analysis.pe_and_dividends", "can_be_parallel": false },
+  "4": { "script": "analysis.margins", "can_be_parallel": false },
+  "5": { "script": "analysis.futures", "can_be_parallel": false },
+  "6": { "script": "analysis.options", "can_be_parallel": false, "note": "GPU-heavy cudf pipelines: analysis tier stays serial on purpose" },
+  "7": { "script": "analysis.analysis_composites", "can_be_parallel": false, "note": "opposite industry correlations (analysis_composites.industry_corr_benchmark_offsets); incremental at window-end granularity; must run after builds.industry + builds.cross_stats — without a nightly run the table went stale silently after the 2026-10-05 smallint migration recreated it" },
+  "8": { "script": "analysis.analysis_signals", "args": ["--sec-type", "index"], "can_be_parallel": false, "note": "signal strategies + history + curves for the FULL index universe (mov_rsi + bollinger + ma_cross families; no code scoping — the 10-index set is STUDY-ONLY, never orchestrated); needs step 2's analysis.mov_ave_rsi (mov_ave_spread rsi step); incremental (missing snapshots + the mutable rolling-latest re-emit + stale-key sweep; is_active/signal_order refresh internal). A scoped study run left single-code class pools here once (2026-10-13) and the curve tier went ~all flat" }
+}

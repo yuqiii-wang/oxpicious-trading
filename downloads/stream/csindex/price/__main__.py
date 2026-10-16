@@ -20,6 +20,10 @@ Loop cadence: 30 minutes. Each loop:
      - Missing entirely from ``index_intraday_5min`` for today, OR
      - Stale (latest bar time > 30 min behind current time during trading hours)
      ...EXCLUDING codes already streamed by SSE (codes with bars today).
+     Ordering: importance rank first (``stats.sec_importance_ranks``, 0 =
+     most important), then industry coverage (one index per industry heads
+     the list) — a throttled or killed loop has covered the important
+     indices AND every industry.
   2. Fetches intraday ticks (~15s granularity) for each code via csindex API.
   3. Aggregates ticks into 5-minute OHLC bars (ceiling convention, same as
      SSE/SZSE — see ``_window_end_5min``).
@@ -67,6 +71,10 @@ from downloads._common import (
 )
 from downloads.index.csindex.quote import CSINDEX_BASE, CSINDEX_HEADERS
 from _common.db_commons import get_db_connection
+from _common.importance import (
+    fetch_importance_ranks_or_empty,
+    order_pairs_by_importance,
+)
 from _common.service_heartbeat import register_service
 from _common._holidays_and_weekdays import is_trading_day
 
@@ -125,7 +133,9 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
 
     Each iteration:
       1. Find missing/stale index codes from DB (EXCLUDING codes already
-         streamed by SSE — CSIndex only downloads indices SSE does NOT cover).
+         streamed by SSE — CSIndex only downloads indices SSE does NOT cover),
+         ordered importance-rank first, then industry coverage (one index
+         per industry heads the list).
       2. Fetch intraday ticks for each via csindex API (with antibot sleep).
       3. Aggregate to 5-min bars, archive to CSV, upsert to DB.
       4. Sleep until next 30-min boundary.
@@ -220,8 +230,17 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
             codes = load_missing_or_stale_codes(
                 conn, today, exclude_codes=sse_streamed_codes,
             )
+            # Importance rank 0 -> 9 FIRST (stats.sec_importance_ranks via
+            # _common.importance; an empty map falls back to code order),
+            # THEN the industry-coverage pass: each industry's head
+            # representative becomes its most important index and the tail
+            # keeps rank order — a throttled or killed loop has covered the
+            # important indices first.
+            ranked_codes = order_pairs_by_importance(
+                codes, fetch_importance_ranks_or_empty(conn),
+            )
             ordered_codes = order_codes_by_industry_coverage(
-                codes, index_industry_map,
+                ranked_codes, index_industry_map,
             )
             n_industries = (
                 len({index_industry_map.get(c, "OTHER") for c, _ in ordered_codes})

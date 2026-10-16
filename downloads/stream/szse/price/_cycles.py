@@ -49,6 +49,7 @@ async def hourly_cycle(
     conns: StreamConns,
     n_groups: int,
     poll_interval: float,
+    b_top_n: int,
     once: bool,
 ) -> str:
     """One iteration of hourly mode. Returns "continue" or "break"."""
@@ -87,7 +88,7 @@ async def hourly_cycle(
     if unfinished:
         state = await run_stock_round(
             unfinished, n_groups, session, host_tracker, emitted_map,
-            current_biz_day, latest_bar_time, conns, poll_interval,
+            current_biz_day, latest_bar_time, conns, poll_interval, b_top_n,
         )
         n_stock_ident = len(state["identity"])
         n_stock_bars = len(state["bars"])
@@ -161,6 +162,7 @@ async def full_cycle(
     conns: StreamConns,
     n_groups: int,
     poll_interval: float,
+    b_top_n: int,
     once: bool,
 ) -> bool:
     """One round of full mode. Returns True when the streamer should exit."""
@@ -199,7 +201,7 @@ async def full_cycle(
 
     state = await run_stock_round(
         unfinished, n_groups, session, host_tracker, emitted_map,
-        current_biz_day, latest_bar_time, conns, poll_interval,
+        current_biz_day, latest_bar_time, conns, poll_interval, b_top_n,
     )
 
     round_elapsed = _time.time() - round_start

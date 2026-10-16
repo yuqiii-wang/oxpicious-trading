@@ -251,10 +251,12 @@ def _find_running_module(module: str) -> int | None:
 
 def _spawn(module: str) -> int:
     """Start ``python -u -m <module>`` detached, output appended to the
-    day's log file (same file naming as scripts/stream_always.sh)."""
+    day's service log ``logs/<date>/<module>.log`` — the SAME file the
+    spawned process's _common/log_setup handler writes (one date one
+    service one log file; both writers append)."""
     log_dir = _REPO_ROOT / "logs" / datetime.now().strftime("%Y-%m-%d")
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_f = open(log_dir / f"{module.replace('.', '_')}.log", "ab")
+    log_f = open(log_dir / f"{module}.log", "ab")
     try:
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", module],

@@ -89,7 +89,6 @@ import RefreshButton from "@/components/RefreshButton";
 import {
   SignalCodeTrendChart,
   SignalPopulationToggles,
-  useSignalPopulation,
   SignalRecordsTable,
 } from "@/shared/components/signal-code-trend";import type { CodeTrendSecType } from "@/ui/OhlcChart";
 import { DateSelector } from "@/shared/components/date-selector";
@@ -278,14 +277,10 @@ export default function LiveDataTradingSignalsPage() {
     );
   }, [data, selectedConfigs, configs]);
 
-  // The population pick (OHLCV variant + episode pass) — the shared
-  // strip above the day table filters its rows (the expansion panels
-  // carry their own per-code strips).
-  const population = useSignalPopulation();
-  const populationRows = useMemo(
-    () => population.apply(rows),
-    [population, rows],
-  );
+  // The day-table rows: one population per event (the boost twins were
+  // retired 2026-10-16 — the boost's tuned confidence lives on the rule
+  // cells, rendered by the rules panels).
+  const populationRows = rows;
 
   // Date roster: biz today (resolved by the server) + dates present in
   // live_signals, newest first, de-duplicated.
@@ -407,10 +402,7 @@ export default function LiveDataTradingSignalsPage() {
         </Typography>
       ) : (
         <>
-          <SignalPopulationToggles
-            population={population}
-            count={populationRows.length}
-          />
+          <SignalPopulationToggles count={populationRows.length} />
           <SignalTable
             rows={populationRows}
             loading={loading}
@@ -450,11 +442,9 @@ export default function LiveDataTradingSignalsPage() {
   );
 }
 
-/** Stable React key + expansion identity for one signal row. The
- *  population VARIANT rides it: the OHLCV-boost twin shares the plain
- *  record's (config, day, time). */
+/** Stable React key + expansion identity for one signal row. */
 function rowKey(s: TradingSignal): string {
-  return `${s.code}-${s.signal_type}-${s.signal_sub_type}-${s.date}-${s.time}-${s.is_ohlcv_boosted ? "b" : "p"}`;
+  return `${s.code}-${s.signal_type}-${s.signal_sub_type}-${s.date}-${s.time}`;
 }
 
 /** Tick-group identity: the live_signals PK minus the config columns —
@@ -619,24 +609,6 @@ function SignalTable({
                   </TableCell>
                   <TableCell sx={{ whiteSpace: "nowrap" }}>
                     {s.signal_type} · {s.signal_sub_type}
-                    {s.is_ohlcv_boosted && (
-                      <Tooltip
-                        title="The OHLCV-boost twin — the same event with its confidence trust-weighted by the day-0 ohlcv score (the strip's OHLCV toggle picks the variant)"
-                        arrow
-                      >
-                        <Chip
-                          size="small"
-                          label="boost"
-                          variant="outlined"
-                          sx={{
-                            ml: 0.5,
-                            height: 18,
-                            fontSize: "0.65rem",
-                            verticalAlign: "middle",
-                          }}
-                        />
-                      </Tooltip>
-                    )}
                     {group.length > 1 && (
                       <Tooltip
                         title={
@@ -646,8 +618,7 @@ function SignalTable({
                             .slice(1)
                             .map(
                               (g) =>
-                                `${g.signal_type} · ${g.signal_sub_type}` +
-                                (g.is_ohlcv_boosted ? " (boost)" : ""),
+                                `${g.signal_type} · ${g.signal_sub_type}`,
                             )
                             .join(", ")
                         }
@@ -668,7 +639,11 @@ function SignalTable({
                     )}
                   </TableCell>
                   <TableCell>
-                    <SignalActionChip action={s.action} confidence={s.confidence} />
+                    <SignalActionChip
+                      action={s.action}
+                      confidence={s.confidence}
+                      rejected={s.is_rejection === true}
+                    />
                   </TableCell>
                   <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
                   <TableCell align="right">
@@ -708,7 +683,6 @@ function SignalTable({
                     }}
                   >
                     {s.confidence_pct.toFixed(2)}%
-                    <CohortConfidenceAddOn s={s} />
                   </TableCell>
                   <TableCell align="center">
                     <Box
@@ -779,10 +753,6 @@ function SignalExpansion({
   const [history, setHistory] =
     useState<TradingSignalHistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The history population controls (the OHLCV variant + episode-pass
-  // picks — the shared SignalPopulationToggles, one control shared with
-  // the analysis Recent Movements panel).
-  const population = useSignalPopulation();
 
   // The code's FULL signal history (every date), anchored on the viewed
   // day — drives both the trend chart's buy/sell markers (ALL of it) and
@@ -806,11 +776,12 @@ function SignalExpansion({
     };
   }, [signal.sec_type, signal.code, signal.date]);
 
-  // The population-filtered events — BOTH the trend chart's markers and
-  // the history table below follow the toggles (one view).
-  const populationRows: TradingSignal[] = useMemo(
-    () => population.apply(history?.signals ?? []),
-    [population, history],
+  // The code's events — BOTH the trend chart's markers and the history
+  // table below draw them (one view; one population since the boost
+  // twins' retirement).
+  const events: TradingSignal[] = useMemo(
+    () => history?.signals ?? [],
+    [history],
   );
 
   // Table rows: only the last 20 trading days ending on the viewed day —
@@ -820,11 +791,11 @@ function SignalExpansion({
   // boundary is missing (fewer than 20 baseline closes).
   const recentRows: TradingSignal[] = useMemo(() => {
     const windowStart = history?.recent_window_start;
-    if (!windowStart) return populationRows;
-    return populationRows.filter(
+    if (!windowStart) return events;
+    return events.filter(
       (h) => h.date > windowStart && h.date <= signal.date,
     );
-  }, [populationRows, history?.recent_window_start, signal.date]);
+  }, [events, history?.recent_window_start, signal.date]);
 
   if (error) {
     return (
@@ -855,43 +826,16 @@ function SignalExpansion({
           name={signal.code_name ?? undefined}
           anchorDate={signal.date}
           history={history}
-          population={populationRows}
+          population={events}
           height={380}
         />
       )}
-      <SignalPopulationToggles
-        population={population}
-        count={populationRows.length}
-      />
+      <SignalPopulationToggles count={events.length} />
       <HistorySignalsTable
         rows={recentRows}
         windowed={history.recent_window_start !== null}
       />
     </Stack>
-  );
-}
-
-/** The same bucket's ohlcv cohort add-on confidences, parenthesized
- *  next to the confidence (the Excess column's muted paren pattern;
- *  the forecast table's population-marker convention): e.g.
- *  "(boost 2.80% / sel 3.21%)". Renders only the parts that exist —
- *  mov_rsi-only, and each cohort registers independently. */
-function CohortConfidenceAddOn({ s }: { s: TradingSignal }) {
-  const theme = useTheme();
-  const parts: string[] = [];
-  if (parts.length === 0) return null;
-  return (
-    <Box
-      component="span"
-      sx={{
-        color: theme.palette.text.secondary,
-        fontWeight: 400,
-        ml: 0.5,
-        whiteSpace: "nowrap",
-      }}
-    >
-      ({parts.join(" / ")})
-    </Box>
   );
 }
 
@@ -983,7 +927,11 @@ function HistorySignalsTable({
                     {s.signal_type} · {s.signal_sub_type}
                   </TableCell>
                   <TableCell>
-                    <SignalActionChip action={s.action} confidence={s.confidence} />
+                    <SignalActionChip
+                      action={s.action}
+                      confidence={s.confidence}
+                      rejected={s.is_rejection === true}
+                    />
                   </TableCell>
                   <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
                   <TableCell align="right">
@@ -1004,7 +952,6 @@ function HistorySignalsTable({
                   </TableCell>
                   <TableCell align="right" sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
                     {s.confidence_pct.toFixed(2)}%
-                    <CohortConfidenceAddOn s={s} />
                   </TableCell>
                   <TableCell align="center">
                     <Box

@@ -16,8 +16,9 @@ fi
 
 _log_dir="logs/$(date +%F)"
 mkdir -p "$_log_dir"
-# setup_logging also writes logs/<date>/stream_watchdog.log; this nohup
-# capture is the console copy.
+# One date one service one log file: stdout/stderr append to the SAME
+# logs/<date>/database.stream_watchdog.log the service's _common/log_setup
+# handler writes (both writers append).
 nohup python -u -m database.stream_watchdog \
-  >> "$_log_dir/stream_watchdog_nohup.log" 2>&1 &
+  >> "$_log_dir/database.stream_watchdog.log" 2>&1 &
 echo "stream_watchdog started (pid $!)"

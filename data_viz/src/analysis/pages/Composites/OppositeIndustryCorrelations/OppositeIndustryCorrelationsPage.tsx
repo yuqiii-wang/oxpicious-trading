@@ -19,17 +19,17 @@
  * 20/60/255-trading-day window next to the RAW overall correlation:
  *
  *   Overall   — raw pairwise MA-curve correlation (benchmark still in).
- *   Offset    — correlation after the benchmark is subtracted from each
- *               industry's trend (market factor removed — the
+ *   Benchmark Offset — correlation after the benchmark is subtracted from
+ *               each industry's trend (market factor removed — the
  *               opposite-industry detector: an industry up while the
- *               benchmark is up more is DOWN after the offset).
- *   Opposite  — score (1 − offset) / 2 in [0, 1]: 1 = perfectly opposite
- *               once the benchmark is removed, 0.5 = uncorrelated, 0 =
- *               perfectly co-moving.
+ *               benchmark is up more is DOWN after the offset; offset −1
+ *               = perfectly opposite, 0 = uncorrelated, +1 = co-moving).
+ *
+ * (The DB's opposite_score_* = (1 − offset) / 2 is a pure rescale of the
+ * Offset correlation and is not surfaced.)
  *
  * Below the chart, a table audits the LATEST window per pair across all
- * three periods (overall / offset / opposite score), sorted by the
- * selected window's opposite score.
+ * three periods (overall / offset), sorted most-opposite-first.
  *
  * Refresh button (and the auto-trigger when a fresh selection has no
  * materialized rows) runs `python -m analysis.analysis_composites
@@ -81,6 +81,7 @@ import {
   METRIC_LABELS,
   THEMES_SOURCES,
   WINDOWS,
+  rowEndDate,
   rowVal,
 } from "./constants";
 import type { CorrWindow, OffsetMetric, PoolSize } from "./constants";
@@ -197,7 +198,15 @@ export default function OppositeIndustryCorrelationsPage() {
       const next = prev.filter((slug) => validSlugs.has(slug));
       return next.length === prev.length ? prev : next;
     });
-    if (!seededRef.current && selectedIndustrySlugs.length === 0 && !nav.strategyId) {
+    // industries.length > 0: the has_rows seed needs the composites list —
+    // seeding before it resolves would fall through to the first-sector
+    // fallback and auto-run a compute for industries nobody picked.
+    if (
+      !seededRef.current &&
+      selectedIndustrySlugs.length === 0 &&
+      !nav.strategyId &&
+      industries.length > 0
+    ) {
       const idToSlug = new Map<string, string>();
       for (const [slug, id] of slugToIndustryId) {
         if (!idToSlug.has(id)) idToSlug.set(id, slug);
@@ -263,23 +272,26 @@ export default function OppositeIndustryCorrelationsPage() {
   );
 
   // ---- Latest-window audit table ----------------------------------------
-  // Latest start_date where the selected window's score is non-null; one
-  // row per pair with all three periods' overall / offset− / score values.
+  // Latest window END date where the selected window's offset correlation
+  // is non-null; one row per pair with both periods' overall / offset values,
+  // sorted most-opposite-first (lowest offset correlation first — the
+  // dropped opposite score's ordering, offset asc = score desc).
   const latestRows = useMemo(() => {
     if (!data || data.offsets.length === 0) return [] as IndustryCorrOffsetRow[];
-    const scoreCol = METRIC_COLS.score[win];
+    const offsetCol = METRIC_COLS.sub[win];
     const dates = Array.from(
       new Set(
         data.offsets
-          .filter((r) => rowVal(r, scoreCol) != null)
-          .map((r) => r.start_date),
+          .filter((r) => rowVal(r, offsetCol) != null)
+          .map((r) => rowEndDate(r, win))
+          .filter((d): d is string => d != null),
       ),
     ).sort();
     if (dates.length === 0) return [];
     const latest = dates[dates.length - 1];
     return data.offsets
-      .filter((r) => r.start_date === latest && rowVal(r, scoreCol) != null)
-      .sort((a, b) => (rowVal(b, scoreCol) ?? 0) - (rowVal(a, scoreCol) ?? 0));
+      .filter((r) => rowEndDate(r, win) === latest && rowVal(r, offsetCol) != null)
+      .sort((a, b) => (rowVal(a, offsetCol) ?? 0) - (rowVal(b, offsetCol) ?? 0));
   }, [data, win]);
 
   const numPairs = data
@@ -297,8 +309,8 @@ export default function OppositeIndustryCorrelationsPage() {
         "rebased to its window-start level subtracted (common market factor removed), then " +
         "every industry PAIR's Pearson r is charted per rolling 20/60/255-day window as " +
         "horizontal segments from each window date. Metric toggle: Overall = raw r (benchmark " +
-        "still in); Offset = r after removal; Opposite = (1 − r)/2 ∈ [0, 1] — 1 = perfectly " +
-        "opposite ex-market, 0.5 = uncorrelated, 0 = co-moving. Indication: Opposite ≈ 1 " +
+        "still in); Benchmark Offset = r after removal — offset −1 = perfectly opposite " +
+        "ex-market, 0 = uncorrelated, +1 = co-moving. Indication: Benchmark Offset ≈ −1 " +
         "pairs are natural market-neutral candidates — long one, hedge with the other.",
       instruments: [
         { code: benchmark, assetClass: "index" },
@@ -341,8 +353,8 @@ export default function OppositeIndustryCorrelationsPage() {
         Industry MA trends offset by a broad-market benchmark (rebased to each industry's
         level at the window start, then subtracted — the market factor removed; prices
         recomputed from the offset trend). Audits the raw overall correlation against the
-        benchmark-removed correlation and the opposite score (1 − offset) / 2 — 1 =
-        perfectly opposite once the benchmark factor is removed. Windows start every 20
+        benchmark-offset correlation — benchmark offset −1 = perfectly opposite once the
+        market factor is removed, 0 = uncorrelated, +1 = co-moving. Windows start every 20
         trading days. Pick industries with the classification nav below — tick multiple
         industry chips (across sectors, they persist while you browse) and optionally a
         strategy/theme; both columns merge into the same pair set.
@@ -480,8 +492,9 @@ export default function OppositeIndustryCorrelationsPage() {
           {latestRows.length > 0 && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                Latest full {win} window audit — {latestRows[0]?.start_date} (sorted by
-                opposite score)
+                Latest full {win} window audit — through {rowEndDate(latestRows[0]!, win)}
+                {" "}(window start {latestRows[0]?.start_date}; sorted by
+                benchmark-offset correlation, most opposite first)
               </Typography>
               <AuditTable rows={latestRows} enableFilters={data.enable_filters} />
             </Box>

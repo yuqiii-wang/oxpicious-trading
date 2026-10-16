@@ -45,8 +45,16 @@ export function hexWithAlpha(hex: string, alpha: number): string {
 }
 
 /** The action's main hue from the theme palette — success (green) for
- *  buy, error (red) for everything else. Case-insensitive. */
-export function actionColor(action: string, theme: Theme): string {
+ *  buy, error (red) for everything else, GREY (text.secondary) for a
+ *  REJECTED no-action record (is_rejection): a declined condition is
+ *  documentation, never a buy/sell signal — the chip reads neutral so
+ *  it is never mistaken for an actionable call. Case-insensitive. */
+export function actionColor(
+  action: string,
+  theme: Theme,
+  rejected?: boolean,
+): string {
+  if (rejected === true) return theme.palette.text.secondary;
   return action.toLowerCase() === "buy"
     ? theme.palette.success.main
     : theme.palette.error.main;

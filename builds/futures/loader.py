@@ -232,7 +232,7 @@ def build_futures_df(
             "product_code": product_code,
             "contract_month": contract_month,
             "contract_year_month": normalize_contract_year_month(contract_month),
-            # stats.futures_identity.contract_type stores its stats.label_dim
+            # stats.futures_identity.contract_type stores its static.label_dim
             # SMALLINT code (0 index / 1 bond) — map the product-class string
             # once here at the write boundary (parse_contract_code already
             # restricted products to PRODUCT_TYPES' keys, so both lookups

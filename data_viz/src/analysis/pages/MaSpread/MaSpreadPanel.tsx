@@ -19,40 +19,22 @@
  *   4. Roof/Floor Trendlines section beneath the RSI Trends section — a
  *      "Roof/Floor Trendlines" row label (same style as the Trading Amt/MA
  *      label) on its own full-width row, with the window buttons (60 …
- *      1275d — the 20d is not a roof/floor window) plus a "shade" toggle
- *      in the row's first column on a new row below it. The buttons keep
+ *      1275d — the 20d is not a roof/floor window) in the row's first
+ *      column on a new row below it. The buttons keep
  *      the period-column alignment of the pair chips — 60d sits under the
  *      MA60 column, …, 1275d in the last column. Clicking one enables that rolling window's High/Low
  *      envelope on the chart and arms the roof/floor interaction —
  *      clicking a date on the chart draws the trendline through the
  *      window's top + 2nd highs (the roof) and top + 2nd lows (the floor)
  *      from history, converging and stopping at the clicked date (two
- *      points determining a line). The "shade" toggle is INDEPENDENT of
- *      the period buttons: it shades EVERY window's extreme↔2nd-extreme
- *      band at once — light purple 2nd high → high (top), light blue low →
- *      2nd low (bottom), each drawn over its own trailing span — and
- *      overlapping windows stack, so zones where several windows agree
- *      read darker (strength by confluence). The shades react to the
- *      chosen date: they anchor to the clicked chart date's windows
- *      (latest date by default), like the trendlines and streak windows.
- *      The anchor's trailing-20-row CLOSE extremes (max / min close of
- *      the last 20 chart rows) provide two CUT lines — roof bottoms are
- *      raised to the 20d max close, floor tops lowered to the 20d min
- *      close — so no band crosses into the last 20 days' closing range;
- *      close-based on purpose so an intraday wick cannot wipe a band,
- *      and at fresh-high anchors the roofs compress to a narrow strip
- *      above the top close. GUARD: a side that still ends with ZERO
- *      bands draws one from the trailing-60-row extremes (roof = 60d max
- *      close → 60d max high, floor = 60d min low → 60d min close).
- *      Breach markers (nail pins, tip pointing in the break's
- *      direction) mark days the close entered a drawn band
- *      from OUTSIDE, in the break's direction (roof: up through the
- *      roof bottom edge; floor: down through the floor top edge) —
- *      crossings of the anchor-date band edges, not the table's
- *      rolling prior-day-band events. Clicking a window button is
+ *      points determining a line). The row's "Est levels" toggle adds the
+ *      QUANTITATIVE roof/floor level estimate for the chosen date
+ *      (analysis.mov_ave_spreads_roof_floor_estimates — trendline /
+ *      donchian / quantile / channel / boll / median method chips) as
+ *      two horizontal dashed lines. Clicking a window button is
  *      EXCLUSIVE: every other section's picks clear (RSI Trends, High/
- *      Low Streaks, Px-Vol States, Top-10% OHLC Days, Market Regimes),
- *      the header overlay returns to Amt, an Amt/MA envelope view
+ *      Low Streaks, Px-Vol States, Top-10% OHLC Days, Market Regimes,
+ *      Trend), the header overlay returns to Amt, an Amt/MA envelope view
  *      falls back to Price/MA5 — and the trading-amt bars yield the
  *      right axis to the window's change-since-last-anchor plot (one
  *      plot, dashed zero central line: Δ Low(Wd) = close − last low
@@ -103,16 +85,45 @@
  *      (rises), red where within the bottom pct/2 (drops); one
  *      qualifying window draws the base fill, several overlapping on a
  *      date stack it darker.
+ *   9. Momentum section beneath the RSI Trends caption — the
+ *      lookback-adaptive momentum row (analysis.mov_ave_momentum):
+ *      multi-picks the two FIXED anchors (5d / 20d) and the three
+ *      volatility-adaptive short/mid/long terms whose lookback n is
+ *      derived per (code, market regime) via equal-expected-move
+ *      targeting over the regime slice's median EWMA vol. Any pick
+ *      replaces the amt bars with the picked terms' lines on the
+ *      offset right axis (band-mapped signed ratios, zero guide —
+ *      below RSI Trends / Slopes / Curvatures in the slot's
+ *      precedence); the caption spells the latest day's effective
+ *      lookbacks + regime, and the tooltip adds each adaptive term's
+ *      per-date lookback. Its extras group auto-loads with the chart
+ *      blocks so the adaptive chips can spell their current effective
+ *      lookbacks (e.g. "short (14d)") before any pick.
+ *  10. Trend section beneath the Market Regimes row — the signals
+ *      tier's trend phase chips (top / bottom / rise / fall, multi-pick;
+ *      analysis.trend_days via the trend-spans API — the RSI re-entry
+ *      classification shared with the rule cells, replacing the retired
+ *      client-side close-vs-MA60 classifier 2026-10-15): top/bottom =
+ *      the MA255-gap extremes, rise/fall = the RSI(14) momentum
+ *      episodes. Each picked phase shades its own date spans (light red
+ *      / green / blue / amber) on every selected pair. The shade
+ *      families share ONE slot: picking any shade button (Trend, RSI
+ *      pct, High/Low Streaks, Px-Vol, Top-10% OHLC Days, Market
+ *      Regimes) clears the other shade rows' picks, so only one
+ *      family's shades draw at a time; within a row the multi-picks
+ *      stay free.
  *
  * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType)
  * — the DEFAULT load carries just the 18 Simple-MA + EMA pair series and the
- * shared per-date tooltip metrics. The other metric groups load ON DEMAND:
+ * shared per-date tooltip metrics (plus the Momentum section's group, which
+ * auto-loads for the chips' lookback labels). The remaining metric groups
+ * load ON DEMAND:
  * the first pick of an Amt/MA chip, a Roof/Floor Trendlines button, a
- * High/Low Streaks period, a Px-Vol state, or an RSI Trends pct fetches
- * that group via fetchMovAveSpreadExtras (a regime button's first pick
- * fetches the spans via fetchMarketRegimeSpans); while any group is in
- * flight every control in the panel is disabled and the plot freezes under
- * a translucent spinner backdrop (BaseChart freezeOnLoading).
+ * High/Low Streaks period, a Px-Vol state, an RSI Trends pct, or a Momentum
+ * term fetches that group via fetchMovAveSpreadExtras (a regime button's
+ * first pick fetches the spans via fetchMarketRegimeSpans); while any group
+ * is in flight every control in the panel is disabled and the plot freezes
+ * under a translucent spinner backdrop (BaseChart freezeOnLoading).
  *
  * Every button-group title carries a small info mark (SectionLabel) that
  * opens a popover with the group's description — the texts live in
@@ -145,11 +156,16 @@ import {
   ALL_REGIMES,
   regimeSpansToMarkArea,
 } from "@/shared/charts/regimeBands";
-import type {
-  MarketRegime,
-  MarketRegimeSpans,
-  MovAveSpreadOhlcGapDay,
-  MovAveSpreadRsiRankDay,
+import {
+  ROOF_FLOOR_ESTIMATE_METHODS,
+  type MarketRegime,
+  type MarketRegimeSpans,
+  type MovAveSpreadMomentumDay,
+  type MovAveSpreadOhlcGapDay,
+  type MovAveSpreadRoofFloorEstimateRow,
+  type MovAveSpreadRoofFloorRebound,
+  type MovAveSpreadRsiRankDay,
+  type RoofFloorEstimateMethod,
 } from "@shared/types";
 import { fmtNum, fmtPct } from "@/lib/series";
 import {
@@ -158,6 +174,7 @@ import {
   fetchMovAveSpreadChartShared,
   fetchMovAveSpreadExtras,
   fetchMarketRegimeSpans,
+  fetchTrendSpans,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
 import type { OhlcMode } from "@/lib/ohlc";
@@ -168,7 +185,6 @@ import type {
   MovAveSpreadSharedMetricsRow,
   MovAveSpreadAmtRow,
   MovAveSpreadOhlcRow,
-  MovAveSpreadBandsRow,
   MovAveSpreadHighLowStreak,
   MovAveSpreadPriceVsAmtDay,
   MovAveSpreadMetric,
@@ -177,12 +193,31 @@ import type { PanelProps } from "./types";
 import { SectionLabel } from "./SectionLabel";
 import {
   ROOF_FLOOR_WINDOWS,
+  RF_ESTIMATE_METHOD_LABELS,
+  RF_ESTIMATE_DEFAULT_METHOD,
   HIGH_LOW_STREAK_PERIODS,
   HIGH_LOW_STREAK_PCTS,
   RSI_WINDOWS,
   RSI_TOP_PCTS,
+  MOMENTUM_TERMS,
 } from "./constants";
-import { buildPairOption, buildAmtEnvelopeOption, shortLabel, type DerivTrendSpec, type ShadeOverlay } from "./chartOption";
+import {
+  buildPairOption,
+  buildAmtEnvelopeOption,
+  shortLabel,
+  TREND_TYPES,
+  TREND_TYPE_LABELS,
+  TREND_ACCENTS,
+  TREND_SHADES,
+  aggregateReboundAudit,
+  type DerivTrendSpec,
+  type MomentumTerm,
+  type MomentumTrendSpec,
+  type ShadeOverlay,
+  type TrendSpansRecord,
+  type TrendType,
+} from "./chartOption";
+import { trendSpansToMarkArea } from "@/shared/charts/trendBands";
 import {
   computePxVolStates,
   pxVolMatchRuns,
@@ -234,30 +269,77 @@ type ChartOverlay = "amt" | "slope" | "curv";
  * The on-demand metric groups (MovAveSpreadMetric) → the ExtrasState key
  * they populate. Each group feeds one control section and is fetched the
  * first time one of its buttons is picked:
- *   amt → the 5 Amt/MA chips · ohlc → the Roof/Floor
- *   bands → the "shade" toggle's band table · streaks → the High/Low
+ *   amt → the 5 Amt/MA chips · ohlc + rfaudit → the Roof/Floor
+ *   Trendlines row (extrema + the rebound audit) · rfest → the row's
+ *   Est-levels toggle · streaks → the High/Low
  *   Streaks row · pxvol → the Px-Vol States row ·
  *   rsiranks → the RSI Trends section's pct row.
  */
-const METRIC_STATE_KEY: Record<MovAveSpreadMetric, "amtPairs" | "ohlc" | "roofFloorBands" | "highLowStreaks" | "priceVsAmt" | "ohlcGaps" | "rsiRanks"> = {
+const METRIC_STATE_KEY: Record<MovAveSpreadMetric, "amtPairs" | "ohlc" | "rfEstimates" | "rfRebounds" | "highLowStreaks" | "priceVsAmt" | "ohlcGaps" | "rsiRanks" | "momentum"> = {
   amt: "amtPairs",
   ohlc: "ohlc",
-  bands: "roofFloorBands",
+  rfest: "rfEstimates",
+  rfaudit: "rfRebounds",
   streaks: "highLowStreaks",
   pxvol: "priceVsAmt",
   gaps: "ohlcGaps",
   rsiranks: "rsiRanks",
+  momentum: "momentum",
 };
 
 /** On-demand metric groups loaded so far (per code + refresh). */
 interface ExtrasState {
   amtPairs?: MovAveSpreadPairSeries[];
   ohlc?: MovAveSpreadOhlcRow[];
-  roofFloorBands?: MovAveSpreadBandsRow[];
+  rfEstimates?: MovAveSpreadRoofFloorEstimateRow[];
+  rfRebounds?: MovAveSpreadRoofFloorRebound[];
   highLowStreaks?: MovAveSpreadHighLowStreak[];
   priceVsAmt?: MovAveSpreadPriceVsAmtDay[];
   ohlcGaps?: MovAveSpreadOhlcGapDay[];
   rsiRanks?: MovAveSpreadRsiRankDay[];
+  momentum?: MovAveSpreadMomentumDay[];
+}
+
+/** The momentum lines' colors — one per term, MUTED_PALETTE tokens
+ *  (distinct from the RSI window lines' blue→teal [0..5] ramp; the two
+ *  overlays are never drawn simultaneously). */
+const MOMENTUM_TERM_COLORS: Record<MomentumTerm, string> = {
+  "5d": MUTED_PALETTE[1],
+  "20d": MUTED_PALETTE[2],
+  short: MUTED_PALETTE[5],
+  mid: MUTED_PALETTE[6],
+  long: MUTED_PALETTE[7],
+};
+
+/** Term → the momentum row's value column. */
+const MOMENTUM_VALUE_KEYS: Record<
+  MomentumTerm,
+  "momentum_5days" | "momentum_20days" | "momentum_short" | "momentum_mid" | "momentum_long"
+> = {
+  "5d": "momentum_5days",
+  "20d": "momentum_20days",
+  short: "momentum_short",
+  mid: "momentum_mid",
+  long: "momentum_long",
+};
+
+/** Adaptive term → the momentum row's effective-lookback column. */
+const MOMENTUM_LB_KEYS = {
+  short: "lb_short",
+  mid: "lb_mid",
+  long: "lb_long",
+} as const;
+
+/** Chip label of a momentum term — the adaptive short/mid/long spell
+ *  their CURRENT effective lookback (the latest row's lb_*) once the
+ *  group has landed, e.g. "short (14d)"; the fixed anchors stay 5d/20d. */
+function momentumChipLabel(
+  term: MomentumTerm,
+  rows: MovAveSpreadMomentumDay[] | undefined,
+): string {
+  if (term === "5d" || term === "20d") return term;
+  const last = rows?.at(-1);
+  return last == null ? term : `${term} (${last[MOMENTUM_LB_KEYS[term]]}d)`;
 }
 
 /**
@@ -378,7 +460,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // state change onto it so the pick applies the moment the spinner stops.
   // Fetch the not-yet-loaded subset of metric groups in ONE /extras call;
   // resolves after they land so callers chain their button's state change
-  // onto it. (The shade toggle loads "ohlc" + "bands" together.)
+  // onto it.
   const ensureMetrics = useCallback(
     (metrics: MovAveSpreadMetric[]): Promise<void> => {
       const missing = metrics.filter((m) => extras[METRIC_STATE_KEY[m]] == null);
@@ -439,19 +521,31 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // (ROOF_FLOOR_WINDOWS holds the clickable windows).
   const [roofFloorWindow, setRoofFloorWindow] = useState<number | null>(null);
 
-  // The row's "shade" toggle — independent of the period buttons: when on,
-  // EVERY roof/floor window (60…1275d at once, regardless of the selected
-  // roofFloorWindow) shades the flat band between the EXTREME and 2ND EXTREME
-  // of the window ending at the anchor date — light purple top (2nd high →
-  // high), light blue bottom (low → 2nd low) — over each window's own
-  // trailing span; overlapping windows stack, deepening where they agree.
-  // Reacts to the chosen date (anchorIdx; latest date by default).
-  const [roofFloorShade, setOhlcShade] = useState(false);
-
   // Clicked chart date index (into the full rows — shared date axis). The
   // roof/floor trendlines of the enabled window are drawn to (and stop at)
   // this date. Clicking the same date again clears it.
   const [anchorIdx, setAnchorIdx] = useState<number | null>(null);
+
+  // Roof/floor Est-levels overlay (needs a roof/floor window enabled):
+  // rfEstOn toggles the two horizontal estimated roof/floor lines at the
+  // CHOSEN date (anchorIdx, latest row when no date clicked) from the
+  // "rfest" extras group (analysis.mov_ave_spreads_roof_floor_estimates);
+  // rfEstMethod picks the quantitative method (median = cross-method
+  // consensus default).
+  const [rfEstOn, setRfEstOn] = useState(false);
+  const [rfEstMethod, setRfEstMethod] = useState<RoofFloorEstimateMethod>(
+    RF_ESTIMATE_DEFAULT_METHOD,
+  );
+  // The toggle click — fetch-through pattern (first pick loads the
+  // "rfest" group, the toggle applies when it lands).
+  const handleRfEstToggle = useCallback(() => {
+    const apply = () => setRfEstOn((v) => !v);
+    if (extras.rfEstimates == null) {
+      void ensureMetric("rfest").then(apply);
+    } else {
+      apply();
+    }
+  }, [ensureMetric, extras.rfEstimates]);
 
   // High/Low Streaks nested buttons: layer 1 = band lookback period
   // (trading rows, null = row off), layer 2 = band tightness pct (percent,
@@ -468,13 +562,91 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   const [pxVolSpeed, setPxVolSpeed] = useState<PxVolSpeed | null>(null);
   const [pxVolVol, setPxVolVol] = useState<PxVolVolState | null>(null);
 
+  // Trend section state: multi-pick of the signals tier's trend phases
+  // (top / bottom / rise / fall — analysis.trend_days, the RSI re-entry
+  // classification shared with the rule cells, fetched per code via the
+  // trend-spans API; REPLACES the retired client-side close-vs-MA60
+  // classifier 2026-10-15). Each picked phase shades its own spans;
+  // date-based, so the shades draw on every selected pair. The spans
+  // also feed the tooltip's per-date trend readout.
+  const [trendPicks, setTrendPicks] = useState<Set<TrendType>>(new Set());
+  const [trendSpans, setTrendSpans] = useState<TrendSpansRecord | null>(null);
+
+  // Tracks the panel's current (secType, code) so a slow trend-span
+  // response for a previous code never lands after a switch (the
+  // regime-span precedent).
+  const trendCodeKeyRef = useRef(`${secType}:${code}`);
+  useEffect(() => {
+    trendCodeKeyRef.current = `${secType}:${code}`;
+    setTrendSpans(null);
+    const reqKey = `${secType}:${code}`;
+    // fetched eagerly (the tooltip readout wants them on any hover) —
+    // one small endpoint, window the API's 10y max (the panel charts
+    // full history)
+    fetchTrendSpans(secType, code, 3650)
+      .then((d) => {
+        if (trendCodeKeyRef.current === reqKey) setTrendSpans(d.spans ?? {});
+      })
+      .catch(() => {
+        if (trendCodeKeyRef.current === reqKey) setTrendSpans({});
+      });
+  }, [code, secType]);
+
+  // The shade families share ONE slot: activating any shade row's button
+  // clears every OTHER shade row's picks, so only one family's shades draw
+  // at a time (trend, RSI Top-% pct, High/Low Streaks, Px-Vol States,
+  // Top-10% OHLC Days, Market Regimes). Within a row the multi-picks stay
+  // free (regimes, trend phases, gap marks, px-vol legs). The setter refs
+  // for the later-declared rows (setGapMarks / setRegimePicks /
+  // setRsiTopPct) are only touched when the callback fires — after render
+  // has initialized them.
+  const clearShadeGroupsExcept = useCallback(
+    (keep: "trend" | "rsiPct" | "streaks" | "pxvol" | "gaps" | "regimes") => {
+      if (keep !== "trend") setTrendPicks(new Set());
+      if (keep !== "rsiPct") setRsiTopPct(null);
+      if (keep !== "streaks") {
+        setStreakPeriod(null);
+        setStreakPct(null);
+      }
+      if (keep !== "pxvol") {
+        setPxVolSpeed(null);
+        setPxVolVol(null);
+      }
+      if (keep !== "gaps") setGapMarks({ spike: false, flush: false });
+      if (keep !== "regimes") setRegimePicks(new Set());
+    },
+    [],
+  );
+
   const togglePxVolSpeed = useCallback((s: PxVolSpeed) => {
+    if (pxVolSpeed == null && pxVolVol == null) {
+      clearShadeGroupsExcept("pxvol");
+    }
     setPxVolSpeed((prev) => (prev === s ? null : s));
-  }, []);
+  }, [pxVolSpeed, pxVolVol, clearShadeGroupsExcept]);
 
   const togglePxVolVol = useCallback((v: PxVolVolState) => {
+    if (pxVolSpeed == null && pxVolVol == null) {
+      clearShadeGroupsExcept("pxvol");
+    }
     setPxVolVol((prev) => (prev === v ? null : v));
-  }, []);
+  }, [pxVolSpeed, pxVolVol, clearShadeGroupsExcept]);
+
+  // A trend-phase pick that turns the section ON takes the shade slot (the
+  // other shade rows' picks clear); further same-row picks just extend the
+  // shaded set, and un-picking leaves the other rows off.
+  const toggleTrendPick = useCallback(
+    (t: TrendType) => {
+      if (!trendPicks.has(t)) clearShadeGroupsExcept("trend");
+      setTrendPicks((prev) => {
+        const next = new Set(prev);
+        if (next.has(t)) next.delete(t);
+        else next.add(t);
+        return next;
+      });
+    },
+    [trendPicks, clearShadeGroupsExcept],
+  );
 
   // Market Regimes buttons (stats.market_regimes): multi-select among ALL
   // regimes — calm included (its grey shade marks the market's calm
@@ -499,6 +671,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // disabled with the shades never drawn).
   const toggleRegime = useCallback(
     (r: MarketRegime) => {
+      if (regimePicks.size === 0) clearShadeGroupsExcept("regimes");
       setRegimePicks((prev) => {
         const next = new Set(prev);
         if (next.has(r)) next.delete(r);
@@ -519,7 +692,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
           if (regimeCodeKeyRef.current === reqKey) setRegimesLoading(false);
         });
     },
-    [code, secType, regimeSpans, regimesLoading],
+    [code, secType, regimePicks, regimeSpans, regimesLoading, clearShadeGroupsExcept],
   );
 
   useEffect(() => {
@@ -527,9 +700,11 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     setRegimeSpans(null);
     setRegimesLoading(false);
     setRsiTopPct(null);
+    setTrendPicks(new Set());
   }, [code, secType]);
 
   const toggleStreakPeriod = useCallback((w: number) => {
+    if (streakPeriod == null) clearShadeGroupsExcept("streaks");
     setStreakPeriod((prev) => {
       if (prev === w) {
         setStreakPct(null);
@@ -537,7 +712,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       }
       return w;
     });
-  }, []);
+  }, [streakPeriod, clearShadeGroupsExcept]);
 
   const toggleStreakPct = useCallback((p: number) => {
     setStreakPct((prev) => (prev === p ? null : p));
@@ -547,15 +722,6 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // loads its metric group first and applies the pick as soon as the fetch
   // resolves; later picks toggle directly. While the fetch is in flight
   // the freeze disables every control, so at most one load runs at a time.
-
-  // The "shade" toggle loads the "bands" group (the precomputed band
-  // edges + breach flags) together with the "ohlc" group (the trendline
-  // anchors) on its first pick.
-  const handleRoofFloorShadeClick = useCallback(() => {
-    void ensureMetrics(["ohlc", "bands"]).then(() =>
-      setOhlcShade((prev) => !prev),
-    );
-  }, [ensureMetrics]);
 
   const handleStreakPeriodClick = useCallback(
     (w: number) => {
@@ -599,6 +765,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   });
   const handleGapMarkClick = useCallback(
     (kind: "spike" | "flush") => {
+      if (!gapMarks.spike && !gapMarks.flush) clearShadeGroupsExcept("gaps");
       if (extras.ohlcGaps == null) {
         void ensureMetric("gaps").then(() =>
           setGapMarks((prev) => ({ ...prev, [kind]: !prev[kind] })),
@@ -607,7 +774,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         setGapMarks((prev) => ({ ...prev, [kind]: !prev[kind] }));
       }
     },
-    [ensureMetric, extras.ohlcGaps],
+    [ensureMetric, extras.ohlcGaps, gapMarks, clearShadeGroupsExcept],
   );
 
   // RSI Trends section state (the button row beneath the chart — the
@@ -650,6 +817,9 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       return;
     }
     if (wasEmpty && rsiTopPct == null) {
+      // The auto-arm IS a pct activation — it takes the shade slot (the
+      // other shade rows' picks clear).
+      clearShadeGroupsExcept("rsiPct");
       if (extras.rsiRanks == null) {
         void ensureMetric("rsiranks").then(() =>
           setRsiTopPct((p) => p ?? 0.01),
@@ -658,25 +828,57 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         setRsiTopPct(0.01);
       }
     }
-  }, [rsiDays, rsiTopPct, ensureMetric, extras.rsiRanks]);
+  }, [rsiDays, rsiTopPct, ensureMetric, extras.rsiRanks, clearShadeGroupsExcept]);
   const handleRsiTopPctSelect = useCallback(
     (pct: number) => {
       if (pct === 0) {
         setRsiTopPct(null);
         return;
       }
+      clearShadeGroupsExcept("rsiPct");
       if (extras.rsiRanks == null) {
         void ensureMetric("rsiranks").then(() => setRsiTopPct(pct));
       } else {
         setRsiTopPct(pct);
       }
     },
-    [ensureMetric, extras.rsiRanks],
+    [ensureMetric, extras.rsiRanks, clearShadeGroupsExcept],
   );
   // The RSI lines ride the toggle's "amt" slot (Slopes/Curvatures keep
   // precedence): active while the days row holds a pick and no derivative
   // overlay is toggled on. The pct shades are independent of the toggle.
   const rsiLinesActive = chartOverlay === "amt" && rsiDays.length > 0;
+
+  // Momentum section state (the row beneath RSI Trends). The section
+  // rests fully OFF: rsiDays empty, no term picked. Its "momentum"
+  // extras group AUTO-LOADS with the chart blocks (the adaptive chips'
+  // lookback labels need it); a term pick applies once the group is
+  // present — and if the auto-load failed, the pick re-fetches it.
+  // Un-picking the last term returns the row to off. The picked terms'
+  // lines take the right-axis amt slot BELOW the RSI lines in the
+  // precedence (Slopes/Curvatures still override both).
+  const [momentumTerms, setMomentumTerms] = useState<MomentumTerm[]>([]);
+  const toggleMomentumTerm = useCallback(
+    (term: MomentumTerm) => {
+      const apply = () =>
+        setMomentumTerms((prev) =>
+          prev.includes(term)
+            ? prev.filter((t) => t !== term)
+            : [...prev, term],
+        );
+      if (extras.momentum == null) {
+        void ensureMetric("momentum").then(apply);
+      } else {
+        apply();
+      }
+    },
+    [ensureMetric, extras.momentum],
+  );
+  const momentumLinesActive =
+    chartOverlay === "amt" &&
+    rsiDays.length === 0 &&
+    momentumTerms.length > 0 &&
+    (extras.momentum?.length ?? 0) > 0;
 
   // Fetch the chart blocks on mount and whenever the code/sec_type changes.
   // All three blocks fire AT ONCE (parallel-then-render): the panel renders
@@ -720,23 +922,42 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       .catch((e) => {
         console.warn(`[ma-spread] shared block failed for ${code} — tooltip metrics hidden:`, e);
       });
+    // The Momentum section's group auto-loads with the blocks (NOT
+    // pick-gated like the other groups): the adaptive short/mid/long
+    // chips spell their CURRENT effective lookbacks (latest day), known
+    // only once the rows land. Same loading/freeze machinery as
+    // ensureMetric; a failure leaves the group unloaded — clicking a
+    // term retries through the normal path.
+    setLoadingMetrics((prev) =>
+      prev.includes("momentum") ? prev : [...prev, "momentum"],
+    );
+    fetchMovAveSpreadExtras(code, secType, ["momentum"])
+      .then((d) => {
+        if (!cancelled) setExtras((prev) => ({ ...prev, momentum: d.momentum }));
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setMetricError(e.message);
+      })
+      .finally(() => {
+        if (!cancelled)
+          setLoadingMetrics((prev) => prev.filter((m) => m !== "momentum"));
+      });
     return () => {
       cancelled = true;
     };
   }, [code, secType, refreshKey]);
 
   // Canvas-level chart click: sets the anchor date. Armed while an OHLC
-  // window, the High/Low Streaks row, or the shade toggle is enabled; the
-  // roof/floor trendlines, the streak window, and every shade window all
-  // re-anchor to the clicked date. Clicking the already-selected date
-  // clears the anchor (toggle, back to the latest date's window), clicking
-  // another date moves it.
+  // window or the High/Low Streaks row is enabled; the roof/floor
+  // trendlines and the streak window re-anchor to the clicked date.
+  // Clicking the already-selected date clears the anchor (toggle, back to
+  // the latest date's window), clicking another date moves it.
   const handleCanvasClick = useCallback(
     (dataIdx: number) => {
-      if (roofFloorWindow == null && streakPeriod == null && !roofFloorShade) return;
+      if (roofFloorWindow == null && streakPeriod == null) return;
       setAnchorIdx((prev) => (prev === dataIdx ? null : dataIdx));
     },
-    [roofFloorWindow, streakPeriod, roofFloorShade],
+    [roofFloorWindow, streakPeriod],
   );
 
   // The full pairs list — the 18 default series plus the 5 Amt/MA series
@@ -879,8 +1100,8 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
 
   // Enabling a Roof/Floor Trendlines window is EXCLUSIVE: every other
   // section's picks clear (RSI Trends, High/Low Streaks, Px-Vol States,
-  // Top-10% OHLC Days, Market Regimes), the header overlay returns to
-  // Amt, and an Amt/MA envelope view falls back to Price/MA5 — so the
+  // Top-10% OHLC Days, Market Regimes, Trend), the header overlay returns
+  // to Amt, and an Amt/MA envelope view falls back to Price/MA5 — so the
   // window's roof/floor overlays own the chart and its change-since-
   // last-anchor plot owns the right axis. Toggling the same window off
   // just clears it (the other sections stay cleared until re-picked);
@@ -898,22 +1119,26 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         setChartOverlay("amt");
         setRsiDays([]);
         setRsiTopPct(null);
+        setMomentumTerms([]);
         setStreakPeriod(null);
         setStreakPct(null);
         setPxVolSpeed(null);
         setPxVolVol(null);
         setGapMarks({ spike: false, flush: false });
         setRegimePicks(new Set());
+        setTrendPicks(new Set());
         if (amtPairSelected) setSelectedPairIdx(0);
         setRoofFloorWindow(w);
       };
       if (extras.ohlc == null) {
-        void ensureMetric("ohlc").then(apply);
+        void ensureMetrics(["ohlc", "rfaudit"]).then(apply);
+      } else if (extras.rfRebounds == null) {
+        void ensureMetric("rfaudit").then(apply);
       } else {
         apply();
       }
     },
-    [ensureMetric, extras.ohlc, roofFloorWindow, amtPairSelected],
+    [ensureMetric, ensureMetrics, extras.ohlc, extras.rfRebounds, roofFloorWindow, amtPairSelected],
   );
 
   // ---- Slopes/Curvatures overlay lines (the header toggle's two
@@ -961,6 +1186,49 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       ],
     };
   }, [chartOverlay, selectedPair, pairs, pairIndexMap]);
+
+  // ---- Momentum overlay lines (the Momentum section's terms row). The
+  // "momentum" extras rows are aligned to the selected pair's dates via
+  // a date→row Map (the same alignment the Top-10% OHLC shades use);
+  // the adaptive terms' per-date lookbacks ride along for the tooltip's
+  // "short·14d" suffixes. One line per PICKED term, in the constants'
+  // canonical order.
+  const momentumTrend = useMemo<MomentumTrendSpec | null>(() => {
+    if (!momentumLinesActive || selectedPair == null) return null;
+    const rows = extras.momentum;
+    if (rows == null || rows.length === 0) return null;
+    const byDate = new Map(rows.map((r) => [r.date, r]));
+    const n = selectedPair.rows.length;
+    const lbs: NonNullable<MomentumTrendSpec["lbs"]> = {
+      short: new Array<number | null>(n).fill(null),
+      mid: new Array<number | null>(n).fill(null),
+      long: new Array<number | null>(n).fill(null),
+    };
+    for (let i = 0; i < n; i++) {
+      const r = byDate.get(selectedPair.rows[i].date);
+      if (!r) continue;
+      lbs.short[i] = r.lb_short;
+      lbs.mid[i] = r.lb_mid;
+      lbs.long[i] = r.lb_long;
+    }
+    const order = MOMENTUM_TERMS as readonly MomentumTerm[];
+    const picked = order.filter((t) => momentumTerms.includes(t));
+    return {
+      lines: picked.map((term) => ({
+        name: `Mom ${term}`,
+        term,
+        color: MOMENTUM_TERM_COLORS[term],
+        data: selectedPair.rows.map(
+          (r) =>
+            (byDate.get(r.date)?.[MOMENTUM_VALUE_KEYS[term]] as
+              | number
+              | null
+              | undefined) ?? null,
+        ),
+      })),
+      lbs,
+    };
+  }, [momentumLinesActive, extras.momentum, momentumTerms, selectedPair]);
 
   // The Top-10% OHLC Days SHADES — light red bands over spike-fade
   // days (upper wick in its trailing-252d top decile), light green over
@@ -1173,6 +1441,29 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     return out;
   }, [rsiTopPct, rsiDays, extras.rsiRanks, selectedPair]);
 
+  // The Trend section's SHADES — the signals tier's spans
+  // (analysis.trend_days, the RSI re-entry classification; date-based
+  // rects — no pair-row alignment needed, so the shades draw on the
+  // selected pair whatever it is). Each picked phase contributes one
+  // legend series of merged markArea rects in its light fill —
+  // rendered through the shared shade-overlay path alongside the
+  // regime / gap / RSI-rank overlays.
+  const trendShades = useMemo<ShadeOverlay[]>(() => {
+    if (trendPicks.size === 0 || trendSpans == null) return [];
+    const out: ShadeOverlay[] = [];
+    for (const t of TREND_TYPES) {
+      if (!trendPicks.has(t)) continue;
+      const spans = trendSpans[t];
+      if (!spans || spans.length === 0) continue;
+      out.push({
+        label: `Trend(${TREND_TYPE_LABELS[t]})`,
+        accent: TREND_ACCENTS[t],
+        data: trendSpansToMarkArea(spans, TREND_SHADES[t]),
+      });
+    }
+    return out;
+  }, [trendPicks, trendSpans]);
+
   // Optional secondary stat row from the latest snapshot of all 9 pairs —
   // surfaced as a small caption so the user can scan the page quickly.
   const latestSummary = chartData?.pairs[safePairIdx]?.rows.slice(-1)[0] ?? null;
@@ -1269,7 +1560,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               streakPct,
               streakAnchorIdx: anchorIdx,
               pxVolShade,
-              regimeShades: [...regimeShades, ...ohlcGapShades],
+              regimeShades: [...regimeShades, ...ohlcGapShades, ...trendShades],
               ohlcGapRows: extras.ohlcGaps ?? null,
               ohlcGapActive: gapMarks.spike || gapMarks.flush,
             })
@@ -1279,27 +1570,35 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               themeMode,
               bollingerK,
               tradingAmtMode:
-                chartOverlay === "amt" && rsiDays.length === 0
+                chartOverlay === "amt" && rsiDays.length === 0 && !momentumLinesActive
                   ? "lowkey"
                   : "off",
               rsiTrendMode: rsiLinesActive,
               rsiWindows: rsiDays,
               rsiPopulation,
               derivTrend,
+              momentumTrend,
               ohlcMode,
               roofFloorWindow,
               roofFloorClickIdx: anchorIdx,
               roofFloorRows: extras.ohlc ?? null,
-              bandRows: extras.roofFloorBands ?? null,
-              roofFloorShadeWindows: roofFloorShade ? ROOF_FLOOR_WINDOWS : null,
+              roofFloorEstRows: extras.rfEstimates ?? null,
+              roofFloorEstMethod: rfEstOn ? rfEstMethod : null,
+              roofFloorRebounds: extras.rfRebounds ?? null,
               longStreaks,
               streakPeriod,
               streakPct,
               streakAnchorIdx: anchorIdx,
               pxVolShade,
-              regimeShades: [...regimeShades, ...ohlcGapShades, ...rsiRankShades],
+              regimeShades: [
+                ...regimeShades,
+                ...ohlcGapShades,
+                ...rsiRankShades,
+                ...trendShades,
+              ],
               ohlcGapRows: extras.ohlcGaps ?? null,
               ohlcGapActive: gapMarks.spike || gapMarks.flush,
+              trendSpans,
             })
         : null,
     [
@@ -1311,16 +1610,22 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       extras.ohlc,
       themeMode,
       bollingerK,
+      trendSpans,
       chartOverlay,
       rsiDays,
       rsiPopulation,
       rsiLinesActive,
       derivTrend,
+      momentumTrend,
+      momentumLinesActive,
       ohlcMode,
       roofFloorWindow,
       anchorIdx,
-      roofFloorShade,
-      extras.roofFloorBands,
+      extras.ohlc,
+      extras.rfEstimates,
+      extras.rfRebounds,
+      rfEstOn,
+      rfEstMethod,
       longStreaks,
       streakPeriod,
       streakPct,
@@ -1328,6 +1633,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       regimeShades,
       ohlcGapShades,
       rsiRankShades,
+      trendShades,
       extras.ohlcGaps,
       gapMarks.spike,
       gapMarks.flush,
@@ -1409,11 +1715,10 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                   { name: `Floor(${roofFloorWindow}d)`, description: "trendline through the window's top+2nd lows, stopping at the anchor date" },
                 ]
               : []),
-            ...(roofFloorShade
+            ...(roofFloorWindow != null && rfEstOn
               ? [
-                  { name: "Roof shade", description: "all roof/floor windows (60–1275d) at once: each window's flat band between its two high anchors (from the bands table's upper_band edges) of the window ending at the anchor date, drawn over that window's trailing span and cut at the 20d-max line, light purple — deepening where windows overlap (strength by confluence)" },
-                  { name: "Floor shade", description: "the mirror on the two low anchors (lower_band edges), cut at the 20d-min line, light blue" },
-                  { name: "Band event marks", description: "event markers on the DRAWN band edges, read from the bands table's stored event-date arrays (σ = trailing-20d population std of the daily close changes): SOLID ▲/▼ triangles on a bounce — the curve touched the drawn roof-bottom/floor-top edge within ±1σ and the next day turned back; oversized NAIL pins (📍, 2× the bounce mark's height, tip pointing in the break's direction) on a breach — a DIRECTIONAL entry into the band from outside: the prior close sat at/below the roof's drawn edge (at/above the floor's) and the day closed beyond edge + 1σ in the break's direction (roof = up move, floor = down move; a close already inside the band that later clears +1σ is not a breach); re-anchored with the clicked date like the shades, only windows whose band survived the 20d cut carry marks, stacked marks = multi-window confluence" },
+                  { name: `Est roof (${rfEstMethod})`, description: `estimated resistance level AT the chosen date under the ${rfEstMethod} method (analysis.mov_ave_spreads_roof_floor_estimates; median = the cross-method consensus of trendline/donchian/quantile/channel/boll) — horizontal dashed roof-orange line` },
+                  { name: `Est floor (${rfEstMethod})`, description: "the mirror estimated support level — horizontal dashed floor-blue line at the same chosen date" },
                 ]
               : []),
             ...(streakLabel
@@ -1423,6 +1728,13 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                 ]
               : []),
             ...(pxVolShade ? [{ name: pxVolShade.label, description: "dates matching the selected price-speed × amount-state combo" }] : []),
+            ...(trendPicks.size > 0
+              ? TREND_TYPES.filter((t) => trendPicks.has(t)).map((t) => ({
+                  name: `Trend(${TREND_TYPE_LABELS[t]})`,
+                  description:
+                    "the signals tier's trend spans (analysis.trend_days: RSI re-entry momentum episodes + MA255-gap extremes) shaded in the phase's light fill (top red / bottom green / rise blue / fall amber)",
+                }))
+              : []),
           ],
       state: {
         pair: selectedPair?.pair_label ?? "—",
@@ -1438,18 +1750,29 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                 : "amt (lowkey bars)") +
           (rsiTopPct != null
             ? ` + RSI top-${Math.round(rsiTopPct * 100)}% history-rank shades split evenly: green where the RSI ranked within the top ${Math.round(rsiTopPct * 500) / 10}% of its own ${rsiDays.length > 0 ? `${rsiDays.slice().sort((a, b) => a - b).join("/")}d window` : "history (any window)"} (rises), red where within the bottom ${Math.round(rsiTopPct * 500) / 10}% (drops); base fill per qualifying window, darker where multiple picked windows' extremes overlap`
+            : "") +
+          (trendPicks.size > 0
+            ? ` + signals-tier trend phase shades (${TREND_TYPES.filter((t) => trendPicks.has(t)).map((t) => TREND_TYPE_LABELS[t]).join("/")})`
             : ""),
         ohlc_window: roofFloorWindow ?? "off",
-        ohlc_shade: roofFloorShade
-          ? "on — every window's (60–1275d) band from the bands table (mov_ave_spreads_roof_and_floor_bands) of the window ending at the anchor date, purple top / blue bottom over each window's trailing span, overlap depth = strength; re-anchors with the clicked date; cut at the anchor's trailing-20-row CLOSE extremes — roof bottoms raised to the 20d max close, floor tops lowered to the 20d min close (wicks cannot wipe a band), so no band crosses the last 20 days' closing range; ▲/▼ markers on days the close crossed INTO a drawn band (up into a roof / down below a floor)"
-          : "off",
         anchor_date: anchorDate ?? "none",
+        rf_estimate:
+          roofFloorWindow != null && rfEstOn
+            ? `${rfEstMethod} @ ${anchorDate ?? "latest date"}`
+            : "off",
         streak_combo: streakLabel || "off",
         px_vol: pxVolShade?.label ?? "off",
+        trend:
+          trendPicks.size > 0
+            ? TREND_TYPES.filter((t) => trendPicks.has(t))
+                .map((t) => TREND_TYPE_LABELS[t])
+                .join("/")
+            : "off",
       },
       notes: [
         "All 9 pairs share one date axis; the in-chart dataZoom windows the view.",
         "Break streaks are detected client-side against the anchor window's static band edge (≤5-day in-band gaps bridged).",
+        "Shade families are mutually exclusive — one shade source at a time (trend / RSI pct / streaks / px-vol / OHLC days / regimes); a pick in one clears the others.",
       ],
     }),
     [
@@ -1461,7 +1784,8 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       longName,
       bollingerK,
       roofFloorWindow,
-      roofFloorShade,
+      rfEstOn,
+      rfEstMethod,
       streakLabel,
       pxVolShade,
       ohlcMode,
@@ -1470,6 +1794,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       derivTrend,
       anchorDate,
       rsiTopPct,
+      trendPicks,
     ],
   );
   const aiAskAddon = useAiAskAddon({
@@ -1787,31 +2112,90 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
             </Typography>
           )}
 
+          {/* ---- Momentum buttons (terms multi-select) ----
+              The lookback-adaptive momentum row: the two fixed anchors
+              (5d / 20d) plus the three volatility-adaptive short/mid/
+              long terms whose lookback varies per (code, regime) — see
+              analysis.mov_ave_momentum. The adaptive chips spell their
+              CURRENT effective lookback (latest day, e.g. "short (14d)")
+              once the auto-loaded group lands. Any pick replaces the amt
+              bars on the right axis (below RSI Trends / Slopes /
+              Curvatures in the slot's precedence); the caption spells
+              the latest day's effective lookbacks + the regime they were
+              derived for. */}
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+            {/* Row label */}
+            <SectionLabel
+              id="momentum"
+              active={momentumTerms.length > 0}
+              suffix={
+                loadingMetrics.includes("momentum") ? " — loading…" : ""
+              }
+            />
+            {MOMENTUM_TERMS.map((term, col) => (
+              <Chip
+                key={term}
+                label={momentumChipLabel(term, extras.momentum)}
+                size="small"
+                clickable
+                disabled={extrasLoading}
+                color={momentumTerms.includes(term) ? "primary" : "default"}
+                variant={momentumTerms.includes(term) ? "filled" : "outlined"}
+                onClick={() => toggleMomentumTerm(term)}
+                sx={{ gridColumn: col + 3, ...PERIOD_CHIP_SX }}
+              />
+            ))}
+          </Box>
+          {momentumTerms.length > 0 &&
+            extras.momentum != null &&
+            extras.momentum.length > 0 &&
+            (() => {
+              const last = extras.momentum!.at(-1)!;
+              const vol =
+                last.vol_regime != null
+                  ? `σ ${(last.vol_regime * 100).toFixed(2)}%/d · `
+                  : "";
+              return (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+                >
+                  momentum = price[t]/price[t−n] − 1 · latest {last.date}:{" "}
+                  {REGIME_LABELS[last.regime]} ({vol}
+                  short {last.lb_short}d · mid {last.lb_mid}d · long{" "}
+                  {last.lb_long}d — lookbacks adapt to the regime's median
+                  volatility; hover the chart for per-date lookbacks)
+                </Typography>
+              );
+            })()}
+
           {/* ---- Roof/floor window buttons ----
               Row label ("Roof/Floor Trendlines") spans the full grid width
               on its own row — same style as the Trading Amt/MA label — with
               the window buttons on a new row below it. The buttons keep the
               period-column alignment of the pair chips: 60d sits under the
-              MA60 column, …, 1275d in the last column (column 2 stays
-              empty — the 20d is not a roof/floor window). The "shade"
-              toggle in the row's first column shades EVERY window's
-              extreme↔2nd-extreme band at once over each window's trailing
-              span, anchored to the clicked chart date (latest by default),
-              independent of the selected period button. */}
+              MA60 column, …, 1275d in the last column (columns 1-2 stay
+              empty — the 20d is not a roof/floor window). */}
           <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
             {/* Row label */}
-            <SectionLabel id="roofFloorWindow" active={roofFloorWindow != null || roofFloorShade} />
-            {/* "shade" toggle — column 1 (the free MA5 column). */}
-            <Chip
-              label="shade"
-              size="small"
-              clickable
-              disabled={extrasLoading}
-              color={roofFloorShade ? "primary" : "default"}
-              variant={roofFloorShade ? "filled" : "outlined"}
-              onClick={handleRoofFloorShadeClick}
-              sx={{ gridColumn: 1, ...PERIOD_CHIP_SX }}
-            />
+            <SectionLabel id="roofFloorWindow" active={roofFloorWindow != null} />
+            {/* Est-levels toggle (column 1, free while the window buttons
+                sit at columns 3-8): enables the two horizontal estimated
+                roof/floor lines at the chosen date under the picked
+                method. Loads the "rfest" extras group on first pick. */}
+            {roofFloorWindow != null && (
+              <Chip
+                label="Est levels"
+                size="small"
+                clickable
+                disabled={extrasLoading}
+                color={rfEstOn ? "secondary" : "default"}
+                variant={rfEstOn ? "filled" : "outlined"}
+                onClick={handleRfEstToggle}
+                sx={{ gridColumn: 1, ...PERIOD_CHIP_SX }}
+              />
+            )}
             {ROOF_FLOOR_WINDOWS.map((w, col) => (
               <Chip
                 key={w}
@@ -1840,24 +2224,127 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                 : ""}
             </Typography>
           )}
-          {roofFloorShade && (
+          {/* Rebound audit captions (the "rfaudit" extras group, loaded
+              with the first window pick): the selected window's rebound
+              frequency/amplitude + retest hold/break funnel for both
+              sides, from the code's own recorded extremes. */}
+          {roofFloorWindow != null && extras.rfRebounds != null &&
+            (() => {
+              const evs = extras.rfRebounds ?? [];
+              const line = (side: "floor" | "roof"): string => {
+                const s = aggregateReboundAudit(evs, roofFloorWindow, side);
+                if (s.nEvents === 0) {
+                  return `no recorded ${side} events at ${roofFloorWindow}d`;
+                }
+                const parts = [
+                  `${s.nEvents} extremes`,
+                  `${s.nRebounded}/${s.nEvents} rebounded (${Math.round(s.reboundPct ?? 0)}%` +
+                    (s.avgReboundPct != null ? `, avg ${s.avgReboundPct.toFixed(1)}%` : "") +
+                    ")",
+                ];
+                if (s.nRetested > 0) {
+                  parts.push(
+                    `${s.nRetested} retested → ${s.nHeld} held / ${s.nBroken} broken` +
+                      (s.nHeld > 0
+                        ? ` (${s.nHeldLaterBroken}/${s.nHeld} holds later broken)`
+                        : "") +
+                      (s.avgBouncePct != null
+                        ? ` · bounce avg ${s.avgBouncePct.toFixed(1)}%`
+                        : "") +
+                      (s.avgDepthPct != null
+                        ? ` · depth avg ${s.avgDepthPct.toFixed(1)}%`
+                        : ""),
+                  );
+                }
+                return parts.join(" · ");
+              };
+              const cap = { variant: "caption", color: "text.secondary", sx: { display: "block", fontSize: "0.65rem" } } as const;
+              return (
+                <>
+                  <Typography {...cap} sx={{ ...cap.sx, mt: 0.5 }}>
+                    rebound audit ({roofFloorWindow}d · this code): floor — {line("floor")}
+                  </Typography>
+                  <Typography {...cap}>
+                    roof — {line("roof")} · ▲/▼ = rebounded extreme before the chosen date, near the median roof/floor (±5%) · source: analysis.mov_ave_spreads_roof_floor_rebounds
+                  </Typography>
+                </>
+              );
+            })()}
+          {/* Est-levels method picker — one chip per quantitative method
+              (columns 3-8), shown while the toggle is on. The picked
+              method's roof/floor estimates for the chosen date (anchor
+              date, latest row by default) draw as the two horizontal
+              dashed lines. */}
+          {roofFloorWindow != null && rfEstOn && (
+            <Box sx={{ ...PERIOD_GRID_SX, mt: 0.5 }}>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  gridColumn: "1 / span 2",
+                  fontSize: "0.7rem",
+                  alignSelf: "center",
+                }}
+              >
+                est method
+              </Typography>
+              {ROOF_FLOOR_ESTIMATE_METHODS.map((m, col) => (
+                <Chip
+                  key={m}
+                  label={RF_ESTIMATE_METHOD_LABELS[m] ?? m}
+                  size="small"
+                  clickable
+                  disabled={extrasLoading}
+                  color={rfEstMethod === m ? "secondary" : "default"}
+                  variant={rfEstMethod === m ? "filled" : "outlined"}
+                  onClick={() => setRfEstMethod(m)}
+                  sx={{ gridColumn: col + 3, ...PERIOD_CHIP_SX }}
+                />
+              ))}
+            </Box>
+          )}
+          {roofFloorWindow != null && rfEstOn &&
+            extras.rfEstimates != null &&
+            extras.rfEstimates.length === firstPairRows.length &&
+            firstPairRows.length > 0 &&
+            (() => {
+              const idx = anchorIdx ?? firstPairRows.length - 1;
+              const row = extras.rfEstimates![idx];
+              const roof =
+                row?.[`roof_${rfEstMethod}_${roofFloorWindow}d`] ?? null;
+              const floor =
+                row?.[`floor_${rfEstMethod}_${roofFloorWindow}d`] ?? null;
+              const date = firstPairRows[idx]?.date ?? "—";
+              return (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+                >
+                  est levels @ {date} · {roofFloorWindow}d ·{" "}
+                  {RF_ESTIMATE_METHOD_LABELS[rfEstMethod] ?? rfEstMethod}:
+                  {roof != null && floor != null ? (
+                    <>
+                      {" "}roof {fmtNum(roof)} · floor {fmtNum(floor)}{" "}
+                      (two dashed lines — click a date to move them)
+                    </>
+                  ) : (
+                    " no estimate for this date/method — try another method"
+                  )}
+                </Typography>
+              );
+            })()}
+          {roofFloorWindow != null && rfEstOn &&
+            (extras.rfEstimates == null ||
+              extras.rfEstimates.length !== firstPairRows.length) && (
             <Typography
               variant="caption"
               color="text.secondary"
               sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
             >
-              shade: all windows {ROOF_FLOOR_WINDOWS.join("/")}d — light
-              purple 2nd high → high, light blue low → 2nd low, deeper where
-              windows overlap; cut at the anchor's 20d CLOSE extremes (roof
-              bottoms ≥ 20d max close, floor tops ≤ 20d min close); solid ▲/▼ =
-              bounce off a band edge, oversized nail pins (2× the bounce mark,
-              tip in the break's direction) = days the close crossed into a
-              drawn band (up into a roof /
-              down below a floor; stacked marks = multi-window confluence)
-              ·{" "}
-              {anchorIdx != null && firstPairRows[anchorIdx]
-                ? `anchored to ${firstPairRows[anchorIdx].date} (click again to clear)`
-                : "anchored to the latest date (click a chart date to re-anchor)"}
+              {extras.rfEstimates == null
+                ? "est levels loading…"
+                : "no estimate rows for this code — run python -m analysis.mov_ave_spread to build analysis.mov_ave_spreads_roof_floor_estimates"}
             </Typography>
           )}
 
@@ -2124,6 +2611,57 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                       }`;
                     })
                     .join(" · ") + " · source: stats.market_regimes (vol_z / amt_z vs own trailing 255d, bars ±1.0σ)"}
+            </Typography>
+          )}
+
+          {/* ---- Trend buttons (the signals tier's trend phases,
+              multi-select) ---- The four phases of analysis.trend_days
+              (fetched via the trend-spans API — the RSI re-entry
+              classification shared with the rule cells; REPLACES the
+              retired client-side close-vs-MA60 classifier 2026-10-15):
+              top / bottom = the MA255-gap extremes, rise / fall = the
+              RSI(14) momentum episodes. Each picked phase shades its
+              own date spans in its light fill — drawn on every selected
+              pair (date-based rects). A pick takes the panel's single
+              shade slot: the other shade rows' picks clear (RSI pct,
+              High/Low Streaks, Px-Vol, Top-10% OHLC Days, Market
+              Regimes), and picking any of those clears the trend
+              picks. */}
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+            <SectionLabel id="trendBands" active={trendPicks.size > 0} />
+            {TREND_TYPES.map((t, col) => (
+              <Chip
+                key={t}
+                label={TREND_TYPE_LABELS[t]}
+                size="small"
+                clickable
+                color={trendPicks.has(t) ? "primary" : "default"}
+                variant={trendPicks.has(t) ? "filled" : "outlined"}
+                onClick={() => toggleTrendPick(t)}
+                sx={{
+                  gridColumn: col + 1,
+                  ...PERIOD_CHIP_SX,
+                  ...(trendPicks.has(t)
+                    ? {
+                        color: TREND_ACCENTS[t],
+                        borderColor: TREND_ACCENTS[t],
+                      }
+                    : {}),
+                }}
+              />
+            ))}
+          </Box>
+          {trendPicks.size > 0 && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              signals-tier trend spans shaded (analysis.trend_days) — top /
+              bottom: MA255-gap extremes · rise / fall: RSI(14) re-entry
+              momentum episodes (RSI re-cross of 50 after a deep ≤30/≥70
+              anchor flips the trend within 40d) · unknown = background ·
+              dates from the rules tier, drawn on every pair
             </Typography>
           )}
           {(pxVolSpeed != null || pxVolVol != null) && (

@@ -1,7 +1,7 @@
 /**
  * Chart option for the Opposite Industry Correlations page — one line per
- * industry pair on the selected metric (Overall / Offset / Opposite) and
- * window (20d/60d/255d), with an axis tooltip that shows ALL three windows'
+ * industry pair on the selected metric (Overall / Offset) and window
+ * (20d/60d/255d), with an axis tooltip that shows ALL three windows'
  * values per pair (the selected one bolded).
  */
 import React from "react";
@@ -17,7 +17,7 @@ import {
 import { fmtNum } from "@/lib/series";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type { IndustryCorrOffsetRow, IndustryCorrOffsetsResponse } from "@shared/types";
-import { METRIC_COLS, METRIC_LABELS, pairLabel, rowVal } from "./constants";
+import { METRIC_COLS, METRIC_LABELS, pairLabel, rowEndDate, rowVal } from "./constants";
 import type { CorrWindow, OffsetMetric } from "./constants";
 
 export function buildCorrOffsetChartOption(
@@ -39,16 +39,29 @@ export function buildCorrOffsetChartOption(
     arr.push(row);
   }
   const sortedPairs = Array.from(pairKeys).sort();
+  // X axis = each window's END date for the SELECTED window (the date
+  // the audit value was knowable through) — the stride grid plus the
+  // trailing window ending at the latest date all line up on it.
   const allDatesSet = new Set<string>();
-  for (const row of data.offsets) allDatesSet.add(row.start_date);
+  for (const row of data.offsets) {
+    const e = rowEndDate(row, win);
+    if (e != null) allDatesSet.add(e);
+  }
   const allDates = Array.from(allDatesSet).sort();
 
   const col = METRIC_COLS[metric][win];
   const series: Array<Record<string, unknown>> = sortedPairs.map((key, i) => {
     const rows = byPair.get(key)!;
-    const byDate = new Map(rows.map((r) => [r.start_date, r]));
+    const byDate = new Map<string, IndustryCorrOffsetRow>();
+    for (const r of rows) {
+      const e = rowEndDate(r, win);
+      if (e != null) byDate.set(e, r);
+    }
     const color = MUTED_PALETTE[i % MUTED_PALETTE.length];
-    const aligned = allDates.map((d) => rowVal(byDate.get(d) ?? rows[0], col));
+    const aligned = allDates.map((d) => {
+      const r = byDate.get(d);
+      return r == null ? null : rowVal(r, col);
+    });
     return {
       name: pairLabel(rows[0]),
       type: "line",
@@ -62,7 +75,6 @@ export function buildCorrOffsetChartOption(
     };
   });
 
-  const isScore = metric === "score";
   // The tooltip is a plain themed card WITHOUT an axisPointer, so it is
   // passed as an explicit override rather than commonTooltip(mode, …) —
   // the kit default would introduce a cross+snap pointer this chart never
@@ -87,10 +99,11 @@ export function buildCorrOffsetChartOption(
         const dateStr = allDates[idx0] ?? "";
         if (!dateStr) return "";
         const children: React.ReactNode[] = [];
-        children.push(React.createElement(tooltipComponents.Header, null, dateStr));
+        children.push(React.createElement(tooltipComponents.Header, null,
+          `${dateStr} (window end)`));
         children.push(React.createElement("div", {
           style: { marginTop: 2, opacity: 0.7 },
-        }, `${METRIC_LABELS[metric]} · ${win} window · benchmark ${data.benchmark_code} (window starts every ${data.offsets[0]?.interval ?? 20} trading days)`));
+        }, `${METRIC_LABELS[metric]} · ${win} window · benchmark ${data.benchmark_code} (stride every ${data.offsets[0]?.interval ?? 20} trading days + trailing window at the latest date)`));
         const rowChildren: React.ReactNode[] = [];
         const col = METRIC_COLS[metric];
         for (const p of arr) {
@@ -100,7 +113,7 @@ export function buildCorrOffsetChartOption(
           });
           if (!key) continue;
           const rows = byPair.get(key)!;
-          const r = rows.find((x) => x.start_date === dateStr);
+          const r = rows.find((x) => rowEndDate(x, win) === dateStr);
           if (!r) continue;
           const pairIdx = sortedPairs.indexOf(key);
           const color = MUTED_PALETTE[pairIdx % MUTED_PALETTE.length];
@@ -142,9 +155,9 @@ export function buildCorrOffsetChartOption(
     },
     yAxis: {
       type: "value",
-      min: isScore ? 0 : -1,
+      min: -1,
       max: 1,
-      name: isScore ? "Opposite score" : "Correlation",
+      name: "Correlation",
       nameTextStyle: { color: c.textColor, fontSize: 9 },
       axisLine: { lineStyle: { color: c.axisLineColor } },
       axisLabel: {

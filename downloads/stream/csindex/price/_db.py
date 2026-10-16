@@ -3,7 +3,8 @@
 - ``load_sse_streamed_codes`` — codes with bars today (excluded from CSIndex)
 - ``load_index_industry_map`` — {code: industry_id} for download ordering
 - ``order_codes_by_industry_coverage`` — reorder so every industry gets one
-  index fetched first
+  index fetched first (input is importance-ranked via ``_common.importance``
+  — ``fetch_importance_ranks_or_empty`` + ``order_pairs_by_importance``)
 - ``load_missing_or_stale_codes`` — indices missing/stale in intraday_5min
 - ``upsert_index_bars`` — upsert identity + bar rows to DB
 """
@@ -14,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from downloads.index.csindex.quote import CSINDEX_SKIP_CODES
 from _common.db_commons import bulk_upsert
+from _common.importance import exchange_map_or_empty, szse_downloader_codes
 
 from ._constants import (
     BOND_NAME_KEYWORD,
@@ -75,8 +77,9 @@ def order_codes_by_industry_coverage(
     """Reorder ``codes`` so every industry gets at least one index FIRST.
 
     Pass 1 (head): pick one representative per industry — the first code
-    encountered for that industry.
-    Pass 2 (tail): append remaining codes in original order.
+    encountered for that industry in the GIVEN order (the caller passes
+    importance-ranked codes, so each industry's most important index leads).
+    Pass 2 (tail): append remaining codes in the same order.
 
     If the loop is killed after only the head is fetched, every industry
     still has fresh data.
@@ -165,9 +168,14 @@ def load_missing_or_stale_codes(
             cur.execute(query, (today,))
             rows = cur.fetchall()
 
+    # Exchange routing (stats.sec_importance_ranks via _common.importance,
+    # cache-first): SZSE-marked codes are owned by the SZSE streamer —
+    # csindex.com.cn does not serve them. CSINDEX_SKIP_CODES stays as the
+    # legacy fallback for codes with no rank row (fresh install).
     excluded = (
         CSINDEX_SKIP_CODES
         | CSINDEX_NO_TICK_CODES
+        | set(szse_downloader_codes(exchange_map_or_empty()))
         | (exclude_codes or set())
     )
     result: List[Tuple[str, str]] = []

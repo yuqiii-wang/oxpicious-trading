@@ -53,6 +53,8 @@ import pandas as pd
 
 from downloads._common import read_csv_gpu_safe
 
+from _common.importance import order_codes_or_sorted
+
 from builds._commons.safe_parse import safe_to_datetime, safe_to_numeric
 from _common.df_utils import (
     compute_moving_averages, compute_emas, safe_columns,
@@ -375,6 +377,24 @@ async def build_daily_df(latest_dates: dict,
     onem_pattern = f"{code_filter}_1m.csv" if code_filter else "*_1m.csv"
     history_files = sorted(glob.glob(os.path.join(CSINDEX_DIR, hist_pattern)))
     onem_files = sorted(glob.glob(os.path.join(CSINDEX_DIR, onem_pattern)))
+
+    # Importance rank 0 -> 9 (monthly stats.sec_importance_ranks build):
+    # load the per-code CSVs most-important-first so an interrupted or
+    # throttled build has covered the important indices. Falls back to
+    # code order when the rank table is unavailable (fresh install).
+    _csindex_codes = {os.path.basename(p).split("_", 1)[0]
+                      for p in history_files + onem_files}
+    _importance_pos = {code: pos for pos, code in enumerate(
+        order_codes_or_sorted(_csindex_codes))}
+    _n_ranked = len(_importance_pos)
+
+    def _importance_file_key(path: str) -> tuple:
+        return (_importance_pos.get(
+            os.path.basename(path).split("_", 1)[0], _n_ranked), path)
+
+    history_files.sort(key=_importance_file_key)
+    onem_files.sort(key=_importance_file_key)
+
     cnindex_files = sorted(glob.glob(os.path.join(CNINDEX_DIR, "*_history.csv")))
     szse_files = sorted(
         glob.glob(os.path.join(SZSE_ARCHIVE_DIR, "szse_index_*.csv"))

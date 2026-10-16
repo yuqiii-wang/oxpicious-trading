@@ -11,7 +11,7 @@
  * triangle would point UP in the legend — the path renders
  * down-pointing in the marker AND the legend.
  */
-import { DOWN_COLOR, UP_COLOR } from "@/theme/chart-palette";
+import { DOWN_COLOR, NEUTRAL_FILL, UP_COLOR } from "@/theme/chart-palette";
 
 /** Canonical marker box (px) at scale 1 — the OhlcChart markPoint look. */
 const BASE_SIZE: [number, number] = [11, 10];
@@ -62,6 +62,29 @@ export function signalMarkerSpec(
 /** Emphasis scale of the SELECTED signal day's marker (the clicked
  *  date — Recent Movements marker clicks). */
 export const SIGNAL_MARKER_EMPHASIS_SCALE = 1.6;
+
+/** markPoint name of the NO-ACTION (rejected) diamond — the emphasis
+ *  effect skips it exactly like the dividend markers (a rejected day
+ *  is documentation, never a decision to spotlight). */
+export const REJECTION_MARK_NAME = "Rejection";
+
+/** The NO-ACTION (rejected) marker — a GREY diamond centered on the
+ *  day's bar: the condition fired but the owning strategy's gate
+ *  explicitly declined it (is_rejection — options_wall's VRP-rejected
+ *  put breaches). Draws INSTEAD of any buy/sell triangle, in the
+ *  chart's neutral grey, so an inaction reads unmistakably different
+ *  from an actionable signal. Same box as the triangles. */
+export function rejectionMarkerSpec(
+  opts?: { scale?: number },
+): SignalMarkerSpec {
+  const k = opts?.scale ?? 1;
+  return {
+    symbol: "diamond",
+    symbolSize: [BASE_SIZE[0] * k, BASE_SIZE[0] * k],
+    symbolOffset: [0, 0],
+    itemStyle: { color: NEUTRAL_FILL },
+  };
+}
 
 /** A bigger copy of one resolved marker with a soft glow in its own
  *  color — the selected-day emphasis. */
