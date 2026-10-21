@@ -16,6 +16,15 @@ export type OffsetMetric = "overall" | "sub";
 
 export const WINDOWS: CorrWindow[] = ["20d", "60d", "255d"];
 
+/** Default page seed — 红利 (DIV_GENERAL) + 科技 (TECH_GENERAL) only, so
+ * first paint fetches ONE pair instead of a quadratic selection. Falls
+ * back to the first has_rows industries when either id is missing from
+ * the loaded classification tree. */
+export const DEFAULT_SEED_INDUSTRY_IDS: readonly string[] = [
+  "DIV_GENERAL",
+  "TECH_GENERAL",
+];
+
 /** Nav trees endpoints (index-only — the same classification trees Industry
  *  Sentiments browses; industries/themes map 1:1 onto the offset table's
  *  industry_ids from stats.sec_classification). */
@@ -78,3 +87,8 @@ export function pairLabel(r: IndustryCorrOffsetRow): string {
     r.benchmark_industry_label, r.benchmark_industry_id,
   )}`;
 }
+
+// The pair pct-change ratio constants + chart builder (PAIR_RATIO_*,
+// buildPairRatioChartOption) moved 2026-10-17 to the shared analysis
+// kit — ../../shared/pairRatioChart (second consumer: the signals
+// Hedge Pairs page).

@@ -38,27 +38,32 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from downloads._common.net import (
-    DEFAULT_TIMEOUT,
-    AntiBotConfig,
+from downloads._common import (
+    COMMON_BASE_HEADERS,
     AntiBotProxy,
+    retry_policy_for,
     antibot_config_for,
+    service_urls,
     setup_logger,
+    sleep_sec_for,
 )
 from downloads._common.exchanges.sse import (
     JSONP_CALLBACK,
     PAGE_SIZE,
-    SSE_HEADERS,
     _num,
     _parse_jsonp,
 )
 
 logger = setup_logger("sse_options")
 
-YUNHQ_BASE = "https://yunhq.sse.com.cn:32042"
-SSE_OPTIONS_UNDERLYING_URL = f"{YUNHQ_BASE}/v1/sho/list/exchange/underlyingstock"
-SSE_OPTIONS_EXPIRE_URL = f"{YUNHQ_BASE}/v1/sho/list/exchange/stockexpire"
-SSE_OPTIONS_TSTYLE_URL = f"{YUNHQ_BASE}/v1/sho/list/tstyle"
+# Endpoint URL roles — the calling service's external_request_config JSON
+# row carries the SSE options endpoints under these names (resolved below
+# via service_urls, a missing role raises at the point of use):
+#   options_underlying / options_expire / options_tstyle   yunhq JSONP legs
+#   options_contract / options_contract_referer            query.sse.com.cn map
+#   options_price_referer                                  tstyle sweep page
+# Pacing (inter-request sleep, retry backoff) resolves from the same row's
+# "options" request_type.
 
 # Field order of every tstyle row (see module docstring for units/semantics).
 TSTYLE_SELECT_FIELDS = "contractid,last,chg_rate,presetpx,exepx,open,high,low,volume,amount"
@@ -71,15 +76,11 @@ OPTIONS_CSV_COLUMNS = [
     "volume", "amount",
 ]
 
-# 当日合约 listing (query.sse.com.cn) — contractid → numeric security id map.
-SSE_OPTIONS_CONTRACT_URL = "https://query.sse.com.cn/commonQuery.do"
-SSE_OPTIONS_CONTRACT_REFERER = "https://www.sse.com.cn/assortment/options/disclo/preinfo/"
+# 当日合约 listing (query.sse.com.cn) — contractid → numeric security id
+# map; the endpoint/referer come from the service row's urls
+# ("options_contract" / "options_contract_referer"), the sqlId below is the
+# page's own query id (not a URL).
 SSE_OPTIONS_CONTRACT_SQL_ID = "SSE_ZQPZ_YSP_GGQQZSXT_XXPL_DRHY_SEARCH_L"
-
-# Inter-request sleep while sweeping the ~20 code-month tstyle endpoints in
-# one poll cycle (options pages tolerate this; the equity pagination uses a
-# far larger 3 s sleep because it walks thousands of rows).
-TSTYLE_INTER_REQUEST_SEC = 0.3
 
 _RE_CONTRACTID = re.compile(
     r"^(?P<underlying>\d{6})(?P<cp>[CP])(?P<yymm>\d{4})(?P<series>[MA])(?P<strike>\d{4,5})$"
@@ -129,23 +130,14 @@ def _update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
-def build_options_proxy(service: Optional[str] = None) -> AntiBotProxy:
-    """The options-leg proxy: paces the ~20 tstyle sweeps at
-    TSTYLE_INTER_REQUEST_SEC (jittered) and audits every request. Pass the
+def build_options_proxy(service: str) -> AntiBotProxy:
+    """The options-leg proxy: pacing resolves from the service's
+    external_request_config row (request_type "options"), fingerprint
+    rotation stays OFF (the endpoints want stable headers). Pass the
     STREAM's shared proxy in when called from the streamer so the options
-    sweeps share one cadence with the equity/fund/index pages.
-
-    With *service* the proxy's base pacing resolves from the service's
-    external_request_config JSON row; the per-call
-    ``sleep_sec=inter_request_sec`` overrides in :func:`_get_jsonp` still
-    win for the tstyle sweeps."""
-    if service is not None:
-        return AntiBotProxy(replace(
-            antibot_config_for(service), rotate_browser_profile=False,
-        ))
-    return AntiBotProxy(AntiBotConfig(
-        rotate_browser_profile=False,
-        base_sleep_sec=TSTYLE_INTER_REQUEST_SEC,
+    sweeps share one cadence with the equity/fund/index pages."""
+    return AntiBotProxy(replace(
+        antibot_config_for(service, "options"), rotate_browser_profile=False,
     ))
 
 
@@ -153,24 +145,29 @@ def _get_jsonp(
     session: requests.Session,
     url: str,
     params: Dict[str, str],
+    service: str,
     referer: Optional[str] = None,
     proxy: Optional[AntiBotProxy] = None,
-    inter_request_sec: float = TSTYLE_INTER_REQUEST_SEC,
+    inter_request_sec: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """GET one yunhq JSONP endpoint and return the parsed payload.
 
     The proxy audits the request, tracks 4xx blocking, and sleeps
     *inter_request_sec* (jittered) after each success — callers no longer
-    sleep between pages themselves.
+    sleep between pages themselves. An omitted *inter_request_sec* resolves
+    from the service row's sleep_sec (request_type "options"); the request
+    timeout comes from the proxy's row-resolved config.
     """
     if proxy is None:
-        proxy = build_options_proxy()
-    headers = dict(SSE_HEADERS)
+        proxy = build_options_proxy(service)
+    headers = {**COMMON_BASE_HEADERS, "Accept": "*/*"}
     if referer:
         headers["Referer"] = referer
+    if inter_request_sec is None:
+        inter_request_sec = sleep_sec_for(service, "options")
     resp = proxy.get(
         session, url, params=params, headers=headers,
-        timeout=DEFAULT_TIMEOUT, sleep_sec=inter_request_sec,
+        sleep_sec=inter_request_sec,
         logger=logger,
     )
     if resp is None:
@@ -185,13 +182,14 @@ def _get_jsonp(
 
 def fetch_underlyings(
     session: requests.Session,
+    service: str = "",
     proxy: Optional[AntiBotProxy] = None,
 ) -> List[str]:
     """Fetch the option underlying list (e.g. ['510050', '510300', …])."""
     payload = _get_jsonp(
-        session, SSE_OPTIONS_UNDERLYING_URL,
+        session, service_urls(service)["options_underlying"],
         {"callback": JSONP_CALLBACK, "select": "stockid"},
-        proxy=proxy,
+        service=service, proxy=proxy,
     )
     if not payload:
         return []
@@ -200,6 +198,7 @@ def fetch_underlyings(
 
 def fetch_expire_months(
     session: requests.Session,
+    service: str = "",
     proxy: Optional[AntiBotProxy] = None,
 ) -> Dict[str, List[str]]:
     """Fetch live expiry months per underlying.
@@ -208,9 +207,9 @@ def fetch_expire_months(
     is the last 2 chars ('09') — always re-derive from this live list.
     """
     payload = _get_jsonp(
-        session, SSE_OPTIONS_EXPIRE_URL,
+        session, service_urls(service)["options_expire"],
         {"callback": JSONP_CALLBACK, "select": "stockid,expiremonth"},
-        proxy=proxy,
+        service=service, proxy=proxy,
     )
     months: Dict[str, List[str]] = {}
     if not payload:
@@ -260,8 +259,9 @@ def _parse_tstyle_row(row: list) -> Optional[Dict[str, object]]:
 def fetch_options_snapshot(
     session: requests.Session,
     months: Dict[str, List[str]],
+    service: str = "",
     proxy: Optional[AntiBotProxy] = None,
-    inter_request_sec: float = TSTYLE_INTER_REQUEST_SEC,
+    inter_request_sec: Optional[float] = None,
 ) -> Tuple[Optional[datetime], Dict[str, dict]]:
     """Sweep every (underlying, expiry-month) tstyle endpoint into one snapshot.
 
@@ -270,25 +270,27 @@ def fetch_options_snapshot(
     time seen across pages; a failed page logs a warning and is skipped
     (partial snapshot, mirroring the equity pagination behaviour).
     """
+    urls = service_urls(service)
     if proxy is None:
-        proxy = build_options_proxy()
+        proxy = build_options_proxy(service)
     snapshot: Dict[str, dict] = {}
     update_dt: Optional[datetime] = None
     n_pages = sum(len(v) for v in months.values())
     if n_pages == 0:
         return None, {}
 
-    referer = "https://www.sse.com.cn/assortment/options/price/"
+    referer = urls["options_price_referer"]
     for stockid, yymms in sorted(months.items()):
         for yymm in sorted(yymms):
             payload = _get_jsonp(
                 session,
-                f"{SSE_OPTIONS_TSTYLE_URL}/{stockid}_{yymm[2:]}",
+                f"{urls['options_tstyle']}/{stockid}_{yymm[2:]}",
                 {
                     "callback": JSONP_CALLBACK,
                     "select": TSTYLE_SELECT_FIELDS,
                     "order": "contractid,ase",
                 },
+                service=service,
                 referer=referer,
                 proxy=proxy,
                 inter_request_sec=inter_request_sec,
@@ -311,6 +313,7 @@ def fetch_day_contract_map(
     page_size: int = PAGE_SIZE,
     max_attempts: int = 2,
     proxy: Optional[AntiBotProxy] = None,
+    service: str = "",
 ) -> Dict[str, Tuple[str, str]]:
     """Fetch the current trading day's contract listing from query.sse.com.cn.
 
@@ -323,20 +326,24 @@ def fetch_day_contract_map(
     whole pagination is retried once on failure/empty result (query.sse.com.cn
     occasionally read-times-out under the anti-bot throttle).
     """
-    headers = dict(SSE_HEADERS)
-    headers["Referer"] = SSE_OPTIONS_CONTRACT_REFERER
-    headers["Accept"] = "*/*"
+    urls = service_urls(service)
+    headers = {**COMMON_BASE_HEADERS, "Accept": "*/*",
+               "Referer": urls["options_contract_referer"]}
+    # Retry backoff from the service row's "options" request_type (the 3.0
+    # literal is the legacy default when the row omits the field).
+    retry_backoff = retry_policy_for(service, "options")[1] or 3.0
 
     for attempt in range(1, max_attempts + 1):
-        mapping = _fetch_contract_map_pages(session, headers, page_size, proxy=proxy)
+        mapping = _fetch_contract_map_pages(
+            session, headers, page_size, proxy=proxy, service=service)
         if mapping:
             return mapping
         if attempt < max_attempts:
             logger.warning(
-                "SSE options contract map attempt %d/%d empty — retrying in 3s",
-                attempt, max_attempts,
+                "SSE options contract map attempt %d/%d empty — retrying in %.0fs",
+                attempt, max_attempts, retry_backoff,
             )
-            _time.sleep(3.0)
+            _time.sleep(retry_backoff)
     return {}
 
 
@@ -345,10 +352,14 @@ def _fetch_contract_map_pages(
     headers: Dict[str, str],
     page_size: int,
     proxy: Optional[AntiBotProxy] = None,
+    service: str = "",
 ) -> Dict[str, Tuple[str, str]]:
-    """One full paginated pass over the 当日合约 listing."""
+    """One full paginated pass over the 当日合约 listing.
+
+    Inter-page pacing resolves from the service row (request_type
+    "options")."""
     if proxy is None:
-        proxy = build_options_proxy()
+        proxy = build_options_proxy(service)
     mapping: Dict[str, Tuple[str, str]] = {}
     page_no = 1
     while True:
@@ -365,8 +376,8 @@ def _fetch_contract_map_pages(
             "pageHelp.cacheSize": 1,
         }
         resp = proxy.post(
-            session, SSE_OPTIONS_CONTRACT_URL, data=data, headers=headers,
-            timeout=DEFAULT_TIMEOUT, sleep_sec=0.2, logger=logger,
+            session, service_urls(service)["options_contract"],
+            data=data, headers=headers, logger=logger,
         )
         if resp is None:
             logger.warning("SSE options contract map page %d failed", page_no)
@@ -397,10 +408,8 @@ def _fetch_contract_map_pages(
 
 __all__ = [
     "OPTIONS_CSV_COLUMNS",
-    "SSE_OPTIONS_EXPIRE_URL",
-    "SSE_OPTIONS_TSTYLE_URL",
-    "SSE_OPTIONS_UNDERLYING_URL",
     "TSTYLE_SELECT_FIELDS",
+    "build_options_proxy",
     "fetch_day_contract_map",
     "fetch_expire_months",
     "fetch_options_snapshot",

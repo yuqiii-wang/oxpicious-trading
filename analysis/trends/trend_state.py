@@ -10,8 +10,12 @@ _common.labels.TREND_CODE (0 top / 1 bottom / 2 rise / 3 fall / 5
 unknown):
 
   top/bottom = the price_vs_ma255 gap beyond its own TRAILING 255d
-    q90/q10 with a matching 20d MA slope (the overextended extremes of
-    rise/fall — the trend-split cells' strongest populations)
+    q90/q10 with a matching 20d MA slope — the STATIONED overextended
+    extremes (small fluctuation parked at the band edge; the
+    mean-reversion reading). A gap-extreme day whose recent leg has
+    TRAVELED (see the travel claim below) is claimed by rise/fall
+    instead — a large fluctuation in progress is a directional state,
+    not an extreme state.
   rise/fall  = the RSI RE-ENTRY episodes (2026-10-15, replacing the
     retired price-vs-MA60 states — a 60d MA identifies a turn months
     after it happened): Wilder RSI(TREND_RSI_WINDOW) vs the FIXED
@@ -40,7 +44,21 @@ unknown):
     the opposite zone sits weeks away and the plain zones would label
     the whole rebound fall/unknown (000001's Apr-2020 recovery: the
     midline re-cross flipped it 2020-04-07 under the guard; the plain
-    zones and the retired MA60 rule NEVER rose that April)
+    zones and the retired MA60 rule NEVER rose that April).
+    THE TRAVEL CLAIM (2026-10-21, user-directed): a gap-extreme day
+    whose recent leg has traveled >= TREND_TRAVEL_MIN close-vol units
+    (the Wilder ewm of |dClose|) from the prior TREND_TRAVEL_WINDOW-row
+    high/low, with the guard agreeing, is a LARGE fluctuation in
+    progress — rise/fall claims it directly, bypassing the RSI episode
+    (the zone edge sits weeks away once a leg consolidates). The old
+    extremes-override chain masked such legs as bottom/top: 000001's
+    2026 Sep-Oct decline (guard -50..-229, leg 8-12 cvol) read bottom
+    for 20+ sessions; it now reads fall, while the August
+    guard-positive stationed-at-the-lows days keep bottom. Measured
+    (temp_scripts/trend_study/): the four state populations are
+    forward-coherent and every pinned regression holds (Apr-2020 flip
+    2020-04-07, synthetic quiet occupancy 162/200 vs the retired MA60
+    rule's 167, V-turn +3d / crash +0d).
   unknown    = neither episode alive: RSI mid-band, momentum
     dissolved beyond the K window, or the code's warmup head (the
     first ~20 rows before the MA20 slope exists; the top/bottom gap
@@ -139,6 +157,25 @@ TREND_RSI_TURN_WINDOW = 40
 # crash +0d, and keeps the quiet-market occupancy under the retired
 # MA60 rule's — temp_scripts/trend_online_candidates_study.py).
 TREND_GUARD_WINDOW = 10
+# THE TRAVEL CLAIM (2026-10-21, user-directed): a gap-extreme day is a
+# LARGE fluctuation in progress — rise/fall claims it directly — when
+# the leg from the prior TREND_TRAVEL_WINDOW-row high/low has traveled
+# >= TREND_TRAVEL_MIN average daily moves (close-vol units: the Wilder
+# ewm of |dClose| over TREND_CVOL_WINDOW rows — the family frames carry
+# no high/low, so the travel normalizer is close-based) AND the guard
+# agrees. Measured (temp_scripts/trend_study/travel60_calib.py): the
+# below-extreme population's travel_dn sits >= 3.7 cvol everywhere
+# (the extreme condition implies a large leg), so the bar is the
+# semantic floor, not a working discriminator — the GUARD SIGN is the
+# working split (traveling vs stationed); 4.0 sits mid-plateau (the
+# T=3..6 profiles are identical). Prompt case: 000001's 2026 Sep-Oct
+# decline (guard -50..-229, leg 8-12 cvol) read bottom for 20+
+# sessions under the old extremes-override chain; the travel claim
+# reads fall through it while the August guard-positive stationed
+# days keep bottom.
+TREND_TRAVEL_WINDOW = 60
+TREND_TRAVEL_MIN = 4.0
+TREND_CVOL_WINDOW = 14
 
 
 # ---------------------------------------------------------------------------
@@ -345,30 +382,62 @@ def attach_trend(df: pd.DataFrame) -> pd.DataFrame:
     gap = df["_gap255"].fillna(0.0)
     slope_pos = slope > 0
     slope_neg = slope < 0
-    # the rise/fall states need the episode alive AND the efficiency
-    # guard agreeing (the label agreement — same guard as the turn
-    # touches above); the MA20 slope survives only as the top/bottom
-    # extremes' own condition below
-    rise = rise_ep & guard_up
-    fall = fall_ep & guard_dn
-    trend = pd.Series(np.int8(5), index=df.index, dtype="int8")  # unknown
-    trend = trend.where(~fall, np.int8(3))                        # fall
-    trend = trend.where(~rise, np.int8(2))                        # rise
     deep_low = df["_q10"].notna() & (gap < df["_q10"].fillna(0.0)) \
         & slope_neg
     deep_high = df["_q90"].notna() & (gap > df["_q90"].fillna(0.0)) \
         & slope_pos
-    trend = trend.where(~deep_low, np.int8(1))                   # bottom
-    trend = trend.where(~deep_high, np.int8(0))                  # top
+
+    # -- the TRAVEL CLAIM (2026-10-21): gap-extreme days whose leg has
+    # traveled (guard sign) >= TREND_TRAVEL_MIN daily-vol units from
+    # the prior TREND_TRAVEL_WINDOW-row high/low are a LARGE fluctuation
+    # in progress — rise/fall claims them directly; the RSI episode's
+    # zone edge sits weeks away once a decline consolidates, and the
+    # old extremes-override chain masked the whole leg as bottom/top
+    # (the ewm result lands in the frame first — reading the column
+    # back keeps every arithmetic op on the proxy path, the same
+    # pattern as _rsi)
+    df["_cvol"] = _grouped_ewm_mean(
+        df["_guard_d"].abs(), df, keys, 1.0 / TREND_CVOL_WINDOW,
+        TREND_CVOL_WINDOW,
+    )
+    df["_hi60"] = grouped_rolling_agg(df, keys, "price", TREND_TRAVEL_WINDOW,
+                                      min_periods=TREND_TRAVEL_WINDOW,
+                                      agg="max")
+    df["_lo60"] = grouped_rolling_agg(df, keys, "price", TREND_TRAVEL_WINDOW,
+                                      min_periods=TREND_TRAVEL_WINDOW,
+                                      agg="min")
+    trav_dn = ((df["_hi60"] - df["price"]) / df["_cvol"]).fillna(0.0)
+    trav_up = ((df["price"] - df["_lo60"]) / df["_cvol"]).fillna(0.0)
+    travel_fall = deep_low & guard_dn & (trav_dn >= TREND_TRAVEL_MIN)
+    travel_rise = deep_high & guard_up & (trav_up >= TREND_TRAVEL_MIN)
+
+    # the rise/fall states: the RSI episode alive AND the guard
+    # agreeing, plus the travel claim; rise wins the (disjoint-guard)
+    # stamp order — the chain's convention
+    rise = rise_ep & guard_up
+    fall = fall_ep & guard_dn
+    fall = fall | travel_fall
+    rise = rise | travel_rise
+    trend = pd.Series(np.int8(5), index=df.index, dtype="int8")  # unknown
+    trend = trend.where(~fall, np.int8(3))                        # fall
+    trend = trend.where(~rise, np.int8(2))                        # rise
+    # the STATIONED extremes: neither directional claim — the small
+    # fluctuation parked at the band edge (mean-reversion state); a
+    # live opposite episode keeps its label over them
+    station_low = deep_low & ~rise & ~fall
+    station_high = deep_high & ~rise & ~fall
+    trend = trend.where(~station_low, np.int8(1))                # bottom
+    trend = trend.where(~station_high, np.int8(0))               # top
     df["trend"] = trend.astype("int8")
     return df.drop(columns=[
         c for c in df.columns
         if c.startswith("_ma") or c.startswith("_q")
         or c in ("_slope", "_gap255", "_rsi", "_trend_delta", "_prev20",
-                 "_guard_d")
+                 "_guard_d", "_cvol", "_hi60", "_lo60")
     ])
 
 
 __all__ = ["attach_trend", "TREND_GAP_WINDOW", "TREND_TOP_Q",
            "TREND_BOTTOM_Q", "TREND_RSI_WINDOW", "TREND_RSI_ZONE_SPREAD",
-           "TREND_RSI_DEEP", "TREND_RSI_TURN_WINDOW", "TREND_GUARD_WINDOW"]
+           "TREND_RSI_DEEP", "TREND_RSI_TURN_WINDOW", "TREND_GUARD_WINDOW",
+           "TREND_TRAVEL_WINDOW", "TREND_TRAVEL_MIN", "TREND_CVOL_WINDOW"]

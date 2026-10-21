@@ -38,7 +38,7 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi';
 --  basic_stats in the build script.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_rsi (
-    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_mov_ave_rsi_sec_type_code_date
     ON analysis.mov_ave_rsi (sec_type, code, date);
 
 COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (3/6/10/14/20/60 days). One row per (code, sec_type, date). sec_type ∈ {etf, index, stock}. analysis.mov_ave_rsi_holiday FK-references this table ON DELETE CASCADE.';
-COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry).';
 COMMENT ON COLUMN analysis.mov_ave_rsi.code        IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_rsi.date        IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_3days   IS 'Wilder RSI over 3 trading days (alpha=1/3, ewm adjust=False, min_periods=3) — an ultra-short momentum window. 0..100. NULL until 3 periods.';
@@ -124,7 +124,7 @@ DROP TABLE IF EXISTS analysis.mov_ave_rsi_ranks CASCADE;
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi_ranks';
 
 CREATE TABLE analysis.mov_ave_rsi_ranks (
-    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -154,7 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_mov_ave_rsi_ranks_sec_type_code_date
     ON analysis.mov_ave_rsi_ranks (sec_type, code, date);
 
 COMMENT ON TABLE  analysis.mov_ave_rsi_ranks             IS 'Per-code RSI history ranks (3/6/10/14/20/60 days): the ordinal rank of each date''s RSI within the code''s own full RSI history — 1 = highest RSI reading, N = lowest, earlier date wins ties, dense 1..N so MAX(rank) per (code, window) is the count of ranked days. Mirrors analysis.mov_ave_rsi row-for-row; rank columns are NULL where that window''s RSI is NULL. Rebuilt wholesale per sec_type by analysis.mov_ave_spread (steps/rsi_ranks.py) on every run that recomputes RSI.';
-COMMENT ON COLUMN analysis.mov_ave_rsi_ranks.sec_type    IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_rsi_ranks.sec_type    IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry).';
 COMMENT ON COLUMN analysis.mov_ave_rsi_ranks.code        IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_rsi_ranks.date        IS 'Business date (trading day) — matches the mov_ave_rsi row being ranked.';
 COMMENT ON COLUMN analysis.mov_ave_rsi_ranks.rank_rsi_3days  IS 'Rank of rsi_3days within the code''s own non-null rsi_3days history: 1 = highest, N = lowest, earlier date wins ties. NULL where rsi_3days is NULL. Dense 1..N.';

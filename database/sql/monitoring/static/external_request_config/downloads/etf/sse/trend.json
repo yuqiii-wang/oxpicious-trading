@@ -14,8 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "SSE fund snapshot CSV pages via run_snapshot_download (INTER_PAGE_SLEEP_SEC; pacing resolves from this row via _common/request_config). Rotation stays off: the yunhq list endpoint wants the page's stable header set (build_sse_proxy).",
+    "settle_sleep_sec": null,
+    "urls": {
+      "list_fund": "https://yunhq.sse.com.cn:32042/v1/sh1/list/exchange/fund",
+      "referer": "https://www.sse.com.cn/market/price/trends/"
+    },
+    "notes": "SSE fund snapshot CSV pages via run_snapshot_download (INTER_PAGE_SLEEP_SEC; pacing resolves from this row via _common/request_config). Rotation stays off: the yunhq list endpoint wants the page's stable header set (build_sse_proxy); URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/_common/exchanges/sse.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

@@ -33,8 +33,12 @@ logger = logging.getLogger(__name__)
 
 
 def _pct(close: float | None, prev_close: float | None) -> float | None:
-    """close / prev_close - 1 as a FRACTION; None on None/zero prev."""
-    if close is None or prev_close is None or prev_close == 0:
+    """close / prev_close - 1 as a FRACTION; None on None/zero inputs
+    (a zero close is a source no-quote placeholder = NULL, not -100%)."""
+    if (
+        close is None or close == 0
+        or prev_close is None or prev_close == 0
+    ):
         return None
     return close / prev_close - 1.0
 

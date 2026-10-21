@@ -14,8 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": false,
     "host_block_cooldown_sec": null,
-    "notes": "PBoC open-market operations; host tracking OFF.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "site": "https://www.pbc.gov.cn",
+      "oma_list_base": "https://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125431/125469/"
+    },
+    "notes": "PBoC open-market operations; host tracking OFF.; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/macro/pboc/oma/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

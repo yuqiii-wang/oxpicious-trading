@@ -255,6 +255,11 @@ export interface ExtRequestConfigPayload {
   addRandomParam: boolean;
   enableHostTracking: boolean;
   hostBlockCooldownSec: number | null;
+  /** Playwright flows' post-navigation settle wait (null = the flow keeps
+   *  its own behavior). */
+  settleSleepSec: number | null;
+  /** The row's endpoint inventory {role: url} (null = none). */
+  urls: Record<string, string> | null;
   notes: string | null;
   sourceRef: string;
   updatedAt: string;
@@ -276,6 +281,8 @@ function toExtRequestPayload(r: ExtRequestConfigRow): ExtRequestConfigPayload {
     addRandomParam: r.add_random_param,
     enableHostTracking: r.enable_host_tracking,
     hostBlockCooldownSec: r.host_block_cooldown_sec,
+    settleSleepSec: r.settle_sleep_sec ?? null,
+    urls: r.urls ?? null,
     notes: r.notes,
     sourceRef: r.source_ref,
     updatedAt: r.updated_at,
@@ -293,6 +300,7 @@ const NUMERIC_FIELDS: Array<
   ["timeoutConnectSec", "timeout_connect_sec"],
   ["timeoutReadSec", "timeout_read_sec"],
   ["hostBlockCooldownSec", "host_block_cooldown_sec"],
+  ["settleSleepSec", "settle_sleep_sec"],
 ];
 
 /** Validate + encode ONE row from the wire (decoded resourceType label
@@ -319,10 +327,31 @@ function parseExtRequestRow(body: unknown, service: string): ExtRequestConfigRow
     add_random_param: b.addRandomParam === true,
     enable_host_tracking: b.enableHostTracking === true,
     host_block_cooldown_sec: null,
+    settle_sleep_sec: null,
+    urls: null,
     notes: null,
     source_ref: "",
     updated_at: "", // stamped below
   };
+  if (b.urls != null) {
+    if (typeof b.urls !== "object" || Array.isArray(b.urls)) {
+      throw new Error("urls must be an object of {role: url} strings");
+    }
+    const urls: Record<string, string> = {};
+    for (const [rawRole, rawUrl] of Object.entries(
+      b.urls as Record<string, unknown>,
+    )) {
+      const role = rawRole.trim();
+      const url = typeof rawUrl === "string" ? rawUrl.trim() : "";
+      if (role === "" || url === "") {
+        throw new Error(
+          `urls entry "${rawRole}" must be a non-empty role = url pair`,
+        );
+      }
+      urls[role] = url;
+    }
+    row.urls = Object.keys(urls).length > 0 ? urls : null;
+  }
   for (const [wire, file] of NUMERIC_FIELDS) {
     const v = b[wire];
     if (v == null) continue;

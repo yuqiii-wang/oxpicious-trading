@@ -14,9 +14,17 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "cninfo quarterly reports (list API + PDF download share the 90s cadence). Timeouts (30,120) migrated from the reports PDF GET's code override (multi-MB PDFs from a throttling CDN; synced 2026-10-10) - code now reads this row.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "show_report": "https://www.szse.cn/api/report/ShowReport",
+      "referer_archive": "https://www.szse.cn/market/trend/archive/index.html",
+      "anl_list": "https://www.szse.cn/api/disc/announcement/annList",
+      "pdf_base": "https://disc.static.szse.cn",
+      "referer_page": "https://www.szse.cn/disclosure/fund/notice/index.html"
+    },
+    "notes": "cninfo quarterly reports (list API + PDF download share the 90s cadence). Timeouts (30,120) migrated from the reports PDF GET's code override (multi-MB PDFs from a throttling CDN; synced 2026-10-10) - code now reads this row; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/etf/szse/archive/reports.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   },
   {
     "service": "downloads.etf.szse.archive",

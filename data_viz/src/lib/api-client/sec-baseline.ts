@@ -11,7 +11,7 @@ import type { SecBaselineResponse } from "@shared/types";
 /** Fetch one security's baseline bundle (rows + classification meta).
  *  `bundle` is null when the code has no rows in its sec_type. */
 export function fetchSecBaseline(
-  secType: "index" | "etf" | "stock",
+  secType: "index" | "etf" | "stock" | "industry",
   code: string,
 ): Promise<SecBaselineResponse> {
   const params = new URLSearchParams();

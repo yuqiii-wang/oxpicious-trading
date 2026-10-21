@@ -49,6 +49,7 @@ import {
   ToggleButtonGroup,
 } from "@mui/material";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import {
   fetchBenchmarkPriceChart,
@@ -392,6 +393,7 @@ export function BenchmarkPriceChart({
   // series names here are dynamic: the benchmark name + industry labels).
   const aiAsk = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.benchmarkPrice,
       intro:
         `Benchmark ${benchmarkCode || "(none selected)"} daily price. ` +
         (priceMode === "rolling"

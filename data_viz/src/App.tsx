@@ -30,6 +30,7 @@ import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
 import SignalsPage from "@/analysis/pages/SignalsPage";
 import RecentMovementsPage from "@/analysis/pages/RecentMovements";
+import HedgePairsPage from "@/analysis/pages/HedgePairs";
 import OptionsSignalsPage from "@/analysis/pages/OptionsSignals";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
 import ServiceMonitorPage from "@/monitor/pages/ServiceMonitor";
@@ -95,6 +96,7 @@ export default function App() {
           />
           <Route path="/analysis/signals" element={<SignalsPage />} />
           <Route path="/analysis/signals/recent-movements" element={<RecentMovementsPage />} />
+          <Route path="/analysis/signals/hedge-pairs" element={<HedgePairsPage />} />
           <Route path="/analysis/signals/options" element={<OptionsSignalsPage />} />
           <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
           <Route

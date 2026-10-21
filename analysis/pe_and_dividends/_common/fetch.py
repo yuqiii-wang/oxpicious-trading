@@ -19,6 +19,14 @@ For sec_type='etf':
 For sec_type='stock':
   - close from stats.stock_basic_stats
   - dividends from stats.stock_dividends
+
+For sec_type='industry':
+  - close from stats.industry_basic_stats.mean_close (pool 'all' — the
+    rebased-to-100 composite close)
+  - PE from stats.industry_basic_stats.mean_pe (the build's
+    cross-sectional mean of member-index raw PE)
+  - dividend_yield is aggregated from the member indices' OWN
+    analysis.dividends rows (see fetch_industry_member_yields)
 """
 from __future__ import annotations
 
@@ -349,3 +357,90 @@ async def fetch_trading_dates(conn, sec_type: str) -> list[datetime.date]:
         f"SELECT DISTINCT date FROM {identity_table} ORDER BY date ASC"
     )
     return [r["date"] for r in rows if r["date"] is not None]
+
+
+# ---------------------------------------------------------------------------
+#  Industry: composite PE + close (pool 'all' slice)
+# ---------------------------------------------------------------------------
+async def fetch_industry_pe_and_close(
+    conn, codes: list[str]
+) -> pd.DataFrame:
+    """Fetch per-(industry_id, date) composite PE + close for the given
+    industry codes (sec_type='industry').
+
+    Source: stats.industry_basic_stats pool-'all' (3) slice — mean_pe is
+    the build's cross-sectional AVG of member-index raw PE (a ratio, so
+    NO rebasing), mean_close the rebased-to-100 composite close. Both are
+    pre-computed by builds.industry; this pipeline does not re-aggregate.
+
+    Returns DataFrame with columns: code, date, close, pe
+    """
+    if not codes:
+        return pd.DataFrame(columns=["code", "date", "close", "pe"])
+    rows = await conn.fetch(
+        """
+        SELECT
+            b.industry_id AS code,
+            extract(epoch from b.date)::float8 AS date,
+            b.mean_close::float8 AS close,
+            b.mean_pe::float8 AS pe
+        FROM stats.industry_basic_stats b
+        WHERE b.industry_id = ANY($1::text[])
+          AND b.pool_size = 3
+          AND b.mean_close IS NOT NULL
+        ORDER BY b.industry_id, b.date ASC
+        """,
+        sorted(codes),
+    )
+    if not rows:
+        return pd.DataFrame(columns=["code", "date", "close", "pe"])
+    # Whole-column positional unpack + epoch->datetime64[us] at the frame
+    # boundary (the fetch convention — never an object-date column).
+    cols = rec_cols(rows)
+    cols["date"] = epoch_col_to_dt64(cols["date"])
+    return pd.DataFrame(cols, columns=["code", "date", "close", "pe"])
+
+
+# ---------------------------------------------------------------------------
+#  Industry: member-index dividend yields (for the cross-sectional mean)
+# ---------------------------------------------------------------------------
+async def fetch_industry_member_yields(conn) -> pd.DataFrame:
+    """Fetch per-(industry_id, date, index_code, dividend_yield) rows — the
+    index-side yields this pipeline itself wrote, joined to their industry
+    membership.
+
+    Members = stats.sec_classification rows (type='index', is_active,
+    industry_id non-empty) — the SAME membership the industry build
+    aggregates over. Yields come from analysis.dividends (sec_type=1
+    index) as-is: each member's value is already a trailing-12m yield, so
+    the industry stage only cross-sectional-means them (compute.
+    compute_industry_dividend_yield) — the same AVG-across-members
+    convention as stats.industry_basic_stats.mean_pe.
+
+    MUST run AFTER the index processor has written its rows (the
+    industry sec_type is ordered last in SEC_TYPES for exactly that).
+
+    Returns DataFrame with columns: code (industry_id), date
+    (datetime64[us]), dividend_yield (one row per member index with a
+    yield on that date).
+    """
+    rows = await conn.fetch(
+        """
+        SELECT
+            sc.industry_id AS code,
+            extract(epoch from d.date)::float8 AS date,
+            d.dividend_yield::float8 AS dividend_yield
+        FROM stats.sec_classification sc
+        JOIN analysis.dividends d
+          ON d.code = sc.code AND d.sec_type = 1
+        WHERE sc.type = 'index'
+          AND sc.is_active = TRUE
+          AND sc.industry_id IS NOT NULL
+          AND sc.industry_id <> ''
+        """
+    )
+    if not rows:
+        return pd.DataFrame(columns=["code", "date", "dividend_yield"])
+    cols = rec_cols(rows)
+    cols["date"] = epoch_col_to_dt64(cols["date"])
+    return pd.DataFrame(cols, columns=["code", "date", "dividend_yield"])

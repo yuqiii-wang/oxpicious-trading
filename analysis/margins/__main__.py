@@ -23,11 +23,16 @@ Pipeline (default: incremental — skip dates already in the DB;
       in-SQL VIEW aggregation), then index-level tech_stats from it.
 
   3. compute_industry_stats — per-(date, industry_id) SUM aggregation
-     of rz_balance / rz_buy across stocks AND ETFs.
+     of rz_balance / rz_buy across stocks AND ETFs, then industry-level
+     tech stats on the SUM(stock+etf) curve (code = industry_id,
+     sec_type='industry'; 'both' runs only).
 
   4. run_margin_changes — detect sustained UP/DOWN TREND episodes on
      the RONGZI margin-balance curve and populate margin_changes
-     (new_buy + rz_buy_vs_trading_amt_ratio).
+     (new_buy + rz_buy_vs_trading_amt_ratio). SECTIONED detection:
+     episodes never span a null-balance gap or (on aggregate curves) a
+     contributing-membership change — no rise/drop is attributed across
+     a section boundary (see changes/detection.py).
 
   5. Register the analyses in analysis.analysis_identity.
 
@@ -39,7 +44,9 @@ Incremental mode rationale
   new dates (their rows for past dates are retained as historical
   record). The slope computation still uses FULL history (fetched
   unconditionally) so windows are correct even for the first
-  newly-added date.
+  newly-added date. NOTE: the sectioning semantics (2026-10-19) changed
+  slope/episode values, so the first run after that change must be
+  --force to refresh stored tech_stats rows.
 
 Testing
   ``python -m analysis.margins --sec-type etf`` runs the pipeline with
@@ -83,6 +90,7 @@ from analysis.margins.pipeline import (  # noqa: E402
     build_margin_index_series,
     run_index_tech_stats,
     insert_industry_stats,
+    run_industry_tech_stats,
 )
 from analysis.margins.compute import compute_industry_stats
 from analysis.margins.changes import run_margin_changes
@@ -113,8 +121,11 @@ class MarginsAnalysis(DataAnalysis):
             choices=["etf", "stock", "index", "both"],
             default="both",
             help="Which sec_type to process. 'both' (default) runs the full "
-                 "pipeline. 'etf' or 'stock' runs only that sec_type (useful "
-                 "for testing with a smaller dataset). 'index' runs only the "
+                 "pipeline including the industry SUM-curve tech stats + "
+                 "industry trend episodes (sec_type='industry'; needs BOTH "
+                 "stock + etf data). 'etf' or 'stock' runs only that "
+                 "sec_type (useful for testing with a smaller dataset; the "
+                 "industry steps are skipped). 'index' runs only the "
                  "margin_index_series TABLE build (Python vectorization) + "
                  "index-level tech stats + trend detection (skips "
                  "stock/etf/industry steps; useful for testing the "
@@ -130,6 +141,11 @@ class MarginsAnalysis(DataAnalysis):
         )
         self.run_index = self.args.sec_type in ("both", "index")
         self.is_index_only = self.args.sec_type == "index"
+        # Industry SUM-curve tech stats + trend episodes need BOTH stock
+        # and etf histories in memory — a partial sec_type test run must
+        # not populate them (its SUM would silently zero the missing
+        # side).
+        self.run_industry = self.args.sec_type == "both"
 
     def header_fields(self) -> dict:
         return {
@@ -146,6 +162,7 @@ class MarginsAnalysis(DataAnalysis):
         sec_types = list(self.sec_types)
         run_index = self.run_index
         is_index_only = self.is_index_only
+        run_industry = self.run_industry
 
         # ---- Step 0: determine ref_date + missing dates ---------------
         logger.info("\n[0/5] Determining ref_date (MAX date across source tables)...")
@@ -157,8 +174,10 @@ class MarginsAnalysis(DataAnalysis):
         (
             target_dates_tech, target_dates_index_series,
             target_dates_index_tech, target_dates_industry,
+            target_dates_industry_tech,
         ) = await detect_missing_dates(
             conn, sec_types, run_index, is_index_only, force,
+            run_industry=run_industry,
         )
 
         # Early exit if everything is up to date (incremental mode only).
@@ -168,6 +187,7 @@ class MarginsAnalysis(DataAnalysis):
                 + len(target_dates_index_series)
                 + len(target_dates_index_tech)
                 + len(target_dates_industry)
+                + len(target_dates_industry_tech)
             )
             if total_missing == 0:
                 logger.info("    -> DB is up to date; nothing to do.")
@@ -272,6 +292,19 @@ class MarginsAnalysis(DataAnalysis):
                 conn, industry_stats,
                 force=force, target_dates=target_dates_industry,
             )
+
+            # ---- Step 3b: industry-level tech stats (SUM curve) -------
+            # Gated on run_industry (BOTH sec_types): a partial test run's
+            # SUM would silently zero the missing side. When it runs it
+            # ALWAYS computes the frames (the changes step needs them);
+            # an empty target_dates set no-ops the write.
+            if run_industry:
+                ind_hist, ind_tech = await run_industry_tech_stats(
+                    conn, industry_stats,
+                    force=force, target_dates=target_dates_industry_tech,
+                )
+                histories["industry"] = ind_hist
+                tech_stats_by_sec_type["industry"] = ind_tech
 
         # ---- Step 4: margin changes detection ---------------------------
         # run_margin_changes upserts its OWN analysis_identity row

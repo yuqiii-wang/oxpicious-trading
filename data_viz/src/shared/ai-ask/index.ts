@@ -19,6 +19,8 @@ export { default as AiAskModal } from "./AiAskModal";
 export { derivePlotInfo } from "./derivePlotInfo";
 export { useAiAskAddon } from "./useAiAskAddon";
 export type { UseAiAskAddonArgs } from "./useAiAskAddon";
+export { INSIGHT_PAGES } from "./insightPages";
+export type { InsightPageIdentity } from "./insightPages";
 export type {
   AiAskSpec,
   AiAskPlotInfo,
@@ -26,4 +28,5 @@ export type {
   AiAskGranularity,
   AiAskSeriesInfo,
   AiAskSeriesStat,
+  AiAskInsightMetric,
 } from "./types";

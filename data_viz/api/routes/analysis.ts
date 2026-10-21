@@ -38,6 +38,8 @@ import {
   getIndustryCorrOffsets,
   listIndustryCorrOffsetBenchmarks,
   listIndustryCorrOffsetIndustries,
+  listPairPctRatioUniverse,
+  getPairPctRatios,
   getIndustryBenchmarkAttribution,
   listIndustryAttributionBenchmarks,
   getBenchmarkPriceChart,
@@ -55,9 +57,11 @@ import {
   listDividendDeliveries,
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,
+  listMarginTrendUnderlyings,
   getMarginIndustrySeries,
   getMarginTrends,
   getFuturesExt,
+  invalidateIndustryCorrOffsetCoverage,
 } from "../services/analysis/index.js";
 import {
   runPythonModule,
@@ -654,6 +658,9 @@ router.post("/industry-corr-offsets/run", async (req: Request, res: Response) =>
       args,
       { processIdTag: INDUSTRY_CORR_OFFSET_RUN_TAG },
     );
+    // A successful filtered run changes the table's materialized coverage —
+    // drop the cached industries/benchmarks lists so the page sees it.
+    if (result.success) invalidateIndustryCorrOffsetCoverage();
     res.json({
       success: result.success,
       already_running: result.already_running === true,
@@ -664,6 +671,65 @@ router.post("/industry-corr-offsets/run", async (req: Request, res: Response) =>
   } catch (err) {
     console.error("[analysis/industry-corr-offsets/run] error:", err);
     res.status(500).json({ success: false, stderr_tail: String(err) });
+  }
+});
+
+// ---- Pair Pct-Change Ratios (industry x industry excess pct change
+//      on the stride-20 global-calendar grid — the trailing mean of the
+//      daily pct-change difference; drives the pair
+//      selector + ratio chart on the Composites → Opposite Industry
+//      Correlations page).
+//   GET /api/analysis/pair-pct-ratios/universe?interval=20
+//         [&industry_ids=DIV_GENERAL,TECH_GENERAL]
+//     Returns PairPctRatioUniverseResponse: both sides of the pair
+//     selector — subject INDUSTRIES and benchmark INDUSTRIES (the pair
+//     is industry x industry; grain is 'industry' on every entry), each
+//     with label, counterpart count and grid date bounds. With
+//     industry_ids, both sides are limited to those industry_ids (the
+//     page scopes the selector to its already-selected industries).
+//   GET /api/analysis/pair-pct-ratios?code=BROAD_SSE&benchmark=BROAD_CSI300
+//         &interval=20&grain=industry
+//     Returns PairPctRatiosResponse: the four stride-grid EXCESS
+//     pct-change values (5/20/60/255d — the trailing mean of the daily
+//     difference ind_pct(code) − ind_pct(benchmark), in pct points) for
+//     ONE industry x industry pair, ordered by date (grain is always
+//     'industry').
+router.get("/pair-pct-ratios/universe", async (req: Request, res: Response) => {
+  try {
+    const raw = typeof req.query.interval === "string" ? req.query.interval : "";
+    const rawIndustries = typeof req.query.industry_ids === "string"
+      ? req.query.industry_ids
+      : "";
+    const industryIds = rawIndustries
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    res.json(await listPairPctRatioUniverse(raw, industryIds));
+  } catch (err) {
+    console.error("[analysis/pair-pct-ratios/universe] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/pair-pct-ratios", async (req: Request, res: Response) => {
+  try {
+    const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
+    const benchmark = typeof req.query.benchmark === "string" ? req.query.benchmark.trim() : "";
+    const interval = typeof req.query.interval === "string" ? req.query.interval : "";
+    const grain = typeof req.query.grain === "string" ? req.query.grain.trim() : "";
+    const market = typeof req.query.market === "string" ? req.query.market.trim() : "";
+    if (!code || !benchmark) {
+      res.status(400).json({ error: "Both 'code' and 'benchmark' are required" });
+      return;
+    }
+    if (code === benchmark) {
+      res.status(400).json({ error: "'code' and 'benchmark' must differ (self-pairs excluded)" });
+      return;
+    }
+    res.json(await getPairPctRatios(code, benchmark, interval, grain, market));
+  } catch (err) {
+    console.error("[analysis/pair-pct-ratios] error:", err);
+    res.status(500).json({ error: String(err) });
   }
 });
 
@@ -1012,7 +1078,10 @@ router.get("/dividends/deliveries", async (req: Request, res: Response) => {
 //   GET /api/analysis/margin-trends/industry-series?industry_id=BANKS&attribution=index
 //     Per-(security, date) margin series for one industry + attribution.
 //     'index' reads the margin_index_series TABLE; 'etf' reads
-//     stats.etf_liquidity_margin for the industry's ETFs.
+//     stats.etf_liquidity_margin for the industry's ETFs; 'industry'
+//     reads analysis.margin_industry_stats (the industry's OWN margin
+//     curve, ONE series with code = industry_id; ?normalize=true switches
+//     it to the SUM of the per-side member AVERAGES — the *_norm cols).
 router.get("/margin-trends/themes", async (req: Request, res: Response) => {
   try {
     const attribution = (req.query.attribution as string | undefined) ?? "index";
@@ -1032,6 +1101,18 @@ router.get("/margin-trends/strategy-themes", async (req: Request, res: Response)
   }
 });
 
+//   GET /api/analysis/margin-trends/underlyings
+//     ALL broad-market index codes (stats.sec_index_tags.is_broad_market)
+//     for the exchange attribution's mapped-underlying dropdown.
+router.get("/margin-trends/underlyings", async (req: Request, res: Response) => {
+  try {
+    res.json(await listMarginTrendUnderlyings());
+  } catch (err) {
+    console.error("[analysis/margin-trends/underlyings] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.get("/margin-trends/industry-series", async (req: Request, res: Response) => {
   try {
     const industryId = (req.query.industry_id as string | undefined) ?? "";
@@ -1040,7 +1121,14 @@ router.get("/margin-trends/industry-series", async (req: Request, res: Response)
       return;
     }
     const attribution = (req.query.attribution as string | undefined) ?? "index";
-    res.json(await getMarginIndustrySeries(industryId, attribution));
+    // 'exchange' only — the mapped broad-market underlying for the
+    // close / turnover / regime joins (validated + defaulted in the SQL).
+    const underlying = req.query.underlying as string | undefined;
+    // 'industry' only — normalized curve: SUM of the per-side member
+    // AVERAGES (*_norm cols in margin_industry_stats) instead of the
+    // raw SUM(stock+etf).
+    const normalize = req.query.normalize as string | undefined;
+    res.json(await getMarginIndustrySeries(industryId, attribution, underlying, normalize));
   } catch (err) {
     console.error("[analysis/margin-trends/industry-series] error:", err);
     res.status(500).json({ error: String(err) });

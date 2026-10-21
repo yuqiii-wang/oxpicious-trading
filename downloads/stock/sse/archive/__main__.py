@@ -99,6 +99,7 @@ from downloads._common import (
     last_business_day,
     next_business_day,
     resolve_out_dir,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -107,8 +108,6 @@ from downloads._common.exchanges.sse import (
     JSONP_CALLBACK,
     LIST_SELECT_FIELDS,
     PAGE_SIZE,
-    SSE_HEADERS,
-    SSE_LIST_URL,
     _fmt_num,
     _num,
     _parse_jsonp,
@@ -119,7 +118,14 @@ from _common.db_commons import get_db_connection
 
 # --- History (dayk) constants ----------------------------------------------
 SERVICE = "downloads.stock.sse.archive"
-SSE_DAYK_URL = "https://yunhq.sse.com.cn:32042/v1/sh1/dayk/{code}"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SSE_DAYK_URL = URLS["sse_dayk_url"]
+# yunhq list/dayk headers — the page referer comes from the row's "referer"
+# role (the shared helper's old SSE_HEADERS constant).
+SSE_HEADERS = build_headers_with_referer(URLS["referer"], extra={"Accept": "*/*"})
 # Default start date for trend data (imported from _download_commons).
 # The dayk endpoint returns the full listing history (some SSE stocks date
 # back to 1999); by default we only keep data from 2020-01-01 onwards.
@@ -136,7 +142,7 @@ ARCHIVE_DIRNAME = "sse_archive"
 # Primary endpoint: queryNewAllQuatAbel.do (FUNDID/inMonth/inYear/searchDate
 # params). Serves the "成交统计" section of the SSE turnover page and has
 # long historical coverage (back to 2020 and earlier).
-SSE_TRADE_STATS_URL = "http://query.sse.com.cn/security/fund/queryNewAllQuatAbel.do"
+SSE_TRADE_STATS_URL = URLS["sse_trade_stats_url"]
 # Alternative (fallback) endpoint: commonQuery.do with
 # sqlId=COMMON_SSE_CP_GPJCTPZ_GPLB_CJGK_MRGK_C, studied from the "成交统计"
 # section of the SSE company page
@@ -144,11 +150,9 @@ SSE_TRADE_STATS_URL = "http://query.sse.com.cn/security/fund/queryNewAllQuatAbel
 # ``search_stocksDepositoryReceipts_2021.js``). Uses SEC_CODE/TX_DATE params
 # and tends to cover only recent dates, so it complements the primary API
 # which has older data.
-SSE_TRADE_STATS_ALT_URL = "http://query.sse.com.cn/commonQuery.do"
+SSE_TRADE_STATS_ALT_URL = URLS["sse_trade_stats_alt_url"]
 SSE_TRADE_STATS_ALT_SQL_ID = "COMMON_SSE_CP_GPJCTPZ_GPLB_CJGK_MRGK_C"
-SSE_COMPANY_REFERER = (
-    "http://www.sse.com.cn/assortment/stock/list/info/turnover/index.shtml"
-)
+SSE_COMPANY_REFERER = URLS["sse_company_referer"]
 SSE_TRADE_STATS_HEADERS = build_headers_with_referer(
     SSE_COMPANY_REFERER, extra={"Accept": "*/*"}
 )
@@ -193,7 +197,7 @@ def _fetch_page(
 
     resp = proxy.get(
         session,
-        SSE_LIST_URL,
+        URLS["list_equity"],
         params=params,
         headers=SSE_HEADERS,
         logger=logger,
@@ -231,7 +235,7 @@ def _fetch_all_stocks(
     # Subsequent pages
     page_index = 1
     while len(stocks) < total:
-        if proxy.is_blocked(SSE_LIST_URL):
+        if proxy.is_blocked(URLS["list_equity"]):
             logger.warning("  [host-blocked] sse.com.cn is blocked, stopping pagination")
             break
 

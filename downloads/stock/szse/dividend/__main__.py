@@ -23,7 +23,7 @@ Anti-bot (two layers):
      ``rotate_browser_profile=True``, ``add_random_param=True``,
      ``enable_host_tracking=True``; pacing (sleep/jitter/timeouts) resolves
      from the service's external_request_config JSON row (600s base sleep,
-     matching the old ``SUPER_LONG_SLEEP_INTERVAL`` cadence).
+     matching the old 600s super-long-sleep cadence).
 
 Response fields (cninfo p_sysapi1139 record):
   F018D — 实施方案公告日期     (announcement date, YYYY-MM-DD)
@@ -98,15 +98,20 @@ from downloads._common import (
     antibot_config_for,
     is_valid_file,
     resolve_out_dir,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
 
 # --- Endpoint constants -----------------------------------------------------
 SERVICE = "downloads.stock.szse.dividend"
-CNINFO_DIVIDEND_URL = "https://webapi.cninfo.com.cn/api/sysapi/p_sysapi1139"
-CNINFO_ORIGIN = "https://webapi.cninfo.com.cn"
-CNINFO_REFERER = "https://webapi.cninfo.com.cn/"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+CNINFO_DIVIDEND_URL = URLS["cninfo_dividend_url"]
+CNINFO_ORIGIN = URLS["cninfo_origin"]
+CNINFO_REFERER = URLS["cninfo_referer"]
 
 # AES key/iv for the mcode token — replicated from cninfo.js getResCode1().
 _MCODE_KEY = b"1234567887654321"

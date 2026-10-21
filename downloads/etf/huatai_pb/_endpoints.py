@@ -70,17 +70,22 @@ from downloads._common import (
     AntiBotProxy,
     antibot_config_for,
     build_headers_with_referer,
+    service_urls,
 )
 
-SITE_BASE = "https://www.huatai-pb.com"
+# Endpoint roles — each huatai_pb service's external_request_config JSON row
+# carries the URLs it requests under these names; the fetch helpers below
+# resolve them from the CALLING service's row, so a missing role raises at
+# the point of use:
+#   site_base      https://www.huatai-pb.com            (fallback referer base)
+#   product_page   .../products/zhishu/{code}/index.html (per-fund Referer)
+#   nav_table      .../common-web/chart/fundnettable/getFundNetTableJson
+#   pcf            .../etf-web/etf/index.json
+#   common_js      .../common/index.html.js
+#   products_index .../products/index.html
+
 # Global var in /common/index.html.js: var siteId = "9496d23c..."
 SITE_ID = "9496d23c648f4a72a79150c3f2ac669b"
-
-PRODUCT_PAGE_URL = SITE_BASE + "/products/zhishu/{code}/index.html"
-NAV_TABLE_URL = SITE_BASE + "/common-web/chart/fundnettable/getFundNetTableJson"
-PCF_URL = SITE_BASE + "/etf-web/etf/index.json"
-COMMON_JS_URL = SITE_BASE + "/common/index.html.js"
-PRODUCTS_INDEX_URL = SITE_BASE + "/products/index.html"
 
 # One page covers the full 成立以来 history (510880 has ~4.8k rows).
 NAV_PAGE_SPEC = "1-5000"
@@ -150,26 +155,23 @@ GPSC_MARKET_MAP: Dict[str, Tuple[str, str]] = {
     "XHKG": ("香港市场", "HK"),
 }
 
-_HEADERS: Dict[str, str] = build_headers_with_referer(
-    SITE_BASE + "/",
-    extra={
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    },
-)
-
-
-def huatai_headers(referer_code: Optional[str] = None) -> Dict[str, str]:
-    """Request headers with the product page as Referer."""
-    if referer_code:
-        return build_headers_with_referer(
-            PRODUCT_PAGE_URL.format(code=referer_code),
-            extra={
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            },
-        )
-    return _HEADERS
+def huatai_headers(
+    service: str, referer_code: Optional[str] = None,
+) -> Dict[str, str]:
+    """Request headers with the product page as Referer (the site base
+    page when no fund code is given)."""
+    urls = service_urls(service)
+    referer = (
+        urls["product_page"].format(code=referer_code)
+        if referer_code else urls["site_base"] + "/"
+    )
+    return build_headers_with_referer(
+        referer,
+        extra={
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        },
+    )
 
 
 def build_proxy(service: str, sleep_sec: Optional[float] = None) -> AntiBotProxy:
@@ -239,6 +241,7 @@ def fetch_nav_rows(
     fund_code: str,
     date_from: str,
     date_to: str,
+    service: str,
     logger: Any = None,
 ) -> List[Dict[str, Any]]:
     """Fetch NAV rows for one fund in [date_from, date_to] (ISO dates).
@@ -247,7 +250,7 @@ def fetch_nav_rows(
     """
     resp = proxy.get(
         session,
-        NAV_TABLE_URL,
+        service_urls(service)["nav_table"],
         params={
             "fundcode": fund_code,
             "from": date_from,
@@ -255,7 +258,7 @@ def fetch_nav_rows(
             "pages": NAV_PAGE_SPEC,
             "siteId": SITE_ID,
         },
-        headers=huatai_headers(fund_code),
+        headers=huatai_headers(service, fund_code),
         logger=logger,
         log_tag=f"[nav {fund_code}]",
     )
@@ -274,6 +277,7 @@ def fetch_pcf_payload(
     proxy: AntiBotProxy,
     fund_code: str,
     begin_date: str,
+    service: str,
     logger: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """POST the PCF query for one fund on one trading day (ISO date).
@@ -284,9 +288,9 @@ def fetch_pcf_payload(
     """
     resp = proxy.post(
         session,
-        PCF_URL,
+        service_urls(service)["pcf"],
         data={"fundcode": fund_code, "beginDate": begin_date},
-        headers=huatai_headers(fund_code),
+        headers=huatai_headers(service, fund_code),
         logger=logger,
         log_tag=f"[pcf {fund_code} {begin_date}]",
     )
@@ -328,6 +332,7 @@ _RE_DAY_PCT = re.compile(
 def fetch_products_index_html(
     session: requests.Session,
     proxy: AntiBotProxy,
+    service: str,
     logger: Any = None,
 ) -> Optional[str]:
     """GET the products index page (all-funds table) as decoded HTML.
@@ -338,8 +343,8 @@ def fetch_products_index_html(
     """
     resp = proxy.get(
         session,
-        PRODUCTS_INDEX_URL,
-        headers=huatai_headers(),
+        service_urls(service)["products_index"],
+        headers=huatai_headers(service),
         logger=logger,
         log_tag="[products-index]",
     )

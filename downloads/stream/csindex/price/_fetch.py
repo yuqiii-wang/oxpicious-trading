@@ -13,10 +13,10 @@ from typing import Optional, Tuple
 from downloads._common import (
     AntiBotProxy,
     HostStatusTracker,
+    service_urls,
     setup_logger,
 )
 from downloads.index.csindex.quote import (
-    CSINDEX_BASE,
     fetch_intraday,
 )
 
@@ -25,6 +25,13 @@ from ._csv_io import write_bars_csv
 from ._db import upsert_index_bars
 
 logger = setup_logger("csindex_stream")
+
+SERVICE = "downloads.stream.csindex.price"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+CSINDEX_BASE = URLS["base"]
 
 
 def fetch_and_upsert_one(

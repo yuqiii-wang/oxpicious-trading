@@ -10,7 +10,15 @@
  * ECharts legend icons do not inherit symbolRotate, so a rotated
  * triangle would point UP in the legend — the path renders
  * down-pointing in the marker AND the legend.
+ *
+ * `signalEventScatterSeries` (below) is the layer built ON the specs:
+ * THE global action-marker scatter for a signal-history event list —
+ * buy/sell triangles + the no-action diamond, one series per class, the
+ * selected-day emphasis — every chart that marks signal history draws
+ * it through here (the vol-index and skew charts, the hedge-pair
+ * curves) instead of hand-rolling the classes per builder.
  */
+import type { SeriesOption } from "echarts";
 import { DOWN_COLOR, NEUTRAL_FILL, UP_COLOR } from "@/theme/chart-palette";
 
 /** Canonical marker box (px) at scale 1 — the OhlcChart markPoint look. */
@@ -110,4 +118,117 @@ export function emphasizeSignalMarker(
 export interface SignalMarkPointData extends SignalMarkerSpec {
   name: string;
   coord: [string, number];
+}
+
+// ---------------------------------------------------------------------------
+// THE shared action-marker EVENT LAYER — signal history as scatter series
+// ---------------------------------------------------------------------------
+
+/** One signal-history event for the shared marker layer (a row of
+ *  analysis_signals.history_signals as the API delivers it):
+ *  actionable events draw the buy/sell triangles, a no-action record
+ *  (is_rejection — the owning strategy's gate declined — or the
+ *  literal "wait" action) draws the grey diamond instead. An inaction
+ *  must never read as a trade. */
+export interface SignalEventPoint {
+  date: string;
+  /** "buy" / "sell" — the event's recorded action. */
+  action: string;
+  /** TRUE = the gate-declined no-action record (the grey diamond). */
+  is_rejection?: boolean;
+}
+
+/** Legend names of the three marker classes, in class order (buy /
+ *  sell / no-action) — the series names every chart's marker layer
+ *  shares, so the legend reads identically everywhere. */
+export const SIGNAL_EVENT_SERIES_NAMES = [
+  "Signal Buy",
+  "Signal Sell",
+  "Signal No-Action",
+] as const;
+
+export interface SignalEventSeriesOpts {
+  /** Legend-name override (hedge-pairs' no-action word is "Wait").
+   *  [buy, sell, noAction]. */
+  names?: readonly [string, string, string];
+  /** The chart's selected day — that day's marker(s) draw with
+   *  `emphasizeSignalMarker` (grow + glow, the Recent Movements
+   *  marker-click feedback), per point. */
+  selectedDate?: string | null;
+  /** Scatter z (the hedge-pair curves ride 6, the options charts 5). */
+  z?: number;
+}
+
+/** THE global action-marker scatter layer for a signal-history event
+ *  list on ONE value series: classifies the events into buy / sell /
+ *  no-action via the shared specs and emits one scatter series per
+ *  non-empty class (legend toggles classes individually). `yByDate`
+ *  resolves each event's marker y (the host curve's value that day);
+ *  events without a finite value that day skip (honest gaps). The
+ *  selected day's points grow + glow (see `SignalEventSeriesOpts`).
+ *  No border anywhere — the flat spec fill as Short-Term Tech renders
+ *  it (the ringed variant was removed 2026-10-19, user-directed: the
+ *  boundary read as noise on the dense option charts). */
+export function signalEventScatterSeries(
+  events: readonly SignalEventPoint[],
+  yByDate: Map<string, number | null | undefined>,
+  opts?: SignalEventSeriesOpts,
+): SeriesOption[] {
+  const names = opts?.names ?? SIGNAL_EVENT_SERIES_NAMES;
+  const selected = opts?.selectedDate ?? null;
+  const z = opts?.z ?? 5;
+  const classes: Array<{
+    key: "buy" | "sell" | "noAction";
+    name: string;
+    spec: SignalMarkerSpec;
+  }> = [
+    { key: "buy", name: names[0], spec: signalMarkerSpec("buy") },
+    { key: "sell", name: names[1], spec: signalMarkerSpec("sell") },
+    { key: "noAction", name: names[2], spec: rejectionMarkerSpec() },
+  ];
+  const out: SeriesOption[] = [];
+  for (const cls of classes) {
+    const data: Array<
+      [string, number]
+      | {
+          value: [string, number];
+          symbolSize: [number, number];
+          symbolOffset: [number, number];
+          itemStyle: SignalMarkerSpec["itemStyle"];
+        }
+    > = [];
+    for (const ev of events) {
+      const noAction = ev.is_rejection === true || ev.action === "wait";
+      const match = cls.key === "noAction"
+        ? noAction
+        : !noAction && ev.action === cls.key;
+      if (!match) continue;
+      const y = yByDate.get(ev.date);
+      if (y == null || !Number.isFinite(y)) continue;
+      if (selected != null && ev.date === selected) {
+        const em = emphasizeSignalMarker(cls.spec);
+        data.push({
+          value: [ev.date, y],
+          symbolSize: em.symbolSize,
+          symbolOffset: em.symbolOffset,
+          itemStyle: em.itemStyle,
+        });
+      } else {
+        data.push([ev.date, y]);
+      }
+    }
+    if (data.length === 0) continue;
+    out.push({
+      type: "scatter" as const,
+      name: cls.name,
+      data,
+      symbol: cls.spec.symbol,
+      symbolSize: cls.spec.symbolSize,
+      symbolOffset: cls.spec.symbolOffset,
+      itemStyle: { color: cls.spec.itemStyle.color },
+      z,
+      tooltip: { show: false },
+    });
+  }
+  return out;
 }

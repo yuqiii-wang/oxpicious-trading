@@ -14,8 +14,14 @@
     "add_random_param": false,
     "enable_host_tracking": false,
     "host_block_cooldown_sec": null,
-    "notes": "Playwright browser download (NOT AntiBotProxy): jitter is a ±5s range; per-date extra 1+rand(0,2)s; timeouts are page-nav / data-load.",
+    "settle_sleep_sec": 2,
+    "urls": {
+      "trend_page": "http://www.cffex.com.cn/cn/rtj.html",
+      "trend_referer": "http://www.cffex.com.cn/cn/",
+      "base_origin": "http://www.cffex.com.cn"
+    },
+    "notes": "Playwright browser download (NOT AntiBotProxy): between-dates sleep 20s +/-5s (sleep_jitter as +/- seconds); settle_sleep_sec is the post-navigation wait before querying (jittered by sleep_jitter); timeout_connect_sec is the page-nav timeout (ms x1000 in code), timeout_read_sec the data-load timeout. Sleeps/timeouts/URLs migrated from code constants 2026-10-17 - code reads this row.",
     "source_ref": "downloads/futures/cffex/trend/config.py; downloads/futures/cffex/trend/downloader.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

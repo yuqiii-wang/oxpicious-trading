@@ -14,8 +14,23 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "Shibor quotes (shibor.org.cn); fallback proxies also 5.0s. Timeouts (15,120) migrated from the code's SHIBOR_TIMEOUT (shibor.sh.cn POSTs are slow; synced 2026-10-10) - code now reads this row.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "site": "https://www.shibor.sh.cn",
+      "check_shibor_his": "https://www.shibor.sh.cn/ags/ms/cm-u-bk-shibor/ShiborHis",
+      "xlsx_shibor_his": "https://www.shibor.sh.cn/dqs/rest/cm-u-bk-shibor/ShiborHisExcel",
+      "check_shibor_pri": "https://www.shibor.sh.cn/ags/ms/cm-u-bk-shibor/ShiborPriHis",
+      "xlsx_shibor_pri": "https://www.shibor.sh.cn/dqs/rest/cm-u-bk-shibor/ShiborPriHisExcel",
+      "pnl_bk": "https://www.shibor.sh.cn/r/cms/www/chinamoney/data//shibor/shibor-pnl-bk.json",
+      "check_shibor_mn": "https://www.shibor.sh.cn/ags/ms/cm-u-bk-shibor/ShiborMnHis",
+      "xlsx_shibor_mn": "https://www.shibor.sh.cn/dqs/rest/cm-u-bk-shibor/ShiborMnHisExcel",
+      "cfg_shibor_mn": "https://www.shibor.sh.cn/ags/ms/cm-u-bk-shibor/ShiborMnHisCFG",
+      "check_lpr_his": "https://www.shibor.sh.cn/ags/ms/cm-u-bk-currency/LprHis",
+      "xlsx_lpr_his": "https://www.shibor.sh.cn/dqs/rest/cm-u-bk-currency/LprHisExcel",
+      "referer_dataservices": "https://www.shibor.sh.cn/shibor/dataservices/"
+    },
+    "notes": "Shibor quotes (shibor.org.cn); fallback proxies also 5.0s. Timeouts (15,120) migrated from the code's SHIBOR_TIMEOUT (shibor.sh.cn POSTs are slow; synced 2026-10-10). URLs migrated from the module's inline base+path constants 2026-10-17 (pnl_bk keeps the legacy double slash the old concatenation produced) - code reads the urls object via service_urls(). (referer_dataservices added 2026-10-17)",
     "source_ref": "downloads/bond/shibor/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

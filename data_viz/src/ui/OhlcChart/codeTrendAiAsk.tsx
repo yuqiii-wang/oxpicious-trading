@@ -20,6 +20,7 @@ export function CodeTrendAiAsk({
   showRegimes,
   sliderOn,
   aiSearchKeywords,
+  insightPage,
   getInstance,
 }: {
   code: string;
@@ -38,6 +39,9 @@ export function CodeTrendAiAsk({
   /** Extra page-level search seed keywords (the aiSearchKeywords prop),
    *  merged ahead of the auto-derived toggle keywords. */
   aiSearchKeywords?: string[];
+  /** Insight-registry item for the AI-Ask metrics table — spread in only
+   *  when set (undefined must not land as a spec key). */
+  insightPage?: { tab: string; page: string };
   /** Live inner-chart instance getter for the screenshot. */
   getInstance: () => ECharts | null;
 }) {
@@ -54,6 +58,7 @@ export function CodeTrendAiAsk({
           ? `${nBars} bars · ${allRows[0].date} → ${allRows[allRows.length - 1].date}`
           : undefined,
         spec: {
+          ...(insightPage ? { insight: insightPage } : {}),
           intro:
             `Daily trend for ${code} (${secType}): OHLC candles (close line when sparse) ` +
             "with MA5/20/60/120 overlays and turnover bars on the right; where data " +

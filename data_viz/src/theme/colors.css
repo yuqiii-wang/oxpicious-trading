@@ -41,7 +41,9 @@
 
   --chart-pe: #e377c2;            /* tableau pink — PE ratio */
   --chart-div-est: #9467bd;       /* tableau purple — dividend price estimation curve */
-  --chart-spot: #2C3E50;          /* spot / underlying reference line */
+  --chart-spot: #d95f0e;          /* spot / underlying reference line (warm orange —
+                                     matches --futures-spot; the old #2C3E50 navy
+                                     vanished on the dark theme) */
   --chart-boll-band: #3498db;     /* Bollinger band envelope line (±k×σ) */
   --chart-boll-fill: #3498db;     /* Bollinger band fill (same hue, opacity at use site) */
   --chart-dividend: #f1c40f;      /* gold — dividend event marker */
@@ -168,4 +170,13 @@
   --expiry-blue-far: #c6dbef;      /* lightest expiry set */
   --expiry-grey-near: #333333;     /* darkest matured expiry */
   --expiry-grey-far: #aaaaaa;      /* lightest matured expiry */
+
+  /* ---- Rolling-window gradient (used by windowBlueColor()) ---- */
+  /* Same-hue darkness ramp for ordered trailing windows (20/60/255d) of ONE
+     metric (e.g. the pair hedge-ratio panels). Dark = shortest window,
+     light = longest — the same dark-near/light-far convention as the expiry
+     gradients, so one metric's windows read as one family instead of three
+     unrelated hues. */
+  --window-blue-near: #08306b;     /* darkest (shortest) window */
+  --window-blue-far: #c6dbef;      /* lightest (longest) window */
 }

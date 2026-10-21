@@ -32,6 +32,7 @@
  */
 import { Box, Typography } from "@mui/material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
+import type { CodeTrendSecType } from "@/ui/OhlcChart/codeTrendTypes";
 import type { SecNavSecType, SecNavThemesSource } from "@/shared/components/sec-nav";
 import SignalTrendPanel from "./SignalTrendPanel";
 import {
@@ -44,8 +45,10 @@ import {
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
 
-/** Nav trees endpoints per sec_type (baseline classification registries). */
-const THEMES_SOURCES: Record<SecNavSecType, SecNavThemesSource> = {
+/** Nav trees endpoints per sec_type (baseline classification registries).
+ *  Industry is excluded — the registry endpoints are classification-tree
+ *  sources and industry entities sit above that taxonomy. */
+const THEMES_SOURCES: Record<Exclude<SecNavSecType, "industry">, SecNavThemesSource> = {
   etf: {
     themes: (exchange) => fetchEtfThemes(exchange),
     strategyThemes: (exchange) => fetchEtfStrategyThemes(exchange),
@@ -60,8 +63,7 @@ const THEMES_SOURCES: Record<SecNavSecType, SecNavThemesSource> = {
   },
 };
 
-/** Cache prefixes invalidated on Refresh, per sec_type. */
-const CACHE_PREFIXES: Record<SecNavSecType, string[]> = {
+const CACHE_PREFIXES: Record<Exclude<SecNavSecType, "industry">, string[]> = {
   etf: ["/api/etf-margin/themes", "/api/etf-margin/strategy-themes"],
   index: ["/api/index/themes", "/api/index/strategy-themes"],
   stock: ["/api/stock/themes", "/api/stock/strategy-themes"],
@@ -96,7 +98,9 @@ export default function RecentMovementsPage() {
     >
       {nav.searchCode ? (
         <SignalTrendPanel
-          secType={nav.secType}
+          // The toggle above offers only etf/index/stock — industry never
+          // reaches the code-trend panel (it has no OHLC source there).
+          secType={nav.secType as CodeTrendSecType}
           code={nav.searchCode}
           name={nav.findItemName(nav.searchCode)}
         />

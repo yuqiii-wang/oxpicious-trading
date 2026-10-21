@@ -1087,6 +1087,11 @@ export interface ExtRequestConfigEntry {
   addRandomParam: boolean;
   enableHostTracking: boolean;
   hostBlockCooldownSec: number | null;
+  /** Playwright flows' post-navigation settle wait (null = the flow keeps
+   *  its own behavior). */
+  settleSleepSec: number | null;
+  /** The row's endpoint inventory {role: url} (null = none). */
+  urls: Record<string, string> | null;
   notes: string | null;
   sourceRef: string;
 }
@@ -1285,6 +1290,8 @@ router.get("/ext-resources/configs", (_req: Request, res: Response) => {
       addRandomParam: r.add_random_param,
       enableHostTracking: r.enable_host_tracking,
       hostBlockCooldownSec: r.host_block_cooldown_sec,
+      settleSleepSec: r.settle_sleep_sec ?? null,
+      urls: r.urls ?? null,
       notes: r.notes,
       sourceRef: r.source_ref,
     });

@@ -29,6 +29,7 @@ from _common.build_commons import (
     TODAY_STR,
 )
 from builds._commons.board_map import stage_stock_boards, upsert_stock_board_rows
+from builds._commons.margin_summary import sync_exchange_margin_summary_async
 from builds._commons.paths import (
     BSE_ARCHIVE_DIR,
     BSE_TREND_DIR,
@@ -264,6 +265,19 @@ async def main() -> None:
             missing_dates = await detect_missing_dates(
                 conn, disc.loadable_dates, code_filter, args.force
             )
+
+        # ------------------------------------------------------------------
+        # 2c. Exchange-level margin summary (analysis.exchange_margin_summary)
+        # Independent of the OHLCV/detail-margin passes — runs on EVERY
+        # invocation (including the early-return paths below) and fills any
+        # date whose summary CSV has data but the table lacks the
+        # (exchange, date) row. Not code-scoped (the table has no code
+        # dimension): --code runs still fill missing market-wide dates;
+        # only a whole-table --force truncates it.
+        # ------------------------------------------------------------------
+        await sync_exchange_margin_summary_async(
+            conn, force=args.force and not code_filter, forced_date=forced,
+        )
 
         # ------------------------------------------------------------------
         # 3. Filter source files to only missing dates and build rows

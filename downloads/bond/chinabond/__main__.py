@@ -18,6 +18,7 @@ from downloads._common import (
     DEFAULT_START_DATE,
     AntiBotProxy,
     antibot_config_for,
+    service_urls,
     sleep_sec_for,
     setup_logger,
     resolve_out_dir,
@@ -38,12 +39,14 @@ from downloads._common import (
 
 SERVICE = "downloads.bond.chinabond"
 
-CHINABOND_BASE = "https://yield.chinabond.com.cn"
-YIELD_MAIN = CHINABOND_BASE + "/cbweb-mn/yield_main?locale=zh_CN"
-API_QUERY_TREE = CHINABOND_BASE + "/cbweb-mn/yc/queryTree?locale=zh_CN"
-API_DOWN_BZQX_DETAIL = CHINABOND_BASE + "/cbweb-mn/yc/downBzqxDetail"
-API_DOWN_YEAR_BZQX_LIST = CHINABOND_BASE + "/cbweb-mn/yc/downYearBzqxList"
-API_DOWN_YEAR_BZQX = CHINABOND_BASE + "/cbweb-mn/yc/downYearBzqx"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+YIELD_MAIN = URLS["yield_main"]
+API_QUERY_TREE = URLS["query_tree"]
+API_DOWN_BZQX_DETAIL = URLS["down_bzqx_detail"]
+API_DOWN_YEAR_BZQX_LIST = URLS["down_year_bzqx_list"]
+API_DOWN_YEAR_BZQX = URLS["down_year_bzqx"]
 
 YC_TREASURY_BOND = "treasury_bond"
 
@@ -294,7 +297,7 @@ def download_chinabond(
 
     try:
         for ck in curve_keys:
-            if proxy.is_blocked(CHINABOND_BASE):
+            if proxy.is_blocked(YIELD_MAIN):
                 logger.warning("  [host-blocked] yield.chinabond.com.cn is blocked, skipping %s", ck)
                 stats.failed += 1
                 continue
@@ -334,7 +337,7 @@ def download_chinabond(
 
                 yitem: YearDownloadPlanItem
                 for yitem in year_plan.items:
-                    if proxy.is_blocked(CHINABOND_BASE):
+                    if proxy.is_blocked(YIELD_MAIN):
                         logger.warning("  [host-blocked] yield.chinabond.com.cn blocked, skipping remaining years")
                         stats.failed += len(year_plan.items) - year_plan.items.index(yitem)
                         break
@@ -380,7 +383,7 @@ def download_chinabond(
 
                 ditem: DayDownloadPlanItem
                 for ditem in day_plan.items:
-                    if proxy.is_blocked(CHINABOND_BASE):
+                    if proxy.is_blocked(YIELD_MAIN):
                         logger.warning("  [host-blocked] yield.chinabond.com.cn blocked, skipping remaining days")
                         stats.failed += len(day_plan.items) - day_plan.items.index(ditem)
                         break

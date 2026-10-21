@@ -16,10 +16,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 import requests
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
     EMPTY_MARKER_RETRY_DAYS,
     MIN_VALID_BYTES,
-    AntiBotConfig,
     AntiBotProxy,
     DayDownloadPlan,
     DayDownloadPlanItem,
@@ -34,16 +32,16 @@ from downloads._common import (
     parse_date_window,
     resolve_out_dir,
     safe_write_bytes,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
 
 
-BASE_URL = "https://www.szse.cn/api/report/ShowReport"
-
-REFERER_ARCHIVE = "https://www.szse.cn/market/trend/archive/index.html"
-REFERER_TREND = "https://www.szse.cn/market/trend/index.html"
-REFERER_MARGIN = "https://www.szse.cn/disclosure/margin/margin/index.html"
+# Referer roles: every consuming service's external_request_config JSON row
+# carries the referer page its headers are built from ("referer_archive" /
+# "referer_trend" / "referer_margin") and the ShowReport endpoint itself
+# ("show_report" — read below via service_urls, it is not owned here).
 
 
 def build_headers(referer: str) -> Dict[str, str]:
@@ -119,7 +117,8 @@ def download_xlsx_once(
     exchange: str = "",
     code_filter: Optional[List[str]] = None,
     sec_type: str = "auto",
-    service: Optional[str] = None,
+    *,
+    service: str,
     request_type: str = "default",
 ) -> Optional[Path]:
     if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
@@ -149,17 +148,12 @@ def download_xlsx_once(
 
     if proxy is None:
         # Pacing from the caller service's external_request_config JSON row
-        # when given (request_type selects the row); DEFAULT_SLEEP_SEC
-        # fallback otherwise.
-        proxy = (
-            AntiBotProxy(service=service, request_type=request_type)
-            if service is not None
-            else AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
-        )
+        # (request_type selects the row).
+        proxy = AntiBotProxy(service=service, request_type=request_type)
 
     resp = proxy.get(
         session,
-        BASE_URL,
+        service_urls(service, request_type)["show_report"],
         params=params,
         headers=headers,
         timeout=timeout,
@@ -227,7 +221,7 @@ def run_szse_download(
     sleep_sec: Optional[float] = None,
     session: Optional[requests.Session] = None,
     proxy: Optional[AntiBotProxy] = None,
-    service: Optional[str] = None,
+    service: str,
     request_type: str = "default",
     exchange: str = "",
     db_table: Optional[str] = None,
@@ -279,10 +273,11 @@ def run_szse_download(
     data for a given date. Files/markers from the primary attempt are
     cleaned up before the fallback runs.
 
-    *service* / *request_type* — with a service the loop's pacing resolves
-    from that service's external_request_config JSON row (*request_type*
-    selects the row, default "default"); *sleep_sec* then overrides only
-    the row's base sleep.
+    *service* / *request_type* — *service* (required) resolves the loop's
+    pacing from that service's external_request_config JSON row
+    (*request_type* selects the row, default "default") and the ShowReport
+    endpoint from the same row's urls ("show_report"); *sleep_sec* then
+    overrides only the row's base sleep.
     """
     out_dir = resolve_out_dir(caller_file, out_dirname, out_root)
 
@@ -347,21 +342,16 @@ def run_szse_download(
         )
 
     # Create proxy if not provided. Pacing resolves from the caller
-    # service's external_request_config JSON row when *service* is given
-    # (*request_type* selects the row; sleep_sec still overrides the row's
-    # base when passed explicitly); DEFAULT_SLEEP_SEC fallback otherwise.
+    # service's external_request_config JSON row (*request_type* selects
+    # the row; sleep_sec still overrides the row's base when passed
+    # explicitly).
     if proxy is None:
-        if service is not None:
-            row = antibot_config_for(service, request_type)
-            if sleep_sec is None:
-                sleep_sec = sleep_sec_for(service, request_type)
-            proxy = AntiBotProxy(replace(row, base_sleep_sec=sleep_sec))
-        else:
-            proxy = AntiBotProxy(AntiBotConfig(
-                base_sleep_sec=(
-                    DEFAULT_SLEEP_SEC if sleep_sec is None else sleep_sec
-                ),
-            ))
+        row = antibot_config_for(service, request_type)
+        if sleep_sec is None:
+            sleep_sec = sleep_sec_for(service, request_type)
+        proxy = AntiBotProxy(replace(row, base_sleep_sec=sleep_sec))
+
+    show_report_url = service_urls(service, request_type)["show_report"]
 
     sess = session or requests.Session()
     stats = RunStats(skipped_cached=plan.present_count)
@@ -375,7 +365,7 @@ def run_szse_download(
     try:
         item: DayDownloadPlanItem
         for item in plan.items:
-            if proxy.is_blocked(BASE_URL):
+            if proxy.is_blocked(show_report_url):
                 logger.warning("  [host-blocked] szse.cn is blocked, skipping remaining tasks")
                 stats.failed += len(plan.items) - plan.items.index(item)
                 break
@@ -434,7 +424,8 @@ def run_szse_download(
             path = download_xlsx_once(
                 sess, params, headers, out_file, tag,
                 proxy=proxy, exchange=exchange, code_filter=code_filter,
-                sec_type=item_sec_type,
+                sec_type=item_sec_type, service=service,
+                request_type=request_type,
             )
             if path is None and fallback_params_builder is not None:
                 # Primary returned no data — clean up any markers/files and
@@ -450,7 +441,8 @@ def run_szse_download(
                     fallback_headers if fallback_headers is not None else headers,
                     out_file, fb_tag,
                     proxy=proxy, exchange=exchange, code_filter=code_filter,
-                    sec_type=item_sec_type,
+                    sec_type=item_sec_type, service=service,
+                    request_type=request_type,
                 )
 
             if path is not None:

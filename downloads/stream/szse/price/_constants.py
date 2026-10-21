@@ -7,7 +7,6 @@ from __future__ import annotations
 from datetime import time
 
 from downloads._common import (
-    DEFAULT_SLEEP_SEC,
     poll_interval_sec_for,
     sleep_sec_for,
 )
@@ -82,17 +81,21 @@ DEFAULT_GROUPS = 10
 # external_request_config JSON row for that source (request_type):
 # Sina (A) sleep=90, both East Money hosts (C/D) sleep=300. B (szse
 # fallback) keeps its poll cadence below.
-COOLDOWN_A_SEC: float = sleep_sec_for(SERVICE, "source_a_sina")      # akshare  (Sina 1-min)
+COOLDOWN_A_SEC: float = sleep_sec_for(SERVICE, "source_a_sina")      # sina (Sina 1-min)
 COOLDOWN_C_SEC: float = sleep_sec_for(SERVICE, "source_c_em_hist")   # em_push2his
 COOLDOWN_D_SEC: float = sleep_sec_for(SERVICE, "source_d_em_quote")  # em_push2
 
 # Default per-fetch cooldown for B (szse fallback) and the index round
-# (same ssjjhq endpoint as B): the source_b_szse row's poll_interval_sec,
-# with the old DEFAULT_SLEEP_SEC (20s) literal as the fallback. Overridable
-# via --interval in __main__.py.
-DEFAULT_POLL_INTERVAL_SEC: float = (
-    poll_interval_sec_for(SERVICE, "source_b_szse") or DEFAULT_SLEEP_SEC
-)
+# (same ssjjhq endpoint as B): the source_b_szse row's poll_interval_sec —
+# the row MUST define it (a missing value is a config error, not a silent
+# code default). Overridable via --interval in __main__.py.
+_B_POLL_SEC = poll_interval_sec_for(SERVICE, "source_b_szse")
+if _B_POLL_SEC is None:
+    raise RuntimeError(
+        f"external_request_config row {SERVICE} (source_b_szse) must define "
+        "poll_interval_sec - it is the szse-fallback fetch cadence"
+    )
+DEFAULT_POLL_INTERVAL_SEC: float = _B_POLL_SEC
 
 # Hard timeout for worker shutdown on termination signal. Workers stuck inside
 # asyncio.to_thread (e.g. a DB upsert) can't be cancelled — this prevents the

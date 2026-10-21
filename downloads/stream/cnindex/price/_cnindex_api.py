@@ -29,24 +29,39 @@ from typing import Any, Dict, Optional
 from downloads._common import (
     COMMON_BASE_HEADERS,
     AntiBotProxy,
+    service_urls,
 )
+from database.sec_statics.exclusion_rules_store import is_excluded
 
 # Dotted service name for the external_request_config JSON row (rt=page:
 # sleep 20s, jitter 0.5, timeouts 15/60) and the resource audit.
 SERVICE = "downloads.stream.cnindex.price"
 
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+
 # CNINDEX-published indices not covered by SSE/SZSE/CSIndex streamers.
 #   399303 = 国证2000, 399311 = 国证1000, 399310 = 国证A50
-CNINDEX_CODES = ["399303", "399311", "399310"]
+# Codes whose intraday ticks never arrive (exclusion store scope
+# "stream"/"all" — the trio logged "NO DATA" on every window of every
+# logged day while its DAILY data flows fine via the cnindex archive) are
+# filtered out: database/sec_statics/exclusion_rules/index_excluded.json
+# curates that list, not this module. Removing a code there re-enables
+# its stream the next start.
+CNINDEX_CODES = [
+    c for c in ("399303", "399311", "399310")
+    if not is_excluded("index", c, scopes=("stream",))
+]
 
 # API endpoint
-CNINDEX_HQ_BASE = "https://hq.cnindex.com.cn"
-CNINDEX_INTRADAY_API = CNINDEX_HQ_BASE + "/market/market/getIndexRealTimeData"
+CNINDEX_HQ_BASE = URLS["hq_base"]
+CNINDEX_INTRADAY_API = URLS["intraday_api"]
 
 # HTTP headers
 CNINDEX_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)
 CNINDEX_HEADERS["Accept"] = "application/json, text/plain, */*"
-CNINDEX_HEADERS["Referer"] = "https://www.cnindex.com.cn/"
+CNINDEX_HEADERS["Referer"] = URLS["referer"]
 
 # Bar array column indices:
 #   [timestamp, current, high, open, low, close, chg, percent,

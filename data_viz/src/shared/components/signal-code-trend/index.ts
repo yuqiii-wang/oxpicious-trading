@@ -11,6 +11,8 @@ export { default as SignalHistoryPanel } from "./SignalHistoryPanel";
 export type { SignalHistoryPanelProps } from "./SignalHistoryPanel";
 export { default as SignalRulesPanel } from "./SignalRulesPanel";
 export type { SignalRulesPanelProps } from "./SignalRulesPanel";
+export { default as SignalRulesAskButton } from "./SignalRulesAskButton";
+export type { SignalRulesAskButtonProps } from "./SignalRulesAskButton";
 export { default as SignalRecordsTable } from "./SignalRecordsTable";
 export type { SignalRecordsTableProps } from "./SignalRecordsTable";
 export { SignalPopulationToggles } from "./SignalPopulationControls";

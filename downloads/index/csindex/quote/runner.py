@@ -13,12 +13,19 @@ Flow per index:
 
 CONTENT FRESHNESS, NOT MTIME: the skip decisions for the daily-record
 steps (2 and 3) compare the local records against the newest session whose
-data CSIndex could have published — ``last_business_day(today - 1)`` —
-never against the file mtime. A morning fetch must not pin the whole
-calendar day: CSIndex publishes laggard indices' rows hours behind peers,
-so a code whose CSVs lack the expected session is re-fetched by every
-later run that day (bounded by REFETCH_MIN_INTERVAL_HOURS so indices
-CSIndex stopped publishing don't burn the anti-bot sleep budget).
+data CSIndex could have published — time-of-day aware via
+``_expected_session``: today's session after EOD_EXPECT_HOUR (17:00) on a
+CN trading day, else the last completed session — never against the file
+mtime. A morning fetch must not pin the whole calendar day: CSIndex
+publishes laggard indices' rows hours behind peers, so a code whose CSVs
+lack the expected session is re-fetched by every later run that day
+(bounded by REFETCH_MIN_INTERVAL_HOURS so indices CSIndex stopped
+publishing don't burn the anti-bot sleep budget). The nightly full sweep
+ends with a time-budgeted MOP-UP pass: codes still missing the expected
+session get one more 1m fetch (backoff bypassed) so late publishers and
+mid-sweep hiccups land the same night instead of on the next trading
+day's run (there are no weekend runs — a Friday gap would otherwise wait
+until Monday).
 
 Targeted mode (``ensure_prev_trading_day=True`` — used by the "Build Yday
 Ref" UI button chain): only codes MISSING the expected session run the
@@ -35,12 +42,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from _common._holidays_and_weekdays import last_business_day
+from _common._holidays_and_weekdays import expected_publish_session
 from _common.importance import (
     exchange_map_or_empty,
     order_codes_or_sorted,
     szse_downloader_codes,
 )
+from database.sec_statics.exclusion_rules_store import exclusion_scopes
 
 from downloads._common import (
     MIN_VALID_BYTES,
@@ -61,6 +69,8 @@ from ._config import (
     CSINDEX_SKIP_CODES,
     UPDATE_WINDOW_DAYS,
     REFETCH_MIN_INTERVAL_HOURS,
+    EOD_EXPECT_HOUR,
+    MOPUP_BUDGET_MIN,
     SERVICE,
     SLEEP_SEC,
     logger,
@@ -81,6 +91,17 @@ from ._history import (
     append_missing_dates_to_csv,
     csv_has_date,
 )
+
+
+def _expected_session(now: Optional[datetime] = None) -> _dt.date:
+    """Newest session whose data CSIndex may have published (delegates to
+    :func:`_common._holidays_and_weekdays.expected_publish_session` with
+    the service's EOD_EXPECT_HOUR) — see that docstring for the
+    2026-10-17 study (the previous always-T-1 rule gated the evening
+    sweep to the previous session, so 186 CSI-sourced codes' Friday rows
+    landed only on the Monday run).
+    """
+    return expected_publish_session(now, eod_hour=EOD_EXPECT_HOUR)
 
 
 def download_index(
@@ -132,12 +153,13 @@ def download_index(
     update_end = _end
     update_start = _end - timedelta(days=update_days)
 
-    # Newest COMPLETED session whose data CSIndex may have published:
-    # yesterday's session when today is a trading day (today's EOD is not
-    # assumed), the last session otherwise (weekend/holiday — everything
-    # up to it is publishable). ONE expectation for both the targeted-mode
-    # target and the per-step content gates below.
-    expected_day = last_business_day(_dt.date.today() - _dt.timedelta(days=1))
+    # Newest COMPLETED session whose data CSIndex may have published —
+    # time-of-day aware (see _expected_session): today's session after
+    # EOD_EXPECT_HOUR on a trading day, else the last completed session
+    # (weekend/holiday runs expect Friday's session; morning runs expect
+    # yesterday's). ONE expectation for both the targeted-mode target
+    # and the per-step content gates below.
+    expected_day = _expected_session()
     expected_yyyymmdd = expected_day.strftime("%Y%m%d")
 
     # Targeted mode: resolve the expected session ONCE (calendar-aware).
@@ -179,19 +201,30 @@ def download_index(
         # via _common.importance, cache-first): codes whose curated
         # exchange carries the SZSE published-index marker are OWNED by
         # the SZSE downloader — csindex.com.cn does not serve them.
-        # CSINDEX_SKIP_CODES stays as the legacy fallback for codes with
-        # no rank row (fresh install before the first monthly build).
-        _szse_owned = (set(szse_downloader_codes(exchange_map_or_empty()))
-                       | CSINDEX_SKIP_CODES)
+        # CSINDEX_SKIP_CODES (exclusion-store backed, see _config) adds
+        # the codes csindex.com.cn never serves regardless of routing
+        # (cnindex-owned trio, SSE-covered 0008xx) — and stays the
+        # fresh-install fallback for codes with no rank row.
+        _szse_owned = set(szse_downloader_codes(exchange_map_or_empty()))
+        _csindex_excluded = CSINDEX_SKIP_CODES
+        _skip = _szse_owned | _csindex_excluded
         if _szse_owned:
             logger.info("Exchange routing: %d codes owned by the SZSE "
                         "downloader (skipped here): %s",
                         len(_szse_owned), sorted(_szse_owned))
+        if _csindex_excluded:
+            logger.info("Exclusion rules: %d codes csindex.com.cn never "
+                        "serves (skipped here): %s",
+                        len(_csindex_excluded), sorted(_csindex_excluded))
         for code in index_codes:
             name = _index_names.get(code, code)
 
             if code in _szse_owned:
                 logger.info("== Index %s (%s) — skipped (exchange-routed: SZSE downloader owns it) ==", code, name)
+                stats.skipped_cached += 1
+                continue
+            if code in _csindex_excluded:
+                logger.info("== Index %s (%s) — skipped (excluded: csindex.com.cn never serves it) ==", code, name)
                 stats.skipped_cached += 1
                 continue
 
@@ -232,8 +265,15 @@ def download_index(
                 stats.failed += 2
                 continue
 
-            pe_records = _run_pe(session, code, _start, _end, out_dir, proxy,
-                                 stats, expected_yyyymmdd)
+            if "csindex_pe" in exclusion_scopes("index", code):
+                # Exclusion store: the PE (peg) series never returns for
+                # this code (daily export flows) — skip the fetch.
+                logger.info("  [pe] %s: excluded (PE series never "
+                            "returns) — skipped", code)
+                pe_records = []
+            else:
+                pe_records = _run_pe(session, code, _start, _end, out_dir,
+                                     proxy, stats, expected_yyyymmdd)
 
             # --- Step 4: Merge into history CSV ---
             history_file = build_history_csv(code, name, out_dir, pe_records)
@@ -249,6 +289,65 @@ def download_index(
                         stats.files.append(str(saved))
                 else:
                     logger.info("  [intraday] %s: 1-day data not available, skipping", code)
+
+        # ---- Mop-up pass (nightly full sweep only): one content-gated
+        # retry of the 1m window for codes still missing the expected
+        # session. Late publishers (HK/overseas indices land their rows
+        # hours behind peers) and mid-sweep fetch hiccups otherwise wait
+        # for the NEXT trading day's run — with no weekend runs that is
+        # up to 3 days. The REFETCH_MIN_INTERVAL_HOURS backoff is
+        # bypassed here: it bounds cross-RUN retries, not one extra
+        # in-process attempt; the content gate still skips codes that
+        # already cover the session. Time-budgeted so a total CSIndex
+        # outage cannot extend the nightly chain unboundedly.
+        if not ensure_prev_trading_day:
+            mopup_deadline = datetime.now() + timedelta(minutes=MOPUP_BUDGET_MIN)
+            mopup_codes = [
+                c for c in index_codes
+                if c not in _skip
+                and not csv_has_date(out_dir, c, expected_yyyymmdd)
+            ]
+            if mopup_codes:
+                logger.info(
+                    "Mop-up: %d codes still missing session %s — "
+                    "retrying 1m fetches (budget %.0f min, backoff bypassed)",
+                    len(mopup_codes), expected_yyyymmdd, MOPUP_BUDGET_MIN,
+                )
+                mopup_done = 0
+                for code in mopup_codes:
+                    if datetime.now() >= mopup_deadline:
+                        logger.warning(
+                            "  [mop-up] budget exhausted with %d codes "
+                            "untried (they retry on the next run)",
+                            len(mopup_codes) - mopup_done,
+                        )
+                        break
+                    if proxy.is_blocked(CSINDEX_BASE):
+                        logger.warning(
+                            "  [mop-up] csindex.com.cn blocked — stopping "
+                            "mop-up (remaining codes retry next run)")
+                        break
+                    name = _index_names.get(code, code)
+                    logger.info("  [mop-up] %s (%s)", code, name)
+                    _run_1m(session, code, update_start, update_end, out_dir,
+                            proxy, stats, expected_yyyymmdd,
+                            bypass_backoff=True)
+                    mopup_done += 1
+                still = sum(
+                    1 for c in mopup_codes
+                    if not csv_has_date(out_dir, c, expected_yyyymmdd)
+                )
+                logger.info(
+                    "Mop-up done: %d/%d codes now cover %s, %d still "
+                    "missing (late publishers retry on the next run)",
+                    len(mopup_codes) - still, len(mopup_codes),
+                    expected_yyyymmdd, still,
+                )
+            else:
+                logger.info(
+                    "Mop-up: all codes already cover session %s — nothing "
+                    "to retry", expected_yyyymmdd,
+                )
 
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
@@ -295,7 +394,7 @@ def _run_from2020(
 
 def _run_1m(
     session, code, update_start, update_end, out_dir, proxy, stats,
-    expected_yyyymmdd: str,
+    expected_yyyymmdd: str, bypass_backoff: bool = False,
 ) -> None:
     """Step 2: 1-month export (incremental update window).
 
@@ -307,7 +406,10 @@ def _run_1m(
     peers (e.g. overseas indices landing their T-1 row mid-day). A code
     missing the expected session re-fetches on every later run, bounded by
     REFETCH_MIN_INTERVAL_HOURS so never-published indices don't burn the
-    anti-bot sleep budget on every attempt.
+    anti-bot sleep budget on every attempt. ``bypass_backoff=True``
+    (end-of-sweep mop-up) skips ONLY the freshness backoff — the content
+    gate still applies — because the backoff bounds cross-RUN retries,
+    not a second in-process attempt.
 
     The xlsx is downloaded with auto_convert disabled so the companion csv
     is NOT overwritten; the append below merges only the dates missing
@@ -321,8 +423,11 @@ def _run_1m(
     if csv_has_date(out_dir, code, expected_yyyymmdd):
         logger.info("  [1m] %s: local CSVs cover %s, skipping download", code, expected_yyyymmdd)
         stats.skipped_cached += 1
-    elif is_fresh_within(onem_xlsx, hours=REFETCH_MIN_INTERVAL_HOURS,
-                         min_bytes=MIN_VALID_BYTES):
+    elif (
+        not bypass_backoff
+        and is_fresh_within(onem_xlsx, hours=REFETCH_MIN_INTERVAL_HOURS,
+                            min_bytes=MIN_VALID_BYTES)
+    ):
         logger.info("  [1m] %s: missing %s but xlsx fetched <%.0fh ago, backing off",
                     code, expected_yyyymmdd, REFETCH_MIN_INTERVAL_HOURS)
         stats.skipped_cached += 1

@@ -67,11 +67,11 @@ from downloads._common import (
     build_default_session,
     is_valid_file,
     resolve_out_dir,
+    service_urls,
     setup_logger,
 )
 from downloads.etf.huatai_pb._endpoints import (
     CHECKIN_FUND_CODES,
-    PCF_URL,
     TDBZ_LABEL_MAP,
     build_proxy,
     fetch_pcf_payload,
@@ -82,6 +82,11 @@ from downloads.etf.huatai_pb._endpoints import (
 logger = setup_logger("huatai_pb_composition")
 
 SERVICE = "downloads.etf.huatai_pb.composition"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+PCF_URL = URLS["pcf"]
 
 CSV_ENCODING = "utf-8-sig"
 # How many business days back the daily mode probes for a published PCF.
@@ -201,7 +206,8 @@ def download_composition(
                     stats.skipped_cached += 1
                     continue
                 payload = fetch_pcf_payload(
-                    session, proxy, code, day.isoformat(), logger=logger)
+                    session, proxy, code, day.isoformat(), service=SERVICE,
+                    logger=logger)
                 if payload is None:
                     stats.failed += 1
                     continue
@@ -220,7 +226,8 @@ def download_composition(
         got = False
         for day in probe_days:
             payload = fetch_pcf_payload(
-                session, proxy, code, day.isoformat(), logger=logger)
+                session, proxy, code, day.isoformat(), service=SERVICE,
+                logger=logger)
             if payload is None:
                 stats.failed += 1
                 break

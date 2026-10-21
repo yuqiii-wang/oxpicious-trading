@@ -90,6 +90,7 @@ from downloads._common import (  # noqa: E402
     antibot_config_for,
     resolve_out_dir,
     retry_policy_for,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -112,7 +113,11 @@ from _common._holidays_and_weekdays import (  # noqa: E402
 #              browser-profile rotation OFF — stable UA)
 SERVICE = "downloads.macro.zhihu.news"
 
-ZHIHU_SEARCH_URL = "https://developer.zhihu.com/api/v1/content/zhihu_search"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+
+ZHIHU_SEARCH_URL = URLS["zhihu_search_url"]
 DEFAULT_KEYWORD = "如何看待A股"
 DEFAULT_COUNT = 10
 DEFAULT_LOOKBACK = 5  # recent biz days force-refreshed each run
@@ -600,7 +605,7 @@ def _clean_author(v: Any) -> str:
 # first-level replies embedded in child_comments; both are flattened into
 # rows. No auth: plain browser-profile headers via the shared anti-bot proxy.
 # ----------------------------------------------------------------------------
-_COMMENT_API = "https://www.zhihu.com/api/v4"
+_COMMENT_API = URLS["comment_api"]
 
 _ANSWER_ID_RE = re.compile(r"/answer/(\d+)")
 _ARTICLE_ID_RE = re.compile(r"/p/(\d+)")

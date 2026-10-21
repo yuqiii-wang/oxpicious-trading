@@ -18,8 +18,11 @@
  * props) is inherited unchanged from SecClassificationNav.
  */
 import SecClassificationNav from "./SecClassificationNav";
+import type { PairNavEntry } from "./SecClassificationNav";
 import type { SectorNode, StrategyNode } from "@shared/types";
 import type { SxProps } from "@mui/material";
+
+export type { PairNavEntry };
 
 interface Props {
   sectors: SectorNode[];
@@ -48,6 +51,13 @@ interface Props {
   /** Per-industry "All <industry>" drop chips in the L3 row. Default true. */
   showAllIndustryChips?: boolean;
 
+  // ---- PAIR mode (opt-in pass-through; see SecClassificationNav) ----
+  pairModeAvailable?: boolean;
+  pairMode?: boolean;
+  onPairModeChange?: (on: boolean) => void;
+  pairEntries?: PairNavEntry[];
+  onPairEntriesChange?: (entries: PairNavEntry[]) => void;
+
   // ---- Style customization (passed through to SecClassificationNav) ----
   sx?: SxProps;
   chipSize?: "small" | "medium";
@@ -73,6 +83,11 @@ export default function SecClassificationNavMulti({
   selectedItemCodes = [],
   onMultiItemSelected,
   showAllIndustryChips = true,
+  pairModeAvailable,
+  pairMode,
+  onPairModeChange,
+  pairEntries,
+  onPairEntriesChange,
   sx,
   chipSize,
   density,
@@ -100,6 +115,11 @@ export default function SecClassificationNavMulti({
       selectedItemCodes={selectedItemCodes}
       onMultiItemSelected={onMultiItemSelected}
       showAllIndustryChips={showAllIndustryChips}
+      pairModeAvailable={pairModeAvailable}
+      pairMode={pairMode}
+      onPairModeChange={onPairModeChange}
+      pairEntries={pairEntries}
+      onPairEntriesChange={onPairEntriesChange}
       mutuallyExclusive={false}
       strategies={strategies}
       strategyId={strategyId}

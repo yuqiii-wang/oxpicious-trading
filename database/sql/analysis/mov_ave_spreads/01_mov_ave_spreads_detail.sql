@@ -3,11 +3,16 @@
 --                                             9 gap columns)
 --
 --  Supports multiple security types via the `sec_type` column
---  ('etf' | 'index' | 'stock'). ETF prices use COALESCE(stats.etf_adjustment.adj_close,
+--  ('etf' | 'index' | 'stock' | 'industry'). ETF prices use COALESCE(stats.etf_adjustment.adj_close,
 --  stats.etf_basic_stats.close); index prices use stats.index_basic_stats.close
 --  (indices have no adjustment table); stock prices use stats.stock_basic_stats.close
 --  (stock_adjustment / stock_tech_stats not yet available — stock rows will be
---  populated once those tables exist). MAs come from the corresponding
+--  populated once those tables exist); industry (sec_type=3, code = industry_id)
+--  prices use the REBASED-TO-100 composite OHLC of stats.industry_basic_stats
+--  (pool 'all' slice: price = mean_close, open/high/low = mean_*), with the
+--  MA/EMA columns computed by the pipeline itself over the composite series
+--  (industry has no *_tech_stats table; gap ratios are scale-invariant so the
+--  rebased composite is directly comparable). MAs come from the corresponding
 --  *_tech_stats table (ma5 / ma20 / ma60 / ma120 / ma255).
 --
 --  9 gap pairs (canonical order):
@@ -68,7 +73,7 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rebounds';
 --  without overflow for any realistic ETF / index / stock price.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_spreads_detail (
-    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code              TEXT         NOT NULL,
     date              DATE         NOT NULL,
 
@@ -150,7 +155,7 @@ SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail', 16);
 --
 --
 COMMENT ON TABLE  analysis.mov_ave_spreads_detail              IS 'MA-spread detail (WIDE format): one row per (code, sec_type, date) with 9 gap_value columns (5 Price/MA + 4 MA5/MA). sec_type ∈ {etf, index, stock}.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail.sec_type   IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.sec_type   IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.code         IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.date         IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma5    IS '5-trading-day moving average of trading_amount (yuan) per (sec_type, code). NUMERIC(24,4) matches source precision (stats.{etf_liquidity_margin,index_basic_stats,stock_liquidity_margin}.trading_amount) so broad-index daily turnover up to 10^20 yuan fits without overflow. NULL until 5 rows. NULL trading_amount values are treated as 0 (zero turnover) in the rolling sum but still counted in the W-row denominator, so a single NULL date no longer creates a W-day NaN gap.';

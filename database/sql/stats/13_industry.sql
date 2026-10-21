@@ -183,3 +183,32 @@ COMMENT ON COLUMN stats.industry_basic_stats.var_price      IS 'VARIANCE(rebased
 COMMENT ON COLUMN stats.industry_basic_stats.mean_pe        IS 'AVG(raw PE) across member indices in this pool_size slice on this date. Source: stats.index_valuation.pe. NULL PE values excluded from the mean; PE = 0 is treated as a no-data marker and likewise excluded (never averaged in as 0). NULL when no member indices have PE data on this date.';
 COMMENT ON COLUMN stats.industry_basic_stats.total_trading_amount IS 'SUM(stock_liquidity_margin.trading_amount) across the UNION of stocks from all member indices'' compositions (LATEST sec_composition snapshot per code, no temporal filter — same stock universe for all dates) in this pool_size slice on this date. Each stock counted ONCE (union, not sum-per-index). Source: stats.stock_liquidity_margin.trading_amount (in yuan). NULL when no stock trading_amount data is available for the union set on this date.';
 COMMENT ON COLUMN stats.industry_basic_stats.trading_amt_per_pct_change IS 'Intraday net-move liquidity ratio at the composite-slice level: total_trading_amount / (mean_close - mean_open), SIGNED — positive when the composite closed above its open, negative below (the sign carries the move direction). mean_open/mean_close are the rebased-to-100 composite OHLC (same units); total_trading_amount is the slice''s union-stock turnover (yuan). Zero move (mean_close = mean_open — flat slice day): denominator floored to 1.0, so the stored value equals the raw total trading amount (mov_ave_spread zero-denominator convention — a pragmatic floor, NOT a true ratio). NULL when any input is NULL (e.g. no stock amount data) or |value| >= 1e12 (NUMERIC(18,6) bound). Computed by builds.industry.';
+
+-- ----------------------------------------------------------------------------
+--  View: stats.industry_identity — the industry entities in the SAME
+--  (date, code, name) identity shape as stats.{etf,index,stock}_identity,
+--  derived from the pool-'all' (3) slice of industry_basic_stats (the
+--  slice every computable industry lands in).
+--
+--  A VIEW, not a table: the industry universe is fully derived from
+--  industry_basic_stats (built by builds.industry) — an identity TABLE
+--  would duplicate it and drift. The analysis consumers read it through
+--  the exact identity-table contract:
+--    • active-universe pre-filter (fetch_codes_with_recent_data_async —
+--      codes with a row in the last N trading days),
+--    • analysis missing-date detection (find_missing_analysis_dates —
+--      the UNION of identity dates forms the expected set),
+--    • per-code name lookup in the analysis codes-summary refreshes
+--      (analysis.mov_ave_spreads_codes / analysis.pe_codes LATERAL).
+--  code = industry_id (e.g. 'BANKS'), name = industry_label (e.g. '银行').
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW stats.industry_identity AS
+SELECT DISTINCT
+       ib.date,
+       ib.industry_id   AS code,
+       ib.industry_label AS name
+FROM stats.industry_basic_stats ib
+WHERE ib.pool_size = 3;
+
+COMMENT ON VIEW stats.industry_identity IS
+    'Industry identity view: one row per (date, industry_id) of the pool-''all'' (3) slice of stats.industry_basic_stats, reshaped to the stats.{etf,index,stock}_identity (date, code, name) contract (code = industry_id, name = industry_label). Derived — never INSERT directly; the population follows builds.industry. Consumed by the analysis pipelines (mov_ave_spread, pe_and_dividends) as sec_type ''industry'' (static.label_dim code 3) for the active-universe pre-filter, missing-date detection, and the codes-summary name lookup.';

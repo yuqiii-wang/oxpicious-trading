@@ -1,19 +1,19 @@
 /**
  * SignalPopulationToggles — the shared signal-history control strip:
- * the SIGNAL pick (the indicator family) + the event count + the
- * Analysis Advice button. (The OHLCV none/boost population toggle was
- * REMOVED 2026-10-16 with the boost twins' retirement: the boost's
- * tuned confidence lives on signal_rules.ohlcv_boost_conf, rendered by
+ * the SIGNAL pick (the indicator family) + the event count. (The OHLCV
+ * none/boost population toggle was REMOVED 2026-10-16 with the boost
+ * twins' retirement: the boost's tuned confidence lives on the rule
+ * cells' latest performance snapshot, rendered by
  * the rules panel — history carries ONE population per event, so there
  * is nothing left to pick. The episode-PASS toggle was removed earlier
- * the same day.)
+ * the same day. The Analysis Advice "A" icon was removed 2026-10-21
+ * with the analysis_advice table's retirement.)
  *
  * Applied to the HISTORY population (chart markers + history table
  * together); both history surfaces (the live expansion + the analysis
  * Recent Movements panel) render this one strip so they cannot drift.
  */
 import { Stack, ToggleButton, ToggleButtonGroup } from "@mui/material";
-import AnalysisAdviceButton from "../analysis-advice";
 import { SIGNAL_TYPE_LABELS } from "./families";
 
 export interface SignalPopulationTogglesProps {
@@ -27,11 +27,6 @@ export interface SignalPopulationTogglesProps {
   signalType?: string | null;
   signalTypeOptions?: string[];
   onSignalTypeChange?: (signalType: string) => void;
-  /** The Analysis Advice context — when provided, the strip renders the
-   *  shared "A" advice button right after the signal pick (the analysis
-   *  Short-Term Tech panel); the live surfaces pass nothing and render
-   *  no advice icon. Null signalType (no family picked yet) hides it. */
-  advice?: { secType: string; code: string; signalType: string | null };
 }
 
 export function SignalPopulationToggles({
@@ -39,7 +34,6 @@ export function SignalPopulationToggles({
   signalType,
   signalTypeOptions,
   onSignalTypeChange,
-  advice,
 }: SignalPopulationTogglesProps) {
   const showSignalPick = Boolean(
     signalTypeOptions && signalTypeOptions.length > 0 && onSignalTypeChange,
@@ -66,13 +60,6 @@ export function SignalPopulationToggles({
             </ToggleButton>
           ))}
         </ToggleButtonGroup>
-      )}
-      {advice && advice.signalType != null && (
-        <AnalysisAdviceButton
-          secType={advice.secType}
-          code={advice.code}
-          signalType={advice.signalType}
-        />
       )}
       <span style={{ fontSize: 11, opacity: 0.7 }}>
         {count} event{count === 1 ? "" : "s"}

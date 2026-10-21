@@ -390,6 +390,8 @@ export function derivePlotInfo(input: {
       notes: spec?.notes ?? [],
       product: spec?.product,
       dateSelectable,
+      insight: spec?.insight,
+      asOfDate: spec?.asOfDate,
     };
   } catch {
     // Unrecognized option shape — degrade to the minimal payload.
@@ -414,6 +416,8 @@ export function derivePlotInfo(input: {
           normalizeDateOrMonth(spec?.window?.end) ??
             normalizeDateOrMonth(spec?.window?.start),
         ),
+      insight: spec?.insight,
+      asOfDate: spec?.asOfDate,
     };
   }
 }

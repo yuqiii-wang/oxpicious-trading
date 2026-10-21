@@ -1,7 +1,8 @@
 """Wide -> LONG melt for the roof/floor level estimates table.
 
 The compute pipeline produces one (sec_type, code, date) frame with a
-roof_/floor_ column pair per (method, window); the target table
+roof_/floor_ column pair per (method, window) plus the per-pair
+breached_ flag columns; the target table
 analysis.mov_ave_spreads_roof_floor_estimates is LONG — one row per
 (sec_type, code, date, period, method). This boundary melt is fully
 vectorized: one slice + rename per (window, method) part, one concat,
@@ -23,6 +24,7 @@ from analysis.mov_ave_spread.config.roof_floor_estimate import (
     ESTIMATE_COLUMNS,
     ESTIMATE_METHOD_ORDER,
     ESTIMATE_WINDOWS,
+    breached_wide_columns,
 )
 from analysis.mov_ave_spread.roof_floor_estimate.methods import (
     ESTIMATE_METHOD_CODE,
@@ -40,8 +42,10 @@ def build_estimate_long_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
         Long frame with columns [sec_type, code, date, period, method,
-        today_close, roof_estimate, floor_estimate], ready for
-        ``csv_copy_from_frame_async``.
+        today_close, roof_estimate, floor_estimate,
+        is_recently_breached], ready for ``csv_copy_from_frame_async``
+        (the flag as python-bool — to_csv renders True/False, which
+        PostgreSQL BOOLEAN COPY accepts).
     """
     if df.empty:
         return pd.DataFrame(
@@ -55,11 +59,13 @@ def build_estimate_long_frame(df: pd.DataFrame) -> pd.DataFrame:
         for m in ESTIMATE_METHOD_ORDER:
             roof_col = f"roof_{m}_{w}d"
             floor_col = f"floor_{m}_{w}d"
+            flag_col = f"breached_{m}_{w}d"
             parts.append(
-                df[base + [roof_col, floor_col]]
+                df[base + [roof_col, floor_col, flag_col]]
                 .rename(columns={
                     roof_col: "roof_estimate",
                     floor_col: "floor_estimate",
+                    flag_col: "is_recently_breached",
                 })
                 .assign(
                     period=w,
@@ -71,6 +77,10 @@ def build_estimate_long_frame(df: pd.DataFrame) -> pd.DataFrame:
         ["sec_type", "code", "date", "period", "method"]
         + list(ESTIMATE_COLUMNS)
     ]
+    # The int64 0/1 flag becomes its DB BOOLEAN at the emit boundary.
+    long_df["is_recently_breached"] = (
+        long_df["is_recently_breached"].astype(bool)
+    )
 
     # Overflow guard on the numeric columns (whole-column ops; same
     # NUMERIC(18,6) safety net as the anchor table's melt).

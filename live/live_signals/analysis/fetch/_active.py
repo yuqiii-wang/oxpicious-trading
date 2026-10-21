@@ -8,10 +8,19 @@ row is current (the pipeline wipes and rewrites the family scope each
 run), one row per (code, sec_type, signal_type, signal_sub_type,
 trend, regime_state, action) cell, carrying its own action, bar
 definition (rule_params.bar_def) and confidence scale
-(rule_params.confidence) — plus the per-code market-regime label and
-the signal rules tier's own TREND classification recorded as breach
+    (rule_params.confidence) — plus the per-code market-regime label and
+    the signal rules tier's own TREND classification recorded as breach
 context. Plain SELECTs — the direction / decision live on the stored
-rows.
+rows. The starvation scale (a cell under its sample floor trades at
+min(n/floor, 1) of the confidence, 2026-10-19) is RECOMPUTED here
+since 2026-10-20 (the gate digest left the slimmed cell snapshot):
+the LATEST performance snapshot's n_episodes against the rule's own
+rule_params.gate.sample_floor constant — merged into the confidence
+dict like the base. The GATED PORTFOLIO CASCADE (the confidence
+INCREASE from a passing portfolio group) reads the PORTFOLIO tier:
+the strongest is_valid portfolio_signal_rules group claiming the
+cell's signal_rule_id, its latest history_portfolio_signal_performance
+snapshot's gate.conf_scale.
 """
 from __future__ import annotations
 
@@ -30,7 +39,26 @@ from _common.labels import (
 )
 
 from live.live_signals.analysis.fetch._values import SIGNAL_VALUE_SOURCE
-from live.live_signals.config import SIGNALS_TABLE, TREND_DAYS_TABLE
+from live.live_signals.config import (
+    PORTFOLIO_PERFORMANCE_TABLE,
+    PORTFOLIO_RULES_TABLE,
+    SIGNALS_TABLE,
+    SIGNAL_PERFORMANCE_TABLE,
+    TREND_DAYS_TABLE,
+)
+
+# The hedge_pairs family's SOURCED component stamps
+# (analysis.analysis_signals.engines.signal_families.hedge_pairs
+# .engine._ComponentRsiEntry): REAL mov_rsi cells (signal_type 0) at
+# the market + leg codes, POOLED on both axes — the portfolio tier's
+# SOURCE layer, whose history replay is deliberately dropped ("the
+# recorded events are the ORCHESTRATED composites'"). They are
+# orchestration inputs, never standalone live bars — and the
+# evaluator's pooled day-context match ('all' 4 matches any day state)
+# would otherwise wake them at exactly the live-checked codes
+# (HP_MARKET_CODE 000300 is a study index). Kept in step with the
+# shim's class name.
+ORCHESTRATION_ENTRIES = ("_ComponentRsiEntry",)
 
 
 async def fetch_regime_state(
@@ -53,7 +81,7 @@ async def fetch_regime_state(
         WHERE r.sec_type = $1 AND r.code = $2 AND r.date = $3
         LIMIT 1
         """,
-        sec_type, code, on_date,
+        SEC_TYPE_CODE[sec_type], code, on_date,
     )
     return row["regime"] if row is not None else 0
 
@@ -84,21 +112,31 @@ async def fetch_trend_state(
 
 async def fetch_active_signals(
     conn: Connection, sec_type: str, code: str,
+    as_of: datetime.date | None = None,
 ) -> list[dict]:
     """The code's ACTIVE RULE CELLS (the current threshold set): every
     analysis_signals.signal_rules row of the LIVE-WIRED families (the
     SIGNAL_VALUE_SOURCE keys — mov_rsi / bollinger; the options and
     ma_cross families are not live-evaluable and never ride this set).
     Each row carries its own action, its (trend, regime) cell key and
-    its SELF-ADAPTIVE prepared params — the bar definition
+    its CONSTANT rule definition — the bar definition
     (rule_params.bar_def: rolling_quantile for mov_rsi's per-code
     percentile tail / fixed_sigma for bollinger's ±k) and the
-    confidence scale (rule_params.confidence: base_pct amplified by
-    depth_factor over the breach depth, capped). The live tier decides
-    buy/sell from THESE, never from family logic. wait rows are
-    EXCLUDED — they are the strategy tier's not-trading-yet records
-    (options_wall's VRP-declined twin; the sample-STARVED cells since
-    2026-10-16), never a live bar."""
+    confidence SCALE (rule_params.confidence: depth_factor /
+    depth_cap). The confidence BASE is the cell's MEASURED dir_ave —
+    the latest history_signal_performance snapshot at-or-before
+    ``as_of`` (the 2026-10-19 split, slimmed 2026-10-20 to the cell's
+    own measure block; None as_of = the latest snapshot), merged
+    into the confidence dict here (the STARVATION scale RECOMPUTED
+    from the same snapshot's n_episodes + the rule's
+    gate.sample_floor constant — the digest left the slimmed snapshot;
+    the live evaluator applies it like the history writer does). The live tier decides buy/sell
+    from THESE, never from family logic. wait rows are EXCLUDED — they
+    are the strategy tier's observational records (options_wall's
+    VRP-declined twin; the starvation wait era ended 2026-10-19 —
+    under-floor cells now trade at a reduced confidence), never a live
+    bar; the hedge_pairs ORCHESTRATION stamps (_ComponentRsiEntry) are
+    excluded too — the portfolio source layer never fires standalone."""
     live_type_codes = [
         SIGNAL_TYPE_CODE[t] for t in sorted(SIGNAL_VALUE_SOURCE)
     ]
@@ -107,18 +145,68 @@ async def fetch_active_signals(
         f"       s.action, s.trend, s.regime_state, "
         f"       s.rule_params->'bar_def'    AS bar_def, "
         f"       s.rule_params->'confidence' AS confidence, "
-        f"       s.rule_params->>'window'    AS window "
+        f"       s.rule_params->>'window'    AS window, "
+        f"       perf.base_pct, perf.sample_scale, pf.portfolio_scale "
         f"FROM {SIGNALS_TABLE} s "
+        # the confidence base = the cell's measured dir_ave at the
+        # LATEST performance snapshot at-or-before the checked date (a
+        # --date replay uses the measurement known that day; the cell
+        # key equijoins the snapshot's PK minus its date). The
+        # STARVATION scale is RECOMPUTED here (2026-10-20, the gate
+        # digest left the cell snapshot with the combined-tier move):
+        # min(n_episodes / the rule's gate.sample_floor constant, 1)
+        # — NULL when the rule carries no floor (no haircut)
+        f"LEFT JOIN LATERAL ( "
+        f"    SELECT p.dir_ave_pct AS base_pct, "
+        f"           LEAST(p.n_episodes::float8 / NULLIF("
+        f"               (s.rule_params->'gate'"
+        f"                ->>'sample_floor')::float8, 0), "
+        f"               1.0) AS sample_scale "
+        f"    FROM {SIGNAL_PERFORMANCE_TABLE} p "
+        f"    WHERE p.code = s.code AND p.sec_type = s.sec_type "
+        f"      AND p.signal_type = s.signal_type "
+        f"      AND p.signal_sub_type = s.signal_sub_type "
+        f"      AND p.trend = s.trend "
+        f"      AND p.regime_state = s.regime_state "
+        f"      AND p.action = s.action "
+        f"      AND ($4::date IS NULL OR p.date <= $4::date) "
+        f"    ORDER BY p.date DESC LIMIT 1 "
+        f") perf ON TRUE "
+        # the GATED PORTFOLIO CASCADE (2026-10-20, re-homed by the
+        # cell-level redesign): the strongest PASSING portfolio group
+        # claiming this cell's signal_rule_id (an is_in_portfolio
+        # member), that group's LATEST audit snapshot's conf_scale —
+        # the confidence INCREASE from the portfolio tier; NULL = no
+        # passing group claimed the cell (the default — never a
+        # discount)
+        f"LEFT JOIN LATERAL ( "
+        f"    SELECT (q.gate->>'conf_scale')::float8 AS portfolio_scale "
+        f"    FROM {PORTFOLIO_RULES_TABLE} g "
+        f"    JOIN LATERAL ( "
+        f"        SELECT q.gate "
+        f"        FROM {PORTFOLIO_PERFORMANCE_TABLE} q "
+        f"        WHERE q.code = g.code "
+        f"          AND q.portfolio_type = g.portfolio_type "
+        f"          AND ($4::date IS NULL OR q.date <= $4::date) "
+        f"        ORDER BY q.date DESC LIMIT 1 "
+        f"    ) q ON TRUE "
+        f"    WHERE s.signal_rule_id = ANY(g.signal_rule_ids) "
+        f"      AND g.is_valid "
+        f"    ORDER BY (q.gate->>'conf_scale')::float8 DESC NULLS LAST "
+        f"    LIMIT 1 "
+        f") pf ON TRUE "
         f"WHERE s.sec_type = $1 AND s.code = $2 "
         f"  AND s.signal_type = ANY($3) "
         f"  AND s.action <> {ACTION_CODE['wait']} "
+        f"  AND s.rule_entry <> ALL($5::text[]) "
         f"ORDER BY s.signal_type, s.signal_sub_type, s.trend, "
         f"         s.regime_state, s.action",
         # the stored sec_type / signal_type columns are SMALLINT label
         # codes (the label-code contract) — the param carries the code
         # and the returned codes decode to the labels the rest of the
         # live tier speaks (SIGNAL_VALUE_SOURCE / the live row write)
-        SEC_TYPE_CODE[sec_type], code, live_type_codes,
+        SEC_TYPE_CODE[sec_type], code, live_type_codes, as_of,
+        list(ORCHESTRATION_ENTRIES),
     )
     out: list[dict] = []
     for r in rows:
@@ -139,6 +227,38 @@ async def fetch_active_signals(
         for key in ("bar_def", "confidence"):
             if isinstance(rec.get(key), str):
                 rec[key] = json.loads(rec[key])
+        # the confidence base (the measured dir_ave, PERCENT) joins the
+        # rule's scale here — rules_confidence_bp reads one confidence
+        # dict; a cell without a snapshot (pre-migration residue) keeps
+        # no base and the breach confidence falls to the 0 default
+        base_pct = rec.pop("base_pct", None)
+        if base_pct is not None:
+            conf = rec["confidence"] \
+                if isinstance(rec["confidence"], dict) else {}
+            rec["confidence"] = {**conf, "base_pct": base_pct}
+        # the starvation haircut (min(n/floor, 1), 2026-10-19;
+        # recomputed in the fetch since the 2026-10-20 slimming) — the
+        # evaluator multiplies it into the breach confidence exactly
+        # like the history writer's confidence_pct; None (no floor on
+        # the rule / no snapshot) means no haircut
+        sample_scale = rec.pop("sample_scale", None)
+        if sample_scale is not None:
+            conf = rec["confidence"] \
+                if isinstance(rec["confidence"], dict) else {}
+            rec["confidence"] = {**conf,
+                                 "sample_scale": float(sample_scale)}
+        # the GATED PORTFOLIO CASCADE (2026-10-20, re-homed by the
+        # cell-level redesign): the confidence INCREASE from the
+        # strongest passing portfolio group claiming the cell's
+        # signal_rule_id (the portfolio tables lateral); None = no
+        # passing group claimed the cell (the default 1.0 — never a
+        # discount)
+        portfolio_scale = rec.pop("portfolio_scale", None)
+        if portfolio_scale is not None:
+            conf = rec["confidence"] \
+                if isinstance(rec["confidence"], dict) else {}
+            rec["confidence"] = {**conf,
+                                 "portfolio_scale": float(portfolio_scale)}
         if rec["window"] is not None:
             rec["window"] = int(rec["window"])
         out.append(rec)

@@ -57,6 +57,7 @@ from downloads._common import (
     scan_present_dates_with_pattern,
     build_default_session,
     RunStats,
+    service_urls,
     sleep_sec_for,
 )
 # Reuse the well-tested date-parsing utilities from the repo-news downloader
@@ -71,17 +72,21 @@ from downloads.macro.pboc._common.parsing import (
 )
 
 
-PBOC_BASE = "https://www.pbc.gov.cn"
-
-# PBoC Open Market Announcements list page (货币政策司 → 公开市场业务 → 业务公告)
-OMA_LIST_BASE = "/zhengcehuobisi/125207/125213/125431/125469/"
-OMA_FILE_PREFIX = "pboc_oma"
-OMA_CATEGORY = "oma"
-
 PBOC_MIN_VALID_BYTES = 200
 # Anti-bot pacing source — the service's external_request_config JSON row
 # (sleep_sec=5, sleep_jitter=0.5, host tracking OFF).
 SERVICE = "downloads.macro.pboc.oma"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+PBOC_BASE = URLS["site"]
+
+# PBoC Open Market Announcements list page (货币政策司 → 公开市场业务 → 业务公告)
+OMA_LIST_BASE = URLS["oma_list_base"]
+OMA_FILE_PREFIX = "pboc_oma"
+OMA_CATEGORY = "oma"
+
 SLEEP_SEC = sleep_sec_for(SERVICE)
 EMPTY_PLACEHOLDER_SUFFIX = "_empty.md"
 
@@ -393,10 +398,10 @@ def detect_page_prefix(html: str) -> Optional[str]:
 
 def list_page_url(page: int, page_prefix_fmt: Optional[str] = None) -> str:
     if page <= 1:
-        return PBOC_BASE + OMA_LIST_BASE + "index.html"
+        return OMA_LIST_BASE + "index.html"
     if page_prefix_fmt:
-        return PBOC_BASE + OMA_LIST_BASE + page_prefix_fmt.format(page=page)
-    return PBOC_BASE + OMA_LIST_BASE + f"index_{page}.html"
+        return OMA_LIST_BASE + page_prefix_fmt.format(page=page)
+    return OMA_LIST_BASE + f"index_{page}.html"
 
 
 def _looks_like_oma_link(text: str) -> bool:
@@ -481,7 +486,7 @@ def fetch_list_page(
     # The list page URL itself (e.g. .../125469/index.html) matches
     # RE_DETAIL_SLUG because the directory "125469" is 7 digits. Exclude it
     # so we don't fetch the list page as an announcement.
-    list_page_full_url = PBOC_BASE + OMA_LIST_BASE + "index.html"
+    list_page_full_url = OMA_LIST_BASE + "index.html"
 
     soup = BeautifulSoup(html, "html.parser")
     items: List[OmaAnnouncementItem] = []
@@ -494,7 +499,8 @@ def fetch_list_page(
         if not href.startswith("http"):
             if not href.startswith("/"):
                 href = OMA_LIST_BASE + href
-            href = PBOC_BASE + href
+            else:
+                href = PBOC_BASE + href
         text = a.get_text(strip=True).strip('"“”').strip()
         if not text:
             continue

@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import pandas as pd
 
-from _common.labels import SEC_TYPE_CODE
+from _common.labels import POOL_SIZE_CODE, SEC_TYPE_CODE
 
 
 # Map sec_type → trading_amount source table.
 # Stock / ETF trading_amount lives in the liquidity_margin tables;
-# index trading_amount is in index_basic_stats directly.
+# index trading_amount is in index_basic_stats directly. Industry
+# trading_amount is the industry composite's total_trading_amount in
+# industry_basic_stats (pool_size=3 'all' slice — SUM of member-stock
+# turnover), renamed onto the (code, trading_amount) shape.
 _TRADING_AMT_TABLES: dict[str, str] = {
     "stock": "stats.stock_liquidity_margin",
     "etf":   "stats.etf_liquidity_margin",
@@ -49,6 +52,16 @@ async def fetch_trading_amt(conn, sec_types: list[str]) -> pd.DataFrame:
 
     parts: list[str] = []
     for sec_type in sec_types:
+        if sec_type == "industry":
+            parts.append(f"""
+                SELECT {SEC_TYPE_CODE['industry']}::smallint AS sec_type_id,
+                       industry_id AS code, date,
+                       total_trading_amount AS trading_amount
+                FROM stats.industry_basic_stats
+                WHERE pool_size = {POOL_SIZE_CODE['all']}
+                  AND total_trading_amount IS NOT NULL
+            """)
+            continue
         table = _TRADING_AMT_TABLES.get(sec_type)
         if table is None:
             continue

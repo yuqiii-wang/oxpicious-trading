@@ -4,24 +4,30 @@ analysis_signals.engines.signal_families.options_vix.engine).
 BUY THE PANIC, conditionally. The axes: corr20 (the PUBLISHED 20-
 session corr of spot return vs vol change — analysis.
 options_vol_index_vs_spot_price_corr, linearly interpolated per code
-onto every session IN-ENGINE; below −0.8 is roughly the 5th-percentile
-deep-fear tail), slope5 (the 5-day vol slope), z252 (the vol level
-z). The measured premise: corr alone ≈ baseline, spike alone weak —
-the INTERACTION is the edge.
+onto every session IN-ENGINE; below −0.75 is the deep-fear tail —
+LOOSENED 2026-10-19 from −0.80, the measured ovix_spike_wide coverage
+play: pooled n=21 dir_ave +1.17% positive), slope5 (the 5-day vol
+slope), z252 (the vol level z). The measured premise: corr alone ≈
+baseline, spike alone weak — the INTERACTION is the edge.
 
-  OvixSpikeEntry (buy)   ovix_spike      — corr20 < −0.8 & slope5 >
+  OvixSpikeEntry (buy)   ovix_spike      — corr20 < −0.75 & slope5 >
       +10% (the panic spike); ovix_spike_hivol — spike & z252 > 1
       (the interaction at its strongest).
-  OvixPanicPeakEntry (buy) — ovix_panic_peak, the vol30 value space:
-      vol escalates ≥ 5% past its prior 120-session max while slope5
-      is still > +10% AND spot sits below its 5-sessions-ago close —
-      the PANIC-PEAK escalation leg. The corr axis stays moderate in
-      V-spike crises (000852's Feb-2024 interp corr bottomed −0.74 vs
-      the −0.80 bar) and the K=8 episode absorb fires any level-based
-      condition at the crisis ONSET — this leg re-arms at the NEW
-      extreme (2024-02-05 for 000852/000300; pooled n=14 dir_ave
-      +3.55% hit 86%), and the downside leg separates fear from
-      upside euphoria (2024-10-08 stimulus top excluded).
+  OvixPanicPeakEntry — the vol30 value space, mirror directions off
+      ONE shared escalation bar (vol >= 5% past its prior 120-session
+      max while slope5 > +10%): ovix_panic_peak (buy) — spot below its
+      5-sessions-ago close, the PANIC-PEAK escalation leg. The corr
+      axis stays moderate in V-spike crises (000852's Feb-2024 interp
+      corr bottomed −0.74) and the K=8 episode absorb fires any
+      level-based condition at the crisis ONSET — this leg re-arms at
+      the NEW extreme (2024-02-05 for 000852/000300), and the
+      direction legs separate fear from euphoria.
+      ovix_euphoria_peak (sell, 2026-10-19) — the MIRROR: spot ABOVE
+      its 5-sessions-ago close, the blow-off-top exit the buy legs
+      deliberately exclude (2024-10-08 stimulus top: 000852 +8.15%
+      at the starvation x0.5; the other codes' euphoria cells
+      measured out — tops continue; sells exit-time, never
+      pooled-gated).
   OvixFearUnwindEntry (sell) — corr20 crosses back above −0.5 with a
       40-session deep-fear witness: "the panic premium is gone and the
       fear trade is over" (exit timing).
@@ -174,19 +180,26 @@ class OvixSpikeEntry(_OvixBase):
 
 
 class OvixPanicPeakEntry(_OvixBase):
-    """ovix_panic_peak — the vol30-space panic-PEAK escalation leg.
+    """ovix_panic_peak (buy) / ovix_euphoria_peak (sell) — the
+    vol30-value-space PEAK legs, mirror directions off ONE shared
+    escalation bar.
 
     vol escalates past its prior 120-session max by >= 5% while slope5
-    is still > +10% AND spot sits below its 5-sessions-ago close. The
+    is still > +10% AND spot sits on the leg's own side of its
+    5-sessions-ago close: BELOW it for the panic buy (the fear leg),
+    ABOVE it for the euphoria sell (2026-10-19, the mirror). The
     re-arm at the NEW extreme is the point: any level-based condition
     fires at the crisis ONSET and the K=8 absorb eats the rest of the
     crisis, so the peak (the day the user sees max VIX + min spot)
     never gets its own marker under the corr-gated configs — the corr
-    axis itself stays moderate through V-spike crises. The downside
-    leg separates downside fear from upside euphoria (the stimulus-day
-    vol spikes buy the top otherwise)."""
+    axis itself stays moderate through V-spike crises. The direction
+    legs separate downside fear (buy the panic) from upside euphoria
+    (the 2024-10-08 stimulus top: the euphoria exit measured +8.15%
+    on 000852 at the starvation x0.5 while the other codes' euphoria
+    cells measured out — tops continue, the asymmetry holding on the
+    mirror side too; sells are exit timing, never pooled-gated)."""
 
-    SUB_TYPES = ("ovix_panic_peak",)
+    SUB_TYPES = ("ovix_panic_peak", "ovix_euphoria_peak")
 
     def run(self, frame: pd.DataFrame) -> tuple[list[dict], list[dict]]:
         rules: list[dict] = []
@@ -196,6 +209,7 @@ class OvixPanicPeakEntry(_OvixBase):
         self._attach_vol_axes(frame)
         keys = ["code"]
         vol = frame["vol30"].astype("float64")
+        price = frame["price"].astype("float64")
         margin = cfg.OVIX_PEAK_ATH_MARGIN
 
         # the escalation bar: the prior ATH-window max (shifted 1 — the
@@ -211,25 +225,30 @@ class OvixPanicPeakEntry(_OvixBase):
         )
         bar = rmax * (1.0 + margin)
 
-        # the downside leg: close below the slope window's own anchor
+        # the direction legs: close vs the slope window's own anchor
         px_prev = grouped_shift(
-            frame.assign(_p=frame["price"].astype("float64")), keys,
+            frame.assign(_p=price), keys,
             ["_p"], out_names=["_pp"], periods=cfg.OVIX_PEAK_DN_WINDOW,
         )["_pp"]
-        dn = frame["price"] < px_prev
+        dn = price < px_prev
+        up = price > px_prev
 
-        mask = (vol > bar) \
-            & (frame["slope5"] > cfg.OVIX_SPIKE_SLOPE) \
-            & dn
-        mask = mask.fillna(False)
+        escalating = (vol > bar) \
+            & (frame["slope5"] > cfg.OVIX_SPIKE_SLOPE)
+        depth = ((vol / bar - 1.0) / margin).clip(lower=0.0)
+        common = {
+            "k": cfg.OVIX_REENTRY_EXIT_DAYS,
+            "value_col": "vol30",
+            "depth_factor": 0.0,
+        }
 
         r, h = self.run_cells(
             frame, "ovix_panic_peak", "buy",
             [Candidate(
                 key="panic_peak",
-                mask=mask,
+                mask=(escalating & dn).fillna(False),
                 reference=bar,
-                depth=((vol / bar - 1.0) / margin).clip(lower=0.0),
+                depth=depth,
                 params={"kind": "ovix_panic_peak",
                         "value_space": "vol_index_30d",
                         "bar_def": {"kind": "vol_ath_escalation",
@@ -240,8 +259,6 @@ class OvixPanicPeakEntry(_OvixBase):
                                     "downside_window":
                                         cfg.OVIX_PEAK_DN_WINDOW}},
             )],
-            k=cfg.OVIX_REENTRY_EXIT_DAYS, value_col="vol30",
-            depth_factor=0.0,
             extra_params={
                 "value_source": "analysis.options_vol_index.vol_index_30d",
                 "axes": {
@@ -253,6 +270,40 @@ class OvixPanicPeakEntry(_OvixBase):
                     "downside": {"window": cfg.OVIX_PEAK_DN_WINDOW},
                 },
             },
+            **common,
+        )
+        rules.extend(r)
+        history.extend(h)
+
+        r, h = self.run_cells(
+            frame, "ovix_euphoria_peak", "sell",
+            [Candidate(
+                key="euphoria_peak",
+                mask=(escalating & up).fillna(False),
+                reference=bar,
+                depth=depth,
+                params={"kind": "ovix_euphoria_peak",
+                        "value_space": "vol_index_30d",
+                        "bar_def": {"kind": "vol_ath_euphoria",
+                                    "ath_window":
+                                        cfg.OVIX_PEAK_ATH_WINDOW,
+                                    "ath_margin_pct": margin * 100,
+                                    "slope5_gt": cfg.OVIX_SPIKE_SLOPE,
+                                    "upside_window":
+                                        cfg.OVIX_PEAK_DN_WINDOW}},
+            )],
+            extra_params={
+                "value_source": "analysis.options_vol_index.vol_index_30d",
+                "axes": {
+                    "vol_ath_euphoria": {
+                        "window": cfg.OVIX_PEAK_ATH_WINDOW,
+                        "margin_pct": margin * 100,
+                    },
+                    "slope5": {"bar_pct": cfg.OVIX_SPIKE_SLOPE * 100},
+                    "upside": {"window": cfg.OVIX_PEAK_DN_WINDOW},
+                },
+            },
+            **common,
         )
         rules.extend(r)
         history.extend(h)
@@ -264,14 +315,15 @@ class OvixAtrBreakEntry(_OvixBase):
 
     The 2026-10-15 grind-down class the corr/ATH legs never cover: a
     fast vol repricing from a LOW base — slope5 fires (+28% that day)
-    while corr20 sits far above −0.80 and vol30 far below its 120-
+    while corr20 sits far above −0.75 and vol30 far below its 120-
     session max, so ovix_spike AND ovix_panic_peak both stay dark. The
     price leg is the day's own return in close-to-close ATR units
     (options_spot_daily has no OHLC — |ret| rolling mean is the ATR
     analog): a >= k-ATR DOWN day while the vol index is repricing is
     the expansion breakout, BUY the panic continuation-reversal. The
-    k bar is SELF-ADAPTIVE per cell from the {2, 2.5, 3} grid; the
-    ATR never includes the trigger day's own return (rolling, the
+    k bar is SELF-ADAPTIVE per cell from the {1.5, 2, 2.5, 3} grid
+    (k=1.5 added 2026-10-19 — the gate + pooled tier still judge it);
+    the ATR never includes the trigger day's own return (rolling, the
     day rides the window but a 2-3x multiple dominates it)."""
 
     SUB_TYPES = ("ovix_atr_break",)

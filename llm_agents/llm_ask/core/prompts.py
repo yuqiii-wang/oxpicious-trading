@@ -141,6 +141,40 @@ def chart_context_block(plot_info: Mapping[str, Any], theme_mode: Optional[str],
         kv = "、".join(f"{k}={v}" for k, v in state.items())
         lines.append(f"当前视图状态：{kv}")
 
+    # The insight metrics table (registered analysis items): the item's
+    # metrics of particular interest with values resolved from the
+    # analysis tables (Δ vs the previous date) or computed on demand —
+    # the numbers the answer should quote for the chosen security/date.
+    insight = plot_info.get("insight") or {}
+    insight_metrics = insight.get("metrics") or []
+    if insight_metrics:
+        tab_item = f"{insight.get('tab', '?')}.{insight.get('item', '?')}"
+        lines.append(f"关键指标（{tab_item}，取自分析表的实际曲线值）：")
+        for m in insight_metrics:
+            if not isinstance(m, dict):
+                continue
+            seg = f"- {m.get('label', m.get('metric', '?'))}"
+            value = m.get("value")
+            if value is None:
+                reason = m.get("unresolved")
+                seg += f"：无数据（{reason}）" if reason else "：无数据"
+                lines.append(seg)
+                continue
+            unit = m.get("unit") or ""
+            as_of = m.get("value_date")
+            seg += f"：{value}{unit}"
+            if as_of:
+                seg += f"（截至 {as_of}）"
+            delta = m.get("delta")
+            if isinstance(delta, (int, float)):
+                seg += f"，较前值变动 {delta:+g}{unit}"
+            if m.get("computed"):
+                seg += "（按需计算）"
+            desc = m.get("description")
+            if desc:
+                seg += f"——{desc}"
+            lines.append(seg)
+
     for s in plot_info.get("series") or []:
         if not isinstance(s, dict):
             continue

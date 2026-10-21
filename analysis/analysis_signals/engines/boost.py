@@ -4,17 +4,21 @@ rule_base as a dedicated collaborator class (the
 architecture-consolidation refactor, 2026-10-15 — the ABC composes it
 by delegation; a family opts in through the OHLCV_BOOST class flag).
 
-The boost is a MERGED confidence pass over each trigger's DAY-0
+The boost is a MERGED trust-score pass over each trigger's DAY-0
 anatomy (the OHLC pattern code, the (vol_state, px_speed) amount /
 price-speed cell, the tail depth z past the sub signal's own bar), its
 coefficients SELF-ADAPTIVE — derived per run, in code, from the
 family's own measured anchor population (no artifact). DISABLED BY
-DEFAULT (RuleEntry.OHLCV_BOOST = False). Since 2026-10-16 its ONLY
-product is the per-cell trust-weighted confidence base stamped on the
-rule rows (``ohlcv_boost_conf`` — the boost-twin history rows are
-retired: only confidence is tuned, never the population). The
-derivation constants carry the retired ohlcv_boost subsystem's
-methodology (ported, then merged 2026-10-15, extracted 2026-10-15).
+DEFAULT (RuleEntry.OHLCV_BOOST = False). Product history: per-cell
+``ohlcv_boost_conf`` stamps 2026-10-16..2026-10-20 (first the
+signal_rules column, then the performance snapshot after the split);
+RETIRED 2026-10-20 with the snapshot column (the combined-tier move —
+the boost was always a trust-weighted measurement, never a gate), the
+collaborator now leaving the per-run DERIVATION AUDIT ONLY (the
+finalize report's coefficients + ship-gate outcomes, logged by
+run_family). The derivation constants carry the retired ohlcv_boost
+subsystem's methodology (ported, then merged 2026-10-15, extracted
+2026-10-15).
 
 The math runs on a REAL host pandas frame (the facts are host dicts
 past the row-materialization boundary already) — building through the
@@ -29,7 +33,7 @@ import pandas as pd
 from scipy.optimize import lsq_linear
 
 from _common.df_utils import host_array, safe_columns
-from _common.labels import ACTION_CODE, SIDE_CODE
+from _common.labels import SIDE_CODE
 
 BOOST_MIN_POOL = 60          # per-side anchor floor to derive at all
 BOOST_MIN_TRAIN_N = 60       # a G2 fit split's anchor floor
@@ -55,15 +59,15 @@ class OhlcvBoost:
     """One entry-run's boost collaborator: collects the fired history
     rows' day-0 anchor facts (``note_anchor``), then ``finalize``
     derives the coefficients SELF-ADAPTIVELY from this run's own anchor
-    population and stamps the per-cell trust-weighted confidence base
-    onto the rule rows — ``ohlcv_boost_conf`` = sum(w*y)/sum(w) over the
-    cell's measurable triggers, w = max(1 + score/K, floor), the SAME
-    trust-weighted measurement the ship gates certify. Only confidence
-    is tuned, never the population — history carries NO boost rows (the
-    2026-10-16 twins retirement; the plain rows are the population of
-    record, the boost is NEVER a gate). Sides whose derivation fails
-    the ship gates (G1 improv / G2 expanding-year OOS / G3
-    top-quintile) stamp nothing — a NULL, reported, not forced. A no-op
+    population and reports the DERIVATION AUDIT (the coefficients + the
+    G1 improv / G2 expanding-year OOS / G3 top-quintile ship-gate
+    outcomes; run_family logs them). The per-cell trust-weighted
+    confidence stamp was RETIRED 2026-10-20 with the performance
+    snapshot's ohlcv_boost_conf column (the combined-tier move) — the
+    boost remains a measurement collaborator, never a gate: no history
+    rows are added or reweighted (the 2026-10-16 twins retirement; the
+    plain rows are the population of record). Sides whose derivation
+    fails the ship gates report the failure — never forced. A no-op
     when the family did not opt in or the frame carries no day-0
     axes."""
 
@@ -146,48 +150,13 @@ class OhlcvBoost:
                 }
         if not coefs:
             return rules_rows, history_rows, report
-        report["cells"] = self._stamp_boost_conf(rules_rows, coefs)
+        # the per-cell stamp was RETIRED with its column (the 2026-10-20
+        # slimming of history_signal_performance dropped ohlcv_boost_conf
+        # — the combined-tier move): the boost's product is the per-run
+        # DERIVATION AUDIT (the report's coefficients + ship-gate
+        # outcomes, logged by run_family); no cell payload is touched
+        report["cells"] = 0
         return rules_rows, history_rows, report
-
-    def _stamp_boost_conf(self, rules_rows: list[dict],
-                          coefs: dict[int, dict]) -> int:
-        """The per-cell trust-weighted confidence base onto the matching
-        rule rows: w per anchor fact (the derivation's scoring
-        semantics), then sum(w*y)/sum(w) over each cell's MEASURABLE
-        facts — the cell's dir_ave under the boost's own weighting, in
-        percent (the rule_params.confidence.base_pct scale). Only rows
-        whose (code, sub, trend, regime, action) match a passing side's
-        anchors get a value; the rest keep the engine's NULL."""
-        w = self._boost_weights(
-            getattr(pd, "_fsproxy_slow", pd).DataFrame(self.facts), coefs,
-        )
-        action_of_side = {
-            SIDE_CODE["bottom"]: ACTION_CODE["buy"],
-            SIDE_CODE["top"]: ACTION_CODE["sell"],
-        }
-        agg: dict[tuple, tuple[float, float]] = {}
-        for fact, wi in zip(self.facts, w):
-            if wi is None or not fact.get("ok", False):
-                continue
-            key = (str(fact["code"]), int(fact["sub_code"]),
-                   int(fact["trend"]), int(fact["regime"]),
-                   action_of_side[int(fact["side"])])
-            wy, wn = agg.get(key, (0.0, 0.0))
-            agg[key] = (wy + float(wi) * float(fact["y_bp"]),
-                        wn + float(wi))
-        values = {
-            key: round(wy / wn, 4)
-            for key, (wy, wn) in agg.items() if wn > 0
-        }
-        stamped = 0
-        for row in rules_rows:
-            key = (str(row["code"]), int(row["signal_sub_type"]),
-                   int(row["trend"]), int(row["regime_state"]),
-                   int(row["action"]))
-            if key in values:
-                row["ohlcv_boost_conf"] = values[key]
-                stamped += 1
-        return stamped
 
     def _attach_depth_z(self, frame: pd.DataFrame) -> pd.DataFrame:
         """The side-aligned depth z-scored within (code, sub_type) and
@@ -406,29 +375,6 @@ class OhlcvBoost:
         return {"legs": legs, "passed": len(legs) > 0
                 and pos > len(legs) / 2.0,
                 "years_positive": f"{pos}/{len(legs)}"}
-
-    def _boost_weights(self, facts: pd.DataFrame,
-                       coefs: dict[int, dict]) -> list[float | None]:
-        """w per fact row (None = the side carries no config — the row's
-        cell stamps nothing): the depth z within (code, sub_type) over
-        the fact population, the ladders through the same cell ->
-        marginal -> neutral fallbacks as the derivation."""
-        scored = self._attach_depth_z(facts)
-        w: list[float | None] = [None] * len(facts)
-        for side_code, spec in coefs.items():
-            idx = scored.index[scored["side"] == side_code]
-            if len(idx) == 0:
-                continue
-            sl = scored.loc[idx]
-            e = self._boost_edges(sl, spec)
-            score = self._boost_score(e, spec["coefs"], spec["use"])
-            weight = np.maximum(
-                1.0 + score / spec["k"], BOOST_WEIGHT_FLOOR,
-            )
-            for pos, wi in zip(idx.tolist(),
-                               host_array(weight).tolist()):
-                w[pos] = float(wi)
-        return w
 
 
 __all__ = ["OhlcvBoost"]

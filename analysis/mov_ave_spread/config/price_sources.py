@@ -18,7 +18,11 @@ boundary.
 from __future__ import annotations
 
 # Base table + price expression per sec_type (ETF uses the adjusted
-# close when available).
+# close when available). Industry composes a rename subquery over the
+# pool-'all' composite slice — industry_basic_stats carries
+# (industry_id, mean_*) columns while every consumer binds ``b.code`` /
+# ``b.close`` / ``b.is_ohl_estimated`` against the aliased base (the
+# plain projection inlines; PG pushes the code/close predicates in).
 PRICE_SOURCE = {
     "index": (
         "stats.index_basic_stats b",
@@ -34,14 +38,24 @@ PRICE_SOURCE = {
         "stats.stock_basic_stats b",
         "b.close",
     ),
+    "industry": (
+        "(SELECT industry_id AS code, date, "
+        " mean_close AS close, mean_open AS open, mean_high AS high, "
+        " mean_low AS low, total_trading_amount AS trading_amount, "
+        " FALSE AS is_ohl_estimated "
+        " FROM stats.industry_basic_stats WHERE pool_size = 3) b",
+        "b.close",
+    ),
 }
 
 # Trading-amount + margin-buy source per sec_type. Index turnover lives
 # on the base table and indices have NO margin data (NULL rz_buy);
 # ETF / stock turnover and rz_buy live on their *_liquidity_margin
 # tables (LEFT JOIN — a missing margin row NULLs trading_amount /
-# rz_buy). Close-less rows are excluded by the fetchers' close IS NOT
-# NULL predicate.
+# rz_buy). Industry mirrors index: the composite turnover is the base
+# subquery's trading_amount column (the slice's union-stock sum), and
+# there is no margin data. Close-less rows are excluded by the
+# fetchers' close IS NOT NULL predicate.
 AMT_SOURCE = {
     "index": (
         "",
@@ -63,14 +77,22 @@ AMT_SOURCE = {
         "m.rz_buy",
         "",
     ),
+    "industry": (
+        "",
+        "b.trading_amount",
+        "NULL::float8",
+        "",
+    ),
 }
 
 # The OHLC-estimated exclusion: rows whose open/high/low are SYNTHETIC
 # (is_ohl_estimated — the index/ETF OHLC estimated from constituents on
-# non-traded days) must never feed an OHLC-derived rule. All three base
-# tables carry the flag.
+# non-traded days) must never feed an OHLC-derived rule. All base
+# tables carry the flag; the industry base subquery projects a constant
+# FALSE (the composite mean_* columns carry no estimated rows).
 OHL_EST_FILTER = {
     "index": " AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
     "etf": " AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
     "stock": " AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
+    "industry": " AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
 }

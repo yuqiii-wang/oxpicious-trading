@@ -27,6 +27,7 @@ export type LabelDomain =
   | 'weighting'
   | 'rank_side'
   | 'pool_size'
+  | 'pair_grain'
   | 'px_speed'
   | 'vol_state'
   | 'board'
@@ -43,6 +44,7 @@ export type LabelDomain =
   | 'db_instance'
   | 'db_replication_state'
   | 'analysis_cache_kind'
+  | 'portfolio_type'
   | 'roof_floor_method'
   | 'rf_rebound_outcome';
 
@@ -58,7 +60,11 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // the sparse non-trend-split families, never a day state)
   trend: { top: 0, bottom: 1, rise: 2, fall: 3, all: 4, unknown: 5 },
   // analysis_signals family identifier (converted 2026-10-10)
-  signal_type: { mov_rsi: 0, bollinger: 1, ma_cross: 2, options_wall: 3, options_vix: 4, momentum: 5, rf_break: 6 },
+  // hp_rsi (8, 2026-10-18 two-layer merge): the hedge_pairs family's
+  // RSI-sourced orchestration layer — the components' existing rsi
+  // signal rules (type 0) are the source, orchestrated into
+  // hp_entry_legs_rsi / hp_exit_mkt_high / hp_catchup_rsi_hi
+  signal_type: { mov_rsi: 0, bollinger: 1, ma_cross: 2, options_wall: 3, options_vix: 4, momentum: 5, rf_break: 6, hedge_pairs: 7, hp_rsi: 8 },
   // the family config grid (converted 2026-10-11): SERIES codes
   // (curves) 0.., THRESHOLD codes (thresholds/history)
   // (series + 1) * 100 + width ordinal; the SINGLE-WIDTH retest
@@ -270,11 +276,71 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // ovix_atr_break (2026-10-16): the volatility-expansion breakout
     // (spot day-return in ATR units beyond k while vol slope5 fires)
     ovix_atr_break: 4306,
+    // ovix_euphoria_peak SELL (2026-10-19): the panic-peak MIRROR —
+    // exit timing on the blow-off top (vol > prior 120-session max x
+    // 1.05 & slope5 > +10% & spot ABOVE its 5-sessions-ago close; the
+    // upside-euphoria leg the buy legs exclude, 2024-10-08 the
+    // canonical catch)
+    ovix_euphoria_peak: 4307,
     // ma_cross breadth additions (2026-10-16): the market-level
     // breadth rules — the Zweig thrust (BUY) + the 9:1 up/down days
     ma_breadth_thrust: 5700,
     ma_9to1_up: 5701,
     ma_9to1_dn: 5702,
+    // hedge_pairs (2026-10-18, block 5800+): the discoveries of the
+    // long–long anti-correlated pair study — entry = broad-market
+    // drawdown gate x both legs' sigma-depth; harvest = the staged
+    // volatility-harvest exits on the pair ratio z (sell the
+    // relatively-high leg, then the laggard at its own high); stops
+    // = the beta stop + the hedge-regime break; regime_flip = the
+    // observational hedgeable turn-on
+    hp_entry_dd5_z1: 5800,
+    hp_entry_dd5_z2: 5801,
+    hp_entry_dd10_z1: 5802,
+    hp_entry_dd10_z2: 5803,
+    hp_harvest_z15: 5804,
+    hp_harvest_z20: 5805,
+    hp_catchup_z1: 5806,
+    hp_catchup_z2: 5807,
+    hp_stop_mkt_dd20: 5808,
+    hp_stop_mkt_dd30: 5809,
+    hp_stop_regime: 5810,
+    hp_regime_flip: 5811,
+    // the 2026-10-18 market-decoupling rework: both legs' own
+    // Short-Term-Tech RSI tail signals paired within ~5 days (entry),
+    // the laggard's own RSI high-tail (catch-up) — the market-drawdown
+    // entries / MA20-z catch-ups / beta stops above are RETIRED
+    hp_entry_legs_rsi: 5812,
+    hp_catchup_rsi_hi: 5813,
+    hp_exit_mkt_high: 5814,
+    // the 2026-10-19 more-triggers graduates: the rf washout entries
+    // (both legs' Donchian-floor witnesses within 5d; the _mkt twin
+    // adds the market's RSI 3pct capitulation witness), the deep
+    // hedgeable turn-on (offset rho <= -0.50), and the catch-up entry
+    // (the weak leg re-crossing its own MA60); the per-window trio
+    // 5815-5817 is RETIRED (2026-10-21 dedup — the window is a
+    // run_cells candidate, not an identity)
+    hp_entry_wash60: 5815,
+    hp_entry_wash120: 5816,
+    hp_entry_wash255: 5817,
+    hp_entry_wash120_mkt: 5818,
+    hp_entry_rho50: 5819,
+    hp_entry_catchup_reclaim60: 5820,
+    // the 2026-10-20 spread-rotation study's momentum tilt: the
+    // harvest's opposite pair — hp_mom_strong BUYs the strong leg,
+    // hp_mom_lag SELLs the laggard (the k grid {1.5, 2.0, 2.5} is
+    // the run_cells candidate set)
+    hp_mom_strong: 5821,
+    hp_mom_lag: 5822,
+    // the 2026-10-21 dedup's merged harvest (the z15/z20 pair's one
+    // most-semantic survivor — the |ratio z| bar is a run_cells
+    // candidate in bar_def.ratio_z); hp_regime_flip (5811) retired —
+    // hp_entry_rho50 is the hedgeable turn-on's one record
+    hp_harvest: 5823,
+    // the 2026-10-21 dedup's merged washout entry (the per-window
+    // trio's one most-semantic survivor — the W window is a
+    // run_cells candidate in bar_def.window)
+    hp_entry_wash: 5824,
   },
   weighting: { equal: 0, amt: 1 },
   rank_side: { HYPE: 0, DRAIN: 1 },
@@ -300,7 +366,8 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     greek_vega: 4,
   },
   contract_type: { index: 0, bond: 1 },
-  sec_type: { etf: 0, index: 1, stock: 2 },
+  sec_type: { etf: 0, index: 1, stock: 2, industry: 3 },
+  pair_grain: { index: 0, industry: 1 },
   attribution_type: { equal: 0, trading_amt: 1 },
   trade_side: { BUY: 0, SELL: 1 },
   // monitor.external_resource_audit (sub_type's domain is selected by
@@ -321,6 +388,7 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     gov: 11,
     pboc: 12,
     zhihu: 13,
+    sina: 14,
     other: 99,
   },
   ext_llm_provider: { zhipu: 0, other: 99 },
@@ -340,6 +408,11 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // analysis_signals.analysis_cache.kind — the generic
   // intermediate-result cache's tenant (which analysis owns the row)
   analysis_cache_kind: { boost_derivation: 0 },
+  // the kind of PORTFOLIO an analysis_signals.portfolio_signal_rules
+  // row groups (the portfolio tier's OWN vocabulary — what the code IS
+  // as a portfolio, not the signal family): 0 = the two-leg long–long
+  // negatively-correlated hedge pair ('A~B' composite code)
+  portfolio_type: { neg_corr_hedge_pair: 0 },
   // quantitative roof/floor level estimate methods
   // (analysis.mov_ave_spreads_roof_floor_estimates.method; median = the
   // cross-method consensus row)

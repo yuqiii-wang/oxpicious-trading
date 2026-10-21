@@ -31,6 +31,7 @@ from builds.etf.pipeline.writes import filter_missing_rows, write_split_tables
 from builds.etf.pipeline.composition_write import insert_composition
 from builds.etf.pipeline.quality import upsert_quality_metrics
 from builds._commons.board_map import stage_stock_boards, refresh_board_mix
+from builds._commons.margin_summary import sync_exchange_margin_summary_async
 
 import logging
 logger = logging.getLogger(__name__)
@@ -134,6 +135,15 @@ async def run(args) -> None:
                 if margin_stale_dates:
                     logger.info(f"    [DB] {len(margin_stale_dates)} margin-stale dates "
                           f"have CSV data — scheduled for margin repair")
+
+        # (2c) Exchange-level margin summary (analysis.exchange_margin_summary)
+        # — shared incremental sync, same contract as the stock build's
+        # step 2c. Independent of the OHLCV/detail-margin passes; not
+        # code-scoped (the table has no code dimension); only a
+        # whole-table --force truncates it.
+        await sync_exchange_margin_summary_async(
+            conn, force=args.force and not code_filter, forced_date=forced,
+        )
 
         # (3) Read ONLY missing-date source CSVs + query DB for history
         ohlcv_df, margin_df, adj_seeds = await load_source_frames(

@@ -14,8 +14,14 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "cninfo SZSE dividends; batch pause of 4200s (70min) after every 20 successful fetches.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "cninfo_dividend_url": "https://webapi.cninfo.com.cn/api/sysapi/p_sysapi1139",
+      "cninfo_origin": "https://webapi.cninfo.com.cn",
+      "cninfo_referer": "https://webapi.cninfo.com.cn/"
+    },
+    "notes": "cninfo SZSE dividends; batch pause of 4200s (70min) after every 20 successful fetches; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/stock/szse/dividend/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

@@ -30,7 +30,7 @@ import {
 } from "@/lib/ohlc";
 import { fetchIndexIntraday5min, invalidateCacheForPrefix, invalidateCacheForUrl } from "@/lib/api-client";
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import {
   MA20_COLOR,
@@ -59,9 +59,12 @@ interface Props {
   /** Optional callback fired when the user clicks ANY date on the chart
    *  (not just intraday-enabled dates). */
   onDateClick?: (date: string) => void;
+  /** Insight-registry item for the Ask AI metrics table — the Dividends
+   *  page overrides the PE default. */
+  insightPage?: { tab: string; page: string };
 }
 
-export default function IndexPanel({ index, onDateClick }: Props) {
+export default function IndexPanel({ index, onDateClick, insightPage = INSIGHT_PAGES.peBaseline }: Props) {
   const themeMode = useChartThemeMode();
   const allRows = index.rows;
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
@@ -418,6 +421,7 @@ export default function IndexPanel({ index, onDateClick }: Props) {
   // screen. Must stay above the is_dummy early return (hook).
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: insightPage,
       intro:
         `Daily chart of index ${index.code} ${index.name}: ` +
         (hasOhlc ? "OHLC candles" : "a close line") +
@@ -446,7 +450,7 @@ export default function IndexPanel({ index, onDateClick }: Props) {
         "Clicking a date that has 5-min intraday bars (pointer cursor) expands the intraday chart below.",
       ],
     }),
-    [index.code, index.name, hasOhlc, ohlcMode],
+    [index.code, index.name, hasOhlc, ohlcMode, insightPage],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${index.code} · ${index.name}`,

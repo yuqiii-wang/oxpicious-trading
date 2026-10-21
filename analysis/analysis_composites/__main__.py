@@ -24,7 +24,10 @@ Modes (mirroring analysis.industry_sentiments.corr):
     end at the latest calendar date (find_missing_offset_window_ends)
     — and (re)upserts only those. The daily increment therefore only
     ever touches the span between the last frozen stride point and the
-    latest date. Superseded trailing rows are deleted. No truncate.
+    latest date. Source industries with NO row at all for the benchmark
+    (newly classified, e.g. invisible to the table-grain stride
+    coverage) additionally trigger a full-history HEAL of all their
+    pairs' windows. Superseded trailing rows are deleted. No truncate.
 
   --force:
     Truncates the table, then recomputes and inserts ALL rows (full
@@ -167,20 +170,31 @@ class CompositesAnalysis(DataAnalysis):
             for bench in self.benchmarks:
                 logger.info(f"\n[0/1] Detecting missing offset-corr windows for "
                       f"benchmark {bench}...")
-                target_dates, load_from = (
+                target_dates, load_from, missing_inds = (
                     await find_missing_offset_window_ends(conn, bench)
                 )
+                if missing_inds:
+                    logger.info(f"    -> {len(missing_inds)} source industries "
+                          f"absent from the table "
+                          f"({', '.join(sorted(missing_inds))}) — healing "
+                          f"with a full-history load")
+                    # Heal pairs' windows span the whole history — a
+                    # bounded load would blank their early windows.
+                    load_from = None
                 logger.info(f"    -> {len(target_dates)} window ends to "
                       f"(re)compute for {TABLE_OFFSETS} (benchmark={bench})"
                       + (f"; bounded load from {load_from.isoformat()}"
                          if load_from else ""))
-                if not target_dates:
+                if not target_dates and not missing_inds:
                     logger.info(f"    -> benchmark {bench} is up to date; "
                           f"nothing to do.")
                     continue
                 await run_opposite_correlations(
-                    conn, target_dates=target_dates, load_from=load_from,
+                    conn,
+                    target_dates=target_dates or None,
+                    load_from=load_from,
                     benchmarks=(bench,),
+                    heal_industries=missing_inds or None,
                 )
 
 

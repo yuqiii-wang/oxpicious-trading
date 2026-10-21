@@ -14,8 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "CFFEX monthly stats; all anti-bot toggles on.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "historysj_base": "http://www.cffex.com.cn/sj/historysj",
+      "referer": "http://www.cffex.com.cn/cn/lssjxz.html"
+    },
+    "notes": "CFFEX monthly stats; all anti-bot toggles on. URLs migrated from the module's inline constants 2026-10-17 (historysj_base is the monthly-zip path prefix) - code reads the urls object via service_urls().",
     "source_ref": "downloads/futures/cffex/archive/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

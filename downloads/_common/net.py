@@ -29,8 +29,8 @@ _common/request_config.py) whenever a proxy is built with
 ``AntiBotProxy(service=...)``; a proxy built with an explicit
 ``AntiBotConfig`` keeps every value the caller passed. The DEFAULT_*
 constants below are the last-resort fallback for services with neither
-their own JSON file nor a usable default.json row — and stay exported
-for backward compatibility.
+their own JSON file nor a usable default.json row (mirrored by
+_common.request_config's FALLBACK_* — one numeric source).
 """
 from __future__ import annotations
 
@@ -60,15 +60,10 @@ DEFAULT_TIMEOUT: Tuple[Optional[float], Optional[float]] = (
 # Shared default sleep seconds between HTTP requests for anti-bot protection.
 # Fallback only — the runtime source is the external_request_config JSON tree
 # (see module docstring); individual downloaders resolve their per-service
-# cadence from it via sleep_sec_for / AntiBotProxy(service=...).
+# cadence from it via sleep_sec_for / AntiBotProxy(service=...). The former
+# SHORT/LONG/VERY_LONG/SUPER_LONG interval constants are gone: each service's
+# cadence lives in its own external_request_config JSON row.
 DEFAULT_SLEEP_SEC = FALLBACK_SLEEP_SEC
-DEFAULT_SHORT_SLEEP_SEC = 8.0
-# Long sleep for aggressive anti-bot sites (e.g. cninfo, SSE dividend endpoint
-# when called at quarterly cadence). 90s between requests makes a full ETF-held
-# sweep take ~hours but is the safest cadence for sites that block on volume.
-LONG_SLEEP_INTERVAL = 90.0
-VERY_LONG_SLEEP_INTERVAL = 300.0
-SUPER_LONG_SLEEP_INTERVAL = 600.0
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

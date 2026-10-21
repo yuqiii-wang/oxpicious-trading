@@ -44,6 +44,12 @@ ESTIMATE_CHANNEL_MIN_OBS = 3
 # boll method: population σ multiplier around the window SMA.
 ESTIMATE_BOLL_K = 2.0
 
+# is_recently_breached span (trading days): the flag marks a row whose
+# LAST `ESTIMATE_BREACH_SPAN_DAYS` closes ALL sit beyond the estimate
+# line AS IT STOOD that many trading days ago (the fixed d−5 level per
+# (code, period, method) — roof side above, floor side below).
+ESTIMATE_BREACH_SPAN_DAYS = 5
+
 # DB schema (LONG format): one row per (sec_type, code, date, period,
 # method) — the value columns in table order (after the PK columns
 # sec_type, code, date, period, method). The internal compute pipeline
@@ -51,7 +57,9 @@ ESTIMATE_BOLL_K = 2.0
 # (method, window) on a (sec_type, code, date) frame) and melts to this
 # long schema only at the DB-write boundary (roof_floor_estimate/
 # long_frame.build_estimate_long_frame).
-ESTIMATE_COLUMNS = ("today_close", "roof_estimate", "floor_estimate")
+ESTIMATE_COLUMNS = (
+    "today_close", "roof_estimate", "floor_estimate", "is_recently_breached",
+)
 
 
 def estimate_wide_columns(w: int) -> tuple:
@@ -64,8 +72,19 @@ def estimate_wide_columns(w: int) -> tuple:
     )
 
 
+def breached_wide_columns(w: int) -> tuple:
+    """Wide per-(method, window) breach-flag column names:
+    breached_{m}_{w}d (int64 0/1 riding the frame; python bool at the
+    long-frame melt boundary)."""
+    return tuple(f"breached_{m}_{w}d" for m in ESTIMATE_METHOD_ORDER)
+
+
 ESTIMATE_WIDE_COLUMNS = tuple(
     c for w in ESTIMATE_WINDOWS for c in estimate_wide_columns(w)
+)
+
+ESTIMATE_BREACHED_WIDE_COLUMNS = tuple(
+    c for w in ESTIMATE_WINDOWS for c in breached_wide_columns(w)
 )
 
 ESTIMATE_DESCRIPTION = (
@@ -89,7 +108,12 @@ ESTIMATE_DESCRIPTION = (
     "residual σ (NULL under 3 valid closes). boll: SMA(period) ± 2 × "
     "population σ of close. median: the NaN-skipping median of the five "
     "methods per (date, period) — the cross-method consensus. "
-    "today_close is the close on `date` (estimate reference). Source: "
+    "today_close is the close on `date` (estimate reference). "
+    "is_recently_breached marks the level-breach state of the line AS IT "
+    "STOOD 5 trading days ago: TRUE when ALL of the row's last 5 trading "
+    "days closed beyond that fixed d−5 level (roof side above it / floor "
+    "side below it; FALSE otherwise — short history, NULL d−5 level, or "
+    "any non-breach day). Source: "
     "same DataFrame as the mov_ave_spread parent pipeline (no second DB "
     "round-trip). The sec_type column discriminates the source universe "
     "('etf' | 'index' | 'stock')."

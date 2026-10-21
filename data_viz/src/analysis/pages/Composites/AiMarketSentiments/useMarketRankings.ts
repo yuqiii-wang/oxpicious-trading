@@ -2,23 +2,29 @@
  * Market-mode feed scope for the Market Sentiments by AI and News page —
  * the LATEST month's top-N HYPE + top-N DRAIN industries from
  * analysis.industry_hypes_and_drains (the same seasonal rankings the
- * Market Trend plot's "Hypes & Drains" sub-view renders). Fetched lazily
- * on first entry into market mode (and on Refresh) with the plot's default
- * parameters.
+ * Market Trend plot's "Hypes & Drains" sub-view renders), PLUS the
+ * broad-market tag the daily ai_daily summary QA stores under (see
+ * MARKET_FEED_BROAD_INDUSTRY_ID — the rankings never contain it). Fetched
+ * lazily on first entry into market mode (and on Refresh) with the plot's
+ * default parameters.
  */
 import { useEffect, useMemo, useState } from "react";
 import { fetchIndustryHypesAndDrains } from "@/lib/api-client";
 import { DEFAULT_ROLLING_DAYS } from "@/analysis/pages/IndustrySentiments/constants";
 import type { IndustryHypesAndDrainsResponse } from "@shared/types";
-import { MARKET_TOP_BENCHMARK } from "./constants";
+import {
+  MARKET_FEED_BROAD_INDUSTRY_ID,
+  MARKET_TOP_BENCHMARK,
+} from "./constants";
 
 /** One seasonal_rankings row. */
 type HdRow = IndustryHypesAndDrainsResponse["seasonal_rankings"][number];
 
-/** The latest season's top-N rows, both sides. Null while the rankings
- *  haven't loaded (the feed fetch is deferred — never silently unscoped);
- *  a loaded-but-empty ranking yields ids: [] which scopes the feed to an
- *  EMPTY set (present-but-empty industry_ids matches nothing). */
+/** The latest season's top-N rows, both sides (ids + the broad-market
+ *  tag). Null while the rankings haven't loaded (the feed fetch is
+ *  deferred — never silently unscoped); a loaded-but-empty ranking still
+ *  carries the broad tag, so the feed shows the daily broad-market QA
+ *  rather than the whole corpus. */
 export interface MarketRanked {
   season: string | null;
   hypes: HdRow[];
@@ -77,18 +83,23 @@ export function useMarketRankings(
       season,
       hypes,
       drains,
-      ids: [...new Set([...hypes, ...drains].map((r) => r.industry_id))],
+      ids: [
+        ...new Set([...hypes, ...drains].map((r) => r.industry_id)),
+        MARKET_FEED_BROAD_INDUSTRY_ID,
+      ],
     };
   }, [mode, hdData, marketTopN]);
 
   const marketLabel = useMemo(() => {
     if (!marketRanked) return "市场 Top…";
+    // 大盘 has no ranking row but IS in scope (the daily broad-market QA).
     const labels = [
       ...new Set(
         [...marketRanked.hypes, ...marketRanked.drains].map(
           (r) => r.industry_label.split("  ")[0] || r.industry_label,
         ),
       ),
+      "大盘",
     ];
     return [
       `市场 Top ${marketTopN}`,

@@ -64,6 +64,18 @@ INTERVAL_DAYS = 20
 # Minimum overlapping dates for a (pair, pool) to be materialized at all.
 MIN_OVERLAP = min(WINDOWS)
 
+# Re-emit grace (trading days) for recently COMPLETED stride windows: a
+# stride start whose window END is within this many trading days of the
+# calendar frontier is re-targeted on every run — like the trailing
+# window, not frozen. Late-landing source rows (cross-border indices
+# whose CSI close rows arrive a day+ behind) make additional pairs valid
+# only AFTER the stride start is already table-grain covered, so the
+# frozen coverage check alone never re-emits those pairs (2026-10-17
+# study: the stride window ending 2026-10-16 carried only C(72,2) of
+# C(106,2) pairs). Cost: at most one stride start per W inside the grace
+# window — roughly doubling the daily trailing-refresh upsert volume.
+RECENT_STRIDE_GRACE_DAYS = 10
+
 # ---------------------------------------------------------------------------
 #  Sources
 # ---------------------------------------------------------------------------

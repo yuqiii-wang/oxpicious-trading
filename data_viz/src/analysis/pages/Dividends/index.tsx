@@ -35,6 +35,7 @@ export default function DividendsPage() {
       backLabel="back to commons"
       subtitle={(headerLabel) => `${headerLabel} — per-security dividends view: the shared baseline plot (ETF/Stock mark ex-dividend dates as gold diamonds on the price chart). Same security universe as the PE page; no streaks card here (the dividend_yield streak tables were removed).`}
       themesSources={VALUATION_THEMES_SOURCES}
+      secTypes={["etf", "index", "stock", "industry"]}
       onInvalidateCache={invalidateValuationCache}
       fetchCodes={fetchValuationPageCodes}
       emptyNoun="dividends data"

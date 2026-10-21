@@ -23,9 +23,10 @@ Usage:
   python -m builds.market_regimes --force           truncate + full recompute
 
 Prerequisite: stats.{etf,index,stock}_{identity,basic_stats} +
-{etf,stock}_liquidity_margin (+ stats.etf_adjustment) populated by the
-builds; then re-run analysis.analysis_forecasts / analysis_signals to
-re-emit the regime-split rows.
+{etf,stock}_liquidity_margin (+ stats.etf_adjustment) and the industry
+composite stats.industry_basic_stats (pool_size = 3 'all' slice)
+populated by the builds; then re-run analysis.analysis_forecasts /
+analysis_signals to re-emit the regime-split rows.
 
 The :class:`MarketRegimesBuild` entry class (a :class:`DataBuild`
 subclass) owns the runtime lifecycle + the DB connection/pool lifecycle
@@ -43,7 +44,7 @@ from _common.data_build import DataBuild
 class MarketRegimesBuild(DataBuild):
     """``python -m builds.market_regimes`` — lifecycle + delegation."""
 
-    title = "BUILD MARKET REGIMES (ETF + INDEX + STOCK)"
+    title = "BUILD MARKET REGIMES (ETF + INDEX + STOCK + INDUSTRY)"
     component = "market_regimes"
     max_concurrent: int = 20
 

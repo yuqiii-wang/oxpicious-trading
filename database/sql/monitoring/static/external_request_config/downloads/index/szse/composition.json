@@ -14,8 +14,12 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "SZSE index composition, per page.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "szse_index_api": "http://www.szse.cn/api/report/ShowReport/data"
+    },
+    "notes": "SZSE index composition, per page.; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/index/szse/composition/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

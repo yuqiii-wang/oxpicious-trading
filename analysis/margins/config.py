@@ -42,11 +42,13 @@ MIN_ETF_DAILY_MARGIN_YUAN = 1_000_000
 # Maps each sec_type to the list of tables whose DISTINCT date column
 # forms the "expected" set. For etf/stock these are the raw margin tables;
 # for index it's the margin_index_series TABLE (built by Python
-# vectorization — see build_margin_index_series).
+# vectorization — see build_margin_index_series); for industry it's the
+# margin_industry_stats TABLE (the SUM aggregate the industry curve reads).
 SEC_TYPE_SOURCE_TABLES: dict[str, list[str]] = {
     "etf": [SRC_TABLE_ETF],
     "stock": [SRC_TABLE_STOCK],
     "index": [TABLE_INDEX_SERIES],
+    "industry": [TABLE_INDUSTRY_STATS],
 }
 
 # ---- margin_tech_stats: numeric columns for sanitize_for_db_insert ------
@@ -65,15 +67,19 @@ TECH_STATS_INSERT_COLUMNS: list[str] = [
     "margin_balance_slope_zscore_20d",
 ]
 
-# ---- margin_industry_stats: insert columns (reduced — sums only) --------
+# ---- margin_industry_stats: insert columns (sums + member norms) --------
 INDUSTRY_STATS_INSERT_COLUMNS: list[str] = [
     "date", "industry_id", "industry_label",
     "stock_margin_balance", "etf_margin_balance",
     "stock_margin_buy", "etf_margin_buy",
+    "stock_margin_balance_norm", "etf_margin_balance_norm",
+    "stock_margin_buy_norm", "etf_margin_buy_norm",
 ]
 INDUSTRY_STATS_NUMERIC_COLS: list[str] = [
     "stock_margin_balance", "etf_margin_balance",
     "stock_margin_buy", "etf_margin_buy",
+    "stock_margin_balance_norm", "etf_margin_balance_norm",
+    "stock_margin_buy_norm", "etf_margin_buy_norm",
 ]
 
 # ---- margin_index_series: insert columns (Python-vectorized build) -------
@@ -92,10 +98,17 @@ TECH_STATS_DESCRIPTION: str = (
     "Per-(sec_type, code, date) regime-detection input for "
     "analysis.margin_changes trend detection: margin_balance_slope_ma5 "
     "(segmentation signal) + margin_balance_slope_zscore_20d "
-    "(significance filter). sec_type ∈ {etf, stock, index} ('index' "
-    "aggregated from analysis.margin_index_series TABLE). RONGZI only. "
-    "Built by analysis.margins (truncate-then-recompute); all INSERTs in "
-    "Python per project rule."
+    "(significance filter). SECTIONED (2026-10-19): the curve is cut at "
+    "null-balance gaps (first valid row after a 0/NULL run) and at "
+    "contributing-membership changes on aggregate curves (industry "
+    "member count, index n_with_balance) — the daily slope is NULL on a "
+    "boundary row and the MA5/MA20/STD20 windows never mix slopes from "
+    "different sections, so no rise/drop is attributed across a "
+    "boundary. sec_type ∈ {etf, stock, index, industry} "
+    "('index' aggregated from analysis.margin_index_series TABLE; "
+    "'industry' from the margin_industry_stats SUM aggregate — "
+    "code = industry_id). RONGZI only. Built by analysis.margins "
+    "(truncate-then-recompute); all INSERTs in Python per project rule."
 )
 
 INDEX_SERIES_DESCRIPTION: str = (
@@ -112,11 +125,19 @@ INDEX_SERIES_DESCRIPTION: str = (
 )
 
 INDUSTRY_STATS_DESCRIPTION: str = (
-    "Per-(date, industry_id) SUM aggregation of stock AND ETF RONGZI (融资) "
-    "margin flows: stock/etf margin_balance + margin_buy. Drives the "
-    "margin-trends themes industry universe. RONGZI only. Built by "
-    "analysis.margins (truncate-then-recompute); all INSERTs in Python per "
-    "project rule."
+    "Per-(date, industry_id) aggregation of stock AND ETF RONGZI (融资) "
+    "margin flows: stock/etf margin_balance + margin_buy SUMs plus the "
+    "*_norm member AVERAGES (AVG rz_* over members with a non-NULL "
+    "non-zero value that date — the per-member-normalized curve behind "
+    "the Margin Trends raw-vs-normalized toggle, plotted as "
+    "SUM(stock_norm+etf_norm)). A 0 SUM is stored as NULL — 0/NULL means "
+    "no member contributed on that date (missing data), never a genuine "
+    "zero-margin day — so the UI series breaks the line instead of "
+    "dipping to 0. Drives the margin-trends themes industry universe AND "
+    "the 'industry' attribution series (sec_type='industry', "
+    "SUM(stock+etf) = the industry's own margin curve) + trend detection. "
+    "RONGZI only. Built by analysis.margins (truncate-then-recompute); "
+    "all INSERTs in Python per project rule."
 )
 
 # ---- analysis.analysis_identity registration -----------------------------

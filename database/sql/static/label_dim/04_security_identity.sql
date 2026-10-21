@@ -7,17 +7,19 @@
 --  stats.sec_owners (sec_owner_type), stats.futures_identity +
 --  analysis.futures_gap_quintiles (contract_type), stats.options_terms
 --  + the analysis.options_* tables (option_type), the analysis.mov_ave*
---  family and monitor.src_data_audit (sec_type); skew_type is PENDING
+--  family, analysis.pe_and_dividends, and monitor.src_data_audit
+--  (sec_type); skew_type is PENDING
 --  (analysis.options_skewness_stats / live.options_intraday_skewness).
 -- ============================================================================
 
 INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- sec_type: security class (converted in the analysis.mov_ave*
-    -- family + the analysis_signals tables — other sec_type columns
-    -- keep TEXT, see 01_label_dim.sql header)
+    -- family + analysis.pe_and_dividends + the analysis_signals tables
+    -- — other sec_type columns keep TEXT, see 01_label_dim.sql header)
     ('sec_type',   0, 'etf',   0),
     ('sec_type',   1, 'index', 1),
     ('sec_type',   2, 'stock', 2),
+    ('sec_type',   3, 'industry', 3),
     -- board: listing board
     ('board',      0, 'MAIN', 0),
     ('board',      1, 'STAR', 1),

@@ -9,6 +9,9 @@ Orchestrates the margin trend detection pipeline:
      once up front) is equality-joined onto the daily rows inside
      detection, and Σ trading_amount per episode yields the
      rz_buy_vs_trading_amt_ratio (no merge_asof — cudf lacks it).
+     Detection is SECTIONED (see detection.py): episodes never span a
+     null-balance gap or a contributing-membership change on aggregate
+     curves (industry / index).
   2. Truncate ``analysis.margin_changes`` and COPY-insert the final
      episodes DataFrame.
   3. Upsert the ``margin_changes`` row in ``analysis.analysis_identity``.

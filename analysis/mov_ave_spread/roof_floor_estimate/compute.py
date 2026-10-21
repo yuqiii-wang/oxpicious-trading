@@ -8,6 +8,10 @@ compute_estimate_columns(df) adds, to the step frame (sorted by
       for every method in ESTIMATE_METHOD_ORDER and every window w in
       ESTIMATE_WINDOWS — the estimated resistance / support LEVEL at
       each row's date (float64, NaN where the method has no level).
+  breached_{method}_{w}d
+      for the same grid — int64 0/1, TRUE (1) when ALL of the last
+      ESTIMATE_BREACH_SPAN_DAYS closes sit beyond the fixed d−n line
+      (methods/recent_breach).
 
 Method order (the median needs the five base methods first):
 trendline -> donchian -> quantile -> channel -> boll -> median.
@@ -18,6 +22,7 @@ import pandas as pd
 
 from _common.df_utils import safe_columns
 from analysis.mov_ave_spread.config.roof_floor_estimate import (
+    ESTIMATE_BREACHED_WIDE_COLUMNS,
     ESTIMATE_METHOD_ORDER,
     ESTIMATE_WIDE_COLUMNS,
     ESTIMATE_WINDOWS,
@@ -33,6 +38,9 @@ from analysis.mov_ave_spread.roof_floor_estimate.methods.median import (
 )
 from analysis.mov_ave_spread.roof_floor_estimate.methods.quantile_band import (
     attach_quantile_estimates,
+)
+from analysis.mov_ave_spread.roof_floor_estimate.methods.recent_breach import (
+    attach_recent_breach_flags,
 )
 from analysis.mov_ave_spread.roof_floor_estimate.methods.regression_channel import (
     attach_channel_estimates,
@@ -62,6 +70,8 @@ def compute_estimate_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["today_close"] = pd.Series(dtype="float64")
         for col in ESTIMATE_WIDE_COLUMNS:
             df[col] = pd.Series(dtype="float64")
+        for col in ESTIMATE_BREACHED_WIDE_COLUMNS:
+            df[col] = pd.Series(dtype="int64")
         return df
 
     # Ensure numeric conversion of the price columns (host-pure
@@ -88,5 +98,9 @@ def compute_estimate_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     # 6. median — the cross-method consensus (host column-fold).
     attach_median_estimates(df, ESTIMATE_WINDOWS)
+
+    # 7. the recent-breach flags per (method, window) — ALL of the last
+    #    ESTIMATE_BREACH_SPAN_DAYS closes beyond the fixed d−n line.
+    attach_recent_breach_flags(df, GROUP_KEYS, ESTIMATE_WINDOWS)
 
     return df

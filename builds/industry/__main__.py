@@ -29,7 +29,12 @@ Pipeline
 
 Default (incremental) mode:
   Only dates present in stats.index_identity but NOT yet in
-  stats.industry_basic_stats are (re)computed and upserted. Step 1 loads
+  stats.industry_basic_stats are (re)computed and upserted, PLUS dates
+  already present whose distinct-industry count is below what the
+  CURRENT member data supports (incomplete dates — the partial-write
+  self-heal: a build that ran while member index rows were still
+  streaming in left e.g. 2026-10-12 with 35 of 106 industries, and the
+  date-grain missing-date skip alone would never retry it). Step 1 loads
   only target-date rows PLUS one first-close row per code (the rebase
   anchor) — full per-code history is NOT loaded, which saves ~99% of rows
   when target_dates is small.
@@ -185,6 +190,61 @@ LOAD_INDEX_DATA_SQL_INCREMENTAL = _LOAD_INDEX_DATA_SQL_TEMPLATE.format(
       AND (ib.date = ANY($1::date[]) OR ib.date = fc.first_date)""",
 )
 
+# Incomplete-date detection (incremental mode): dates ALREADY present in
+# industry_basic_stats whose distinct-industry count (pool 'all' = 3, the
+# pool every computable industry lands in) is below the count computable
+# from the CURRENT member data. A partial write happens when the build
+# runs while member index rows are still streaming in (e.g. 2026-10-12
+# landed with 35 of 106 industries); the date-grain missing-date skip
+# then never retries it — this check re-targets such dates so the upsert
+# refreshes them once the members arrive. It also backfills industries
+# whose classification was added AFTER their member indices' history
+# (e.g. BROAD_BSE: member 899050 has closes back to 2022 but the table
+# only carries the industry from 2026-10-08). Dates must ALREADY be
+# present in the table (JOIN actual, not LEFT JOIN): CN holidays that
+# is_trading_day occasionally misclassifies never entered the table, and
+# flagging them would build partial cross-border-only holiday rows. The
+# classification filters mirror the load SQL above exactly (is_active,
+# close non-NULL, compositioned, non-empty dummy guard) so the expected
+# count equals what a recompute would actually produce — no permanent
+# false targets.
+_INCOMPLETE_DATES_SQL = """
+    WITH expected AS (
+        SELECT ib.date, COUNT(DISTINCT sc.industry_id) AS n_expected
+        FROM stats.index_basic_stats ib
+        JOIN stats.sec_classification sc
+            ON sc.code = ib.code AND sc.type = 'index'
+        WHERE sc.industry_id IS NOT NULL
+          AND sc.industry_id <> ''
+          AND sc.is_active = TRUE
+          AND ib.close IS NOT NULL
+          AND NOT (
+              sc.is_dummy = TRUE
+              AND NOT EXISTS (
+                  SELECT 1 FROM stats.index_basic_stats ibx
+                  WHERE ibx.code = sc.code
+                    AND ibx.close IS NOT NULL
+              )
+          )
+          AND EXISTS (
+              SELECT 1 FROM stats.sec_composition sc3
+              WHERE sc3.code = ib.code
+                AND sc3.source_type = 'index'
+          )
+        GROUP BY ib.date
+    ),
+    actual AS (
+        SELECT date, COUNT(DISTINCT industry_id) AS n_actual
+        FROM stats.industry_basic_stats
+        WHERE pool_size = 3
+        GROUP BY date
+    )
+    SELECT e.date
+    FROM expected e
+    JOIN actual a ON a.date = e.date
+    WHERE a.n_actual < e.n_expected
+"""
+
 # Step 5a — materialize the per-pool union of stocks (latest snapshot per
 # index code, no temporal filter) into a temp table. Each (industry, pool,
 # stock) appears once.
@@ -289,6 +349,11 @@ class IndustryBuild(DataBuild):
     async def run(self) -> None:
         args = self.args
         forced = self.forced_date
+        # Dates detected as present-but-incomplete in incremental mode —
+        # their rows must be REFRESHED by the upsert (Step 6 bypasses the
+        # already-present skip check for them). Stays empty in --date /
+        # --force modes.
+        incomplete: Set[datetime.date] = set()
 
         conn = await self.open_conn()
         try:
@@ -326,6 +391,20 @@ class IndustryBuild(DataBuild):
                 # so holiday targets are skipped, not built from a partial pool.
                 target_dates = {d for d in target_dates if is_trading_day(d)}
                 logger.info(f"    -> {len(target_dates)} dates missing from {TABLE}")
+                # Dates present but INCOMPLETE (fewer industries than the
+                # member data now supports — partial writes from a build that
+                # ran mid-fetch; see _INCOMPLETE_DATES_SQL). Same trading-day
+                # filter: cross-border member rows on CN holidays must not
+                # flag a holiday as incomplete.
+                inc_rows = await conn.fetch(_INCOMPLETE_DATES_SQL)
+                incomplete = {r["date"] for r in inc_rows
+                              if is_trading_day(r["date"])}
+                if incomplete:
+                    logger.info(f"    -> {len(incomplete)} INCOMPLETE dates "
+                          f"(industry count below member-data count; "
+                          f"recomputing): "
+                          f"{', '.join(str(d) for d in sorted(incomplete))}")
+                    target_dates |= incomplete
                 if not target_dates:
                     logger.info("    -> DB is up to date; nothing to do.")
                     return
@@ -547,14 +626,22 @@ class IndustryBuild(DataBuild):
             # target_dates, but this catches any edge cases). In force mode the
             # table was truncated so every row is new — skip the check.
             # --date mode bypasses it too: already-present forced-date rows must
-            # be REFRESHED via the upsert below, not skipped.
+            # be REFRESHED via the upsert below, not skipped. Incomplete dates
+            # bypass it for the same reason: their existing rows are exactly
+            # what the recompute must overwrite (2026-10-17: this filter
+            # discarded 286,958 repair rows as "already present", inserted 0).
             if not args.force and forced is None:
-                n_before = len(data)
-                data = await filter_rows_to_missing_dates_async(conn, TABLE, data)
-                n_skipped = n_before - len(data)
-                if n_skipped > 0:
-                    logger.info(f"    -> skip check: {n_skipped:,} of {n_before:,} rows "
-                          f"already present (skipped)")
+                if incomplete:
+                    logger.info("    -> skip check bypassed for "
+                          f"{len(incomplete)} incomplete-date targets "
+                          "(upsert refreshes their existing rows)")
+                else:
+                    n_before = len(data)
+                    data = await filter_rows_to_missing_dates_async(conn, TABLE, data)
+                    n_skipped = n_before - len(data)
+                    if n_skipped > 0:
+                        logger.info(f"    -> skip check: {n_skipped:,} of {n_before:,} rows "
+                              f"already present (skipped)")
 
             # Force mode: table is pre-truncated → key-batched COPY (whole
             # industry_id groups per chunk — the table's HASH partition key;

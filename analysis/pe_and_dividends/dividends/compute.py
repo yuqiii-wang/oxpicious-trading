@@ -270,3 +270,46 @@ def compute_simple_dividend_yield(
     merged["dividend_yield"] = np.where(quot >= MIN_STORED_YIELD, quot, np.nan)
 
     return merged[["code", "date", "dividend_yield"]]
+
+
+# ---------------------------------------------------------------------------
+#  Industry dividend_yield — cross-sectional mean of member-index yields
+# ---------------------------------------------------------------------------
+def compute_industry_dividend_yield(
+    member_yields_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compute dividend_yield for each industry code per date as the
+    cross-sectional MEAN of its member indices' own trailing-12m yields.
+
+    This is the same AVG-across-members convention
+    stats.industry_basic_stats.mean_pe applies to PE: a dividend yield is
+    a ratio (scale-invariant), so the composite industry value is the
+    unweighted mean of the member indices' values — NOT a
+    re-weighted constituent aggregation (member indices' compositions
+    overlap, and per-index weight_pct carries no cross-index meaning).
+
+    Args:
+        member_yields_df: DataFrame with columns code (industry_id),
+            date (datetime64), dividend_yield — one row per (member
+            index, date) where the index side of THIS pipeline wrote a
+            yield (see fetch.fetch_industry_member_yields).
+
+    Returns:
+        DataFrame with columns: code (industry_id), date, dividend_yield.
+        One row per (industry, date) where at least one member index has
+        a yield; values below the NUMERIC(10,6) storage floor are nulled
+        (the MIN_STORED_YIELD convention).
+    """
+    if member_yields_df is None or member_yields_df.empty:
+        return pd.DataFrame(columns=["code", "date", "dividend_yield"])
+    industry_dy = (
+        member_yields_df.groupby(["code", "date"], sort=False)["dividend_yield"]
+        .mean()
+        .reset_index()
+    )
+    # Storage-precision floor: an all-micro-yield membership mean rounds
+    # to a stored 0.000000, and exact 0.0 means NO DATA in this table.
+    industry_dy["dividend_yield"] = industry_dy["dividend_yield"].where(
+        industry_dy["dividend_yield"] >= MIN_STORED_YIELD
+    )
+    return industry_dy[["code", "date", "dividend_yield"]]

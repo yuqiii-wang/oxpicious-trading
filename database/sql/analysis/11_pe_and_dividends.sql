@@ -9,11 +9,12 @@
 --
 --  Close price is NOT stored here — it lives in the stats schema
 --  (stats.index_basic_stats.close, stats.etf_basic_stats.close,
---  stats.stock_basic_stats.close). Both tables mirror
+--  stats.stock_basic_stats.close, stats.industry_basic_stats.mean_close).
+--  Both tables mirror
 --  analysis.mov_ave_spreads_detail's all-sec_types shape so they join 1:1
 --  on (sec_type, code, date).
 --
---    sec_type ∈ ('index' | 'etf' | 'stock')
+--    sec_type ∈ ('index' | 'etf' | 'stock' | 'industry')
 --
 --  ============================================================================
 --  Table: analysis.pe
@@ -23,7 +24,9 @@
 --    pe — RAW PE (no smoothing): index from stats.index_valuation.pe; etf
 --         from stats.etf_basic_stats.pe (pre-computed by builds.etf via
 --         harmonic-weighted constituent PE); stock from
---         stats.stock_basic_stats.pe (pre-computed by builds.stock). NULL
+--         stats.stock_basic_stats.pe (pre-computed by builds.stock);
+--         industry from stats.industry_basic_stats.mean_pe (pool 'all' —
+--         the build's cross-sectional AVG of member-index raw PE). NULL
 --         when the source PE is <= 0 / NULL (no earnings / invalid data —
 --         the invalid-value rule of compute.pe.clean_pe). A row exists
 --         only where the source day exists (close IS NOT NULL); rows with
@@ -77,6 +80,18 @@
 --                                convert between those units, so it
 --                                understated the yield by ~100x (the SSE
 --                                composite showed ~0.05% instead of ~2.5%).
+--                       industry -> Cross-sectional MEAN of the member
+--                                indices' own dividend_yield values
+--                                (analysis.dividends sec_type=1), members =
+--                                stats.sec_classification rows
+--                                (type='index', is_active) carrying that
+--                                industry_id — the same AVG-across-members
+--                                convention stats.industry_basic_stats uses
+--                                for mean_pe (a yield is a ratio,
+--                                scale-invariant; NULL members excluded).
+--                                Depends on the index side of THIS pipeline
+--                                having run (the industry processor runs
+--                                last).
 --
 --  POPULATION
 --    analysis.pe_and_dividends (Python module; one pipeline computes both
@@ -93,7 +108,7 @@
 --  Table: analysis.pe  (daily raw PE)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.pe (
-    sec_type        SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -104,7 +119,7 @@ CREATE TABLE IF NOT EXISTS analysis.pe (
 
     CONSTRAINT pk_pe PRIMARY KEY (code, sec_type, date),
     CONSTRAINT chk_pe_sec_type
-        CHECK (sec_type IN (0, 1, 2))  -- label codes: 0=etf 1=index 2=stock
+        CHECK (sec_type IN (0, 1, 2, 3))  -- label codes: 0=etf 1=index 2=stock 3=industry
 ) PARTITION BY HASH (code);
 
 SELECT public.create_hash_partitions('analysis', 'pe', 16);
@@ -114,17 +129,17 @@ CREATE INDEX IF NOT EXISTS idx_pe_date
 CREATE INDEX IF NOT EXISTS idx_pe_sec_type_date
     ON analysis.pe (sec_type, date);
 
-COMMENT ON TABLE  analysis.pe        IS 'Per-(code, sec_type, date) RAW price-to-earnings ratio (no smoothing; 2026-09 split from the former combined analysis.pe_and_dividends). Sources per sec_type: index = stats.index_valuation.pe; etf = stats.etf_basic_stats.pe (pre-computed by builds.etf via harmonic-weighted constituent PE); stock = stats.stock_basic_stats.pe (pre-computed by builds.stock). Rows exist only for source days with a valid (strictly positive) PE — invalid (<= 0 / NULL) PE days have NO row. Built by analysis.pe_and_dividends; all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.pe.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
-COMMENT ON COLUMN analysis.pe.code     IS 'Security code (bare index code e.g. 000300; ETF bare e.g. 159001; stock ticker with exchange suffix e.g. 600008.SS).';
+COMMENT ON TABLE  analysis.pe        IS 'Per-(code, sec_type, date) RAW price-to-earnings ratio (no smoothing; 2026-09 split from the former combined analysis.pe_and_dividends). Sources per sec_type: index = stats.index_valuation.pe; etf = stats.etf_basic_stats.pe (pre-computed by builds.etf via harmonic-weighted constituent PE); stock = stats.stock_basic_stats.pe (pre-computed by builds.stock); industry = stats.industry_basic_stats.mean_pe (pool ''all'' — the build''s cross-sectional AVG of member-index raw PE, already a ratio so no rebasing). Rows exist only for source days with a valid (strictly positive) PE — invalid (<= 0 / NULL) PE days have NO row. Built by analysis.pe_and_dividends; all INSERTs in Python per project rule.';
+COMMENT ON COLUMN analysis.pe.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry, code = stats.sec_classification.industry_id).';
+COMMENT ON COLUMN analysis.pe.code     IS 'Security code (bare index code e.g. 000300; ETF bare e.g. 159001; stock ticker with exchange suffix e.g. 600008.SS; sec_type=3: industry_id e.g. BANKS).';
 COMMENT ON COLUMN analysis.pe.date     IS 'Trading date.';
-COMMENT ON COLUMN analysis.pe.pe       IS 'RAW price-to-earnings ratio, no smoothing (2026-09: replaced the legacy pe_ma20 20-day MA, then the combined table split per metric). Sources per sec_type: index = stats.index_valuation.pe; etf = stats.etf_basic_stats.pe (pre-computed by builds.etf via harmonic-weighted constituent PE); stock = stats.stock_basic_stats.pe (pre-computed by builds.stock).';
+COMMENT ON COLUMN analysis.pe.pe       IS 'RAW price-to-earnings ratio, no smoothing (2026-09: replaced the legacy pe_ma20 20-day MA, then the combined table split per metric). Sources per sec_type: index = stats.index_valuation.pe; etf = stats.etf_basic_stats.pe (pre-computed by builds.etf via harmonic-weighted constituent PE); stock = stats.stock_basic_stats.pe (pre-computed by builds.stock); industry = stats.industry_basic_stats.mean_pe (pool ''all'' slice — cross-sectional mean of member-index raw PE; PE is scale-invariant so the mean uses RAW values, no rebasing).';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.dividends  (daily trailing-12m dividend yield)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis.dividends (
-    sec_type        SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT         NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
@@ -134,7 +149,7 @@ CREATE TABLE IF NOT EXISTS analysis.dividends (
 
     CONSTRAINT pk_dividends PRIMARY KEY (code, sec_type, date),
     CONSTRAINT chk_dividends_sec_type
-        CHECK (sec_type IN (0, 1, 2))  -- label codes: 0=etf 1=index 2=stock
+        CHECK (sec_type IN (0, 1, 2, 3))  -- label codes: 0=etf 1=index 2=stock 3=industry
 ) PARTITION BY HASH (code);
 
 SELECT public.create_hash_partitions('analysis', 'dividends', 16);
@@ -144,11 +159,11 @@ CREATE INDEX IF NOT EXISTS idx_dividends_date
 CREATE INDEX IF NOT EXISTS idx_dividends_sec_type_date
     ON analysis.dividends (sec_type, date);
 
-COMMENT ON TABLE  analysis.dividends        IS 'Per-(code, sec_type, date) trailing-12m dividend yield (D/P, fractional ratio; 2026-09 split from the former combined analysis.pe_and_dividends). Close is read live from stats at compute time (NOT stored here). stock: SUM(stock_dividends.dividend_per_share_pre_tax over trailing 365d)/close; etf: SUM(etf_adjustment.implied_dividend_per_share over trailing 365d)/close; index: cap-weighted average of constituent trailing-12m yields (SUM weight_fraction x dps/close, per-share numerator and denominator) using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation). Rows exist only where the yield is defined (strictly positive) — non-payers have NO row (exact 0.0 is never produced). Built by analysis.pe_and_dividends; all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.dividends.sec_type        IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
-COMMENT ON COLUMN analysis.dividends.code            IS 'Security code (bare index code e.g. 000300; ETF bare e.g. 159001; stock ticker with exchange suffix e.g. 600008.SS).';
+COMMENT ON TABLE  analysis.dividends        IS 'Per-(code, sec_type, date) trailing-12m dividend yield (D/P, fractional ratio; 2026-09 split from the former combined analysis.pe_and_dividends). Close is read live from stats at compute time (NOT stored here). stock: SUM(stock_dividends.dividend_per_share_pre_tax over trailing 365d)/close; etf: SUM(etf_adjustment.implied_dividend_per_share over trailing 365d)/close; index: cap-weighted average of constituent trailing-12m yields (SUM weight_fraction x dps/close, per-share numerator and denominator) using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation); industry: cross-sectional MEAN of the member indices'' own yields (analysis.dividends sec_type=1) — the same AVG-across-members convention as stats.industry_basic_stats.mean_pe (a yield is a ratio, scale-invariant). Rows exist only where the yield is defined (strictly positive) — non-payers have NO row (exact 0.0 is never produced). Built by analysis.pe_and_dividends; all INSERTs in Python per project rule.';
+COMMENT ON COLUMN analysis.dividends.sec_type        IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry, code = stats.sec_classification.industry_id).';
+COMMENT ON COLUMN analysis.dividends.code            IS 'Security code (bare index code e.g. 000300; ETF bare e.g. 159001; stock ticker with exchange suffix e.g. 600008.SS; sec_type=3: industry_id e.g. BANKS).';
 COMMENT ON COLUMN analysis.dividends.date            IS 'Trading date.';
-COMMENT ON COLUMN analysis.dividends.dividend_yield  IS 'Trailing-12m dividend yield (D/P) as a FRACTIONAL ratio (0.035 = 3.5%). Close is read live from stats at compute time (NOT stored in this table). stock: SUM(stats.stock_dividends.dividend_per_share_pre_tax WHERE ex_dividend_date in (date-365d, date]) / close. etf: SUM(stats.etf_adjustment.implied_dividend_per_share over trailing 365d) / close. index: cap-weighted average of constituent trailing-12m yields = SUM(weight_fraction x constituent dps / constituent close) using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation) — per-share numerator and denominator, a true yield (the former weighted-DPS / index-close formula mixed per-share CNY with index POINTS and understated yields ~100x). Strictly positive: rows with an undefined yield (close <= 0 or no dividend data in the trailing 365d window) are NOT inserted.';
+COMMENT ON COLUMN analysis.dividends.dividend_yield  IS 'Trailing-12m dividend yield (D/P) as a FRACTIONAL ratio (0.035 = 3.5%). Close is read live from stats at compute time (NOT stored in this table). stock: SUM(stats.stock_dividends.dividend_per_share_pre_tax WHERE ex_dividend_date in (date-365d, date]) / close. etf: SUM(stats.etf_adjustment.implied_dividend_per_share over trailing 365d) / close. index: cap-weighted average of constituent trailing-12m yields = SUM(weight_fraction x constituent dps / constituent close) using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation) — per-share numerator and denominator, a true yield (the former weighted-DPS / index-close formula mixed per-share CNY with index POINTS and understated yields ~100x). industry: cross-sectional MEAN of the member indices'' own dividend_yield values (analysis.dividends sec_type=1; members = stats.sec_classification type=''index'' is_active rows with that industry_id), NULL-excluded per member — no member yield on a date means NO industry row. Strictly positive: rows with an undefined yield are NOT inserted.';
 
 -- ----------------------------------------------------------------------------
 --  Register in analysis.analysis_identity (one entry per split table; the
@@ -265,7 +280,7 @@ CREATE INDEX IF NOT EXISTS idx_pe_pct_code
     ON analysis.pe_pct (sec_type, code, date_year_month);
 
 COMMENT ON TABLE  analysis.pe_pct               IS 'Per-(sec_type, code, month, period, pct_type) percentile BAND of the pe series (2026-09 split of the former combined analysis.pe_and_dividend_pct — the metric column is gone; the table name carries the metric). low_val = pct_type-th percentile and high_val = (100 - pct_type)-th percentile (linear interpolation) of the pe series'' non-NULL values over the TRAILING window of `period` observations (255/500/750/1275 = ~1/2/3/5 trading years) ending at the month''s LAST observation row; both legs use the SAME series. One band row per calendar month, anchored at the month''s last observation row and stored under the month''s first day; the in-progress month is skipped (no true month-end anchor yet). Windows near a code''s history start are naturally truncated; fewer than 255 non-NULL pe observations yields no band. Trailing windows make completed months immutable — only missing (code, month) triples are computed incrementally (a triple is complete when all 12 period x pct_type rows exist); --force / single-code rebuilds the scope. Internal step of analysis.pe_and_dividends (pct_bands.py).';
-COMMENT ON COLUMN analysis.pe_pct.sec_type      IS 'Security type: etf, index, or stock.';
+COMMENT ON COLUMN analysis.pe_pct.sec_type      IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf, 1 = index, 2 = stock, 3 = industry (composite industry, code = industry_id).';
 COMMENT ON COLUMN analysis.pe_pct.code          IS 'Security code (bare index code e.g. 000300; ETF bare e.g. 159001; stock ticker with exchange suffix e.g. 600008.SS).';
 COMMENT ON COLUMN analysis.pe_pct.date_year_month IS 'Calendar month of the band, stored as the month''s FIRST day (e.g. 2026-09-01) — the percentile window ENDS (inclusive) at the month''s last non-NULL observation row of the pe series. Part of the PK.';
 COMMENT ON COLUMN analysis.pe_pct.period        IS 'Lookback window length in pe observations: 255 / 500 / 750 / 1275 (~1 / 2 / 3 / 5 trading years). Part of the PK.';
@@ -312,7 +327,7 @@ CREATE INDEX IF NOT EXISTS idx_pe_pct_streaks_code
     ON analysis.pe_pct_streaks (sec_type, code, period, pct_type, start_date);
 
 COMMENT ON TABLE  analysis.pe_pct_streaks            IS 'Band-BREAK excursion streaks of the pe series audited against analysis.pe_pct (2026-09 split of the former combined analysis.pe_and_dividend_pct_streaks — the metric column is gone; the table name carries the metric). A day is OUT-OF-BAND when its pe value is ABOVE its own month-band high_val or BELOW low_val. An excursion streak is the maximal consolidation of same-side out-of-band TRADING days where re-entries of up to 5 consecutive trading days are TOLERATED (bridged — in-band gap days stay inside the span and count in day_count); a longer in-band gap or a side switch ends the streak. start_date/end_date bound the span (first/last OUT-OF-BAND day). Non-trading vendor rows (ffilled weekday holidays) and NULL-pe rows are excluded before classification — spans, gap tolerance and day_count are in REAL observation days. Streaks can span calendar months (each day is tested against its OWN month''s band); date_year_month records the START month. Episodes shift with new data, so the table is rebuilt WHOLESALE per sec_type (per code in single-code mode) on every run that processes the scope. The side (high/low) is derived at query time from the END month''s band (a streak never switches sides). Internal step of analysis.pe_and_dividends (pct_streaks.py).';
-COMMENT ON COLUMN analysis.pe_pct_streaks.sec_type   IS 'Security type: etf, index, or stock.';
+COMMENT ON COLUMN analysis.pe_pct_streaks.sec_type   IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf, 1 = index, 2 = stock, 3 = industry (composite industry, code = industry_id).';
 COMMENT ON COLUMN analysis.pe_pct_streaks.code       IS 'Security code (bare index code; ETF bare 6-digit; stock ticker with exchange suffix).';
 COMMENT ON COLUMN analysis.pe_pct_streaks.date_year_month IS 'The streak''s START month, stored as the month''s FIRST day — the band-month context in which the excursion began. Streaks may span later months (each day is tested against its own month''s band). Part of the PK.';
 COMMENT ON COLUMN analysis.pe_pct_streaks.period     IS 'Lookback window of the audited band in observations: 255 / 500 / 750 / 1275 — the band''s period in analysis.pe_pct. Part of the PK.';
@@ -369,7 +384,7 @@ CREATE TABLE IF NOT EXISTS analysis.pe_codes (
 );
 
 COMMENT ON TABLE  analysis.pe_codes IS 'Per-code summary of analysis.pe ∪ analysis.dividends (ONE row per sec_type+code): date coverage over the union, latest pe + dividend_yield snapshot, latest identity name. Precomputed source for the /api/analysis/pe/codes endpoint (the former live aggregate took 4.7s index / 35s stock per request). Maintained by analysis.pe_and_dividends after every detail write pass; the mov_ave_spreads_codes pattern.';
-COMMENT ON COLUMN analysis.pe_codes.name                  IS 'Latest identity name (stats.{etf,index,stock}_identity row at the greatest date). Empty string when the identity table has no row for the code.';
+COMMENT ON COLUMN analysis.pe_codes.name                  IS 'Latest identity name (the sec_type''s identity-table row at the greatest date; sec_type=3 reads stats.industry_identity). Empty string when the identity table has no row for the code.';
 COMMENT ON COLUMN analysis.pe_codes.n_dates               IS 'COUNT(DISTINCT date) over the UNION of the code''s analysis.pe and analysis.dividends rows (a date present in both counts once).';
 COMMENT ON COLUMN analysis.pe_codes.latest_pe             IS 'pe at the code''s LAST analysis.pe row (NULL when the code has no pe rows).';
 COMMENT ON COLUMN analysis.pe_codes.latest_dividend_yield IS 'dividend_yield at the code''s LAST analysis.dividends row (NULL when the code has no dividends rows).';

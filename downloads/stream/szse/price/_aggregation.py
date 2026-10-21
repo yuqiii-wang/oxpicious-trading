@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 
 from downloads._common import add_exchange_suffix
 
-from ._akshare_source import MinuteSample
+from ._sina_source import MinuteSample
 
 # 15:00 (market close) expressed as minutes-of-day. Once the wall-clock
 # reaches this, every window up to and including 15:00 is complete (the
@@ -24,7 +24,7 @@ def _emission_cutoff_minute(last_bar_minute: int, data_date=None) -> int:
 
     Discards the tail window whose end minute has not been reached by a
     COMPLETE minute. Each 1-min source bar is timestamped at its START (the
-    bar at 14:35 covers 14:34:00-14:35:00) and the SZSE/AkShare sources return
+    bar at 14:35 covers 14:34:00-14:35:00) and the SZSE/Sina sources return
     real-time "close(now)", so a bar whose minute == the current wall-clock
     minute may still be in progress. Round such bars down to the previous 5-min
     window end so the in-progress tail is discarded.
@@ -141,6 +141,11 @@ def aggregate_5min(
             continue
         # Order points by their own timestamp within the window.
         pts.sort(key=lambda x: x[0])
+        # Non-positive price = source no-quote placeholder — treat as null
+        # and skip so no zero bar is loaded.
+        pts = [pt for pt in pts if pt[1] > 0]
+        if not pts:
+            continue
         prices = [p for _, p, _ in pts]
         vols = [v for _, _, v in pts]
         o = prices[0]
@@ -237,6 +242,11 @@ def aggregate_index_5min(
         if emit_key in emitted:
             continue
         pts.sort(key=lambda x: x[0])
+        # Non-positive price = source no-quote placeholder — treat as null
+        # and skip so no zero bar is loaded.
+        pts = [pt for pt in pts if pt[1] > 0]
+        if not pts:
+            continue
         prices = [p for _, p, _ in pts]
         o = prices[0]
         h = max(prices)

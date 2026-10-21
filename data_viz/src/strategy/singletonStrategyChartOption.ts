@@ -488,8 +488,6 @@ export function buildSingletonStrategyOption({
           decision: d,
           itemStyle: {
             color: topConfBuyNos.has(d.decision_no) ? DARK_GREEN : UP_COLOR,
-            borderColor: "#fff",
-            borderWidth: 1,
           },
         })),
         xAxisIndex: 0,
@@ -518,8 +516,6 @@ export function buildSingletonStrategyOption({
           decision: d,
           itemStyle: {
             color: topLossSellNos.has(d.decision_no) ? DARK_RED : DOWN_COLOR,
-            borderColor: "#fff",
-            borderWidth: 1,
           },
         })),
         xAxisIndex: 0,
@@ -546,8 +542,6 @@ export function buildSingletonStrategyOption({
           decision: d,
           itemStyle: {
             color: LAST_DAY_SELL_COLOR,
-            borderColor: "#fff",
-            borderWidth: 2,
           },
         })),
         xAxisIndex: 0,

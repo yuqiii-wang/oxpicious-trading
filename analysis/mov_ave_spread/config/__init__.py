@@ -65,6 +65,8 @@ from analysis.mov_ave_spread.config.ohlc import (
 from analysis.mov_ave_spread.config.roof_floor_estimate import (
     ESTIMATE_ANALYSIS_NAME,
     ESTIMATE_BOLL_K,
+    ESTIMATE_BREACH_SPAN_DAYS,
+    ESTIMATE_BREACHED_WIDE_COLUMNS,
     ESTIMATE_CHANNEL_K,
     ESTIMATE_CHANNEL_MIN_OBS,
     ESTIMATE_COLUMNS,
@@ -75,6 +77,7 @@ from analysis.mov_ave_spread.config.roof_floor_estimate import (
     ESTIMATE_TABLE,
     ESTIMATE_WIDE_COLUMNS,
     ESTIMATE_WINDOWS,
+    breached_wide_columns,
     estimate_wide_columns,
 )
 from analysis.mov_ave_spread.config.roof_floor_rebound import (
@@ -187,6 +190,8 @@ __all__ = [
     # roof/floor level estimates
     "ESTIMATE_ANALYSIS_NAME", "ESTIMATE_BOLL_K", "ESTIMATE_CHANNEL_K",
     "ESTIMATE_CHANNEL_MIN_OBS", "ESTIMATE_COLUMNS", "ESTIMATE_DESCRIPTION",
+    "ESTIMATE_BREACH_SPAN_DAYS", "ESTIMATE_BREACHED_WIDE_COLUMNS",
+    "breached_wide_columns",
     "ESTIMATE_METHOD_ORDER", "ESTIMATE_QUANTILE_HI", "ESTIMATE_QUANTILE_LO",
     "ESTIMATE_TABLE", "ESTIMATE_WIDE_COLUMNS", "ESTIMATE_WINDOWS",
     "estimate_wide_columns",

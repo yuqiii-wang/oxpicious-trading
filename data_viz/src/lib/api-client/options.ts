@@ -200,7 +200,8 @@ export function fetchOptionsMoneynessSeries(
 }
 
 /** Zone walls from analysis.options_walls (wall_type='zone' — the backend
- *  removed the legacy 80pct / large_num wall types). */
+ *  removed the legacy 80pct / large_num wall types). Per-expiry rows —
+ *  the Options Trend cohort chart's payload. */
 export function fetchOptionsWalls(
   underlying: string,
   startDate?: string | null,
@@ -212,6 +213,24 @@ export function fetchOptionsWalls(
   if (endDate) params.set("end_date", endDate);
   const qs = params.toString();
   return fetchJson<OptionsWallsResponse>(`/api/szse-options/walls${qs ? `?${qs}` : ""}`);
+}
+
+/** The DOMINANT zone wall per (date, side) — the skew panel's wall-shade
+ *  table (the per-(date × expiry × side) rows collapse to one per (date,
+ *  side) server-side, ~10x lighter than /walls on the big underlyings). */
+export function fetchOptionsWallsDominant(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<OptionsWallsResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<OptionsWallsResponse>(
+    `/api/szse-options/walls-dominant${qs ? `?${qs}` : ""}`,
+  );
 }
 
 /** Per-expiry OI stats from the dedicated per-real-expiry table

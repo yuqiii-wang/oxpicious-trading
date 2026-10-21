@@ -23,6 +23,7 @@ from _common.pre_check_and_load import (
     fetch_codes_with_recent_data_async,
 )
 from builds.market_regimes.config import (
+    SEC_TYPE_IDENTITY_CODE_COLUMN,
     SEC_TYPE_IDENTITY_TABLE,
     SEC_TYPE_SOURCE_SQL,
 )
@@ -59,10 +60,13 @@ async def fetch_regime_source(
     """
     empty = pd.DataFrame(columns=list(REGIME_SOURCE_COLUMNS))
     identity_table = SEC_TYPE_IDENTITY_TABLE[sec_type]
+    # industry_basic_stats keys on industry_id, not code.
+    identity_code_column = SEC_TYPE_IDENTITY_CODE_COLUMN[sec_type]
 
     cutoff = recent_trading_day_cutoff(RECENT_TRADING_DAYS)
     active_codes = await fetch_codes_with_recent_data_async(
         conn, identity_table, n_trading_days=RECENT_TRADING_DAYS,
+        code_column=identity_code_column,
     )
     logger.info(
         f"      pre-filter: {len(active_codes):,} {sec_type} codes have "

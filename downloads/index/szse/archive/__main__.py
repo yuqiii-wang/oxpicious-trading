@@ -24,10 +24,8 @@ from typing import Dict, List, Optional
 
 import requests
 
-from downloads._common import DEFAULT_START_DATE
+from downloads._common import DEFAULT_START_DATE, service_urls
 from downloads._common.exchanges.szse import (
-    REFERER_ARCHIVE,
-    REFERER_TREND,
     build_headers,
     run_szse_download,
 )
@@ -38,6 +36,10 @@ logger = setup_logging("archive")
 # Pacing (inter-day sleep, jitter, timeouts, toggles) resolves from this
 # service's external_request_config JSON row inside run_szse_download.
 SERVICE = "downloads.index.szse.archive"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 
 
 INDEX_EXTRA_PARAMS: Dict[str, Optional[str]] = {}
@@ -56,8 +58,8 @@ CODE_FILTER_BY_TYPE: Dict[str, List[str]] = {
     "index": INDEX_CODES_TO_KEEP,
 }
 
-ARCHIVE_HEADERS = build_headers(REFERER_ARCHIVE)
-TREND_HEADERS = build_headers(REFERER_TREND)
+ARCHIVE_HEADERS = build_headers(URLS["referer_archive"])
+TREND_HEADERS = build_headers(URLS["referer_trend"])
 
 # Trend endpoint archiveDate — dates >= this use the trend endpoint, earlier
 # dates use the archive endpoint. The fallback tries trend regardless of date

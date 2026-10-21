@@ -19,7 +19,7 @@ Two assets per EOD cycle, both sourced from www.bse.cn:
     count to ~200 codes.
   * INDICES (北证50 899050, 北证专精特新 899601) — one GET per index per
     cycle (``neeqRealController/getRealBZ50.do`` / ``getRealZJTX.do``, see
-    ``BSE_INDEX_ENDPOINTS``) returning the whole session's per-minute
+    the per-index urls roles) returning the whole session's per-minute
     series; every 5-minute window is re-aggregated and idempotently
     upserted into ``stats.index_intraday_5min`` (no volume column there),
     with identity rows to ``stats.index_identity``. Restarts self-heal
@@ -70,6 +70,7 @@ from downloads._common import (
     AntiBotProxy,
     antibot_config_for,
     resolve_out_dir,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -113,6 +114,10 @@ for _s in (sys.stdout, sys.stderr):
 logger = setup_logger("stream_bse")
 
 SERVICE = "downloads.stream.bse.price"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 
 # Anti-bot pacing — resolved once at import from the service's
 # external_request_config JSON rows; the CLI overrides feed the proxy's base

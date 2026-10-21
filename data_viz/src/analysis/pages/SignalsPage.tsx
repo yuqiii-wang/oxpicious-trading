@@ -32,6 +32,29 @@ const SIGNALS_ANALYSES: SignalItem[] = [
     tags: ["ETF", "Index", "Stock", "signal", "classification nav"],
   },
   {
+    slug: "hedge-pairs",
+    title: "Hedge Pairs",
+    description:
+      "Industry-pair hedge view on the SAME multi-select classification " +
+      "nav as Composites (industries + strategy themes, no per-index " +
+      "chips). Its nav carries a Pair-mode toggle (only here): pair mode " +
+      "allows exactly two picks — a 3rd pick auto-forgets the oldest; " +
+      "pick 1 = subject (hedging instrument), pick 2 = benchmark, with a " +
+      "role-swap button (default 红利 vs 科技). The upper plot — the " +
+      "PAIR PORTFOLIO chart — draws both industries' composite close " +
+      "curves on TWO separate y-axes (the MA-Spread dual-axis chart " +
+      "style) with the portfolio's signal events as buy/sell/wait " +
+      "markers; the lower plot charts the pair's hedge ratio (raw / " +
+      "market-offset, trailing 20/60/255d windows). The hedge_pairs " +
+      "SIGNAL tier frames the plots (market-decoupled: entries pair " +
+      "the legs' own Short-Term-Tech RSI capitulations within ~5 " +
+      "days, never a market gate): the pair portfolio's managed RULE " +
+      "GROUPS above (the shared portfolio-signal component takes the " +
+      "pair's two industry codes) and the replayed event HISTORY " +
+      "below.",
+    tags: ["Index", "signal", "industry pair", "pair mode", "hedge ratio", "dual axis", "signal rules + history"],
+  },
+  {
     slug: "options",
     title: "Options",
     description:

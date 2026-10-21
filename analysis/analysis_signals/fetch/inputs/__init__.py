@@ -60,11 +60,18 @@ from ._rf_break import (
     fetch_latest_rf_date,
     fetch_rf_inputs,
 )
+from ._hedge_pairs import (
+    fetch_hedge_pair_inputs,
+    parse_pair_code,
+    pair_code,
+    resolve_hedge_pair_universe,
+)
 
 __all__ = [
     "fetch_active_codes",
     "fetch_boll_inputs",
     "fetch_first_dates",
+    "fetch_hedge_pair_inputs",
     "fetch_index_classes",
     "fetch_latest_boll_date",
     "fetch_latest_ma_date",
@@ -82,5 +89,7 @@ __all__ = [
     "fetch_rf_inputs",
     "fetch_rsi_codes",
     "fetch_rsi_inputs",
-    "resolve_options_universe",
+    "parse_pair_code",
+    "pair_code",
+    "resolve_hedge_pair_universe",
 ]

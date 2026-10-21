@@ -16,9 +16,8 @@ from typing import Dict, Optional
 
 import requests
 
-from downloads._common import DEFAULT_START_DATE
+from downloads._common import DEFAULT_START_DATE, service_urls
 from downloads._common.exchanges.szse import (
-    REFERER_ARCHIVE,
     build_headers,
     run_szse_download,
 )
@@ -27,6 +26,10 @@ from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("archive")
 
 SERVICE = "downloads.stock.szse.archive"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 
 
 STOCK_EXTRA_PARAMS: Dict[str, Optional[str]] = {}
@@ -44,7 +47,7 @@ DB_TABLE_BY_TYPE: Dict[str, str] = {
     "stock": "stats.stock_identity",
 }
 
-ARCHIVE_HEADERS = build_headers(REFERER_ARCHIVE)
+ARCHIVE_HEADERS = build_headers(URLS["referer_archive"])
 
 
 def _build_archive_params(security_type: str, trade_date: date) -> Dict[str, object]:

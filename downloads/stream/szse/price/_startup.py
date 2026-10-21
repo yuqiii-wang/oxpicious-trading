@@ -21,7 +21,6 @@ from _common.study_and_select_stocks import (
     load_yesterday_top_traded_stocks,
 )
 
-from ._akshare_source import _get_akshare
 from ._constants import HOURLY_MODE_CUTOFF, INDEX_ALWAYS_CODES, TOP_TRADED_N
 
 logger = setup_logger("stream_szse")
@@ -37,7 +36,7 @@ class StreamConns:
 
     def __init__(self, conn, conn_a, conn_b, conn_c, conn_d) -> None:
         self.conn = conn        # main + index upsert
-        self.conn_a = conn_a    # akshare
+        self.conn_a = conn_a    # sina
         self.conn_b = conn_b    # szse fallback
         self.conn_c = conn_c    # em_push2his
         self.conn_d = conn_d    # em_push2
@@ -64,7 +63,7 @@ def open_db_connections() -> StreamConns:
 
     t_step = _time.time()
     conn_a = get_db_connection()
-    logger.info("[startup] DB conn_a (akshare) ready in %.2fs.", _time.time() - t_step)
+    logger.info("[startup] DB conn_a (sina) ready in %.2fs.", _time.time() - t_step)
 
     t_step = _time.time()
     conn_b = get_db_connection()
@@ -109,13 +108,14 @@ def load_stock_lists(conn) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]
 
 
 def import_heavy_modules() -> None:
-    """Import AkShare up-front (heavy module: pandas/numpy/requests + V8) and
-    create the curl_cffi session that drives the East Money sources C/D.
+    """Pre-create the network stacks: the Sina source's requests.Session and
+    the curl_cffi session that drives the East Money sources C/D.
     """
     t0 = _time.time()
-    logger.info("[startup] importing AkShare (heavy: pandas/numpy/requests + V8)...")
-    _get_akshare()
-    logger.info("[startup] AkShare imported (V8 ready) in %.2fs.", _time.time() - t0)
+    logger.info("[startup] creating Sina requests.Session (source A)...")
+    from ._sina_source import _get_sina_session
+    _get_sina_session()
+    logger.info("[startup] Sina Session created (source A ready) in %.2fs.", _time.time() - t0)
 
     t0 = _time.time()
     logger.info("[startup] creating curl_cffi Session (EM sources C/D)...")

@@ -14,7 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "NDRC (ndrc.gov.cn) 新闻发布 list pagination via the shared gov orchestrator (main_gov) — same 90s anti-bot cadence as its gov.cn siblings.",
-    "source_ref": "downloads/macro/gov/main_gov.py LONG_SLEEP_INTERVAL default (row written 2026-10-10 when pacing switched to JSON-driven)"
+    "settle_sleep_sec": null,
+    "urls": {
+      "ndrc_list_base": "https://www.ndrc.gov.cn/xwdt/xwfb/",
+      "ndrc_host": "https://www.ndrc.gov.cn"
+    },
+    "notes": "NDRC (ndrc.gov.cn) 新闻发布 list pagination via the shared gov orchestrator (main_gov) — same 90s anti-bot cadence as its gov.cn siblings.; URLs migrated from code constants 2026-10-17",
+    "source_ref": "downloads/macro/gov/main_gov.py LONG_SLEEP_INTERVAL default (row written 2026-10-10 when pacing switched to JSON-driven)",
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

@@ -39,7 +39,7 @@
 \ir 23_dividend_deliveries.sql
 \ir 24_options_bands.sql
 \ir 25_options_moneyness.sql
-\ir 26_analysis_advice.sql
+\ir 28_exchange_margin_summary.sql
 -- Analysis Commons: composites + the signal rules tier (redesigned
 -- 2026-10-14 — signal_rules replaces the retired thresholds/curves;
 -- history_signals is populated by replaying the rules).

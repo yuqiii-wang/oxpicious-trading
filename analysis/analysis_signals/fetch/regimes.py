@@ -13,6 +13,7 @@ import pandas as pd
 
 from _common.build_commons import rec_cols
 from _common.df_utils import epoch_col_to_dt64
+from _common.labels import SEC_TYPE_CODE
 
 _REGIME_COLUMNS = ["code", "date", "regime"]
 
@@ -27,6 +28,9 @@ async def fetch_market_regimes(
     stats.market_regimes (the 4-state label: calm / hot / panic /
     quiet; built by builds.market_regimes with shift-1 trailing inputs,
     so every label is known at its own day's close — no look-ahead).
+    The registry's sec_type column stores its static.label_dim SMALLINT
+    code (the label-code contract) — ``sec_type`` here is the label
+    string and is bound as its code.
 
     Returns a DataFrame with columns ``_REGIME_COLUMNS`` (date as
     datetime64[us])."""
@@ -40,7 +44,7 @@ async def fetch_market_regimes(
           AND m.date >= $2
         ORDER BY m.code, m.date ASC
         """,
-        sec_type,
+        SEC_TYPE_CODE[sec_type],
         since,
     )
     if not rows:

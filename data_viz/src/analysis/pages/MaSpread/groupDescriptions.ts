@@ -227,19 +227,26 @@ export const MA_SPREAD_GROUP_INFO: Record<MaSpreadGroupId, GroupInfo> = {
       "RSI re-entry classifier the rule cells split by; replaced the " +
       "retired client-side close-vs-MA60 classifier 2026-10-15, whose " +
       "crash-inflated MA60 kept labeling post-crash recoveries down for " +
-      "months): rise/fall = Wilder RSI(14) momentum episodes (fixed " +
-      "50±7.5 zones, ≤5-row re-entry absorb, MA20-slope agreement; a " +
-      "deep RSI ≤30/≥70 anchor opens a 40-day window in which the " +
-      "midline re-cross flips the trend — the post-crash rebound fix); " +
-      "top/bottom = the price-vs-MA255 gap extremes vs their own " +
-      "trailing q90/q10; unknown = neither episode (the unshaded " +
-      "background). Multi-pick shades each picked phase's date spans " +
-      "(light red top / green bottom / blue rise / amber fall). The " +
-      "shade families share the panel's ONE shade slot: activating any " +
-      "shade row (Trend, RSI pct, High/Low Streaks, Px-Vol, Top-10% " +
-      "OHLC Days, Market Regimes) clears the other rows' picks, so only " +
-      "one family's shades draw at a time. Indication: rise spans = the " +
-      "momentum-long regime (ride them); fall = stand aside / fade weak " +
-      "bounces; top/bottom = the overextended extremes of either side.",
+      "months): rise/fall = Wilder RSI(10) momentum episodes (fixed " +
+      "50±12.5 zones, ≤5-row re-entry absorb, the Kaufman 10-row " +
+      "net-change sign as the direction guard; a deep RSI ≤30/≥70 " +
+      "anchor opens a 40-day window in which the midline re-cross with " +
+      "the guard flips the trend — the post-crash rebound fix) plus " +
+      "the 2026-10-21 TRAVEL CLAIM: a MA255-gap-extreme day whose leg " +
+      "has traveled ≥4 average daily moves from the prior 60-row " +
+      "high/low with the guard agreeing claims rise/fall directly — a " +
+      "large fluctuation in progress reads directional even while the " +
+      "RSI zone sits weeks away; top/bottom = the STATIONED gap " +
+      "extremes vs their own trailing q90/q10 (small fluctuation " +
+      "parked at the band edge); unknown = neither episode (the " +
+      "unshaded background). Multi-pick shades each picked phase's " +
+      "date spans (light red top / green bottom / blue rise / amber " +
+      "fall). The shade families share the panel's ONE shade slot: " +
+      "activating any shade row (Trend, RSI pct, High/Low Streaks, " +
+      "Px-Vol, Top-10% OHLC Days, Market Regimes) clears the other " +
+      "rows' picks, so only one family's shades draw at a time. " +
+      "Indication: rise spans = the momentum-long regime (ride them); " +
+      "fall = stand aside / fade weak bounces; top/bottom = the " +
+      "stationed extremes of either side.",
   },
 };

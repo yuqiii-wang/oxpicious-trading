@@ -35,17 +35,18 @@ from _common.request_config import (
     host_block_cooldown_for,
     request_config_for,
     retry_policy_for,
+    service_urls,
     sleep_sec_for,
 )
-from downloads._common import LONG_SLEEP_INTERVAL
-
-
-PBOC_BASE = "https://www.pbc.gov.cn"
 
 # Service row in the static external_request_config JSON tree — the runtime
-# source for pacing (sleep, retries/backoff, blocked-host cooldown, timeout).
+# source for pacing (sleep, retries/backoff, blocked-host cooldown, timeout)
+# and the endpoint URLs (urls roles: "site", "central_index").
 SERVICE = "downloads.macro.pboc.stats"
 REQUEST_TYPE = "curl_cffi"
+_URLS = service_urls(SERVICE, REQUEST_TYPE)
+
+PBOC_BASE = _URLS["site"]
 
 # curl_cffi impersonation targets — rotate to vary TLS fingerprint.
 # All must be supported by the installed curl_cffi version.
@@ -62,18 +63,19 @@ _IMPERSONATE_PROFILES: List[str] = [
 class CffiAntiBotConfig:
     """Configuration for the curl_cffi anti-bot session.
 
-    Defaults mirror the service's external_request_config JSON row; the
-    live values are resolved from that row in :func:`build_session`.
+    Every value is resolved from the service's external_request_config JSON
+    row (request_type ``curl_cffi``) in :func:`build_session` — there is no
+    code-side default; a row that omits a pacing field is a config error.
     """
-    base_sleep_sec: float = LONG_SLEEP_INTERVAL
-    sleep_jitter: float = 0.5  # 0..1, multiplied with base_sleep_sec
+    base_sleep_sec: float
+    sleep_jitter: float  # 0..1, multiplied with base_sleep_sec
+    max_retries: int
+    retry_backoff_sec: float
+    timeout: int
+    host_block_cooldown_sec: float
     enable_sleep: bool = True
     enable_host_tracking: bool = True
     rotate_profile: bool = True
-    max_retries: int = 2
-    retry_backoff_sec: float = 30.0
-    timeout: int = 60
-    host_block_cooldown_sec: float = 3600.0
 
 
 @dataclass
@@ -307,24 +309,21 @@ def build_session(
     sleep only, and the former inline constants are the fallback when the row
     omits a value.
     """
+    row = request_config_for(SERVICE, REQUEST_TYPE)
     max_retries, retry_backoff_sec = retry_policy_for(SERVICE, REQUEST_TYPE)
-    read_timeout = request_config_for(SERVICE, REQUEST_TYPE).timeout_read_sec
     cooldown = host_block_cooldown_for(SERVICE, REQUEST_TYPE)
     config = CffiAntiBotConfig(
         base_sleep_sec=(
             sleep_sec if sleep_sec is not None
             else sleep_sec_for(SERVICE, REQUEST_TYPE)
         ),
-        max_retries=max_retries if max_retries is not None else 2,
-        retry_backoff_sec=(
-            retry_backoff_sec if retry_backoff_sec is not None else 30.0
-        ),
+        sleep_jitter=row.sleep_jitter,
+        max_retries=max_retries,
+        retry_backoff_sec=retry_backoff_sec,
         # The row's timeout_connect_sec is None (no connect timeout) and
-        # timeout_read_sec is 60 — curl_cffi takes one scalar bound here, so
-        # the read timeout applies as the whole-request cap.
-        timeout=int(read_timeout) if read_timeout is not None else 60,
-        host_block_cooldown_sec=(
-            cooldown if cooldown is not None else 3600.0
-        ),
+        # timeout_read_sec carries the cap — curl_cffi takes one scalar
+        # bound here, so the read timeout applies as the whole-request cap.
+        timeout=int(row.timeout_read_sec),
+        host_block_cooldown_sec=cooldown,
     )
     return CffiAntiBotSession(config=config, logger=logger)

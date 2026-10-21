@@ -125,7 +125,16 @@ TREND_CODE: dict[str, int] = {"top": 0, "bottom": 1, "rise": 2, "fall": 3,
 SIGNAL_TYPE_CODE: dict[str, int] = {
     "mov_rsi": 0, "bollinger": 1, "ma_cross": 2,
     "options_wall": 3, "options_vix": 4, "momentum": 5,
-    "rf_break": 6,
+    "rf_break": 6, "hedge_pairs": 7,
+    # hp_rsi (2026-10-18, the two-layer merge): the hedge_pairs
+    # family's RSI-SOURCED ORCHESTRATION layer — the components'
+    # existing Short-Term-Tech rsi signal rules (REAL mov_rsi rows,
+    # type 0, at the market + leg codes) are the SOURCE, and the
+    # hedge pairs layer orchestrates them into the portfolio rules
+    # (hp_entry_legs_rsi / hp_exit_mkt_high / hp_catchup_rsi_hi)
+    # stamped under THIS type at the pair codes; the pair-native
+    # rules (harvest / stop / flip) stay under hedge_pairs 7
+    "hp_rsi": 8,
 }
 # the family config grid (analysis_signals.signal_thresholds /
 # history_signals / signal_curves — converted 2026-10-11).
@@ -363,16 +372,115 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # the spot day-return in close-to-close ATR units beyond the k bar
     # while vol slope5 fires (the 2026-10-15 low-base repricing class)
     "ovix_atr_break": 4306,
+    # ovix_euphoria_peak (2026-10-19): the panic-peak MIRROR — the SELL
+    # exit on the blow-off top (vol > prior 120-session max x 1.05 &
+    # slope5 > +10% & spot ABOVE its 5-sessions-ago close; the
+    # upside-euphoria leg the buy legs exclude, 2024-10-08 the
+    # canonical catch)
+    "ovix_euphoria_peak": 4307,
     # ma_cross breadth additions (2026-10-16): the market-level breadth
     # rules — the Zweig 10d-EMA thrust (BUY) + the 9:1 up/down days
     "ma_breadth_thrust": 5700,
     "ma_9to1_up": 5701,
     "ma_9to1_dn": 5702,
+    # hedge_pairs (2026-10-18, block 5800+): the discoveries of the
+    # long–long anti-correlated pair study — entry = broad-market
+    # drawdown gate x both legs' σ-depth (dd{5,10}% x z{1,2}, the
+    # nested deepest-claim carving); harvest = the staged volatility-
+    # harvest exits (|ratio z| >= 1.5/2 sells the relatively-high leg;
+    # the laggard reaching its own z >= 1/2 sells the second leg);
+    # stops = the beta stop (market >= 20/30% below its 255d high) +
+    # the hedge-regime break (offset corr >= 0 within 60d of a
+    # <= -0.30 reading); regime_flip = the observational hedgeable
+    # turn-on (offset corr <= -0.30 episode first day, ungated buy).
+    # The 2026-10-21 dedup (same-semantics subs collapse to the one
+    # most semantic): 5800-5809 + hp_regime_flip (5811) retired here,
+    # and hp_harvest_z15/z20 (5804/5805) merged into hp_harvest
+    # (5823) — the z bar is a run_cells candidate, not an identity
+    # (labels stay registered)
+    "hp_entry_dd5_z1": 5800,
+    "hp_entry_dd5_z2": 5801,
+    "hp_entry_dd10_z1": 5802,
+    "hp_entry_dd10_z2": 5803,
+    "hp_harvest_z15": 5804,
+    "hp_harvest_z20": 5805,
+    "hp_catchup_z1": 5806,
+    "hp_catchup_z2": 5807,
+    "hp_stop_mkt_dd20": 5808,
+    "hp_stop_mkt_dd30": 5809,
+    "hp_stop_regime": 5810,
+    "hp_regime_flip": 5811,
+    # the 2026-10-18 market-decoupling rework: hp_entry_legs_rsi
+    # replaces the four dd x z entries (the market-drawdown gate made
+    # every pair fire the SAME action on the SAME crash dates) — both
+    # legs' OWN Short-Term-Tech capitulation signal (Wilder RSI14
+    # below its per-leg adaptive percentile tail) paired within ~5
+    # traded days, roughly nearby never exact-date; hp_catchup_rsi_hi
+    # replaces the MA20-z catch-ups — the laggard's own RSI high-tail
+    # breach. The dd entries (5800-5803), MA20-z catch-ups (5806/07)
+    # and beta stops (5808/09) are RETIRED (labels stay registered)
+    "hp_entry_legs_rsi": 5812,
+    "hp_catchup_rsi_hi": 5813,
+    # the market-exhaustion composite SELL (the vocabulary-split pass,
+    # 2026-10-18: the broad market's own short-term-tech HIGH-tail
+    # signal coordinated at the PORTFOLIO level — the highs
+    # counterpart of the entry's market-lows coordination; the
+    # per-code component rules are REAL mov_rsi rows, signal_type 0)
+    "hp_exit_mkt_high": 5814,
+    # the 2026-10-19 more-triggers graduates (docs/
+    # hedge_pairs_more_triggers_study_2026-10-19.md): the rf washout
+    # entries (both legs' W-day Donchian-floor breakdown witnesses
+    # alive within 5 pair-days — each window its OWN population, the
+    # rf_break no-carve precedent; the _mkt twin adds the market's
+    # RSI 3pct capitulation witness, the RSI trio's structural
+    # cousin), the deep hedgeable turn-on (offset corr's first day
+    # <= -0.50 — regime_flip's deep trading anchor; the grid measured
+    # -0.40 flat / -0.50 the bar / -0.60 weaker), and the catch-up
+    # ENTRY (the weak leg closing back above its own MA60 — the
+    # reclaim mirror of the catch-up sell; MA20 measured worse on
+    # both lenses). The 2026-10-21 dedup retired the per-window trio
+    # hp_entry_wash{60,120,255} (5815-5817) — the W window is a
+    # run_cells candidate, not an identity (labels stay registered;
+    # rows purged by the next --force run)
+    "hp_entry_wash60": 5815,
+    "hp_entry_wash120": 5816,
+    "hp_entry_wash255": 5817,
+    "hp_entry_wash120_mkt": 5818,
+    "hp_entry_rho50": 5819,
+    "hp_entry_catchup_reclaim60": 5820,
+    # the 2026-10-20 spread-rotation study's portfolio-first graduates
+    # (docs/hedge_pairs_spread_rotation_study_2026-10-20.md): the
+    # MOMENTUM TILT — the harvest's opposite buy/sell pair. The study
+    # measured divergence (|ratio z| >= k) as CONTINUATION, not
+    # reversion: the strong leg keeps outperforming (+0.37..+0.55%
+    # fwd across the k grid) and shifting the book toward it is the
+    # only tilt that improved BOTH lenses (drawdown +0.16..+0.90pp on
+    # 62-67% of events). The proposed mean-reversion rotation (sell
+    # rich + buy cheap) measured NEGATIVE under every criterion
+    # (per-open -1.24% t=-3.96; no stop rule rescued it) — these two
+    # carry the direction the evidence endorsed. Two labels, one per
+    # action leg (the portfolio fragments' per-sub merge keys):
+    # hp_mom_strong BUYs the strong leg (response px_strong),
+    # hp_mom_lag SELLs the laggard (response px_lag, the exit-timing
+    # bar); the k grid {1.5, 2.0, 2.5} is the run_cells candidate set.
+    "hp_mom_strong": 5821,
+    "hp_mom_lag": 5822,
+    # the 2026-10-21 dedup's merged harvest (the z15/z20 pair's ONE
+    # most-semantic survivor — the |ratio z| candidate grid rides
+    # bar_def.ratio_z, per-cell winner picks the bar)
+    "hp_harvest": 5823,
+    # the 2026-10-21 dedup's merged washout entry (the per-window
+    # trio's ONE most-semantic survivor — the W window candidate grid
+    # rides bar_def.window, per-cell winner picks it; the recorded
+    # value is the fetch's combined washdepth gauge, the deepest
+    # alive witness's window)
+    "hp_entry_wash": 5824,
 }
 SIGNAL_SUB_TYPE_CODE: dict[str, int] = {
     **SIGNAL_SUB_TYPE_SERIES, **SIGNAL_SUB_TYPE_THRESHOLD,
 }
 WEIGHTING_CODE: dict[str, int] = {"equal": 0, "amt": 1}
+PAIR_GRAIN_CODE: dict[str, int] = {"index": 0, "industry": 1}
 RANK_SIDE_CODE: dict[str, int] = {"HYPE": 0, "DRAIN": 1}
 POOL_SIZE_CODE: dict[str, int] = {"small": 0, "mid": 1, "large": 2, "all": 3}
 PX_SPEED_CODE: dict[str, int] = {
@@ -408,7 +516,10 @@ SKEW_TYPE_CODE: dict[str, int] = {
     "greek_vega": 4,
 }
 CONTRACT_TYPE_CODE: dict[str, int] = {"index": 0, "bond": 1}
-SEC_TYPE_CODE: dict[str, int] = {"etf": 0, "index": 1, "stock": 2}
+# 3 = industry: composite industry entity (code = industry_id, e.g. BANKS)
+# — the stats.industry_basic_stats pool-'all' slice as an analysis universe
+# (mov_ave_spread + pe_and_dividends read it via stats.industry_identity)
+SEC_TYPE_CODE: dict[str, int] = {"etf": 0, "index": 1, "stock": 2, "industry": 3}
 ATTRIBUTION_TYPE_CODE: dict[str, int] = {"equal": 0, "trading_amt": 1}
 TRADE_SIDE_CODE: dict[str, int] = {"BUY": 0, "SELL": 1}
 # external request audit (monitor.external_resource_audit) — sub_type's
@@ -419,6 +530,7 @@ EXT_HTTP_SOURCE_CODE: dict[str, int] = {
     "sse": 0, "szse": 1, "bse": 2, "cffex": 3, "csindex": 4,
     "cnindex": 5, "chinabond": 6, "shibor": 7, "huatai": 8,
     "eastmoney": 9, "cninfo": 10, "gov": 11, "pboc": 12, "zhihu": 13,
+    "sina": 14,
     "other": 99,
 }
 EXT_LLM_PROVIDER_CODE: dict[str, int] = {"zhipu": 0, "other": 99}
@@ -435,6 +547,12 @@ DB_REPLICATION_STATE_CODE: dict[str, int] = {
 # (analysis_signals.analysis_cache.kind) — which analysis owns the row's
 # cache jsonb
 ANALYSIS_CACHE_KIND_CODE: dict[str, int] = {"boost_derivation": 0}
+# the kind of PORTFOLIO an analysis_signals.portfolio_signal_rules row
+# groups (the portfolio tier's OWN vocabulary — what the code IS as a
+# portfolio, not the signal family that measured it): the two-leg
+# long–long negatively-correlated hedge pair ('A~B' composite code —
+# the hedge_pairs family's universe)
+PORTFOLIO_TYPE_CODE: dict[str, int] = {"neg_corr_hedge_pair": 0}
 # quantitative roof/floor (resistance/support) level estimate methods
 # (analysis.mov_ave_spreads_roof_floor_estimates.method) — registry order =
 # the roof_floor_estimate/methods registry; 'median' is the cross-method
@@ -461,6 +579,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "weighting": WEIGHTING_CODE,
     "rank_side": RANK_SIDE_CODE,
     "pool_size": POOL_SIZE_CODE,
+    "pair_grain": PAIR_GRAIN_CODE,
     "px_speed": PX_SPEED_CODE,
     "vol_state": VOL_STATE_CODE,
     "board": BOARD_CODE,
@@ -477,6 +596,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "db_instance": DB_INSTANCE_CODE,
     "db_replication_state": DB_REPLICATION_STATE_CODE,
     "analysis_cache_kind": ANALYSIS_CACHE_KIND_CODE,
+    "portfolio_type": PORTFOLIO_TYPE_CODE,
     "roof_floor_method": ROOF_FLOOR_METHOD_CODE,
     "rf_rebound_outcome": RF_REBOUND_OUTCOME_CODE,
 }
@@ -512,6 +632,7 @@ EXT_LLM_PROVIDER_LABEL: dict[int, str] = CODE_MAPS["ext_llm_provider"]
 DB_INSTANCE_LABEL: dict[int, str] = CODE_MAPS["db_instance"]
 DB_REPLICATION_STATE_LABEL: dict[int, str] = CODE_MAPS["db_replication_state"]
 ANALYSIS_CACHE_KIND_LABEL: dict[int, str] = CODE_MAPS["analysis_cache_kind"]
+PORTFOLIO_TYPE_LABEL: dict[int, str] = CODE_MAPS["portfolio_type"]
 ROOF_FLOOR_METHOD_LABEL: dict[int, str] = CODE_MAPS["roof_floor_method"]
 RF_REBOUND_OUTCOME_LABEL: dict[int, str] = CODE_MAPS["rf_rebound_outcome"]
 
@@ -529,6 +650,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "weighting": tuple(WEIGHTING_CODE),
     "rank_side": tuple(RANK_SIDE_CODE),
     "pool_size": ("all", "large", "mid", "small"),
+    "pair_grain": ("index", "industry"),
     "px_speed": ("sharp_dn", "slow_dn", "flat", "slow_up", "sharp_up"),
     "vol_state": ("shrink", "normal", "heavy"),
     "board": ("MAIN", "STAR", "GEM", "BSE"),
@@ -546,6 +668,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "db_instance": tuple(DB_INSTANCE_CODE),
     "db_replication_state": tuple(DB_REPLICATION_STATE_CODE),
     "analysis_cache_kind": tuple(ANALYSIS_CACHE_KIND_CODE),
+    "portfolio_type": tuple(PORTFOLIO_TYPE_CODE),
     "roof_floor_method": tuple(ROOF_FLOOR_METHOD_CODE),
     "rf_rebound_outcome": tuple(RF_REBOUND_OUTCOME_CODE),
 }

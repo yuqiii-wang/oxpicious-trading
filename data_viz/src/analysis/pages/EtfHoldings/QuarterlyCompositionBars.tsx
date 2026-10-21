@@ -44,7 +44,7 @@ import {
   commonTooltip,
   useChartThemeMode,
 } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts } from "echarts";
 import { fetchQuarterlyComposition, invalidateCacheForUrl } from "@/lib/api-client";
@@ -412,6 +412,7 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
   const barsAiAskRef = useRef<ECharts | null>(null);
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.etfHoldings,
       intro:
         `Quarterly holdings of ${code}${name ? ` (${name})` : ""} by industry: one 100% ` +
         "stacked bar per quarter — each segment = industry weight / quarter total × 100. " +

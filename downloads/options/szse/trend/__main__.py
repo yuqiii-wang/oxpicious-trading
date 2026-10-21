@@ -20,8 +20,8 @@ from typing import Dict, Optional
 
 import requests
 
+from downloads._common import service_urls
 from downloads._common.exchanges.szse import (
-    REFERER_TREND,
     build_headers,
     run_szse_download,
 )
@@ -33,6 +33,11 @@ logger = setup_logging("trend")
 # Pacing (sleep/jitter/timeouts/anti-bot toggles) resolves from this service's
 # external_request_config JSON row via run_szse_download(service=...).
 SERVICE = "downloads.options.szse.trend"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+REFERER_TREND = URLS["referer_trend"]
 
 
 TREND_ARCHIVE_DATE = "2025-07-01"

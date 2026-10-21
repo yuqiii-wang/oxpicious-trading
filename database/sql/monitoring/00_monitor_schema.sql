@@ -60,7 +60,12 @@
 --  pacing / anti-bot request inventory — since 2026-10-10 it is the
 --  RUNTIME source read by _common/request_config.py (AntiBotProxy
 --  construction, sleep constants, poll loops, retry backoffs), with
---  net.py's constants as the last-resort fallback.
+--  net.py's constants as the last-resort fallback. Market holiday
+--  calendars are NOT config — they live in database/sql/static/
+--  holiday_calendar/ (one JSON per country, dates grouped by year),
+--  read at import time by _common/_holidays_and_weekdays.py, which
+--  fails loudly on a broken file (an empty calendar would corrupt
+--  every pipeline's trading-day math).
 --
 --  Consumers:
 --    database/stream_watchdog.py      — supervisor; restarts dead/stale

@@ -17,6 +17,7 @@ import {
   useChartThemeMode,
 } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { ThemeMode } from "@/store/filters";
 import type { OptionsRow } from "@shared/types";
 import {
@@ -294,6 +295,7 @@ export default function MarketInterestWallPanel({
   // the intro; the card shows only the concise identity line.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.interestWall,
       intro:
         "Per-strike OI stacked by expiry month — calls right (+), puts left (−); blue " +
         "gradient: dark = nearest. Bar height = raw OI contracts per strike (not premium- " +

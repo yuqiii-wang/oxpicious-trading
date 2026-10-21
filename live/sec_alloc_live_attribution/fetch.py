@@ -298,6 +298,10 @@ async def find_pairs_with_missing_ticks(
 #  Anti-joins the tick table per (code, time) on is_without_trading_amt =
 #  FALSE: rows missing entirely OR present only as FALLBACK (TRUE) are
 #  (re)fetched — the upsert then upgrades fallback rows in place.
+#
+#  Zero closes anywhere (tick bar, prev closes, benchmark bar) are the
+#  sources' no-quote placeholders — filtered like NULL so no tick is
+#  computed against a zero price (which would read as a -100% move).
 # ----------------------------------------------------------------------------
 _MISSING_TICKS_SQL = """
 WITH bench_bars AS (
@@ -306,6 +310,7 @@ WITH bench_bars AS (
     WHERE i5.code = $1::text
       AND i5.date = $2::date
       AND i5.close IS NOT NULL
+      AND i5.close <> 0
 ),
 members AS MATERIALIZED (
     SELECT sc.code, sc.type
@@ -326,7 +331,7 @@ member_prev_close AS (
     SELECT b.code, b.close AS prev_close
     FROM stats.index_basic_stats b
     WHERE b.date = (SELECT d FROM prev_d)
-      AND b.close IS NOT NULL AND b.close::text <> 'NaN'
+      AND b.close IS NOT NULL AND b.close::text <> 'NaN' AND b.close <> 0
       AND b.code IN (SELECT code FROM members)
 ),
 bench_prev_close AS (
@@ -336,6 +341,7 @@ bench_prev_close AS (
       AND date = (SELECT d FROM prev_d)
       AND close IS NOT NULL
       AND close::text <> 'NaN'
+      AND close <> 0
     LIMIT 1
 )
 SELECT
@@ -354,6 +360,7 @@ CROSS JOIN bench_prev_close bp
 LEFT JOIN bench_bars bb ON bb.time = i5.time
 WHERE i5.date = $2::date
   AND i5.close IS NOT NULL
+  AND i5.close <> 0
   AND NOT EXISTS (
       SELECT 1
       FROM live.sec_alloc_live_attribution t
@@ -415,6 +422,9 @@ async def fetch_missing_ticks(
 #  Anti-join skips (code, time) rows already present with ANY flag —
 #  identical values between fallback runs (no churn), and weighted rows
 #  are never downgraded.
+#  Zero closes (tick bar, prev closes, benchmark bar) are the sources'
+#  no-quote placeholders — filtered like NULL so no tick is computed
+#  against a zero price (which would read as a -100% move).
 # ----------------------------------------------------------------------------
 _FALLBACK_TICKS_SQL = """
 WITH universe AS (
@@ -445,6 +455,7 @@ member_prev_close AS (
     WHERE date = (SELECT d FROM prev_d)
       AND close IS NOT NULL
       AND close::text <> 'NaN'
+      AND close <> 0
       AND code IN (SELECT member_code FROM universe)
     ORDER BY code, time DESC
 ),
@@ -455,6 +466,7 @@ bench_prev_close AS (
       AND date = (SELECT d FROM prev_d)
       AND close IS NOT NULL
       AND close::text <> 'NaN'
+      AND close <> 0
     ORDER BY time DESC
     LIMIT 1
 ),
@@ -464,6 +476,7 @@ bench_bars AS (
     WHERE i5.code = $1::text
       AND i5.date = $2::date
       AND i5.close IS NOT NULL
+      AND i5.close <> 0
 )
 SELECT
     u.member_code                 AS code,
@@ -481,6 +494,7 @@ CROSS JOIN bench_prev_close bp
 LEFT JOIN bench_bars bb ON bb.time = i5.time
 WHERE i5.date = $2::date
   AND i5.close IS NOT NULL
+  AND i5.close <> 0
   AND NOT EXISTS (
       SELECT 1
       FROM live.sec_alloc_live_attribution t

@@ -22,15 +22,13 @@ import {
   commonDataZoom,
   commonGrid,
   commonLegend,
+  windowBlueColor,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
-import {
-  rejectionMarkerSpec,
-  signalMarkerSpec,
-} from "@/shared/charts/signalMarker";
+import { signalEventScatterSeries } from "@/shared/charts/signalMarker";
 import type { ThemeMode } from "@/store/filters";
 import type { VolIndexCorrRow, VolIndexRow } from "@shared/types";
-import type { EChartsOption, SeriesOption } from "echarts";
+import type { EChartsOption } from "echarts";
 
 export function volIndexUnderlyingLabel(code: string): string {
   return UNDERLYING_LABELS[code] ?? code;
@@ -61,8 +59,9 @@ export interface VolIndexSignalLayer {
 }
 
 /** The corr companion's in-signal options: the family's corr bars as
- * guide lines (-0.8 the fear bar, -0.5 the unwind bar; the emphasized
- * one thick) + the selected-day pin. */
+ * guide lines (-0.75 the fear bar — loosened from -0.8 2026-10-19,
+ * -0.5 the unwind bar; the emphasized one thick) + the selected-day
+ * pin. */
 export interface VolIndexCorrSignalLayer {
   /** value → TRUE = emphasized (the picked trigger-bar chip's config
    * bar; the wall-panel chip → bold-wall analog). */
@@ -71,17 +70,9 @@ export interface VolIndexCorrSignalLayer {
 }
 
 /** Identity-stable no-event defaults (a fresh [] per render dirties
- * the option memo and forces a full notMerge rebuild). */
+ *  the option memo and forces a full notMerge rebuild). */
 export const NO_VOL_SIGNAL_EVENTS: readonly VolIndexSignalEvent[] = [];
 export const NO_VOL_CORR_BARS: readonly { value: number; emphasized?: boolean }[] = [];
-
-/** Series names of the SIGNAL marker classes (legend order) — the
- * shared visual language of the skew chart's in-signal mode. */
-export const VOL_SIGNAL_MARKER_SERIES_NAMES = [
-  "Signal Buy",
-  "Signal Sell",
-  "Signal No-Action",
-] as const;
 
 /** Colored series dot inside tooltip rows (repo ColoredDot convention). */
 function tooltipDot(color: string): string {
@@ -270,81 +261,26 @@ export function buildVolIndexOption(
           ]
         : []),
       // The IN-SIGNAL marker layer (the options signals page): the
-      // signal-history events on the vol curve — buy ▲ / sell ▼ via
-      // THE shared triangles, the grey ◆ diamond on gate-rejected
-      // events. One scatter series per class (only classes with >= 1
-      // event), so the legend toggles classes individually — the skew
-      // chart's signalEventSeries convention.
-      ...volSignalMarkerSeries(events, byUnderlying, codes),
+      // signal-history events on the vol curve via THE global shared
+      // action-marker layer (signalMarker.signalEventScatterSeries —
+      // buy ▲ / sell ▼ / the grey ◆ no-action diamond, one scatter
+      // series per non-empty class so the legend toggles classes
+      // individually; the selected history day's marker grows + glows
+      // like Recent Movements). Markers ride the first code's vol line.
+      ...signalEventScatterSeries(
+        events,
+        byUnderlying.get(codes[0] ?? "") ?? new Map<string, number | null>(),
+        { selectedDate },
+      ),
     ],
   });
 }
 
-/** SIGNAL-history scatter markers on the vol curve (the options page's
- * IN-SIGNAL marker mode — analysis_signals.history_signals, the
- * options_vix family, fetched with signal_type=options_vix). The
- * marker's y = the underlying's own vol_index_30d that day. */
-function volSignalMarkerSeries(
-  events: readonly VolIndexSignalEvent[],
-  byUnderlying: Map<string, Map<string, number | null>>,
-  codes: string[],
-): SeriesOption[] {
-  // the marker host series values: the single underlying's vol curve
-  // (multi-underlying payloads mark the first code's line)
-  const volByDate =
-    byUnderlying.get(codes[0] ?? "") ?? new Map<string, number | null>();
-  const classes: Array<{
-    key: "buy" | "sell" | "rej";
-    name: string;
-    spec: { symbol: string; symbolSize: [number, number]; symbolOffset: [number, number]; itemStyle: { color: string } };
-  }> = [
-    {
-      key: "buy",
-      name: VOL_SIGNAL_MARKER_SERIES_NAMES[0],
-      spec: signalMarkerSpec("buy"),
-    },
-    {
-      key: "sell",
-      name: VOL_SIGNAL_MARKER_SERIES_NAMES[1],
-      spec: signalMarkerSpec("sell"),
-    },
-    {
-      key: "rej",
-      name: VOL_SIGNAL_MARKER_SERIES_NAMES[2],
-      spec: rejectionMarkerSpec(),
-    },
-  ];
-  const out: SeriesOption[] = [];
-  for (const cls of classes) {
-    const data: Array<[string, number]> = [];
-    for (const ev of events) {
-      const rej = ev.is_rejection === true;
-      const isBuy = !rej && ev.action === "buy";
-      const isSell = !rej && ev.action === "sell";
-      const match = cls.key === "rej" ? rej
-        : cls.key === "buy" ? isBuy : isSell;
-      if (!match) continue;
-      const y = volByDate.get(ev.date);
-      if (y == null || !Number.isFinite(y)) continue;
-      data.push([ev.date, y]);
-    }
-    if (data.length === 0) continue;
-    out.push({
-      type: "scatter" as const,
-      name: cls.name,
-      data,
-      symbol: cls.spec.symbol,
-      symbolSize: cls.spec.symbolSize,
-      symbolOffset: cls.spec.symbolOffset,
-      itemStyle: { color: cls.spec.itemStyle.color, borderColor: "#fff", borderWidth: 1 },
-      z: 5,
-      tooltip: { show: false },
-    });
-  }
-  return out;
-}
-
-/** Corr chart series spec — one curve per rolling window. */
+/** Corr chart series spec — one curve per rolling window. The four
+ *  windows are horizons of ONE metric (the vol-vs-spot rolling corr of
+ *  the SAME underlying), so they share one blue hue at graded darkness
+ *  (windowBlueColor: dark = 5d, light = 255d) — the futures dark-near /
+ *  light-far ramp convention, not MUTED_PALETTE's hue-per-series. */
 const CORR_SERIES: Array<{
   key: "corr_5d" | "corr_20d" | "corr_60d" | "corr_255d";
   name: string;
@@ -443,6 +379,9 @@ export function buildVolIndexCorrOption(
       splitLine: { lineStyle: { color: c.splitLineColor } },
     },
     series: CORR_SERIES.map((s, i) => {
+      // One blue family at graded darkness (dark = 5d … light = 255d) —
+      // the same ramp convention as the pair hedge-ratio windows.
+      const ramp = windowBlueColor(i, CORR_SERIES.length);
       // The corr_20d curve hosts the in-signal layers: the family's
       // bars as markLine guides (the emphasized config's bar thick +
       // labeled) and the selected-day pin (the corr may be null on a
@@ -454,8 +393,8 @@ export function buildVolIndexCorrOption(
         type: "line" as const,
         symbol: "none",
         connectNulls: true,
-        lineStyle: { color: MUTED_PALETTE[i % MUTED_PALETTE.length], width: 1.4 },
-        itemStyle: { color: MUTED_PALETTE[i % MUTED_PALETTE.length] },
+        lineStyle: { color: ramp, width: 1.4 },
+        itemStyle: { color: ramp },
         emphasis: { focus: "series" as const },
         data: dates.map((d) => byDate.get(d)?.[s.key] ?? null),
         ...(host && corrBars.length > 0
@@ -489,7 +428,8 @@ export function buildVolIndexCorrOption(
                 symbol: "circle",
                 symbolSize: 9,
                 itemStyle: {
-                  color: MUTED_PALETTE[1] ?? MUTED_PALETTE[0],
+                  // the pin rides the corr_20d host curve — its ramp shade
+                  color: windowBlueColor(1, CORR_SERIES.length),
                   borderColor: "#fff",
                   borderWidth: 1,
                 },

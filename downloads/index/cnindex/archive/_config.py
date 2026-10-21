@@ -23,6 +23,7 @@ from typing import Dict
 
 from downloads._common import (
     COMMON_BASE_HEADERS,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -30,16 +31,19 @@ from downloads._common import (
 # Service name for the external_request_config JSON row (pacing source).
 SERVICE = "downloads.index.cnindex.archive"
 
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+
 # CNINDEX-published indices not covered by csindex/SZSE/SSE sources.
 #   399303 = 国证2000, 399311 = 国证1000, 399310 = 国证A50
 CNINDEX_ARCHIVE_CODES = ["399303", "399310", "399311"]
 
-CNINDEX_HQ_BASE = "https://hq.cnindex.com.cn"
-CNINDEX_DAILY_API = CNINDEX_HQ_BASE + "/market/market/getIndexDailyData"
+CNINDEX_DAILY_API = URLS["cnindex_daily_api"]
 
 CNINDEX_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)
 CNINDEX_HEADERS["Accept"] = "application/json, text/plain, */*"
-CNINDEX_HEADERS["Referer"] = "https://www.cnindex.com.cn/"
+CNINDEX_HEADERS["Referer"] = URLS["referer"]
 
 # Anti-bot sleep between requests — resolved from the service's
 # external_request_config JSON row (sleep_sec; the same row also carries

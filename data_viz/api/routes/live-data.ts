@@ -36,6 +36,9 @@ import { runPythonModule, getPythonProcessStatus, isPythonProcessRunning } from 
 import { getSecAllocLiveAttribution } from "../services/sec-alloc-live-attribution.service.js";
 import {
   fetchSignalRules,
+  fetchSignalPortfolios,
+  fetchPortfolioSignals,
+  fetchPortfolioSignalHistory,
   fetchTrendSpans,
   fetchTradingSignalConfigs,
   fetchTriggeredSignals,
@@ -582,6 +585,50 @@ router.get("/trading-signals/history", async (req: Request, res: Response) => {
   }
 });
 
+/** GET /api/live-data/trading-signals/portfolio-history?sec_type=index
+ *  &code=A~B[&signal_type=&signal_sub_type=]
+ *  → { sec_type, code, signal_type, signal_sub_type, events: [...] } —
+ *  the PORTFOLIO tier's EVENT history (analysis_signals.
+ *  portfolio_history_signals, 2026-10-21): one row per coordinated
+ *  portfolio event with THE EVENT DATE and the member association —
+ *  the member CELL-LEVEL signal events that triggered it (each with
+ *  its OWN date; the components' own history is dropped from
+ *  history_signals, so the member records ride the payload). The
+ *  portfolio history panel's expandable rows. signal_type /
+ *  signal_sub_type optionally narrow to one family / sub. */
+router.get("/trading-signals/portfolio-history", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const code = typeof req.query.code === "string"
+      ? req.query.code.trim() : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    const signalType = typeof req.query.signal_type === "string"
+      && req.query.signal_type.trim()
+      ? req.query.signal_type.trim() : null;
+    const signalSubType = typeof req.query.signal_sub_type === "string"
+      && req.query.signal_sub_type.trim()
+      ? req.query.signal_sub_type.trim() : null;
+    const events = await fetchPortfolioSignalHistory(
+      secType, code, signalType, signalSubType,
+    );
+    res.json({
+      sec_type: sec_type_valid(secType),
+      code,
+      signal_type: signalType,
+      signal_sub_type: signalSubType,
+      events,
+    });
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals/portfolio-history] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
 /** GET /api/live-data/trading-signals/rules?sec_type=index&code=000001
  *  → { sec_type, code, rules: [...] } — the code's RULE CELLS
  *  (analysis_signals.signal_rules, the 2026-10-15 rules tier): one row
@@ -611,6 +658,62 @@ router.get("/trading-signals/rules", async (req: Request, res: Response) => {
   } catch (err) {
     const status = (err as { status?: number })?.status ?? 500;
     console.error("[live-data/trading-signals/rules] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals/portfolios?sec_type=index
+ *  [&portfolio_type=neg_corr_hedge_pair]
+ *  → { sec_type, portfolio_type, portfolios: [...] } — the managed
+ *  PORTFOLIO codes of the sec_type (analysis_signals.
+ *  portfolio_signal_rules, the 2026-10-18 portfolio tier: per-sub-type
+ *  rule groups with signal_rule_ids BIGINT[] arrays — the neg_corr_
+ *  hedge_pair 'A~B' pair portfolios), each with its census (rule
+ *  cells, gate-passed share, sub-type groups, latest event date,
+ *  latest build). The managed-pair roster. */
+router.get("/trading-signals/portfolios", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const portfolioType = typeof req.query.portfolio_type === "string"
+      ? req.query.portfolio_type.trim() : null;
+    const portfolios = await fetchSignalPortfolios(
+      secType, portfolioType || null);
+    res.json({
+      sec_type: sec_type_valid(secType),
+      portfolio_type: portfolioType,
+      portfolios,
+    });
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals/portfolios] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals/portfolio?sec_type=index
+ *  &codes=DIV_GENERAL,TECH_GENERAL
+ *  → { sec_type, codes, portfolios: [...], rules: [...] } — the
+ *  portfolios whose legs sit in the requested CODES (the pair types:
+ *  both legs of 'A~B' must be in the list — industry scope for now),
+ *  each with its PORTFOLIO row (the whole member signal_rule_ids
+ *  array + the rule_params construction with the per-sub
+ *  coordination specs under subs, + its LATEST
+ *  history_portfolio_signal_performance audit snapshot — the
+ *  members' combined stats + what the portfolio took; the hedge
+ *  type: max drawdown reduction) and census, plus the FULL rule rows
+ *  expanded from the ids. The shared portfolio-signal UI component's
+ *  one round trip. */
+router.get("/trading-signals/portfolio", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const codes = typeof req.query.codes === "string"
+      ? req.query.codes.split(",") : [];
+    res.json(await fetchPortfolioSignals(secType, codes));
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals/portfolio] error:", err);
     res.status(status).json({ error: String(err) });
   }
 });

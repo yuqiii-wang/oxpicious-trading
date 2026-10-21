@@ -30,6 +30,7 @@ import IndexPanel from "@/dataviz/features/index/IndexPanel";
 import EtfMarginPanel from "@/dataviz/features/etf-margin/EtfMarginPanel";
 import StockPanel from "@/dataviz/features/stock/StockPanel";
 import { useSecBaselineBundle } from "@/analysis/pages/shared/useSecBaselineBundle";
+import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type {
   IndexBundle,
   EtfBundle,
@@ -83,10 +84,12 @@ export function DividendsPanel({
   }
   // Delegate to the exact same plot component used in /dataviz/*, with the
   // deliveries audit table under it.
-  if (secType === "index") {
+  // Industry resolves to the composite IndexBundle (pool-'all' slice —
+  // an index-shaped entity), so IndexPanel renders it.
+  if (secType === "index" || secType === "industry") {
     return (
       <Box>
-        <IndexPanel index={secBundle as IndexBundle} />
+        <IndexPanel index={secBundle as IndexBundle} insightPage={INSIGHT_PAGES.dividendsBaseline} />
         {deliveriesCard}
       </Box>
     );
@@ -98,14 +101,14 @@ export function DividendsPanel({
     // right axis — the plain ETF-margin page keeps the unmodified panel.
     return (
       <Box>
-        <EtfMarginPanel etf={secBundle as EtfBundle} showDivEst />
+        <EtfMarginPanel etf={secBundle as EtfBundle} showDivEst insightPage={INSIGHT_PAGES.dividendsBaseline} />
         {deliveriesCard}
       </Box>
     );
   }
   return (
     <Box>
-      <StockPanel stock={secBundle as StockBundle} />
+      <StockPanel stock={secBundle as StockBundle} insightPage={INSIGHT_PAGES.dividendsBaseline} />
       {deliveriesCard}
     </Box>
   );

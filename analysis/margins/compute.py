@@ -6,14 +6,35 @@ Three compute functions (all REDUCED / moved in the margin cleanup):
     on rz_balance (slope_ma5 + zscore_20d) consumed by the margin_changes
     trend episode detection, producing rows for analysis.margin_tech_stats.
 
-  - ``compute_industry_stats``: per-(date, industry_id) SUM aggregation
-    of rz_balance / rz_buy across stocks and ETFs in each industry,
-    producing rows for analysis.margin_industry_stats.
+  - ``compute_industry_stats``: per-(date, industry_id) aggregation of
+    rz_balance / rz_buy across stocks and ETFs in each industry — a SUM
+    per side (raw member totals) PLUS a *_norm AVERAGE per side over
+    members with a non-null non-zero value (the per-member-normalized
+    curve behind the Margin Trends raw-vs-normalized toggle), producing
+    rows for analysis.margin_industry_stats.
 
   - ``compute_index_margin_series``: per-(index_code, date) weighted-
     AVERAGE rongzi margin series (branch 1 stock-based + branch 2
     ETF-proxy), producing rows for the analysis.margin_index_series TABLE
     (the aggregation was moved out of SQL into this pandas vectorization).
+
+SECTIONING (2026-10-19): the rz_balance curve is SECTIONED before any
+rise/drop attribution — a section is a maximal run of consecutive rows
+with a valid (>0) balance AND an unchanged contributing population. A
+margin rise/drop is never measured ACROSS a section boundary: the daily
+slope, its MA5/MA20/STD20 windows, and the margin_changes trend episodes
+all reset at boundaries. Two boundary kinds (both rendered as dots /
+line-breaks on the Margin Trends page):
+
+  - null gaps — the first valid row after a 0/NULL rz_balance run (the
+    plotted line breaks; the balance may have moved arbitrarily inside
+    the gap, so the cross-gap delta is not a one-day move);
+  - membership changes — industry rows where the contributing-member
+    count (Σ per-side SUM/norm) differs from the previous row, and index
+    rows where n_with_balance differs (a new member's balance jolts the
+    SUM / re-weights the average for population reasons, not margin
+    behavior; study 2026-10-19: 7.4% of industry episodes spanned such a
+    day with a median 13% structural share of the move, worst cases 99%).
 """
 from __future__ import annotations
 
@@ -31,6 +52,72 @@ from _common.labels import SEC_TYPE_CODE
 SLOPE_MA_WINDOWS = [5, 20]
 SLOPE_STD_WINDOW = 20
 
+# Passenger column carrying the contributing-population count per row
+# (industry: contributing members behind the SUM; index: constituents
+# behind the weighted average). Absent for etf/stock per-security curves.
+MEMBER_COUNT_COL = "n_members"
+
+
+# ---------------------------------------------------------------------------
+#  Section flags — shared by compute_tech_stats + episode detection
+# ---------------------------------------------------------------------------
+
+def attach_section_flags(df: pd.DataFrame,
+                         member_col: str | None = None) -> None:
+    """Mark section boundaries on a margin curve frame (in place).
+
+    Adds ``__section_break`` (bool — True on the FIRST row of a new
+    section) and ``__section_id`` (int64 — 0-based within each code;
+    rows between sections keep the pre-boundary id). The sectioning is
+    the rise/drop-attribution contract: no slope, rolling window, or
+    trend episode may span a boundary.
+
+    Boundary rules (a boundary row is always a VALID-balance row):
+      - the first valid (>0) row of a code, and the first valid row after
+        any 0/NULL rz_balance run (null-gap boundary);
+      - when ``member_col`` is given: a valid row whose member count
+        differs from the previous row of the same code (membership-change
+        boundary — population shift behind an aggregate curve).
+
+    Args:
+        df: DataFrame with [code, date, rz_balance], ALREADY sorted by
+            (code, date). Modified in place (two columns added).
+        member_col: optional population-count column (see MEMBER_COUNT_COL).
+            NaN counts never mark a boundary (unknown ≠ changed).
+    """
+    valid = (
+        pd.to_numeric(df["rz_balance"], errors="coerce") > 0
+    ).fillna(False)
+    df["__valid_f"] = valid.astype("float64")
+    prev_valid = df.groupby(
+        "code", sort=False
+    )["__valid_f"].shift(1).fillna(0.0)
+    # after_gap: valid today, previous row of the code not valid (also
+    # True on the code's first row — its own slope is NULL anyway).
+    after_gap = (df["__valid_f"] > 0.5) & (prev_valid < 0.5)
+    boundary = after_gap
+
+    if member_col is not None and member_col in safe_columns(df):
+        members = pd.to_numeric(df[member_col], errors="coerce")
+        df["__prev_members_f"] = members.astype("float64")
+        prev_members = df.groupby(
+            "code", sort=False
+        )["__prev_members_f"].shift(1)
+        member_changed = (
+            (df["__valid_f"] > 0.5)
+            & prev_members.notna()
+            & (df["__prev_members_f"] != prev_members).fillna(False)
+        )
+        boundary = after_gap | member_changed
+        df.drop(columns=["__prev_members_f"], inplace=True)
+
+    df["__section_break"] = boundary
+    df["__section_break_i"] = boundary.astype("int64")
+    df["__section_id"] = df.groupby(
+        "code", sort=False
+    )["__section_break_i"].cumsum().astype("int64")
+    df.drop(columns=["__valid_f", "__section_break_i"], inplace=True)
+
 
 # ---------------------------------------------------------------------------
 #  Per-(sec_type, code) regime-detection columns
@@ -40,7 +127,9 @@ def compute_tech_stats(df: pd.DataFrame, sec_type: str) -> pd.DataFrame:
     """Compute the margin_balance regime-detection cols per code.
 
     Input:
-      df with columns [code, date, rz_balance, rz_buy] sorted by (code, date).
+      df with columns [code, date, rz_balance, rz_buy] sorted by (code,
+      date), plus the optional ``n_members`` population passenger
+      (industry / index curves — see attach_section_flags).
 
     Output:
       DataFrame with columns:
@@ -51,11 +140,15 @@ def compute_tech_stats(df: pd.DataFrame, sec_type: str) -> pd.DataFrame:
     Conventions:
       - INVALID-VALUE RULE (rz_balance == 0 OR NULL → NaN): a 0 rz_balance
         means "no rongzi position" — missing data for rolling purposes.
-        Rolling means/stds skip NaN (min_periods=1), matching the
-        "skip-the-date-as-a-holiday" semantics.
+      - SECTIONING (see the module docstring): the slope and every
+        rolling window are computed WITHIN sections — null-gap and
+        membership-change boundaries (``__section_break``). The slope is
+        NULL on a boundary row (no cross-boundary delta); the MA/STD
+        windows never mix slopes from different sections.
       - slope: (X[t] - X[t-1]) / X[t-1], NULL on the first date of each
-        code or when X[t-1] <= 0 (denominator guard).
-      - slope_ma5: rolling(5, min_periods=1).mean() of the daily slope.
+        SECTION or when X[t-1] <= 0 (denominator guard).
+      - slope_ma5: rolling(5, min_periods=1).mean() of the daily slope
+        within the section.
       - zscore_20d: (slope - slope_ma20) / slope_std20, NaN when the
         rolling std is NaN or <= 0.
     """
@@ -69,13 +162,16 @@ def compute_tech_stats(df: pd.DataFrame, sec_type: str) -> pd.DataFrame:
         )
 
     work = df.sort_values(["code", "date"]).reset_index(drop=True)
-    grp_keys = ["code"]
+
+    # ---- Section flags (null-gap + membership boundaries) ------------
+    attach_section_flags(work, member_col=MEMBER_COUNT_COL)
+    grp_keys = ["code", "__section_id"]
 
     # ---- Invalid-value cleaning: 0 / NULL → NaN ----------------------
     cleaned = pd.to_numeric(work["rz_balance"], errors="coerce")
     work["rz_balance"] = cleaned.where(cleaned > 0)
 
-    # ---- slope = (X[t] - X[t-1]) / X[t-1] ----------------------------
+    # ---- slope = (X[t] - X[t-1]) / X[t-1] (within section) -----------
     from _common.df_utils import grouped_shift
     prev_col = "__prev_rz_balance"
     grouped_shift(
@@ -129,6 +225,8 @@ _INDUSTRY_STATS_COLUMNS = [
     "date", "industry_id", "industry_label",
     "stock_margin_balance", "etf_margin_balance",
     "stock_margin_buy", "etf_margin_buy",
+    "stock_margin_balance_norm", "etf_margin_balance_norm",
+    "stock_margin_buy_norm", "etf_margin_buy_norm",
 ]
 
 
@@ -172,7 +270,11 @@ def compute_industry_stats(
     stock_industry_map: pd.DataFrame,
 ) -> pd.DataFrame:
     """Aggregate per-(sec_type, code, date) rz_balance / rz_buy into
-    per-(date, industry_id) SUMs split by stock / etf.
+    per-(date, industry_id) side stats split by stock / etf: the SUM of
+    member flows (raw columns) plus the AVERAGE over members with a
+    NON-NULL NON-ZERO value (*_norm columns — the per-member-normalized
+    curve; zero-margin members are excluded from BOTH numerator and
+    denominator, so a day's norm reflects only contributing members).
 
     The inputs are the RAW rz_balance / rz_buy per (code, date) — NOT the
     tech-stats output. Pass the raw history DataFrames from
@@ -187,7 +289,9 @@ def compute_industry_stats(
     Output:
       DataFrame with columns matching analysis.margin_industry_stats:
       [date, industry_id, industry_label, stock_margin_balance,
-      etf_margin_balance, stock_margin_buy, etf_margin_buy].
+      etf_margin_balance, stock_margin_buy, etf_margin_buy,
+      stock_margin_balance_norm, etf_margin_balance_norm,
+      stock_margin_buy_norm, etf_margin_buy_norm].
       One row per (date, industry_id).
 
     LABEL-CODE CONTRACT: the merge/groupby/outer-join/sort chain runs on
@@ -231,6 +335,13 @@ def compute_industry_stats(
         merged["rz_buy"] = pd.to_numeric(
             merged["rz_buy"], errors="coerce"
         ).fillna(0)
+        # NORM inputs: values <= 0 → NaN so the grouped MEAN skips them
+        # (average of the non-null non-zero members only; an all-invalid
+        # group means to NaN → NULL, matching the SUM's zero→NULL rule).
+        merged["__balance_pos"] = merged["rz_balance"].where(
+            merged["rz_balance"] > 0
+        )
+        merged["__buy_pos"] = merged["rz_buy"].where(merged["rz_buy"] > 0)
 
         agg = merged.groupby(
             ["date", "industry_code"], as_index=False
@@ -238,8 +349,21 @@ def compute_industry_stats(
             **{
                 f"{prefix}_margin_balance": ("rz_balance", "sum"),
                 f"{prefix}_margin_buy": ("rz_buy", "sum"),
+                f"{prefix}_margin_balance_norm": ("__balance_pos", "mean"),
+                f"{prefix}_margin_buy_norm": ("__buy_pos", "mean"),
             }
         )
+        # ZERO-SUM -> NULL: a 0 SUM means NO member contributed on that
+        # date (missing data), not a genuine zero-margin day — store NULL
+        # so the UI series breaks the line instead of dipping to 0. Also
+        # normalizes the cudf all-null-group SUM (null) vs pandas (0.0).
+        # Applied to the norms too for symmetry (a positive-only mean
+        # cannot legitimately be 0).
+        for c in (
+            f"{prefix}_margin_balance", f"{prefix}_margin_buy",
+            f"{prefix}_margin_balance_norm", f"{prefix}_margin_buy_norm",
+        ):
+            agg[c] = agg[c].where(agg[c] > 0)
         out_frames.append(agg)
 
     if not out_frames:
@@ -268,18 +392,17 @@ def compute_industry_stats(
         )
     elif stock_agg is not None:
         merged = stock_agg
-        merged["etf_margin_balance"] = 0.0
-        merged["etf_margin_buy"] = 0.0
+        for c in ("etf_margin_balance", "etf_margin_buy",
+                  "etf_margin_balance_norm", "etf_margin_buy_norm"):
+            merged[c] = np.nan
     else:
         merged = etf_agg  # type: ignore[assignment]
-        merged["stock_margin_balance"] = 0.0
-        merged["stock_margin_buy"] = 0.0
+        for c in ("stock_margin_balance", "stock_margin_buy",
+                  "stock_margin_balance_norm", "stock_margin_buy_norm"):
+            merged[c] = np.nan
 
-    # Fill NaN sums with 0 (outer join produces NaN where one side is
-    # missing).
-    for c in ("stock_margin_balance", "etf_margin_balance",
-              "stock_margin_buy", "etf_margin_buy"):
-        merged[c] = merged[c].fillna(0)
+    # NO fillna(0): the outer join leaves NaN where one side is missing —
+    # that IS the semantics (no contribution on that date -> NULL in DB).
 
     # Write boundary: re-attach the TEXT identity (industry_id /
     # industry_label) from the small code frame — the labels never rode

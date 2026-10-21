@@ -470,6 +470,7 @@ export default class CodeTrendChart extends React.Component<
         showRegimes={this.state.showRegimes}
         sliderOn={sliderOn}
         aiSearchKeywords={this.props.aiSearchKeywords}
+        insightPage={this.props.aiAskInsight}
         getInstance={() => this.chartInstance}
       />
     );

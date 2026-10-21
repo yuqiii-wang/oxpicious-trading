@@ -85,7 +85,7 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_momentum';
 --  the registry in-memory on (code, date).
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_momentum (
-    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
     regime          SMALLINT     NOT NULL,  -- label code (static.label_dim 'regime'): 0=calm 1=hot 2=panic 3=quiet
@@ -128,7 +128,7 @@ CREATE INDEX IF NOT EXISTS idx_mov_ave_momentum_sec_type_code_date
     ON analysis.mov_ave_momentum (sec_type, code, date);
 
 COMMENT ON TABLE  analysis.mov_ave_momentum           IS 'Lookback-adaptive momentum (rate of change): one row per (code, sec_type, date). momentum[n][t] = price[t]/price[t-n] - 1 over the parent mov_ave_spread price column. TWO FIXED lookbacks (momentum_5days, momentum_20days — the stable anchors) plus THREE ADAPTIVE lookbacks whose n is chosen self-adaptively by volatility per (code, regime): n_term = round((target_move_term / sigma(code,regime))^2) — equal-expected-move / volatility-time targeting over the median stats.market_regimes.vol of the code''s days in that regime (high vol -> shorter lookbacks). short target 3% clipped [5,60]; mid 6% [20,120]; long 12% [60,255]; ordering enforced. lb_* record the day''s effective lookbacks; vol_regime the sigma they were derived from. sigma is FULL-HISTORY per slice, so past lookbacks shift with new data — the table is REBUILT WHOLESALE per sec_type on every run that computes it (the rsi_ranks precedent). Built by analysis.mov_ave_spread (steps/momentum.py).';
-COMMENT ON COLUMN analysis.mov_ave_momentum.sec_type        IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_momentum.sec_type        IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry).';
 COMMENT ON COLUMN analysis.mov_ave_momentum.code            IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_momentum.date            IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_momentum.regime          IS 'The day''s regime as its static.label_dim (''regime'' domain) SMALLINT code: 0 calm, 1 hot, 2 panic, 3 quiet (from stats.market_regimes; the label-code contract). Days with no registry row (build lag) store 0 (calm) with NULL vol_regime — the registry''s own no-state-day convention.';

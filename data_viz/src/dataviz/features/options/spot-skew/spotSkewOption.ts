@@ -381,7 +381,7 @@ export function buildHistoryOption(
         yAxisIndex: 0,
         symbol: "none",
         lineStyle: { color: SPOT_COLOR, width: 1.4 },
-        areaStyle: { color: "rgba(44,62,80,0.06)" },
+        areaStyle: { color: "rgba(217,95,14,0.06)" },
         data: spotSeries,
         ...(selMark ? { markLine: selMark } : {}),
       },

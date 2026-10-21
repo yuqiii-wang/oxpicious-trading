@@ -53,6 +53,7 @@ from downloads._common import (
     build_default_session,
     is_fresh_within,
     resolve_out_dir,
+    service_urls,
     setup_logger,
 )
 
@@ -60,10 +61,14 @@ logger = setup_logger("fund_nav_eastmoney")
 
 SERVICE = "downloads.fund.eastmoney.nav"
 
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+
 CSV_ENCODING = "utf-8-sig"
 FRESH_HOURS = 20 * 24  # monthly cadence freshness guard
-PINGZHONG_URL = "https://fund.eastmoney.com/pingzhongdata/{code}.js"
-REFERER_URL = "https://fund.eastmoney.com/{code}.html"
+PINGZHONG_URL = URLS["pingzhong_url"]
+REFERER_URL = URLS["referer_url"]
 
 NAV_COLS = ["date", "code", "nav", "cum_nav", "day_pct"]
 

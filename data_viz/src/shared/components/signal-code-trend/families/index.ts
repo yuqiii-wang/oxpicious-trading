@@ -1,7 +1,7 @@
 /**
  * families — the signal families' display REGISTRY (one file per
  * family: rsi / bollinger / macross / optionsWall / optionsVix /
- * momentum / rfBreak). The
+ * momentum / rfBreak / hedgePairs). The
  * rules/history panels and the shared tables consume THIS registry and
  * never name a family themselves — adding a family is one file + one
  * registry entry (the ENGINES-registry pattern the Python signals
@@ -20,6 +20,8 @@ import { optionsWallFamily } from "./optionsWall";
 import { optionsVixFamily } from "./optionsVix";
 import { momentumFamily } from "./momentum";
 import { rfBreakFamily } from "./rfBreak";
+import { hedgePairsFamily } from "./hedgePairs";
+import { hpRsiFamily } from "./hpRsi";
 
 /** One family's display vocabulary. */
 export interface SignalFamily {
@@ -42,6 +44,8 @@ export const SIGNAL_FAMILIES: Record<string, SignalFamily> = {
   options_vix: optionsVixFamily,
   momentum: momentumFamily,
   rf_break: rfBreakFamily,
+  hedge_pairs: hedgePairsFamily,
+  hp_rsi: hpRsiFamily,
 };
 
 /** Display label per signal TAG (signal_type — the indicator family).
@@ -53,11 +57,11 @@ export const SIGNAL_TYPE_LABELS: Record<string, string> = Object
   );
 
 /** The `family · sub` display of one signal record — the family word
- * is the family's display LABEL (never the raw signal_type literal —
- * "Roof/Floor · rf60_med_roof", not "rf_break · …"); families with a
- * recordLabel carry their own sub word (ma_cross: the window-only
- * label, "MA Cross · MA 20"; options_wall: the config word), others
- * keep the raw literal. */
+ is the family's display LABEL (never the raw signal_type literal —
+ "Roof/Floor · rf60_med_roof", not "rf_break · …"); families with a
+ recordLabel carry their own sub word (ma_cross: the window-only
+ label, "MA Cross · MA 20"; options_wall: the config word), others
+ keep the raw literal. */
 export function signalRecordName(
   signalType: string,
   subType: string,
@@ -65,4 +69,27 @@ export function signalRecordName(
   const own = SIGNAL_FAMILIES[signalType]?.recordLabel?.(subType) ?? null;
   const family = SIGNAL_TYPE_LABELS[signalType] ?? signalType;
   return `${family} · ${own ?? subType}`;
+}
+
+/** The record's SHORT sub word alone (the family's recordLabel; the
+ raw literal when unmapped) — the compact surfaces (the portfolio
+ cell rows, the sub-type dropdowns) render this instead of the full
+ `family · sub` name; the full name stays on tooltips. */
+export function signalSubWord(
+  signalType: string,
+  subType: string,
+): string {
+  return SIGNAL_FAMILIES[signalType]?.recordLabel?.(subType) ?? subType;
+}
+
+/** The SHORT sub word from the literal alone — scans the families for
+ *  the first recordLabel that maps it (the sub literals are unique
+ *  across families; the dropdowns that carry bare sub strings use
+ *  this). Raw literal when no family maps it. */
+export function signalSubWordLoose(subType: string): string {
+  for (const f of Object.values(SIGNAL_FAMILIES)) {
+    const w = f.recordLabel?.(subType);
+    if (w != null) return w;
+  }
+  return subType;
 }

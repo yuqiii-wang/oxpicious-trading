@@ -26,9 +26,13 @@ ABOVE_ACTION = ACTION_CODE["sell"]
 # normalized breach depth by depth_factor, capped at depth_cap:
 #
 #     confidence(pct) = base_pct × (1 + depth_factor × min(depth, cap))
+#                       × sample_scale × portfolio_scale
 #
 # — the IDENTICAL formula the history writer (rule_base.confidence_pct)
-# applies, so the two breach tiers stay comparable. The depth
+# applies, so the two breach tiers stay comparable. sample_scale is
+# the starvation haircut (<= 1); portfolio_scale the GATED PORTFOLIO
+# CASCADE (>= 1 — the confidence INCREASE from a passing portfolio
+# group, 2026-10-20). The depth
 # normalization unit rides the bar_def kind (the engines' own scales):
 #
 #     rolling_quantile  |excess| / 10  (RSI points — mov_rsi's
@@ -58,16 +62,30 @@ def breach_depth_norm(sig: dict, excess: float) -> float:
 def rules_confidence_bp(sig: dict, excess: float) -> int:
     """One rule cell's SCALED breach confidence on the INTEGER
     basis-point record scale: base_pct × (1 + depth_factor ×
-    min(depth_norm, depth_cap)) percent over the normalized breach
-    depth — the history writer's identical formula
-    (rule_base.confidence_pct) converted ×100, clamped to [0, 10000]."""
+    min(depth_norm, depth_cap)) × sample_scale × portfolio_scale
+    percent over the normalized breach depth — the history writer's
+    identical formula (rule_base.confidence_pct) converted ×100,
+    clamped to [0, 10000]. sample_scale is the starvation haircut
+    min(n/floor, 1) RECOMPUTED by the fetch since 2026-10-20 (the
+    latest snapshot's n_episodes against the rule's
+    gate.sample_floor constant — the digest left the slimmed cell
+    snapshot; missing = no haircut).
+    portfolio_scale is the GATED PORTFOLIO CASCADE (2026-10-20,
+    re-homed the same day): the confidence INCREASE from the strongest
+    passing portfolio group claiming the cell (scale > 1, from the
+    portfolio tables lateral — the group's latest
+    history_portfolio_signal_performance gate.conf_scale; missing = no
+    passing group claimed the cell — 1.0, never a discount)."""
     conf = sig.get("confidence") or {}
     base_pct = float(conf.get("base_pct") or 0.0)
     factor = float(conf.get("depth_factor") or 0.0)
     cap = float(conf.get("depth_cap") or 2.0)
+    scale = float(conf.get("sample_scale") or 1.0)
+    pf_scale = float(conf.get("portfolio_scale") or 1.0)
     depth = min(breach_depth_norm(sig, excess), cap)
-    return int(min(max(round(base_pct * (1.0 + factor * depth) * 100.0),
-                       0), 10_000))
+    return int(min(max(round(
+        base_pct * (1.0 + factor * depth) * scale * pf_scale * 100.0,
+    ), 0), 10_000))
 
 # ---- Record defaults ---------------------------------------------------------
 

@@ -12,6 +12,7 @@
 import { useMemo } from "react";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { OptionsRow } from "@shared/types";
 import { fmtNum } from "@/lib/series";
 import { computeSmileSkewness } from "@/lib/options-stats";
@@ -51,6 +52,7 @@ export default function VolSmilePanel({ rows, selectedDate }: Props) {
   // the notes, the card keeps the identity.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.volSmile,
       intro:
         "IV (%) vs moneyness m = K/S — calls solid, puts dashed, grouped by expiry month " +
         "(blue gradient: dark = near). ATM line at m = 1; markers = per-expiry OI-weighted " +

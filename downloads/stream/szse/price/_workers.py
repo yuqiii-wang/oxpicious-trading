@@ -1,7 +1,7 @@
 """SZSE stream workers — async fetch dispatch, circuit breakers, index rounds.
 
 Contains the async machinery that drives the four parallel source workers
-(A=akshare, C=em_push2his, D=em_push2, B=szse fallback) plus the index round
+(A=sina, C=em_push2his, D=em_push2, B=szse fallback) plus the index round
 runner. Also holds biz-day helpers (wait_for_next_trading_day, sleep_chunks,
 _seconds_until_next_hour), split_groups, and the per-stock circuit-breaker
 logic that hands failed groups from A/C/D to the szse fallback worker.
@@ -23,9 +23,9 @@ from downloads._common import (
 from _common.db_commons import check_stock_intraday_exists
 
 from ._aggregation import aggregate_5min, aggregate_index_5min
-from ._akshare_source import MinuteSample, fetch_akshare_minute
 from ._em_source import fetch_em_push2_minute, fetch_em_push2his_minute
 from ._io import load_bars_sync, load_index_bars_sync
+from ._sina_source import MinuteSample, fetch_sina_minute
 from ._szse_source import fetch_szse_index_minute, fetch_szse_minute
 
 logger = setup_logger("stream_szse")
@@ -35,7 +35,7 @@ logger = setup_logger("stream_szse")
 # they all reach CLOSE_TIME, then the loop waits for the next trading day.
 CLOSE_TIME = time(15, 0)
 
-# Per-fetch hard timeout (seconds). If a single AkShare / SZSE fetch takes
+# Per-fetch hard timeout (seconds). If a single Sina / SZSE / EM fetch takes
 # longer than this we abandon it (daemon thread winds down in the background)
 # and log a timeout — so a hung fetch never stalls the whole stream.
 FETCH_TIMEOUT_SEC = 120.0
@@ -226,8 +226,8 @@ async def _fetch_async(source: str, bare_code: str, session, host_tracker):
     the samples list, or None on failure / timeout (the "no data downloaded
     for 2 min → timeout" notice fires here).
     """
-    if source == "akshare":
-        coro = asyncio.to_thread(fetch_akshare_minute, bare_code)
+    if source == "sina":
+        coro = asyncio.to_thread(fetch_sina_minute, bare_code)
     elif source == "em_push2his":
         coro = asyncio.to_thread(fetch_em_push2his_minute, bare_code)
     elif source == "em_push2":
@@ -269,13 +269,15 @@ async def _process_stocks(
     Circuit breaker: each source has a ``max_consecutive_failures`` threshold.
     When that many consecutive failures occur, the worker returns the remainder
     (from the current failed stock onward) so the szse worker can resume it.
-      * akshare (A): 1  — stop immediately on first failure (V8 crash risk).
+      * sina (A): 1  — stop immediately on first failure: a blocked host stays
+        blocked within a round, so hammering on only invites a longer block;
+        the in-fetch retry already rode through transient blips.
       * em_push2his/push2 (C/D): 3  — ride through 1-2 transient failures
         before giving up (EM endpoints can be flaky but not uniformly dead).
       * szse (B): 0  — never stops (last resort, always continues).
     Returns (identity_rows, bar_rows, {code: latest_time}, remainder).
     """
-    if source == "akshare":
+    if source == "sina":
         max_consecutive_failures = 1
     elif source in ("em_push2his", "em_push2"):
         max_consecutive_failures = 3
@@ -430,20 +432,18 @@ async def _run_index_round(
 
 
 # ---------------------------------------------------------------------------
-# Async workers: three primary procs (A=akshare, C=em_push2his, D=em_push2)
+# Async workers: three primary procs (A=sina, C=em_push2his, D=em_push2)
 # pull groups from a shared primary queue in parallel; one fallback proc
 # (B=szse) drains the fallback queue first, then the primary. The fallback
 # queue is seeded with the rank-priority slice (highest-ranked codes -> B,
 # see _rounds.split_rank_priority) before circuit-breaker remainders from
 # A/C/D land behind it. Whoever finishes first takes the next group.
 # On an A/C/D failure the unfinished remainder is handed to the SZSE worker.
-# V8 is only ever touched by the akshare worker, so the
-# partition_address_space.cc race cannot happen.
 # ---------------------------------------------------------------------------
 async def _parallel_source_worker(source: str, tag: str, q_primary, q_fallback,
                                   state, session, host_tracker, emitted_map,
                                   trade_date, cooldown_sec, conn):
-    """Generic primary-queue worker for sources A (akshare), C (em_push2his),
+    """Generic primary-queue worker for sources A (sina), C (em_push2his),
     D (em_push2). Pulls groups from q_primary; on failure hands the remainder
     to q_fallback for the szse worker to resume.
     """

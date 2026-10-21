@@ -2,11 +2,12 @@
  * Barrel re-export for the analysis service modules.
  * Extracted from the former analysis.service.ts.
  */
-export { listMovAveSpreadCodes, getMovAveSpreadChart, getMovAveSpreadChartPairs, getMovAveSpreadChartEma, getMovAveSpreadChartShared, getMovAveSpreadChartExtras, getMarketRegimeSpans, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads.js";
-export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution.js";
-export { listIndustrySentimentsThemes, listIndustrySentimentsStrategyThemes, getIndustrySentimentsChart, getIndustrySentimentsChartByCode } from "./industry-sentiments.js";
+export { listMovAveSpreadCodes, getMovAveSpreadChart, getMovAveSpreadChartPairs, getMovAveSpreadChartEma, getMovAveSpreadChartShared, getMovAveSpreadChartExtras, getMarketRegimeSpans, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads/index.js";
+export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution/index.js";
+export { listIndustrySentimentsThemes, listIndustrySentimentsStrategyThemes, getIndustrySentimentsChart, getIndustrySentimentsChartByCode } from "./industry-sentiments/index.js";
 export { getIndustryCorrelations } from "./industry-correlations.js";
-export { getIndustryCorrOffsets, listIndustryCorrOffsetBenchmarks, listIndustryCorrOffsetIndustries } from "./industry-corr-offsets.js";
+export { getIndustryCorrOffsets, listIndustryCorrOffsetBenchmarks, listIndustryCorrOffsetIndustries, invalidateIndustryCorrOffsetCoverage } from "./industry-corr-offsets.js";
+export { listPairPctRatioUniverse, getPairPctRatios } from "./pair-pct-ratios.js";
 export { getBenchmarkPriceChart, getIndustryAttributionPriceSeries } from "./benchmark-price-chart.js";
 export { getAllIndustriesAttribution, getMemberIndexAttribution } from "./industry-attribution-bars.js";
 export { getIndustryBenchmarkAttribution, listIndustryAttributionBenchmarks } from "./industry-benchmark-attribution.js";
@@ -20,11 +21,12 @@ export {
   listValuationThemes,
   listValuationStrategyThemes,
   listPeStreaks,
-} from "./pe.js";
+} from "./pe/index.js";
 export { listDividendDeliveries } from "./dividends.js";
 export {
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,
+  listMarginTrendUnderlyings,
   getMarginIndustrySeries,
   getMarginTrends,
 } from "./margin-trends.js";

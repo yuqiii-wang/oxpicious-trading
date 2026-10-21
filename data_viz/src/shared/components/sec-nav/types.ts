@@ -4,8 +4,11 @@
  */
 import type { SectorNode, StrategyNode } from "@shared/types";
 
-/** Security type across all analysis pages — the sec_type toggle value. */
-export type SecNavSecType = "etf" | "index" | "stock";
+/** Security type across all analysis pages — the sec_type toggle value.
+ *  "industry" = the composite industry entities (code = industry_id;
+ *  no sector/strategy classification above them — their themes source
+ *  renders one flat L1 group). */
+export type SecNavSecType = "etf" | "index" | "stock" | "industry";
 
 /** Themes endpoints for ONE sec_type — a page plugs in its own backend routes. */
 export interface SecNavThemesSource {

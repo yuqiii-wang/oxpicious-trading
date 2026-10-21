@@ -17,6 +17,7 @@
  * mode via POST /api/analysis/industry-corr-offsets/run).
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { LruCache } from "../../lib/lru-cache.js";
 import type { QueryResultRow } from "pg";
 import type {
   IndustryCorrOffsetBenchmarksResponse,
@@ -26,6 +27,22 @@ import type {
 } from "../../../shared/types.js";
 import { fetchIndustryLabels } from "./industry-correlations.js";
 import { encodeLabelParam } from "../label-codes.js";
+
+// ----------------------------------------------------------------------------
+//  Coverage cache — the industries/benchmarks endpoints describe what is
+//  MATERIALIZED in the offsets table, which only changes when the composites
+//  pipeline runs. Each uncached hit passes over the whole ~880K-row table
+//  twice (~200 ms warm, 0.6-1 s cold) and both fire in the page's first-wave
+//  request burst, so they are served from a short TTL cache instead.
+//  invalidateIndustryCorrOffsetCoverage() runs after a successful
+//  /industry-corr-offsets/run so fresh coverage shows immediately.
+// ----------------------------------------------------------------------------
+const COVERAGE_CACHE_TTL_MS = 60_000;
+const coverageCache = new LruCache<unknown>(4, COVERAGE_CACHE_TTL_MS);
+
+export function invalidateIndustryCorrOffsetCoverage(): void {
+  coverageCache.clear();
+}
 
 // ----------------------------------------------------------------------------
 //  GET rows — one row per (start_date, lexicographic pair, benchmark) for
@@ -187,32 +204,49 @@ interface DbBenchmarkRow extends QueryResultRow {
 export async function listIndustryCorrOffsetBenchmarks(): Promise<
   IndustryCorrOffsetBenchmarksResponse
 > {
-  // One pass over the offsets table with BOTH pair endpoints unnested —
-  // COUNT(DISTINCT industry_id) alone undercounts (an industry that is
-  // only ever the lexicographically LARGER endpoint of its pairs would be
-  // missing; e.g. {AI, BANKS, SEMI} pairs count 2 instead of 3).
+  const cached = coverageCache.get("benchmarks");
+  if (cached) return cached as IndustryCorrOffsetBenchmarksResponse;
+  // Two inner-DISTINCT branches + a plain GROUP BY for the date bounds.
+  // The naive shape (UNION ALL over both endpoints carrying start_date,
+  // then COUNT(DISTINCT)/MIN/MAX per benchmark) sorts 1.67M rows with an
+  // external-merge disk spill (~4 s, 2026-10-17 probe); deduping each side
+  // first (833K rows -> ~105 strings) keeps everything in hash memory
+  // (~170 ms). COUNT per benchmark over the deduped union stays exact:
+  // an industry that is only ever the lexicographically LARGER endpoint
+  // of its pairs is still counted (e.g. {AI, BANKS, SEMI} pairs count 3).
   const rows = await queryRows<DbBenchmarkRow>(`
+    WITH bounds AS (
+      SELECT benchmark_code, MIN(start_date) AS first_start_date,
+                               MAX(start_date) AS last_start_date
+      FROM analysis_composites.industry_corr_benchmark_offsets
+      GROUP BY benchmark_code
+    ),
+    counts AS (
+      SELECT benchmark_code, COUNT(*) AS n_industries
+      FROM (
+        SELECT DISTINCT benchmark_code, industry_id AS ind
+        FROM analysis_composites.industry_corr_benchmark_offsets
+        UNION
+        SELECT DISTINCT benchmark_code, benchmark_industry_id
+        FROM analysis_composites.industry_corr_benchmark_offsets
+      ) s
+      GROUP BY benchmark_code
+    )
     SELECT
-      u.benchmark_code,
+      b.benchmark_code,
       (
-        SELECT COALESCE(NULLIF(MAX(sc.industry_label), ''), u.benchmark_code)
+        SELECT COALESCE(NULLIF(MAX(sc.industry_label), ''), b.benchmark_code)
         FROM stats.sec_classification sc
-        WHERE sc.type = 'index' AND sc.code = u.benchmark_code
+        WHERE sc.type = 'index' AND sc.code = b.benchmark_code
       ) AS benchmark_label,
-      COUNT(DISTINCT u.ind) AS n_industries,
-      MIN(u.start_date) AS first_start_date,
-      MAX(u.start_date) AS last_start_date
-    FROM (
-      SELECT t.benchmark_code, t.industry_id AS ind, t.start_date
-      FROM analysis_composites.industry_corr_benchmark_offsets t
-      UNION ALL
-      SELECT t.benchmark_code, t.benchmark_industry_id, t.start_date
-      FROM analysis_composites.industry_corr_benchmark_offsets t
-    ) u
-    GROUP BY u.benchmark_code
-    ORDER BY u.benchmark_code
+      c.n_industries,
+      b.first_start_date,
+      b.last_start_date
+    FROM bounds b
+    JOIN counts c USING (benchmark_code)
+    ORDER BY b.benchmark_code
   `);
-  return {
+  const resp: IndustryCorrOffsetBenchmarksResponse = {
     benchmarks: rows.map((r) => ({
       benchmark_code: r.benchmark_code,
       benchmark_label: r.benchmark_label ?? r.benchmark_code,
@@ -221,6 +255,8 @@ export async function listIndustryCorrOffsetBenchmarks(): Promise<
       last_start_date: formatDate(r.last_start_date),
     })),
   };
+  coverageCache.set("benchmarks", resp);
+  return resp;
 }
 
 // ----------------------------------------------------------------------------
@@ -238,13 +274,21 @@ interface DbIndustryRow extends QueryResultRow {
 export async function listIndustryCorrOffsetIndustries(): Promise<
   IndustryCorrOffsetIndustriesResponse
 > {
-  // ONE pass over the offsets table (UNION dedups both pair endpoints),
-  // then a cheap LEFT JOIN — avoids per-industry count scans.
+  const cached = coverageCache.get("industries");
+  if (cached) return cached as IndustryCorrOffsetIndustriesResponse;
+  // Inner DISTINCTs dedup each endpoint side (833K rows -> ~105 strings)
+  // BEFORE the UNION — the plain UNION sorts both full sides with an
+  // external-merge disk spill (~2.3 s cold, 2026-10-17 probe); deduped
+  // sides keep it a ~50 ms hash pass. Covers both pair endpoints, so an
+  // industry that only ever appears as the lexicographically LARGER
+  // endpoint is still flagged has_rows.
   const rows = await queryRows<DbIndustryRow>(`
     WITH cov AS (
-      SELECT industry_id AS ind FROM analysis_composites.industry_corr_benchmark_offsets
+      SELECT DISTINCT industry_id AS ind
+      FROM analysis_composites.industry_corr_benchmark_offsets
       UNION
-      SELECT benchmark_industry_id FROM analysis_composites.industry_corr_benchmark_offsets
+      SELECT DISTINCT benchmark_industry_id
+      FROM analysis_composites.industry_corr_benchmark_offsets
     )
     SELECT
       sc.industry_id,
@@ -260,11 +304,13 @@ export async function listIndustryCorrOffsetIndustries(): Promise<
     LEFT JOIN cov c ON c.ind = sc.industry_id
     ORDER BY sc.industry_id
   `);
-  return {
+  const resp: IndustryCorrOffsetIndustriesResponse = {
     industries: rows.map((r) => ({
       industry_id: r.industry_id,
       industry_label: r.industry_label ?? r.industry_id,
       has_rows: r.has_rows === true,
     })),
   };
+  coverageCache.set("industries", resp);
+  return resp;
 }

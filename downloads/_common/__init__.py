@@ -45,6 +45,8 @@ from _common.request_config import (
     poll_interval_sec_for,
     request_config_for,
     retry_policy_for,
+    service_urls,
+    settle_sleep_sec_for,
     sleep_sec_for,
 )
 from downloads._common.net import (
@@ -52,13 +54,9 @@ from downloads._common.net import (
     COMMON_BASE_HEADERS,
     DEFAULT_ACCEPT,
     DEFAULT_ACCEPT_LANG,
-    DEFAULT_SHORT_SLEEP_SEC,
     DEFAULT_SLEEP_SEC,
     DEFAULT_TIMEOUT,
     DEFAULT_USER_AGENT,
-    LONG_SLEEP_INTERVAL,
-    SUPER_LONG_SLEEP_INTERVAL,
-    VERY_LONG_SLEEP_INTERVAL,
     AntiBotConfig,
     AntiBotProxy,
     HostStatus,

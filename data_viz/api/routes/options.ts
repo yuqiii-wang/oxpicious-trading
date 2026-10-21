@@ -7,6 +7,7 @@ import {
   listUnderlyings,
   getOptionsCombined,
   getOptionsWalls,
+  getOptionsWallsDominant,
   getEtfOhlcv,
   getOptionsSkewnessSeries,
   getOptionsOiStats,
@@ -45,7 +46,7 @@ router.get("/underlyings", async (req: Request, res: Response) => {
       typeof req.query.target_type === "string" ? req.query.target_type : undefined;
     const exchange =
       typeof req.query.exchange === "string" ? req.query.exchange : undefined;
-    res.json(await listUnderlyings(targetType, exchange));
+    res.json(await listUnderlyings(targetType, exchange, wantsFresh(req)));
   } catch (err) {
     console.error("[szse-options/underlyings] error:", err);
     res.status(500).json({ error: String(err) });
@@ -78,6 +79,23 @@ router.get("/walls", async (req: Request, res: Response) => {
     res.json(await getOptionsWalls(query));
   } catch (err) {
     console.error("[szse-options/walls] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** Per-plot: the DOMINANT zone wall per (date, side) — the skew panel's
+ *  wall shades without the per-expiry bulk (the Options Trend cohort
+ *  chart keeps /walls). */
+router.get("/walls-dominant", async (req: Request, res: Response) => {
+  try {
+    const query = {
+      underlying: typeof req.query.underlying === "string" ? req.query.underlying : undefined,
+      start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+      end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+    };
+    res.json(await getOptionsWallsDominant(query));
+  } catch (err) {
+    console.error("[szse-options/walls-dominant] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

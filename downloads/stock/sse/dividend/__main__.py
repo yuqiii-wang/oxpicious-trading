@@ -39,7 +39,7 @@ Anti-bot: uses the SAME ``AntiBotProxy`` configuration as the PE requests in
 ``add_random_param=True``, ``enable_host_tracking=True``; pacing
 (sleep/jitter/timeouts) resolves from the service's external_request_config
 JSON row (request_type ``dividend`` — 90s base sleep, matching the old
-``LONG_SLEEP_INTERVAL`` cadence). A mandatory ``Referer`` header pointing to
+the 90s long-sleep cadence). A mandatory ``Referer`` header pointing to
 the SSE company page is set via ``build_headers_with_referer``.
 
 Outputs one CSV per stock under ``temps/sse_archive/``:
@@ -102,6 +102,7 @@ from downloads._common import (
     build_headers_with_referer,
     is_valid_file,
     resolve_out_dir,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -113,17 +114,19 @@ from downloads._common.exchanges.sse import (
 
 # --- Endpoint constants -----------------------------------------------------
 SERVICE = "downloads.stock.sse.dividend"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 # Same JSONP endpoint as the PE/turnover "成交统计" download — only the sqlId
 # and request parameters differ.
-SSE_DIVIDEND_URL = "http://query.sse.com.cn/commonQuery.do"
+SSE_DIVIDEND_URL = URLS["sse_dividend_url"]
 SSE_DIVIDEND_SQL_ID = "COMMON_SSE_CP_GPJCTPZ_GPLB_LRFP_FH_L"
 
 # Referer is mandatory for this endpoint — without it the API returns
 # {"success":"false","error":"System Error..."}. Pointing to the company page
 # (the page that hosts the 利润分配/分红 tab) is the most natural choice.
-SSE_COMPANY_REFERER = (
-    "http://www.sse.com.cn/assortment/stock/list/info/company/index.shtml"
-)
+SSE_COMPANY_REFERER = URLS["sse_company_referer"]
 SSE_DIVIDEND_HEADERS = build_headers_with_referer(
     SSE_COMPANY_REFERER, extra={"Accept": "*/*"}
 )

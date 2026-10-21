@@ -30,7 +30,7 @@ import { invalidateCacheForPrefix, invalidateCacheForUrl } from "@/lib/api-clien
 import EChart from "@/shared/charts/EChart";
 import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ThemeMode } from "@/store/filters";
 import type { EtfBundle } from "@shared/types";
@@ -75,6 +75,9 @@ interface Props {
   defaultEndDate?: string;
   /** Optional callback fired when the user clicks any date on the chart. */
   onDateClick?: (date: string) => void;
+  /** Insight-registry item for the Ask AI metrics table — the Dividends
+   *  page overrides the PE default. */
+  insightPage?: { tab: string; page: string };
 }
 
 function retBadge(values: number[], idxFromEnd: number): number | null {
@@ -618,7 +621,7 @@ function ReturnBadges({ etf }: { etf: EtfBundle }) {
   );
 }
 
-export default function EtfMarginPanel({ etf, showDivEst = false, defaultStartDate, defaultEndDate, onDateClick }: Props) {
+export default function EtfMarginPanel({ etf, showDivEst = false, defaultStartDate, defaultEndDate, onDateClick, insightPage = INSIGHT_PAGES.peBaseline }: Props) {
   const themeMode = useChartThemeMode();
   const allRows = etf.rows;
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -714,6 +717,7 @@ export default function EtfMarginPanel({ etf, showDivEst = false, defaultStartDa
   // the CURRENT OHLC mode so the modal / LLM describe the view on screen.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: insightPage,
       intro:
         `Single-ETF daily chart of ${etf.code} ${etf.name} ` +
         `(${etf.is_bond ? "bond ETF — rebased close % line, neutral fill" : "equity ETF — adjusted OHLC bars, so dividends/splits draw no fake gaps"}): ` +
@@ -767,7 +771,7 @@ export default function EtfMarginPanel({ etf, showDivEst = false, defaultStartDa
           : []),
       ],
     }),
-    [etf.code, etf.name, etf.is_bond, ohlcMode, showDivEst],
+    [etf.code, etf.name, etf.is_bond, ohlcMode, showDivEst, insightPage],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${etf.code} · ${etf.name}`,

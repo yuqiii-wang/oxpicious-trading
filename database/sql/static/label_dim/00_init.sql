@@ -7,7 +7,14 @@
 --  Today that is the label-code contract (static.label_dim, the
 --  closed-vocabulary label <-> SMALLINT code map): DDL in
 --  01_label_dim.sql, data rows split into purpose-scoped INSERT files
---  (10..60) so each business area owns its own vocabulary rows.
+--  (10..60) so each business area owns its own vocabulary rows; and
+--  the JSON sibling ../holiday_calendar/ (one file per country, dates
+--  grouped by year — cn.json A-share market closures migrated 2026-10-17
+--  from _common/_holidays_and_weekdays.py inline constants; us.json
+--  NYSE/Nasdaq and hk.json HKEX added the same day, verified against
+--  the NYSE calendar and GovHK gazetted general holidays). The holiday
+--  JSONs are NOT SQL and not part of this \ir chain — the Python
+--  loader _common/_holidays_and_weekdays.py reads them at import time.
 --  stats/00_init.sql includes this master, so a fresh install still
 --  applies label_dim in the stats-master order.
 --

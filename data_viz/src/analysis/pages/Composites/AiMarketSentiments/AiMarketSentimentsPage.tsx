@@ -38,11 +38,14 @@
  *     amount, with the Overview / Hypes & Drains sub-toggle), and
  *   • the Q&A feed is scoped to the LATEST month's top-3/5 HYPE + DRAIN
  *     industries from analysis.industry_hypes_and_drains — the same
- *     rankings the plot's "Hypes & Drains" sub-view renders. A Top 3 / Top
- *     5 toggle (same idiom as that sub-view) picks N per side. The feed is
- *     scoped by industry_ids — never a silent fall back to "show all":
- *     until the rankings resolve the feed fetch is deferred, and an empty
- *     ranking scopes to an empty set.
+ *     rankings the plot's "Hypes & Drains" sub-view renders — PLUS the
+ *     broad-market tag (BROAD_SSE) the daily ai_daily summary QA stores
+ *     under, so the one Q&A that updates every trading day stays in scope
+ *     (the rankings never contain it). A Top 3 / Top 5 toggle (same idiom
+ *     as that sub-view) picks N per side. The feed is scoped by
+ *     industry_ids — never a silent fall back to "show all": until the
+ *     rankings resolve the feed fetch is deferred, and an empty ranking
+ *     still scopes to the broad tag alone.
  *
  * INDUSTRY-mode feed scoping — the DataViz AI page's Q&A feed idiom loads
  * the LLM Q&A knowledge base (text.llm_qa / text.llm_qa_refs, written by
@@ -225,8 +228,9 @@ export default function AiMarketSentimentsPage() {
             dots. Market: the classification nav is replaced by the Market
             Trend plot (broad-market indices + the Overview / Hypes & Drains
             sub-toggle) and the feed is scoped to the latest month's Top 3/5
-            HYPE + DRAIN industries (the Top 3 / 5 toggle picks N per side);
-            the strip falls back to its own slider. The AI / News toggle
+            HYPE + DRAIN industries (the Top 3 / 5 toggle picks N per side)
+            plus the broad-market daily QA (大盘 · BROAD_SSE); the strip
+            falls back to its own slider. The AI / News toggle
             switches the feed between LLM Q&A (text.llm_qa) and raw news
             (text.news) — same scope, day pick, and search. Cards expand to
             the full answer (AI) / article + comments (News).`}

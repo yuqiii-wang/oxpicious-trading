@@ -35,10 +35,10 @@ from downloads._common import (
     build_default_session,
     is_valid_file,
     resolve_out_dir,
+    service_urls,
     setup_logger,
 )
 from downloads.etf.huatai_pb._endpoints import (
-    COMMON_JS_URL,
     INTRO_FIELDS,
     build_proxy,
     is_listed_etf_code,
@@ -48,6 +48,11 @@ from downloads.etf.huatai_pb._endpoints import (
 logger = setup_logger("huatai_pb_intro")
 
 SERVICE = "downloads.etf.huatai_pb.intro"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+COMMON_JS_URL = URLS["common_js"]
 
 CSV_ENCODING = "utf-8-sig"
 

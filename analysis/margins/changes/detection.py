@@ -15,11 +15,32 @@ decline). Using zscore for direction caused misclassification (e.g. a
 sustained balance decline labeled as "UP" because daily declines were
 smaller than the 20d average decline).
 
+SECTIONING (2026-10-19): a rise/drop is never attributed ACROSS a
+section boundary. Sections are computed by
+``compute.attach_section_flags`` and shared with compute_tech_stats, so
+the slope windows and the episode segmentation see the SAME boundaries:
+
+  - null gaps — the rz_balance curve breaks (0/NULL row); the balance
+    may have moved arbitrarily inside the gap, so the cross-gap delta is
+    not a move of the first post-gap day. Null rows are NOT episode
+    days (not counted in days_of_trend), and the first valid row after
+    a gap starts a new section (its direction is a break).
+  - membership changes — on AGGREGATE curves (industry SUM, index
+    weighted-average) a contributing-member-count change (new member
+    added / member's margin data starts or stops) shifts the curve
+    level for POPULATION reasons; that jump is not a margin rise/drop
+    of the existing members (study 2026-10-19: 7.4% of industry
+    episodes spanned such a day, median 13% of the episode's |move| was
+    the structural jump, worst cases 99%).
+
 GAP BRIDGING: short opposite-direction runs of <= ``BRIDGE_GAP_DAYS``
-(3) days that occur between two same-direction runs are ABSORBED
-(flipped to match the surrounding direction). This prevents 1-3 day
-counter-trend blips from fragmenting what should be a single longer
-trend.
+(3) days that occur between two ADJACENT same-direction runs are
+ABSORBED (flipped to match the surrounding direction). This prevents
+1-3 day counter-trend blips from fragmenting what should be a single
+longer trend. Breaks are OPAQUE to bridging: a run separated from its
+neighbor by a break (null gap / membership change / section start) is
+never flipped based on what lies beyond the break, so no episode or
+bridged direction ever spans a section boundary.
 
 SIGNIFICANCE FILTER: after segmentation + bridging, a trend is KEPT only
 if a MAJORITY (> ``ZSCORE_MAJORITY_THRESHOLD`` = 50%) of its days have
@@ -31,6 +52,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from _common.df_utils import safe_columns
 from _common.labels import SEC_TYPE_CODE
 from analysis.margins.changes.constants import (
     BRIDGE_GAP_DAYS,
@@ -38,6 +60,7 @@ from analysis.margins.changes.constants import (
     MIN_TREND_DAYS,
     ZSCORE_MAJORITY_THRESHOLD,
 )
+from analysis.margins.compute import attach_section_flags, MEMBER_COUNT_COL
 
 
 def detect_trend_episodes(
@@ -52,9 +75,16 @@ def detect_trend_episodes(
     (slope_ma5 > 0 = UP, slope_ma5 < 0 = DOWN, NaN/0 = break). Direction
     comes from the ACTUAL balance movement (5-day smoothed slope sign).
 
+    SECTIONING: episodes never span a section boundary (null gap /
+    membership change — see the module docstring). Null-balance rows are
+    dropped before segmentation (not episode days); the boundary row's
+    direction is a break (the section-scoped slope_ma5 is NaN there), so
+    the episodes on either side of a boundary are separate rows.
+
     GAP BRIDGING: short opposite-direction runs of <= BRIDGE_GAP_DAYS
-    between two same-direction runs are flipped to match the surrounding
-    direction, preventing noise from fragmenting meaningful trends.
+    between two ADJACENT same-direction runs are flipped to match the
+    surrounding direction, preventing noise from fragmenting meaningful
+    trends. Breaks are opaque — no bridged direction spans a boundary.
 
     SIGNIFICANCE FILTER: after bridging, a trend is KEPT only if a
     MAJORITY (>ZSCORE_MAJORITY_THRESHOLD) of its days have a
@@ -68,11 +98,14 @@ def detect_trend_episodes(
     segments, so no asof join is needed; cudf has no merge_asof).
 
     Args:
-        history: DataFrame[code, date, rz_balance, rz_buy] — raw margin
-            history for this sec_type.
+        history: DataFrame[code, date, rz_balance, rz_buy(, n_members)]
+            — raw margin history for this sec_type. The optional
+            ``n_members`` population passenger (industry / index curves)
+            feeds the membership-change section boundaries.
         tech_stats: DataFrame with columns [code, date,
-            margin_balance_slope_ma5, margin_balance_slope_zscore_20d].
-        sec_type: 'etf' | 'stock' | 'index'.
+            margin_balance_slope_ma5, margin_balance_slope_zscore_20d]
+            (section-scoped — from compute_tech_stats).
+        sec_type: 'etf' | 'stock' | 'index' | 'industry'.
         trading_amt: optional daily trading_amount rows for this
             sec_type ([code, date, trading_amount]).
 
@@ -84,10 +117,13 @@ def detect_trend_episodes(
     if history.empty or tech_stats.empty:
         return pd.DataFrame(columns=INSERT_COLUMNS + ["sum_rz_buy"])
 
-    # Merge history (rz_balance, rz_buy) with tech_stats (slope_ma5 +
-    # zscore_20d) on (code, date). Inner join — only rows present in
-    # both are usable.
-    work = history[["code", "date", "rz_balance", "rz_buy"]].merge(
+    # Merge history (rz_balance, rz_buy[, n_members]) with tech_stats
+    # (slope_ma5 + zscore_20d) on (code, date). Inner join — only rows
+    # present in both are usable.
+    hist_cols = ["code", "date", "rz_balance", "rz_buy"]
+    if MEMBER_COUNT_COL in safe_columns(history):
+        hist_cols.append(MEMBER_COUNT_COL)
+    work = history[hist_cols].merge(
         tech_stats[["code", "date",
                      "margin_balance_slope_ma5",
                      "margin_balance_slope_zscore_20d"]],
@@ -110,14 +146,38 @@ def detect_trend_episodes(
     # Sort by (code, date) for correct temporal ordering within each code.
     work = work.sort_values(["code", "date"]).reset_index(drop=True)
 
+    # ---- SECTIONING: boundary flags shared with compute_tech_stats ---
+    # (null-gap + membership-change boundaries; see module docstring).
+    attach_section_flags(work, member_col=MEMBER_COUNT_COL)
+
+    # ---- Drop null-balance rows: they are NOT episode days ----------
+    # A 0/NULL rz_balance is missing data (the plotted line breaks); the
+    # cross-gap delta belongs to no day and must not count as trend
+    # length. The first valid row after the gap carries a section break
+    # (direction NaN below), so episodes split there.
+    valid_mask = (
+        pd.to_numeric(work["rz_balance"], errors="coerce") > 0
+    ).fillna(False)
+    work = work[valid_mask].reset_index(drop=True)
+    if work.empty:
+        return pd.DataFrame(columns=INSERT_COLUMNS + ["sum_rz_buy"])
+
     # ---- Clean rz_balance / rz_buy: 0 / NULL → NaN ------------------
     for col in ("rz_balance", "rz_buy"):
         cleaned = pd.to_numeric(work[col], errors="coerce")
         work[col] = cleaned.where(cleaned > 0)
 
     # ---- Step 1: Assign raw direction from slope_ma5 sign ------------
+    # slope_ma5 is section-scoped and NaN on section-boundary rows (the
+    # boundary row is its section's first row, whose within-section
+    # slope is NaN) — the explicit __section_break mask makes the break
+    # robust even if a boundary row ever carried a numeric slope_ma5.
     slope_ma5 = work["margin_balance_slope_ma5"]
-    work["__dir_raw"] = np.where(slope_ma5 > 0, 1.0, np.where(slope_ma5 < 0, -1.0, np.nan))
+    work["__dir_raw"] = np.where(
+        work["__section_break"],
+        np.nan,
+        np.where(slope_ma5 > 0, 1.0, np.where(slope_ma5 < 0, -1.0, np.nan)),
+    )
 
     # ---- Step 2: Initial segmentation (raw) --------------------------
     # Numeric dir key: 1.0 (U), -1.0 (D), 0.0 (X/break — NaN filled).
@@ -145,15 +205,19 @@ def detect_trend_episodes(
 
 def _bridge_gaps(work: pd.DataFrame) -> None:
     """Flip short opposite-direction segments sandwiched between two
-    same-direction segments (in-place on ``work``).
+    ADJACENT same-direction segments (in-place on ``work``).
 
     Fully cudf-native: uses groupby.shift() for stencil computation,
     boolean masks for eligibility, and a single merge to apply
     bridged directions — no Python for-loops over codes.
 
-    Break segments (NaN direction) are forward-filled within each
-    code so they become transparent to the shift-based neighbor
-    lookups, matching the original per-code bridging behavior.
+    Break segments (NaN direction — every remaining break is a section
+    boundary: null-gap / membership-change / section start) are OPAQUE:
+    the neighbor shifts read the segment sequence as-is, so a run
+    separated from its neighbor by a break never sees beyond it and no
+    bridged direction spans a section boundary. (The pre-2026-10-19
+    code forward-filled breaks, making them transparent — that behavior
+    is what let episodes attribute moves across null gaps.)
     """
     work["__dir_bridged"] = work["__dir_raw"].copy()
 
@@ -162,12 +226,6 @@ def _bridge_gaps(work: pd.DataFrame) -> None:
         seg_dir=("__dir_raw", "first"),
         seg_len=("date", "count"),
     ).reset_index()
-
-    # --- Fully vectorized cudf-native bridging (all codes at once) ---
-    # Forward-fill break (NaN) segments so they become transparent
-    # to shift-based neighbor lookups. The original per-code loop
-    # excluded breaks from real_segs, making them invisible neighbors.
-    seg_meta["_dir_ffill"] = seg_meta.groupby("code", sort=False)["seg_dir"].ffill()
 
     # Identify real segments (direction is not NaN)
     real_mask = seg_meta["seg_dir"].notna()
@@ -178,25 +236,36 @@ def _bridge_gaps(work: pd.DataFrame) -> None:
     def _compute_bridged(seg: pd.DataFrame) -> pd.Series:
         """Run iterative bridging on seg_meta (cudf).
 
-        Uses _dir_ffill for shift-based neighbor lookup so that
-        break segments are transparent. Only real segments are
-        eligible for flipping; break segments keep NaN.
+        Neighbor directions come from RAW shifts over the full segment
+        sequence (breaks read as NaN): a short opposite run is flipped
+        only when the IMMEDIATELY preceding and following segments are
+        real and same-direction. Sentinel-filled prev/next keep the
+        eligibility mask pure-bool under cudf Kleene logic (null
+        comparisons would poison the mask); the distinct sentinels
+        (999 / -999) make prev == next unsatisfiable across a break.
+        Only real segments are eligible for flipping; breaks keep NaN.
         """
-        result = seg["_dir_ffill"].copy()
+        result = seg["seg_dir"].copy()
 
         # Only real segments within bridgeable codes are eligible
         eligible_init = real_mask & can_bridge
 
         for _ in range(5):
-            # Groupby shift — GPU-accelerated, on forward-filled direction
-            prev_dir = result.groupby(seg["code"], sort=False).shift(1)
-            next_dir = result.groupby(seg["code"], sort=False).shift(-1)
+            # Groupby shift — GPU-accelerated, breaks stay NaN (opaque)
+            prev_dir = (
+                result.groupby(seg["code"], sort=False).shift(1).fillna(999.0)
+            )
+            next_dir = (
+                result.groupby(seg["code"], sort=False).shift(-1).fillna(-999.0)
+            )
+            # fillna BEFORE comparing — null-free operand for the != check
+            result_f = result.fillna(0.0)
 
-            # Vectorized eligibility (cudf boolean operations)
+            # Vectorized eligibility (pure bool after sentinel fills)
             elig = (
                 eligible_init
                 & (seg["seg_len"] <= BRIDGE_GAP_DAYS)
-                & (result != prev_dir)
+                & (result_f != prev_dir)
                 & (prev_dir == next_dir)
             )
 
@@ -206,8 +275,6 @@ def _bridge_gaps(work: pd.DataFrame) -> None:
             # Vectorized flip on GPU
             result.loc[elig] = prev_dir.loc[elig]
 
-        # Restore NaN for break segments (they were ffilled for bridging)
-        result = result.where(real_mask, np.nan)
         return result
 
     bridged = _compute_bridged(seg_meta)

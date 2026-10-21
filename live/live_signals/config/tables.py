@@ -19,6 +19,27 @@ from __future__ import annotations
 SIGNALS_TABLE = "analysis_signals.signal_rules"
 LIVE_SIGNALS_TABLE = "live.live_signals"
 
+# The MEASURED half of each rule cell — dated daily snapshots of the
+# cell's OWN evidence (the measure block + the is_in_portfolio flag;
+# slimmed 2026-10-20 — the gate digest / pooled tier / cascade moved
+# to the portfolio tier). The live check's confidence base reads the
+# LATEST snapshot at-or-before the checked date (see
+# fetch/_active.fetch_active_signals) and RECOMPUTES the starvation
+# sample scale from the snapshot's n_episodes + the rule's
+# rule_params.gate.sample_floor constant.
+SIGNAL_PERFORMANCE_TABLE = (
+    "analysis_signals.history_signal_performance")
+
+# The PORTFOLIO tier (2026-10-20's cell-level redesign): the member
+# grouping + the dated portfolio audit. The live check's GATED
+# CONFIDENCE CASCADE reads, for an is_in_portfolio cell, the strongest
+# passing portfolio group claiming its signal_rule_id and that group's
+# LATEST audit snapshot's gate.conf_scale (an INCREASE only — 1.0 /
+# absent when no passing group claimed the cell).
+PORTFOLIO_RULES_TABLE = "analysis_signals.portfolio_signal_rules"
+PORTFOLIO_PERFORMANCE_TABLE = (
+    "analysis_signals.history_portfolio_signal_performance")
+
 # RSI indicator source (daily rows, one per sec_type/code/date).
 RSI_TABLE = "analysis.mov_ave_rsi"
 
@@ -61,6 +82,9 @@ LIVE_SIGNAL_PK = [
 __all__ = [
     "SIGNALS_TABLE",
     "LIVE_SIGNALS_TABLE",
+    "SIGNAL_PERFORMANCE_TABLE",
+    "PORTFOLIO_RULES_TABLE",
+    "PORTFOLIO_PERFORMANCE_TABLE",
     "RSI_TABLE",
     "TREND_DAYS_TABLE",
     "LIVE_SIGNAL_COLUMNS",

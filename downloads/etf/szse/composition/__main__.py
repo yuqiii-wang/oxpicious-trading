@@ -26,6 +26,7 @@ from downloads._common import (
     AntiBotProxy,
     antibot_config_for,
     retry_policy_for,
+    service_urls,
     sleep_sec_for,
     setup_logger,
     resolve_out_dir,
@@ -40,14 +41,18 @@ from downloads._common import (
 from downloads._common.monthly import is_month_start, most_recent_trading_day
 
 
-LIST_API_URL = "https://www.szse.cn/api/report/ShowReport/data"
-DETAIL_BASE_URL = "https://reportdocs.static.szse.cn"
-REFERER = "https://www.szse.cn/disclosure/fund/currency/index.html"
+SERVICE = "downloads.etf.szse.composition"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+LIST_API_URL = URLS["list_api"]
+DETAIL_BASE_URL = URLS["detail_base"]
+REFERER = URLS["referer"]
+
 CATALOGID = "sgshqd"
 PAGE_SIZE = 20
 MD_MIN_BYTES = 200
-
-SERVICE = "downloads.etf.szse.composition"
 
 # Base inter-request sleep — resolved from the service's
 # external_request_config JSON row (sleep_sec), overridable per-run with

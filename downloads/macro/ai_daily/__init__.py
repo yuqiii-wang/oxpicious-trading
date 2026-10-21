@@ -1,14 +1,13 @@
 """Download the daily AI market summary — online search + LLM answer.
 
-The RECENCY flow of the two AI-QA flows sharing text.llm_qa: this
-script asks ONLY about the live snapshot — the general summary anchors
-on today / the latest biz date and the movers phase reads ONLY the
-latest daily cross_stats date — so it never backfills. The HISTORY
-flow is ``llm_agents.industry_qa_weekly``'s manual backfill (seasonal
-top + MA5-slope episode asks over the trading calendar, categories
-``industry`` / ``market``); this flow's artifacts — loaded into the
-knowledge base by ``builds.text`` under category ``market_daily`` —
-are, since the live weekly step's removal, the only live generator of it.
+The LIVE AI-QA flow writing text.llm_qa (this script asks ONLY about
+the live snapshot — the general summary anchors on today / the latest
+biz date and the movers phase reads ONLY the latest daily cross_stats
+date — so it never backfills). Its artifacts are loaded into the
+knowledge base by ``builds.text`` under category ``market_daily``; the
+legacy weekly history backfill (seasonal top + MA5-slope episode asks,
+categories ``industry`` / ``market``) has been removed, and its rows
+remain queryable in text.llm_qa.
 
 Runs the ``llm_agents.online_search_summary`` daily request preset
 (``llm_agents.online_search_summary.daily``): the query asks for a

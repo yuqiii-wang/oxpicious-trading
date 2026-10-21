@@ -39,6 +39,7 @@ import {
   SignalCodeTrendChart,
   SignalHistoryPanel,
   SignalPopulationToggles,
+  SignalRulesAskButton,
   SignalRulesPanel,
 } from "@/shared/components/signal-code-trend";
 import type { CodeTrendChartOptions, CodeTrendSecType } from "@/ui/OhlcChart";
@@ -216,13 +217,28 @@ export default function SignalTrendPanel({
           signalType={signalType}
           signalTypeOptions={signalTypes}
           onSignalTypeChange={setSignalType}
-          advice={{ secType, code, signalType }}
         />
       )}
       <Paper variant="outlined" sx={{ px: 1.5, py: 1 }}>
-        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-          Signal rules — self-adaptive cells
-        </Typography>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 1,
+            mb: 0.5,
+          }}
+        >
+          <Typography variant="subtitle2">Signal rules — self-adaptive cells</Typography>
+          {/* Ask AI on the rules surface: the metrics table carries the
+              cells' input values for the picked security */}
+          <SignalRulesAskButton
+            secType={secType}
+            code={code}
+            name={name}
+            signalType={signalType}
+          />
+        </Box>
         {rulesError ? (
           <Alert severity="warning" sx={{ mb: 1 }}>
             Failed to load {code} signal rules: {rulesError}

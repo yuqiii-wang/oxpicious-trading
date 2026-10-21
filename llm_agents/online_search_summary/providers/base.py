@@ -110,9 +110,8 @@ class BaseOnlineSearchProvider(BaseLlmProvider):
     ) -> SearchSummary:
         """Compose summarization over PRE-FETCHED hits (no search here).
 
-        For flows that control their own retrieval — e.g. the industry
-        weekly Q&A's period-scoped backfill, which searches a year-month
-        query, filters hits to the question's time range, then hands the
+        For flows that control their own retrieval: they search first,
+        filter the hits to the question's time range, then hand the
         survivors here; citation tags are rebuilt from the filtered set
         so refs always align. ``context`` is optional caller-supplied
         text anchored between the date and the search results (the AI

@@ -48,6 +48,7 @@ export default function PePage() {
             securities show all series; ETF/Stock show close +
             dividend_yield only (no PE source).`}
       themesSources={VALUATION_THEMES_SOURCES}
+      secTypes={["etf", "index", "stock", "industry"]}
       onInvalidateCache={() => {
         invalidateValuationCache();
         // The per-panel PE analysis card reads /api/analysis/pe/chart +

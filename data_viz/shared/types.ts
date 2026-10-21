@@ -1181,8 +1181,9 @@ export interface SnapshotDate {
 //   The sec_type is supplied as a query param on every endpoint; responses
 //   are scoped to that sec_type (no sec_type field in the payload).
 // ----------------------------------------------------------------------------
-/** Security type discriminator for the MA-spread analysis. */
-export type MaSpreadSecType = "etf" | "index" | "stock";
+/** Security type discriminator for the MA-spread analysis. "industry" =
+ *  the composite industry entities (code = stats.sec_classification.industry_id). */
+export type MaSpreadSecType = "etf" | "index" | "stock" | "industry";
 
 /**
  * One row in a pair's date-level series — the TRIMMED per-pair columns the
@@ -1663,12 +1664,19 @@ export type RoofFloorEstimateWindow = (typeof ROOF_FLOOR_ESTIMATE_WINDOWS)[numbe
  *  lines table), donchian (window max high / min low), quantile (rolling
  *  90th/10th close percentile), channel (OLS fit ± 2σ residual), boll
  *  (SMA ± 2 population σ), median (consensus of the five). NULL where a
- *  method has no level for that (date, window). */
+ *  method has no level for that (date, window).
+ *  `breached_{method}_{W}d` is the table's is_recently_breached flag: TRUE
+ *  when ALL of the last 5 trading days closed beyond the fixed d−5 line
+ *  (roof side above / floor side below); NULL where no row exists. */
 export interface MovAveSpreadRoofFloorEstimateRow
   extends Record<
     | `roof_${RoofFloorEstimateMethod}_${RoofFloorEstimateWindow}d`
     | `floor_${RoofFloorEstimateMethod}_${RoofFloorEstimateWindow}d`,
     number | null
+  >,
+  Record<
+    `breached_${RoofFloorEstimateMethod}_${RoofFloorEstimateWindow}d`,
+    boolean | null
   > {
   date: string;
 }
@@ -1885,7 +1893,8 @@ export interface MovAveSpreadOhlcGapDay {
 //    stock_basic_stats.close). The chart endpoint JOINs stats live at
 //    request time so the UI always shows the freshest close.
 // ----------------------------------------------------------------------------
-export type PeSecType = "etf" | "index" | "stock";
+/** "industry" = the composite industry entities (code = industry_id). */
+export type PeSecType = "etf" | "index" | "stock" | "industry";
 
 /** One daily row JOINed from analysis.pe / analysis.dividends + stats close. */
 export interface PeChartRow {
@@ -2071,7 +2080,7 @@ export interface SecBaselineResponse {
 //       industry; toggle Balance | Buy. Trend-episode shades + per-episode
 //       rz_buy_vs_trading_amt_ratio (on the Buy chart).
 // ----------------------------------------------------------------------------
-export type MarginAttributionType = "index" | "etf";
+export type MarginAttributionType = "index" | "etf" | "industry" | "exchange";
 
 /** One security (index or ETF code) available in an industry for plotting. */
 export interface MarginSecurity {
@@ -2079,6 +2088,15 @@ export interface MarginSecurity {
   code: string;
   /** Display name from stats.sec_classification.name. */
   label: string;
+}
+
+/** One broad-market index offered as the 'exchange' attribution's mapped
+ *  underlying (stats.sec_index_tags.is_broad_market = TRUE). */
+export interface MarginUnderlyingEntry {
+  /** Bare 6-digit index code. */
+  code: string;
+  /** Display name (stats.sec_classification.name; falls back to the code). */
+  name: string;
 }
 
 /** One daily margin data point for one security. */
@@ -2089,14 +2107,17 @@ export interface MarginSeriesRow {
   balance: number | null;
   /** RONGZI buy amount (融资买入额, yuan, FLOW). */
   buy: number | null;
-  /** Underlying security close price (from index/etf_basic_stats). */
+  /** Underlying security close price (from index/etf_basic_stats; exchange
+   *  rows read the mapped broad-market underlying). */
   close: number | null;
   /** Underlying security turnover (成交金额, yuan). Index rows read
    *  stats.index_basic_stats.trading_amount (whole-index turnover); ETF rows
-   *  read stats.etf_liquidity_margin.trading_amount. With `buy` this yields
-   *  the margin-buy share of turnover (买入占比) — the margin-intensity
-   *  regime variable. NOTE for index attribution the share is scale-offset
-   *  (weighted-AVG constituent rz_buy vs WHOLE-index turnover), which is
+   *  read stats.etf_liquidity_margin.trading_amount; exchange rows read the
+   *  mapped broad-market underlying's turnover (default 沪深300 000300). With
+   *  `buy` this yields the margin-buy share of turnover (买入占比) — the
+   *  margin-intensity regime variable. NOTE for index/exchange attributions
+   *  the share is scale-offset (weighted-AVG constituent rz_buy or
+   *  WHOLE-exchange rz_buy vs the underlying index's turnover), which is
    *  fine for RANK-based (tercile) regime bucketing. */
   trading_amount: number | null;
   /** The day's canonical market-regime label (stats.market_regimes:
@@ -2105,16 +2126,43 @@ export interface MarginSeriesRow {
    *  Feeds the regime×tercile amplification split of the companion
    *  chart. */
   regime: MarketRegime | null;
+  /** 'industry' rows only: the number of member securities (non-null
+   *  non-zero rz_* contributors) behind the per-side averages on this
+   *  date, derived exactly as SUM/AVG per side. Null on dates where no
+   *  member contributed. Drives the member-count change dots + the
+   *  tooltip's "N members" note (both modes). */
+  n_members?: number | null;
 }
 
 /** Response for GET /api/analysis/margin-trends/industry-series.
  *  Per-security daily margin series for ONE industry + ONE attribution.
  *  attribution='index' reads analysis.margin_index_series (weighted-avg
  *  constituent-stock margin); attribution='etf' reads
- *  stats.etf_liquidity_margin for the industry's ETFs. */
+ *  stats.etf_liquidity_margin for the industry's ETFs; attribution=
+ *  'industry' reads analysis.margin_industry_stats — the industry's OWN
+ *  margin curve as ONE series (code = industry_id): raw (default) is the
+ *  SUM(stock+etf) curve, normalized (?normalize=true) is the SUM of the
+ *  per-side member AVERAGES over non-null non-zero members (the *_norm
+ *  cols) — with close from stats.industry_basic_stats.mean_close and
+ *  trading_amount from total_trading_amount (pool_size='all' slice). */
 export interface MarginIndustrySeriesResponse {
   industry_id: string;
   industry_label: string;
+  /** True when the rows carry the normalized curve (SUM of the per-side
+   *  member averages) — only ever true for the 'industry' attribution;
+   *  the amplification analytics stay raw-based regardless. */
+  normalized: boolean;
+  /** Mapped underlying label, when the attribution borrows another
+   *  instrument's price/turnover for the daily-return + hyped-vs-drained
+   *  views. Set ONLY for the 'exchange' attribution (= the user-selected
+   *  broad-market underlying; exchange rows carry no composite of their
+   *  own). The chart title shows both:
+   *  "<industry_label> · <underlying_label>". */
+  underlying_label?: string;
+  /** The broad-market index code the 'exchange' attribution mapped as the
+   *  underlying (echoes the ?underlying= request param, or the 沪深300
+   *  default when the param was absent / not a broad-market code). */
+  underlying_code?: string;
   attribution: MarginAttributionType;
   securities: MarginSecurity[];
   rows: MarginSeriesRow[];
@@ -2577,6 +2625,96 @@ export interface IndustryCorrOffsetIndustry {
 /** Response for GET /api/analysis/industry-corr-offsets/industries */
 export interface IndustryCorrOffsetIndustriesResponse {
   industries: IndustryCorrOffsetIndustry[];
+}
+
+// ----------------------------------------------------------------------------
+//  Pair Pct-Change Ratios — the subject's daily pct change as a multiple
+//  of the benchmark's (ratio = pct_change_code / pct_change_benchmark on
+//  the pair's common trading dates), smoothed by trailing 5/20/60/255-
+//  common-day rolling means and materialized ONLY on stride-grid dates
+//  of the global index calendar (default stride 20 — the corr pattern).
+//  Ratio > 1 = subject outmoves the benchmark, (0,1) = undermoves, < 0 =
+//  opposite direction. The RATIO counterpart of the stats.cross_stats
+//  point-offset primitive.
+//
+//  TWO grains (static.label_dim 'pair_grain'): 'index' = per-index pair
+//  rows (subjects = ALL active indexes); 'industry' = industry_id rows,
+//  the AVG over the industry's member-index rows per (benchmark, grid
+//  date) — the cross_stats industry-grain pattern.
+//
+//  Source: analysis.pair_pct_change_ratios (built by
+//  python -m analysis.pair_pct_change_ratios; subjects = ALL active
+//  indexes + industry aggregates, benchmarks = ALL active indexes).
+//  Drives the pair selector + ratio chart on the Composites → "Opposite
+//  Industry Correlations" page.
+// ----------------------------------------------------------------------------
+/** Subject grain of a pair-ratio row (static.label_dim 'pair_grain'). */
+export type PairPctRatioGrain = "index" | "industry";
+
+/** One side of the pair selector universe (a subject code or a benchmark
+ *  code with materialized rows). */
+export interface PairPctRatioUniverseEntry {
+  /** Index code, or industry_id when grain = 'industry'. */
+  code: string;
+  /** Display label (from stats.sec_classification; falls back to the
+   *  code). */
+  label: string;
+  /** Subject grain ('index' for every benchmark-side entry — benchmarks
+   *  are always indexes). */
+  grain: PairPctRatioGrain;
+  /** Distinct counterpart codes this side has pair rows with. */
+  n_counterparts: number;
+  /** First / last grid dates materialized. */
+  first_date: string;
+  last_date: string;
+}
+
+/** Response for GET /api/analysis/pair-pct-ratios/universe */
+export interface PairPctRatioUniverseResponse {
+  /** Selectable subjects — industry aggregates first, then per-index
+   *  rows. */
+  codes: PairPctRatioUniverseEntry[];
+  benchmarks: PairPctRatioUniverseEntry[];
+  /** Grid stride the universe listing is scoped to (default 20). */
+  interval: number;
+  /** Industry_ids the universe was limited to (industry entries + member
+   *  indexes on both sides; empty = unfiltered full universe). */
+  industry_ids: string[];
+}
+
+/** One stride-grid sample of the four ratio rolling means. */
+export interface PairPctRatioRow {
+  /** Stride-grid date (YYYY-MM-DD). */
+  date: string;
+  /** Minimum-variance hedge ratio h* = -Cov(A,B)/Var(A), RAW mode
+   *  (A,B = industry aggregate pct changes; NULL when the window's
+   *  pairwise-complete null share exceeds 10%, Var(A) is at the floor,
+   *  or beyond the NUMERIC(10,6) bound). */
+  hedge_raw_ma5d: number | null;
+  hedge_raw_ma20d: number | null;
+  hedge_raw_ma60d: number | null;
+  hedge_raw_ma255d: number | null;
+  /** Same ratio on market-offset series A' = A - M, B' = B - M (M =
+   *  benchmark_market index pct — the market factor cancelled; the
+   *  opposite-moves regime where the buy-to-hedge answer lives). */
+  hedge_offset_ma5d: number | null;
+  hedge_offset_ma20d: number | null;
+  hedge_offset_ma60d: number | null;
+  hedge_offset_ma255d: number | null;
+}
+
+/** Response for GET /api/analysis/pair-pct-ratios?code=&benchmark= */
+export interface PairPctRatiosResponse {
+  code: string;
+  benchmark_code: string;
+  interval: number;
+  /** Subject grain of the returned series (industry = the AVG over the
+   *  industry's member-index rows). */
+  grain: PairPctRatioGrain;
+  /** Grid-sampled rows, ordered by date ascending. */
+  rows: PairPctRatioRow[];
+  /** The offset-market benchmark index code (e.g. '000300'). */
+  benchmark_market: string;
 }
 
 // ----------------------------------------------------------------------------

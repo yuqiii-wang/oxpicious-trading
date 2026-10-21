@@ -51,6 +51,7 @@ from downloads._common import (
     scan_present_dates_with_pattern,
     build_default_session,
     RunStats,
+    service_urls,
     sleep_sec_for,
 )
 # Reuse the well-tested date-parsing utilities from the repo-news downloader
@@ -64,18 +65,22 @@ from downloads.macro.pboc._common.parsing import (
 )
 
 
-PBOC_BASE = "https://www.pbc.gov.cn"
-
-# PBoC LPR announcement list page (货币政策司 → 利率 → 贷款市场报价利率)
-LPR_LIST_BASE = "/zhengcehuobisi/125207/125213/125440/3876551/"
-LPR_FILE_PREFIX = "pboc_lpr"
-LPR_CATEGORY = "lpr"
-
 PBOC_MIN_VALID_BYTES = 200
 # Anti-bot pacing source — the service's external_request_config JSON row
 # (sleep_sec=5, sleep_jitter=0.5, host tracking OFF: pagination probing hits
 # 404 on non-existent pages and must not block the host).
 SERVICE = "downloads.macro.pboc.lpr_news"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+PBOC_BASE = URLS["site"]
+
+# PBoC LPR announcement list page (货币政策司 → 利率 → 贷款市场报价利率)
+LPR_LIST_BASE = URLS["lpr_list_base"]
+LPR_FILE_PREFIX = "pboc_lpr"
+LPR_CATEGORY = "lpr"
+
 SLEEP_SEC = sleep_sec_for(SERVICE)
 EMPTY_PLACEHOLDER_SUFFIX = "_empty.md"
 
@@ -319,10 +324,10 @@ def detect_page_prefix(html: str) -> Optional[str]:
 
 def list_page_url(page: int, page_prefix_fmt: Optional[str] = None) -> str:
     if page <= 1:
-        return PBOC_BASE + LPR_LIST_BASE + "index.html"
+        return LPR_LIST_BASE + "index.html"
     if page_prefix_fmt:
-        return PBOC_BASE + LPR_LIST_BASE + page_prefix_fmt.format(page=page)
-    return PBOC_BASE + LPR_LIST_BASE + f"index_{page}.html"
+        return LPR_LIST_BASE + page_prefix_fmt.format(page=page)
+    return LPR_LIST_BASE + f"index_{page}.html"
 
 
 def _looks_like_lpr_link(text: str) -> bool:
@@ -375,7 +380,7 @@ def fetch_list_page(
     # The list page URL itself (e.g. .../3876551/index.html) matches
     # RE_DETAIL_SLUG because the directory "3876551" is 7 digits. We must
     # exclude it so we don't fetch the list page as if it were an announcement.
-    list_page_full_url = PBOC_BASE + LPR_LIST_BASE + "index.html"
+    list_page_full_url = LPR_LIST_BASE + "index.html"
 
     soup = BeautifulSoup(html, "html.parser")
     items: List[LprAnnouncementItem] = []
@@ -388,7 +393,8 @@ def fetch_list_page(
         if not href.startswith("http"):
             if not href.startswith("/"):
                 href = LPR_LIST_BASE + href
-            href = PBOC_BASE + href
+            else:
+                href = PBOC_BASE + href
         text = a.get_text(strip=True).strip('"“”').strip()
         if not text:
             continue

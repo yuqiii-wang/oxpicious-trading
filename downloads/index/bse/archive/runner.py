@@ -2,10 +2,12 @@
 
 Mirrors ``downloads.index.cnindex.archive.runner`` (same content gate, raw
 artifact, append-only merge) against each index's own kline endpoint in
-``BSE_INDEX_ENDPOINTS``:
+the per-index ``kline_<code>``/``realtime_<code>`` urls roles:
 
   1. CONTENT gate: skip when the history CSV already covers the newest
-     session BSE could have published — ``last_business_day(today-1)``.
+     session BSE could have published — time-of-day aware via
+     ``expected_publish_session`` (today's session after ~17:00 on a CN
+     trading day, else the last completed session).
   2. Fetch the FULL daily kline (single GET), persist it as the raw
      ``{code}_kline.json`` artifact (backoff anchor + re-conversion source).
   3. Drop today's row while the session is still live (the last kline
@@ -25,7 +27,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from _common._holidays_and_weekdays import last_business_day
+from _common._holidays_and_weekdays import expected_publish_session
 
 from downloads._common import (
     AntiBotProxy,
@@ -78,7 +80,7 @@ def download_bse_index_archive(
         index_codes = list(BSE_INDEX_CODES)
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "bse_index_archive")
 
-    expected_day = last_business_day(_dt.date.today() - _dt.timedelta(days=1))
+    expected_day = expected_publish_session()
     expected_yyyymmdd = expected_day.strftime("%Y%m%d")
 
     logger.info(

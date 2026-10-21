@@ -2,11 +2,12 @@
 
 Per code (CNINDEX_ARCHIVE_CODES):
   1. CONTENT gate: skip when the history CSV already covers the newest
-     session CSIndex could have published — ``last_business_day(today-1)``.
-     The raw-fetch mtime is never a skip reason by itself (publishes land
-     at arbitrary times); it only bounds retries via
-     REFETCH_MIN_INTERVAL_HOURS so a dead feed doesn't re-hit the network
-     on every run.
+     session CNIndex could have published — time-of-day aware via
+     ``expected_publish_session`` (today's session after ~17:00 on a CN
+     trading day, else the last completed session). The raw-fetch mtime
+     is never a skip reason by itself (publishes land at arbitrary
+     times); it only bounds retries via REFETCH_MIN_INTERVAL_HOURS so a
+     dead feed doesn't re-hit the network on every run.
   2. Fetch the full daily history (single GET — the API always returns the
      whole series), persist it as the raw ``{code}_daily.json`` artifact
      (backoff anchor + re-conversion source, same role as the old
@@ -24,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from _common._holidays_and_weekdays import last_business_day
+from _common._holidays_and_weekdays import expected_publish_session
 
 from downloads._common import (
     AntiBotProxy,
@@ -63,7 +64,7 @@ def download_cnindex_archive(
 
     # Newest COMPLETED session whose data CNINDEX may have published:
     # yesterday's session on a trading day, the last session otherwise.
-    expected_day = last_business_day(_dt.date.today() - _dt.timedelta(days=1))
+    expected_day = expected_publish_session()
     expected_yyyymmdd = expected_day.strftime("%Y%m%d")
 
     logger.info(

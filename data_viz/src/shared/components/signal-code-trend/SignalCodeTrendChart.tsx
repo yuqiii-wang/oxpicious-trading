@@ -21,6 +21,7 @@ import type {
   CodeTrendSecType,
   OhlcTradeSignal,
 } from "@/ui/OhlcChart";
+import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import {
   fetchTradingSignalHistory,
   type TradingSignal,
@@ -124,6 +125,7 @@ export default function SignalCodeTrendChart({
       name={name}
       height={height}
       headerAction={headerAction}
+      aiAskInsight={INSIGHT_PAGES.signalCodeTrend}
       chartOptions={{
         ...chartOptions,
         tradeSignals: markers,

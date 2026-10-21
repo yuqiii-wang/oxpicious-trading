@@ -107,6 +107,49 @@ export const FREE_TEXT_OR_NULL: FieldRule = {
   error: () => null,
 };
 
+/** The endpoint inventory, one "role = url" pair per line (the urls
+ *  object on an external_request_config row: {role: url}). Blank = the
+ *  row carries no urls. */
+export const URL_LINES_OR_NULL: FieldRule = {
+  hint: "one per line: role = url · blank = none",
+  error: (t) => {
+    if (isBlank(t)) return null;
+    for (const line of t.split("\n")) {
+      if (line.trim() === "") continue;
+      const m = /^(\S+)\s*=\s*(\S+)$/.exec(line.trim());
+      if (m == null) {
+        return `must be "role = url" per line — got: ${line.trim().slice(0, 60)}`;
+      }
+    }
+    return null;
+  },
+};
+
+/** Validated "role = url" lines text → the row's urls object (blank →
+ *  null). Call only after the field's rule accepted the text. */
+export function urlLinesOrNull(text: string): Record<string, string> | null {
+  const pairs = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((line) => {
+      const eq = line.indexOf("=");
+      return [line.slice(0, eq).trim(), line.slice(eq + 1).trim()] as const;
+    });
+  if (pairs.length === 0) return null;
+  return Object.fromEntries(pairs);
+}
+
+/** The row's urls object → the "role = url" lines text for the editor. */
+export function urlsToLines(
+  urls: Record<string, string> | null | undefined,
+): string {
+  if (urls == null) return "";
+  return Object.entries(urls)
+    .map(([role, url]) => `${role} = ${url}`)
+    .join("\n");
+}
+
 /** Validated numeric text → the JSON number (blank → null). Call only
  *  after the field's rule accepted the text. */
 export function numOrNull(text: string): number | null {

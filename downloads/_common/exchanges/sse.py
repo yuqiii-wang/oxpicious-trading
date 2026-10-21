@@ -13,6 +13,12 @@ powers several downloaders:
 Consolidated here because the SSE snapshot CSV schema (COLUMNS below,
 written utf-8-sig under ``temps/sse_trend/``) is this exchange's canonical
 on-disk format.
+
+Endpoint URLs are NOT owned here: every consumer service's
+external_request_config JSON row carries the list URL it walks (roles
+``list_equity`` / ``list_fund`` / ``list_index``) plus the page ``referer``,
+and passes the URL into :func:`run_snapshot_download`; pacing resolves from
+the same row via the caller's ``service`` name (required).
 """
 from __future__ import annotations
 
@@ -27,29 +33,19 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from _common._holidays_and_weekdays import last_business_day
+from downloads._common import service_urls
 from downloads._common.filescan import (
     MIN_VALID_BYTES,
     resolve_out_dir,
     is_valid_file,
 )
 from downloads._common.net import (
-    DEFAULT_TIMEOUT,
-    AntiBotConfig,
     AntiBotProxy,
     antibot_config_for,
     build_headers_with_referer,
     setup_logger,
 )
 
-
-# --- Endpoint URLs ---------------------------------------------------------
-SSE_LIST_URL = "https://yunhq.sse.com.cn:32042/v1/sh1/list/exchange/equity"
-# Fund (ETF/LOF) tab — same JSONP schema as the equity endpoint, only the
-# path suffix differs (/exchange/fund vs /exchange/equity).
-SSE_FUND_LIST_URL = SSE_LIST_URL.replace("/equity", "/fund")
-# Index (指数) tab — same JSONP schema, path suffix /exchange/index.
-SSE_INDEX_LIST_URL = SSE_LIST_URL.replace("/equity", "/index")
-SSE_REFERER = "https://www.sse.com.cn/market/price/trends/"
 
 # --- JSONP / pagination ----------------------------------------------------
 JSONP_CALLBACK = "jQuery1"
@@ -61,13 +57,6 @@ LIST_SELECT_FIELDS = "code,name"
 # paths need last/volume/open/... — unlike the archive's list fetcher which
 # only selects code+name (the OHLCV comes from the dayk endpoint there).
 STREAM_SELECT_FIELDS = "code,name,open,high,low,last,prev_close,change,volume,amount"
-
-# Inter-page sleep for list-endpoint pagination — applied by the shared
-# AntiBotProxy as a jittered post-success sleep (and every page lands in
-# monitor.external_resource_audit).
-INTER_PAGE_SLEEP_SEC = 3.0
-
-SSE_HEADERS = build_headers_with_referer(SSE_REFERER, extra={"Accept": "*/*"})
 
 # --- Output schema (mirrors szse_trend_stock CSV) --------------------------
 COLUMNS: List[str] = [
@@ -91,6 +80,16 @@ _RE_JSONP = re.compile(rf"^{re.escape(JSONP_CALLBACK)}\((.*)\);?\s*$", re.S)
 
 
 logger = setup_logger("sse_trend")
+
+
+def sse_list_headers(referer: str) -> Dict[str, str]:
+    """Headers for the yunhq list endpoints: the page referer + Accept.
+
+    Fingerprint rotation stays OFF for these endpoints (the proxy is built
+    with rot=False in :func:`build_sse_proxy`) — they want the page's own
+    stable header set.
+    """
+    return build_headers_with_referer(referer, extra={"Accept": "*/*"})
 
 
 # ---------------------------------------------------------------------------
@@ -186,20 +185,14 @@ def _extract_update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
-def build_sse_proxy(service: Optional[str] = None) -> AntiBotProxy:
+def build_sse_proxy(service: str) -> AntiBotProxy:
     """The SSE list-endpoint proxy: pacing (inter-page sleep) resolves from
-    the caller service's external_request_config JSON row when *service* is
-    given (INTER_PAGE_SLEEP_SEC stays the fallback), and fingerprint
-    rotation stays OFF either way — the yunhq endpoints want the page's own
-    stable header set (a deliberate code override of the JSON rows' rot
-    flag); every page is audited."""
-    if service is not None:
-        return AntiBotProxy(replace(
-            antibot_config_for(service), rotate_browser_profile=False,
-        ))
-    return AntiBotProxy(AntiBotConfig(
-        rotate_browser_profile=False,
-        base_sleep_sec=INTER_PAGE_SLEEP_SEC,
+    the caller service's external_request_config JSON row, and fingerprint
+    rotation stays OFF — the yunhq endpoints want the page's own stable
+    header set (a deliberate code override of the JSON rows' rot flag);
+    every page is audited."""
+    return AntiBotProxy(replace(
+        antibot_config_for(service), rotate_browser_profile=False,
     ))
 
 
@@ -208,11 +201,12 @@ def _fetch_snapshot_page(
     begin: int,
     end: int,
     list_url: str,
+    headers: Dict[str, str],
     proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch one page from an SSE list endpoint with full real-time fields."""
     if proxy is None:
-        proxy = build_sse_proxy()
+        raise ValueError("build the proxy via build_sse_proxy(service)")
     params = {
         "callback": JSONP_CALLBACK,
         "begin": str(begin),
@@ -223,7 +217,7 @@ def _fetch_snapshot_page(
         session,
         list_url,
         params=params,
-        headers=SSE_HEADERS,
+        headers=headers,
         logger=logger,
         log_tag=f"[sse-page {begin}-{end}] ",
     )
@@ -286,15 +280,17 @@ def _parse_snapshot_to_trend_row(
 def _fetch_today_snapshot(
     session: requests.Session,
     list_url: str,
+    service: str,
     proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[Optional[datetime], Optional[str], List[Dict[str, Any]]]:
     """Fetch the SSE list endpoint snapshot (all securities, full field set)."""
     if proxy is None:
-        proxy = build_sse_proxy()
+        proxy = build_sse_proxy(service)
+    headers = sse_list_headers(service_urls(service)["referer"])
     asset_tag = list_url.rsplit("/", 1)[-1]
 
     first = _fetch_snapshot_page(
-        session, 0, PAGE_SIZE, list_url=list_url, proxy=proxy
+        session, 0, PAGE_SIZE, list_url=list_url, headers=headers, proxy=proxy
     )
     if first is None:
         logger.error("Failed to fetch first SSE list page (%s)", asset_tag)
@@ -333,7 +329,7 @@ def _fetch_today_snapshot(
         end = begin + PAGE_SIZE
         # Inter-page pacing is the proxy's post-success sleep.
         payload = _fetch_snapshot_page(
-            session, begin, end, list_url=list_url, proxy=proxy
+            session, begin, end, list_url=list_url, headers=headers, proxy=proxy
         )
         if payload is None:
             logger.warning(
@@ -368,6 +364,7 @@ def download_one_type(
     force: bool = False,
     sec_type: str = "auto",
     proxy: Optional[AntiBotProxy] = None,
+    service: str = "",
 ) -> dict:
     """Download one snapshot type (equity / fund / index) and write its CSV."""
     out_file = _get_out_file(out_dir, expected_latest_str, prefix=prefix)
@@ -405,7 +402,7 @@ def download_one_type(
             )
 
     update_dt, trade_date_str, rows = _fetch_today_snapshot(
-        sess, list_url=list_url, proxy=proxy
+        sess, list_url=list_url, service=service, proxy=proxy
     )
     if trade_date_str is None or not rows:
         logger.error("No snapshot data fetched for %s", prefix)
@@ -433,13 +430,14 @@ def run_snapshot_download(
     out_root: Optional[str] = None,
     force: bool = False,
     session: Optional[requests.Session] = None,
-    service: Optional[str] = None,
+    service: str,
 ) -> dict:
     """Shared entry point for the equity / fund / index snapshot leaves.
 
-    *service* (the caller's dotted service name) resolves the pacing row
-    from the external_request_config JSON tree; without it the adapter
-    falls back to its INTER_PAGE_SLEEP_SEC constant.
+    *service* (the caller's dotted service name, required) resolves the
+    pacing row AND the page referer (urls role "referer") from the
+    external_request_config JSON tree; *list_url* comes from the same
+    row's urls object (the leaf passes it in).
     """
     out_dir = resolve_out_dir(__file__, "sse_trend", out_root)
     sess = session or requests.Session()
@@ -458,22 +456,16 @@ def run_snapshot_download(
     result = download_one_type(
         sess, out_dir, expected_latest_str,
         list_url, prefix, force=force, sec_type=prefix_sec_type,
-        proxy=build_sse_proxy(service),
+        proxy=build_sse_proxy(service), service=service,
     )
     return {"out_dir": str(out_dir), "result": result}
 
 
 __all__ = [
-    "SSE_LIST_URL",
-    "SSE_FUND_LIST_URL",
-    "SSE_INDEX_LIST_URL",
-    "SSE_REFERER",
     "JSONP_CALLBACK",
     "PAGE_SIZE",
     "LIST_SELECT_FIELDS",
     "STREAM_SELECT_FIELDS",
-    "INTER_PAGE_SLEEP_SEC",
-    "SSE_HEADERS",
     "COLUMNS",
     "CSV_ENCODING",
     "_RE_JSONP",
@@ -481,8 +473,8 @@ __all__ = [
     "_num",
     "_fmt_num",
     "_write_rows",
-    "DEFAULT_TIMEOUT",
     "build_sse_proxy",
     "download_one_type",
     "run_snapshot_download",
+    "sse_list_headers",
 ]

@@ -11,10 +11,17 @@ cumulative volumes across samples) and store the code WITH exchange suffix
 """
 from __future__ import annotations
 
-from downloads._common.exchanges.sse import SSE_LIST_URL
+from downloads._common import service_urls
 
 from ._io import _prepopulate_finished_codes
 from ._model import AssetStream
+
+SERVICE = "downloads.stream.sse.price"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SSE_LIST_URL = URLS["list_equity"]
 
 
 def build_stock_asset() -> AssetStream:

@@ -48,17 +48,21 @@ from downloads._common import (
     build_default_session,
     is_fresh_within,
     resolve_out_dir,
+    service_urls,
     setup_logger,
 )
 from downloads.etf.huatai_pb._endpoints import (
     CHECKIN_FUND_CODES,
-    PRODUCT_PAGE_URL,
     build_proxy,
 )
 
 logger = setup_logger("huatai_pb_dividends")
-
 SERVICE = "downloads.etf.huatai_pb.dividends"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+PRODUCT_PAGE_URL = URLS["product_page"]
 
 CSV_ENCODING = "utf-8-sig"
 FRESH_HOURS = 20 * 24  # freshness guard (semi-annual cadence)

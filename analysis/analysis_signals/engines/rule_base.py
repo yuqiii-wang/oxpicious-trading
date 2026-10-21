@@ -41,22 +41,35 @@ cell loop this base owns):
                   whose pooled evidence fails emits NOTHING that run;
                   sell records the evidence ungated, exit timing) →
                   signal_rules rows (rule_params carry the cell's
-                  prepared params — SELF-ADAPTIVE per PK) +
+                  CONSTANT rule only — SELF-ADAPTIVE per PK — plus the
+                  measured half on the row's _performance payload (the
+                  cell's OWN measure block; slimmed 2026-10-20), peeled
+                  by run_family into
+                  analysis_signals.history_signal_performance as the
+                  run's dated snapshot; the 2026-10-19 split) +
                   history_signals rows (the winning cells' triggers;
                   day-0 anchor facts feed the boost collaborator).
-                  STARVED cells (episodes but under the sample floor)
-                  record as the WAIT population (renamed from
-                  no_action 2026-10-16): the extreme-event monotone
-                  guarantee (2026-10-16) — a deepest-claim breach
-                  never vanishes because its cell is under-floored;
-                  history always replays the triggers, the rules
-                  watchlist row only for imminent cells (floor-blocked
-                  only)
+                  STARVED cells (under the sample floor) TRADE since
+                  2026-10-19 (user-directed): the floor no longer
+                  blocks — the dir_ave bar is the only verdict, and a
+                  thin cell's confidence is scaled by its sample
+                  completeness min(n / floor, 1) (the starvation wait
+                  logic retired; the extreme-event record is now a
+                  REDUCED-CONFIDENCE trading row, never a wait row —
+                  the only remaining wait rows are the ungated
+                  observational twins, options_wall's VRP-fail `_rej`)
 
 The rule_params therefore DIFFER per PK by construction: the same sub
 signal type measures asymmetric populations in different trends (and
 regimes, where the family keeps regime splits), so different cells get
-different prepared bars/evidence.
+different prepared bars. The MEASURED evidence (the cell's own measure
+block) is NOT rule_params — it is the dated per-run snapshot of
+analysis_signals.history_signal_performance (never purged: a cell's
+evidence evolution, graduation and death survive the rules tier's
+per-run wipes). The COMBINED tiers (pooled evidence block, gate
+digest, cascade) moved to the portfolio tier 2026-10-20
+(history_portfolio_signal_performance — the combined stats of the
+individual in-portfolio signals).
 
 Cell axes per family shape:
   trend split + regime split   mov_rsi, bollinger
@@ -159,6 +172,24 @@ class RuleEntry(ABC):
     # pass; every family inherits the machinery off and opts in by
     # flipping this)
     OHLCV_BOOST: bool = False
+    # Whether the family's frame codes belong in analysis.trend_days
+    # (run_family's _write_trend_days). Composite-scope families
+    # (hedge_pairs' 'A~B' pair ids) opt OUT — their codes are not
+    # securities and must not pollute the trends store.
+    WRITES_TREND_DAYS: bool = True
+    # The forward-blend RESPONSE price columns (the multi-response
+    # extension, 2026-10-18): a family that measures cells against
+    # more than the frame's own ``price`` declares the extra price
+    # columns here — prepare_frame attaches EACH one's forward-blend
+    # set (the primary ``price`` keeps the legacy names _blend /
+    # _blend_ok / _fwd{h}; extras carry the column suffix —
+    # _blend_{col} / _blend_ok_{col} / _fwd{h}_{col}), and
+    # run_cells(response_col=...) measures that call's cells against
+    # the named set. The hedge_pairs precedent: the inverse-vol pair
+    # portfolio is the primary response, the strong/laggard legs the
+    # harvest-exit responses (the sell gates judge the leg they
+    # trim, not the portfolio).
+    FORWARD_PRICE_COLS: tuple[str, ...] = ("price",)
 
     def __init__(self, conn, sec_type: str, codes: Sequence[str],
                  boost: bool | None = None):
@@ -170,14 +201,11 @@ class RuleEntry(ABC):
         self._boost = OhlcvBoost(
             self.OHLCV_BOOST if boost is None else boost,
         )
-        # starved rules-row dedup across this entry's run_cells calls:
-        # a PK cell starved on BOTH sides (buy AND sell) emits ONE
-        # wait rules row — action collapses the side in the rules
-        # PK. First side wins (the engines' buy-before-sell call order —
-        # deterministic); the losing side's HISTORY rows still record
-        # (history's PK carries no action, and same-axis opposite tails
-        # never breach the same day).
-        self._starved_rules_pks: set[tuple] = set()
+        # the performance snapshot's AS-OF date (the frame's data
+        # horizon), cached at first run_cells call — the dated key of
+        # the history_signal_performance row each emitted rule cell
+        # carries (the 2026-10-19 constant/performance split)
+        self._perf_as_of: date | None = None
 
     # -- identity helpers -------------------------------------------------
     @property
@@ -194,6 +222,27 @@ class RuleEntry(ABC):
 
     def sub_type_code(self, sub_type: str) -> int:
         return SIGNAL_SUB_TYPE_CODE[sub_type]
+
+    def rule_wipe_scopes(self) -> list[tuple[int, list[str]]]:
+        """The (signal_type code, codes) scopes this run's
+        signal_rules rows live at — run_family's PRE-INSERT WIPE
+        (code-scoped: concurrent writers of the SAME signal_type at
+        other codes — the hedge_pairs family writes typical mov_rsi
+        component rows at the market + industry codes — never
+        collide). Default: the family's own type at the run's codes.
+        Composite families override with additional scopes."""
+        return [(self.signal_type_code, self.codes)]
+
+    def history_purge_scopes(self) -> list[tuple[int, list[str]]]:
+        """The (signal_type code, codes) scopes this family owns in
+        history_signals — run_family's --force purge. Default: the
+        rule wipe scopes (families replay history only under their
+        own type); a family that stamps additional rule scopes
+        inherits the same coverage — the hedge_pairs precedent: its
+        rules live under THREE types (hp_rsi + hedge_pairs at the
+        pair codes, mov_rsi at the component codes), so the purge
+        must cover them all."""
+        return self.rule_wipe_scopes()
 
     @property
     def cell_keys(self) -> list[str]:
@@ -234,7 +283,15 @@ class RuleEntry(ABC):
         convention) — do NOT re-convert: epoch_col_to_dt64 expects
         epoch-SECONDS floats, and feeding it a datetime column
         manufactures far-future dates that match NOTHING (the
-        all-calm degenerate split, found + fixed 2026-10-15)."""
+        all-calm degenerate split, found + fixed 2026-10-15).
+        REGIME_FREE families stamp the constant pooled 4 and skip the
+        fetch entirely — their cells never split by the column (the
+        joined values would be dead weight), so the whole sec_type's
+        regime table must not be pulled for them."""
+        if self.REGIME_FREE:
+            df = df.copy()
+            df["regime"] = np.full(len(df), 4, dtype="int8")
+            return df
         regimes = await fetch_market_regimes(
             self.conn, self.sec_type, since=date(1990, 1, 1),
         )
@@ -247,29 +304,53 @@ class RuleEntry(ABC):
         return df
 
     def _attach_forward(self, df: pd.DataFrame) -> pd.DataFrame:
-        """The fixed forward blend dir_ave axis: fwd_h = the close-to-
-        close change h traded days after the trigger (delay-0 profile —
-        the trigger IS the episode's first day), blended
+        """The fixed forward blend dir_ave axes — ONE set per declared
+        FORWARD_PRICE_COLS response column (the primary ``price`` the
+        legacy ``_blend``/``_blend_ok``/``_fwd{h}`` names; extras the
+        ``_{col}``-suffixed twins): fwd_h = the close-to-close change
+        h traded days after the trigger (delay-0 profile — the
+        trigger IS the episode's first day), blended
         0.10/0.15/0.50/0.15/0.10 over (0, 3, 5, 10, 20). ``_blend_ok``
         marks rows whose full 20d future is realized (measurement uses
         only these; the newest triggers still replay into history with
         their cell's prepared confidence)."""
+        for price_col in self.FORWARD_PRICE_COLS:
+            self._attach_forward_for(df, price_col)
+        return df
+
+    @staticmethod
+    def _blend_col_names(price_col: str) -> tuple[str, str, str]:
+        """(blend, ok, fwd-template) column names for one response
+        price column — the legacy unsuffixed names for the primary
+        ``price`` (every pre-multi-response contract reads them)."""
+        if price_col == "price":
+            return "_blend", "_blend_ok", "_fwd{h}"
+        return f"_blend_{price_col}", f"_blend_ok_{price_col}", \
+            f"_fwd{{h}}_{price_col}"
+
+    def _attach_forward_for(self, df: pd.DataFrame,
+                            price_col: str) -> None:
+        """One response column's forward-blend set (see
+        _attach_forward — the shared loop over FORWARD_PRICE_COLS
+        calls this per column)."""
         keys = ["code"]
+        fwd_tmpl = self._blend_col_names(price_col)[2]
         blend = pd.Series(0.0, index=df.index, dtype="float64")
         ok = pd.Series(True, index=df.index, dtype="bool")
         for h, w in zip(cfg.FORWARD_BLEND_DAYS, cfg.FORWARD_BLEND_WEIGHTS):
             if h == 0:
                 continue
+            fwd_name = fwd_tmpl.format(h=h)
             fwd = grouped_shift(
-                df, keys, ["price"], out_names=[f"_fwd{h}"], periods=-h,
-            )[f"_fwd{h}"]
-            fwd = fwd / df["price"] - 1.0
-            df[f"_fwd{h}"] = fwd
+                df, keys, [price_col], out_names=[fwd_name], periods=-h,
+            )[fwd_name]
+            fwd = fwd / df[price_col] - 1.0
+            df[fwd_name] = fwd
             blend = blend + w * fwd.fillna(0.0)
             ok = ok & fwd.notna()
-        df["_blend"] = blend
-        df["_blend_ok"] = ok
-        return df
+        blend_col, ok_col, _ = self._blend_col_names(price_col)
+        df[blend_col] = blend
+        df[ok_col] = ok
 
     # -- the evaluation contract (thin delegates to evaluation.py) --------
     @staticmethod
@@ -288,16 +369,33 @@ class RuleEntry(ABC):
 
     @staticmethod
     def passes_gate(action: str, n: int, dir_ave: float) -> bool:
-        """The plain gate (see evaluation.CellGate)."""
+        """The evidence bar (see evaluation.CellGate — the dir_ave bar
+        only; ``n`` shapes the sample_scale confidence, never the
+        verdict)."""
         return CellGate().passes(action, n, dir_ave)
 
     @staticmethod
     def confidence_pct(base_pct: float, depth_norm: float,
-                       factor: float) -> float:
-        """Depth-scaled confidence in percent (see evaluation.CellGate)."""
-        return CellGate().confidence_pct(base_pct, depth_norm, factor)
+                       factor: float,
+                       sample_scale: float = 1.0) -> float:
+        """Depth-scaled confidence in percent (see evaluation.CellGate;
+        ``sample_scale`` the starvation haircut min(n/floor, 1))."""
+        return CellGate().confidence_pct(base_pct, depth_norm, factor,
+                                         sample_scale)
 
     # -- the shared self-adaptive cell loop ------------------------------------
+    def _performance_as_of(self, df: pd.DataFrame) -> date:
+        """The performance snapshot's AS-OF date — the prepared frame's
+        data horizon (max date), the day the cells were measured
+        THROUGH. Cached per entry (ONE host unwrap of the date column
+        across the entry's run_cells calls); the terminal [D] cast is
+        the sanctioned python-date boundary (the _write_trend_days
+        pattern)."""
+        if self._perf_as_of is None:
+            self._perf_as_of = host_array(df["date"]).max() \
+                .astype("datetime64[D]").astype("O")
+        return self._perf_as_of
+
     def run_cells(
         self,
         df: pd.DataFrame,
@@ -311,54 +409,77 @@ class RuleEntry(ABC):
         ungated: bool = False,
         is_typical: pd.Series | None = None,
         extra_params: dict | None = None,
+        response_col: str = "price",
     ) -> tuple[list[dict], list[dict]]:
         """Measure every candidate per cell, pick each cell's WINNING
         candidate (the gate-passing one with the best dir_ave; ties →
         the FIRST candidate — the widest bar), run the POOLED EVIDENCE
         TIER, and emit the cell's signal_rules row (rule_params = the
-        prepared params + measured evidence) plus history rows for the
-        winning cells' episode-first triggers.
+        CONSTANT rule definition only — axis, K, the reentry flags, the
+        family's bar_def/params, the gate bar constants, the confidence
+        scale) plus history rows for the winning cells' episode-first
+        triggers. The MEASURED items ride each row's ``_performance``
+        payload — the cell's OWN measure block only (n / dir_ave /
+        std / t / hit + the as-of date), slimmed 2026-10-20: run_family
+        peels it into analysis_signals.history_signal_performance as
+        the run's dated snapshot; the COMBINED tiers (the pooled
+        evidence block, the gate digest, the cascade) live on the
+        PORTFOLIO tier (history_portfolio_signal_performance), never
+        on the cell snapshot.
 
         ``ungated`` marks observational populations (the VRP-rejection
         twin): cells emit regardless of the gate (still n >= 1),
         recording the measured evidence as-is (no pooled tier either).
 
-        THE POOLED EVIDENCE TIER (2026-10-16): the per-cell floors
-        cannot reach statistical significance (blend sigma ~2.6% ->
-        n=3 SE ~1.5%, the 0.25% bar ~0.16 SE), so the BUY edge claim
-        lives at the (sub_type, action) POOLED population — all
-        winning cells' measurable triggers across codes, judged by
-        pooled t-stat + expanding-year sign consistency
-        (evaluation.pooled_evidence). A BUY side whose pooled evidence
-        FAILS is demoted to measured-out: its trading cells emit no
-        rules rows and no history rows that run (the starved wait
-        replay is untouched — the monotone guarantee survives the
-        pooled tier). SELL records the pooled evidence on its rows but
-        is never pooled-gated (exit timing — the equity asymmetry).
-        The pooled block rides every winning rules row's
-        rule_params.pooled (n, t_stat, hit, the per-horizon decay
-        curve, the expanding-year legs).
+        ``response_col`` selects WHICH declared FORWARD_PRICE_COLS
+        response this call's cells measure against (default "price"
+        — the frame's own price; hedge_pairs' harvest exits pass the
+        strong/laggard leg columns so the sell gates judge the leg
+        they trim). The blend set for that column must exist on the
+        frame — prepare_frame attaches every FORWARD_PRICE_COLS
+        member's set.
 
-        STARVED cells also record (2026-10-16, tightened same day): a
-        cell whose best candidate holds episodes (n >= 1) but sits
-        BELOW the sample floor is a WAIT population — its triggers
-        ALWAYS replay into history as wait events (the extreme-event
-        monotone guarantee: a deepest-claim breach must never vanish
-        because its cell is under-floored; a deeper fluctuation never
-        yields LESS record than a shallower one), but its signal_rules
-        WAIT row is SELECTIVE — only cells blocked SOLELY by the floor
-        (n = floor - 1 with dir_ave already at the side's bar: one
-        confirming episode from trading). Populating a rules row for
-        every starved cell flooded the panel. The wait row graduates
-        to the real action once n clears the floor and the gate passes
-        (history re-emission upserts the same PK in place — action is
-        not a history PK member). Measured-out cells (n >= floor but
-        dir_ave below the bar) still emit NOTHING — that is the gate
-        rejecting on evidence, not starvation."""
+        THE POOLED EVIDENCE TIER (2026-10-16; starvation-trading since
+        2026-10-19): the per-cell floors cannot reach statistical
+        significance (blend sigma ~2.6% -> n=3 SE ~1.5%, the 0.25% bar
+        ~0.16 SE), so the BUY edge claim lives at the (sub_type,
+        action) POOLED population — all winning cells' measurable
+        triggers across codes, judged by pooled t-stat + expanding-year
+        sign consistency (evaluation.pooled_evidence). A BUY side whose
+        statistics legs FAIL (the dir_ave bar, the t bar, the year
+        majority) is demoted to measured-out: its cells emit no rules
+        rows and no history rows that run. A side under POOLED_MIN_N
+        but past POOLED_TRADE_FLOOR with the statistics legs clear
+        TRADES at the pooled completeness scale min(n / POOLED_MIN_N, 1)
+        of the confidence (folded into every row's history-record
+        scale — an in-run haircut since 2026-10-20; the pooled block
+        no longer rides the cell snapshot). SELL records the pooled
+        evidence on its side but is never pooled-gated (exit timing —
+        the equity asymmetry).
+
+        STARVED cells TRADE since 2026-10-19 (user-directed; retired
+        the 2026-10-16 wait replay): the sample floor is no longer a
+        verdict — ``CellGate.passes`` judges the dir_ave bar only, and
+        a cell holding fewer episodes than its floor emits its REAL
+        action at the sample-completeness confidence
+        ``min(n / floor, 1)`` (the starvation haircut; readers
+        recompute it from the snapshot's n_episodes + the rule's
+        gate.sample_floor constant — the digest no longer rides the
+        cell snapshot since 2026-10-20). A deepest-claim breach at an
+        extreme corner now records as a REDUCED-CONFIDENCE trading
+        row — the extreme-event monotone guarantee kept, without the
+        not-trading-yet wait population. Measured-out cells (dir_ave
+        below the bar, any n) still emit NOTHING — that is the gate
+        rejecting on evidence. ``ungated`` populations (the VRP-fail
+        twin) stay observational wait rows: every cell with episodes
+        emits, confidence flat."""
         action_code = ACTION_CODE[action]
-        wait_code = ACTION_CODE["wait"]
         keys = self.cell_keys
         sub_code = self.sub_type_code(sub_type)
+        # this call's response axis: the declared FORWARD_PRICE_COLS
+        # column whose blend set the cells measure against (primary
+        # "price" the legacy unsuffixed names)
+        blend_col, ok_col, fwd_tmpl = self._blend_col_names(response_col)
         detector = EpisodeDetector(k)
         gate = CellGate()
         # the boost's day-0 axes ride the family frame? (mov_rsi and
@@ -367,13 +488,12 @@ class RuleEntry(ABC):
         if self._boost.enabled and not self._boost.axes_ready:
             self._boost.check_axes(df)
 
-        # the passing winners, plus the STARVED (wait) fallback: a cell
-        # with no passing candidate keeps its best under-floored
-        # candidate (a passing candidate for the same cell always
-        # beats it); its triggers replay into history, its rules row
-        # only when imminent (see the emission loop)
+        # the winners: the best bar-clearing candidate per cell — the
+        # dir_ave bar is the ONLY verdict (2026-10-19; the sample floor
+        # discounts the confidence instead of blocking, see the
+        # emission loop). Ungated populations (the VRP twin) take any
+        # candidate with episodes.
         chosen: dict[tuple, tuple[Candidate, dict]] = {}
-        starved: dict[tuple, tuple[Candidate, dict]] = {}
         per_cand: list[tuple[Candidate, pd.Series, pd.DataFrame]] = []
         trend_series = df["trend"] if self.TREND_AWARE_REENTRY else None
         # the cell-split context column: the family's own cell axes
@@ -394,10 +514,11 @@ class RuleEntry(ABC):
             trig = per_cand[-1][2]
             if trig.empty:
                 continue
-            measurable = trig[trig["_blend_ok"].fillna(False)]
+            measurable = trig[trig[ok_col].fillna(False)]
             if measurable.empty:
                 continue
-            for row in cell_stats(measurable, action, keys) \
+            for row in cell_stats(measurable, action, keys,
+                                  blend_col=blend_col) \
                     .to_dict("records"):
                 cell = tuple(row[kk] for kk in keys)
                 n = int(row["n"])
@@ -405,19 +526,17 @@ class RuleEntry(ABC):
                 passed = (n >= 1) if ungated else gate.passes(
                     action, n, dir_ave,
                 )
-                if passed:
-                    pool = chosen
-                elif not ungated and 1 <= n < gate.floors.get(action, 0):
-                    pool = starved
-                else:
+                if not passed:
+                    # measured-out: below the side's dir_ave bar — the
+                    # gate rejecting on evidence, any n
                     continue
-                prev = pool.get(cell)
+                prev = chosen.get(cell)
                 if prev is None or dir_ave * 100.0 > prev[1]["measure"]["dir_ave_pct"]:
                     std = float(row["dir_std"])
                     t_stat = (dir_ave / (std / math.sqrt(n))
                               if n >= 2 and math.isfinite(std)
                               and std > 1e-12 else None)
-                    pool[cell] = (cand, {
+                    chosen[cell] = (cand, {
                         "measure": {
                             "n_episodes": n,
                             "dir_ave_pct": round(dir_ave * 100.0, 4),
@@ -432,70 +551,126 @@ class RuleEntry(ABC):
                         },
                     })
 
-        # the emitted winner per cell: a passing candidate overrides the
-        # starved fallback of the same cell
-        emit = dict(starved)
-        emit.update(chosen)
-        if not emit:
+        # the emitted winners — every chosen cell is a trading row
+        # (starved cells emit their REAL action at the reduced
+        # confidence; only the ungated twins stay observational wait)
+        if not chosen:
             return [], []
 
+        # THE POOLED EVIDENCE TIER (2026-10-16; verdict-first since the
+        # 2026-10-19 pooled starvation retreat) — the two-tier gate's
+        # statistical layer: the (sub_type, action) pooled population
+        # of the winning cells' MEASURABLE triggers across codes. A BUY
+        # side that fails the statistics legs (the dir_ave bar, the
+        # t-stat bar, the measurable-year sign majority) AND the n
+        # floors is demoted to measured-out (no rules rows, no history
+        # that run); a side under POOLED_MIN_N but past
+        # POOLED_TRADE_FLOOR with the statistics legs clear TRADES at
+        # the pooled completeness scale min(n / POOLED_MIN_N, 1) of the
+        # confidence — folded into every row's sample scale below (the
+        # live tier reads the same total from the snapshot's
+        # gate.conf_scale). SELL records the evidence ungated (exit
+        # timing — the equity asymmetry). Host boundary per the row
+        # loop's convention (the frames are the small chosen-trigger
+        # subsets).
+        pooled: dict | None = None
+        pooled_scale = 1.0
+        if not ungated:
+            sgn0 = 1.0 if action == "buy" else -1.0
+            fwd_hs = [h for h in cfg.FORWARD_BLEND_DAYS if h > 0]
+            facts: list[dict] = []
+            for cand, trig_mask, trig in per_cand:
+                if trig.empty:
+                    continue
+                hit_mask = pd.Series(False, index=trig.index,
+                                     dtype="bool")
+                for cell, (win_cand, _) in chosen.items():
+                    if win_cand is not cand:
+                        continue
+                    m = trig["code"] == cell[0]
+                    if "trend" in keys:
+                        m = m & (trig["trend"]
+                                 == cell[keys.index("trend")])
+                    if "regime" in keys:
+                        m = m & (trig["regime"]
+                                 == cell[keys.index("regime")])
+                    hit_mask = hit_mask | m
+                fired = trig[hit_mask.fillna(False)]
+                if fired.empty:
+                    continue
+                ok_np = host_array(fired[ok_col]).astype(bool)
+                blend_np = host_array(fired[blend_col])
+                fwd_np = {h: host_array(fired[fwd_tmpl.format(h=h)])
+                          * 100.0 for h in fwd_hs}
+                years_np = host_array(fired["date"]) \
+                    .astype("datetime64[D]") \
+                    .astype("datetime64[Y]").astype("int64") + 1970
+                for i in range(len(fired)):
+                    if not ok_np[i]:
+                        continue
+                    facts.append({
+                        "year": int(years_np[i]),
+                        # sign-aligned favorable response, PERCENT
+                        "fav": float(blend_np[i]) * 100.0 * sgn0,
+                        **{f"f{h}": float(fwd_np[h][i]) * sgn0
+                           for h in fwd_hs},
+                    })
+            pooled = pooled_evidence(facts)
+        pooled_demoted = bool(pooled is not None and action == "buy"
+                              and not pooled["passed"])
+        if pooled_demoted:
+            logger.warning(
+                f"[{self.FAMILY}] {sub_type}/{action}: POOLED evidence "
+                f"REJECTED — {len(chosen)} winning cell(s) emit nothing "
+                f"(pooled n={pooled['n']} "
+                f"dir_ave={pooled['dir_ave_pct']:+.2f}% "
+                f"t={pooled['t_stat']} years_positive="
+                f"{pooled['years']['positive']})",
+            )
+            return [], []
+        if pooled is not None and action == "buy" and pooled["starved"]:
+            pooled_scale = float(pooled["conf_scale"])
+            logger.info(
+                f"[{self.FAMILY}] {sub_type}/{action}: POOLED evidence "
+                f"STARVED-TRADING — pooled n={pooled['n']} < floor "
+                f"{pooled['floor']} at conf_scale={pooled_scale} "
+                f"(dir_ave={pooled['dir_ave_pct']:+.2f}% "
+                f"t={pooled['t_stat']} years_positive="
+                f"{pooled['years']['positive']})",
+            )
+
         rules_rows: list[dict] = []
-        rules_chosen: list[bool] = []   # per rules row: a chosen cell?
-        for cell, (cand, meas) in emit.items():
-            cell_starved = cell not in chosen
+        for cell, (cand, meas) in chosen.items():
             code = str(cell[0])
             trend_code = int(cell[keys.index("trend")]) \
                 if "trend" in keys else 4
             regime_code = int(cell[keys.index("regime")]) \
                 if "regime" in keys else 4
-            if cell_starved:
-                # THE SELECTIVE WAIT WATCHLIST (2026-10-16 tightening):
-                # a rules row only for cells blocked SOLELY by the
-                # sample floor — n = floor - 1 with dir_ave already at
-                # the side's bar (one confirming episode from trading).
-                # Every other starved cell records through HISTORY
-                # replay only (its triggers still emit as wait events
-                # below); a rules row per starved cell flooded the
-                # panel. Plus one wait row per rules PK (the twin side
-                # of the same cell already claimed it — the skipped
-                # side's triggers still replay into history).
-                m_w = meas["measure"]
-                bar_pct = round(cfg.GATE_DIR_AVE_MIN[action] * 100.0, 4) \
-                    if action in cfg.GATE_DIR_AVE_MIN else 0.0
-                if m_w["n_episodes"] != cfg.SAMPLE_FLOOR.get(action, 0) - 1 \
-                        or m_w["dir_ave_pct"] < bar_pct:
-                    continue
-                pk = (code, self.sec_type_code, self.signal_type_code,
-                      sub_code, trend_code, regime_code, wait_code)
-                if pk in self._starved_rules_pks:
-                    continue
-                self._starved_rules_pks.add(pk)
             m = meas["measure"]
-            gate_block: dict = {
+            # the 2026-10-19 CONSTANT/PERFORMANCE split, slimmed
+            # 2026-10-20: the gate's BAR constants (+ the observational
+            # designation) ride the rule; the VERDICT is the rule's
+            # is_valid boolean (the unified dir_ave test) — the gate
+            # digest no longer rides the cell snapshot (the combined
+            # tiers live on the portfolio tier)
+            gate_bars: dict = {
                 "metric": "dir_ave",
                 "min_pct": round(
                     cfg.GATE_DIR_AVE_MIN[action] * 100.0, 4)
                 if action in cfg.GATE_DIR_AVE_MIN else None,
                 "sample_floor": cfg.SAMPLE_FLOOR.get(action),
-                "passed": not ungated and not cell_starved,
                 "ungated": ungated,
-                "starved": cell_starved,
             }
-            if cell_starved:
-                # the action the cell trades once it graduates past the
-                # floor (the row itself records wait)
-                gate_block["intended_action"] = action
             params: dict = {
                 "axis": f"{self.FAMILY}:{sub_type}",
                 "episode_merge_days": k,
                 "reentry_trend_split": self.TREND_AWARE_REENTRY,
                 "reentry_cell_split": self.CELL_SPLIT_EPISODES,
-                "gate": gate_block,
-                "measure": m,
+                "gate": gate_bars,
                 "confidence": {
-                    # the base IS the cell's measured dir_ave (pct) —
-                    # the same number as the measure block above
-                    "base_pct": m["dir_ave_pct"],
+                    # the measured BASE (= the cell's dir_ave pct) lives
+                    # on the performance snapshot (dir_ave_pct); the
+                    # rule carries the SCALE only
                     "depth_factor": depth_factor,
                     "depth_cap": 2.0,
                 },
@@ -510,35 +685,49 @@ class RuleEntry(ABC):
                 "signal_sub_type": sub_code,
                 "trend": trend_code,
                 "regime_state": regime_code,
-                # starved cells record observationally — wait is never
-                # a trading row (the VRP-twin precedent)
-                "action": wait_code if cell_starved else action_code,
+                # starved cells TRADE at the reduced confidence — the
+                # only wait rows left are the ungated twins (the twin's
+                # own action argument is "wait")
+                "action": action_code,
                 # the per-cell GATE VERDICT (denormalized gate.passed):
-                # TRUE only for gate-passed trading cells — negative
-                # future returns never validate (measured-out cells do
-                # not emit; starved/ungated rows stay observational)
-                "is_valid": not ungated and not cell_starved,
+                # TRUE for bar-clearing trading cells — negative future
+                # returns never validate (measured-out cells do not
+                # emit; the ungated twin rows stay observational)
+                "is_valid": not ungated,
                 "rule_entry": self.entry_name,
                 "rule_params": params,
-                # the boost collaborator stamps the passing sides'
-                # trust-weighted confidence base in finalize (NULL =
-                # the side boosted nothing)
-                "ohlcv_boost_conf": None,
+                # the MEASURED half of the former rule_params (the
+                # 2026-10-19 split, slimmed 2026-10-20 to the cell's
+                # OWN measure): run_family peels this payload into
+                # analysis_signals.history_signal_performance as the
+                # run's dated snapshot — the pooled tier / gate digest /
+                # boost conf / dd lens / cascade never ride the CELL
+                # snapshot any more (the portfolio tier owns the
+                # combined audit)
+                "_performance": {
+                    "date": self._performance_as_of(df),
+                    "n_episodes": m["n_episodes"],
+                    "dir_ave_pct": m["dir_ave_pct"],
+                    "dir_std_pct": m["dir_std_pct"],
+                    "t_stat": m["t_stat"],
+                    "hit_rate": m["hit_rate"],
+                },
             })
-            rules_chosen.append(not cell_starved)
 
-        # replay: the winning cells' triggers become history rows,
-        # STAGED with their cell verdict — the POOLED EVIDENCE TIER
-        # (after the loop) filters before returning
+        # replay: the winning cells' triggers become history rows at
+        # their cell's confidence (starved cells at the reduced scale)
         base_pct = {
             cell: meas["measure"]["dir_ave_pct"]
-            for cell, (_, meas) in emit.items()
+            for cell, (_, meas) in chosen.items()
+        }
+        scales = {
+            cell: (1.0 if ungated
+                   else gate.sample_scale(
+                       action, meas["measure"]["n_episodes"],
+                   ) * pooled_scale)
+            for cell, (_, meas) in chosen.items()
         }
         history_rows: list[dict] = []
-        row_trading: list[bool] = []      # per staged row: chosen cell?
-        pooled_facts: list[dict] = []     # the chosen cells' MEASURABLE
-                                          # triggers (the pooled tier's
-                                          # population)
         staged_anchors: list[dict] = []   # boost facts (dropped when
                                           # the side is pooled-demoted)
         for cand, trig_mask, trig in per_cand:
@@ -546,7 +735,7 @@ class RuleEntry(ABC):
                 continue
             # the triggers whose cell chose THIS candidate
             hit_mask = pd.Series(False, index=trig.index, dtype="bool")
-            for cell, (win_cand, _) in emit.items():
+            for cell, (win_cand, _) in chosen.items():
                 if win_cand is not cand:
                     continue
                 m = trig["code"] == cell[0]
@@ -584,14 +773,11 @@ class RuleEntry(ABC):
             typ_np = host_array(is_typical[trig_mask]) \
                 if isinstance(is_typical, pd.Series) else None
             collect = self._boost.enabled and self._boost.axes_ready
-            # the pooled tier always needs the blend/ok legs — the
-            # boost collect flag no longer gates them
-            blend_np = host_array(fired["_blend"])
-            ok_np = host_array(fired["_blend_ok"]).astype(bool)
-            # the per-horizon legs (the pooled decay curve): host
-            # gathers in PERCENT, sign-aligned in the row loop
-            fwd_np = {h: host_array(fired[f"_fwd{h}"]) * 100.0
-                      for h in cfg.FORWARD_BLEND_DAYS if h > 0}
+            # the boost + the pooled tier need the blend/ok legs — the
+            # boost collect flag no longer gates them (the pooled facts
+            # were collected verdict-first, above)
+            blend_np = host_array(fired[blend_col])
+            ok_np = host_array(fired[ok_col]).astype(bool)
             sgn = 1.0 if action == "buy" else -1.0
             pat_np = host_array(fired["pattern"]).astype("int64") \
                 if collect else None
@@ -628,11 +814,10 @@ class RuleEntry(ABC):
                     "is_ohlcv_boosted": False,
                     "date": py_dates[i],
                     "time": _DAY_CLOSE,
-                    # starved cells' triggers record as wait events;
-                    # graduation re-emits the same PK as the real
-                    # action (action is no history PK member)
-                    "action": wait_code if cell not in chosen
-                    else action_code,
+                    # starved cells record their REAL action at the
+                    # reduced confidence (the 2026-10-19 starvation
+                    # retreat — no wait replay any more)
+                    "action": action_code,
                     "signal": round(float(vals_np[i]), 6),
                     "signal_reference": round(float(ref_np[sel_np][i]), 6),
                     # the record column stays on the INTEGER
@@ -640,7 +825,7 @@ class RuleEntry(ABC):
                     "confidence": round(
                         gate.confidence_pct(
                             base_pct[cell], float(depth_np[sel_np][i]),
-                            depth_factor,
+                            depth_factor, scales[cell],
                         ) * 100.0,
                     ),
                     "is_day_close_trigger": True,
@@ -649,28 +834,18 @@ class RuleEntry(ABC):
                     else (None if bool(np.isnan(typ_np[sel_np][i]))
                           else bool(typ_np[sel_np][i])),
                 })
-                row_trading.append(cell in chosen)
-                if cell in chosen:
-                    if bool(ok_np[i]):
-                        pooled_facts.append({
-                            "year": int(years_np[i]),
-                            # sign-aligned favorable response, PERCENT
-                            "fav": float(blend_np[i]) * 100.0 * sgn,
-                            **{f"f{h}": float(fwd_np[h][i]) * sgn
-                               for h in cfg.FORWARD_BLEND_DAYS
-                               if h > 0},
-                        })
-                    if collect:
-                        # observational (starved) rows never feed the
-                        # boost derivation — the measured population of
-                        # record is the passing cells' triggers; a
-                        # pooled-demoted side's anchors are dropped too
-                        staged_anchors.append({
+                if collect:
+                    # every emitted trading row feeds the boost
+                    # derivation (the starved observational era is
+                    # over); a pooled-demoted side's anchors are
+                    # dropped with its rows
+                    staged_anchors.append({
                             "code": code,
                             "sub_type": sub_type,
-                            # the rules-row key of the cell this trigger
-                            # measured (finalize stamps ohlcv_boost_conf
-                            # back onto the matching rule row)
+                            # the rules-row key of the cell this
+                            # trigger measured (the boost derivation's
+                            # population key — the per-cell stamp was
+                            # retired with its column, 2026-10-20)
                             "sub_code": sub_code,
                             "trend": int(cell[1]) if "trend" in keys
                             else 4,
@@ -700,43 +875,8 @@ class RuleEntry(ABC):
                             "amt": int(amt_np[i]) if amt_np is not None
                             else 0,
                         })
-        # THE POOLED EVIDENCE TIER (2026-10-16) — the two-tier gate's
-        # statistical layer: the (sub_type, action) pooled population
-        # of the winning cells' measurable triggers. A BUY failure
-        # demotes the side to measured-out (its trading rules rows and
-        # history replay are dropped — the starved wait rows survive,
-        # preserving the monotone guarantee); SELL records the evidence
-        # ungated (exit timing — the equity asymmetry). The demoted
-        # side's boost anchors never feed the derivation.
-        pooled: dict | None = None
-        if chosen and not ungated:
-            pooled = pooled_evidence(pooled_facts)
-        pooled_demoted = bool(pooled is not None and action == "buy"
-                              and not pooled["passed"])
-        if pooled_demoted:
-            history_rows = [r for r, t in zip(history_rows, row_trading)
-                            if not t]
-            rules_rows = [r for r, t in zip(rules_rows, rules_chosen)
-                          if not t]
-            logger.warning(
-                f"[{self.FAMILY}] {sub_type}/{action}: POOLED evidence "
-                f"REJECTED — {len(chosen)} winning cell(s) emit nothing "
-                f"(pooled n={pooled['n']} "
-                f"dir_ave={pooled['dir_ave_pct']:+.2f}% "
-                f"t={pooled['t_stat']} years_positive="
-                f"{pooled['years']['positive']})",
-            )
-        elif staged_anchors:
+        if staged_anchors:
             self._boost.facts.extend(staged_anchors)
-        # stamp the pooled block on the TRADING rows (the demoted
-        # branch already filtered rules_rows; rules_chosen still refers
-        # to the pre-filter alignment, so never stamp under demotion)
-        if pooled is not None and not pooled_demoted:
-            for row, trading in zip(rules_rows, rules_chosen):
-                if trading:
-                    row["rule_params"]["pooled"] = {
-                        **pooled, "gating": action == "buy",
-                    }
         return rules_rows, history_rows
 
     # -- the ohlcv boost (delegated to the OhlcvBoost collaborator) --------

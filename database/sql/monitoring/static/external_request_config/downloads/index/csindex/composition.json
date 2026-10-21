@@ -14,8 +14,12 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "csindex closeweight.xls on the OSS bucket — 403-prone, hence the very long cadence.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "closeweight_url_template": "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/file/autofile/closeweight/{index_code}closeweight.xls"
+    },
+    "notes": "csindex closeweight.xls on the OSS bucket — 403-prone, hence the very long cadence.; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/index/csindex/composition/_config.py; downloads/index/csindex/composition/_fetch.py; downloads/index/csindex/composition/runner.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

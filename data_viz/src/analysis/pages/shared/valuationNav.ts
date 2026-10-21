@@ -30,6 +30,12 @@ export const VALUATION_THEMES_SOURCES: Record<SecNavSecType, SecNavThemesSource>
     themes: (exchange) => fetchValuationThemes("stock", exchange),
     strategyThemes: (exchange) => fetchValuationStrategyThemes("stock", exchange),
   },
+  // Industry: flat tree (no classification above the industry entity) +
+  // empty strategy column — handled service-side.
+  industry: {
+    themes: (exchange) => fetchValuationThemes("industry", exchange),
+    strategyThemes: (exchange) => fetchValuationStrategyThemes("industry", exchange),
+  },
 };
 
 /** Codes fetcher for SecCodesPageShell — /api/analysis/valuation/codes. */

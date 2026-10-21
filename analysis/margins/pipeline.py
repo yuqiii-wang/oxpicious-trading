@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from _common.build_commons import (
@@ -102,13 +103,17 @@ async def detect_missing_dates(
     run_index: bool,
     is_index_only: bool,
     force: bool,
-) -> tuple[dict, set, set, set]:
+    run_industry: bool = False,
+) -> tuple[dict, set, set, set, set]:
     """Detect missing dates per table for incremental mode.
 
     Returns (target_dates_tech, target_dates_index_series,
-    target_dates_index_tech, target_dates_industry). Each value is None
-    in force mode (meaning "all dates"), or a set of missing dates in
-    incremental mode.
+    target_dates_index_tech, target_dates_industry,
+    target_dates_industry_tech). Each value is None in force mode
+    (meaning "all dates"), or a set of missing dates in incremental
+    mode. target_dates_industry_tech is an empty set unless
+    ``run_industry`` (industry needs BOTH stock+etf histories — a
+    partial sec_type run must not populate it).
     """
     if force:
         return (
@@ -116,6 +121,7 @@ async def detect_missing_dates(
             None if run_index else set(),
             None if run_index else set(),
             None,
+            None if run_industry else set(),
         )
 
     # ---- tech_stats per sec_type ----
@@ -164,9 +170,26 @@ async def detect_missing_dates(
         logger.info(f"    -> industry_stats: {len(target_dates_industry)} "
               f"missing dates")
 
+    # ---- tech_stats[industry] (keyed off margin_industry_stats) -------
+    # Same pattern as index: dates missing from the industry_stats TABLE
+    # (to be built this run) will also be missing from tech_stats after
+    # the build, so the union covers both. Gated on run_industry — the
+    # industry SUM curve is only meaningful with BOTH stock + etf
+    # histories in memory.
+    target_dates_industry_tech: set = set()
+    if run_industry and not is_index_only:
+        target_dates_industry_tech = await find_missing_analysis_dates(
+            conn, TABLE_TECH_STATS,
+            SEC_TYPE_SOURCE_TABLES["industry"],
+            sec_type=SEC_TYPE_CODE["industry"],
+        ) | target_dates_industry
+        logger.info(f"    -> tech_stats[industry]: "
+              f"{len(target_dates_industry_tech)} missing dates")
+
     return (
         target_dates_tech, target_dates_index_series,
         target_dates_index_tech, target_dates_industry,
+        target_dates_industry_tech,
     )
 
 
@@ -534,3 +557,155 @@ async def insert_industry_stats(
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
         logger.info(f"    -> inserted {n:,} rows via {via}")
+
+
+# ---------------------------------------------------------------------------
+#  Industry-level tech stats (SUM(stock+etf) curve per industry_id)
+# ---------------------------------------------------------------------------
+
+async def run_industry_tech_stats(
+    conn,
+    industry_stats: pd.DataFrame,
+    *,
+    force: bool = True,
+    target_dates: Optional[set] = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute + insert sec_type='industry' tech_stats from the
+    industry SUM aggregate (compute_industry_stats output).
+
+    The industry's own margin curve is the SUM of its member flows:
+      rz_balance = stock_margin_balance + etf_margin_balance
+      rz_buy     = stock_margin_buy     + etf_margin_buy
+    keyed as code = industry_id (the static.label_dim sec_type=3
+    contract). compute_tech_stats then derives the regime-detection cols
+    (slope_ma5 / zscore_20d) on this SUMMED curve — the same
+    aggregate-then-compute order as the index path (slopes are
+    non-additive).
+
+    Returns (history, tech_stats):
+      history     — DataFrame[code, date, rz_balance, rz_buy, n_members]
+                   (the SUM curve + the contributing-member count
+                   passenger; needed by the margin_changes step).
+      tech_stats  — DataFrame with the full margin_tech_stats column set
+                   (sec_type='industry'). FULL set (all dates) is
+                   returned regardless of mode.
+
+    Args:
+        conn: asyncpg connection.
+        industry_stats: DataFrame from compute_industry_stats (FULL set
+            — the caller computes it on every run past the early exit).
+        force: when True, DELETE + COPY-insert (full recompute). When
+            False, upsert only target_dates rows (incremental).
+        target_dates: set of missing dates to write (incremental mode).
+    """
+    logger.info("\n  --- sec_type = industry (SUM aggregate per "
+          "industry_id) ---")
+
+    if industry_stats.empty:
+        history = pd.DataFrame(
+            columns=["code", "date", "rz_balance", "rz_buy", "n_members"])
+        tech_stats = compute_tech_stats(history, "industry")
+        logger.info("        -> no industry_stats rows; empty output")
+        return history, tech_stats
+
+    # ---- Derive the SUM curve (vectorized; label-code contract keeps
+    # industry_id as a plain string groupby key — hash ops are
+    # cuDF-native) -------------------------------------------------------
+    # Per-side NULL = no contribution on that date — fillna(0) so a
+    # one-sided day still sums to the contributing side; an all-NULL day
+    # sums to 0, which compute_tech_stats / detection clean to NaN (a
+    # break, never a zero-margin dip).
+    #
+    # n_members — contributing members behind the SUM (Σ per-side
+    # ROUND(SUM/norm), the SAME derivation as the UI's member-change
+    # dots; both cover the identical non-null non-zero member set). A
+    # day-to-day change marks a SECTION boundary in compute_tech_stats /
+    # detection: a new member jolts the SUM for population reasons, and
+    # that jump must not be attributed as a margin rise/drop.
+    logger.info("    [a] Deriving the SUM(stock+etf) curve per "
+          "industry_id...")
+
+    def _side_member_count(balance: pd.Series, norm: pd.Series):
+        norm_ok = norm.fillna(0.0) > 0.0
+        return np.where(
+            norm_ok & balance.notna(),
+            np.round(balance.fillna(0.0) / norm.fillna(1.0)),
+            0.0,
+        )
+
+    n_members = (
+        _side_member_count(
+            industry_stats["stock_margin_balance"],
+            industry_stats["stock_margin_balance_norm"],
+        )
+        + _side_member_count(
+            industry_stats["etf_margin_balance"],
+            industry_stats["etf_margin_balance_norm"],
+        )
+    ).astype("int64")
+
+    history = pd.DataFrame({
+        "code": industry_stats["industry_id"],
+        "date": industry_stats["date"],
+        "rz_balance": (
+            industry_stats["stock_margin_balance"].fillna(0)
+            + industry_stats["etf_margin_balance"].fillna(0)
+        ),
+        "rz_buy": (
+            industry_stats["stock_margin_buy"].fillna(0)
+            + industry_stats["etf_margin_buy"].fillna(0)
+        ),
+        "n_members": n_members,
+    })
+    n_codes = history["code"].nunique()
+    logger.info(f"        -> {len(history):,} rows, {n_codes:,} industries")
+
+    logger.info("    [b] Computing ma5/ma20/ma60 + slope + regime cols "
+          "(on the SUM curve)...")
+    tech_stats = compute_tech_stats(history, "industry")
+    logger.info(f"        -> {len(tech_stats):,} tech-stats rows")
+
+    # ---- Insert ------------------------------------------------------
+    if force:
+        logger.info(f"    [c] Deleting old industry rows from "
+              f"{TABLE_TECH_STATS}...")
+        await delete_tech_stats_for_sec_type(conn, "industry")
+        rows_to_write = tech_stats
+    else:
+        if target_dates is not None:
+            n_before = len(tech_stats)
+            rows_to_write = tech_stats[
+                tech_stats["date"].isin(target_dates)
+            ].reset_index(drop=True)
+            logger.info(f"    [c] Incremental filter: {len(rows_to_write):,} of "
+                  f"{n_before:,} rows are in target_dates")
+        else:
+            rows_to_write = tech_stats
+
+    if rows_to_write.empty:
+        logger.info("        -> no rows to insert" if force else
+              "        -> no new rows to upsert")
+    elif force:
+        n = await copy_frame_chunked_async(
+            conn, TABLE_TECH_STATS, rows_to_write,
+            columns=TECH_STATS_INSERT_COLUMNS,
+            numeric_cols=TECH_STATS_NUMERIC_COLS, round_to=6,
+            label="tech_stats[industry]",
+        )
+        logger.info(f"        -> COPY-inserted {n:,} rows")
+    else:
+        rows = sanitize_for_db_insert(
+            rows_to_write[TECH_STATS_INSERT_COLUMNS],
+            numeric_cols=TECH_STATS_NUMERIC_COLS, round_to=6,
+        )
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            conn, TABLE_TECH_STATS, rows,
+            key_columns=["sec_type", "code", "date"],
+        )
+        n = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+        logger.info(f"        -> inserted {n:,} rows via {via}")
+
+    return history, tech_stats

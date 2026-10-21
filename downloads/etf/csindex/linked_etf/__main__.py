@@ -88,6 +88,7 @@ from downloads._common import (
     is_valid_file,
     merge_browser_profile,
     resolve_out_dir,
+    service_urls,
     setup_logger,
 )
 from downloads._common.monthly import is_month_start
@@ -98,18 +99,21 @@ from downloads._common.monthly import is_month_start
 
 SERVICE = "downloads.etf.csindex.linked_etf"
 
-CSINDEX_BASE = "https://www.csindex.com.cn"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+CSINDEX_BASE = URLS["site"]
 
 # POST JSON list — paginated fund data
-API_FUNDS_TRACKING_INDEX = CSINDEX_BASE + "/csindex-home/index-list/funds-tracking-index"
+API_FUNDS_TRACKING_INDEX = URLS["funds_tracking_index"]
 
 # POST Excel export — same body, returns .xls binary
-API_EXPORT_FUNDS_EXCEL = CSINDEX_BASE + "/csindex-home/exportExcel/funds-tracking-index-excel/CH"
+API_EXPORT_FUNDS_EXCEL = URLS["export_funds_excel"]
 
 # GET filter options (fund size buckets, asset classes, fund types, etc.)
-API_FUNDS_FILTER = CSINDEX_BASE + "/csindex-home/index-list/funds-filter"
+API_FUNDS_FILTER = URLS["funds_filter"]
 
-PRODUCT_PAGE_URL = CSINDEX_BASE + "/#/indices/indexProduct"
+PRODUCT_PAGE_URL = URLS["product_page"]
 
 # AUM threshold in 亿元 (1亿 = 100 million CNY)
 DEFAULT_MIN_AUM = 1.0

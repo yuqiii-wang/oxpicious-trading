@@ -18,12 +18,37 @@
  *
  * Optional L3 security-level row: when `itemKind` is set, renders one chip
  * per individual Index/ETF/Stock under the active industry/theme, paginated.
+ *
+ * Split (2026-10-20, >900-line split): the labeled chip row lives in
+ * ./ChipRow, the default-selection logic in ./useNavDefaults, the L3 item
+ * collection in ./navItems, and the page-size/default tables in
+ * ./constants — re-assembled here unchanged.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Box, Chip, CircularProgress, Pagination, Stack, Typography, type SxProps } from "@mui/material";
 import type { SectorNode, StrategyNode } from "@shared/types";
 import { PRIMARY_EXCHANGE_OPTIONS, SECONDARY_EXCHANGE_OPTIONS } from "@/shared/utils/classify";
 import SimilarIndicesList from "./SimilarIndicesList";
+import { ChipRow } from "./ChipRow";
+import { ITEMS_PAGE_SIZE } from "./constants";
+import { collectActiveItems } from "./navItems";
+import { useNavDefaults } from "./useNavDefaults";
+
+// ---------------------------------------------------------------------------
+// Pair mode (opt-in — only pages that pass `pairModeAvailable` render it)
+// ---------------------------------------------------------------------------
+/** One picked entry of the nav's PAIR mode — an L2 industry (LEFT column)
+ *  or L2 theme (RIGHT column; both carry an industry_id) in pick order
+ *  (oldest first). The mode caps the list at TWO: a 3rd pick auto-forgets
+ *  the oldest entry. */
+export interface PairNavEntry {
+  industryId: string;
+  label: string;
+  /** The L2 slug of the picked chip (industry_slug / theme slug). */
+  slug: string;
+  /** TRUE when picked from the RIGHT (strategy → theme) column. */
+  isStrategy: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -52,7 +77,7 @@ interface Props {
   onMultiIndustryChange?: (slugs: string[]) => void;
 
   /** Optional L3 security-level row. */
-  itemKind?: "Index" | "ETF" | "Stock";
+  itemKind?: "Index" | "ETF" | "Stock" | "Industry";
   selectedItemCode?: string | null;
   onItemSelected?: (code: string) => void;
   onClearItemSelection?: () => void;
@@ -96,65 +121,21 @@ interface Props {
    *  both columns' selections. Used by pages that merge industry + strategy
    *  selections into one view (e.g. Industry Sentiments). */
   mutuallyExclusive?: boolean;
-}
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-const ITEMS_PAGE_SIZE = 16;
-
-/** Default selection per sec_type. Applied ONCE on initial mount when the
- *  classification tree has loaded and no prior user selection exists.
- *  Centralised here so every page using the nav gets the same default
- *  without per-page boilerplate.
- *
- *  Verified against stats.sec_classification (DB query on 2026-08-15):
- *    Index 000001      — BROAD / broad_sse  (strategy column, is_industry_not_strategy=FALSE)
- *    Stock 000001.SZ   — FIN   / banks      (industry column, is_industry_not_strategy=TRUE )
- *    ETF   159673      — BROAD / broad_csi300 (strategy column, is_industry_not_strategy=FALSE)
- *
- *  `isStrategy` flags whether the default lives in the RIGHT column
- *  (strategy → theme, is_industry_not_strategy=FALSE) or the LEFT column
- *  (sector → industry, is_industry_not_strategy=TRUE). Mirrors how the
- *  useEffect below picks which column-change handlers to invoke.
- */
-const DEFAULTS_BY_KIND: Record<
-  "Index" | "ETF" | "Stock",
-  { sectorId: string; industrySlug: string; itemCode: string; isStrategy: boolean }
-> = {
-  Index: { sectorId: "BROAD", industrySlug: "broad_sse",     itemCode: "000001",    isStrategy: true },
-  // ETF themes tree strips the .SZ suffix (returns bare 6-digit codes), so
-  // the default must use the bare code to match the chip list. The search/
-  // filter logic in pages normalizes by stripping suffixes, so `159673` and
-  // `159673.SZ` are treated as equivalent when querying the chart API.
-  ETF:   { sectorId: "BROAD", industrySlug: "broad_csi300", itemCode: "159673",   isStrategy: true },
-  Stock: { sectorId: "FIN",   industrySlug: "banks",         itemCode: "000001.SZ", isStrategy: false },
-};
-
-// ---------------------------------------------------------------------------
-// Sub-component: a labeled row of chips
-// ---------------------------------------------------------------------------
-interface ChipRowProps {
-  label: string;
-  chipSize: "small" | "medium";
-  children: ReactNode;
-  /** Optional element rendered immediately after the label (e.g. expand/collapse triangle). */
-  labelAdornment?: ReactNode;
-}
-
-function ChipRow({ label, chipSize, children, labelAdornment }: ChipRowProps) {
-  return (
-    <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", alignItems: "center" }}>
-      <Typography
-        variant="subtitle2"
-        sx={{ fontWeight: 600, minWidth: 56, fontSize: chipSize === "small" ? "0.75rem" : "0.85rem" }}
-      >
-        {label}
-      </Typography>
-      {labelAdornment}
-      {children}
-    </Box>
-  );
+  // ---- PAIR mode (opt-in; currently only the signals Hedge Pairs page) ----
+  /** When TRUE, renders the "Mode" row with the Pair toggle. Pages that
+   *  don't pass it never see the feature (default false). */
+  pairModeAvailable?: boolean;
+  /** Controlled Pair-mode state (only meaningful with pairModeAvailable).
+   *  When TRUE, L2 industry + theme chips pick into the ordered
+   *  `pairEntries` list (max TWO — a 3rd pick auto-forgets the oldest)
+   *  instead of the normal multi/single selection paths, and the mass
+   *  "All (N)" chips are hidden. */
+  pairMode?: boolean;
+  onPairModeChange?: (on: boolean) => void;
+  /** The controlled pair list — pick order, oldest first (see PairNavEntry). */
+  pairEntries?: PairNavEntry[];
+  onPairEntriesChange?: (entries: PairNavEntry[]) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +171,11 @@ export default function SecClassificationNav({
   showExchange = true,
   mutuallyExclusive = true,
   loading = false,
+  pairModeAvailable = false,
+  pairMode = false,
+  onPairModeChange,
+  pairEntries = [],
+  onPairEntriesChange,
 }: Props) {
   const hasStrategyColumn = !!strategies && strategies.length > 0;
   const activeSector = sectors.find((s) => s.sector_id === sectorId) ?? null;
@@ -207,92 +193,24 @@ export default function SecClassificationNav({
     setItemPage(1);
   }, [sectorId, industrySlug, strategyId, themeSlug]);
 
-  // --- Default selection per sec_type ---
-  // On initial mount, when the classification tree has loaded, auto-select
-  // the default (sector/strategy + industry/theme + code) for the current
-  // itemKind. Applied ONCE via a ref guard so subsequent tree reloads (e.g.
-  // exchange filter changes) do not override the user's selection. Skipped
-  // in multi-select mode.
-  //
-  // Handles two scenarios:
-  //  1. Clean slate — no sector/strategy selected (page has no default logic):
-  //     set the full default (sector/strategy + industry/theme + code).
-  //  2. Page already set the sector/strategy but didn't drill down: complete
-  //     the selection with the industry/theme + code.
-  //
-  // Default lives in the strategy (RIGHT) column for Index and ETF
-  // (is_industry_not_strategy=FALSE), and in the industry (LEFT) column for
-  // Stock (is_industry_not_strategy=TRUE). Falls back to LEFT column when
-  // the strategy column is absent on the page.
-  // Reset the "default applied" guard whenever itemKind changes, so the
-  // default re-applies on every sec_type switch (Index → Stock → ETF). Without
-  // this, the guard is set to TRUE on the first tree load and never fires
-  // again, so switching sec_type would leave the nav without a default.
-  const defaultAppliedRef = useRef(false);
-  const lastItemKindRef = useRef<typeof itemKind>(undefined);
-  useEffect(() => {
-    if (lastItemKindRef.current !== itemKind) {
-      lastItemKindRef.current = itemKind;
-      defaultAppliedRef.current = false;
-    }
-  }, [itemKind]);
-  useEffect(() => {
-    if (defaultAppliedRef.current) return;
-    if (!itemKind) return;
-    if (multiSelect || multiSelectItems) return;
-
-    const def = DEFAULTS_BY_KIND[itemKind];
-    if (!def) return;
-
-    const hasTree = sectors.length > 0 || (!!strategies && strategies.length > 0);
-    if (!hasTree) return;
-
-    // The default's column is chosen by `isStrategy`, but it must fall back
-    // to the other column when that column is absent on the page. E.g. for
-    // Index/ETF the default lives in the strategy column, but pages without a
-    // strategy column should still drill down via sector/industry.
-    const asStrategy = def.isStrategy
-      ? (strategies?.find((s) => s.sector_id === def.sectorId) ?? null)
-      : null;
-    const asSector = sectors.find((s) => s.sector_id === def.sectorId) ?? null;
-    const node = asStrategy ?? asSector;
-    if (!node) return;
-
-    const industry = node.industries.find((i) => i.industry_slug === def.industrySlug);
-    if (!industry) return;
-    if (!industry.items.some((it) => it.code === def.itemCode)) return;
-
-    // All validation passed — mark as applied NOW (not earlier) so that a
-    // stale tree from a different sec_type (e.g. old Index tree while
-    // switching to ETF) doesn't prematurely set the guard and block the
-    // default from firing when the correct tree arrives.
-    defaultAppliedRef.current = true;
-
-    const isStrategy = !!asStrategy;
-
-    if (isStrategy) {
-      // Default lives in the RIGHT column (strategy → theme)
-      if (!sectorId && !strategyId) {
-        onStrategyChange?.(def.sectorId);
-        onThemeChange?.(def.industrySlug);
-        onItemSelected?.(def.itemCode);
-      } else if (strategyId === def.sectorId && !themeSlug && !selectedItemCode) {
-        onThemeChange?.(def.industrySlug);
-        onItemSelected?.(def.itemCode);
-      }
-    } else {
-      // Default lives in the LEFT column (sector → industry)
-      if (!sectorId && !strategyId) {
-        onSectorChange(def.sectorId);
-        onIndustryChange(def.industrySlug);
-        onItemSelected?.(def.itemCode);
-      } else if (sectorId === def.sectorId && !industrySlug && !selectedItemCode) {
-        onIndustryChange(def.industrySlug);
-        onItemSelected?.(def.itemCode);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [itemKind, sectors, strategies, sectorId, strategyId, themeSlug, industrySlug, selectedItemCode]);
+  // --- Default selection per sec_type (see useNavDefaults) ---
+  useNavDefaults({
+    itemKind,
+    multiSelect,
+    multiSelectItems,
+    sectors,
+    strategies,
+    sectorId,
+    strategyId,
+    themeSlug,
+    industrySlug,
+    selectedItemCode,
+    onSectorChange,
+    onIndustryChange,
+    onStrategyChange,
+    onThemeChange,
+    onItemSelected,
+  });
 
   // Cross-Border exchange row (HK / Overseas) — hidden by default. The user
   // expands it via the ▼ triangle next to the "Exchange" label. Cross-border
@@ -300,70 +218,20 @@ export default function SecClassificationNav({
   // row is opt-in.
   const [showCrossBorder, setShowCrossBorder] = useState(false);
 
-  const activeItems = useMemo(() => {
-    // Helper: collect strategy-theme items (de-duplicated by code).
-    const collectStrategyItems = (): Array<{ code: string; name: string }> => {
-      if (!activeStrategy) return [];
-      if (themeSlug) {
-        const theme = activeStrategy.industries.find((t) => t.industry_slug === themeSlug);
-        return theme ? theme.items : [];
-      }
-      const seen = new Set<string>();
-      const all: Array<{ code: string; name: string }> = [];
-      for (const th of activeStrategy.industries) {
-        for (const it of th.items) {
-          if (!seen.has(it.code)) { seen.add(it.code); all.push(it); }
-        }
-      }
-      return all;
-    };
-
-    // Helper: collect industry items from the active sector (de-duplicated).
-    const collectIndustryItems = (): Array<{ code: string; name: string }> => {
-      if (!activeSector) return [];
-      if (multiSelect && selectedIndustrySlugs.length > 0) {
-        const selectedSlugs = new Set(selectedIndustrySlugs);
-        const seen = new Set<string>();
-        const all: Array<{ code: string; name: string }> = [];
-        for (const ind of activeSector.industries) {
-          if (!selectedSlugs.has(ind.industry_slug)) continue;
-          for (const it of ind.items) {
-            if (!seen.has(it.code)) { seen.add(it.code); all.push(it); }
-          }
-        }
-        return all;
-      }
-      if (industrySlug) {
-        const ind = activeSector.industries.find((i) => i.industry_slug === industrySlug);
-        return ind ? ind.items : [];
-      }
-      const seen = new Set<string>();
-      const all: Array<{ code: string; name: string }> = [];
-      for (const ind of activeSector.industries) {
-        for (const it of ind.items) {
-          if (!seen.has(it.code)) { seen.add(it.code); all.push(it); }
-        }
-      }
-      return all;
-    };
-
-    // Mutually-exclusive mode (default): only the active column's items.
-    if (mutuallyExclusive) {
-      if (activeColumn === "strategy") return collectStrategyItems();
-      return collectIndustryItems();
-    }
-
-    // Non-exclusive mode: union of BOTH columns' items (de-duplicated).
-    const seen = new Set<string>();
-    const all: Array<{ code: string; name: string }> = [];
-    for (const it of collectIndustryItems()) {
-      if (!seen.has(it.code)) { seen.add(it.code); all.push(it); }
-    }
-    for (const it of collectStrategyItems()) {
-      if (!seen.has(it.code)) { seen.add(it.code); all.push(it); }
-    }
-    return all;
-  }, [activeColumn, activeSector, activeStrategy, industrySlug, themeSlug, multiSelect, selectedIndustrySlugs, mutuallyExclusive]);
+  const activeItems = useMemo(
+    () =>
+      collectActiveItems({
+        activeColumn,
+        activeSector,
+        activeStrategy,
+        industrySlug,
+        themeSlug,
+        multiSelect,
+        selectedIndustrySlugs,
+        mutuallyExclusive,
+      }),
+    [activeColumn, activeSector, activeStrategy, industrySlug, themeSlug, multiSelect, selectedIndustrySlugs, mutuallyExclusive],
+  );
 
   const totalItemPages = Math.max(1, Math.ceil(activeItems.length / ITEMS_PAGE_SIZE));
   const itemPageClamped = Math.min(itemPage, totalItemPages);
@@ -399,6 +267,19 @@ export default function SecClassificationNav({
       onMultiIndustryChange?.(Array.from(new Set([...selectedIndustrySlugs, ...sectorSlugs])));
     }
   };
+
+  // --- PAIR mode picking (see PairNavEntry) ---
+  // L2 chips of BOTH columns (industry / theme — both carry an industry_id)
+  // toggle membership in the ordered pair list; a 3rd DISTINCT pick evicts
+  // the oldest entry (FIFO cap 2). Clicking a picked chip removes it.
+  const handlePairPick = (entry: PairNavEntry) => {
+    const next = pairEntries.some((e) => e.slug === entry.slug)
+      ? pairEntries.filter((e) => e.slug !== entry.slug)
+      : [...pairEntries, entry].slice(-2);
+    onPairEntriesChange?.(next);
+  };
+  const isPairPicked = (slug: string): boolean =>
+    pairEntries.some((e) => e.slug === slug);
 
   const allChipSelected = multiSelect && activeSector
     ? activeSector.industries.every((i) => selectedIndustrySlugs.includes(i.industry_slug))
@@ -462,16 +343,22 @@ export default function SecClassificationNav({
     if (!activeSector) return null;
     return (
       <ChipRow label={`Industry${multiSelect ? " · multi" : ""}`} chipSize={chipSize}>
-        <Chip
-          label={`All (${activeSector.count})`}
-          size={chipSize}
-          color={allChipSelected ? "secondary" : "default"}
-          variant={allChipSelected ? "filled" : "outlined"}
-          onClick={handleAllClick}
-          sx={{ fontSize: chipFontSize }}
-        />
+        {/* Mass "All" hidden in pair mode — selecting a whole sector has no
+            meaning for a two-entry pair. */}
+        {!pairMode && (
+          <Chip
+            label={`All (${activeSector.count})`}
+            size={chipSize}
+            color={allChipSelected ? "secondary" : "default"}
+            variant={allChipSelected ? "filled" : "outlined"}
+            onClick={handleAllClick}
+            sx={{ fontSize: chipFontSize }}
+          />
+        )}
         {activeSector.industries.map((ind) => {
-          const selected = isIndustrySelected(ind.industry_slug);
+          const selected = pairMode
+            ? isPairPicked(ind.industry_slug)
+            : isIndustrySelected(ind.industry_slug);
           return (
             <Chip
               key={ind.industry_id}
@@ -479,7 +366,15 @@ export default function SecClassificationNav({
               size={chipSize}
               color={selected ? "secondary" : "default"}
               variant={selected ? "filled" : "outlined"}
-              onClick={() => handleIndustryClick(ind.industry_slug)}
+              onClick={() =>
+                pairMode
+                  ? handlePairPick({
+                      industryId: ind.industry_id,
+                      label: ind.industry_label,
+                      slug: ind.industry_slug,
+                      isStrategy: false,
+                    })
+                  : handleIndustryClick(ind.industry_slug)}
               sx={{ fontSize: chipFontSize }}
             />
           );
@@ -509,16 +404,21 @@ export default function SecClassificationNav({
     if (!activeStrategy) return null;
     return (
       <ChipRow label="Theme" chipSize={chipSize}>
-        <Chip
-          label={`All (${activeStrategy.count})`}
-          size={chipSize}
-          color={!themeSlug ? "secondary" : "default"}
-          variant={!themeSlug ? "filled" : "outlined"}
-          onClick={() => onThemeChange?.(null)}
-          sx={{ fontSize: chipFontSize }}
-        />
+        {/* Mass "All" hidden in pair mode (see the Industry row). */}
+        {!pairMode && (
+          <Chip
+            label={`All (${activeStrategy.count})`}
+            size={chipSize}
+            color={!themeSlug ? "secondary" : "default"}
+            variant={!themeSlug ? "filled" : "outlined"}
+            onClick={() => onThemeChange?.(null)}
+            sx={{ fontSize: chipFontSize }}
+          />
+        )}
         {activeStrategy.industries.map((th) => {
-          const selected = themeSlug === th.industry_slug;
+          const selected = pairMode
+            ? isPairPicked(th.industry_slug)
+            : themeSlug === th.industry_slug;
           return (
             <Chip
               key={th.industry_id}
@@ -526,7 +426,15 @@ export default function SecClassificationNav({
               size={chipSize}
               color={selected ? "secondary" : "default"}
               variant={selected ? "filled" : "outlined"}
-              onClick={() => onThemeChange?.(th.industry_slug)}
+              onClick={() =>
+                pairMode
+                  ? handlePairPick({
+                      industryId: th.industry_id,
+                      label: th.industry_label,
+                      slug: th.industry_slug,
+                      isStrategy: true,
+                    })
+                  : onThemeChange?.(th.industry_slug)}
               sx={{ fontSize: chipFontSize }}
             />
           );
@@ -569,7 +477,7 @@ export default function SecClassificationNav({
         onItemSelected?.(code);
       }
     };
-    const handleAllClick = () => {
+    const handleItemsAllClick = () => {
       if (multiSelectItems) {
         onMultiItemSelected?.([]);
       } else {
@@ -609,7 +517,7 @@ export default function SecClassificationNav({
               size={chipSize}
               color={allSelected ? "secondary" : "default"}
               variant={allSelected ? "filled" : "outlined"}
-              onClick={handleAllClick}
+              onClick={handleItemsAllClick}
               sx={{ fontSize: chipFontSize }}
             />
           )}
@@ -776,6 +684,26 @@ export default function SecClassificationNav({
         ...sx,
       }}
     >
+      {/* PAIR mode toggle — opt-in (pairModeAvailable); currently only the
+          signals Hedge Pairs page passes it. */}
+      {pairModeAvailable && (
+        <ChipRow label="Mode" chipSize={chipSize}>
+          <Chip
+            label="Pair"
+            size={chipSize}
+            color={pairMode ? "secondary" : "default"}
+            variant={pairMode ? "filled" : "outlined"}
+            onClick={() => onPairModeChange?.(!pairMode)}
+            sx={{ fontSize: chipFontSize }}
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: chipFontSize }}>
+            {pairMode
+              ? "pair — pick two industries/themes; a 3rd pick drops the oldest"
+              : "free multi-select"}
+          </Typography>
+        </ChipRow>
+      )}
+
       {/* Exchange filter — TWO rows mirroring the DB-derived
           `is_primary_exchange` flag (see classify.ts).
             Row 1 (primary, is_primary_exchange=TRUE):  All (primary) / SSE / SZSE / BSE

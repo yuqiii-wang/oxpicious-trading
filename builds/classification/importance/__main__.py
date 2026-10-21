@@ -33,6 +33,14 @@ database/sql/stats/07_sec_classification.sql):
   STOCK 2-5 max index weight >= 7/5/3/2% · 6 >=1% or ETF-held ·
         7 any composition member · 8 no membership · 9 inactive
 
+EXCLUSIONS (exclusion_rules JSONs): codes with exclusion scope ``all``
+(database/sec_statics/exclusion_rules/<sec_type>_excluded.json —
+delisted stocks/ETFs, dead indices) are DROPPED from the table by this
+build: they carry no row, so rank-ordered sweeps never enumerate them
+and the ranks cache never lists them. Service-scoped exclusions
+(csindex/stream/csindex_pe) stay ranked — the affected download services
+skip them via database.sec_statics.exclusion_rules_store.
+
 Quantitative inputs (all monthly snapshot, trailing AMT_WINDOW_DAYS):
   stats.sec_classification (type/is_active/is_dummy/aum_yi/exchange,
   ETF parent),
@@ -73,6 +81,9 @@ from _common.db_commons import (  # noqa: E402
 from _common.importance import save_importance_ranks_cache  # noqa: E402
 from _common.labels import SEC_TYPE_CODE, SEC_TYPE_LABEL  # noqa: E402
 from _common.log_setup import setup_logging  # noqa: E402
+from database.sec_statics.exclusion_rules_store import (  # noqa: E402
+    load_excluded_codes,
+)
 from database.sec_statics.importance_rules_store import (  # noqa: E402
     load_curated_exchanges,
     load_curated_ranks,
@@ -341,6 +352,36 @@ class ImportanceBuild(DataBuild):
             raise RuntimeError(
                 f"curated sentinel rows left after overlay: {leftover[:10]}")
 
+    @staticmethod
+    def _apply_exclusions(
+        rows: List[Dict], excluded_all: Dict[str, set],
+        curated_codes: set,
+    ) -> List[Dict]:
+        """Drop scope-``all`` excluded codes; return the kept rows.
+
+        An excluded code carries no rank row, so importance-ordered
+        sweeps never enumerate it and the ranks cache never lists it.
+        A curated rank 0/1 code that is also excluded is a curation
+        conflict — the exclusion wins (a dead code must not be swept
+        first) and the warning names it so the JSONs get fixed.
+        """
+        kept: List[Dict] = []
+        dropped: Dict[str, int] = {}
+        for r in rows:
+            sec_type = SEC_TYPE_LABEL[r["sec_type"]]
+            if r["code"] in excluded_all.get(sec_type, ()):
+                dropped[sec_type] = dropped.get(sec_type, 0) + 1
+                if r["code"] in curated_codes:
+                    logger.warning("excluded code %s is ALSO curated rank "
+                                   "0/1 — exclusion wins; fix the "
+                                   "importance/exclusion JSONs", r["code"])
+                continue
+            kept.append(r)
+        for sec_type, n in sorted(dropped.items()):
+            logger.info("exclusions: dropped %d %s codes (scope all)",
+                        n, sec_type)
+        return kept
+
     async def run(self) -> None:
         conn = await self.connect_db()
         try:
@@ -355,11 +396,15 @@ class ImportanceBuild(DataBuild):
             curated_exchanges = load_curated_exchanges()
             curated_codes = sorted(
                 {code for codes in curated.values() for code in codes})
+            excluded_all = load_excluded_codes(scopes=("all",))
+            n_excluded = sum(len(v) for v in excluded_all.values())
             logger.info(f"[0/3] Curated top ranks from "
                   f"database/sec_statics/importance_rules: "
                   f"{len(curated_codes)} codes "
                   f"({', '.join(f'{k[0]}r{k[1]}={len(v)}' for k, v in sorted(curated.items()))}); "
-                  f"{len(curated_exchanges)} curated exchange overrides")
+                  f"{len(curated_exchanges)} curated exchange overrides; "
+                  f"{n_excluded} scope-all excluded codes "
+                  f"({', '.join(f'{t}={len(v)}' for t, v in excluded_all.items())})")
 
             today = _dt.date.today()
             win_start = today - _dt.timedelta(days=AMT_WINDOW_DAYS)
@@ -371,8 +416,10 @@ class ImportanceBuild(DataBuild):
             logger.info(f"[1/3] {len(rows):,} ranked codes")
 
             logger.info("[2/3] Applying curated rank 0/1 + exchange "
-                        "overlay …")
+                        "overlay + exclusions …")
             self._apply_curated_overlay(rows, curated, curated_exchanges)
+            rows = self._apply_exclusions(
+                rows, excluded_all, set(curated_codes))
 
             logger.info(f"[3/3] Truncating {TABLE} + upserting "
                   f"{len(rows):,} rows …")

@@ -23,7 +23,7 @@ pe_pct_streaks precedent).
 Missing-date detection, the up-to-date skips, ``--force`` scoping and
 the analysis_identity upserts are all per selected stage.
 
-Per sec_type (index / etf / stock):
+Per sec_type (index / etf / stock / industry):
   1. Fetch active-universe codes from the identity table.
   2. Fetch source data:
      - index: PE (index_valuation) + close (index_basic_stats) + latest
@@ -32,6 +32,11 @@ Per sec_type (index / etf / stock):
      - etf: close (etf_basic_stats) + implied_dividend_per_share
        (etf_adjustment).
      - stock: close (stock_basic_stats) + dividends (stock_dividends).
+     - industry: composite close (industry_basic_stats.mean_close, pool
+       'all') + PE (industry_basic_stats.mean_pe — the build's
+       cross-sectional mean of member-index raw PE); the dividend stage
+       cross-sectional-means the member indices' own analysis.dividends
+       rows (must run AFTER index — 'industry' is last in SEC_TYPES).
   3. Compute pe (raw, invalid values masked) and dividend_yield
      (trailing-12m D/P) on FULL history (trailing-12m DPS windows need
      it).
@@ -103,11 +108,14 @@ from analysis.pe_and_dividends._common.fetch import (
     fetch_etf_close_and_dividends,
     fetch_stock_close,
     fetch_trading_dates,
+    fetch_industry_pe_and_close,
+    fetch_industry_member_yields,
 )
 from analysis.pe_and_dividends.dividends.compute import (
     compute_trailing_12m_dps,
     compute_index_dividend_yield,
     compute_simple_dividend_yield,
+    compute_industry_dividend_yield,
 )
 from analysis.pe_and_dividends.dividends.config import (
     ANALYSIS_NAME_DELIVERIES,
@@ -509,10 +517,117 @@ async def _process_stock(
     return n_detail + n_dl
 
 
+async def _process_industry(
+    conn, pool, *, force: bool, metrics: frozenset[str],
+    target_dates_pe: set | None,
+    target_dates_dy: set | None,
+    target_dates_tech: set | None,
+    code: str | None = None,
+) -> int:
+    """Process sec_type='industry' for the --metrics-selected stages.
+
+    Sources (all pre-computed or member-derived — nothing re-aggregated
+    from constituents here):
+      - close: stats.industry_basic_stats.mean_close (pool 'all' — the
+        rebased-to-100 composite close; code = industry_id).
+      - pe:    stats.industry_basic_stats.mean_pe — the build's
+        cross-sectional AVG of member-index raw PE (a ratio, so raw).
+      - dividend_yield: cross-sectional MEAN of the member indices' own
+        analysis.dividends rows (the mean_pe convention — see
+        compute_industry_dividend_yield). Depends on the index processor
+        having run first ('industry' is last in SEC_TYPES); a date whose
+        index rows are still missing yields NO industry row this run and
+        stays missing for the next run to fill (self-healing).
+
+    ``code`` (single-code mode, --code): bypasses the active-universe
+    pre-filter and recomputes ALL rows for that one industry (upsert).
+    """
+    st = "industry"
+    if "tech" in metrics:
+        logger.info(f"\n  [{st}] tech stage: etf-only for now; skipping.")
+    if "deliveries" in metrics:
+        logger.info(f"\n  [{st}] deliveries stage: etf/stock only (a composite "
+              f"industry has no per-share deliveries); skipping.")
+    if code is not None:
+        code_list = [code]
+        logger.info(f"\n  [{st}] SINGLE-CODE mode: processing {code}")
+    else:
+        logger.info(f"\n  [{st}] Fetching active codes...")
+        codes = await fetch_active_codes(conn, st)
+        code_list = await order_codes_or_sorted_async(conn, codes)
+        logger.info(f"  [{st}]   {len(code_list):,} active codes")
+        if not code_list:
+            logger.info(f"  [{st}]   no active codes; skipping.")
+            return 0
+
+    logger.info(f"  [{st}] Fetching composite close + mean_pe from "
+          f"industry_basic_stats (pool 'all')...")
+    close_df = await fetch_industry_pe_and_close(conn, code_list)
+    logger.info(f"  [{st}]   {len(close_df):,} (code, date) rows with close")
+
+    if code is not None and close_df.empty:
+        logger.info(f"  [{st}]   no source data for {code} in {st}; skipping.")
+        return 0
+
+    # ---- Dividend-side fetch + compute (dividends stage only) ----------
+    if "dividends" in metrics:
+        logger.info(f"  [{st}] Fetching member-index yields from "
+              f"analysis.dividends (sec_type=index)...")
+        member_yields = await fetch_industry_member_yields(conn)
+        n_member_inds = (
+            member_yields["code"].nunique()
+            if not member_yields.empty else 0
+        )
+        logger.info(f"  [{st}]   {len(member_yields):,} (member index, date) "
+              f"yield rows across {n_member_inds} industries")
+
+        logger.info(f"  [{st}] Computing industry dividend_yield "
+              f"(cross-sectional mean of member yields)...")
+        dy_df = compute_industry_dividend_yield(member_yields)
+        if not dy_df.empty:
+            dy_df = dy_df[dy_df["code"].isin(code_list)]
+        logger.info(f"  [{st}]   {dy_df['dividend_yield'].notna().sum():,} "
+              f"non-null dividend_yield values")
+    else:
+        logger.info(f"  [{st}] dividends stage not selected (--metrics); "
+              f"skipping dividend-side fetch + compute")
+        dy_df = pd.DataFrame()
+
+    # ---- Compute pe (pe stage only) ---------------------------------------
+    if "pe" in metrics:
+        logger.info(f"  [{st}] Cleaning pe (masking invalid <= 0 / NULL values)...")
+        pe = clean_pe(close_df)
+        logger.info(f"  [{st}]   {pe.notna().sum():,} non-null pe values")
+    else:
+        pe = None
+
+    # ---- Build + insert detail rows --------------------------------------
+    logger.info(f"  [{st}] Building detail rows...")
+    detail_df = build_detail_rows(close_df, pe, dy_df, st)
+    logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
+
+    n_detail = await _write_detail(
+        conn, st, detail_df, force=force, metrics=metrics,
+        target_dates_pe=target_dates_pe,
+        target_dates_dy=target_dates_dy,
+    )
+
+    # ---- Percentile bands + band-break excursion streaks (internal
+    # PE-only steps — see the index processor's comment).
+    if "pe" in metrics:
+        await run_pe_pct_bands(
+            conn, detail_df, sec_type=st, force=force, code_filter=code,
+        )
+        await run_pe_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
+
+    return n_detail
+
+
 _PROCESSORS = {
     "index": _process_index,
     "etf": _process_etf,
     "stock": _process_stock,
+    "industry": _process_industry,
 }
 
 
@@ -743,7 +858,7 @@ class PeDividendsAnalysis(DataAnalysis):
     by the DataAnalysis amain() template (self.conn / self.pool).
     """
 
-    title = "ANALYZE PE & DIVIDENDS (ETF + INDEX + STOCK)"
+    title = "ANALYZE PE & DIVIDENDS (ETF + INDEX + STOCK + INDUSTRY)"
     sec_types = tuple(SEC_TYPES)
     pool_size = 4
     component = "pe_and_dividends"

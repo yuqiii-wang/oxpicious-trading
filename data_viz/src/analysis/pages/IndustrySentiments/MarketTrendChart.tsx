@@ -30,7 +30,7 @@ import {
 } from "@mui/material";
 import ChartCard from "@/shared/components/ChartCard";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts } from "echarts";
 import {
@@ -180,6 +180,7 @@ export function MarketTrendChart() {
   const trendRef = useRef<ECharts | null>(null);
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.marketTrend,
       intro:
         "Broad-market overview: the four A-share indices' closes rebased to " +
         "100 × P_t/P_0 (left axis) for direct relative comparison; each index's " +

@@ -26,7 +26,7 @@ from _common.db_commons import (
     chunked_purge_async,
 )
 from _common.df_utils import host_unique
-from _common.labels import REGIME_CODE, SEC_TYPE_LABEL
+from _common.labels import REGIME_CODE, SEC_TYPE_CODE, SEC_TYPE_LABEL
 from builds.market_regimes.config import (
     AMT_BAR,
     AMT_Z_MIN_PERIODS,
@@ -210,45 +210,44 @@ async def run_market_regimes(
 
     # ---- Step 3: collapse the daily states into contiguous spans -----
     # BEFORE the states frame's column reindex — the collapse selects the
-    # sec_type_id frame-code column. Write boundary for spans: re-materialize
-    # the TEXT sec_type (the loop constant in the run_build path — never a
-    # per-row decode), then drop the frame code via the column reindex.
+    # sec_type_id frame-code column. Write boundary: the sec_type column
+    # stores its static.label_dim SMALLINT code (the label-code contract)
+    # — the frame's sec_type_id code column IS the stored value, so it
+    # rides through unchanged; the reindex drops the frame-code column.
     spans = compute_regime_spans(out)
-    spans["sec_type"] = (
-        sec_type if sec_type is not None
-        else spans["sec_type_id"].map(SEC_TYPE_LABEL)
-    )
+    spans["sec_type"] = spans["sec_type_id"]
     spans = spans.reindex(columns=list(MARKET_REGIME_SPANS_COLUMNS))
     spans_per_code = len(spans) / n_codes if n_codes else 0.0
     logger.info(f"[mr3/4] {len(spans):,} regime spans "
           f"({spans_per_code:.0f}/code avg) for stats.market_regime_spans")
 
-    # ---- Write boundary (states frame): TEXT sec_type + table order ----
-    out["sec_type"] = (
-        sec_type if sec_type is not None
-        else out["sec_type_id"].map(SEC_TYPE_LABEL)
-    )
+    # ---- Write boundary (states frame): SMALLINT sec_type + table order --
+    out["sec_type"] = out["sec_type_id"]
     out = out.reindex(columns=list(MARKET_REGIMES_COLUMNS))
 
     # ---- Step 4: replace the scope's rows wholesale (both tables) -----
+    # SQL binds the sec_type column's SMALLINT code (the label-code
+    # contract); st stays the loop/log vocabulary label.
     for st in sec_types:
         if code_filter is not None:
             status = await conn.execute(
                 f"DELETE FROM {TABLE} "
                 f"WHERE sec_type = $1 AND code = $2",
-                st, code_filter,
+                SEC_TYPE_CODE[st], code_filter,
             )
             spans_status = await conn.execute(
                 f"DELETE FROM {SPANS_TABLE} "
                 f"WHERE sec_type = $1 AND code = $2",
-                st, code_filter,
+                SEC_TYPE_CODE[st], code_filter,
             )
         else:
             n_del = await chunked_purge_async(
-                conn, TABLE, where_sql="sec_type = $1", params=(st,),
+                conn, TABLE, where_sql="sec_type = $1",
+                params=(SEC_TYPE_CODE[st],),
             )
             n_spans_del = await chunked_purge_async(
-                conn, SPANS_TABLE, where_sql="sec_type = $1", params=(st,),
+                conn, SPANS_TABLE, where_sql="sec_type = $1",
+                params=(SEC_TYPE_CODE[st],),
             )
         logger.info(f"[mr4/4] deleted {n_del:,} existing state rows + "
               f"{n_spans_del:,} span rows ({st})")

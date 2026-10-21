@@ -14,8 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "SZSE options snapshot pages.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "show_report": "https://www.szse.cn/api/report/ShowReport",
+      "referer_trend": "https://www.szse.cn/market/trend/index.html"
+    },
+    "notes": "SZSE options snapshot pages; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/options/szse/trend/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

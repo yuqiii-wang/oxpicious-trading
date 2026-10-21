@@ -22,6 +22,14 @@ export const THEMES_SOURCES = {
  *  what the plot's Hypes & Drains sub-view shows out of the box. */
 export const MARKET_TOP_BENCHMARK = "000300";
 
+/** Market mode: the broad-market tag is ALWAYS part of the feed scope —
+ *  downloads.macro.ai_daily stores the daily broad-market summary QA under
+ *  it (stats.sec_index_tags for 000001; same value the DataViz AI page
+ *  resolves through the strategy tree), and it never appears in the
+ *  hypes & drains rankings, so without it the market feed would never
+ *  show the one QA that updates every trading day. */
+export const MARKET_FEED_BROAD_INDUSTRY_ID = "BROAD_SSE";
+
 /** Feed page size (server caps at 100). */
 export const PAGE_SIZE = 20;
 

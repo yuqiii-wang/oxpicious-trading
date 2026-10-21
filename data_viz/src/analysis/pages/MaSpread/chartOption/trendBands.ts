@@ -7,10 +7,12 @@
  * (2026-10-15): the MA60 leg identified turns months late (after the
  * 2020-03 crash, close stayed below its crash-inflated MA60 all April
  * — a rising month shaded "down"). The signals tier's RSI re-entry
- * classifier (Wilder RSI(14) zones + the deep-anchor turn) is
- * server-side, shared with the rule cells, and already rebuilt daily
- * — this module only adapts its vocabulary and span format for the
- * pair chart's tooltip readout and the Trend section's shades.
+ * classifier (Wilder RSI(10) zones + the Kaufman guard + the
+ * deep-anchor turn + the 2026-10-21 travel claim: a traveling
+ * MA255-gap extreme claims rise/fall directly) is server-side,
+ * shared with the rule cells, and already rebuilt daily — this module
+ * only adapts its vocabulary and span format for the pair chart's
+ * tooltip readout and the Trend section's shades.
  *
  * The spans are DATE ranges, so no index alignment with the pair rows
  * is needed (the CodeTrendChart precedent); unknown is the unshaded

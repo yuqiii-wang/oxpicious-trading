@@ -51,14 +51,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import ChartCard from "@/shared/components/ChartCard";
 import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import {
   fetchOptionsBands,
   fetchOptionsOiStats,
   fetchOptionsSkewnessSeries,
   fetchOptionsMoneynessSeries,
-  fetchOptionsWalls,
+  fetchOptionsWallsDominant,
   type OptionsTargetType,
   type OptionsVenue,
 } from "@/lib/api-client/options";
@@ -301,13 +301,15 @@ export default function SharedSkewPanel({
   // Per-plot load #1 — the oi_moneyness series aggregate (ALSO supplies the
   // spot-per-date map the greek_* rebases need; one cached fetch serves
   // both). Reset state on scope change so the spec is NEVER computed with
-  // a mismatched mode/data pair.
+  // a mismatched mode/data pair — BEFORE the guard, so an empty-scope
+  // pass (the signals page's venue-resolved underlying mid-switch) also
+  // drops the stale series instead of keeping the old chart up.
   useEffect(() => {
-    if (!underlyingCode) return;
-    let cancelled = false;
     setSeriesLoading(true);
     setSeriesError(null);
     setMoneynessResp(null);
+    if (!underlyingCode) return;
+    let cancelled = false;
     fetchOptionsMoneynessSeries(underlyingCode, targetType, exchange, {
       fresh: reloadKey > 0,
     })
@@ -372,9 +374,10 @@ export default function SharedSkewPanel({
   // v2): the OI-mass corridor (P10..P90 strikes) + fresh corridor crosses
   // vs the prior session's corridor. Rendered as the corridor shade +
   // markers on the spot curve; failure degrades to no layer (never blocks
-  // the panel). The wall/zone rows (analysis.options_walls) ride the same
-  // load — the /walls URL is LRU-cached, so the Options Trend card's
-  // identical fetch is served from cache.
+  // the panel). The wall shades draw from the DOMINANT per-(date, side)
+  // zone table (/walls-dominant — the server-side collapse of the
+  // per-expiry /walls rows this panel's shade builder applies anyway;
+  // the Options Trend cohort chart keeps the per-expiry /walls payload).
   useEffect(() => {
     setBandsRows([]);
     setWallRows([]);
@@ -382,7 +385,7 @@ export default function SharedSkewPanel({
     let cancelled = false;
     Promise.all([
       fetchOptionsBands(underlyingCode),
-      fetchOptionsWalls(underlyingCode),
+      fetchOptionsWallsDominant(underlyingCode),
     ])
       .then(([bands, walls]) => {
         if (cancelled) return;
@@ -658,6 +661,14 @@ export default function SharedSkewPanel({
   // Suggested questions carry the guide's actionable angle.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      // The signals page's in-signal instance (marker layer attached) maps
+      // to the options-signals item; the plain panel maps per mode.
+      insight:
+        signalEvents !== undefined
+          ? INSIGHT_PAGES.optionsSignals
+          : mode.startsWith("greek_")
+            ? INSIGHT_PAGES.greeks
+            : INSIGHT_PAGES.oiMoneynessSkew,
       intro: meta.subtitle,
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
       series: [

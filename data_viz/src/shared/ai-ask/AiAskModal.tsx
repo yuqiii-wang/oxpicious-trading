@@ -23,11 +23,20 @@
  *      time-relative questions;
  *   3. renders the answer.
  *
- * Concise layout: the series-tags strip is capped at two rows with a
- * gradient fade over the third (double-arrow toggle expands all — stacked
- * charts can carry 100+ series chips); submitted screenshots shrink to
- * thumbnails that open a zoom lightbox on click; the answer box takes most
- * of the remaining dialog height.
+ * Concise layout: for registered analysis pages (the spec's `insight`)
+ * the control-state + series-tags strips are REPLACED by the page's
+ * METRICS TABLE — the
+ * metrics of particular interest translated from the insight registry
+ * jsonb (analysis_insights.insight_templates), each value resolved
+ * server-side from the analysis tables (Δ vs the previous date) or
+ * computed on demand when missing, reacting to the ask's instrument
+ * (the classification-nav chosen security) and the as-of date (seeded
+ * with the code trend's chosen date). Otherwise the series-tags strip
+ * shows, capped at two rows with a gradient fade over the third
+ * (double-arrow toggle expands all — stacked charts can carry 100+
+ * series chips); submitted screenshots shrink to thumbnails that open a
+ * zoom lightbox on click; the answer box takes most of the remaining
+ * dialog height.
  *
  * The clamped intro is the doorway to the full description view: clicking
  * it (or the "full description" hint under it) replaces the ask UI with a
@@ -53,6 +62,13 @@ import {
   DialogTitle,
   FormControlLabel,
   IconButton,
+  Skeleton,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from "@mui/material";
@@ -62,6 +78,8 @@ import KeyboardDoubleArrowDownIcon from "@mui/icons-material/KeyboardDoubleArrow
 import KeyboardDoubleArrowUpIcon from "@mui/icons-material/KeyboardDoubleArrowUp";
 import { Close as CloseIcon } from "@mui/icons-material";
 import { askChartAi } from "@/lib/api-client/aiAsk";
+import { fetchInsightMetrics } from "@/lib/api-client/analysis-insights";
+import type { InsightMetricsResponse } from "@/lib/api-client/analysis-insights";
 import { DescriptionView } from "@/shared/components/description";
 import {
   DateOrMonthField,
@@ -70,7 +88,7 @@ import {
 // Leaf-module import (not the base-chart barrel): BaseChart imports this
 // package, so going through the barrel would close a module cycle.
 import { useChartThemeMode } from "@/shared/charts/base-chart/useChartThemeMode";
-import type { AiAskPlotInfo, AiAskSeriesInfo } from "./types";
+import type { AiAskInsightMetric, AiAskPlotInfo, AiAskSeriesInfo } from "./types";
 import { useStore } from "@/store/filters";
 
 /** Paper colors the chart cards sit on (mui-theme.ts fallbacks) — the chart
@@ -99,6 +117,22 @@ function fmtNum(v: number | undefined): string {
   return Math.abs(v) >= 1000
     ? v.toLocaleString("en-US", { maximumFractionDigits: 1 })
     : String(Math.round(v * 100) / 100);
+}
+
+/** One insight-metric cell — concise: number + unit, "–" when unresolved
+ *  (blanket reason goes to the row tooltip). */
+function fmtMetricValue(m: AiAskInsightMetric): string {
+  if (m.value === null || m.value === undefined) return "–";
+  if (typeof m.value === "boolean") return m.value ? "1" : "0";
+  if (typeof m.value === "string") return m.value;
+  return fmtNum(m.value) + (m.unit && m.unit !== "%" ? ` ${m.unit}` : m.unit === "%" ? "%" : "");
+}
+
+/** Δ cell — signed 2dp (pp for %-unit metrics, else raw). */
+function fmtMetricDelta(m: AiAskInsightMetric): string {
+  if (m.delta === null || m.value === null) return "–";
+  const sign = m.delta >= 0 ? "+" : "−";
+  return `${sign}${fmtNum(Math.abs(m.delta))}${m.unit === "%" ? "pp" : ""}`;
 }
 
 /** "12.3 → 15.6 (+26.8%)" — the one number a trader reads first. Percent
@@ -204,16 +238,18 @@ export default function AiAskModal({
     };
   }, [plotInfo, open, tagsEl]);
 
-  // Seed the as-of date whenever the dialog opens: the chart's latest
-  // plotted date is the natural "now" for time-relative questions, with
-  // the global filter range as the fallback. Only fills an empty field —
-  // user edits are never clobbered (close() clears so each open re-seeds).
+  // Seed the as-of date whenever the dialog opens: the chart's own
+  // chosen/anchor date (the code trend click, roof/floor anchor) leads,
+  // then the chart's latest plotted date, then the global filter range.
+  // Only fills an empty field — user edits are never clobbered (close()
+  // clears so each open re-seeds).
   useEffect(() => {
     if (!open || !dateSelectable) return;
     setAsOfDate((prev) => {
       if (prev.trim()) return prev;
       const s = useStore.getState();
       return (
+        normalizeDateOrMonth(plotInfo.asOfDate) ??
         normalizeDateOrMonth(plotInfo.window.end) ??
         normalizeDateOrMonth(plotInfo.window.start) ??
         normalizeDateOrMonth(s.endDate) ??
@@ -222,6 +258,61 @@ export default function AiAskModal({
       );
     });
   }, [open, dateSelectable, plotInfo]);
+
+  // ---- insight metrics table (registered analysis pages) ----
+  // The page's metrics of particular interest (analysis_insights.
+  // insight_templates, translated from the registry jsonb) with values
+  // resolved server-side — from the analysis tables, or on-demand
+  // computed when missing — for the CURRENT instrument (the
+  // classification-nav chosen security) and the as-of date chosen above
+  // (the code trend's chosen date seeds it). Refetches whenever any of
+  // those move; a failed fetch falls back to the series-tags strip.
+  const insightTab = plotInfo.insight?.tab;
+  const insightPage = plotInfo.insight?.page;
+  const instrument = plotInfo.scope.instruments[0];
+  const insightCode = instrument?.code ?? null;
+  const insightSecType = instrument?.assetClass ?? null;
+  const industrySlug = useStore((s) => s.industrySlug);
+  const [insightMetrics, setInsightMetrics] =
+    useState<InsightMetricsResponse | null>(null);
+  const [insightFailed, setInsightFailed] = useState(false);
+  useEffect(() => {
+    if (!open || !insightTab || !insightPage) {
+      setInsightMetrics(null);
+      setInsightFailed(false);
+      return;
+    }
+    let cancelled = false;
+    setInsightMetrics(null);
+    setInsightFailed(false);
+    fetchInsightMetrics({
+      tab: insightTab,
+      page: insightPage,
+      code: insightCode ?? undefined,
+      secType: insightSecType ?? undefined,
+      industry: industrySlug ?? undefined,
+      date: asOfNorm ?? undefined,
+    })
+      .then((r) => {
+        if (!cancelled) setInsightMetrics(r);
+      })
+      .catch(() => {
+        if (!cancelled) setInsightFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, insightTab, insightPage, insightCode, insightSecType, industrySlug, asOfNorm]);
+
+  const hasInsight = Boolean(insightTab && insightPage);
+  // loading while fetching (skeleton table); loaded-but-empty (unknown
+  // page) or failed fetch → fall back to the series-tags strip
+  const insightLoading = hasInsight && !insightFailed && insightMetrics === null;
+  const insightKnown =
+    hasInsight && !insightFailed && (insightMetrics?.metrics.length ?? 0) > 0;
+  const showInsightTable = insightLoading || insightKnown;
+  const anyComputed =
+    insightKnown && insightMetrics.metrics.some((m) => m.computed);
 
   const close = () => {
     if (submitting) return; // one ask at a time — don't orphan an in-flight POST
@@ -321,6 +412,17 @@ export default function AiAskModal({
         // as "now" for time-relative questions; undefined drops the key.
         date: asOfTrim && asOfNorm ? asOfNorm : undefined,
         page: plotInfo.page ?? pathname,
+        // The insight metrics table's resolved values (the page's metrics
+        // of particular interest for the chosen security/date) — rides
+        // along so the adviser answers with the actual curve values.
+        ...(plotInfo.insight && insightKnown
+          ? {
+              insight: {
+                ...plotInfo.insight,
+                metrics: insightMetrics.metrics,
+              },
+            }
+          : {}),
       };
 
       const res = await askChartAi({
@@ -358,7 +460,7 @@ export default function AiAskModal({
 
   return (
     <>
-      <Dialog open={open} onClose={close} maxWidth="md" fullWidth>
+      <Dialog open={open} onClose={close} maxWidth="lg" fullWidth>
         <DialogTitle
           sx={{
             position: "relative",
@@ -438,7 +540,11 @@ export default function AiAskModal({
                 </Box>
               )}
 
-          {plotInfo.state && Object.keys(plotInfo.state).length > 0 && (
+          {/* control-state tags — non-registry charts only: on a registered
+              analysis page the insight metrics table below IS the current
+              view's readout, so these k:v chips would duplicate it */}
+          {!showInsightTable &&
+            plotInfo.state && Object.keys(plotInfo.state).length > 0 && (
             <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
               {Object.entries(plotInfo.state).map(([k, v]) => (
                 <Typography
@@ -458,8 +564,135 @@ export default function AiAskModal({
             </Box>
           )}
 
-          {/* series tags — two rows + gradient fade, double-arrow expands */}
-          {seriesCount > 0 && (
+          {/* insight metrics table — for registered analysis pages this
+              REPLACES the tags strips: the page's metrics of
+              particular interest (translated from the registry jsonb),
+              values from the analysis tables (Δ vs the previous date) or
+              computed on demand ("*"). Non-registry charts (and a failed
+              fetch) keep the state + series tags strips instead. */}
+          {showInsightTable && (
+            <TableContainer
+              sx={{
+                maxHeight: 220,
+                borderRadius: 1,
+                border: "1px solid",
+                borderColor: "divider",
+              }}
+            >
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    {["Metric", "Value", "Δ", "As of"].map((h, i) => (
+                      <TableCell
+                        key={h}
+                        align={i === 0 ? "left" : "right"}
+                        sx={{
+                          color: "var(--chart-subtitle)",
+                          fontWeight: 600,
+                          fontSize: "0.7rem",
+                          py: 0.5,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {h}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {insightLoading ? (
+                    [0, 1, 2, 3, 4].map((i) => (
+                      <TableRow key={i}>
+                        {[0, 1, 2, 3].map((c) => (
+                          <TableCell key={c} sx={{ py: 0.5 }}>
+                            <Skeleton height={14} />
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))
+                  ) : (
+                    insightMetrics.metrics.map((m) => (
+                      <TableRow
+                        key={m.template_id}
+                        title={
+                          m.description +
+                          (m.unresolved ? ` — ${m.unresolved}` : "")
+                        }
+                      >
+                        <TableCell
+                          sx={{
+                            py: 0.25,
+                            fontSize: "0.75rem",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {m.label}
+                          {m.computed && (
+                            <Typography
+                              component="sup"
+                              sx={{ fontSize: "0.6rem", color: "var(--chart-subtitle)" }}
+                            >
+                              *
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{
+                            py: 0.25,
+                            fontSize: "0.75rem",
+                            fontWeight: 600,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {fmtMetricValue(m)}
+                        </TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{
+                            py: 0.25,
+                            fontSize: "0.75rem",
+                            whiteSpace: "nowrap",
+                            color:
+                              m.delta === null || m.delta === 0
+                                ? "var(--chart-subtitle)"
+                                : m.delta > 0
+                                  ? "success.main"
+                                  : "error.main",
+                          }}
+                        >
+                          {fmtMetricDelta(m)}
+                        </TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{
+                            py: 0.25,
+                            fontSize: "0.7rem",
+                            color: "var(--chart-subtitle)",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {m.value_date ?? "–"}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+          {showInsightTable && anyComputed && (
+            <Typography
+              variant="caption"
+              sx={{ color: "var(--chart-subtitle)", mt: -0.5 }}
+            >
+              * computed on demand for the chosen security/date
+            </Typography>
+          )}
+
+          {/* series tags — two rows + gradient fade, double-arrow expands
+              (the fallback / non-registry charts' key-metrics strip) */}
+          {!showInsightTable && seriesCount > 0 && (
             <Box>
               <Box
                 ref={setTagsEl}

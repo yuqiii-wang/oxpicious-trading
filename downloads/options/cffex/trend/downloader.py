@@ -26,9 +26,7 @@ The CSV format matches the archive downloader:
 from __future__ import annotations
 
 import csv as csv_mod
-import random
 import tempfile
-import time
 from datetime import date
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
@@ -46,6 +44,7 @@ from _common.playwright import (
 )
 from downloads._common import (
     clean_table_cell,
+    random_sleep,
     request_config_for,
     setup_logger,
     sleep_sec_for,
@@ -59,6 +58,8 @@ from downloads.options.cffex.trend.config import (
     HEADLESS,
     OUTPUT_CSV_ENCODING,
     PAGE_NAVIGATION_TIMEOUT,
+    SETTLE_JITTER,
+    SETTLE_SLEEP_SEC,
     VIEWPORT_HEIGHT,
     VIEWPORT_WIDTH,
     _format_date_for_filename,
@@ -378,7 +379,9 @@ def _download_with_page(
     """Navigate, query and save one date using an existing page."""
     try:
         _navigate_to_trend_page(page)
-        time.sleep(2)
+        # Post-navigation settle — the service row's settle_sleep_sec,
+        # jittered by its sleep_jitter fraction.
+        random_sleep(SETTLE_SLEEP_SEC, SETTLE_JITTER)
 
         if not _query_date(page, target_date):
             logger.info("  No data for %s", date_str)
@@ -442,7 +445,9 @@ def download_trend_batch(
 
             try:
                 _navigate_to_trend_page(page)
-                time.sleep(1 + random.uniform(0, 2))
+                # Post-navigation settle — the service row's settle_sleep_sec,
+                # jittered by its sleep_jitter fraction.
+                random_sleep(SETTLE_SLEEP_SEC, SETTLE_JITTER)
 
                 if not _query_date(page, target_date):
                     logger.info("  No data for %s", date_str)

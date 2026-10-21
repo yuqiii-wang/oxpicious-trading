@@ -27,7 +27,7 @@ Architecture (split across this package):
   * ``_stream.py``     — main loop: biz-day anchoring, hourly/full cycles,
                          pacing/backoff.
   * ``_workers.py``    — async fetch dispatch, circuit breakers, index rounds:
-      proc A (akshare)     — AkShare ``ak.stock_zh_a_minute`` (Sina 1-min).
+      proc A (sina)        — Sina 1-min kline direct fetch (jsonp v2 API).
       proc C (em_push2his) — East Money push2his trends2 (ndays=5).
       proc D (em_push2)    — East Money push2 trends2 (ndays=1, iscr=1;
                              a DIFFERENT host from C).
@@ -42,8 +42,7 @@ Architecture (split across this package):
     (dynamic dispatch). Each worker applies its own anti-bot cooldown between
     fetches; the four hit different hosts (Sina, push2his.eastmoney.com,
     push2.eastmoney.com, szse.cn) so they don't contend on rate limits.
-    Crucially only proc A ever touches V8, so the old
-    partition_address_space.cc(243) race cannot happen. Index streaming
+    Index streaming
     (hourly mode only) fetches the always-on indices sequentially via the
     SZSE ssjjhq API; index bars have NO volume column (index_intraday_5min).
   * ``_aggregation.py`` — 1-minute samples → 5-minute OHLCV bars:
@@ -61,7 +60,7 @@ Anti-bot: reuses safe_get(), build_headers_with_referer(), random_sleep,
 HostStatusTracker and build_default_session() from _download_commons.py.
 Cooldown: per-source anti-bot sleep between fetches (jittered ±50%),
 resolved from the service's external_request_config JSON rows (one row per
-source) — A (akshare/Sina) row source_a_sina (90s); C/D (East Money
+source) — A (Sina) row source_a_sina (90s); C/D (East Money
 push2his / push2) rows source_c_em_hist / source_d_em_quote (300s); B (szse
 fallback) keeps --interval (row source_b_szse poll_interval_sec, 20s).
 NO_ADVANCE_BACKOFF_SEC (60s) when no stock advanced.
@@ -136,7 +135,7 @@ def main() -> None:
                 _time.time() - _MODULE_LOAD_T0)
     ap = argparse.ArgumentParser(
         description="Stream SZSE equity prices into 5-min OHLCV bars "
-                    "(4 parallel procs: A=akshare %.0fs, C=em_push2his %.0fs, "
+                    "(4 parallel procs: A=sina %.0fs, C=em_push2his %.0fs, "
                     "D=em_push2 %.0fs, B=szse fallback --interval)."
                     % (COOLDOWN_A_SEC, COOLDOWN_C_SEC, COOLDOWN_D_SEC)
     )
@@ -152,7 +151,7 @@ def main() -> None:
     ap.add_argument("--once", action="store_true",
                     help="Run one round then exit (dev/test).")
     args = ap.parse_args()
-    logger.info("[startup] args parsed (interval=%.1f groups=%d once=%s b_top_n=%s) in %.2fs; calling asyncio.run(stream)...",
+    logger.info("[startup] args parsed (interval=%s groups=%d once=%s b_top_n=%s) in %.2fs; calling asyncio.run(stream)...",
                 args.interval, args.groups, args.once, args.b_top_n, _time.time() - t_main)
     # Liveness heartbeat for database/stream_watchdog.py — long-running
     # mode only; --once exits before a beat would matter.

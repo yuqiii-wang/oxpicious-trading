@@ -120,8 +120,9 @@ async def upsert_qa(
     Uniqueness is (question, news_group_id); because Postgres UNIQUE treats
     NULLs as distinct, the news-less case is matched explicitly on
     question + NULL group and updated in place. *qa_date* is the
-    question's OWN data date (the weekly industry Q&A's （截至…） anchor,
-    Asia/Shanghai midnight) — the column that used to be created_at; the
+    question's OWN data date (the ai_daily ask's data date — the general
+    summary's biz date / a movers ask's plan date —, Asia/Shanghai
+    midnight) — the column that used to be created_at; the
     AI page maps it to the latest trading day on or before it. None keeps
     the now() default (manual/undated rows).
 

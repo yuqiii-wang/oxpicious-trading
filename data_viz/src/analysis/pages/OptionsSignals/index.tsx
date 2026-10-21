@@ -13,7 +13,7 @@
  *     mode="oi_moneyness") carries the wall events as in-signal markers;
  *   • options_vix — the SHAREABLE VolIndexPanel in its IN-SIGNAL mode
  *     (the 30d model-free vol-index curve carries the fear-gauge events
- *     as buy/sell markers + a selected-day pin + the corr bars -0.8 /
+ *     as buy/sell markers + a selected-day pin + the corr bars -0.75 /
  *     -0.5 on the corr companion).
  *
  * The RULES-ERA surfaces ride the Short-Term Tech composition
@@ -77,6 +77,7 @@ import VolIndexPanel from "@/dataviz/features/options/vol-index/VolIndexPanel";
 import { useOptionsDates } from "@/dataviz/features/options/data-hooks";
 import {
   SignalHistoryPanel,
+  SignalRulesAskButton,
   SignalRulesPanel,
 } from "@/shared/components/signal-code-trend";
 import { ruleCellKey } from "@/shared/components/signal-code-trend/ruleParams";
@@ -119,7 +120,7 @@ const SECTION_TEXT: Record<OptionsSignalFamily, string> = {
   options_vix:
     "Vol-index fear-gauge signals (options_vix — the 30d model-free " +
     "VIX-style index vs its rolling correlation to spot: ovix_spike the " +
-    "corr < -0.8 + vol-spike panic BUY, ovix_spike_hivol its high-vol " +
+    "corr < -0.75 + vol-spike panic BUY, ovix_spike_hivol its high-vol " +
     "regime refinement, ovix_rollover the peak-confirmed turn, " +
     "ovix_fear_unwind the corr ≥ -0.5 exit companion SELL, plus the " +
     "populate additions ovix_deep_hivol the no-spike " +
@@ -191,10 +192,27 @@ export default function OptionsSignalsPage() {
     setExpandedDate(null);
   }, [signalFamily]);
 
+  // The venue-RESOLVED underlying: "" while the venue's underlyings list
+  // is in flight (or the pick is stale for the venue) — every downstream
+  // fetch keys on this, so a venue switch never fires the (new venue, old
+  // code) round the page used to waste; ONE consistent round runs once
+  // the list lands and the fallback pick resolves.
+  const effectiveUnderlying = useMemo(
+    () =>
+      underlyings.some((u) => u.code === underlyingCode) ? underlyingCode : "",
+    [underlyings, underlyingCode],
+  );
+
   useEffect(() => {
+    // Mid-switch (no venue-valid underlying yet): hold the loading state —
+    // the resolved pick's fetch fires the moment it lands.
+    if (!effectiveUnderlying) {
+      setSignalHistoryLoading(true);
+      return;
+    }
     let cancelled = false;
     setSignalHistoryLoading(true);
-    fetchTradingSignalHistory(signalsSecType, underlyingCode, signalFamily)
+    fetchTradingSignalHistory(signalsSecType, effectiveUnderlying, signalFamily)
       .then((resp) => {
         if (!cancelled) setSignalHistory(resp.signals ?? []);
       })
@@ -207,7 +225,7 @@ export default function OptionsSignalsPage() {
     return () => {
       cancelled = true;
     };
-  }, [signalsSecType, underlyingCode, signalFamily, refreshKey]);
+  }, [signalsSecType, effectiveUnderlying, signalFamily, refreshKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -216,7 +234,8 @@ export default function OptionsSignalsPage() {
     // A fetch re-scopes the cell vocabulary — the expanded cell key of
     // the old scope is stale.
     setExpandedRule(null);
-    fetchSignalRules(signalsSecType, underlyingCode)
+    if (!effectiveUnderlying) return;
+    fetchSignalRules(signalsSecType, effectiveUnderlying)
       .then((resp) => {
         if (!cancelled) {
           setRules(
@@ -233,13 +252,13 @@ export default function OptionsSignalsPage() {
     return () => {
       cancelled = true;
     };
-  }, [signalsSecType, underlyingCode, signalFamily, refreshKey]);
+  }, [signalsSecType, effectiveUnderlying, signalFamily, refreshKey]);
 
   // A venue/underlying switch changes the family's sub-type vocabulary
   // — reset the pick (a shrunk vocabulary also drops orphaned picks).
   useEffect(() => {
     setSignalSubType("all");
-  }, [signalsSecType, underlyingCode]);
+  }, [signalsSecType, effectiveUnderlying]);
 
   // The pickable sub types — the family's rule cells unioned with the
   // history's literals (a sub type is pickable wherever either surface
@@ -352,7 +371,7 @@ export default function OptionsSignalsPage() {
 
   // Trading-date index — defaults the chart's highlighted date to
   // the latest session; the history panel's date expansion updates it.
-  const datesInfo = useOptionsDates(underlyingCode, optionsTargetType, optionsVenue, refreshKey);
+  const datesInfo = useOptionsDates(effectiveUnderlying, optionsTargetType, optionsVenue, refreshKey);
   useEffect(() => {
     setSelectedDate((cur) =>
       cur && datesInfo.dates.includes(cur)
@@ -365,6 +384,10 @@ export default function OptionsSignalsPage() {
 
   const handleRefresh = () => {
     invalidateCacheForPrefix("/api/szse-options/");
+    // the history/rules fetches ride the live-data prefix — without this
+    // the client LRU would serve them stale on the very refresh that
+    // promises "bypass cache"
+    invalidateCacheForPrefix("/api/live-data/trading-signals/");
     setRefreshKey((k) => k + 1);
   };
 
@@ -442,7 +465,12 @@ export default function OptionsSignalsPage() {
           exclusive
           value={optionsVenue}
           onChange={(_, v) => {
-            if (v) setOptionsVenue(v as "SZSE" | "SSE" | "CFFEX");
+            if (!v) return;
+            // clear the list in the same batch as the venue set — the
+            // venue-resolved pick goes "" for the switch window, so the
+            // downstream fetches hold instead of firing a stale pair
+            setUnderlyings([]);
+            setOptionsVenue(v as "SZSE" | "SSE" | "CFFEX");
           }}
         >
           <ToggleButton value="SZSE" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
@@ -472,12 +500,11 @@ export default function OptionsSignalsPage() {
         </FormControl>
       </Box>
 
-      {/* Loading / Error states */}
-      {datesInfo.loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
-          <CircularProgress size={32} />
-        </Box>
-      )}
+      {/* Loading / Error states — the dates fetch NO LONGER gates the
+          panels: every surface (caption, rules, chart, history) renders
+          as soon as ITS OWN query returns, each behind its own spinner.
+          Mid-venue-switch (effectiveUnderlying "") the panels hold
+          spinners instead of a stale scope. */}
       {error && (
         <Alert severity="error" variant="filled">
           Failed to load options data: {error}
@@ -489,18 +516,19 @@ export default function OptionsSignalsPage() {
         </Alert>
       )}
 
-      {/* Panels */}
-      {!datesInfo.loading && !error && (
+      {/* Panels — one query, one table, one render each. */}
+      {effectiveUnderlying && !error && (
         <>
-          {datesInfo.dates.length === 0 ? (
+          {datesInfo.dates.length === 0 && !datesInfo.loading && (
             <Alert severity="warning">No options data available.</Alert>
-          ) : (
-            <>
-              <Typography variant="caption" color="text.secondary">
-                Highlighted date {selectedDate || "—"} · {datesInfo.rowCount} option contracts ·{" "}
-                {datesInfo.dates.length} trading days · {datesInfo.dates[0] ?? "—"} →{" "}
-                {datesInfo.dates[datesInfo.dates.length - 1] ?? "—"}
-              </Typography>
+          )}
+          {datesInfo.dates.length > 0 && (
+            <Typography variant="caption" color="text.secondary">
+              Highlighted date {selectedDate || "—"} · {datesInfo.rowCount} option contracts ·{" "}
+              {datesInfo.dates.length} trading days · {datesInfo.dates[0] ?? "—"} →{" "}
+              {datesInfo.dates[datesInfo.dates.length - 1] ?? "—"}
+            </Typography>
+          )}
 
               {/* The Options Signals section header + pick row — ABOVE the
                   rules panel and the chart (the sub-type pick drives the
@@ -578,9 +606,27 @@ export default function OptionsSignalsPage() {
               )}
               {!rulesError && (
                 <Paper variant="outlined" sx={{ px: 1.5, py: 1 }}>
-                  <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                    Signal rules — self-adaptive cells
-                  </Typography>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 1,
+                      mb: 0.5,
+                    }}
+                  >
+                    <Typography variant="subtitle2">
+                      Signal rules — self-adaptive cells
+                    </Typography>
+                    {/* Ask AI on the rules surface — the ask's instrument
+                        is the option UNDERLYING (the cells' own code) */}
+                    <SignalRulesAskButton
+                      secType={signalsSecType}
+                      code={effectiveUnderlying}
+                      name={underlyingName}
+                      signalType={signalFamily}
+                    />
+                  </Box>
                   {rulesLoading ? (
                     <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
                       <CircularProgress size={24} />
@@ -600,11 +646,13 @@ export default function OptionsSignalsPage() {
                   rule cell's wall side bolded; options_vix: the vol-index
                   curve + corr companion with the events as markers + the
                   expanded rule cell's corr bar bolded (the in-analysis
-                  modes stay on the Options Analysis page). */}
+                  modes stay on the Options Analysis page). Both panels
+                  take the venue-RESOLVED underlying so no fetch fires
+                  with a stale (venue, code) pair. */}
               {signalFamily === "options_wall" ? (
                 <SharedSkewPanel
                   mode="oi_moneyness"
-                  underlying={underlyingCode}
+                  underlying={effectiveUnderlying}
                   targetType={optionsTargetType}
                   exchange={optionsVenue}
                   selectedDate={selectedDate}
@@ -616,6 +664,7 @@ export default function OptionsSignalsPage() {
               ) : (
                 <VolIndexPanel
                   mode="in-signal"
+                  underlying={effectiveUnderlying}
                   signalEvents={volSignalEvents}
                   selectedDate={selectedDate || null}
                   onDateSelect={setSelectedDate}
@@ -639,8 +688,6 @@ export default function OptionsSignalsPage() {
                   onExpandedDateChange={handleExpandedDateChange}
                 />
               )}
-            </>
-          )}
         </>
       )}
     </Stack>

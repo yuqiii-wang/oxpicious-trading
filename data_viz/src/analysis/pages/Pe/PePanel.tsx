@@ -57,7 +57,7 @@ import type {
   PeChartResponse,
 } from "@shared/types";
 import { buildStreakChartOption, type MetricObsRow } from "./chartOption/streakChartOption";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts } from "echarts";
 import type { PanelProps } from "./types";import {
@@ -287,6 +287,7 @@ export function PePanel({
   const streakChartRef = useRef<ECharts | null>(null);
   const streakAiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.peStreaks,
       intro:
         "Valuation band-break streaks: PE plotted " +
         "daily with the trailing window's static tightness-% zones shaded (light purple " +
@@ -379,7 +380,9 @@ export function PePanel({
       );
     }
     // Delegate to the exact same plot component used in /dataviz/*.
-    if (secType === "index") {
+    // Industry resolves to the composite IndexBundle — the pool-'all'
+    // slice IS an index-shaped entity, so IndexPanel renders it.
+    if (secType === "index" || secType === "industry") {
       return <IndexPanel index={bundle as IndexBundle} />;
     }
     if (secType === "etf") {

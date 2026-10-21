@@ -8,16 +8,25 @@ they measure SELF-ADAPTIVE per-(code, sub signal type, trend, regime,
 action) cells on each code's own history and write
 
   analysis_signals.signal_rules     the rule cells (the engine entry +
-                                    the prepared rule_params; the family
+                                    the CONSTANT rule_params; the family
                                     knowledge lives in
                                     static.analysis_signal_docs)
   analysis_signals.history_signals  the history populated by REPLAYING
                                     those rules (episode first days)
+  analysis_signals.history_signal_performance
+                                    the DATED daily snapshot of every
+                                    MEASURED item per rule cell (the
+                                    evidence measure block, the pooled
+                                    tier, the gate verdict, the boost
+                                    conf — the 2026-10-19 split; never
+                                    purged)
 
 Modes:
   incremental (default): a family whose every requested code already
     reaches its data horizon with a live rules scope is skipped.
-  --force: purges the sec_type's rows in both tables and re-emits.
+  --force: purges the sec_type's rows in both tables and re-emits
+    (history_signal_performance is NEVER purged — past snapshots are
+    the point of the table).
 
 Universe: --sec-type index (default) with the 10 study indices; the
 options families run their OWN universe — the sec_type's option
@@ -41,12 +50,17 @@ from _common.log_setup import setup_logging
 from analysis.analysis_signals import config as cfg
 from analysis.analysis_signals.engines.signal_families import (
     OPTIONS_FAMILIES,
+    SELF_UNIVERSE_FAMILIES,
     SIGNAL_FAMILY_ENTRIES,
     family_label,
 )
-from analysis.analysis_signals.fetch import resolve_options_universe
+from analysis.analysis_signals.fetch import (
+    resolve_hedge_pair_universe,
+    resolve_options_universe,
+)
 from analysis.analysis_signals.run import (
     HISTORY_TABLE,
+    PERF_TABLE,
     RULES_TABLE,
     run_family,
 )
@@ -72,7 +86,8 @@ def _parse_args() -> argparse.Namespace:
                    help="comma-separated codes (default: the 10 study "
                         "indices; ignored for the options families — "
                         "their universe resolves per sec_type from "
-                        "stats.options_terms)")
+                        "stats.options_terms — and for hedge_pairs — "
+                        "the offsets table's top opposite pairs)")
     p.add_argument("--analyze", action="store_true",
                    help="run ANALYZE on the two tables after the writes")
     p.add_argument("--no-boost", action="store_true",
@@ -103,6 +118,11 @@ async def amain() -> None:
                 fam_codes = await resolve_options_universe(
                     conn, label, args.sec_type,
                 )
+            elif label in SELF_UNIVERSE_FAMILIES:
+                # hedge_pairs: the offsets table's top offset-opposite
+                # industry pairs + the showcase pair (composite
+                # 'A~B' codes)
+                fam_codes = await resolve_hedge_pair_universe(conn)
             else:
                 fam_codes = codes
             if not fam_codes:
@@ -115,7 +135,8 @@ async def amain() -> None:
             totals["rules"] += n_rules
             totals["history"] += n_hist
         if args.analyze and (totals["rules"] or totals["history"]):
-            await analyze_tables_async(conn, [RULES_TABLE, HISTORY_TABLE])
+            await analyze_tables_async(
+                conn, [RULES_TABLE, HISTORY_TABLE, PERF_TABLE])
         logger.info(f"done: {totals['rules']} rule cells, "
                     f"{totals['history']} history events")
     finally:

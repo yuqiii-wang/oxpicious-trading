@@ -47,9 +47,9 @@ hits into text.news.
 
 Best run after the market close AND after ``python -m
 builds.cross_stats`` has loaded the day's industry grain. Recency-only
-by design — historical sector asks belong to the HISTORY flow
-(``llm_agents.industry_qa_weekly``'s manual backfill, seasonal top +
-MA5-slope episodes).
+by design — the legacy weekly history backfill (seasonal top +
+MA5-slope episodes) has been removed; its rows remain queryable in
+text.llm_qa (categories ``industry`` / ``market``).
 """
 from __future__ import annotations
 

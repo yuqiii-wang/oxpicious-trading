@@ -45,6 +45,7 @@ from downloads._common import (
     business_days,
     last_business_day,
     resolve_out_dir,
+    service_urls,
     setup_logger,
     single_instance_lock,
     sleep_sec_for,
@@ -53,8 +54,11 @@ from downloads._common import (
 
 SERVICE = "downloads.margin.sse"
 
-SSE_QUERY_URL = "https://query.sse.com.cn/commonSoaQuery.do"
-SSE_REFERER = "https://www.sse.com.cn/market/othersdata/margin/sum/"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SSE_QUERY_URL = URLS["sse_query_url"]
+SSE_REFERER = URLS["sse_referer"]
 JSONP_CALLBACK = "jsonpCallback"
 
 SUMMARY_SQL_ID = "RZRQ_HZ_INFO"

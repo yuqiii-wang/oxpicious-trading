@@ -24,6 +24,7 @@ helpers (infer_sec_types, filter_target_dates).
 """
 from __future__ import annotations
 
+import datetime as dt
 import time
 from typing import Awaitable, Callable, Optional, Set
 
@@ -33,7 +34,10 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
-from _common.db_commons import chunked_purge_async
+from _common.db_commons import (
+    chunked_purge_async,
+    csv_copy_from_frame_async,
+)
 from _common.df_utils import (
     column_subset,
     host_unique,
@@ -49,6 +53,150 @@ from analysis.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
 
 import logging
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+#  Default increment bound — the nightly run covers only the LATEST
+#  missing dates
+# ---------------------------------------------------------------------------
+# Incremental detection is date-grain over the FULL identity history, so a
+# table that is newer than the history it covers (e.g. roof_floor_estimates
+# vs ~20y of ETF identity) reports thousands of missing dates and the
+# nightly default would grind through a multi-year backfill every run.
+# The default therefore BOUNDS the increment to the newest
+# INCREMENTAL_RECENT_DATES identity dates; deeper backlog dates are
+# deferred and converge only via the explicit --backfill flag (or a
+# wholesale --force). Set backfill_missing = True (from __main__'s
+# --backfill) to lift the bound.
+INCREMENTAL_RECENT_DATES: int = 10
+
+backfill_missing: bool = False
+
+
+async def _recent_date_floor(
+    conn, sec_types: tuple[str, ...],
+) -> Optional[dt.date]:
+    """The (INCREMENTAL_RECENT_DATES + 1)-th newest trading date across the
+    sec_types' identity tables — dates at or after it stay in the default
+    increment's scope. None when the identity history is shorter than the
+    window (nothing to bound — the whole table is recent)."""
+    if not sec_types:
+        return None
+    unions = " UNION ".join(
+        f"SELECT date FROM {SEC_TYPE_IDENTITY_TABLE[st]}" for st in sec_types
+    )
+    # The offset is an internal constant — interpolated as a literal
+    # (asyncpg's extended-protocol prepare does not see the $1 in this
+    # position and plans the statement with zero parameters).
+    row = await conn.fetchrow(
+        f"SELECT DISTINCT date FROM ({unions}) u "
+        f"ORDER BY date DESC OFFSET {int(INCREMENTAL_RECENT_DATES)} LIMIT 1",
+    )
+    return row["date"] if row else None
+
+
+async def diff_write_scope_async(
+    conn,
+    *,
+    table: str,
+    frame: pd.DataFrame,
+    columns: list[str],
+    key_cols: tuple[str, ...],
+    sec_types: tuple[str, ...],
+    label: str,
+    insert_only: bool = False,
+) -> tuple[int, int]:
+    """Set-based diff write: make ``table``'s scope rows exactly match
+    ``frame`` — upsert new/changed rows, delete vanished PKs — instead of
+    the nightly purge-all + COPY-all.
+
+    The computed frame is CSV-COPY'd into a TEMP table cast to the
+    target's column types (precision-safe: NUMERIC/float rounding is
+    identical on both sides of the comparison), then the whole diff runs
+    set-based in the database:
+
+      - rows in the frame that are new or IS DISTINCT FROM the stored
+        row → INSERT ... ON CONFLICT DO UPDATE,
+      - scope rows with no frame counterpart → DELETE.
+
+    Temp tables are not WAL-logged, so the only WAL is the changed rows
+    themselves — the replica stays caught up and the replay-lag throttle
+    stays quiet. History rows whose values did not move are never
+    rewritten, so the nightly write volume collapses to the tail rows
+    the new trading day actually touched.
+
+    insert_only mode (the frozen-lookback semantics): existing rows are
+    NEVER rewritten — only PK rows not yet in the table are inserted
+    (ON CONFLICT DO NOTHING) and nothing is deleted. Historical rows
+    keep their as-of-first-computation adaptive values; restatements
+    converge only via --force.
+
+    Returns (inserted/upserted, deleted) row counts.
+    """
+    t0 = time.time()
+    sec_ints = [SEC_TYPE_CODE[st] for st in sec_types]
+    tmp = "_mov_ave_diff_tmp"
+    col_sql = ", ".join(f'"{c}"' for c in columns)
+    tmp_cols = ", ".join(f't."{c}"' for c in columns)
+    pk_join = " AND ".join(f's."{k}" = t."{k}"' for k in key_cols)
+    pk_not_exists = " AND ".join(
+        f't."{k}" = s."{k}"' for k in key_cols
+    )
+    val_cmp = ", ".join(f's."{c}"' for c in columns)
+    tmp_cmp = ", ".join(f't."{c}"' for c in columns)
+    set_clause = ", ".join(
+        f'"{c}" = EXCLUDED."{c}"' for c in columns if c not in key_cols
+    )
+    await conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+    await conn.execute(
+        f"CREATE TEMP TABLE {tmp} AS TABLE {table} WITH NO DATA"
+    )
+    try:
+        await csv_copy_from_frame_async(conn, tmp, frame, columns=columns)
+        if insert_only:
+            n_ins = await conn.fetchval(f"""
+                WITH ins AS (
+                    INSERT INTO {table} ({col_sql})
+                    SELECT {tmp_cols}
+                    FROM {tmp} t
+                    ON CONFLICT ({", ".join(key_cols)}) DO NOTHING
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM ins
+            """)
+            logger.info(
+                f"    -> insert-only write ({label}): {int(n_ins):,} new "
+                f"rows inserted, existing rows frozen "
+                f"[{len(frame):,} computed rows, {time.time() - t0:.1f}s]")
+            return int(n_ins), 0
+        n_up = await conn.fetchval(f"""
+            WITH ins AS (
+                INSERT INTO {table} ({col_sql})
+                SELECT {tmp_cols}
+                FROM {tmp} t
+                LEFT JOIN {table} s
+                  ON {pk_join} AND s.sec_type = ANY($1)
+                WHERE s."{key_cols[0]}" IS NULL
+                   OR ({val_cmp}) IS DISTINCT FROM ({tmp_cmp})
+                ON CONFLICT ({", ".join(key_cols)}) DO UPDATE SET {set_clause}
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM ins
+        """, sec_ints)
+        status = await conn.execute(f"""
+            DELETE FROM {table} s
+            WHERE s.sec_type = ANY($1)
+              AND NOT EXISTS (
+                SELECT 1 FROM {tmp} t WHERE {pk_not_exists})
+        """, sec_ints)
+        n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
+        logger.info(
+            f"    -> diff write ({label}): {int(n_up):,} upserted "
+            f"(new+changed), {n_del:,} vanished deleted "
+            f"[{len(frame):,} computed rows, "
+            f"{time.time() - t0:.1f}s]")
+        return int(n_up), n_del
+    finally:
+        await conn.execute(f"DROP TABLE IF EXISTS {tmp}")
 
 
 def infer_sec_types(
@@ -147,6 +295,7 @@ async def resolve_target_dates(
 
     logger.info("    mode: incremental (missing dates only)")
     target_dates_union: set = set()
+    repair_dates: set = set()
     for st in sec_types:
         td_st = await find_missing_analysis_dates(
             conn, table,
@@ -154,11 +303,27 @@ async def resolve_target_dates(
         )
         if detect_fn is not None:
             extra = await detect_fn(conn, st)
+            repair_dates |= extra
             td_st = td_st | extra
         target_dates_union |= td_st
         logger.info(f"    -> {st}: {len(td_st)} target dates")
     logger.info(f"    -> union across sec_types: "
           f"{len(target_dates_union)} dates to (re)compute")
+
+    # Default increment bound: only the LATEST missing dates are built —
+    # detect_fn repair dates stay exempt (deliberate recomputes), while
+    # deep-history backlog dates are deferred to --backfill.
+    if not backfill_missing and target_dates_union:
+        floor = await _recent_date_floor(conn, sec_types)
+        if floor is not None:
+            bounded = {d for d in target_dates_union if d >= floor}
+            backlog = len(target_dates_union) - len(bounded)
+            if backlog:
+                logger.info(
+                    f"    -> default increment bound (identity dates >= "
+                    f"{floor}): {backlog:,} backlog dates deferred — run "
+                    f"with --backfill to converge them")
+            target_dates_union = bounded | repair_dates
     return target_dates_union
 
 

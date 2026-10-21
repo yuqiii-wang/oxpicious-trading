@@ -9,6 +9,10 @@
  *   • useOffsetCorrRefresh.ts   — Refresh button + run-tag poll + auto-run
  *                                 for fresh selections without rows.
  *   • AuditTable.tsx            — the latest-window ExpandedTable audit.
+ *   • PairRatioSection.tsx      — pair selector (scoped to the selected
+ *                                 industries' member indexes) + the four
+ *                                 stride-grid pct-change-ratio MA lines
+ *                                 (shared pairRatioChart.ts builder).
  *   • OppositeIndustryCorrelationsPage.tsx — this page.
  *
  * Audits analysis_composites.industry_corr_benchmark_offsets: each
@@ -58,7 +62,7 @@ import {
 import RefreshIcon from "@mui/icons-material/Refresh";
 import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
-import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
+import { AiAskButton, derivePlotInfo, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts } from "echarts";
 import { useSecNav } from "@/shared/components/sec-nav";
@@ -76,7 +80,9 @@ import type {
 import AuditTable from "./AuditTable";
 import { buildCorrOffsetChartOption } from "./corrOffsetChartOption";
 import { useOffsetCorrRefresh } from "./useOffsetCorrRefresh";
+import PairRatioSection from "./PairRatioSection";
 import {
+  DEFAULT_SEED_INDUSTRY_IDS,
   METRIC_COLS,
   METRIC_LABELS,
   THEMES_SOURCES,
@@ -182,11 +188,16 @@ export default function OppositeIndustryCorrelationsPage() {
   }, []);
 
   // Prune multi-select slugs that no longer exist in the (re)loaded tree
-  // (e.g. switching exchange drops mainland-only industries), then seed the
-  // multi-select ONCE with the first industries that have materialized offset
-  // rows so the page shows data immediately on first load. If nothing
-  // materialized maps into the tree, fall back to the first industries of the
-  // first sector (the auto-recompute below fetches their rows on demand).
+  // (e.g. switching exchange drops mainland-only industries), then seed
+  // the page ONCE with the DEFAULT pair (红利 + 科技) so it shows data
+  // immediately on first load. 红利 (DIV_GENERAL) is a STRATEGY THEME
+  // (right column: strategy DIV → theme div_general) while 科技
+  // (TECH_GENERAL) is a LEFT-column sector industry — each default is
+  // resolved through whichever column holds it. When a default cannot
+  // be resolved (exchange switch etc.), fall back to the first
+  // industries with materialized offset rows; if nothing materialized
+  // maps into the tree, the first industries of the first sector (the
+  // auto-recompute below fetches their rows on demand).
   const seededRef = useRef(false);
   useEffect(() => {
     if (nav.sectors.length === 0) return;
@@ -198,40 +209,87 @@ export default function OppositeIndustryCorrelationsPage() {
       const next = prev.filter((slug) => validSlugs.has(slug));
       return next.length === prev.length ? prev : next;
     });
-    // industries.length > 0: the has_rows seed needs the composites list —
-    // seeding before it resolves would fall through to the first-sector
-    // fallback and auto-run a compute for industries nobody picked.
+    // industries.length > 0 is NOT required to seed the DEFAULT pair — it
+    // resolves through the classification trees alone, so the main chart
+    // fetch starts one round-trip earlier (the industries list is the
+    // slowest first-wave request). Only the FALLBACK paths (defaults
+    // unresolvable → has_rows industries → first sector) need the
+    // composites list — seeding from it before it resolves would auto-run
+    // a compute for industries nobody picked.
     if (
       !seededRef.current &&
       selectedIndustrySlugs.length === 0 &&
-      !nav.strategyId &&
-      industries.length > 0
+      !nav.strategyId
     ) {
       const idToSlug = new Map<string, string>();
       for (const [slug, id] of slugToIndustryId) {
         if (!idToSlug.has(id)) idToSlug.set(id, slug);
       }
-      const seedSlugs = industries
-        .filter((i) => i.has_rows)
-        .map((i) => idToSlug.get(i.industry_id))
-        .filter((s): s is string => Boolean(s))
-        .slice(0, 3);
-      if (seedSlugs.length === 0) {
-        for (const ind of nav.sectors[0].industries.slice(0, 3)) {
-          seedSlugs.push(ind.industry_slug);
+      let themeSeed: { strategyId: string; themeSlug: string } | null = null;
+      const seedSlugs: string[] = [];
+      for (const id of DEFAULT_SEED_INDUSTRY_IDS) {
+        const slug = idToSlug.get(id);
+        if (slug) {
+          seedSlugs.push(slug);
+          continue;
+        }
+        // Only ONE strategy theme is selectable at a time — the first
+        // theme-mapped default wins the right column.
+        if (!themeSeed) {
+          for (const strat of nav.strategies) {
+            const th = strat.industries.find(
+              (t) => t.industry_id === id,
+            );
+            if (th) {
+              themeSeed = {
+                strategyId: strat.sector_id,
+                themeSlug: th.industry_slug,
+              };
+              break;
+            }
+          }
         }
       }
-      if (seedSlugs.length > 0) {
+      let applyTheme = themeSeed;
+      let finalSlugs = seedSlugs;
+      if (
+        seedSlugs.length + (applyTheme ? 1 : 0) <
+        DEFAULT_SEED_INDUSTRY_IDS.length
+      ) {
+        // Defaults unresolvable in the tree — the has_rows fallback needs
+        // the composites list; wait for it (the effect re-runs when it
+        // lands).
+        if (industries.length === 0) return;
+        applyTheme = null;
+        finalSlugs = industries
+          .filter((i) => i.has_rows)
+          .map((i) => idToSlug.get(i.industry_id))
+          .filter((s): s is string => Boolean(s))
+          .slice(0, 3);
+      }
+      if (finalSlugs.length === 0 && !applyTheme) {
+        for (const ind of nav.sectors[0].industries.slice(0, 3)) {
+          finalSlugs.push(ind.industry_slug);
+        }
+      }
+      if (finalSlugs.length > 0 || applyTheme) {
         seededRef.current = true;
-        const firstSector = nav.sectors.find((s) =>
-          s.industries.some((i) => seedSlugs.includes(i.industry_slug)),
-        );
-        if (firstSector) nav.handleSectorChange(firstSector.sector_id);
-        setSelectedIndustrySlugs(seedSlugs);
+        if (applyTheme) {
+          // Strategy first: a null strategy id resets the theme slug.
+          nav.handleStrategyChange(applyTheme.strategyId);
+          nav.handleThemeChange(applyTheme.themeSlug);
+        }
+        if (finalSlugs.length > 0) {
+          const firstSector = nav.sectors.find((s) =>
+            s.industries.some((i) => finalSlugs.includes(i.industry_slug)),
+          );
+          if (firstSector) nav.handleSectorChange(firstSector.sector_id);
+          setSelectedIndustrySlugs(finalSlugs);
+        }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nav.sectors, nav.strategyId, selectedIndustrySlugs, industries, slugToIndustryId]);
+  }, [nav.sectors, nav.strategies, nav.strategyId, selectedIndustrySlugs, industries, slugToIndustryId]);
 
   // Fetch rows whenever the selection / pool / benchmark / refreshTick
   // changes.
@@ -304,6 +362,7 @@ export default function OppositeIndustryCorrelationsPage() {
   const chartRef = useRef<ECharts | null>(null);
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.offsetCorrelations,
       intro:
         "Benchmark-offset industry correlations: each industry's MA trend has the benchmark " +
         "rebased to its window-start level subtracted (common market factor removed), then " +
@@ -501,6 +560,11 @@ export default function OppositeIndustryCorrelationsPage() {
           )}
         </>
       )}
+
+      {/* ---- Pair pct-change ratios — its own (index × benchmark) pair
+           selector, SCOPED to the industries selected above (both
+           dropdowns list only their member indexes). ---- */}
+      <PairRatioSection industryIds={selectedIds} />
     </Box>
   );
 }

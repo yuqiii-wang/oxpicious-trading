@@ -31,17 +31,26 @@ export interface SignalRecordsTableProps {
   /** Prepend a Time column (a date's records can span several ticks;
    *  one tick's cannot). Default false. */
   showTime?: boolean;
+  /** Prepend a Date column (records from DIFFERENT days in one scope —
+   *  a portfolio event's member signals fired on their own nearby
+   *  days). Default false. */
+  showDate?: boolean;
+  /** Prepend a Code column (cross-code records — a portfolio event's
+   *  members sit at the component codes). Default false. */
+  showCode?: boolean;
 }
 
 /** Stable React key for one signal record inside a shared scope. */
 function recordKey(s: TradingSignal): string {
-  return `${s.date}-${s.time}-${s.signal_type}-${s.signal_sub_type}`;
+  return `${s.code}-${s.date}-${s.time}-${s.signal_type}-${s.signal_sub_type}`;
 }
 
 export default function SignalRecordsTable({
   rows,
   caption,
   showTime = false,
+  showDate = false,
+  showCode = false,
 }: SignalRecordsTableProps) {
   const theme = useTheme();
   return (
@@ -56,6 +65,8 @@ export default function SignalRecordsTable({
       <Table size="small">
         <TableHead>
           <TableRow>
+            {showCode && <TableCell>Code</TableCell>}
+            {showDate && <TableCell>Date</TableCell>}
             {showTime && <TableCell>Time</TableCell>}
             <TableCell>Signal</TableCell>
             <TableCell>Action</TableCell>
@@ -77,6 +88,12 @@ export default function SignalRecordsTable({
         <TableBody>
           {rows.map((s) => (
             <TableRow key={recordKey(s)}>
+              {showCode && (
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{s.code}</TableCell>
+              )}
+              {showDate && (
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{s.date}</TableCell>
+              )}
               {showTime && (
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{s.time}</TableCell>
               )}

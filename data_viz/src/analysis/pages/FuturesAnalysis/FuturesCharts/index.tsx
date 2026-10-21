@@ -27,7 +27,7 @@ import type * as echarts from "echarts";
 import type { EChartsOption } from "echarts";
 import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { FuturesCombinedResponse } from "@shared/types";
 import {
@@ -205,6 +205,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   const spotName = combinedData.underlying_name || combinedData.product_name;
   const priceSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.futuresPriceCurves,
       intro:
         `Futures price curves for ${product} (${combinedData.product_name}): one ` +
         "settlement-price line per contract — active in a blue gradient (farther maturity " +
@@ -227,6 +228,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   );
   const corrSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.futuresCorr,
       intro:
         "20-day rolling correlation vs the underlying (corr_price_vs_underlying): " +
         `one line per contract — ${nActive} active · ${nMatured} matured — same colors ` +
@@ -241,6 +243,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   );
   const convSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.futuresBasis,
       intro:
         "Basis convergence (contrarian): per-contract signed gap (futures − spot) in bps, " +
         "collapsing to 0 as each contract ages toward expiry. Dots: matured contracts' " +

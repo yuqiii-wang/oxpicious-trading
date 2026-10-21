@@ -6,16 +6,24 @@ analysis.options_walls (call_wall_high the outer cap, put_wall_low the
 outer edge); a close MEANINGFULLY past a wall is a reversion trade
 back toward it.
 
-  put breach  (buy)  — close <= put_wall_low x (1 − 0.25%),
-      VRP-GATED: implied vol30 must sit in its trailing top quintile
-      vs realized (the variance-risk-premium confirmation — a breach
+  put breach  (buy)  — close <= put_wall_low x (1 − width), width
+      SELF-ADAPTIVE per cell from cfg.OW_BREACH_WIDTH_PCTS (a SINGLE
+      0.10% width since the 2026-10-19 sparsity study collapsed the
+      grid — breach-day counts were identical across widths; the
+      winner rides the cell's bar_def),
+      VRP-GATED: implied vol30 must sit in its trailing top 40% vs
+      realized (the variance-risk-premium confirmation — a breach
       with RICH IV is the capitulation rebound; with cheap IV it is
       the falling knife). The gate is realized as
-      vrp_ratio >= its own trailing-255d 80th-percentile bar (shifted
-      — no look-ahead); no per-row rank needed.
+      vrp_ratio >= its own trailing-255d 60th-percentile bar (shifted
+      — no look-ahead; 120-row warmup, the bar's min_periods is NOT
+      the full window — the full-window warmup erased whole codes'
+      breach history, the 2026-10-19 sparsity study). History: the
+      80th-percentile bar left the gated population EMPTY (2026-10-19
+      loosening), 70th kept 9/41 breach days (the same-day study).
   _rej twin   (wait) — the same breach with the VRP gate FAILED:
       observational only, never in a trading set.
-  call breach (sell) — close >= call_wall_high x (1 + 0.25%), ungated
+  call breach (sell) — close >= call_wall_high x (1 + width), ungated
       (the sell is exit timing for longs).
 
 Sparse event population: POOLED (trend 4 / regime 4 — per-code
@@ -44,7 +52,8 @@ _TRADING_DAYS = 252.0
 
 class WallBreachEntry(RuleEntry):
     """The OI-wall breach rule — one entry, the sides are the sub signal
-    types (ow_put_025pct / ow_put_025pct_rej / ow_call_025pct)."""
+    types (ow_put_025pct / ow_put_025pct_rej / ow_call_025pct); the
+    breach width is the cell's self-adaptive pick from the width grid."""
 
     FAMILY = "options_wall"
     PACKAGE = "options_wall"
@@ -64,7 +73,11 @@ class WallBreachEntry(RuleEntry):
 
         # the VRP gate: implied (vol30) rich vs realized (rolling 20d
         # spot-return σ, annualized) — the ratio beyond its own trailing
-        # 80th percentile bar, the bar SHIFTED one row (no look-ahead)
+        # percentile bar, the bar SHIFTED one row (no look-ahead). The
+        # bar's warmup is the SHORT min_periods (OW_VRP_PCTL_MIN_
+        # PERIODS), not the full 255d window: the full-window warmup
+        # erased whole codes' breach history (the 2026-10-19 sparsity
+        # study — 000016's put side was structurally empty)
         ret = frame["price"] / grouped_shift(
             frame, keys, ["price"], out_names=["_p"], periods=1,
         )["_p"] - 1.0
@@ -77,7 +90,7 @@ class WallBreachEntry(RuleEntry):
         vrp_bar = grouped_shift(
             frame.assign(_raw=grouped_rolling_quantile(
                 frame, keys, "vrp_ratio", cfg.OW_VRP_PCTL_WINDOW,
-                cfg.OW_VRP_PCTL_WINDOW, cfg.OW_VRP_PCTL_MIN,
+                cfg.OW_VRP_PCTL_MIN_PERIODS, cfg.OW_VRP_PCTL_MIN,
             )), keys, ["_raw"], out_names=["_s"], periods=1,
         )["_s"]
         vrp_gate = (frame["vrp_ratio"] >= vrp_bar).fillna(False)
@@ -86,10 +99,45 @@ class WallBreachEntry(RuleEntry):
                              - 1.0) * 100.0
         frame["call_dist"] = (frame["price"] / frame["call_wall_high"]
                               - 1.0) * 100.0
-        put_breach = (frame["put_wall_low"].notna()
-                      & (frame["put_dist"] <= -cfg.OW_BREACH_WIDTH_PCT))
-        call_breach = (frame["call_wall_high"].notna()
-                       & (frame["call_dist"] >= cfg.OW_BREACH_WIDTH_PCT))
+        # the width candidates, DEEPEST-first (ties -> the first / deepest
+        # bar; nested by construction — a deeper breach is also a
+        # shallower one)
+        put_cands: list[Candidate] = []
+        rej_cands: list[Candidate] = []
+        call_cands: list[Candidate] = []
+        for w in cfg.OW_BREACH_WIDTH_PCTS:
+            put_breach = (frame["put_wall_low"].notna()
+                          & (frame["put_dist"] <= -w))
+            call_breach = (frame["call_wall_high"].notna()
+                           & (frame["call_dist"] >= w))
+            put_cands.append(Candidate(
+                key=f"put_breach_vrp_w{w:g}",
+                mask=put_breach & vrp_gate,
+                reference=-w,
+                depth=(-frame["put_dist"] - w) / 1.0,
+                params={"kind": "wall_breach", "side": "put",
+                        "bar_def": {"kind": "wall_dist_pct",
+                                    "below": -w}},
+            ))
+            rej_cands.append(Candidate(
+                key=f"put_breach_vrp_fail_w{w:g}",
+                mask=put_breach & ~vrp_gate,
+                reference=-w,
+                depth=(-frame["put_dist"] - w) / 1.0,
+                params={"kind": "wall_breach", "side": "put",
+                        "bar_def": {"kind": "wall_dist_pct",
+                                    "below": -w},
+                        "vrp_gate_failed": True},
+            ))
+            call_cands.append(Candidate(
+                key=f"call_breach_w{w:g}",
+                mask=call_breach,
+                reference=w,
+                depth=(frame["call_dist"] - w) / 1.0,
+                params={"kind": "wall_breach", "side": "call",
+                        "bar_def": {"kind": "wall_dist_pct",
+                                    "above": w}},
+            ))
 
         common = {
             "k": cfg.OW_REENTRY_EXIT_DAYS,
@@ -100,49 +148,22 @@ class WallBreachEntry(RuleEntry):
                     "kind": "trailing_pctl_bar",
                     "pctl": cfg.OW_VRP_PCTL_MIN,
                     "window_days": cfg.OW_VRP_PCTL_WINDOW,
+                    "min_periods": cfg.OW_VRP_PCTL_MIN_PERIODS,
                     "realized_window": cfg.OW_VRP_REALIZED_WINDOW,
                 },
             },
         }
         r_buy, h_buy = self.run_cells(
-            frame, "ow_put_025pct", "buy",
-            [Candidate(
-                key="put_breach_vrp",
-                mask=put_breach & vrp_gate,
-                reference=-cfg.OW_BREACH_WIDTH_PCT,
-                depth=(-frame["put_dist"] - cfg.OW_BREACH_WIDTH_PCT) / 1.0,
-                params={"kind": "wall_breach", "side": "put",
-                        "bar_def": {"kind": "wall_dist_pct",
-                                    "below": -cfg.OW_BREACH_WIDTH_PCT}},
-            )],
+            frame, "ow_put_025pct", "buy", put_cands,
             value_col="put_dist", **common,
         )
         # the VRP-fail twin: observational, never a trading row
         r_rej, h_rej = self.run_cells(
-            frame, "ow_put_025pct_rej", "wait",
-            [Candidate(
-                key="put_breach_vrp_fail",
-                mask=put_breach & ~vrp_gate,
-                reference=-cfg.OW_BREACH_WIDTH_PCT,
-                depth=(-frame["put_dist"] - cfg.OW_BREACH_WIDTH_PCT) / 1.0,
-                params={"kind": "wall_breach", "side": "put",
-                        "bar_def": {"kind": "wall_dist_pct",
-                                    "below": -cfg.OW_BREACH_WIDTH_PCT},
-                        "vrp_gate_failed": True},
-            )],
+            frame, "ow_put_025pct_rej", "wait", rej_cands,
             value_col="put_dist", ungated=True, **common,
         )
         r_sell, h_sell = self.run_cells(
-            frame, "ow_call_025pct", "sell",
-            [Candidate(
-                key="call_breach",
-                mask=call_breach,
-                reference=cfg.OW_BREACH_WIDTH_PCT,
-                depth=(frame["call_dist"] - cfg.OW_BREACH_WIDTH_PCT) / 1.0,
-                params={"kind": "wall_breach", "side": "call",
-                        "bar_def": {"kind": "wall_dist_pct",
-                                    "above": cfg.OW_BREACH_WIDTH_PCT}},
-            )],
+            frame, "ow_call_025pct", "sell", call_cands,
             value_col="call_dist", **common,
         )
         rules.extend(r_buy + r_rej + r_sell)

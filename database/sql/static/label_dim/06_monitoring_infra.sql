@@ -32,6 +32,7 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('ext_http_source', 11, 'gov',       11),
     ('ext_http_source', 12, 'pboc',      12),
     ('ext_http_source', 13, 'zhihu',     13),
+    ('ext_http_source', 14, 'sina',      14),
     ('ext_http_source', 99, 'other',     99),
     -- ext_llm_provider: sub_type when resource_type = 1 — the provider
     -- name (RetryingJsonClient's owning BaseLlmProvider.name); 99 fallback

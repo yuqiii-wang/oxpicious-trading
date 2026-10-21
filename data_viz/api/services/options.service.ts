@@ -190,7 +190,11 @@ function transformOptionsRow(r: DbOptionsRow): OptionsRow {
 //  via the underlying_target_type filter, and the two ETF venues are
 //  separated by the exchange column.
 // ----------------------------------------------------------------------------
-export async function listUnderlyings(targetType?: string, exchange?: string): Promise<OptionsUnderlying[]> {
+export async function listUnderlyings(
+  targetType?: string,
+  exchange?: string,
+  fresh = false,
+): Promise<OptionsUnderlying[]> {
   const t = (targetType ?? "").trim().toUpperCase();
   const ex = (exchange ?? "").trim().toUpperCase();
 
@@ -205,13 +209,21 @@ export async function listUnderlyings(targetType?: string, exchange?: string): P
     where.push(`exchange = $${params.length}`);
   }
 
+  // The venue-scoped DISTINCT reads every row of the scope (measured
+  // 11.8k buffer hits / ~260ms per request) to answer a handful of codes
+  // that only change with the daily rebuild — ride the same version-keyed
+  // aggregate cache as the per-plot queries so venue switches skip it.
   const sql = `
     SELECT DISTINCT underlying_code, underlying_name
     FROM stats.options_terms
     WHERE ${where.join(" AND ")}
     ORDER BY underlying_code
   `;
-  const rows = await queryRows<DbUnderlyingRow>(sql, params);
+  const rows = await cachedAggregate(
+    aggKey("underlyings", { target_type: t, exchange: ex }),
+    () => queryRows<DbUnderlyingRow>(sql, params),
+    fresh,
+  );
   return rows.map((r) => ({
     code: r.underlying_code,
     name: r.underlying_name,
@@ -437,6 +449,82 @@ export async function getOptionsWalls(
     FROM analysis.options_walls
     WHERE ${where.join(" AND ")}
     ORDER BY date ASC, expiry_date ASC, option_type ASC
+  `;
+  const rows = await queryRows<DbOptionsWallRow>(sql, params);
+  const transformed: OptionsWallRow[] = rows.map((r) => ({
+    date: formatDate(r.date),
+    option_type: (decodeLabel("option_type", r.option_type) ?? "CALL") as "PUT" | "CALL",
+    underlying_code: r.underlying_code,
+    expiry_date: formatDate(r.expiry_date),
+    wall_type: "zone" as const,
+    wall_strike: toNum(r.wall_strike),
+    wall_oi: toNum(r.wall_oi),
+    wall_low: toNum(r.wall_low),
+    wall_high: toNum(r.wall_high),
+    wall_center: toNum(r.wall_center),
+    mass_share: toNum(r.mass_share),
+    gap_pct: toNum(r.gap_pct),
+    days_persisted: toNum(r.days_persisted),
+    state: (r.state ?? null) as OptionsWallRow["state"],
+    strength_score: toNum(r.strength_score),
+  }));
+
+  return { underlying_code: underlying, rows: transformed };
+}
+
+// ----------------------------------------------------------------------------
+//  Dominant zone wall per (date, side) — the skew panel's wall shades pull
+//  the whole per-expiry zone history through /walls (5.4MB of JSON for the
+//  biggest CFFEX underlying) and collapse it client-side
+//  (buildChainWallZones) to ONE zone per (date, side) ranked by the
+//  weighted rule strength_score*1e9 + wall_oi (null strength as -1). This
+//  endpoint runs the same collapse in SQL (DISTINCT ON, the same weighted
+//  rank) so the panel ships one row per (date, side) — the Options Trend
+//  cohort chart keeps the per-expiry /walls rows. Validity mirrors the client filter exactly (zone rows with a
+//  complete strike range and positive wall OI only); the final
+//  expiry_date tiebreak reproduces the client's first-seen-wins order.
+// ----------------------------------------------------------------------------
+
+export async function getOptionsWallsDominant(
+  q: OptionsQuery,
+): Promise<OptionsWallsResponse> {
+  const underlying = stripExchangeSuffix((q.underlying ?? "")).trim();
+
+  const params: unknown[] = [];
+  const where: string[] = [
+    "wall_type = 'zone'",
+    "wall_low IS NOT NULL",
+    "wall_high IS NOT NULL",
+    "wall_center IS NOT NULL",
+    "wall_oi > 0",
+  ];
+  let i = 1;
+  if (underlying) {
+    where.push(`underlying_code = $${i++}`);
+    params.push(underlying);
+  }
+  const startDate = toDateParam(q.start_date);
+  const endDate = toDateParam(q.end_date);
+  if (startDate) {
+    where.push(`date >= $${i++}::date`);
+    params.push(startDate);
+  }
+  if (endDate) {
+    where.push(`date <= $${i++}::date`);
+    params.push(endDate);
+  }
+
+  const sql = `
+    SELECT DISTINCT ON (date, option_type)
+           date, option_type, underlying_code, expiry_date, wall_type,
+           wall_strike, wall_oi, wall_low, wall_high, wall_center,
+           mass_share, gap_pct, days_persisted, state, strength_score
+    FROM analysis.options_walls
+    WHERE ${where.join(" AND ")}
+    ORDER BY date ASC, option_type ASC,
+             (COALESCE(strength_score, -1)::float8 * 1e9
+              + COALESCE(wall_oi, 0)::float8) DESC,
+             expiry_date ASC
   `;
   const rows = await queryRows<DbOptionsWallRow>(sql, params);
   const transformed: OptionsWallRow[] = rows.map((r) => ({
@@ -1149,7 +1237,13 @@ function monthSortKey(label: string): number {
   return m ? parseInt(m[1], 10) : 0;
 }
 
-/** DISTINCT trading dates + row/contract counters (date picker, caption). */
+/** DISTINCT trading dates + row/contract counters (date picker, caption).
+ *  COUNT(*) only — the (contract_code, date) PK makes every (date,
+ *  contract_code) pair unique, so the per-date DISTINCT contract count IS
+ *  the row count; COUNT(DISTINCT contract_code) instead forces a
+ *  full-input sort of the scope's rows (399k for the biggest CFFEX
+ *  underlying) that spilled ~11MB to external merge, ~2s — the HashAggregate
+ *  plan this admits runs the same scope in ~30ms (measured 2026-10-17). */
 export async function getOptionsDates(
   q: OptionsQuery,
   fresh = false,
@@ -1159,7 +1253,7 @@ export async function getOptionsDates(
     const where = termsWhere(q, params);
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = await queryRows<QueryResultRow & { date: Date | string; row_count: string | number; contract_count: string | number }>(`
-      SELECT t.date, COUNT(*) AS row_count, COUNT(DISTINCT t.contract_code) AS contract_count
+      SELECT t.date, COUNT(*) AS row_count, COUNT(*) AS contract_count
       FROM stats.options_terms t
       ${whereClause}
       GROUP BY t.date

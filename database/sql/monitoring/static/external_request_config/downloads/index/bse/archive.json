@@ -14,8 +14,22 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "BSE index kline (www.bse.cn); no fingerprint rotation.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "list": "https://www.bse.cn/nqhqController/nqhq_en.do",
+      "referer_list": "https://www.bse.cn/nq/quotation.html",
+      "kline": "https://www.bse.cn/companyEchartsController/getKLine/list/{code}.do",
+      "referer_kline": "https://www.bse.cn/products/neeq_listed_companies/company_time_sharing.html",
+      "timesharing": "https://www.bse.cn/companyEchartsController/getTimeSharingChart/list/{code}.do",
+      "kline_899050": "https://www.bse.cn/neeqRealController/getBz50Kline.do",
+      "realtime_899050": "https://www.bse.cn/neeqRealController/getRealBZ50.do",
+      "referer_899050": "https://www.bse.cn/market_data/bse_indices/bse_bz50.html",
+      "kline_899601": "https://www.bse.cn/neeqRealController/getZjtxKline.do",
+      "realtime_899601": "https://www.bse.cn/neeqRealController/getRealZJTX.do",
+      "referer_899601": "https://www.bse.cn/market_data/bse_indices/bse_zjtx.html"
+    },
+    "notes": "BSE index kline (www.bse.cn); no fingerprint rotation.; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/index/bse/archive/runner.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

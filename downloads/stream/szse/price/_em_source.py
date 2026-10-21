@@ -25,18 +25,22 @@ from downloads._common import (
     AntiBotProxy,
     antibot_config_for,
     retry_policy_for,
+    service_urls,
     setup_logger,
 )
 
-from ._akshare_source import MinuteSample
+from ._sina_source import MinuteSample
 
 logger = setup_logger("stream_szse")
 
 SERVICE = "downloads.stream.szse.price"
 
-EM_PUSH2HIS_URL = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
-EM_PUSH2_URL = "https://push2.eastmoney.com/api/qt/stock/trends2/get"
-EM_REFERER = "https://quote.eastmoney.com/"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+EM_PUSH2HIS_URL = URLS["push2his_url"]
+EM_PUSH2_URL = URLS["push2_url"]
+EM_REFERER = URLS["em_referer"]
 EM_UT = "7eea3edcaed734bea9cbfc24409ed989"
 
 # Regular-session minute bounds, matching the Sina (source A) convention:

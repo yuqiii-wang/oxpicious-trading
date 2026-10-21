@@ -140,7 +140,7 @@ def download_nav_archive(
             continue
 
         rows = fetch_nav_rows(session, proxy, code, HISTORY_SINCE, today,
-                              logger=logger)
+                              service=SERVICE, logger=logger)
         if not rows:
             logger.warning("[archive %s] no NAV rows returned, skipping", code)
             stats.failed += 1

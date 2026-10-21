@@ -105,23 +105,41 @@ MARKET_REGIMES_DESCRIPTION = (
     "wholesale-rebuilt per scope on every run (margin_changes "
     "precedent). Derived shading table: stats.market_regime_spans "
     "(materialized by this build). "
-    "The sec_type column discriminates the source universe ('etf' | "
-    "'index' | 'stock')."
+    "The sec_type column stores its static.label_dim ('sec_type' domain) "
+    "SMALLINT code (0 etf / 1 index / 2 stock / 3 industry — the "
+    "label-code contract; this build's scopes are etf/index/stock/"
+    "industry). 'industry' rows classify the composite industry series "
+    "(stats.industry_basic_stats pool_size = 3 'all' slice: mean_close "
+    "+ total_trading_amount) keyed as code = industry_id — the regime "
+    "labels behind the Margin Trends industry attribution's "
+    "hyped-vs-drained regime split."
 )
 
 # ---------------------------------------------------------------------------
 #  Source tables (stats schema)
 # ---------------------------------------------------------------------------
 
-SEC_TYPES = ("etf", "index", "stock")
+SEC_TYPES = ("etf", "index", "stock", "industry")
 
 # Identity table per sec_type — the active-universe pre-filter
 # (fetch_codes_with_recent_data_async). Same convention as the retired
-# market_hypes build.
+# market_hypes build. Industry has no identity table: its universe is
+# the industry composite in stats.industry_basic_stats (pool_size = 3,
+# the 'all' slice), pre-filtered on industry_id recency.
 SEC_TYPE_IDENTITY_TABLE = {
     "etf":   "stats.etf_identity",
     "index": "stats.index_identity",
     "stock": "stats.stock_identity",
+    "industry": "stats.industry_basic_stats",
+}
+
+# The code column of each identity table (industry_basic_stats keys on
+# industry_id, not code).
+SEC_TYPE_IDENTITY_CODE_COLUMN = {
+    "etf": "code",
+    "index": "code",
+    "stock": "code",
+    "industry": "industry_id",
 }
 
 # Per-sec_type source SQL: code, date (epoch float — the fetch.py
@@ -131,6 +149,13 @@ SEC_TYPE_IDENTITY_TABLE = {
 # fetch_analysis_inputs (etf uses adjustment-adjusted close; index /
 # stock close from basic_stats; close-less rows excluded — a NULL close
 # would zero ret_1d and poison the vol leg).
+#
+# industry: the composite industry series (stats.industry_basic_stats,
+# pool_size = 3 'all' slice — the SAME series the Margin Trends page
+# plots and reads close/trading_amount from). price = mean_close (the
+# equal-weighted member-mean composite — a membership change can bump
+# the vol leg for a few days; accepted, it is the only industry price
+# series and the regime is a coarse 4-state label).
 SEC_TYPE_SOURCE_SQL = {
     "etf": """
         SELECT
@@ -173,5 +198,18 @@ SEC_TYPE_SOURCE_SQL = {
           AND b.close IS NOT NULL
           AND m.trading_amount IS NOT NULL AND m.trading_amount > 0
         ORDER BY i.code, i.date ASC
+    """,
+    "industry": """
+        SELECT
+            b.industry_id AS code,
+            extract(epoch from b.date)::float8 AS date,
+            b.mean_close::float8 AS price,
+            b.total_trading_amount::float8
+        FROM stats.industry_basic_stats b
+        WHERE b.industry_id = ANY($1::text[])
+          AND b.pool_size = 3
+          AND b.mean_close IS NOT NULL AND b.mean_close > 0
+          AND b.total_trading_amount IS NOT NULL AND b.total_trading_amount > 0
+        ORDER BY b.industry_id, b.date ASC
     """,
 }

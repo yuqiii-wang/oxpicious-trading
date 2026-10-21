@@ -65,11 +65,12 @@ from downloads._common import (
     build_default_session,
     merge_browser_profile,
     random_sleep,
+    service_urls,
     setup_logger,
     poll_interval_sec_for,
     sleep_sec_for,
 )
-from downloads.index.csindex.quote import CSINDEX_BASE, CSINDEX_HEADERS
+from downloads.index.csindex.quote import CSINDEX_HEADERS
 from _common.db_commons import get_db_connection
 from _common.importance import (
     fetch_importance_ranks_or_empty,
@@ -92,6 +93,11 @@ from ._fetch import fetch_and_upsert_one
 logger = setup_logger("csindex_stream")
 
 SERVICE = "downloads.stream.csindex.price"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+CSINDEX_BASE = URLS["base"]
 
 # Inter-fetch anti-bot cooldown — resolved once at import from the service's
 # external_request_config JSON row (request_type "page", sleep_sec).

@@ -61,7 +61,20 @@ find_missing_offset_window_ends): only windows whose END date is in
 ``target_dates`` are upserted — the missing complete stride windows plus
 the trailing windows (end = latest calendar date). Superseded trailing
 rows are deleted. Full history is still loaded so the MA curves are
-correct. No truncate.
+correct. No truncate. A bounded ``load_from`` (the tail span the targeted
+windows need) prunes both source loads.
+
+INDUSTRY-COVERAGE HEAL (``heal_industries`` — the per-industry gap the
+table-grain stride detection cannot see): source industries that have
+NO row at all in the table for the benchmark (e.g. a newly classified
+industry like BROAD_BSE after the 2026-10-05 recreate) have ALL their
+pairs' windows (stride + trailing, full history) emitted alongside the
+normal incremental targets — the pairs never existed, so every window
+is missing, not just the latest stride. Healing forces a full-history
+load (``load_from`` ignored) because the heal pairs' MA-{W} windows
+reach back to the calendar start. Filtered mode's ``industry_ids``
+(recompute pairs AMONG the selection) cannot express this — the heal
+needs pairs against ALL industries.
 
 Force mode (``force=True``): truncates the table first, then recomputes
 and inserts all rows (stride + trailing).
@@ -102,6 +115,7 @@ from analysis.analysis_composites.config import (
     INTERVAL_DAYS,
     MIN_OVERLAP,
     POOL_SIZES,
+    RECENT_STRIDE_GRACE_DAYS,
     TABLE_OFFSETS,
     WINDOWS,
 )
@@ -117,24 +131,38 @@ logger = logging.getLogger(__name__)
 async def find_missing_offset_window_ends(
     conn,
     benchmark_code: str,
-) -> tuple[Set[datetime.date], Optional[datetime.date]]:
-    """Return ``(target_end_dates, load_from_date)`` for ``benchmark_code``
-    — the incremental daily scope:
+) -> tuple[Set[datetime.date], Optional[datetime.date], Set[str]]:
+    """Return ``(target_end_dates, load_from_date, missing_industries)``
+    for ``benchmark_code`` — the incremental daily scope:
 
       * MISSING COMPLETE STRIDE WINDOWS: stride-grid starts (calendar
         index % INTERVAL_DAYS == 0) whose W-day window now fits inside
         the calendar but the table carries no non-NULL metric for that
-        W at the start date. These materialize once and stay frozen.
+        W at the start date. These materialize once and stay frozen —
+        EXCEPT starts whose window END is within
+        RECENT_STRIDE_GRACE_DAYS trading days of the frontier, which
+        are re-targeted like the trailing window (late-landing source
+        rows can add pairs after the start is already covered).
       * TRAILING WINDOW: per W, the window ending at the calendar's
         LATEST date (start index t_len − W). It is a LIVE value — the
         latest date is ALWAYS a target so every run refreshes it (and
         the run deletes the superseded trailing rows).
+      * MISSING INDUSTRIES (per-industry coverage heal): source
+        industries (stats.industry_basic_stats, matured to at least
+        MIN_OVERLAP calendar dates — younger ones cannot pair yet)
+        with NO row at all in the table for this benchmark — e.g. a
+        newly classified industry. Stride coverage is table-grain, so
+        a brand-new industry's pairs are invisible to it; the heal set
+        makes the run emit EVERY window of the pairs touching these
+        industries (see run_opposite_correlations).
 
     ``load_from_date`` bounds the incremental LOAD (not just the emit):
     the earliest calendar date any targeted window's MA curves need —
     ``cal[min(s − W + 1)]`` over the targeted windows — so the daily
     increment fetches only the tail span (typically ~2.1 years for the
-    255d trailing window) instead of full history.
+    255d trailing window) instead of full history. The caller passes it
+    through ONLY when the heal set is empty (heal pairs need full
+    history back to the calendar start).
 
     A stride/trailing start is "covered" when ANY row at its start_date
     carries a non-NULL metric for that W (table-grain coverage).
@@ -154,14 +182,38 @@ async def find_missing_offset_window_ends(
         f"SELECT DISTINCT date FROM {BASELINE_TABLE} ORDER BY date"
     )
     cov_rows = await conn.fetch(cov_sql, benchmark_code)
+    # Inner DISTINCTs dedup each endpoint side before the UNION — the
+    # plain UNION spills an external-merge sort (2026-10-17 probe).
+    # HAVING >= MIN_OVERLAP: an industry with fewer calendar dates than
+    # the overlap floor can NEVER pair this run (e.g. BROAD_BSE, first
+    # published 2026-10-08) — keeping it out of the heal set avoids a
+    # nightly full-history load that emits nothing; it enters the set
+    # the day it matures past the floor.
+    src_rows = await conn.fetch(f"""
+        SELECT industry_id
+        FROM {BASELINE_TABLE}
+        GROUP BY industry_id
+        HAVING COUNT(DISTINCT date) >= {MIN_OVERLAP}
+    """)
+    tbl_ind_rows = await conn.fetch(f"""
+        SELECT DISTINCT industry_id AS ind FROM {TABLE_OFFSETS}
+        WHERE benchmark_code = $1
+        UNION
+        SELECT DISTINCT benchmark_industry_id FROM {TABLE_OFFSETS}
+        WHERE benchmark_code = $1
+    """, benchmark_code)
     cal: list[datetime.date] = [r["date"] for r in cal_rows]
     t_len = len(cal)
     if t_len == 0:
-        return set(), None
+        return set(), None, set()
     cov: dict[datetime.date, dict[int, bool]] = {
         r["start_date"]: {20: r["c20"], 60: r["c60"], 255: r["c255"]}
         for r in cov_rows
     }
+    missing_industries: Set[str] = (
+        {r["industry_id"] for r in src_rows}
+        - {r["ind"] for r in tbl_ind_rows}
+    )
 
     def covered(start: datetime.date, w: int) -> bool:
         return cov.get(start, {}).get(w, False)
@@ -176,9 +228,17 @@ async def find_missing_offset_window_ends(
         # load_from to the calendar start forever.
         first = -(-(w - 1) // INTERVAL_DAYS) * INTERVAL_DAYS
         for s_idx in range(first, t_len - w + 1, INTERVAL_DAYS):
-            if not covered(cal[s_idx], w):
-                targets.add(cal[s_idx + w - 1])
-                need_idx.append(max(0, s_idx - w + 1))
+            # Recently-completed stride windows are re-targeted for a
+            # grace period (like the trailing window, not frozen): late
+            # source rows can make MORE pairs valid after the start is
+            # already table-grain covered, and the frozen check alone
+            # never re-emits them.
+            recent = (s_idx + w - 1
+                      >= t_len - 1 - RECENT_STRIDE_GRACE_DAYS)
+            if not recent and covered(cal[s_idx], w):
+                continue
+            targets.add(cal[s_idx + w - 1])
+            need_idx.append(max(0, s_idx - w + 1))
         # Trailing window (LIVE — always refreshed). Skip when it IS a
         # stride start: then it is a frozen stride window handled above.
         pos = t_len - w
@@ -186,7 +246,7 @@ async def find_missing_offset_window_ends(
             targets.add(cal[t_len - 1])
             need_idx.append(max(0, pos - w + 1))
     load_from = cal[min(need_idx)] if need_idx else None
-    return targets, load_from
+    return targets, load_from, missing_industries
 
 
 # ---------------------------------------------------------------------------
@@ -208,12 +268,18 @@ stock_num AS (
     GROUP BY h.code
 ),
 cls AS (
+    -- EVERY classified industry, including strategy themes (DIV_GENERAL
+    -- 红利 etc.): the baseline table (stats.industry_basic_stats) carries
+    -- them, so restricting the offset curves to genuine industries left
+    -- their pairs' offset_sub_corr_* eternally NULL — half-populated
+    -- audit rows (2026-10-17). The offset math (member close-change
+    -- minus benchmark change, averaged + cumulated) is
+    -- classification-agnostic.
     SELECT code, industry_id
     FROM stats.sec_classification
     WHERE type = 'index'
       AND is_active = TRUE
       AND industry_id IS NOT NULL AND industry_id <> ''
-      AND is_industry_not_strategy = TRUE
 ),
 member_pool AS (
     -- Pool buckets mirror builds.industry.classify_pool_vectorized
@@ -299,6 +365,7 @@ async def run_opposite_correlations(
     force: bool = False,
     industry_ids: Optional[Set[str]] = None,
     benchmarks: Sequence[str] = ("000300",),
+    heal_industries: Optional[Set[str]] = None,
 ) -> None:
     """Run the benchmark-offset correlation pipeline.
 
@@ -311,15 +378,19 @@ async def run_opposite_correlations(
          the load to the tail span the targeted windows need; each
          pool's pivot is re-anchored onto its FULL calendar (cheap
          DISTINCT query) so the stride grid keeps the historical
-         index-0 anchor.
+         index-0 anchor. Healing (``heal_industries``) forces the FULL
+         load — the heal pairs' windows span the whole history.
       2. Load per-benchmark consolidated offset curves (date-bounded in
-         incremental mode).
+         incremental mode; unbounded when healing).
       3. Per pool: pivot to a (date x industry) matrix, compute the
          MA-{W} curves + stride/trailing starts + full-window validity
          (shared kernel with the correlations step), then per benchmark
          emit the audit stacks: overall (reused _window_corr_stack) and
          the benchmark-removed offset (component-sum algebra), plus the
-         derived opposite score = (1 - offset) / 2.
+         derived opposite score = (1 - offset) / 2. In incremental mode
+         the emit mask keeps only windows whose end date is targeted —
+         OR, when healing, any window of a pair touching a heal
+         industry (all of them are missing: the pair never existed).
       4. Delete superseded trailing rows (non-force) + truncate (force)
          + ONE key-batched write; upsert analysis_identity.
     """
@@ -331,15 +402,26 @@ async def run_opposite_correlations(
 
     benchmarks = tuple(dict.fromkeys(benchmarks))
     filtered = industry_ids is not None and len(industry_ids) > 0
+    healing = heal_industries is not None and len(heal_industries) > 0
     if filtered and force:
         raise ValueError(
             "run_opposite_correlations: industry_ids filter cannot be "
             "combined with force=True (filtered runs must never truncate "
             "the whole table)"
         )
+    if healing and (force or filtered):
+        raise ValueError(
+            "run_opposite_correlations: heal_industries cannot be "
+            "combined with force=True or the industry_ids filter"
+        )
+    if healing:
+        # Heal pairs' MA-{W} windows span the whole history — a bounded
+        # load would blank their early windows.
+        load_from = None
     incremental = (not force and not filtered
-                   and target_dates is not None
-                   and len(target_dates) > 0)
+                   and ((target_dates is not None
+                         and len(target_dates) > 0)
+                        or healing))
     bounded = incremental and load_from is not None
     if force:
         logger.info("    mode: FORCE (full recompute)")
@@ -347,10 +429,14 @@ async def run_opposite_correlations(
         logger.info(f"    mode: FILTERED ({len(industry_ids)} industries — "
               f"recompute all their windows, upsert)")
     elif incremental:
-        logger.info(f"    mode: incremental ({len(target_dates)} target "
-              f"window-end dates"
+        logger.info(f"    mode: incremental ({len(target_dates) if target_dates else 0} "
+              f"target window-end dates"
               + (f", bounded load from {load_from.isoformat()})"
                  if bounded else ")"))
+        if healing:
+            logger.info(f"    + HEAL {len(heal_industries)} industries with no "
+                  f"rows ({', '.join(sorted(heal_industries))}) — "
+                  f"full-history load, all their pairs' windows emitted")
     logger.info(f"    benchmarks: {', '.join(benchmarks)}")
 
     # ---- Step 1: load mean_close series (same query as correlations) ----
@@ -440,7 +526,7 @@ async def run_opposite_correlations(
 
     out_rows: list[dict] = []
     tgt64: np.ndarray = (
-        np.asarray(sorted(target_dates), dtype="datetime64[D]")
+        np.asarray(sorted(target_dates or []), dtype="datetime64[D]")
         if incremental else np.array([], dtype="datetime64[D]")
     )
     # Stride + current-trailing start dates across processed pool
@@ -496,6 +582,16 @@ async def run_opposite_correlations(
             if pos >= 0:
                 allowed_sw[starts == pos, wi] = True
         pair_ok: np.ndarray = np.triu(overlap >= MIN_OVERLAP, k=1)
+        # Heal membership per pool column -> symmetric pair mask (N, N):
+        # pairs with at least one endpoint among the heal industries.
+        # host_array keeps np.isin off any cudf proxy (string columns).
+        heal_member: np.ndarray = (
+            np.isin(host_array(ids), sorted(heal_industries))
+            if healing else np.zeros(n_ind, dtype=bool)
+        )
+        heal_pair: np.ndarray = (
+            heal_member[:, None] | heal_member[None, :]
+        )
         keep_dates.update(sd_d[starts].tolist())
         processed_pools.append(pool)
 
@@ -555,6 +651,11 @@ async def run_opposite_correlations(
                         (ok[:, :, None] & ok[:, None, :])
                         & end_in_target[:, None, None]
                     )
+                if healing:
+                    # Heal pairs: their rows never existed, so EVERY
+                    # window (stride + trailing) is missing — not just
+                    # the latest stride.
+                    touch3 |= heal_pair[None, :, :]
                 emit3 &= touch3
             s_idx, ai_idx, bi_idx = np.nonzero(emit3)
             pool_rows = int(s_idx.size)

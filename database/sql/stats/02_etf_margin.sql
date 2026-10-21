@@ -262,6 +262,17 @@ CREATE INDEX IF NOT EXISTS idx_etf_identity_exchange_code_date
 
 CREATE INDEX IF NOT EXISTS idx_etf_basic_stats_date
     ON stats.etf_basic_stats (date);
+
+-- Date-first walk restricted to REAL closes: the trading-signals services
+-- derive the last-20-trading-days window and the date-selector roster with
+-- "SELECT DISTINCT date … WHERE close IS NOT NULL ORDER BY date DESC
+-- OFFSET/LIMIT" per request — through the plain (date) index that walk
+-- visits every close-NULL row's heap tuple too (~2k buffer hits per fetch).
+-- The partial index pre-filters close IS NOT NULL, so the walk is an
+-- index-only backward scan that stops at the OFFSET/LIMIT boundary.
+CREATE INDEX IF NOT EXISTS idx_etf_basic_stats_date_closed
+    ON stats.etf_basic_stats (date DESC)
+    WHERE close IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_etf_tech_stats_date
     ON stats.etf_tech_stats (date);
 CREATE INDEX IF NOT EXISTS idx_etf_adjustment_date

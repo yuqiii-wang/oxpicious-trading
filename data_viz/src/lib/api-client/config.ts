@@ -96,6 +96,11 @@ export interface ExtRequestConfigEntry {
   addRandomParam: boolean;
   enableHostTracking: boolean;
   hostBlockCooldownSec: number | null;
+  /** Playwright flows' post-navigation settle wait (null = the flow keeps
+   *  its own behavior). */
+  settleSleepSec: number | null;
+  /** The row's endpoint inventory {role: url} (null = none). */
+  urls: Record<string, string> | null;
   notes: string | null;
   sourceRef: string;
   updatedAt: string;

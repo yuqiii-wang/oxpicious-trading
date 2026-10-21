@@ -30,7 +30,7 @@ import { Alert, Box, CircularProgress, Stack } from "@mui/material";
 import ChartCard from "@/shared/components/ChartCard";
 import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts, EChartsOption } from "echarts";
 import type { OptionsOiCellsResponse, OptionsOiDailyResponse, OptionsExpiryMetaResponse, OptionsWallRow } from "@shared/types";
@@ -419,6 +419,7 @@ export default function OptionsTrendPanel({
   // selection so the modal / LLM always describe the view on screen.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.optionsTrend,
       intro:
         `Three synchronized option-flow charts for ${underlyingCode || "(n/a)"}: ` +
         "(1) Expiry OI Bands — per-expiry OI vs the spot line (where exposure concentrates " +

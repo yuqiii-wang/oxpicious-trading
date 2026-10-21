@@ -21,7 +21,11 @@ resolves its interval here. Resolution order per (service, request_type):
 
 Any problem reading (missing file, malformed JSON, bad field type) is
 skipped field-by-field / file-by-file — a config problem must never block
-a pipeline (same contract as service_heartbeat.max_parallel_for).
+a pipeline (same contract as service_heartbeat.max_parallel_for). Two
+row fields fall outside that skip-it contract: ``urls`` (the endpoint
+inventory, resolved ONLY from the service's own file — a missing role
+raises at the module's point of use) and ``settle_sleep_sec`` (null =
+the flow keeps its own behavior).
 
 Lives in the global ``_common`` (not ``downloads._common``) because the
 tree also serves non-downloads services (llm_agents/llm_ask.json).
@@ -32,7 +36,7 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _STATIC_EXT_REQUEST_CONFIG_DIR = (
@@ -76,6 +80,15 @@ class RequestConfig:
     enable_host_tracking: bool
     # Auto-unblock delay for a 4xx-blocked host (null = tracker default).
     host_block_cooldown_sec: Optional[float]
+    # Playwright flows: settle wait after page navigation before the next
+    # page interaction (null = the flow keeps its own behavior).
+    settle_sleep_sec: Optional[float]
+    # The row's endpoint inventory: {role: url}. Resolved ONLY from the
+    # service's own file (the default.json fallback carries no urls — a
+    # fallback URL is meaningless); {} when the row omits it. Values are
+    # FULL literal URLs and may carry ``{placeholder}`` templates the
+    # module formats at call time.
+    urls: Dict[str, str]
     # Where the row came from: "<file>:<request_type>" or "code-defaults".
     source: str
 
@@ -100,6 +113,17 @@ def _int(value: object) -> Optional[int]:
 
 def _bool(value: object, default: bool) -> bool:
     return value if isinstance(value, bool) else default
+
+
+def _urls(value: Any) -> Dict[str, str]:
+    """JSON object → {role: url}; blank / non-string entries dropped."""
+    if not isinstance(value, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key, url in value.items():
+        if isinstance(key, str) and key.strip() and isinstance(url, str) and url.strip():
+            out[key.strip()] = url.strip()
+    return out
 
 
 def _files_for(service: str) -> Tuple[Path, ...]:
@@ -178,6 +202,8 @@ def _resolve(service: str, request_type: str) -> RequestConfig:
             host_block_cooldown_sec=_positive(
                 row.get("host_block_cooldown_sec")
             ),
+            settle_sleep_sec=_positive(row.get("settle_sleep_sec")),
+            urls=_urls(row.get("urls")),
             source=origin,
         )
     return RequestConfig(
@@ -194,6 +220,8 @@ def _resolve(service: str, request_type: str) -> RequestConfig:
         add_random_param=FALLBACK_ADD_RANDOM_PARAM,
         enable_host_tracking=FALLBACK_ENABLE_HOST_TRACKING,
         host_block_cooldown_sec=None,
+        settle_sleep_sec=None,
+        urls={},
         source="code-defaults",
     )
 
@@ -240,6 +268,25 @@ def host_block_cooldown_for(
     """The service's blocked-host auto-unblock delay, or None for the
     HostStatusTracker class default."""
     return request_config_for(service, request_type).host_block_cooldown_sec
+
+
+def service_urls(service: str, request_type: str = "default") -> Dict[str, str]:
+    """The service row's endpoint inventory ({role: url}).
+
+    Resolved ONLY from the service's own tree file (the default.json
+    fallback carries no urls); {} when the row omits the field. Modules
+    index the roles they need — a missing role is a config error and
+    raises KeyError at the point of use.
+    """
+    return request_config_for(service, request_type).urls
+
+
+def settle_sleep_sec_for(
+    service: str, request_type: str = "default"
+) -> Optional[float]:
+    """The service's post-navigation settle wait (Playwright flows), or
+    None when the row does not define one."""
+    return request_config_for(service, request_type).settle_sleep_sec
 
 
 def retry_policy_for(

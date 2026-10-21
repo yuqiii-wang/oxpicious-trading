@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 
-from downloads._common.exchanges.sse import SSE_INDEX_LIST_URL
+from downloads._common import service_urls
 from downloads._common.exchanges.sse import run_snapshot_download
 
 from _common.log_setup import setup_logging  # noqa: E402
@@ -26,6 +26,10 @@ logger = setup_logging("trend")
 # Pacing (inter-page sleep, jitter, timeouts, toggles) resolves from this
 # service's external_request_config JSON row inside run_snapshot_download.
 SERVICE = "downloads.index.sse.trend"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 
 
 if __name__ == "__main__":
@@ -38,6 +42,6 @@ if __name__ == "__main__":
     from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
     autoregister()  # heartbeat + run audit (monitor.*)
     logger.info(run_snapshot_download(
-        SSE_INDEX_LIST_URL, "sse_trend_index", force=args.force,
+        URLS["list_index"], "sse_trend_index", force=args.force,
         service=SERVICE,
     ))

@@ -20,7 +20,7 @@ import type { ECharts } from "echarts";
 import ChartCard from "@/shared/components/ChartCard";
 import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import { OhlcChart } from "@/ui/OhlcChart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { fmtPct } from "@/lib/series";
 import { type OhlcMode } from "@/lib/ohlc";
@@ -37,6 +37,9 @@ interface Props {
   defaultEndDate?: string;
   /** Optional callback fired when the user clicks any date on the chart. */
   onDateClick?: (date: string) => void;
+  /** Insight-registry item for the Ask AI metrics table — the Dividends
+   *  page overrides the PE default. */
+  insightPage?: { tab: string; page: string };
 }
 
 function retBadge(values: Array<number | null>, idxFromEnd: number): number | null {
@@ -85,7 +88,7 @@ function ReturnBadges({ stock }: { stock: StockBundle }) {
   );
 }
 
-export default function StockPanel({ stock, defaultStartDate, defaultEndDate, onDateClick }: Props) {
+export default function StockPanel({ stock, defaultStartDate, defaultEndDate, onDateClick, insightPage = INSIGHT_PAGES.peBaseline }: Props) {
   const allRows = stock.rows;
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
@@ -147,6 +150,7 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate, on
   const aiAskChartRef = useRef<ECharts | null>(null);
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: insightPage,
       product: "stock-baseline",
       intro:
         `Single-stock daily chart of ${stock.code} (${stock.name}, ` +
@@ -177,7 +181,7 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate, on
         "Percentage mode rebases from the first VISIBLE close (zoom-dependent).",
       ],
     }),
-    [stock.code, stock.name, stock.industry_label, ohlcMode, hasOhlc, hasPe],
+    [stock.code, stock.name, stock.industry_label, ohlcMode, hasOhlc, hasPe, insightPage],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${stock.code} · ${stock.name}`,

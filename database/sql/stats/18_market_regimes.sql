@@ -54,13 +54,22 @@
 --  every run DELETEs the whole scope (one sec_type, or one code in
 --  --code mode) and recomputes from the FULL per-code history.
 --
+--  sec_type is its static.label_dim ('sec_type' domain) SMALLINT code
+--  (the label-code contract: 0 etf / 1 index / 2 stock / 3 industry) —
+--  converted from TEXT 2026-10-18. Decode at the API boundary only
+--  (data_viz label-codes / labelDecodeSql); consumers binding the
+--  column use the code (the _common.labels.SEC_TYPE_CODE mirror).
+--
 --  Derived table: stats.market_regime_spans — one row per CONTIGUOUS
 --  same-regime run over this table, MATERIALIZED by builds.market_regimes
 --  (the same run collapses the daily states it just wrote). The UI
 --  shading source that replaces the old episode rows.
 --
 --  POPULATION: python -m builds.market_regimes (ETF + Index + Stock
---  in one table, sec_type discriminates).
+--  + Industry composite in one table, sec_type discriminates; 'industry'
+--  rows classify the stats.industry_basic_stats pool_size=3 'all' slice
+--  keyed as code = industry_id — the Margin Trends industry attribution's
+--  regime-split source).
 -- ============================================================================
 
 -- stats.market_regime_spans used to be a VIEW (gaps-and-islands
@@ -88,7 +97,7 @@ DROP TABLE IF EXISTS stats.market_regimes CASCADE;
 DROP TABLE IF EXISTS stats.mov_ave_market_hypes CASCADE;
 
 CREATE TABLE stats.market_regimes (
-    sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
     regime          SMALLINT     NOT NULL,  -- label code (static.label_dim 'regime'): 0=calm 1=hot 2=panic 3=quiet
@@ -120,6 +129,7 @@ SELECT public.create_hash_partitions('stats', 'market_regimes', 8);
 COMMENT ON TABLE  stats.market_regimes IS 'Daily market-REGIME state registry: one row per (sec_type, code, trading date) classifying the day into ONE of four exhaustive regimes — hot (vol_z > vol_bar AND amt_z > amt_bar: elevated volatility WITH volume expansion, the retired boolean "hyped"), panic (vol_z > vol_bar AND amt_z <= amt_bar: elevated volatility WITHOUT volume expansion — exhaustion/unwind, invisible to the old AND-gated hype boolean), quiet (vol_z <= vol_bar AND amt_z > amt_bar: volume expansion without price movement) or calm (everything else). vol_z = z of the code''s EWMA realized return-volatility (sqrt(EWMA(ret_1d^2, span=20))) vs its own trailing 255-row moments, amt_z = z of log(trading_amount) vs its own trailing 255-row moments — BOTH legs shifted 1 row (no look-ahead; the px_vol log_level convention — unlike the retired stats.mov_ave_market_hypes centered ±10y look-ahead percentile base). Days without state yet (first 60 rows) carry regime=''calm'' with NULL evidence. The parameter columns record the build''s calibration. Replaces stats.mov_ave_market_hypes (dropped); built by builds.market_regimes, wholesale-rebuilt per scope on every run (margin_changes
 precedent). Derived shading table: stats.market_regime_spans,
 materialized by the same build.';
+COMMENT ON COLUMN stats.market_regimes.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry: the stats.industry_basic_stats pool_size=3 ''all'' slice — mean_close + total_trading_amount, code = industry_id; the Margin Trends industry attribution''s regime-split source). Part of the PK; decode to strings only at the API boundary.';
 COMMENT ON COLUMN stats.market_regimes.regime IS 'The day''s regime as its static.label_dim (''regime'' domain) SMALLINT code — 0 calm, 1 hot, 2 panic, 3 quiet (code order == label order, so ORDER BY regime is unchanged from the TEXT era). hot = vol_z > vol_bar AND amt_z > amt_bar; panic = vol_z > vol_bar AND amt_z <= amt_bar; quiet = vol_z <= vol_bar AND amt_z > amt_bar; calm = everything else. No-state days (NULL z''s) are code 0 (calm). Decode to strings only at the API boundary (data_viz label-codes).';
 COMMENT ON COLUMN stats.market_regimes.vol     IS 'Evidence: sqrt(EWMA(ret_1d^2, span=vol_span, min_periods=vol_min_periods)) — the EWMA realized volatility level the vol leg z-scores.';
 COMMENT ON COLUMN stats.market_regimes.vol_z   IS 'Evidence: (vol - mu)/sigma of the code''s own trailing vol_z_window-row vol moments, SHIFTED 1 row (no look-ahead). NULL on no-state days.';
@@ -140,7 +150,7 @@ COMMENT ON COLUMN stats.market_regimes.amt_bar IS 'Recorded build parameter: the
 --  into a pure row read.
 -- ----------------------------------------------------------------------------
 CREATE TABLE stats.market_regime_spans (
-    sec_type   TEXT    NOT NULL,  -- 'etf' | 'index' | 'stock'
+    sec_type   SMALLINT NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code       TEXT    NOT NULL,
     regime     SMALLINT NOT NULL,  -- label code (static.label_dim 'regime'): 0=calm 1=hot 2=panic 3=quiet
     start_date DATE    NOT NULL,  -- inclusive
@@ -159,7 +169,8 @@ CREATE TABLE stats.market_regime_spans (
 -- daily registry (the per-code endpoint read prunes to one partition).
 SELECT public.create_hash_partitions('stats', 'market_regime_spans', 8);
 
-COMMENT ON TABLE stats.market_regime_spans IS 'One row per CONTIGUOUS run of same-regime days over stats.market_regimes: (start_date, end_date) inclusive span + span_days (trading-date count). regime carries the static.label_dim ''regime'' SMALLINT code (0 calm / 1 hot / 2 panic / 3 quiet). The UI regime-shading source replacing the retired mov_ave_market_hypes episode rows — hot spans shade as the old "hyped" bands did; panic/quiet get their own colors. MATERIALIZED by builds.market_regimes (wholesale-rebuilt per scope alongside the registry; formerly a per-query view).';
+COMMENT ON TABLE stats.market_regime_spans IS 'One row per CONTIGUOUS run of same-regime days over stats.market_regimes: (start_date, end_date) inclusive span + span_days (trading-date count). sec_type / regime carry their static.label_dim SMALLINT codes (sec_type: 0 etf / 1 index / 2 stock; regime: 0 calm / 1 hot / 2 panic / 3 quiet). The UI regime-shading source replacing the retired mov_ave_market_hypes episode rows — hot spans shade as the old "hyped" bands did; panic/quiet get their own colors. MATERIALIZED by builds.market_regimes (wholesale-rebuilt per scope alongside the registry; formerly a per-query view).';
+COMMENT ON COLUMN stats.market_regime_spans.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf, 1 = index, 2 = stock, 3 = industry (reserved). Part of the PK; decode to strings only at the API boundary.';
 
 -- Idempotent migration (2026-09-30): strip the exchange suffix from ETF
 -- codes — ETF codes are BARE 6-digit everywhere now (stock rows keep
@@ -167,11 +178,12 @@ COMMENT ON TABLE stats.market_regime_spans IS 'One row per CONTIGUOUS run of sam
 -- destructive DROP+CREATE (fresh-init / 00_init.sql only) — against the
 -- live DB run these two UPDATEs standalone; the owning build also
 -- wholesale-rebuilds its scope every run, so a --force regen converges
--- here as well.
+-- here as well. (sec_type has been its SMALLINT code since 2026-10-18;
+-- 0 = etf.)
 UPDATE stats.market_regimes
    SET code = split_part(code, '.', 1)
- WHERE sec_type = 'etf' AND code ~ '^\d{6}\.';
+ WHERE sec_type = 0 AND code ~ '^\d{6}\.';
 
 UPDATE stats.market_regime_spans
    SET code = split_part(code, '.', 1)
- WHERE sec_type = 'etf' AND code ~ '^\d{6}\.';
+ WHERE sec_type = 0 AND code ~ '^\d{6}\.';

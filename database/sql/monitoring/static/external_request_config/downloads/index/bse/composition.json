@@ -14,8 +14,10 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "CSI co-published closeweight.xls for the two BSE indices (899050/899601) on the same 403-prone oss-ch.csindex.com.cn bucket as csindex composition — but this pass is 2 requests per monthly refresh, not a ~500-index sweep, so a moderate 60s cadence suffices.",
+    "settle_sleep_sec": null,
+    "urls": {},
+    "notes": "CSI co-published closeweight.xls for the two BSE indices (899050/899601) on the same 403-prone oss-ch.csindex.com.cn bucket as csindex composition — but this pass is 2 requests per monthly refresh, not a ~500-index sweep, so a moderate 60s cadence suffices.; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/index/bse/composition/runner.py; downloads/index/bse/composition/_config.py",
-    "updated_at": "2026-10-12T03:40:53.558127+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

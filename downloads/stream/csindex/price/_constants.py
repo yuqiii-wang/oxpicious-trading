@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from datetime import time
 
+from database.sec_statics.exclusion_rules_store import excluded_codes
+
 # Loop cadence: 30 minutes between full sweeps.
 LOOP_INTERVAL_SEC = 30 * 60  # 1800s
 
@@ -28,16 +30,15 @@ CSINDEX_START_TIME = time(16, 0)
 # typically lack meaningful intraday tick data on csindex.com.cn.
 BOND_NAME_KEYWORD = "债"
 
-# Index codes empirically observed to return "no ticks available" from the
-# csindex.com.cn intraday API. Hard-skipped to avoid wasting anti-bot sleep
-# budget (each fetch otherwise costs ~15-30s).
-CSINDEX_NO_TICK_CODES = {
-    "931265", "931407", "931528", "931688",
-    "931786", "931800", "H11014",
-    # SZSE-published 399xxx indices that csindex.com.cn intraday API
-    # returns "no ticks available" for.
-    "399303", "399310", "399311",
-}
+# Index codes the streamer must never fetch — curated in
+# database/sec_statics/exclusion_rules/index_excluded.json (edit that
+# list, not this module), scopes "stream"/"csindex" (+"all" is implicit):
+#   - "stream": codes empirically observed to return "no ticks
+#     available" from the csindex.com.cn intraday API on every sweep —
+#     each fetch otherwise costs ~15-30s of anti-bot sleep budget;
+#   - "csindex": codes csindex.com.cn serves nothing for at all (SZSE-
+#     published family, cnindex-owned trio, SSE-covered 0008xx).
+CSINDEX_NO_TICK_CODES = excluded_codes("index", scopes=("stream", "csindex"))
 
 # CSV backfill interval: how often the main loop calls backfill_csvs.
 BACKFILL_INTERVAL_SEC = 5 * 60  # 5 minutes

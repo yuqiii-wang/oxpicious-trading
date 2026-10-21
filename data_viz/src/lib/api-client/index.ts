@@ -60,6 +60,7 @@ export {
   fetchUnderlyings,
   fetchOptionsCombined,
   fetchOptionsWalls,
+  fetchOptionsWallsDominant,
   fetchEtfOhlcv,
   fetchOptionsDates,
   fetchOptionsSnapshotRows,
@@ -140,18 +141,9 @@ export {
 export { fetchSecBaseline } from "./sec-baseline";
 
 export {
-  fetchAnalysisAdvice,
-  type AdviceTableColumn,
-  type AdviceJustificationTable,
-  type AdviceImplication,
-  type AdviceSignificance,
-  type AnalysisAdvice,
-  type AnalysisAdviceResponse,
-} from "./analysis-advice";
-
-export {
   fetchMarginTrendThemes,
   fetchMarginTrendStrategyThemes,
+  fetchMarginTrendUnderlyings,
   fetchMarginIndustrySeries,
 } from "./analysis-margin-trends";
 
@@ -182,6 +174,12 @@ export {
   runIndustryCorrOffsetsRefresh,
   INDUSTRY_CORR_OFFSET_RUN_TAG,
 } from "./analysis-corr-offsets";
+
+export {
+  fetchPairPctRatioUniverse,
+  fetchPairPctRatios,
+  PAIR_PCT_RATIO_INTERVAL,
+} from "./analysis-pair-ratios";
 
 export {
   fetchIndustryBenchmarkAttribution,
@@ -240,6 +238,9 @@ export {
   fetchTradingSignals,
   fetchTradingSignalHistory,
   fetchSignalRules,
+  fetchSignalPortfolios,
+  fetchPortfolioSignals,
+  fetchPortfolioSignalHistory,
   fetchTrendSpans,
   type TradingSignalsRunResponse,
   type TradingSignalConfig,
@@ -251,6 +252,14 @@ export {
   type SignalRuleParams,
   type SignalRuleDocument,
   type SignalRulesResponse,
+  type SignalPortfolio,
+  type SignalPortfoliosResponse,
+  type PortfolioBenefitSnapshot,
+  type PortfolioSignalGroup,
+  type PortfolioSignalsResponse,
+  type PortfolioEventMemberSignal,
+  type PortfolioHistorySignal,
+  type PortfolioSignalHistoryResponse,
   type TrendSpan,
   type TrendSpansResponse,
 } from "./trading-signals";

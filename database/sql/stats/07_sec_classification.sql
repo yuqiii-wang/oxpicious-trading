@@ -367,6 +367,14 @@ COMMENT ON COLUMN stats.sec_similars.dissimilar_5th_industry_code_sharing_weight
 --   classification row of the ETF (parent_index_is_primary is name-match
 --   dependent and misses e.g. 588000 -> 000688). Whole table is TRUNCATE +
 --   rebuilt monthly; as_of records the build date.
+--
+--   EXCLUSIONS: codes with exclusion scope 'all'
+--   (database/sec_statics/exclusion_rules/<sec_type>_excluded.json --
+--   delisted stocks/ETFs, dead indices) carry NO row here: the monthly
+--   build drops them, so rank-ordered sweeps never enumerate them.
+--   Service-scoped exclusions (csindex / csindex_pe / stream) stay
+--   ranked; the affected download services skip them via
+--   database.sec_statics.exclusion_rules_store.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stats.sec_importance_ranks (
     code                    TEXT          NOT NULL,

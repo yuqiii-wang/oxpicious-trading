@@ -16,7 +16,7 @@
  */
 import React from "react";
 import type { MarginAnalytics } from "./types";
-import { RET_SUFFIX, VOL_SUFFIX, fmtShare } from "./types";
+import { MEMBERS_SUFFIX, RET_SUFFIX, VOL_SUFFIX, fmtShare } from "./types";
 import { fmtNum } from "@/lib/series";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { UP_COLOR, DOWN_COLOR, axisColors } from "@/theme/chart-palette";
@@ -33,10 +33,14 @@ export interface TrendTooltipArgs {
   effectiveSelectedSet: Set<string>;
   unit: string;
   themeMode: ThemeMode;
+  /** Normalized mode only: "code|date" → the number of member securities
+   *  behind the per-side averages on that date (rows' n_members). When
+   *  given, each margin row appends "· N members". */
+  membersByCodeDate?: Map<string, number | null>;
 }
 
 export function buildTrendTooltip(args: TrendTooltipArgs) {
-  const { dates, analytics, codeToLabel, effectiveSelectedSet, unit } = args;
+  const { dates, analytics, codeToLabel, effectiveSelectedSet, unit, membersByCodeDate } = args;
   const c = axisColors(args.themeMode);
 
   return {
@@ -56,13 +60,18 @@ export function buildTrendTooltip(args: TrendTooltipArgs) {
       const dateStr = dates[idx] ?? "";
       const label = (code: string) => codeToLabel.get(code) ?? code;
       const selectedCodes = Array.from(effectiveSelectedSet);
+      // Reverse lookup — ECharts params carry the display label.
+      const labelToCode = new Map(
+        Array.from(codeToLabel.entries(), ([code, l]) => [l, code] as const),
+      );
 
-      // -- margin rows (top grid values; return/vol series excluded) ------
+      // -- margin rows (top grid values; return/vol/members series excluded)
       const marginRows = arr.filter(
         (p) => p.seriesName
           && !p.seriesName.endsWith(CLOSE_SUFFIX)
           && !p.seriesName.endsWith(RET_SUFFIX)
           && !p.seriesName.endsWith(VOL_SUFFIX)
+          && !p.seriesName.endsWith(MEMBERS_SUFFIX)
           && typeof p.value === "number",
       )
         .filter((p) => p.value != null && Number.isFinite(p.value as number))
@@ -73,11 +82,25 @@ export function buildTrendTooltip(args: TrendTooltipArgs) {
       children.push(React.createElement(tooltipComponents.Header, null, dateStr));
       for (const p of marginRows) {
         const v = p.value as number;
+        const code = labelToCode.get(p.seriesName ?? "");
+        const members = membersByCodeDate
+          ?.get(`${code}|${dateStr}`) ?? null;
+        // Member-count delta vs the previous date — non-null exactly where
+        // the chart draws a member-change dot.
+        const prevMembers = membersByCodeDate
+          ?.get(`${code}|${dates[idx - 1] ?? ""}`) ?? null;
+        const membersDelta =
+          members != null && prevMembers != null && members !== prevMembers
+            ? members - prevMembers
+            : null;
         children.push(React.createElement(tooltipComponents.Row, null, [
           React.createElement("span", { style: { color: p.color ?? "" } }, "●"),
           ` ${p.seriesName}: `,
           React.createElement(tooltipComponents.Bold, null, fmtNum(v, 2)),
           ` ${unit}`,
+          ...(members != null
+            ? [` · ${members} members${membersDelta != null ? ` (Δ ${membersDelta > 0 ? "+" : ""}${membersDelta})` : ""}`]
+            : []),
         ]));
       }
 

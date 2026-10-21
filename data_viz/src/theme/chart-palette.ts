@@ -72,7 +72,7 @@ export const PE_COLOR = cssVar("--chart-pe", "#e377c2"); // tableau pink — sta
 export const DIV_EST_COLOR = cssVar("--chart-div-est", "#9467bd");
 
 // Spot / max pain / OI-weighted
-export const SPOT_COLOR = cssVar("--chart-spot", "#2C3E50");
+export const SPOT_COLOR = cssVar("--chart-spot", "#d95f0e");
 
 // Bollinger band envelope (±k×σ around an MA). Used on the MA-Spread page
 // to draw the upper/lower band lines and the faint fill between them.
@@ -184,6 +184,32 @@ export function expiryGreyColor(i: number, n: number): string {
   if (n <= 1) return EXPIRY_GREY_NEAR;
   const t = i / (n - 1);
   return lerpColor(EXPIRY_GREY_NEAR, EXPIRY_GREY_FAR, t);
+}
+
+// ----------------------------------------------------------------------------
+// Rolling-window gradient (blue) — one hue at graded darkness for the ordered
+// trailing windows (20/60/255d) of a SINGLE metric (e.g. the pair hedge-ratio
+// panels). Dark = shortest window (nearest horizon), light = longest — the
+// same dark-near/light-far convention as the expiry gradients above. Unlike
+// MUTED_PALETTE (a distinct hue per series), one metric's windows share a hue
+// so the family reads as one series at three horizons. Endpoints live in
+// colors.css (--window-blue-near/far) so a single token change rethemes
+// every consumer.
+// ----------------------------------------------------------------------------
+const WINDOW_BLUE_NEAR = cssVar("--window-blue-near", "#08306b");
+const WINDOW_BLUE_FAR = cssVar("--window-blue-far", "#c6dbef");
+
+/**
+ * Blue ramp for window-indexed series of one metric.
+ * Dark blue = shortest window, light blue = longest.
+ *
+ * @param i  Zero-based window index (0 = shortest window)
+ * @param n  Total number of windows
+ * @returns  Hex color string
+ */
+export function windowBlueColor(i: number, n: number): string {
+  if (n <= 1) return WINDOW_BLUE_NEAR;
+  return lerpColor(WINDOW_BLUE_NEAR, WINDOW_BLUE_FAR, i / (n - 1));
 }
 
 // ----------------------------------------------------------------------------

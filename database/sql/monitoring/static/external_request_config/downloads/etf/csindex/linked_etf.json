@@ -14,8 +14,16 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "CSI linked-ETF lists. Timeouts (15,120) migrated from the code's CSINDEX_TIMEOUT (10k-row JSON page + .xls export need the read headroom; synced 2026-10-10) - code now reads this row.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "site": "https://www.csindex.com.cn",
+      "funds_tracking_index": "https://www.csindex.com.cn/csindex-home/index-list/funds-tracking-index",
+      "export_funds_excel": "https://www.csindex.com.cn/csindex-home/exportExcel/funds-tracking-index-excel/CH",
+      "funds_filter": "https://www.csindex.com.cn/csindex-home/index-list/funds-filter",
+      "product_page": "https://www.csindex.com.cn/#/indices/indexProduct"
+    },
+    "notes": "CSI linked-ETF lists. Timeouts (15,120) migrated from the code's CSINDEX_TIMEOUT (10k-row JSON page + .xls export need the read headroom; synced 2026-10-10) - code now reads this row; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/etf/csindex/linked_etf/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

@@ -75,7 +75,6 @@ import pandas as pd
 from _common.db_commons import csv_copy_from_frame_async
 from _common.df_utils import column_subset, host_unique
 from _common.labels import SEC_TYPE_CODE, SEC_TYPE_LABEL, SIDE_CODE
-from _common.db_commons import chunked_purge_async
 from analysis._common import upsert_analysis_identity
 from analysis.mov_ave_spread.config import (
     PRICE_VS_AMT_ANALYSIS_NAME,
@@ -99,7 +98,10 @@ from analysis.mov_ave_spread.steps.px_vol import (
     add_px_vol_features,
     fetch_price_vs_amt_source,
 )
-from analysis.mov_ave_spread._common.steps import sec_type_code
+from analysis.mov_ave_spread._common.steps import (
+    diff_write_scope_async,
+    sec_type_code,
+)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -417,14 +419,26 @@ async def run_price_vs_amt(
             logger.info(f"    -> deleted {n_del:,} existing state rows "
                   f"({st}/{code_filter})")
     else:
-        for st in sec_types:
-            n_del = await chunked_purge_async(
-                conn, PRICE_VS_AMT_TABLE,
-                where_sql="sec_type = $1", params=(sec_type_code(st),),
-            )
-            logger.info(f"    -> deleted {n_del:,} existing state rows "
-                  f"({st})")
-
+        # Incremental run with missing dates: recompute the FULL history
+        # (the rolling stats need it), then a diff write — only rows
+        # affected by the new dates are upserted and vanished PKs
+        # deleted. History rows freeze once their windows close, so the
+        # nightly write volume is the tail, not the table.
+        n_ins, _ = await diff_write_scope_async(
+            conn, table=PRICE_VS_AMT_TABLE, frame=rows_df,
+            columns=PRICE_VS_AMT_COLUMNS,
+            key_cols=("code", "sec_type", "date"),
+            sec_types=sec_types, label="price_vs_amt", insert_only=True)
+        logger.info(f"    -> insert-only write: {n_ins:,} new rows "
+              f"inserted, existing rows frozen")
+        del rows_df
+        await upsert_analysis_identity(
+            conn,
+            name=PRICE_VS_AMT_ANALYSIS_NAME,
+            detail_name="mov_ave_price_vs_amt",
+            description=PRICE_VS_AMT_DESCRIPTION,
+        )
+        return
     n = await _copy_rows_chunked(
         conn, pool, rows_df, max_concurrent=max_concurrent,
     )

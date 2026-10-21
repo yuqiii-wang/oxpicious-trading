@@ -1,12 +1,12 @@
 """Core pipeline constants for analysis.mov_ave_spread.
 
-Moving-Average Spread Analysis (ETF + Index + Stock).
+Moving-Average Spread Analysis (ETF + Index + Stock + Industry).
 
 Loads every business date's MA-gap values for every ETF, every index, and
 every stock into the wide-format detail table analysis.mov_ave_spreads_detail.
 
 The ``sec_type`` column discriminates the source universe. The schema
-CHECK allows three values ('etf' | 'index' | 'stock'):
+CHECK allows four values ('etf' | 'index' | 'stock' | 'industry'):
   - ETF   - price = COALESCE(stats.etf_adjustment.adj_close,
                              stats.etf_basic_stats.close);
             MAs from stats.etf_tech_stats.
@@ -15,6 +15,15 @@ CHECK allows three values ('etf' | 'index' | 'stock'):
   - Stock - price = stats.stock_basic_stats.close (no adjustment table);
             MAs from stats.stock_tech_stats (populated by
             builds.stock.tech_stats).
+  - Industry - price = the REBASED-TO-100 composite close
+            (stats.industry_basic_stats.mean_close, pool 'all' slice —
+            code = industry_id); industry has NO *_tech_stats table, so
+            the MA/EMA columns are computed by the pipeline itself over
+            the composite series (fetch/source.py, the same
+            compute_moving_averages / compute_emas helpers the builds
+            use — min_periods=1, adjust=False, 6dp round). Gap ratios
+            are scale-invariant, so the rebased composite is directly
+            comparable to the raw-price sec_types.
 
 9 gap pairs (canonical order):
   - 5 Price-vs-MA pairs:  gap = (price - maX) / maX,  X in {5,20,60,120,255}
@@ -30,8 +39,9 @@ DETAIL_TABLE = "analysis.mov_ave_spreads_detail"
 CODES_SUMMARY_TABLE = "analysis.mov_ave_spreads_codes"
 
 DESCRIPTION = (
-    "Moving-average spread analysis (ETF + Index + Stock). For each security "
-    "(ETF, index, or stock) and business date, computes 9 gap pairs (5 "
+    "Moving-average spread analysis (ETF + Index + Stock + Industry). For "
+    "each security (ETF, index, stock, or composite industry) and business "
+    "date, computes 9 gap pairs (5 "
     "Price/MA + 4 MA5/MA) as gap_value = (short_value - long_value) / "
     "long_value, plus the derivatives of the 1-day leg (price) and the "
     "5/20-day MA legs — price_slope/price_curvature and ma{5,20}_slope / "
@@ -45,13 +55,16 @@ DESCRIPTION = (
     "std_20days / std_60days / std_120days / std_255days) used for "
     "Bollinger-style envelopes (MA ± k×σ) around each Price/MA pair chart. "
     "The sec_type column discriminates the source universe; the schema "
-    "CHECK allows 'etf' | 'index' | 'stock'. 'etf' uses "
+    "CHECK allows 'etf' | 'index' | 'stock' | 'industry'. 'etf' uses "
     "COALESCE(etf_adjustment.adj_close, etf_basic_stats.close) for price "
     "and etf_tech_stats for MAs; 'index' uses index_basic_stats.close for "
     "price and index_tech_stats for MAs; 'stock' uses stock_basic_stats.close "
-    "for price and stock_tech_stats for MAs. Detail table stores one wide "
-    "row per (sec_type, code, date) with all 9 gap values + 6 derivative "
-    "columns (price + ma5/20 x slope/curv) + 5 rolling σ "
+    "for price and stock_tech_stats for MAs; 'industry' (code = industry_id) "
+    "uses the rebased-to-100 composite OHLC of stats.industry_basic_stats "
+    "(pool 'all' slice) for price with the MAs/EMAs computed by the "
+    "pipeline itself (no industry tech_stats). Detail table stores one "
+    "wide row per (sec_type, code, date) with all 9 gap values + 6 "
+    "derivative columns (price + ma5/20 x slope/curv) + 5 rolling σ "
     "columns."
 )
 
@@ -108,22 +121,30 @@ PAIRS = [
     (5, 255, "ma5_vs_ma255"),
 ]
 
-# Security types computed by this script. The DB schema CHECK on
-# analysis.mov_ave_spreads_detail.sec_type allows ('etf', 'index', 'stock').
-# Stock MAs come from stats.stock_tech_stats (populated by
-# builds.stock.tech_stats); stock prices use stats.stock_basic_stats.close
-# (no adjustment table for stocks).
-SEC_TYPES = ("etf", "index", "stock")
+# Security types computed by this script. The DB schema allows
+# ('etf', 'index', 'stock', 'industry') on the mov_ave-family sec_type
+# columns (static.label_dim 'sec_type' codes 0-3). Stock MAs come from
+# stats.stock_tech_stats (populated by builds.stock.tech_stats); stock
+# prices use stats.stock_basic_stats.close (no adjustment table for
+# stocks). Industry (3) reads the composite pool-'all' slice of
+# stats.industry_basic_stats through the stats.industry_identity view;
+# its MA/EMA columns are computed in fetch/source.py.
+SEC_TYPES = ("etf", "index", "stock", "industry")
 
 # Identity table per sec_type - used by the recent-data pre-filter
 # (fetch_codes_with_recent_data_async) to find codes with at least one row
 # in the last RECENT_TRADING_DAYS trading days. A code with no recent data
 # (delisted / suspended / never-traded) is excluded from the analysis
-# universe entirely so its full history is skipped.
+# universe entirely so its full history is skipped. industry resolves to
+# the stats.industry_identity VIEW (database/sql/stats/13_industry.sql) —
+# the (date, code=industry_id, name=industry_label) reshape of
+# industry_basic_stats pool 'all', honoring the identity-table contract
+# (pre-filter / missing-date detection / codes-summary name lookup).
 SEC_TYPE_IDENTITY_TABLE = {
     "etf":   "stats.etf_identity",
     "index": "stats.index_identity",
     "stock": "stats.stock_identity",
+    "industry": "stats.industry_identity",
 }
 
 # Every numeric column in analysis.mov_ave_spreads_detail is declared

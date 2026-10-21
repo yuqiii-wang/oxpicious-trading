@@ -14,8 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "BSE daily price via download_bse_price; the bjs.py helpers also carry snapshot 1.5s / stock-list 5.0s / kline 20.0s used by the other bse services. Rotation stays off: the BSE endpoint needs fixed headers that fingerprint rotation would clobber (bjs adapter).",
+    "settle_sleep_sec": null,
+    "urls": {
+      "list": "https://www.bse.cn/nqhqController/nqhq_en.do",
+      "referer_list": "https://www.bse.cn/nq/quotation.html"
+    },
+    "notes": "BSE daily price via download_bse_price; the bjs.py helpers also carry snapshot 1.5s / stock-list 5.0s / kline 20.0s used by the other bse services. Rotation stays off: the BSE endpoint needs fixed headers that fingerprint rotation would clobber (bjs adapter).; list urls added for the migrated bjs helper 2026-10-17",
     "source_ref": "downloads/_common/exchanges/bjs.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

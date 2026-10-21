@@ -11,10 +11,11 @@
 INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- action: 0 buy (reversal up), 1 sell (down) — pairs with the
     -- excess-sign convention (sell <-> positive signal_excess);
-    -- 2 wait (2026-10-13 as no_action; RENAMED 2026-10-16): a rule
-    -- not trading yet — signal_rules' observational outcomes (the
-    -- VRP-declined twin / the sample-starved cells waiting for
-    -- evidence to graduate)
+    -- 2 wait (2026-10-13 as no_action; RENAMED 2026-10-16):
+    -- signal_rules' observational outcomes — since 2026-10-19 the
+    -- ungated VRP-declined twin only (the sample-starved wait era
+    -- ended: under-floor cells trade at the starvation confidence
+    -- scale instead)
     ('action',     0, 'buy',    0),
     ('action',     1, 'sell',   1),
     ('action',     2, 'wait',   2),
@@ -39,6 +40,28 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- studies showed the cell grid starving exactly at the extreme
     -- (top, hot) / (bottom, calm) corners where these events land)
     ('signal_type', 6, 'rf_break', 6),
+    -- hedge_pairs (2026-10-18): the long–long anti-correlated pair
+    -- family — industry pair composites (code 'A~B', lexicographic)
+    -- selected as offset-opposite by analysis_composites.
+    -- industry_corr_benchmark_offsets, driven by the THREE source
+    -- curves (two industry composite closes + the broad-market
+    -- benchmark close): entry at broad-market drawdown lows with
+    -- both legs at Bollinger-σ relative lows, the staged
+    -- volatility-harvest exits on the pair ratio's z extremes
+    -- (sell the relatively-high leg, then the laggard at its own
+    -- high), and the market/regime stops
+    ('signal_type', 7, 'hedge_pairs', 7),
+    -- hp_rsi (2026-10-18, the two-layer merge): the hedge_pairs
+    -- family's RSI-SOURCED ORCHESTRATION layer — the components'
+    -- existing Short-Term-Tech rsi signal rules (REAL mov_rsi rows,
+    -- signal_type 0, at the market + leg codes) are the SOURCE, and
+    -- the hedge pairs layer orchestrates them into the portfolio
+    -- rules (hp_entry_legs_rsi / hp_exit_mkt_high /
+    -- hp_catchup_rsi_hi) stamped under THIS type at the pair
+    -- codes; each row's portfolio_signal_rules group references the
+    -- sourced mov_rsi rule ids it coordinates. The pair-native
+    -- rules (harvest / stop / flip) stay under hedge_pairs 7.
+    ('signal_type', 8, 'hp_rsi', 8),
     -- trend (2026-10-14, with the signal_rules redesign; rise/fall
     -- redefined 2026-10-15): the code's own trend classification in
     -- force for a rules cell — the PK member that makes rule_params
@@ -291,6 +314,15 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- a low base where the corr (-0.80) and vol-ATH (+5%) legs both
     -- stay unmet; k self-adaptive per cell from {2, 2.5, 3})
     ('signal_sub_type', 4306, 'ovix_atr_break', 4306),
+    -- options_vix addition (2026-10-19): ovix_euphoria_peak SELL — the
+    -- panic-peak MIRROR (exit timing on the blow-off top): vol
+    -- escalates >= 5% past its prior 120-session max while still
+    -- spiking (slope5 > +10%) AND spot ABOVE its 5-sessions-ago close
+    -- — the upside-euphoria leg the buy legs deliberately exclude
+    -- (2024-10-08 stimulus top: 000852 n=1 +8.15% at the starvation
+    -- x0.5; the other codes' euphoria cells measured out — tops
+    -- continue, the asymmetry holding on the mirror side too)
+    ('signal_sub_type', 4307, 'ovix_euphoria_peak', 4307),
     -- ma_cross breadth additions (2026-10-16, block 5700+): the
     -- market-level breadth rules over the sec_type's own universe —
     -- the Zweig breadth thrust (the 10d EMA of adv/(adv+dec) from
@@ -301,7 +333,117 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 5700, 'ma_breadth_thrust', 5700),
     ('signal_sub_type', 5701, 'ma_9to1_up', 5701),
     ('signal_sub_type', 5702, 'ma_9to1_dn', 5702),
+    -- hedge_pairs (2026-10-18, block 5800+): the discoveries of the
+    -- long–long anti-correlated pair study, one sub type each —
+    -- entry = the broad-market drawdown gate x both legs' σ-depth
+    -- (the nested dd{5,10}% x z{1,2} carving, deepest claim first);
+    -- harvest = the volatility-harvest staged exits on the pair
+    -- ratio z (|z| >= 1.5 / 2 sells the relatively-HIGH leg; the
+    -- laggard reaching its OWN leg z >= 1 / 2 sells the second leg);
+    -- stops = the beta stop (market >= 20/30% below its 255d high)
+    -- and the hedge-regime break (offset corr >= 0 within 60d of a
+    -- <= -0.30 reading); regime_flip = the observational hedgeable-
+    -- regime turn-on (offset corr <= -0.30 episode first day,
+    -- ungated buy).
+    -- REWORKED same day (the market-decoupling pass): the market-
+    -- drawdown gate made every pair fire the SAME action on the SAME
+    -- crash dates (the family traded the broad market, not the pair),
+    -- and the same-day MA20 σ leg check was a custom depth gauge.
+    -- hp_entry_legs_rsi (5812) replaces the four dd x z entries:
+    -- both legs' OWN Short-Term-Tech capitulation signal (Wilder
+    -- RSI14 below its per-leg adaptive percentile tail) paired
+    -- within ~5 traded days — roughly nearby, never exact-date;
+    -- hp_catchup_rsi_hi (5813) replaces the MA20-z catch-up exits:
+    -- the laggard's own RSI high-tail breach. The dd entries
+    -- (5800-5803), the MA20-z catch-ups (5806/5807) and the beta
+    -- stops (5808/5809) are RETIRED (labels stay registered; rows
+    -- purged by the next --force run).
+    ('signal_sub_type', 5800, 'hp_entry_dd5_z1', 5800),
+    ('signal_sub_type', 5801, 'hp_entry_dd5_z2', 5801),
+    ('signal_sub_type', 5802, 'hp_entry_dd10_z1', 5802),
+    ('signal_sub_type', 5803, 'hp_entry_dd10_z2', 5803),
+    ('signal_sub_type', 5804, 'hp_harvest_z15', 5804),
+    ('signal_sub_type', 5805, 'hp_harvest_z20', 5805),
+    ('signal_sub_type', 5806, 'hp_catchup_z1', 5806),
+    ('signal_sub_type', 5807, 'hp_catchup_z2', 5807),
+    ('signal_sub_type', 5808, 'hp_stop_mkt_dd20', 5808),
+    ('signal_sub_type', 5809, 'hp_stop_mkt_dd30', 5809),
+    ('signal_sub_type', 5810, 'hp_stop_regime', 5810),
+    ('signal_sub_type', 5811, 'hp_regime_flip', 5811),
+    ('signal_sub_type', 5812, 'hp_entry_legs_rsi', 5812),
+    ('signal_sub_type', 5813, 'hp_catchup_rsi_hi', 5813),
+    -- hp_exit_mkt_high (2026-10-18, the per-code/portfolio vocabulary
+    -- split): the market-exhaustion composite SELL — the broad
+    -- market's own short-term-tech HIGH-tail signal (RSI above its
+    -- adaptive upper tail, ~5d witness) coordinated at the PORTFOLIO
+    -- level (response: the pair portfolio) — the highs counterpart of
+    -- the entry's market-lows coordination. NOTE the vocabulary
+    -- split: the PER-CODE component rules (the market + the leg
+    -- industries) are REAL mov_rsi rows (signal_type 0, rsi14_*
+    -- sub types, both sides); only the portfolio-level rules carry
+    -- the hedge_pairs sub types.
+    ('signal_sub_type', 5814, 'hp_exit_mkt_high', 5814),
+    -- the 2026-10-19 more-triggers graduates (docs/
+    -- hedge_pairs_more_triggers_study_2026-10-19.md): wash = the rf
+    -- washout entries (both legs' W-day Donchian-floor breakdown
+    -- witnesses alive within 5 pair-days; each window its OWN
+    -- population — the rf_break no-carve precedent; the _mkt twin
+    -- adds the market's RSI 3pct capitulation witness — the RSI
+    -- trio's structural cousin); rho50 = the deep hedgeable turn-on
+    -- (offset corr's first day <= -0.50 — the turn-on's one record
+    -- since the 2026-10-21 dedup retired the observational shallow
+    -- twin hp_regime_flip; the grid measured -0.40 flat / -0.50 the
+    -- bar / -0.60 weaker); reclaim60 = the catch-up ENTRY (the weak
+    -- leg closing back above its own MA60 — the reclaim mirror of
+    -- the catch-up sell; MA20 measured worse on both lenses).
+    -- The per-window trio 5815-5817 is RETIRED (the 2026-10-21
+    -- dedup — the W window is a run_cells candidate, not an
+    -- identity; labels stay registered, rows purged by the next
+    -- --force run)
+    ('signal_sub_type', 5815, 'hp_entry_wash60', 5815),
+    ('signal_sub_type', 5816, 'hp_entry_wash120', 5816),
+    ('signal_sub_type', 5817, 'hp_entry_wash255', 5817),
+    ('signal_sub_type', 5818, 'hp_entry_wash120_mkt', 5818),
+    ('signal_sub_type', 5819, 'hp_entry_rho50', 5819),
+    ('signal_sub_type', 5820, 'hp_entry_catchup_reclaim60', 5820),
+    -- the 2026-10-20 spread-rotation study's portfolio-first
+    -- graduates (docs/hedge_pairs_spread_rotation_study_2026-10-20.md):
+    -- the MOMENTUM TILT, the harvest's opposite buy/sell pair.
+    -- Divergence (|ratio z| >= k) measured CONTINUATION, not
+    -- reversion: the strong leg keeps outperforming (+0.37..+0.55%
+    -- fwd) and the toward-strong tilt is the only one that improved
+    -- BOTH lenses (dd +0.16..+0.90pp on 62-67% of events); the
+    -- proposed mean-reversion direction measured NEGATIVE under every
+    -- criterion (per-open -1.24% t=-3.96, no stop rule rescued it).
+    -- hp_mom_strong BUYs the strong leg (response px_strong),
+    -- hp_mom_lag SELLs the laggard (response px_lag, the exit-timing
+    -- bar); the k grid {1.5, 2.0, 2.5} is the run_cells candidate set.
+    ('signal_sub_type', 5821, 'hp_mom_strong', 5821),
+    ('signal_sub_type', 5822, 'hp_mom_lag', 5822),
+    -- hp_harvest (2026-10-21 dedup, user-directed — same-semantics
+    -- subs collapse to the one most semantic): the staged harvest
+    -- pair hp_harvest_z15/z20 (5804/5805, labels stay registered)
+    -- merged into ONE sub — the |ratio z| bar is a run_cells
+    -- candidate (bar_def.ratio_z, the per-cell winner picks it), not
+    -- an identity; hp_regime_flip (5811) retired — hp_entry_rho50
+    -- (5819) is the hedgeable turn-on's one record
+    ('signal_sub_type', 5823, 'hp_harvest', 5823),
+    -- hp_entry_wash (2026-10-21 dedup): the per-window washout trio
+    -- hp_entry_wash60/120/255 (5815-5817, labels stay registered)
+    -- merged into ONE sub — the W window is a run_cells candidate
+    -- (bar_def.window, the per-cell winner picks it), not an
+    -- identity; the recorded value is the fetch's combined washdepth
+    -- gauge (the deepest alive witness's window)
+    ('signal_sub_type', 5824, 'hp_entry_wash', 5824),
     -- analysis_cache_kind: analysis_signals.analysis_cache.kind — the
     -- generic intermediate-result cache's tenant (which analysis owns
     -- the row's cache jsonb)
-    ('analysis_cache_kind', 0, 'boost_derivation', 0);
+    ('analysis_cache_kind', 0, 'boost_derivation', 0),
+    -- portfolio_type (2026-10-18): the kind of PORTFOLIO a
+    -- analysis_signals.portfolio_signal_rules row groups — the
+    -- portfolio tier's own vocabulary (NOT the signal family: the
+    -- type says what the code IS as a portfolio, and one type can
+    -- outlive family renames). 0 neg_corr_hedge_pair = the two-leg
+    -- long–long negatively-correlated hedge pair (code 'A~B',
+    -- lexicographic — the hedge_pairs family's universe)
+    ('portfolio_type', 0, 'neg_corr_hedge_pair', 0);

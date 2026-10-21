@@ -46,7 +46,11 @@ images:
   MOMENTUM for drift-up names; a SELL is EXIT TIMING for longs, never
   a short entry.
 - Sample floors 2 sells / 3 buys (loosened 2026-10-16 from 3/4) —
-  sell evidence is structurally thinner under positive drift.
+  sell evidence is structurally thinner under positive drift. Since
+  2026-10-19 the floors are the CONFIDENCE REFERENCE, not a gate
+  (user-directed): a cell under its floor trades at the starvation
+  scale min(n / floor, 1) of the confidence — thin evidence
+  discounts the claim instead of silencing it.
 - ma_cross gdepth has NO top side: deep gaps ABOVE the MA measured
   uniformly negative.
 
@@ -84,23 +88,35 @@ measurements, not taste:
   — trend-aware it fires 2026-01-13 in the top cell. bollinger /
   momentum keep the plain absorb until their own A/B is measured.
 - Confidence = the cell's measured dir_ave (base) scaled by breach
-  depth (capped 2×) — never a fitted curve; the deeper the pierce,
-  the stronger the claim, up to the family's depth normalizer.
-- STARVED CELLS RECORD (2026-10-16; label renamed no_action → WAIT
-  and the rules row made SELECTIVE the same day): a cell with
-  episodes below the sample floor replays ALL its triggers into
-  history as wait events and graduates to the real action in place
-  once n clears the floor and the gate passes; the signal_rules
-  wait watchlist row carries only floor-blocked imminent cells
-  (n = floor−1 with dir_ave at the side's bar — one confirming
-  episode from trading; the intended action rides
-  gate.intended_action). Rationale — the monotone guarantee for extreme
-  events: nested carving assigns a deep breach to its DEEPEST claim,
-  and those deepest-claim cells starve exactly at the extreme corners
-  where the events land (the 2024-09-30 / 2026-10-15 studies); without
-  the record, a MORE extreme fluctuation produced LESS signal than a
-  milder one. Measured-out cells (n ≥ floor, dir_ave below the bar)
-  still emit nothing — that is rejection on evidence, not starvation.
+  depth (capped 2×) and by the STARVATION SCALE min(n / floor, 1)
+  (2026-10-19 — under-floor cells trade at reduced confidence) —
+  never a fitted curve; the deeper the pierce, the stronger the
+  claim, up to the family's depth normalizer.
+- STARVED CELLS TRADE (2026-10-19; retiring the 2026-10-16 wait
+  record): a cell with episodes below the sample floor emits its REAL
+  action at the starvation scale min(n / floor, 1) of the confidence
+  (gate.starved + gate.conf_scale on the performance snapshot). The
+  monotone guarantee for extreme events survives in a trading form:
+  nested carving assigns a deep breach to its DEEPEST claim, and
+  those deepest-claim cells starve exactly at the extreme corners
+  where the events land (the 2024-09-30 / 2026-10-15 studies, and
+  000001's 2025-04-08 tariff-crash wait rows that prompted the
+  change) — the record is now a REDUCED-CONFIDENCE trading row, not a
+  not-trading-yet wait. Measured-out cells (dir_ave below the bar,
+  any n) still emit nothing — that is rejection on evidence, not
+  starvation.
+- THE POOLED STARVATION RETREAT (2026-10-19, later the same day —
+  the per-cell retreat one level up): the pooled tier's n ≥ 10 floor
+  stopped BLOCKING too. The statistics legs (the 0.25% bar, t ≥ 1,
+  the measurable-year sign majority) stay VERDICT legs; n between
+  POOLED_TRADE_FLOOR (3) and POOLED_MIN_N (10) TRADES at the pooled
+  completeness scale min(n / 10, 1), folded into the same
+  gate.conf_scale the live tier already applies (pooled.starved +
+  pooled.conf_scale on the snapshot). What prompted it: the
+  2026-10-19 loosening rebuild measured ow_put buy n=7 +6.17% t=3.96
+  and ovix_spike n=9 +3.33% t=4.55 — both REJECTED on n alone while
+  statistically significant. Below the trade floor the side still
+  emits nothing (the etf ovix_spike_hivol n=1 is the honest example).
 
 ## The market-regime layer (stats.market_regimes)
 
@@ -220,23 +236,48 @@ conditioned and gated. Three entries (regime-free, trend split):
 reversion trade back toward it. Universe: the options underlyings
 (000300/000016/000852 + SZSE ETFs; SSE ETFs excluded — accumulated-
 volume OI). Rules era: breach-only (K=0 strict consecutive-day
-episodes; pooled cells; confidence FLAT):
+episodes; pooled cells; confidence FLAT).
 
-- **ow_put_025pct** (buy): close ≤ put_wall_low × (1 − 0.25%),
+The SPARSITY FACT (2026-10-19 study, docs/
+options_wall_sparsity_study_2026-10-19.md): the bar is the dominant
+OI zone's OUTER edge, which sits median ~12% from spot (the zones
+chain sparse deep strikes; the OI mass/center sits ~3% away) — only
+~1.2% of days breach it at all, and that rare population IS the
+edge. Density attempts measured OUT the same day: the nearest-
+expiry dominant pick (1 gated pass), zone-entry at the near edge
+(89% of days, +0.03%), and walls-as-STRIKES (max-OI and gamma×OI
+picks from stats.options_greeks — 229/341 gated events at
++0.16%/+0.04%, far below the bar; SpotGamma-style strike walls are
+proximate and EDGELESS here — the deep zone-edge breach is the
+reversion event, matching the dealer-hedging story where a raw wall
+breach otherwise ACCELERATES).
+
+- **ow_put_025pct** (buy): close ≤ put_wall_low × (1 − width),
   VRP-GATED — vrp_ratio (implied vol30 vs rolling-20d realized)
-  beyond its own trailing-255d 80th percentile bar. Current cell:
-  +5.83% @n=5; the VRP-fail twin (`_rej`, wait) records the
-  falling-knife population.
-- **ow_call_025pct** (sell, ungated): close ≥ call_wall_high × (1 +
-  0.25%) — exit timing.
-- PROPOSED (2026-10-16): `ow_call_1pct` sell (n=14 pooled +1.31%
-  @78.6 — reproduces the threshold-era n=15 @80.0% +1.41); implement
-  as a second width candidate on the call side.
+  beyond its own trailing-255d percentile bar (the bar: 0.80 → 0.70
+  → 0.60 across 2026-10-19's two steps; p50 halves the edge — do
+  not go lower). The width collapsed to the SINGLE 0.10% (the
+  {0.25, 0.10} grid measured a no-op — breach-day counts identical;
+  the sub_type NAME's 025 is historical label vocabulary). The
+  bar's warmup is the SHORT min_periods=120, not the 255d window —
+  the full-window warmup erased whole codes (000016's entire put
+  population sat in it). Current rebuild (2026-10-19, index): TWO
+  trading cells — 000852 n=8 +5.44% hit 100% (the 2024-07/09
+  window), 000016 n=8 +0.56% hit 75% (2023-12/2024-01) — pooled
+  n=16 t=3.07 at FULL pooled confidence (the starvation scale is
+  gone, n ≥ 10). The VRP-fail twin (`_rej`, wait) records the
+  falling-knife population (+0.74% @40% — no edge ungated).
+- **ow_call_025pct** (sell, ungated): close ≥ call_wall_high ×
+  (1 + width) — exit timing. Index n=13 pooled +1.29% t=1.29
+  (000300 n=10 + 000016 n=3).
 - MEASURED OUT 2026-10-16: the put-wall CENTER approach
   (`ow_put_center_vrp`) — its threshold-era edge (n=68 @72.1% +1.31)
   is GONE on the current wall population (+0.09% @44.7; the ungated
   twin −0.01%). The call approach rally needs etf scope to evaluate
   (its threshold-era population was 84% one ETF, 159919).
+- UNIVERSE GROWTH (P2) is source-blocked: the SZSE trend service
+  only serves from 2025-07-01 (the 4 ETF codes' whole history);
+  backfilling needs SZSE's historical-archive endpoint or a vendor.
 
 ## options_vix — the vol-spike-in-fear-regime family
 
@@ -247,11 +288,15 @@ series), slope5 (5-day vol slope), z252 (vol level z), on the repo's
 own 30d implied-vol index. The premise: corr alone ≈ baseline, spike
 alone weak — the INTERACTION is the edge.
 
-- **ovix_spike** (buy): corr20 < −0.8 & slope5 > +10% — the crises
-  (2020-02 COVID, 2022-03/10, 2024-04, 2025-04, 2026-03). Cell:
-  +3.94% n=5.
+- **ovix_spike** (buy): corr20 < −0.75 & slope5 > +10% — the bar
+  LOOSENED 2026-10-19 from −0.80 (the measured ovix_spike_wide
+  coverage play graduated into the main bar: pooled n=21 +1.17% @
+  the 2026-10-16 study; the 000852 Feb-2024 crisis bottomed −0.74,
+  just past the old bar). Cell (000852, index): n=6 +4.26% hit 100%
+  at the pooled starvation ×0.9 (pooled n=9 t=4.55).
 - **ovix_spike_hivol** (buy): spike & z252 > 1 — the interaction at
-  its strongest (threshold era: +3.74% @83% fwd20). Cell: +4.12% n=5.
+  its strongest (threshold era: +3.74% @83% fwd20). Cell: n=5
+  +4.12% hit 100% at ×0.6 (pooled n=6 t=4.17).
 - **ovix_panic_peak** (buy, 2026-10-15): the vol30 VALUE SPACE — vol
   > prior 120-session max × 1.05 & slope5 > +10% & spot below its
   5-session-ago close. The diagnosis: in V-spike crises the corr axis
@@ -261,14 +306,40 @@ alone weak — the INTERACTION is the edge.
   extreme, and the downside leg separates fear from upside euphoria
   (the 2024-10-08 stimulus top excluded). Cells: 000852 n=5 +4.85%
   @80, 000300 n=4 +2.32% @75.
+- **ovix_euphoria_peak** (sell, 2026-10-19): the panic-peak MIRROR —
+  the same escalation bar with spot ABOVE its 5-sessions-ago close,
+  the blow-off-top exit the buy legs deliberately exclude. The
+  2026-10-19 off-spike study (temp_scripts/ovix_off_spike_study.py +
+  ovix_grid_study.py) measured the mirror honestly: euphoria tops
+  mostly CONTINUE (000016/000300 euphoria cells measured out — the
+  asymmetry holding on the mirror side), and the leg trades only
+  where the blow-off actually rolled over — 000852 2024-10-08 n=1
+  +8.15% hit 100% at the starvation ×0.5 (sells never pooled-gated).
+  The same study MEASURED OUT the candidate bar grids: corr
+  {−0.75,−0.70} × slope-window {5,3} on spike/hivol/peak added ZERO
+  events (the missed spikes fail both legs or have no measured
+  edge), and the atr slope3 grid LOST 9 net events on
+  precision-noise winner flips — do not re-add without new
+  measurements.
+- **ovix_atr_break** (buy, 2026-10-16): the spot day-return in
+  close-to-close ATR units past the self-adaptive {1.5, 2, 2.5, 3}
+  bar (k=1.5 added 2026-10-19 — the gate + pooled tier still judge
+  it; the measured 2026-10-15 class fired at −2.51 ATR) while vol
+  slope5 fires — the fast repricing from a LOW base (corr −0.60..
+  −0.72 vs the −0.75 bar, vol −17..−28% below its 120d max, slope5
+  +28%). Fired 2026-10-15 on 000852 (−2.51 ATR); crisis-leg history
+  2024-10-09, 2025-04-07, 2026-02-02, 2026-03-23. Index: 45 events /
+  3 cells (the winners stayed deep — the K=8 absorb merges the
+  shallower runs).
 - **ovix_fear_unwind** (sell): corr20 crosses back above −0.5 with a
-  40-session deep-fear witness — exit timing (+0.05% @n=7, thin but
-  honest).
+  40-session deep-fear witness (corr min < the −0.75 bar) — exit
+  timing. The 2026-10-19 index rebuild MEASURED IT OUT at the cell
+  gate (the eased witness re-populated it below the 0 bar); the etf
+  cells carry it (2 cells / 7 events).
 - MEASURED OUT 2026-10-16: `ovix_rollover` (+0.48% @n=12 vs the
   threshold-era +2.32% @73 — the published-corr interpolation changed
-  this population's character; 0 passing cells). Borderline:
-  ovix_spike_wide (corr −0.75; n=21 pooled +1.17%, 1 cell — the
-  coverage play), ovix_deep_hivol (n=10 +0.48%, 1 cell).
+  this population's character; 0 passing cells). ovix_spike_wide is
+  RETIRED AS A NAME (2026-10-19): its −0.75 widening IS the main bar.
 - Exits ride every rule doc: primary exit corr20 ≥ −0.5; a −8% stop
   halves the win rate — tight stops are HARMFUL here; max hold 60.
 - OVIX_REENTRY_EXIT_DAYS = 8 (crisis regimes fire daily). Pooled,
@@ -304,6 +375,81 @@ cross-axis dip-in-uptrend (short-axis tail conditioned on long-axis
 sign) measured +3.05% BUT its falling-knife control measured +2.61% —
 the conditioning adds almost nothing and cells starve below the
 floor. Revisit when the population doubles.
+
+## hedge_pairs / hp_rsi — the long–long anti-correlated pair family (2026-10-18; graduates 2026-10-19)
+
+The PORTFOLIO family: 36 disjoint offset-opposite industry pairs
+(analysis_composites offsets, trailing 255d opposite score > 0.5),
+inverse-vol long–long weighting, codes 'A~B'. The aim is negative-corr
+COORDINATION study, not profit — the DRAWDOWN LENS (ddmin20: the
+triggers' forward worst-trough vs the all-days baseline; the
+orchestrating cells' lenses combined into the portfolio audit's `dd`
+column since the 2026-10-20 redesign) is the
+family's recorded evidence axis; the dir_ave bar stays the verdict.
+The PORTFOLIO AUDIT (2026-10-20,
+analysis_signals.history_portfolio_signal_performance, ONE DATED
+SNAPSHOT PER PORTFOLIO since the same day's cell-level redesign):
+WHAT THE PORTFOLIO TOOK — kind
+max_drawdown_reduction, the pair value's OWN max drawdown vs each
+leg's standalone (reduction_vs_worst/mean in percentage points,
+positive = the hedge paid; the showcase pair audits −25.0% vs
+−20.3%/−48.6% legs = +23.6pp vs the worst leg) + the orchestrating
+cells' combined dd lens + `pooled` — the COMBINED STATS of the
+individual in-portfolio signals (the member cells' own measures
+meta-combined: n-weighted dir_ave / hit, the combined-moments t);
+portfolio_signal_rules.rule_params carries
+the CONSTANT construction (legs / market / aim / weighting + the
+per-sub coordination specs under subs) since the same day. Two layers: hp_rsi (type 8)
+orchestrates the components' REAL mov_rsi rows into portfolio
+composites; hedge_pairs (type 7) is pair-native.
+THE GATED CONFIDENCE CASCADE (2026-10-20, user-directed): the
+portfolio's confidence ADDS to the member cells' as an INCREASE,
+gated — the src data TOGETHER must pass the PORTFOLIO GATE (the
+audited drawdown reduction vs the MEAN leg ≥ 0pp — the worst-leg
+comparison is nearly automatic for any blend) AND the ENTRY RULES
+(the orchestrating composite's own is_valid); only then do members
+see the cell-level increase: scale = 1 + 0.25 × min(benefit_pp / 5,
+2) (cap ×1.5; PF_* in config), the strongest passing membership under
+max-scale aggregation, stamped as portfolio_cascade on the members'
+snapshots and multiplied by the live tier beside the starvation
+sample_scale. A failed gate stamps nothing — the portfolio tier only
+ever INCREASES a member's confidence, never discounts it.
+
+- **hp_entry_legs_rsi** (BUY): the trio entry — market + both legs'
+  RSI capitulation witnesses paired ≤5d. Pooled t=12.45; dd_min20
+  +0.24% vs −3.14% baseline (the drawdown-optimal entry).
+- **THE 2026-10-19 GRADUATES** (docs/hedge_pairs_more_triggers_study_
+  2026-10-19.md — the measured study behind every bar): hp_entry_wash
+  (both legs' W-day Donchian-floor breakdown witnesses within 5
+  pair-days — the co-drawdown on a STRUCTURAL bar; each window its
+  own population, the rf_break no-carve precedent; the 2026-10-21
+  dedup merged the per-window trio — same semantics, only the window
+  differed, so the grid {60, 120, 255} is the run_cells candidate set
+  and the per-cell winner picks it), hp_entry_wash120_mkt (the wash
+  + the market's RSI-3pct witness — the trio's
+  structural cousin, the strongest graduate t=8.94, trough −1.58% vs
+  −3.14%), hp_entry_rho50 (offset corr's first day ≤ −0.50 — buy when
+  the covariance cancellation works hardest; the grid measured −0.40
+  flat / −0.50 the bar / −0.60 weaker), hp_entry_catchup_reclaim60
+  (the WEAK leg's first close back above its own MA60 — the ma_cross
+  reclaim in coordination form; RESPONSE = the PORTFOLIO: the px_lag
+  switching path measured NEGATIVE (−0.56% t=−6.07 — it abandons the
+  reclaimed leg at the ratio's zero-cross); MA20 measured worse on
+  both lenses; the |z|≥1 conditioning adds nothing).
+- MEASURED OUT by the same study: leg Donchian ROOF breakouts (any
+  form incl. coordinated — single-name momentum, not coordination),
+  naked Donchian-on-ratio, portfolio gdepth; the knife state (leg
+  floor + other leg roof) is a drawdown warning (deepest troughs),
+  not a directional trade.
+- Sells: hp_harvest (|ratio z|≥k trims the high leg; the 2026-10-21
+  dedup merged the z15/z20 subs — same semantics, only the bar
+  differed, so the grid {1.5, 2.0} is the run_cells candidate set
+  and the per-cell winner picks it), hp_stop_regime (rho_off ≥ 0
+  within 60d of a ≤ −0.30 reading), hp_catchup_rsi_hi (the laggard's
+  own RSI high-tail). The observational hp_regime_flip was RETIRED
+  by the same dedup — hp_entry_rho50 is the hedgeable turn-on's one
+  record (its deep gated anchor; the shallow ungated twin measured
+  nothing the deep anchor's cells didn't).
 
 ## rf_break — the roof/floor breakout family (2026-10-16)
 
@@ -346,13 +492,14 @@ thin out the way a trailing percentile does.
 ## The 2026-10-16 event-study additions to the existing families
 
 - **ovix_atr_break** (options_vix, BUY): the spot day-return in
-  close-to-close ATR units past the self-adaptive {2, 2.5, 3} bar
-  while vol slope5 fires — the 2026-10-15 class (fast repricing from
-  a LOW base: corr −0.60..−0.72 vs the −0.80 bar, vol −17..−28%
+  close-to-close ATR units past the self-adaptive bar (now
+  {1.5, 2, 2.5, 3} — k=1.5 added 2026-10-19) while vol slope5 fires —
+  the 2026-10-15 class (fast repricing from a LOW base: corr −0.60..−0.72 vs
+  the fear bar, vol −17..−28%
   below its 120d max vs the +5% bar, slope5 +28%). Fired 2026-10-15
   on 000852 (−2.51 ATR); crisis-leg history 2024-10-09, 2025-04-07,
-  2026-02-02, 2026-03-23. 3 cells (000016/000300 k=2, 000852 k=2.5),
-  45 events.
+  2026-02-02, 2026-03-23. 3 cells / 45 events at index scope (the
+  winners stayed deep — see the options_vix section).
 - **ma_breadth_thrust** (ma_cross, BUY): the Zweig thrust — the 10d
   EMA of adv/(adv+dec) over the sec_type's OWN universe from below
   0.40 to above 0.615 within 10 sessions. Fired 2024-09-24 (0.616 vs
@@ -433,28 +580,55 @@ hysteresis, trigger-time-observable conditioning only.
 6. ma_cross conditioning uses trigger-time-observable state only.
 7. No curve without measured monotonicity (the curve tier died
    2026-10-14 for measured weakness).
-8. Regimes are SPLITS, never weights; live records regime as context,
-   never a gate.
+8. Regimes are SPLITS, never weights; in the live tier the
+   day-context match makes the cell's OWN regime a firing gate (a
+   cell fires only on the days of the regime population it measured;
+   a pooled 'all' 4 cell matches any day state on that axis) while
+   the breach row records the day regime as CONTEXT (re-worded
+   2026-10-21 — the old "context, never a gate" line predated the
+   rules-era day-context match).
 9. options_wall put-side breaches are NEVER emitted ungated; sparse
    options families pool at the gate; the VRP-fail twin is wait.
 10. options_vix: corr alone and spike alone are baseline — never
-    productize a single-axis variant; exits ride corr normalization,
-    never tight stops.
+    productize a single-axis variant; exits ride corr normalization
+    (fear_unwind) or the euphoria-top mirror (vol-ATH escalation with
+    spot above its 5-session-ago close) — never tight stops. The
+    peak legs' direction split (spot below 5d-ago buys, above sells)
+    is the family's fear-vs-euphoria separator — measured out on
+    2026-10-19: the corr/slope bar grids add zero events, the atr
+    slope3 grid loses net events.
 11. boll5 is structurally untriggerable at k ≥ 2 (max |z| =
     (n−1)/√n); rsi3-sell, EMA variants, the wall-center approach,
     ovix_rollover and the squeeze breakout are MEASURED OUT (2026-10-
     16) — re-adding any requires new measurements.
 12. The boost is a trust-weighted measurement, never a gate: it stamps
-    the per-cell `signal_rules.ohlcv_boost_conf` (NULL where the side
-    boosted nothing) and never adds/reweights history rows — the plain
+    the per-cell `ohlcv_boost_conf` on the cell's dated
+    history_signal_performance snapshot (NULL where the side boosted
+    nothing) and never adds/reweights history rows — the plain
     rows are the population of record (the twin era ended 2026-10-16).
-13. STARVED cells (episodes below the floor) RECORD as WAIT rows
-    (renamed from no_action 2026-10-16) and graduate in place — the
-    extreme-event monotone guarantee (a deeper fluctuation never
-    yields less record than a milder one): ALL starved triggers
-    replay into history; the rules watchlist row only for
-    floor-blocked imminent cells; measured-out cells emit nothing;
-    wait rows never trade and never fire live.
+13. STARVED cells (episodes below the floor) TRADE at the starvation
+    confidence scale min(n / floor, 1) (2026-10-19, retiring the
+    2026-10-16 wait rows; readers RECOMPUTE the scale since 2026-10-20
+    from the snapshot's n_episodes + the rule's gate.sample_floor —
+    the digest left the slimmed cell snapshot) — the extreme-event
+    monotone guarantee (a
+    deeper fluctuation never yields less record than a milder one)
+    kept as a reduced-confidence trading record; the dir_ave bar is
+    the only verdict, so measured-out cells (any n) emit nothing and
+    the only wait rows left are the ungated VRP twins (never trade,
+    never fire live).
+14. The POOLED floor is a CONFIDENCE reference too (2026-10-19): the
+    statistics legs (bar / t / year majority) are the BUY side's
+    verdict; n in [POOLED_TRADE_FLOOR, POOLED_MIN_N) trades at
+    min(n / POOLED_MIN_N, 1), below the trade floor emits nothing.
+    The options families' bars as of the 2026-10-19 sparsity study:
+    wall width SINGLE 0.10% (the grid measured a no-op), VRP gate
+    0.60 with the SHORT 120-row warmup (the full-window warmup
+    erased whole codes), corr bar −0.75 (spike_wide graduated into
+    it), ATR ks include 1.5. options_wall put breaches never emit
+    ungated; the deep zone-edge breach is the family's only
+    edge-carrying population (strike walls / near-edge / center /
+    nearest-expiry all measured out).
 
 ## Where the numbers live (single sources of truth)
 
@@ -462,8 +636,15 @@ hysteresis, trigger-time-observable conditioning only.
   `analysis/analysis_signals/config/__init__.py`
 - The rule engines: `engines/rule_base.py` + one engine package per
   family under `engines/signal_families/`
-- The measured evidence per cell: `signal_rules.rule_params.measure`
-  (n / dir_ave_pct / hit_rate) — the evidence column the UI renders
+- The measured evidence per cell: the LATEST
+  `analysis_signals.history_signal_performance` snapshot (n /
+  dir_ave_pct / std / t / hit + the is_in_portfolio flag — the
+  2026-10-19 split slimmed 2026-10-20; the rules API
+  re-merges it into its rule_params response as `measure`) — the
+  evidence the UI renders, one dated snapshot per daily run; the
+  PORTFOLIO tier's combined audit (the members' pooled stats, the
+  drawdown benefit, the cascade scale) lives in
+  `analysis_signals.history_portfolio_signal_performance`
 - The 2026-10-16 sub-rule study (graduates + honest negatives):
   `docs/sub_rules_proposal_2026-10-16.md`; the harness:
   `temp_scripts/subrule_candidates_study.py`

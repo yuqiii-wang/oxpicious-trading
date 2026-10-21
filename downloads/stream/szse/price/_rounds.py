@@ -1,9 +1,10 @@
 """SZSE streamer rounds — one stock round via the 4 parallel workers.
 
 Extracted from ``__main__.py``: both hourly and full modes dispatch the same
-worker set (A=akshare, C=em_push2his, D=em_pull primary queue; B=szse fallback
-queue), so the queue/state/task construction and the shutdown protocol are
-shared here. The highest-ranked stocks (list head) are seeded onto B's queue
+worker set (A=sina, C=em_push2his, D=em_push2 pull the primary queue; B=szse
+fallback queue), so the queue/state/task construction and the shutdown
+protocol are shared here. The highest-ranked stocks (list head) are seeded
+onto B's queue
 so the official SZSE source fetches them with priority (split_rank_priority);
 cancellation (Ctrl-C) propagates up to the caller after reaping the worker
 tasks.
@@ -122,7 +123,7 @@ async def run_stock_round(
 
     workers = [
         asyncio.create_task(_parallel_source_worker(
-            "akshare", "A", q_primary, q_fallback, state, session,
+            "sina", "A", q_primary, q_fallback, state, session,
             host_tracker, emitted_map, trade_date, COOLDOWN_A_SEC, conns.conn_a)),
         asyncio.create_task(_parallel_source_worker(
             "em_push2his", "C", q_primary, q_fallback, state, session,

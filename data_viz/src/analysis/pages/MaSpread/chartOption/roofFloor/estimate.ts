@@ -11,9 +11,14 @@
  * field pick. Values are RAW price units; in percentage ohlcMode the
  * axis relabels them (same as every other price line on the chart), and
  * the markLine labels format through the chart's fmtPrice.
+ *
+ * The row's `breached_{method}_{W}d` flag (the table's
+ * is_recently_breached: ALL of the last 5 trading days closed beyond the
+ * d−5 line) switches both lines + labels to their LIGHT color variants —
+ * an overrun level de-emphasizes until it is a level again.
  */
 import type { MovAveSpreadRoofFloorEstimateRow, RoofFloorEstimateMethod } from "@shared/types";
-import { ROOF_COLOR, FLOOR_COLOR } from "./colors";
+import { ROOF_COLOR, FLOOR_COLOR, ROOF_COLOR_LIGHT, FLOOR_COLOR_LIGHT } from "./colors";
 
 /** markLine block attached to the long-MA series (merged with the roof/
  *  floor anchor mark line by buildPairOption — one markLine per series). */
@@ -37,6 +42,9 @@ export interface RoofFloorEstimateState {
   dateIdx: number | null;
   roofVal: number | null;
   floorVal: number | null;
+  /** The chosen row's is_recently_breached flag — ALL of the last 5
+   *  trading days closed beyond the d−5 line (the est lines draw faded). */
+  breached: boolean;
   markLine: EstimateMarkLine | null;
 }
 
@@ -69,6 +77,7 @@ export function buildRoofFloorEstimateState(
       dateIdx: null,
       roofVal: null,
       floorVal: null,
+      breached: false,
       markLine: null,
     };
   }
@@ -80,19 +89,25 @@ export function buildRoofFloorEstimateState(
   const row = estRows[dateIdx];
   const roofVal = row?.[`roof_${estMethod}_${roofFloorWindow}d`] ?? null;
   const floorVal = row?.[`floor_${estMethod}_${roofFloorWindow}d`] ?? null;
+  const breached = row?.[`breached_${estMethod}_${roofFloorWindow}d`] ?? false;
 
   // Two horizontal lines (either may be absent — e.g. the trendline
   // method without a determined line at that date); each carries its own
-  // lineStyle + value label so both can share ONE markLine block.
+  // lineStyle + value label so both can share ONE markLine block. A
+  // recently-breached estimate draws in its LIGHT color — the level has
+  // been overrun on every one of the last 5 days, so it fades until it
+  // is a level again.
+  const roofColor = breached ? ROOF_COLOR_LIGHT : ROOF_COLOR;
+  const floorColor = breached ? FLOOR_COLOR_LIGHT : FLOOR_COLOR;
   const data: Array<Record<string, unknown>> = [];
   if (roofVal != null) {
     data.push({
       yAxis: roofVal,
-      lineStyle: { type: "dashed", color: ROOF_COLOR, width: 1.4, opacity: 0.9 },
+      lineStyle: { type: "dashed", color: roofColor, width: 1.4, opacity: 0.9 },
       label: {
         show: true,
         position: "insideEndTop",
-        color: ROOF_COLOR,
+        color: roofColor,
         fontSize: 9,
         formatter: `Est roof ${args.fmtValue(roofVal)}`,
       },
@@ -101,11 +116,11 @@ export function buildRoofFloorEstimateState(
   if (floorVal != null) {
     data.push({
       yAxis: floorVal,
-      lineStyle: { type: "dashed", color: FLOOR_COLOR, width: 1.4, opacity: 0.9 },
+      lineStyle: { type: "dashed", color: floorColor, width: 1.4, opacity: 0.9 },
       label: {
         show: true,
         position: "insideEndBottom",
-        color: FLOOR_COLOR,
+        color: floorColor,
         fontSize: 9,
         formatter: `Est floor ${args.fmtValue(floorVal)}`,
       },
@@ -118,6 +133,7 @@ export function buildRoofFloorEstimateState(
     dateIdx,
     roofVal,
     floorVal,
+    breached,
     markLine: data.length > 0
       ? {
           markLine: {

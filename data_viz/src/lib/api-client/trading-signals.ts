@@ -88,7 +88,7 @@ export interface TradingSignal {
   regime_state: string;
   /** The event's RETIRED population-variant marker: the ohlcv-boost
    *  twins were retired 2026-10-16 (the boost's tuned confidence lives
-   *  on signal_rules.ohlcv_boost_conf, shown in the rules panel) — the
+   *  the latest performance snapshot, shown in the rules panel) — the
    *  column reads FALSE on every row. */
   is_ohlcv_boosted: boolean;
   /** The trigger day's episode-PASS attribution: TRUE = the typical
@@ -244,6 +244,83 @@ export function fetchTradingSignalHistory(
 }
 
 // ---------------------------------------------------------------------------
+//  Portfolio HISTORY SIGNALS — the portfolio tier's EVENT history
+//  (analysis_signals.portfolio_history_signals, 2026-10-21): one row
+//  per coordinated PORTFOLIO event with THE EVENT DATE and the member
+//  association — the member CELL-LEVEL signal events that triggered it
+//  (each with its OWN date: different sub signals on different nearby
+//  days; the components' own history is dropped from history_signals,
+//  the member records ride the payload). Drives the Hedge Pairs page's
+//  expandable history rows.
+// ---------------------------------------------------------------------------
+
+/** One member CELL-LEVEL signal event (a portfolio event's trigger
+ *  witness — the sourced component cell's own episode-first record). */
+export interface PortfolioEventMemberSignal {
+  code: string;
+  signal_type: string;
+  signal_sub_type: string;
+  action: string;
+  /** 'YYYY-MM-DD' — the member's OWN trigger day (up to the witness
+   *  window before the portfolio event's date). */
+  date: string;
+  signal: number;
+  signal_reference: number;
+  /** Basis points — the member record's own scaled confidence. */
+  confidence: number;
+}
+
+/** One PORTFOLIO signal event: the coordinated event's own record +
+ *  the triggering cell-level signals (empty for the pair-native subs,
+ *  whose trigger is the pair's own gauge). */
+export interface PortfolioHistorySignal {
+  code: string;
+  portfolio_type: string;
+  signal_type: string;
+  signal_sub_type: string;
+  /** 'YYYY-MM-DD' — the EVENT date (the day the coordination
+   *  completed — every component witness alive). */
+  date: string;
+  time: string;
+  action: string;
+  signal: number;
+  signal_reference: number;
+  signal_excess: number;
+  /** Basis points — the composite event's scaled confidence. */
+  confidence: number;
+  confidence_pct: number;
+  regime_state: string;
+  is_typical: boolean | null;
+  members: PortfolioEventMemberSignal[];
+}
+
+export interface PortfolioSignalHistoryResponse {
+  sec_type: string;
+  code: string;
+  /** Echoed filters (null = not narrowed). */
+  signal_type: string | null;
+  signal_sub_type: string | null;
+  events: PortfolioHistorySignal[];
+}
+
+/** One portfolio code's FULL coordinated-event history (newest first)
+ *  with each event's member cell-level signals. Optional signalType /
+ *  signalSubType narrow to one family / sub. */
+export function fetchPortfolioSignalHistory(
+  secType: string,
+  code: string,
+  signalType?: string | null,
+  signalSubType?: string | null,
+): Promise<PortfolioSignalHistoryResponse> {
+  const params = new URLSearchParams({ sec_type: secType, code });
+  if (signalType) params.set("signal_type", signalType);
+  if (signalSubType) params.set("signal_sub_type", signalSubType);
+  return fetchJson<PortfolioSignalHistoryResponse>(
+    `/api/live-data/trading-signals/portfolio-history?${params.toString()}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 //  Signal RULES — the Recent Movements code-trend's rules panel.
 //  (The curve/threshold tier was RETIRED with its tables 2026-10-14;
 //  signal_rules replaces it.)
@@ -258,20 +335,26 @@ export interface SignalRuleParams {
   /** The episode merge K (out-of-band traded days absorbed as the same
    *  episode). */
   episode_merge_days?: number;
-  /** The gate the cell passed: dir_ave minimum (pct) + sample floor +
-   *  whether the population is observational (ungated, e.g. the
-   *  options_wall VRP-fail twin). */
+  /** The gate's BAR constants (the stored constant rule_params; since
+   *  the 2026-10-20 combined-tier move the VERDICT no longer merges
+   *  in — it is the row's is_valid, and the starvation haircut is
+   *  recomputed by readers as min(measure.n_episodes / sample_floor,
+   *  1)). ungated marks the observational populations (the
+   *  options_wall VRP-fail twin) — never a trading row. */
   gate?: {
     metric?: string;
     min_pct?: number | null;
     sample_floor?: number | null;
-    passed?: boolean;
     ungated?: boolean;
   };
-  /** The measured evidence on the cell's trigger days. */
+  /** The measured evidence on the cell's trigger days (the latest
+   *  performance snapshot's measure block — merged at the API
+   *  boundary). */
   measure?: {
     n_episodes?: number;
     dir_ave_pct?: number;
+    dir_std_pct?: number | null;
+    t_stat?: number | null;
     hit_rate?: number;
   };
   /** The confidence scale: base_pct = the on-bar measured base in
@@ -321,6 +404,11 @@ export interface SignalRule {
   sec_type: string;
   signal_type: string;
   signal_sub_type: string;
+  /** The rule row's SURROGATE ID — the one-to-one join key
+   *  portfolio_signal_rules manages the rule cell through (each rule
+   *  id under exactly one portfolio code). Identifies the row
+   *  EMISSION: ids churn with the pipeline's wipe-and-reinsert runs. */
+  signal_rule_id: number;
   /** top / bottom / rise / fall / flat — the code's own trend
    *  classification in force for the cell. */
   trend: string;
@@ -328,21 +416,28 @@ export interface SignalRule {
   regime_state: string;
   /** buy / sell / wait. */
   action: string;
-  /** The per-cell GATE VERDICT (denormalized rule_params.gate.passed):
-   *  true iff the cell's measured future returns cleared its side's
-   *  dir_ave bar at the sample floor. false = observational (wait
-   *  watchlist / ungated twin) — negative future returns are
-   *  discouraged: never valid, never trades, never fires live. */
+  /** The per-cell GATE VERDICT (the unified dir_ave test): true iff
+   *  the cell's measured future returns cleared its side's dir_ave
+   *  bar. false = observational (the ungated twin) — negative future
+   *  returns are discouraged: never valid, never trades, never fires
+   *  live. */
   is_valid: boolean;
+  /** Whether the cell is a MEMBER of a portfolio group (2026-10-20,
+   *  the cell-level-signals-in-portfolio redesign): its
+   *  signal_rule_id rides some portfolio_signal_rules.signal_rule_ids
+   *  array (the hedge sourced components + the pair-native
+   *  self-members; the orchestrating composites carry false — the
+   *  group IS the composite). Membership only — the cell's own test
+   *  stays the unified dir_ave gate; the portfolio tier's combined
+   *  audit lives in history_portfolio_signal_performance. */
+  is_in_portfolio: boolean;
   /** The engine entry class that runs the rule. */
   rule_entry: string;
   rule_params: SignalRuleParams;
-  /** The ohlcv boost's trust-weighted confidence BASE for the cell
-   *  (pct — the same scale as rule_params.confidence.base_pct):
-   *  sum(w*y)/sum(w) over the cell's measurable trigger days. NULL =
-   *  the side boosted nothing (ship gates failed / family not opted
-   *  in) — an honest absence, never a gate. */
-  ohlcv_boost_conf: number | null;
+  /** 'YYYY-MM-DD' — the as-of date of the latest performance snapshot
+   *  merged onto this row (the frame data horizon the cell was last
+   *  measured through); null when no snapshot exists. */
+  performance_as_of: string | null;
   document: SignalRuleDocument;
   created_at: string;
 }
@@ -362,6 +457,143 @@ export function fetchSignalRules(
   const params = new URLSearchParams({ sec_type: secType, code });
   return fetchJson<SignalRulesResponse>(
     `/api/live-data/trading-signals/rules?${params.toString()}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Signal PORTFOLIOS — the portfolio tier (2026-10-18, refactored to
+//  per-sub-type groups): portfolio_signal_rules holds one row per
+//  (code, portfolio_type, signal_sub_type) whose signal_rule_ids
+//  BIGINT[] carries the group's rule ids. fetchSignalPortfolios is
+//  the per-code roster; fetchPortfolioSignals matches portfolios by
+//  the requested CODES (the pair types: both 'A~B' legs in the list)
+//  and expands the ids to full rule rows — the shared
+//  portfolio-signal component's one round trip.
+// ---------------------------------------------------------------------------
+
+/** One managed PORTFOLIO code's census (the roster row). */
+export interface SignalPortfolio {
+  code: string;
+  /** The portfolio tier's own vocabulary, decoded (today always
+   *  neg_corr_hedge_pair — the two-leg 'A~B' hedge pair). */
+  portfolio_type: string;
+  /** The portfolio's rule cells (the ids across its sub-type groups). */
+  n_rules: number;
+  /** The portfolio's gate-passed (is_valid) rule cells. */
+  n_valid: number;
+  /** The portfolio's sub-type groups. */
+  n_sub_types: number;
+  /** 'YYYY-MM-DD' — the portfolio's latest replayed event date; null
+   *  when its rules have never triggered. */
+  latest_event: string | null;
+  /** 'YYYY-MM-DD HH24:MI' — the pipeline run that emitted the
+   *  portfolio's current groups. */
+  latest_built: string;
+}
+
+export interface SignalPortfoliosResponse {
+  sec_type: string;
+  /** Echoed portfolio_type filter (null = all types). */
+  portfolio_type: string | null;
+  portfolios: SignalPortfolio[];
+}
+
+/** The managed PORTFOLIO codes of a sec_type (optionally one
+ *  portfolio_type) — one row per code with its census. */
+export function fetchSignalPortfolios(
+  secType: string,
+  portfolioType?: string | null,
+): Promise<SignalPortfoliosResponse> {
+  const params = new URLSearchParams({ sec_type: secType });
+  if (portfolioType) params.set("portfolio_type", portfolioType);
+  return fetchJson<SignalPortfoliosResponse>(
+    `/api/live-data/trading-signals/portfolios?${params.toString()}`,
+  );
+}
+
+/** The latest history_portfolio_signal_performance snapshot of one
+ *  portfolio — the PORTFOLIO-LEVEL AUDIT (renamed 2026-10-20): WHAT
+ *  THE PORTFOLIO TOOK plus the COMBINED STATS of the individual
+ *  in-portfolio signals. The hedge type's claim: benefit kind
+ *  "max_drawdown_reduction" — max_dd {portfolio_pct, leg_a_pct,
+ *  leg_b_pct, worst_leg_pct, mean_leg_pct, reduction_vs_worst_pct,
+ *  reduction_vs_mean_pct (percentage points shallower than the legs'
+ *  drawdown; >= 0 = the hedge paid)} — the gate VERDICT digest
+ *  {metric, min_pp, passed, conf_scale} (conf_scale = the member
+ *  confidence cascade the passing portfolio's cells take) — the
+ *  members' combined stats (pooled: {n_cells, n_episodes,
+ *  dir_ave_pct, t_stat, hit_rate} — the member cells' own measures
+ *  meta-combined) — and the portfolio's dd lens {min20_pct, p10_pct,
+ *  baseline_pct, n} (the orchestrating cells' lenses combined). */
+export interface PortfolioBenefitSnapshot {
+  as_of: string | null;
+  pooled: Record<string, unknown> | null;
+  benefit: Record<string, unknown> | null;
+  gate: Record<string, unknown> | null;
+  dd: Record<string, unknown> | null;
+}
+
+/** One matched portfolio: its identity, census and its PORTFOLIO row
+ *  (2026-10-20's cell-level redesign — the sub-type groups merged
+ *  into the one row per portfolio: ALL member ids in the single
+ *  signal_rule_ids array, the shared construction + per-sub
+ *  coordination specs in rule_params, the portfolio-level gate
+ *  verdict + writing entries). */
+export interface PortfolioSignalGroup {
+  code: string;
+  portfolio_type: string;
+  n_rules: number;
+  n_valid: number;
+  n_sub_types: number;
+  latest_event: string | null;
+  latest_built: string;
+  /** The portfolio's member rule ids (the whole ids array — the
+   *  members' is_in_portfolio cells; pair with the rules response on
+   *  (signal_rule_id)). */
+  signal_rule_ids: number[];
+  /** The portfolio's GATE VERDICT: the audited benefit cleared the
+   *  portfolio gate AND at least one orchestrating composite cell's
+   *  own entry-rule verdict — the GATING conjunction (members see the
+   *  confidence increase only on is_valid portfolios). */
+  is_valid: boolean;
+  /** The orchestrating RuleEntry subclasses that wrote the portfolio
+   *  ('|'-joined). */
+  rule_entry: string;
+  rule_params: Record<string, unknown>;
+  performance: PortfolioBenefitSnapshot | null;
+  /** The portfolio type's knowledge document
+   *  (static.portfolio_signal_docs — {name, description, condition,
+   *  sources, principles, benefit}; the analysis_signal_docs
+   *  convention at the portfolio tier, 2026-10-20). */
+  document: Record<string, unknown>;
+}
+
+export interface PortfolioSignalsResponse {
+  sec_type: string;
+  /** Echoed requested codes (deduped, trimmed). */
+  codes: string[];
+  /** The portfolios whose legs sit in the codes (pair convention:
+   *  both 'A~B' legs in the list) — empty when none match. */
+  portfolios: PortfolioSignalGroup[];
+  /** The matched portfolios' FULL rule rows (the SignalRule shape;
+   *  rule.code identifies its portfolio — pairs with the
+   *  sub_types' signal_rule_ids on (code, signal_rule_id)). */
+  rules: SignalRule[];
+}
+
+/** The portfolios formed from the given codes (industry scope for
+ *  now — the hedge-pair legs are industry ids), with their sub-type
+ *  groups and full rule rows. */
+export function fetchPortfolioSignals(
+  secType: string,
+  codes: ReadonlyArray<string>,
+): Promise<PortfolioSignalsResponse> {
+  const params = new URLSearchParams({
+    sec_type: secType,
+    codes: codes.join(","),
+  });
+  return fetchJson<PortfolioSignalsResponse>(
+    `/api/live-data/trading-signals/portfolio?${params.toString()}`,
   );
 }
 

@@ -35,7 +35,8 @@ export function useSecBaselineBundle(
   const [error, setError] = useState<string | null>(null);
 
   // Fetch the security baseline bundle on mount and whenever code/sec_type
-  // changes.
+  // changes. Industry resolves to the composite IndexBundle (the endpoint
+  // assembles it from stats.industry_basic_stats).
   useEffect(() => {
     let cancelled = false;
     setLoading(true);

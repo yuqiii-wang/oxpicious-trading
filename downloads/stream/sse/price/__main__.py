@@ -85,10 +85,11 @@ from typing import Optional
 
 from downloads._common import (
     build_default_session,
+    build_headers_with_referer,
     is_trading_day,
+    service_urls,
     setup_logger,
 )
-from downloads._common.exchanges.sse import SSE_HEADERS
 from _common.db_commons import get_db_connection
 from _common.service_heartbeat import register_service
 from _common.study_and_select_stocks import (
@@ -153,6 +154,11 @@ for _s in (sys.stdout, sys.stderr):
 logger = setup_logger("stream_sse")
 
 SERVICE = "downloads.stream.sse.price"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SSE_HEADERS = build_headers_with_referer(URLS["referer"], extra={"Accept": "*/*"})
 
 
 def _emit_options_bars(conn, asset: OptionsStream, trade_date: date, verb: str):
@@ -462,7 +468,8 @@ def stream(
                     # Same isolation as _emit_options_bars: the options leg
                     # must not take the other assets' day down with it.
                     try:
-                        refresh_options_universe(options_asset, session, proxy)
+                        refresh_options_universe(options_asset, session, proxy,
+                                                 service=SERVICE)
                         load_options_oi_base(conn, options_asset, current_trade_date)
                     except Exception as e:  # noqa: BLE001
                         logger.error(
@@ -480,7 +487,7 @@ def stream(
                 try:
                     if asset.name == "options":
                         update_dt, snapshot = fetch_options_snapshot(
-                            session, asset.months, proxy=proxy,
+                            session, asset.months, service=SERVICE, proxy=proxy,
                         )
                     else:
                         update_dt, snapshot = fetch_snapshot(

@@ -104,6 +104,8 @@ export interface CodeTrendChartProps {
    *  auto-derived instrument/series keywords; identity-stable (memoized)
    *  like every other chart input. */
   aiSearchKeywords?: string[];
+  /** Insight-registry page for the AI-Ask metrics table (the signal code-trend passes one). */
+  aiAskInsight?: { tab: string; page: string };
   /** Inner-chart option pass-through (dividends, dataZoom, onDateClick, …). */
   chartOptions?: CodeTrendChartOptions;
   /** Fired after each load settles (success or empty; not on error). */

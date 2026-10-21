@@ -14,8 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": 3600,
-    "notes": "curl_cffi TLS impersonation (chrome/chrome110/chrome120/chrome124/edge101); linear backoff 30*(attempt+1); 403 retried on a different profile; host block window 1h.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "site": "https://www.pbc.gov.cn",
+      "central_index": "https://www.pbc.gov.cn/diaochatongjisi/116219/116319/index.html"
+    },
+    "notes": "curl_cffi TLS impersonation (chrome/chrome110/chrome120/chrome124/edge101); linear backoff 30*(attempt+1); 403 retried on a different profile; host block window 1h.; URLs + pacing (sleep/jitter/retries/backoff/read-timeout/block cooldown) migrated from code constants 2026-10-17",
     "source_ref": "downloads/macro/pboc/stats/_session.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

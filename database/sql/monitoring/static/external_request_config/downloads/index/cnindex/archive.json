@@ -14,8 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "CNIndex index archive (www.cnindex.com.cn).",
+    "settle_sleep_sec": null,
+    "urls": {
+      "cnindex_daily_api": "https://hq.cnindex.com.cn/market/market/getIndexDailyData",
+      "referer": "https://www.cnindex.com.cn/"
+    },
+    "notes": "CNIndex index archive (www.cnindex.com.cn).; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/index/cnindex/archive/_config.py; downloads/index/cnindex/archive/runner.py; downloads/index/cnindex/archive/_api.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

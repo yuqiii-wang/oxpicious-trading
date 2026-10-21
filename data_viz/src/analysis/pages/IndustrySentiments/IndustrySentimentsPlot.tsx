@@ -16,7 +16,7 @@ import {
 import ChartCard from "@/shared/components/ChartCard";
 import EChart from "@/shared/charts/EChart";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
-import { useAiAskAddon } from "@/shared/ai-ask";
+import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts, EChartsOption } from "echarts";
 import { buildGroupColorScheme } from "@/theme/group-colors";
@@ -255,6 +255,7 @@ export function IndustrySentimentsPlot({
   // modal and the LLM describe the view on screen.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.sentimentPlot,
       intro:
         `Industry sentiment for ${chartTitle}: member closes rebased to 100 × P_t/P_0 on a ` +
         "shared date axis; pool-size toggle isolates small/mid/large members; selected " +

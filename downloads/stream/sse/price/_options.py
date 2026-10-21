@@ -58,6 +58,11 @@ from downloads._common.exchanges.sse_options import (
 )
 from _common.db_commons import bulk_upsert
 
+# The stream service name — the sse_options helpers resolve their endpoint
+# URLs and the "options"-request-type pacing from this service's
+# external_request_config JSON row.
+SERVICE = "downloads.stream.sse.price"
+
 from ._csv_backfill import _extract_date_from_filename, _file_last_window
 from ._io import write_snapshot_csv
 from ._model import CLOSE_TIME, ceiling_5min
@@ -122,9 +127,9 @@ def refresh_options_universe(
     Called at startup and whenever the trade date rolls over (new contract
     listings / expiries). Returns True when the months map is usable.
     """
-    underlyings = fetch_underlyings(session, proxy=proxy)
-    months = fetch_expire_months(session, proxy=proxy)
-    contract_map = fetch_day_contract_map(session, proxy=proxy)
+    underlyings = fetch_underlyings(session, service=SERVICE, proxy=proxy)
+    months = fetch_expire_months(session, service=SERVICE, proxy=proxy)
+    contract_map = fetch_day_contract_map(session, proxy=proxy, service=SERVICE)
     if not months:
         logger.warning(
             "options universe refresh: no expiry months returned "
@@ -559,6 +564,7 @@ def run_options_eod_capture(
     session: requests.Session,
     conn,
     proxy: Optional[AntiBotProxy] = None,
+    service: str = "downloads.stream.sse.price",
 ) -> Tuple[int, int]:
     """Fetch the current tstyle state once and emit the 15:00 EOD bars.
 
@@ -575,7 +581,7 @@ def run_options_eod_capture(
         return 0, 0
 
     update_dt, snapshot = fetch_options_snapshot(
-        session, asset.months, proxy=proxy,
+        session, asset.months, service=service, proxy=proxy,
         inter_request_sec=TSTYLE_SWEEP_SLEEP_SEC,
     )
     if update_dt is None or not snapshot:

@@ -14,8 +14,14 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "PBoC repo news.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "site": "https://www.pbc.gov.cn",
+      "omo_transaction_list_base": "https://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125431/125475/",
+      "outright_repo_list_base": "https://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125431/5492845/"
+    },
+    "notes": "PBoC repo news.; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/macro/pboc/repo_news/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

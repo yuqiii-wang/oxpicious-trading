@@ -40,13 +40,36 @@ FORWARD_BLEND_WEIGHTS = (0.10, 0.15, 0.50, 0.15, 0.10)
 # a measured edge), sharp rises continue (the sell is EXIT TIMING for
 # longs — any non-negative edge qualifies); sells are structurally
 # thinner under positive drift. LOOSENED 2026-10-16 (the moderate step,
-# user-directed): buy bar 0.75% -> 0.25%, floors 4/3 -> 3/2 — measured
-# graduation on the starved watchlist ~176 cells at index scope, plus
-# the previously measured-out cells between 0.25% and 0.75% the bar cut
-# re-admits; the buy still requires a positive measured edge — the
-# asymmetry stands, at a lower bar
+# user-directed): buy bar 0.75% -> 0.25%, floors 4/3 -> 3/2. The FLOOR
+# stopped being a gate 2026-10-19 (user-directed): it no longer blocks
+# thin cells — it is the CONFIDENCE REFERENCE instead. A cell under its
+# floor trades at sample_scale = min(n / floor, 1) of the confidence
+# (the starvation wait logic retired); the dir_ave bar remains the only
+# verdict — a cell below it is measured-out and emits nothing
 GATE_DIR_AVE_MIN = {"buy": 0.0025, "sell": 0.0}
 SAMPLE_FLOOR = {"buy": 3, "sell": 2}
+
+# The PORTFOLIO TIER's gate + CONFIDENCE CASCADE (2026-10-20): a
+# portfolio group's own verdict axis is the BENEFIT it took (the hedge
+# type's claim: max drawdown reduction) — the group's gate is the
+# audited drawdown reduction vs the MEAN leg clearing the bar (the
+# worst-leg comparison is nearly automatic for any two-asset blend;
+# the mean is the honest bar). A group passes when the portfolio gate
+# AND the entry rules (at least one orchestrating composite cell's own
+# is_valid — the dir_ave verdict on the coordination itself) hold;
+# only then do the group's MEMBER cells see the cascade — their
+# confidence INCREASED by conf_scale = 1 + PF_CONF_FACTOR x
+# min(benefit_pp / PF_CONF_UNIT_PP, PF_CONF_CAP), the cell depth-scale
+# formula applied to the benefit depth (never a decrease: a failed
+# gate stamps scale 1.0). The scale rides the portfolio snapshots'
+# gate digest (history_portfolio_signal_performance); the live tier
+# reads it for the is_in_portfolio member cells of is_valid groups,
+# beside the starvation sample_scale.
+PF_GATE_METRIC = "max_dd_reduction_vs_mean"  # the portfolio gate's metric (the history_portfolio_signal_performance.gate digest mirror)
+PF_GATE_MIN_PP = 0.0      # the bar: reduction vs the MEAN leg, percentage points
+PF_CONF_UNIT_PP = 5.0     # the benefit depth normalizer: 5pp of drawdown reduction = 1 unit
+PF_CONF_FACTOR = 0.25     # the cascade confidence factor per unit (max x1.5 at the cap)
+PF_CONF_CAP = 2.0         # the cascade depth cap (the cell depth_cap precedent)
 
 # the POOLED EVIDENCE TIER (2026-10-16): the per-cell floors cannot
 # reach statistical significance — a typical index's per-event blend
@@ -59,11 +82,29 @@ SAMPLE_FLOOR = {"buy": 3, "sell": 2}
 # discipline, formalized into the gate). SELL stays cell-gated only
 # (exit timing — the equity asymmetry). A pooled FAILURE drops the
 # buy side's trading rows and replayed history for that run
-# (measured-out semantics); the starved wait population is unchanged.
+# (measured-out semantics) — since the 2026-10-19 starvation retreat
+# there is no wait population to survive the demotion.
 POOLED_DIR_AVE_MIN = 0.0025   # the pooled bar mirrors the cell bar
 POOLED_T_STAT_MIN = 1.0       # one-sided ~84% — honest at small n
-POOLED_MIN_N = 10             # below this the side has no claim to test
+POOLED_MIN_N = 10             # the FULL-CONFIDENCE reference (the
+                              # 2026-10-19 pooled starvation retreat: n
+                              # between POOLED_TRADE_FLOOR and this
+                              # trades at min(n / this, 1) of the
+                              # confidence — see POOLED_TRADE_FLOOR)
 POOLED_YEAR_MIN_N = 5         # a year counts toward sign consistency
+# the POOLED STARVATION RETREAT (2026-10-19, user-directed — the
+# per-cell starvation retreat one level up): the pooled n floor above
+# stopped BLOCKING a statistically-significant side. A BUY population
+# whose t-stat clears POOLED_T_STAT_MIN, whose mean clears the bar and
+# whose measurable years are sign-majority positive TRADES at the
+# pooled completeness scale min(n / POOLED_MIN_N, 1) of the confidence
+# (the options families' 3-code universes pinned every strong crisis
+# population under n=10: the 2026-10-19 rebuild measured ow_put buy
+# n=7 +6.17% t=3.96 and ovix_spike n=9 +3.33% t=4.55 — both REJECTED
+# on n alone). Below POOLED_TRADE_FLOOR the side still has no claim at
+# all (demoted, emits nothing) — and the t/bar/year legs stay verdict
+# legs; only n became a confidence reference.
+POOLED_TRADE_FLOOR = 3
 
 # one signal per EPISODE: the episode anatomy constants
 # (REENTRY_EXIT_DAYS and the tail-episode parameters) moved 2026-10-15
@@ -144,10 +185,34 @@ MOMENTUM_BAR_MIN_PERIODS = 255
 # ---------------------------------------------------------------------------
 # options_wall — the VRP-gated OI-wall family
 # ---------------------------------------------------------------------------
-OW_BREACH_WIDTH_PCT = 0.25      # the meaningful-breach bar (pct of the wall)
-OW_VRP_PCTL_MIN = 0.80          # implied vol30 in its trailing top quintile vs realized
+# The breach width was a candidate grid {(0.25, 0.10), 2026-10-19} until
+# the sparsity study COLLAPSED it (docs/
+# options_wall_sparsity_study_2026-10-19.md): the wall-distance
+# distribution is lumpy (p1 -0.30% -> p5 +4.90%) and the dominant
+# wall's outer edge sits median ~12% from spot, so breach-day counts
+# were IDENTICAL across widths (put 41/41/37, call 15/15/14 over
+# {0.05, 0.10, 0.25}) — the width axis is not a coverage lever. The
+# single shallowest measured width stands. (The sub_type NAME's 025 is
+# historical label vocabulary only — the bar lives in bar_def.)
+OW_BREACH_WIDTH_PCTS = (0.10,)
+# the put-side VRP gate stays THE gate (put breaches never emit
+# ungated — the _rej twin records the fail population). The bar
+# LOOSENED twice on measured steps: 0.80 -> 0.70 (2026-10-19, the
+# gated population was EMPTY at the 80th) -> 0.60 (the same-day
+# sparsity study: p70 kept only 9/41 breach days — breach days' own
+# vrp_ratio runs LOWER than typical days, realized reprices faster
+# than implied — and p60 adds one event with the pooled edge intact
+# +4.04%; p50 halves it, do not go below 0.60 without new evidence)
+OW_VRP_PCTL_MIN = 0.60          # implied vol30 in its trailing top 40% vs realized
 OW_VRP_REALIZED_WINDOW = 20     # the realized-vol leg (rolling σ of spot returns)
 OW_VRP_PCTL_WINDOW = 255        # the VRP ratio's trailing percentile window
+# the VRP bar's WARMUP (the sparsity study's main lever): the
+# min_periods=255 window erased whole codes' breach history — 000016's
+# 10-of-11 put breach days fell in the NaN-bar warmup and its put side
+# was structurally empty. 120 and 60 measured IDENTICALLY (the rescued
+# 000016 population: n=6 +0.73% hit 83% — a passing buy cell; the
+# gated put pool 9 -> 15) — 120 is the more conservative warmup.
+OW_VRP_PCTL_MIN_PERIODS = 120
 OW_REENTRY_EXIT_DAYS = 0        # strict consecutive-day episodes
 
 # ---------------------------------------------------------------------------
@@ -160,7 +225,12 @@ OW_REENTRY_EXIT_DAYS = 0        # strict consecutive-day episodes
 # linearly interpolated per code onto every session IN-ENGINE — never
 # stored back to the DB. The stored grid never feeds a day-over-day
 # crossing directly.
-OVIX_CORR_BAR = -0.80           # the deep-fear corr20 tail (~5th pctile)
+OVIX_CORR_BAR = -0.75           # the deep-fear corr20 tail; LOOSENED 2026-10-19
+                                # from -0.80 (user-directed) — the measured
+                                # ovix_spike_wide coverage play (2026-10-16
+                                # study: pooled n=21 dir_ave +1.17% positive)
+                                # and the 000852 Feb-2024 V-spike crisis whose
+                                # interp corr bottomed -0.74, just past the old bar
 OVIX_CORR_WINDOW = 20           # the published corr_20d session window
 OVIX_SPIKE_SLOPE = 0.10         # 5d vol slope > +10% (the panic spike)
 OVIX_HIVOL_Z = 1.0              # the vol-level z252 leg of the interaction
@@ -223,11 +293,14 @@ AMT_CLIMAX_EXTREME = 2.5     # ratio >= 2.5x — the climax grade
 # ovix_atr_break BUY: the spot day-return in close-to-close ATR units
 # beyond the k bar while the vol index slope5 fires — the 2026-10-15
 # grind-down class (fast vol repricing from a LOW base, where the corr
-# leg (-0.80) and the vol-ATH leg (+5% over the 120d max) both stay
+# leg (-0.75) and the vol-ATH leg (+5% over the 120d max) both stay
 # unmet). The ATR is close-to-close (analysis.options_spot_daily has no
-# OHLC); k is SELF-ADAPTIVE per cell from the candidate grid.
+# OHLC); k is SELF-ADAPTIVE per cell from the candidate grid. The
+# LOOSENED 2026-10-19 grid adds k=1.5 — the shallowest candidate the
+# gate + pooled tier still judge on evidence (the measured 2026-10-15
+# class fired at -2.51 ATR, so 1.5 covers the milder expansions).
 OVIX_ATR_WINDOW = 20         # the |ret| mean window (the ATR analog)
-OVIX_ATR_KS = (2.0, 2.5, 3.0)
+OVIX_ATR_KS = (1.5, 2.0, 2.5, 3.0)
 
 # ---------------------------------------------------------------------------
 # ma_cross — the market-level breadth rules (2026-10-16)
@@ -247,6 +320,99 @@ BREADTH_MIN_CODES = 50       # the day's adv+dec floor for a valid state
 BREADTH_9TO1_RATIO = 9.0
 
 # ---------------------------------------------------------------------------
+# hedge_pairs — the long–long anti-correlated pair family (2026-10-18;
+# REWORKED same day — the market-decoupling pass)
+# ---------------------------------------------------------------------------
+# The online hedge-portfolio study's pair-native discoveries over THREE
+# source curves: the two industries' composite closes
+# (stats.industry_basic_stats mean_close, pool 'all') and the broad-
+# market benchmark close (stats.index_basic_stats — the OFFSET-
+# CORRELATION market leg, never a directional gate). The pair universe
+# is DATA-DRIVEN — the top offset-opposite industry pairs by the
+# trailing 255d opposite score of analysis_composites.
+# industry_corr_benchmark_offsets (each industry in at most one pair)
+# plus the DIV_GENERAL~TECH_GENERAL showcase pair; the code is the
+# composite 'A~B' (lexicographic, mirroring the offsets table's
+# dedup). The long–long portfolio is INVERSE-VOL weighted (the
+# study's robust choice when the rho estimate is noisy): w_A =
+# sigma_B / (sigma_A + sigma_B) over the 60d window, weights lagged
+# one row, portfolio value = 100 * exp(cumsum(log1p(w_A*a + w_B*b))).
+#
+# THE REWORK (2026-10-18, same day): the first cut gated entry on the
+# broad-market drawdown with both legs at a same-day MA20 σ-depth —
+# every pair fired the SAME action on the SAME crash dates (the family
+# traded the market, not the pairs) and the signal count was noise.
+# The legs' cheap/expensive gauge is now the SHORT-TERM-TECH signal
+# itself (the mov_rsi family's Wilder RSI + per-leg adaptive
+# percentile tails — the exact kernel analysis.mov_ave_rsi runs,
+# reused verbatim), and the two legs' capitulation signals only need
+# to be ROUGHLY NEARBY — within HP_ENTRY_WITNESS_WINDOW traded days of
+# each other, never the exact date. No market-drawdown gates remain.
+HP_MARKET_CODE = "000300"        # the offset-corr market leg (rho_off only)
+# the universe covers ALL industries (2026-10-18 all-industries study):
+# greedy disjoint selection over EVERY pair whose trailing 255d offset
+# corr is negative (score > 0.5) — no pair-count cap. Industries whose
+# every negative-corr partner is already paired stay out (logged); the
+# hp_stop_regime exit covers pairs whose rho drifts later.
+HP_MIN_PAIR_SCORE = 0.5          # floor: trailing opposite score (corr < 0)
+HP_SHOWCASE_PAIR = ("DIV_GENERAL", "TECH_GENERAL")
+HP_OFFSETS_TABLE = "analysis_composites.industry_corr_benchmark_offsets"
+HP_OFFSETS_POOL = 3              # pool_size 'all' (static.label_dim)
+HP_OFFSETS_INTERVAL = 20
+HP_OPPOSITE_SCORE_COL = "opposite_score_ma255_255d"
+HP_RATIO_Z_WINDOW = 60           # the pair ratio ln(A/B) z window
+HP_VOL_WINDOW = 60               # inverse-vol weights + offset-corr window
+HP_HARVEST_ZS = (1.5, 2.0)       # |ratio z| bars (sell the high leg)
+# the MOMENTUM TILT's divergence grid (2026-10-20 spread-rotation
+# study, docs/hedge_pairs_spread_rotation_study_2026-10-20.md): the
+# harvest's OPPOSITE pair — at |ratio z| >= k the measured drift is
+# CONTINUATION (the strong leg's fwd +0.55/+0.37/+0.39% across the
+# grid; the toward-strong tilt the only one that improved BOTH lenses,
+# dd +0.16..+0.90pp on 62-67% of events). k = the run_cells candidate
+# set (the per-cell winner picks the bar); the mean-reversion
+# direction measured negative per-open under every stop rule.
+HP_MOM_ZS = (1.5, 2.0, 2.5)      # |ratio z| bars (buy strong / sell lag)
+HP_HEDGEABLE_RHO = -0.30         # offset corr at/below = hedgeable
+HP_REGIME_BROKE_RHO = 0.0        # offset corr at/above = regime broke
+HP_REGIME_WITNESS_WINDOW = 60    # days back a hedgeable reading witnesses a break
+# the legs' SHORT-TERM-TECH gauge (the mov_rsi family's conventions,
+# verbatim): Wilder RSI window, the nested percentile tail grid (the
+# run_cells candidate loop picks the per-cell winner), the per-leg
+# adaptive bar window (trailing 10y, one-row-shifted — no look-ahead)
+HP_LEG_RSI_WINDOW = 14
+HP_LEG_TAIL_PCTS = (1, 2, 3)
+HP_LEG_BAR_WINDOW_DAYS = 2550
+HP_LEG_BAR_MIN_PERIODS = 255
+# the entry's PAIRING window: the two legs' capitulation signals count
+# as a pair when they sit within this many of the leg's OWN traded
+# days of each other (the trigger fires the day the pair completes)
+HP_ENTRY_WITNESS_WINDOW = 5
+
+# The 2026-10-19 more-triggers graduates (docs/
+# hedge_pairs_more_triggers_study_2026-10-19.md — the measured study
+# behind every bar): the rf washout entry's W-window candidate grid
+# (both legs' W-day Donchian-floor breakdown witnesses alive within
+# the pairing window; each window its OWN population — the rf_break
+# no-carve precedent, carving starves the mid windows; ONE sub since
+# the 2026-10-21 dedup — the window is a run_cells candidate, the
+# per-cell winner picks it), the market-witness tail (the RSI
+# lo-tail whose witness augments wash120 into the trio form: the
+# mkt-augmented wash measured the strongest graduate +2.58% t=8.94,
+# forward worst-trough -1.79% vs the -3.44% all-days baseline), the
+# deep hedgeable rho bar (the grid measured -0.40 flat / -0.50 the
+# bar / -0.60 weaker — regime_flip's deep TRADING anchor; buying the
+# pair when the covariance cancellation works hardest is the purest
+# negative-corr exploitation), and the catch-up reclaim's MA window
+# (MA20 measured worse on BOTH lenses — 4/7 years and a trough deeper
+# than baseline; the |ratio_z| >= 1 conditioning adds nothing, the
+# dip-in-uptrend precedent)
+HP_WASH_WINDOWS = (60, 120, 255)
+HP_WASH_MKT_WINDOW = 120
+HP_WASH_MKT_TAIL_PCT = 3
+HP_RHO_DEEP = -0.50
+HP_RECLAIM_MA_WINDOW = 60
+
+# ---------------------------------------------------------------------------
 # population universes
 # ---------------------------------------------------------------------------
 # the mandatory study scope (analysis/strategy: industries + these 10
@@ -259,4 +425,7 @@ STUDY_INDEX_CODES = (
 # underlyings from stats.options_terms, resolved per family at run time
 # (fetch/inputs._shared.resolve_options_universe; options_wall drops the
 # SSE ETF underlyings, whose chain OI is an accumulated-volume
-# estimator). The study indices carry no options data.
+# estimator). The study indices carry no options data. The hedge_pairs
+# universe is likewise data-driven — the top offset-opposite industry
+# pairs from the offsets table (fetch/inputs._hedge_pairs.
+# resolve_hedge_pair_universe; --codes is ignored for the family).

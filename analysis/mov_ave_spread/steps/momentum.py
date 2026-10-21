@@ -105,6 +105,7 @@ from _common.labels import SEC_TYPE_LABEL
 from analysis._common import upsert_analysis_identity
 from analysis.mov_ave_spread._common import null_if_overflow_counted
 from analysis.mov_ave_spread._common.steps import (
+    diff_write_scope_async,
     infer_sec_types,
     sec_type_code,
 )
@@ -186,7 +187,10 @@ async def _fetch_market_regimes(conn, sec_type: str) -> pd.DataFrame:
     """Fetch the sec_type's DAILY market-regime states — one row per
     (code, date) from stats.market_regimes, with the `vol` evidence
     column (sqrt(EWMA(ret_1d^2, span=20))) the adaptive lookbacks derive
-    from. date as datetime64[us] (the merge alignment convention)."""
+    from. date as datetime64[us] (the merge alignment convention). The
+    registry's sec_type column stores its static.label_dim SMALLINT code
+    (the label-code contract) — bind the code, keep the label string as
+    the loop/log vocabulary."""
     rows = await conn.fetch(
         """
         SELECT m.code,
@@ -197,7 +201,7 @@ async def _fetch_market_regimes(conn, sec_type: str) -> pd.DataFrame:
         WHERE m.sec_type = $1
         ORDER BY m.code, m.date ASC
         """,
-        sec_type,
+        sec_type_code(sec_type),
     )
     if not rows:
         return pd.DataFrame(columns=_REGIME_COLUMNS)
@@ -571,15 +575,26 @@ async def run_momentum(
         logger.info(f"    -> single-code mode: deleted {n_del:,} momentum "
               f"rows for ({sec_types[0]}, {code_filter})")
     elif not force:
-        # Incremental run with missing dates: the wholesale rebuild needs
-        # the purge (force runs reuse the parent's upfront purge).
-        for st in sec_types:
-            n_del = await chunked_purge_async(
-                conn, MOMENTUM_TABLE,
-                where_sql="sec_type = $1", params=(sec_type_code(st),),
-            )
-            logger.info(f"    -> deleted {n_del:,} {st} momentum rows "
-                  f"(wholesale rebuild)")
+        # Incremental run with missing dates: recompute the FULL history
+        # (the rolling windows need it), then a diff write — only rows
+        # affected by the new dates are upserted and vanished PKs
+        # deleted. History rows freeze once their episodes close, so the
+        # nightly write volume is the tail, not the table.
+        n_ins, _ = await diff_write_scope_async(
+            conn, table=MOMENTUM_TABLE, frame=emit,
+            columns=MOMENTUM_COLUMNS,
+            key_cols=("code", "sec_type", "date"),
+            sec_types=sec_types, label="momentum", insert_only=True)
+        logger.info(f"    -> insert-only write: {n_ins:,} new rows "
+              f"inserted, existing rows frozen")
+        del frame, emit
+        await upsert_analysis_identity(
+            conn,
+            name=MOMENTUM_ANALYSIS_NAME,
+            detail_name="mov_ave_momentum",
+            description=MOMENTUM_DESCRIPTION,
+        )
+        return
     total = await csv_copy_frame_chunked_async(
         conn, MOMENTUM_TABLE, emit,
         partition_key="code",

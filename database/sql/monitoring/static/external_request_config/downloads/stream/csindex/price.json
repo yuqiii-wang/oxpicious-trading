@@ -1,6 +1,29 @@
 [
   {
     "service": "downloads.stream.csindex.price",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 60,
+    "sleep_jitter": 0.5,
+    "poll_interval_sec": null,
+    "max_retries": null,
+    "retry_backoff_sec": null,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": null,
+    "settle_sleep_sec": null,
+    "urls": {
+      "base": "https://www.csindex.com.cn"
+    },
+    "notes": "csindex.com.cn endpoint inventory (default request_type; the intraday fetch itself rides the downloads.index.csindex.quote service); pacing stays on the page row. URLs migrated from code constants 2026-10-17",
+    "source_ref": "downloads/stream/csindex/price/__main__.py; downloads/stream/csindex/price/_fetch.py",
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
+  },
+  {
+    "service": "downloads.stream.csindex.price",
     "request_type": "page",
     "resource_type": 0,
     "sleep_sec": 20,

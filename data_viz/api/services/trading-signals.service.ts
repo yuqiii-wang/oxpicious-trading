@@ -25,7 +25,11 @@
 //    marker.
 // ---------------------------------------------------------------------------
 import { queryRows, formatDate } from "./db.service.js";
-import { labelDecodeSql, LABEL_CODE } from "./label-codes.js";
+import {
+  labelDecodeSql,
+  LABEL_CODE,
+  decodeLabel,
+} from "./label-codes.js";
 import type { QueryResultRow } from "pg";
 
 /** One menu entry: a signal family + window (e.g. mov_rsi / rsi14). */
@@ -139,8 +143,9 @@ export async function fetchTradingSignalConfigs(
        -- general families (mov_rsi / bollinger / ma_cross)
        AND t.signal_type <> ${LABEL_CODE.signal_type.options_wall}
        AND t.signal_type <> ${LABEL_CODE.signal_type.options_vix}
-       -- wait rows are not trading yet (the VRP twin / the
-       -- sample-starved cells, 2026-10-16): the menu contract stays
+       -- wait rows are observational only since 2026-10-19 (the
+       -- ungated VRP twin; the starvation wait era ended — under-floor
+       -- cells trade at a reduced confidence): the menu contract stays
        -- "at least one GATE-PASSING cell"
        AND t.action <> ${LABEL_CODE.action.wait}
      GROUP BY t.signal_type, t.signal_sub_type
@@ -170,7 +175,7 @@ const BASIC_STATS_TABLE: Record<string, string> = {
 /** One day's triggered signals for a sec_type, confidence DESC then time
  *  DESC — one row per event (is_ohlcv_boosted is the retired boost-twin
  *  marker: FALSE everywhere since the 2026-10-16 retirement — the
- *  boost's tuned confidence lives on signal_rules.ohlcv_boost_conf)
+ *  boost's tuned confidence lives on the performance snapshots)
  *  + the event's episode-pass attribute (is_typical; no toggle filters
  *  on it any more; a live tick winning a day inherits its history
  *  anchor's stamp, null when no stamped anchor exists). Two source
@@ -375,9 +380,9 @@ export async function isTradingSignalComputeEligible(
         EXISTS (SELECT 1 FROM analysis_signals.signal_rules
                 WHERE sec_type = ${LABEL_CODE.sec_type[st]})
         AND EXISTS (SELECT 1 FROM ${BASIC_STATS_TABLE[st]!}
-                    WHERE date = $2::date AND close IS NOT NULL)
+                    WHERE date = $1::date AND close IS NOT NULL)
      ) AS eligible`,
-    [st, date],
+    [date],
   );
   return rows[0]?.eligible === true;
 }
@@ -404,7 +409,7 @@ export interface TradingSignalHistoryResult {
  *      rolling latest owns [Jan 1, its key]; 15:00 day-close anchors),
  *      one population per event since the boost twins' retirement
  *      (is_ohlcv_boosted FALSE everywhere; the boost's tuned confidence
- *      lives on signal_rules.ohlcv_boost_conf) + the day's episode-pass
+ *      lives on the performance snapshots) + the day's episode-pass
  *      attribute (is_typical TRUE typical / FALSE re-entry / NULL
  *      unclassified — no toggle filters on it any more),
  *    • live.live_signals — the RECENT 20-TRADING-DAY SLICE ONLY: the
@@ -530,7 +535,7 @@ export async function fetchTradingSignalHistory(
         -- tier (15:00 day-close anchors), one population per event since
         -- the boost twins' retirement (is_ohlcv_boosted FALSE everywhere
         -- — the boost's tuned confidence lives on signal_rules.
-        -- ohlcv_boost_conf); is_typical TRUE = the typical pass, FALSE =
+        -- the performance snapshots); is_typical TRUE = the typical pass, FALSE =
         -- the re-entry pass, NULL = the family does not classify passes
         -- (no toggle filters on it any more). The rules-era table stores
         -- the crossed cell bar as signal_reference — the legacy response
@@ -644,16 +649,28 @@ export async function fetchTradingSignalHistory(
 // ---------------------------------------------------------------------------
 
 /** One RULE CELL row of the code (analysis_signals.signal_rules — the
- *  rules tier, 2026-10-15): the self-adaptive prepared parameters the
- *  engine measured for THIS (code, config, trend, regime, action) cell
- *  on the code's own history, plus the family knowledge document read
- *  from the repo's static template (the DB stores no document).
+ *  rules tier, 2026-10-15): the CONSTANT rule definition the engine
+ *  prepared for THIS (code, config, trend, regime, action) cell, plus
+ *  the family knowledge document read from the repo's static template
+ *  (the DB stores no document). The MEASURED items — the cell's OWN
+ *  evidence measure block — live in
+ *  analysis_signals.history_signal_performance as dated daily
+ *  snapshots (the 2026-10-19 split, slimmed 2026-10-20: the pooled
+ *  tier / gate digest / boost conf / cascade moved to the portfolio
+ *  tier); the response re-merges each cell's LATEST snapshot at this
+ *  boundary, so the rule_params shape the UI consumes is unchanged.
  *  The history table is populated by REPLAYING these cells. */
 export interface SignalRuleRow {
   code: string;
   sec_type: string;
   signal_type: string;
   signal_sub_type: string;
+  /** The rule row's SURROGATE ID (signal_rule_id_seq, 2026-10-18) —
+   *  the one-to-one join key analysis_signals.portfolio_signal_rules
+   *  manages the rule cell through. Identifies the row EMISSION: the
+   *  rules tier is current-state (a family's scope is wiped and
+   *  re-inserted every pipeline run), so ids churn with it. */
+  signal_rule_id: number;
   /** top / bottom / rise / fall / all / unknown — the code's own trend
    *  classification in force for the cell (the per-PK asymmetry axis),
    *  decoded from the label code. */
@@ -662,35 +679,116 @@ export interface SignalRuleRow {
   regime_state: string;
   /** buy / sell / wait — decoded. */
   action: string;
-  /** The per-cell GATE VERDICT (denormalized rule_params.gate.passed):
-   *  TRUE iff the cell's measured future returns cleared its side's
-   *  dir_ave bar at the sample floor (buy >= 0.25% @ n >= 3 / sell >=
-   *  0% @ n >= 2). FALSE = observational (the starved wait watchlist /
-   *  the ungated VRP twin) — negative-future-return evidence is
-   *  discouraged: it never validates, never trades, never fires live. */
+  /** The per-cell GATE VERDICT (the unified dir_ave test): TRUE iff
+   *  the cell's measured future returns cleared its side's dir_ave bar
+   *  (buy >= 0.25% / sell >= 0%). The sample floor is NOT part of the
+   *  verdict since 2026-10-19 — a cell under its floor trades at the
+   *  starvation confidence scale (min(n/floor, 1), recomputed by
+   *  readers from the latest snapshot's n_episodes + the rule's
+   *  gate.sample_floor). FALSE = observational (the ungated VRP twin)
+   *  — negative-future-return evidence is discouraged: it never
+   *  validates, never trades, never fires live. */
   is_valid: boolean;
+  /** Whether the cell is a MEMBER of a portfolio group (2026-10-20,
+   *  the cell-level-signals-in-portfolio redesign): its
+   *  signal_rule_id rides some portfolio_signal_rules.signal_rule_ids
+   *  array (the hedge sourced components + the pair-native
+   *  self-members; the orchestrating composites carry FALSE — the
+   *  group IS the composite). Membership only — the cell's own test
+   *  stays the unified dir_ave gate; the portfolio tier's combined
+   *  audit lives in history_portfolio_signal_performance. */
+  is_in_portfolio: boolean;
   /** The engine entry that runs the rule (the RuleEntry subclass name
    *  under analysis/analysis_signals/engines/signal_families/). */
   rule_entry: string;
-  /** The SELF-ADAPTIVE prepared parameters: the breach bar def, the
-   *  episode merge K, the gate numbers, the measured evidence
-   *  (n_episodes, dir_ave_pct, dir_std_pct, t_stat, hit_rate), the
-   *  confidence scale and — on trading rows — the POOLED EVIDENCE
-   *  block (the (sub_type, action) pooled n / t-stat / hit, the
-   *  per-horizon decay curve, the expanding-year legs; the two-tier
-   *  gate's statistical layer, 2026-10-16). */
+  /** The CONSTANT rule definition (bar def, episode merge K, reentry
+   *  flags, gate bar constants, confidence scale) MERGED at this
+   *  boundary with the latest performance snapshot's measured items —
+   *  measure (n_episodes, dir_ave_pct, dir_std_pct, t_stat, hit_rate)
+   *  and confidence.base_pct (= the measured dir_ave). */
   rule_params: Record<string, unknown>;
-  /** The ohlcv boost's trust-weighted confidence BASE for the cell
-   *  (pct — the same scale as rule_params.confidence.base_pct):
-   *  sum(w*y)/sum(w) over the cell's measurable trigger days. NULL =
-   *  the side boosted nothing (ship gates failed / family not opted
-   *  in) — an honest absence, never a gate. */
-  ohlcv_boost_conf: number | null;
-  /** The family knowledge document (static.analysis_signal_docs —
-   *  the knowledge seeded from database/sql/static/
+  /** 'YYYY-MM-DD' — the as-of date of the merged performance
+   *  snapshot (the frame data horizon the cell was last measured
+   *  through); null when no snapshot exists (pre-migration residue). */
+  performance_as_of: string | null;
+  /** The family knowledge document (static.analysis_signal_docs — the
+   *  knowledge seeded from database/sql/static/
    *  analysis_signal_docs/, joined per family). */
   document: Record<string, unknown>;
   created_at: string;
+}
+
+/** The latest performance snapshot's measured columns (the LATERAL
+ *  join's payload) — peeled by mergeRulePerformance; never part of the
+ *  wire contract (performance_as_of is the one field promoted onto the
+ *  row). Slimmed 2026-10-20: the cell's OWN measure block only (the
+ *  pooled tier / gate digest / boost conf / dd / cascade live on the
+ *  portfolio tier). */
+interface PerformanceSnapshotRow {
+  perf_date: string | null;
+  perf_n_episodes: number | null;
+  perf_dir_ave_pct: number | null;
+  perf_dir_std_pct: number | null;
+  perf_t_stat: number | null;
+  perf_hit_rate: number | null;
+}
+
+/** The LATERAL fragment joining each rule cell's LATEST
+ *  history_signal_performance snapshot (the 2026-10-19 split: the
+ *  stored rule_params are constant-only; the measured items are dated
+ *  daily snapshots). PK-equi-joined on the full cell key, newest date
+ *  first — partition-pruned by the code-leading PK. Alias: `perf`. */
+const LATEST_PERFORMANCE_JOIN = `
+     LEFT JOIN LATERAL (
+        SELECT to_char(p.date, 'YYYY-MM-DD') AS perf_date,
+               p.n_episodes        AS perf_n_episodes,
+               p.dir_ave_pct       AS perf_dir_ave_pct,
+               p.dir_std_pct       AS perf_dir_std_pct,
+               p.t_stat            AS perf_t_stat,
+               p.hit_rate          AS perf_hit_rate
+        FROM analysis_signals.history_signal_performance p
+        WHERE p.code = r.code AND p.sec_type = r.sec_type
+          AND p.signal_type = r.signal_type
+          AND p.signal_sub_type = r.signal_sub_type
+          AND p.trend = r.trend
+          AND p.regime_state = r.regime_state
+          AND p.action = r.action
+        ORDER BY p.date DESC LIMIT 1
+     ) perf ON TRUE`;
+
+/** Merge a cell's latest performance snapshot into its rule row: the
+ *  measured items ride rule_params (measure /
+ *  confidence.base_pct) — the rules-era response shape the UI
+ *  consumes, served from the split store. A row without a snapshot
+ *  (pre-migration residue) degrades to constants-only. */
+function mergeRulePerformance(
+  row: SignalRuleRow & QueryResultRow & PerformanceSnapshotRow,
+): SignalRuleRow {
+  const params: Record<string, unknown> = {
+    ...(row.rule_params ?? {}),
+  };
+  if (row.perf_n_episodes != null) {
+    params.measure = {
+      n_episodes: row.perf_n_episodes,
+      dir_ave_pct: row.perf_dir_ave_pct,
+      dir_std_pct: row.perf_dir_std_pct,
+      t_stat: row.perf_t_stat,
+      hit_rate: row.perf_hit_rate,
+    };
+    params.confidence = {
+      ...(params.confidence as Record<string, unknown> ?? {}),
+      base_pct: row.perf_dir_ave_pct,
+    };
+  }
+  const {
+    perf_date, perf_n_episodes, perf_dir_ave_pct, perf_dir_std_pct,
+    perf_t_stat, perf_hit_rate,
+    ...rest
+  } = row;
+  void perf_n_episodes; void perf_dir_ave_pct; void perf_dir_std_pct;
+  void perf_t_stat; void perf_hit_rate;
+  return { ...rest, rule_params: params,
+           performance_as_of: perf_date };
 }
 
 /** The code's rule cells — every (sub signal, trend, regime, action)
@@ -711,8 +809,13 @@ export async function fetchSignalRules(
   // document joins from static.analysis_signal_docs (one row per family —
   // byte-identical across a family's cells, so it lives there, not on
   // signal_rules); an unseeded family serves an empty document (the
-  // rules panel degrades to the params digest)
-  return queryRows<SignalRuleRow & QueryResultRow>(
+  // rules panel degrades to the params digest). The latest performance
+  // snapshot (the measured half — the 2026-10-19 split) laterally
+  // joins per cell and mergeRulePerformance folds it back into the
+  // response's rule_params shape.
+  const rows = await queryRows<
+    SignalRuleRow & QueryResultRow & PerformanceSnapshotRow
+  >(
     `SELECT r.code,
             ${labelDecodeSql("sec_type", "r.sec_type")} AS sec_type,
             ${labelDecodeSql("signal_type", "r.signal_type")} AS signal_type,
@@ -720,20 +823,496 @@ export async function fetchSignalRules(
             ${labelDecodeSql("trend", "r.trend")} AS trend,
             ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
             ${labelDecodeSql("action", "r.action")} AS action,
+            r.signal_rule_id::float8 AS signal_rule_id,
             r.is_valid,
+            r.is_in_portfolio,
             r.rule_entry,
             r.rule_params,
-            r.ohlcv_boost_conf,
+            perf.perf_date,
+            perf.perf_n_episodes, perf.perf_dir_ave_pct,
+            perf.perf_dir_std_pct, perf.perf_t_stat,
+            perf.perf_hit_rate,
             COALESCE(d.document, '{}'::jsonb) AS document,
             to_char(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at
      FROM analysis_signals.signal_rules r
      LEFT JOIN static.analysis_signal_docs d
-            ON d.signal_type = r.signal_type
+            ON d.signal_type = r.signal_type${LATEST_PERFORMANCE_JOIN}
      WHERE r.sec_type = ${LABEL_CODE.sec_type[st]} AND r.code = $1
      ORDER BY r.signal_type, r.signal_sub_type, r.trend,
               r.regime_state, r.action`,
     [c],
   );
+  return rows.map(mergeRulePerformance);
+}
+
+// ----------------------------------------------------------------------------
+//  fetchSignalPortfolios / fetchPortfolioSignals — the PORTFOLIO tier
+//  (2026-10-18; simplified 2026-10-20's cell-level redesign):
+//  analysis_signals.portfolio_signal_rules holds ONE ROW PER (code,
+//  portfolio_type) whose signal_rule_ids BIGINT[] carries ALL the
+//  portfolio's member rule-row surrogate ids ACROSS SUB TYPES — =
+//  ANY(ids) finds the portfolio's member cells, exactly the
+//  is_in_portfolio cells — and whose rule_params JSONB carries the
+//  CONSTANT portfolio construction (legs / market / aim / weighting +
+//  the per-sub coordination specs under subs).
+//  analysis_signals.history_portfolio_signal_performance (renamed
+//  2026-10-20) holds the dated PORTFOLIO AUDIT per portfolio — WHAT
+//  THE PORTFOLIO TOOK (the hedge type's claim: max drawdown reduction)
+//  AND the COMBINED STATS of the individual in-portfolio signals (the
+//  pooled block — the members' own measures meta-combined);
+//  fetchPortfolioSignals laterally joins each portfolio's LATEST
+//  snapshot into its response, plus the type's knowledge document
+//  (static.portfolio_signal_docs — the analysis_signal_docs
+//  convention at the portfolio tier) on every matched portfolio.
+//  portfolio_type is the tier's OWN vocabulary (0 neg_corr_hedge_pair
+//  — the two-leg 'A~B' long–long negatively-correlated hedge pair).
+//  fetchSignalPortfolios serves the per-code roster census;
+//  fetchPortfolioSignals matches portfolios by the REQUESTED CODES
+//  (the pair types: both legs of 'A~B' must sit in the codes list)
+//  and expands the ids to full rule rows.
+// ----------------------------------------------------------------------------
+
+/** One managed PORTFOLIO code's census (the roster row). */
+export interface SignalPortfolioRow {
+  code: string;
+  /** The portfolio tier's own vocabulary, decoded (today always
+   *  neg_corr_hedge_pair — the two-leg 'A~B' hedge pair). */
+  portfolio_type: string;
+  /** The portfolio's member rule cells (its whole ids array). */
+  n_rules: number;
+  /** The portfolio's gate-passed (is_valid) member cells. */
+  n_valid: number;
+  /** The portfolio's coordinated sub types (rule_params.subs keys). */
+  n_sub_types: number;
+  /** 'YYYY-MM-DD' — the portfolio's latest replayed event date; null
+   *  when its rules have never triggered. */
+  latest_event: string | null;
+  /** 'YYYY-MM-DD HH24:MI' — the pipeline run that emitted the
+   *  portfolio's current row. */
+  latest_built: string;
+}
+
+/** The managed PORTFOLIO codes of a sec_type (optionally narrowed to
+ *  one portfolio_type) with their census — one row per code. An
+ *  unknown portfolio_type label filters to nothing (never a fuzzy
+ *  match). */
+export async function fetchSignalPortfolios(
+  secType: string | null | undefined,
+  portfolioType?: string | null,
+): Promise<SignalPortfolioRow[]> {
+  const st = assertSecType(secType);
+  const predicates = [`p.sec_type = ${LABEL_CODE.sec_type[st]}`];
+  if (portfolioType != null && portfolioType.trim() !== "") {
+    const ptCode = LABEL_CODE.portfolio_type[portfolioType.trim()];
+    if (ptCode === undefined) {
+      return [];
+    }
+    predicates.push(`p.portfolio_type = ${ptCode}`);
+  }
+  return queryRows<SignalPortfolioRow & QueryResultRow>(
+    `SELECT p.code,
+            ${labelDecodeSql("portfolio_type", "p.portfolio_type")} AS portfolio_type,
+            cardinality(p.signal_rule_ids)::int AS n_rules,
+            (SELECT count(*)::int
+             FROM analysis_signals.signal_rules r
+             WHERE r.signal_rule_id = ANY(p.signal_rule_ids)
+               AND r.is_valid) AS n_valid,
+            COALESCE((SELECT count(*)::int
+             FROM jsonb_object_keys(p.rule_params->'subs')), 0)
+              AS n_sub_types,
+            to_char(e.latest_event, 'YYYY-MM-DD') AS latest_event,
+            to_char(p.created_at, 'YYYY-MM-DD HH24:MI') AS latest_built
+     FROM analysis_signals.portfolio_signal_rules p
+     LEFT JOIN LATERAL (
+        SELECT max(h.date) AS latest_event
+        FROM analysis_signals.history_signals h
+        WHERE h.code = p.code AND h.sec_type = p.sec_type
+     ) e ON TRUE
+     WHERE ${predicates.join(" AND ")}
+     ORDER BY p.code`,
+    [],
+  );
+}
+
+/** The latest history_portfolio_signal_performance snapshot of one
+ *  portfolio: the as-of date, the COMBINED STATS of the individual
+ *  in-portfolio signals (pooled — {n_cells, n_episodes, dir_ave_pct,
+ *  t_stat, hit_rate}: the member cells' own measures meta-combined),
+ *  the benefit payload (kind max_drawdown_reduction for the hedge
+ *  type — max_dd {portfolio_pct, leg_a_pct, leg_b_pct,
+ *  worst_leg_pct, mean_leg_pct, reduction_vs_worst_pct,
+ *  reduction_vs_mean_pct}), the gate VERDICT digest {metric, min_pp,
+ *  passed, conf_scale} (conf_scale = the member confidence cascade),
+ *  and the portfolio's dd lens {min20_pct, p10_pct, baseline_pct, n}
+ *  (the orchestrating cells' lenses combined). */
+export interface PortfolioBenefitSnapshot {
+  as_of: string | null;
+  pooled: Record<string, unknown> | null;
+  benefit: Record<string, unknown> | null;
+  gate: Record<string, unknown> | null;
+  dd: Record<string, unknown> | null;
+}
+
+/** One matched portfolio: its identity, census and PORTFOLIO row
+ *  (2026-10-20's cell-level redesign — the sub-type groups merged
+ *  into the one row per portfolio: ALL member ids in the single
+ *  signal_rule_ids array, the shared construction + per-sub
+ *  coordination specs in rule_params, the portfolio-level gate
+ *  verdict + writing entries). */
+export interface PortfolioSignalGroupRow {
+  code: string;
+  portfolio_type: string;
+  n_rules: number;
+  n_valid: number;
+  n_sub_types: number;
+  latest_event: string | null;
+  latest_built: string;
+  /** The portfolio's member rule ids (the whole ids array — the
+   *  members' is_in_portfolio cells; pair with the rules response on
+   *  (signal_rule_id)). */
+  signal_rule_ids: number[];
+  /** The portfolio's GATE VERDICT: the audited benefit cleared the
+   *  portfolio gate AND at least one orchestrating composite cell's
+   *  own entry-rule verdict — the GATING conjunction (members see the
+   *  confidence increase only on is_valid portfolios). */
+  is_valid: boolean;
+  /** The orchestrating RuleEntry subclasses that wrote the portfolio
+   *  ('|'-joined). */
+  rule_entry: string;
+  rule_params: Record<string, unknown>;
+  performance: PortfolioBenefitSnapshot | null;
+  /** The portfolio type's knowledge document
+   *  (static.portfolio_signal_docs — {name, description, condition,
+   *  sources, principles, benefit}; the analysis_signal_docs
+   *  convention at the portfolio tier, 2026-10-20). */
+  document: Record<string, unknown>;
+}
+
+export interface PortfolioSignalsResult {
+  sec_type: string;
+  codes: string[];
+  portfolios: PortfolioSignalGroupRow[];
+  /** The matched portfolios' FULL rule rows (the same shape as
+   *  fetchSignalRules; rule.code identifies its portfolio). */
+  rules: SignalRuleRow[];
+}
+
+/** The portfolios whose legs sit in ``codes`` (the pair types: BOTH
+ *  legs of the 'A~B' composite must be in the list — the neg_corr_
+ *  hedge_pair convention), with their portfolio rows and FULL rule
+ *  rows expanded from the signal_rule_ids arrays. Industry scope for
+ *  now (the hedge-pair legs are industry ids). Feeds the shared
+ *  portfolio-signal UI component. */
+export async function fetchPortfolioSignals(
+  secType: string | null | undefined,
+  codes: string[],
+): Promise<PortfolioSignalsResult> {
+  const st = assertSecType(secType);
+  const cleaned = [...new Set(
+    (codes ?? []).map((c) => (c ?? "").trim()).filter(Boolean),
+  )];
+  if (cleaned.length === 0) {
+    return { sec_type: st, codes: [], portfolios: [], rules: [] };
+  }
+  // the PAIR types' leg matching: the composite code is 'A~B' — both
+  // split parts must sit in the requested codes. neg_corr_hedge_pair
+  // (0) is the only portfolio type today; multi-leg types extend this
+  // predicate when they arrive.
+  const groups = await queryRows<
+    { code: string; latest_event: string | null; latest_built: string } &
+    QueryResultRow
+  >(
+    `SELECT p.code,
+            to_char(e.latest_event, 'YYYY-MM-DD') AS latest_event,
+            to_char(p.created_at, 'YYYY-MM-DD HH24:MI') AS latest_built
+     FROM analysis_signals.portfolio_signal_rules p
+     LEFT JOIN LATERAL (
+        SELECT max(h.date) AS latest_event
+        FROM analysis_signals.history_signals h
+        WHERE h.code = p.code AND h.sec_type = p.sec_type
+     ) e ON TRUE
+     WHERE p.sec_type = ${LABEL_CODE.sec_type[st]}
+       AND p.portfolio_type = ${LABEL_CODE.portfolio_type.neg_corr_hedge_pair}
+       AND split_part(p.code, '~', 1) = ANY($1::text[])
+       AND split_part(p.code, '~', 2) = ANY($1::text[])
+     ORDER BY p.code`,
+    [cleaned],
+  );
+  if (groups.length === 0) {
+    return { sec_type: st, codes: cleaned, portfolios: [], rules: [] };
+  }
+  const matched = groups.map((g) => g.code);
+  // the portfolio type's knowledge document (static.portfolio_signal_
+  // docs — the analysis_signal_docs convention at the portfolio tier;
+  // one row per portfolio_type, so ONE fetch serves every portfolio)
+  const docRows = await queryRows<{ document: Record<string, unknown> }>(
+    `SELECT document FROM static.portfolio_signal_docs
+     WHERE portfolio_type = ${LABEL_CODE.portfolio_type.neg_corr_hedge_pair}`,
+    [],
+  );
+  const document = docRows[0]?.document ?? {};
+  // the matched portfolios' OWN rows (one row per portfolio since the
+  // 2026-10-20 cell-level redesign): the whole ids array, the shared
+  // construction + per-sub coordination specs (rule_params), the
+  // portfolio-level gate verdict + writing entries, and the LATEST
+  // history_portfolio_signal_performance snapshot (the portfolio
+  // audit — what the portfolio took + the members' COMBINED STATS;
+  // laterally joined newest-date-first)
+  const portRows = await queryRows<
+    { code: string; signal_rule_ids: number[];
+       is_valid: boolean; rule_entry: string;
+       rule_params: Record<string, unknown>;
+       pp_as_of: string | null;
+       pp_pooled: Record<string, unknown> | null;
+       pp_benefit: Record<string, unknown> | null;
+       pp_gate: Record<string, unknown> | null;
+       pp_dd: Record<string, unknown> | null } & QueryResultRow
+  >(
+    `SELECT p.code,
+            p.signal_rule_ids,
+            p.is_valid,
+            p.rule_entry,
+            p.rule_params,
+            to_char(pp.pp_date, 'YYYY-MM-DD') AS pp_as_of,
+            pp.pp_pooled,
+            pp.pp_benefit,
+            pp.pp_gate,
+            pp.pp_dd
+     FROM analysis_signals.portfolio_signal_rules p
+     LEFT JOIN LATERAL (
+        SELECT q.date AS pp_date, q.pooled AS pp_pooled,
+               q.benefit AS pp_benefit, q.gate AS pp_gate,
+               q.dd AS pp_dd
+        FROM analysis_signals.history_portfolio_signal_performance q
+        WHERE q.code = p.code AND q.portfolio_type = p.portfolio_type
+        ORDER BY q.date DESC LIMIT 1
+     ) pp ON TRUE
+     WHERE p.sec_type = ${LABEL_CODE.sec_type[st]}
+       AND p.portfolio_type = ${LABEL_CODE.portfolio_type.neg_corr_hedge_pair}
+       AND p.code = ANY($1::text[])
+     ORDER BY p.code`,
+    [matched],
+  );
+  // the FULL rule rows: the matched portfolios' OWN rows (the
+  // composite entry + the pair-native exits — code = the pair id)
+  // UNION the portfolios' member ids expanded (the sourced
+  // typical-signal components at their own codes: the market + the
+  // leg industries — exactly the is_in_portfolio cells); each cell's
+  // latest performance snapshot laterally joins and
+  // mergeRulePerformance folds it back in (the 2026-10-19 split)
+  const allIds = portRows.flatMap((s) =>
+    s.signal_rule_ids.map(Number));
+  const rules = await queryRows<
+    SignalRuleRow & QueryResultRow & PerformanceSnapshotRow
+  >(
+    `SELECT r.code,
+            ${labelDecodeSql("sec_type", "r.sec_type")} AS sec_type,
+            ${labelDecodeSql("signal_type", "r.signal_type")} AS signal_type,
+            ${labelDecodeSql("signal_sub_type", "r.signal_sub_type")} AS signal_sub_type,
+            ${labelDecodeSql("trend", "r.trend")} AS trend,
+            ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
+            ${labelDecodeSql("action", "r.action")} AS action,
+            r.signal_rule_id::float8 AS signal_rule_id,
+            r.is_valid,
+            r.is_in_portfolio,
+            r.rule_entry,
+            r.rule_params,
+            perf.perf_date,
+            perf.perf_n_episodes, perf.perf_dir_ave_pct,
+            perf.perf_dir_std_pct, perf.perf_t_stat,
+            perf.perf_hit_rate,
+            COALESCE(d.document, '{}'::jsonb) AS document,
+            to_char(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at
+     FROM analysis_signals.signal_rules r
+     LEFT JOIN static.analysis_signal_docs d
+            ON d.signal_type = r.signal_type${LATEST_PERFORMANCE_JOIN}
+     WHERE r.sec_type = ${LABEL_CODE.sec_type[st]}
+       AND (r.code = ANY($1::text[])
+            OR r.signal_rule_id = ANY($2::bigint[]))
+     ORDER BY r.code, r.signal_type, r.signal_sub_type, r.trend,
+              r.regime_state, r.action`,
+    [matched, allIds],
+  ).then((rows) => rows.map(mergeRulePerformance));
+  // the census per portfolio: its OWN members by id (the components +
+  // the pair-native exits; the composite's own row is not a member —
+  // the GROUP is the composite)
+  const byId = new Map(rules.map((r) => [r.signal_rule_id, r]));
+  const byCode = new Map(portRows.map((p) => [p.code, p]));
+  const portfolios: PortfolioSignalGroupRow[] = groups.map((g) => {
+    const p = byCode.get(g.code);
+    const ids = (p?.signal_rule_ids ?? []).map(Number);
+    return {
+      code: g.code,
+      portfolio_type: "neg_corr_hedge_pair",
+      n_rules: ids.length,
+      n_valid: ids.filter((id) => byId.get(id)?.is_valid === true)
+        .length,
+      n_sub_types: Object.keys(
+        (p?.rule_params as { subs?: Record<string, unknown> } | undefined)
+          ?.subs ?? {},
+      ).length,
+      latest_event: g.latest_event,
+      latest_built: g.latest_built,
+      signal_rule_ids: ids,
+      is_valid: p?.is_valid === true,
+      rule_entry: p?.rule_entry ?? "",
+      rule_params: p?.rule_params ?? {},
+      performance: (p != null && (p.pp_benefit != null
+                                  || p.pp_as_of != null
+                                  || p.pp_gate != null || p.pp_dd != null
+                                  || p.pp_pooled != null))
+        ? { as_of: p.pp_as_of, pooled: p.pp_pooled,
+            benefit: p.pp_benefit, gate: p.pp_gate, dd: p.pp_dd }
+        : null,
+      document,
+    };
+  });
+  return { sec_type: st, codes: cleaned, portfolios, rules };
+}
+
+// ----------------------------------------------------------------------------
+//  fetchPortfolioSignalHistory — the PORTFOLIO tier's EVENT history
+//  (2026-10-21): analysis_signals.portfolio_history_signals holds ONE
+//  ROW PER PORTFOLIO EVENT (the composite/pair-native rule cells'
+//  replayed triggers at the pair codes) with THE EVENT DATE and the
+//  ``member_signals`` JSONB — the associated member CELL-LEVEL signal
+//  events that triggered it (the sourced component cells' own
+//  episode-first records, each WITH ITS OWN DATE — different sub
+//  signals on different nearby days; the component cells' own history
+//  is deliberately dropped from history_signals, these member records
+//  are the one place the triggering cell events are kept). The member
+//  payload's label codes (signal_type / signal_sub_type / action
+//  SMALLINT codes inside the JSONB) decode here at the response
+//  boundary through the label-codes mirror. Feeds the portfolio
+//  history panel's expandable rows.
+// ----------------------------------------------------------------------------
+
+/** One member CELL-LEVEL signal event inside a portfolio event's
+ *  member_signals association (decoded from the stored JSONB). */
+export interface PortfolioEventMember {
+  code: string;
+  signal_type: string;
+  signal_sub_type: string;
+  action: string;
+  /** 'YYYY-MM-DD' — the member's OWN trigger day (the component's
+   *  episode first day — up to the witness window before the event). */
+  date: string;
+  signal: number;
+  signal_reference: number;
+  /** Basis points — the member record's own scaled confidence. */
+  confidence: number;
+}
+
+/** One PORTFOLIO EVENT (analysis_signals.portfolio_history_signals
+ *  row): the coordinated event's own record + the member association
+ *  the UI's row expansion renders. */
+export interface PortfolioHistorySignalRow {
+  code: string;
+  portfolio_type: string;
+  signal_type: string;
+  signal_sub_type: string;
+  date: string;
+  time: string;
+  action: string;
+  signal: number;
+  signal_reference: number;
+  /** signal - signal_reference (the breach-direction sign). */
+  signal_excess: number;
+  /** Basis points — the composite event's scaled confidence. */
+  confidence: number;
+  confidence_pct: number;
+  regime_state: string;
+  is_typical: boolean | null;
+  /** The triggering CELL-LEVEL events (different subs, nearby days);
+   *  empty for the pair-native subs. */
+  members: PortfolioEventMember[];
+}
+
+/** One portfolio code's FULL event history (newest first): the
+ *  coordinated portfolio events with their member cell-level signals.
+ *  Optional signal_type / signal_sub_type narrow to one family / sub
+ *  (unknown labels filter to nothing, never a fuzzy match). */
+export async function fetchPortfolioSignalHistory(
+  secType: string | null | undefined,
+  code: string,
+  signalType?: string | null,
+  signalSubType?: string | null,
+): Promise<PortfolioHistorySignalRow[]> {
+  const st = assertSecType(secType);
+  const c = (code ?? "").trim();
+  if (!c) {
+    throw Object.assign(new Error("code is required"), { status: 400 });
+  }
+  const predicates = [
+    `h.sec_type = ${LABEL_CODE.sec_type[st]}`,
+    `h.code = $1`,
+  ];
+  const params: unknown[] = [c];
+  if (signalType != null && signalType.trim() !== "") {
+    const sigCode = LABEL_CODE.signal_type[signalType.trim()];
+    if (sigCode === undefined) return [];
+    predicates.push(`h.signal_type = ${sigCode}`);
+  }
+  if (signalSubType != null && signalSubType.trim() !== "") {
+    const subCode = LABEL_CODE.signal_sub_type[signalSubType.trim()];
+    if (subCode === undefined) return [];
+    predicates.push(`h.signal_sub_type = ${subCode}`);
+  }
+  const rows = await queryRows<
+    {
+      code: string;
+      portfolio_type: string;
+      signal_type: string;
+      signal_sub_type: string;
+      date: string;
+      time: string;
+      action: string;
+      signal: number;
+      signal_reference: number;
+      signal_excess: number;
+      confidence: number;
+      confidence_pct: number;
+      regime_state: string;
+      is_typical: boolean | null;
+      member_signals: Array<Record<string, unknown>>;
+    } & QueryResultRow
+  >(
+    `SELECT h.code,
+            ${labelDecodeSql("portfolio_type", "h.portfolio_type")} AS portfolio_type,
+            ${labelDecodeSql("signal_type", "h.signal_type")} AS signal_type,
+            ${labelDecodeSql("signal_sub_type", "h.signal_sub_type")} AS signal_sub_type,
+            to_char(h.date, 'YYYY-MM-DD') AS date,
+            to_char(h.time, 'HH24:MI')    AS time,
+            ${labelDecodeSql("action", "h.action")} AS action,
+            h.signal::float8               AS signal,
+            h.signal_reference::float8     AS signal_reference,
+            (h.signal - h.signal_reference)::float8 AS signal_excess,
+            h.confidence,
+            (h.confidence::float8 / 100.0) AS confidence_pct,
+            ${labelDecodeSql("regime", "h.regime_state")} AS regime_state,
+            h.is_typical,
+            h.member_signals
+     FROM analysis_signals.portfolio_history_signals h
+     WHERE ${predicates.join(" AND ")}
+     ORDER BY h.date DESC, h.time DESC, h.signal_type, h.signal_sub_type`,
+    params,
+  );
+  return rows.map((r) => ({
+    ...r,
+    members: (r.member_signals ?? []).map((m) => ({
+      code: String(m.code ?? ""),
+      signal_type: decodeLabel("signal_type", m.signal_type as number)
+        ?? String(m.signal_type),
+      signal_sub_type: decodeLabel("signal_sub_type",
+        m.signal_sub_type as number) ?? String(m.signal_sub_type),
+      action: decodeLabel("action", m.action as number)
+        ?? String(m.action),
+      date: String(m.date ?? ""),
+      signal: Number(m.signal ?? 0),
+      signal_reference: Number(m.signal_reference ?? 0),
+      confidence: Number(m.confidence ?? 0),
+    })),
+  }));
 }
 
 // ----------------------------------------------------------------------------

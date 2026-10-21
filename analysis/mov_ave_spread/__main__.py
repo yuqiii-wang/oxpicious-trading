@@ -95,8 +95,9 @@ Pipeline
 
 Default (incremental) mode:
   Only dates present in source identity tables (stats.etf_identity +
-  stats.index_identity + stats.stock_identity) but NOT yet in
-  analysis.mov_ave_spreads_detail are (re)computed and upserted.
+  stats.index_identity + stats.stock_identity + the stats.industry_identity
+  view) but NOT yet in analysis.mov_ave_spreads_detail are (re)computed
+  and upserted.
 
   The missing-date check is PER-sec_type: a date populated for ETF does
   NOT mask the same date being missing for index/stock. This matters
@@ -113,6 +114,13 @@ Default (incremental) mode:
 
 --sec-type mode:
   Process only the specified sec_type (for testing). Default: all.
+
+--backfill mode:
+  Lift the default increment bound. By default the nightly run builds
+  ONLY the latest missing dates (the newest INCREMENTAL_RECENT_DATES
+  identity dates); deep-history backlog dates are deferred and logged.
+  --backfill targets EVERY missing date — the one-time convergence for
+  a table newer than the history it covers (slow by design).
 """
 from __future__ import annotations
 
@@ -154,6 +162,7 @@ from analysis.mov_ave_spread.config import (
     TRADING_AMT_TABLE,
 )
 from analysis.mov_ave_spread.fetch import fetch_source_data
+from analysis.mov_ave_spread._common import steps as mov_ave_steps
 from analysis.mov_ave_spread.steps import (
     RSI_RANKS_TABLE,
     RSI_TABLE,
@@ -444,7 +453,7 @@ async def _process_single_code(
 
 
 class MovAveSpreadAnalysis(DataAnalysis):
-    title = "ANALYZE MA-SPREADS (ETF + INDEX + STOCK)"
+    title = "ANALYZE MA-SPREADS (ETF + INDEX + STOCK + INDUSTRY)"
     sec_types = tuple(SEC_TYPES)
     component = "mov_ave_spread"
 
@@ -453,11 +462,20 @@ class MovAveSpreadAnalysis(DataAnalysis):
         self.add_sec_type_arg(parser)
         self.add_max_concurrent_arg(parser)
         self.add_code_arg(parser)
+        parser.add_argument(
+            "--backfill", action="store_true",
+            help="Converge ALL missing dates (deep-history backlog too). "
+                 "Default: the nightly increment builds only the latest "
+                 "missing dates (the newest "
+                 f"{mov_ave_steps.INCREMENTAL_RECENT_DATES} identity "
+                 "dates) and defers backlog dates.",
+        )
 
     def apply_args(self) -> None:
         if self.args.code and self.args.force:
             logger.error("ERROR: --code and --force are mutually exclusive.")
             sys.exit(2)
+        mov_ave_steps.backfill_missing = bool(self.args.backfill)
         self.pool_size = max(1, self.args.max_concurrent)
 
     def header_fields(self) -> dict:

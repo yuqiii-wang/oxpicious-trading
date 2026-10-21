@@ -53,6 +53,7 @@ from downloads._common import (
     build_default_session,
     is_valid_file,
     resolve_out_dir,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -67,15 +68,17 @@ from downloads.etf.szse.archive.extract import (
 # Constants
 # ---------------------------------------------------------------------------
 
-ANL_LIST_URL = "https://www.szse.cn/api/disc/announcement/annList"
-PDF_BASE_URL = "https://disc.static.szse.cn"
-REFERER_PAGE = (
-    "https://www.szse.cn/disclosure/fund/notice/index.html"
-)
+SERVICE = "downloads.etf.szse.archive"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+ANL_LIST_URL = URLS["anl_list"]
+PDF_BASE_URL = URLS["pdf_base"]
+REFERER_PAGE = URLS["referer_page"]
+
 PAGE_SIZE = 50
 MAX_PAGES = 20  # safety cap: 50 * 20 = 1000 announcements per fund
-
-SERVICE = "downloads.etf.szse.archive"
 
 # Inter-request anti-bot sleep — resolved from the service's
 # external_request_config JSON row (sleep_sec), overridable per-run with

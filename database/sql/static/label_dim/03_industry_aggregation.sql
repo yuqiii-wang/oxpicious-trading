@@ -5,7 +5,8 @@
 --  analytics. Owning tables: analysis.industry_hypes_and_drains /
 --  _seasonal (weighting, rank_side), stats.industry_basic_stats,
 --  analysis.industry_correlations / industry_etf_contribution,
---  analysis_composites.industry_corr_benchmark_offsets (pool_size);
+--  analysis_composites.industry_corr_benchmark_offsets (pool_size),
+--  analysis.pair_pct_change_ratios (pair_grain);
 --  attribution_type is PENDING (analysis.industry_attributions).
 -- ============================================================================
 
@@ -16,7 +17,7 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('weighting',  1, 'amt',    1),
     -- rank_side: hypes-and-drains ranking direction
     ('rank_side',  0, 'HYPE',   0),
-    ('rank_side',  1, 'DRAIN',  1),
+    ('rank_side',  1, 'DRAIN',   1),
     -- pool_size: code order is SEMANTIC (small -> mid -> large -> all);
     -- sort_order keeps the pre-refactor TEXT presentation order
     -- (alphabetical) so API/UI listings are unchanged
@@ -26,4 +27,10 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('pool_size',  3, 'all',    0),
     -- attribution_type: industry attributions (PENDING)
     ('attribution_type', 0, 'equal',      0),
-    ('attribution_type', 1, 'trading_amt', 1);
+    ('attribution_type', 1, 'trading_amt', 1),
+    -- pair_grain: subject grain of analysis.pair_pct_change_ratios rows —
+    -- per-index pair rows vs the industry aggregate derived from them
+    -- (AVG over the industry's member-index rows; the cross_stats
+    -- industry-grain pattern)
+    ('pair_grain', 0, 'index',    0),
+    ('pair_grain', 1, 'industry', 1);

@@ -13,6 +13,7 @@ import {
   useChartThemeMode,
 } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { ThemeMode } from "@/store/filters";
 import type { OptionsRow } from "@shared/types";
 import {
@@ -491,6 +492,7 @@ export default function GreeksPanel({ rows, selectedDate, greekKey }: Props) {
   // keeps identity + units only.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.greeks,
       product: "options-greeks",
       intro:
         "Per-expiry Greek vs moneyness m = K/S — calls solid, puts dashed, grouped by expiry " +

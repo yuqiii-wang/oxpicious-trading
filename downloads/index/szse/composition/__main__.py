@@ -70,18 +70,20 @@ from downloads._common import (
     random_browser_profile,
     add_exchange_suffix,
     get_exchange_from_code,
+    service_urls,
     sleep_sec_for,
 )
 from downloads._common.monthly import is_month_start
 
 logger = setup_logger("szse_index_composition")
 
-SZSE_INDEX_API = (
-    "http://www.szse.cn/api/report/ShowReport/data"
-)
-
 # Service name for the external_request_config JSON row (pacing source).
 SERVICE = "downloads.index.szse.composition"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SZSE_INDEX_API = URLS["szse_index_api"]
 
 # Default indices to track
 DEFAULT_INDEX_CODES = ["399001", "399006", "399812", "399348", "399346"]

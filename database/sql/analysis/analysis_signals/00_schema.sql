@@ -7,17 +7,56 @@
 --  is POPULATED BY RUNNING THOSE RULES:
 --
 --    - signal_rules (01): one row per (code, sec_type, signal_type,
---      signal_sub_type, trend, regime_state, action) — the rule CELL.
---      document carries the family knowledge doc (the repo's
---      static/example.*.json template stamped with the cell's measured
---      performance); rule_entry names the engine entry class that runs
---      the rule; rule_params the SELF-ADAPTIVE prepared parameters the
---      engine measured on the code's own history for THAT cell (the
---      breach bar, episode merge, gate + scale numbers).
+--      signal_sub_type, trend, regime_state, action) — the rule CELL,
+--      CONSTANT-ONLY since 2026-10-19: rule_entry names the engine
+--      entry class that runs the rule; rule_params carry the constant
+--      rule definition (the breach bar def, episode merge, reentry
+--      flags, gate bar constants, confidence scale); is_in_portfolio
+--      (2026-10-20) flags the cells a portfolio group claims — the
+--      MEASURED items live in history_signal_performance (04).
 --    - history_signals (02): one row per qualifying trigger day, the
 --      event record (value, bar, scaled confidence) emitted by
 --      replaying the rules over history.
---    - code_trend_days (03): one row per (code, date) — the TREND
+--    - portfolio_signal_rules (03): the PORTFOLIO tier (2026-10-18;
+--      simplified 2026-10-20 to one row per portfolio) — one row per
+--      (code, portfolio_type) whose signal_rule_ids BIGINT[] holds ALL
+--      the portfolio's member rule-row surrogate ids ACROSS SUB TYPES
+--      (the negative-corr hedge pair 'A~B' portfolios; = ANY(ids)
+--      joins the member cells); rule_params carry the CONSTANT
+--      portfolio construction (legs / market / aim / weighting + the
+--      per-sub coordination specs under subs).
+--    - history_signal_performance (04): one row per (rule cell x
+--      as-of date) — the DAILY snapshot of the cell's OWN measured
+--      evidence (the 2026-10-19 split, slimmed 2026-10-20 to the
+--      measure block + the is_in_portfolio flag: the pooled tier /
+--      gate digest / boost conf / dd lens / cascade moved to the
+--      portfolio tier). date = the prepared frame's data horizon at
+--      measurement; never purged — a cell's evidence evolution,
+--      graduation and death are preserved across the rules tier's
+--      per-run wipes.
+--    - history_portfolio_signal_performance (05, renamed from
+--      portfolio_signal_performance 2026-10-20): one row per
+--      (portfolio x as-of date) — the PORTFOLIO-LEVEL AUDIT over the
+--      group's MEMBER CELLS: what the portfolio STRUCTURE took that
+--      its standalone components would not have (the hedge type's
+--      claim: max drawdown reduction — the pair value's own max
+--      drawdown vs the legs' standalone, plus the orchestrating
+--      cells' coordinated-event forward-trough lens) AND the COMBINED
+--      STATS of the individual in-portfolio signals (pooled — the
+--      member cells' measures meta-combined). Same dated-snapshot
+--      lifecycle as 04: upserted on the PK + date, never purged.
+--    - portfolio_history_signals (06, 2026-10-21): the PORTFOLIO
+--      tier's EVENT history — one row per coordinated portfolio event
+--      (the composite/pair-native rule cells' replayed triggers at
+--      the pair codes) with THE EVENT DATE (the day the coordination
+--      completed) and ``member_signals`` — the association to the
+--      member CELL-LEVEL signal events that triggered it (the sourced
+--      component cells' own records, each with its own date:
+--      different sub signals on different nearby days; the component
+--      cells' own history stays dropped from history_signals). Same
+--      lifecycle as history_signals (force purge + re-emit /
+--      incremental upsert).
+--    - code_trend_days: one row per (code, date) — the TREND
 --      classification of the prepared frame (trends.attach_trend),
 --      shared by the trend-spans API (chart shading) and the live
 --      tier's day-context rule-cell matching.

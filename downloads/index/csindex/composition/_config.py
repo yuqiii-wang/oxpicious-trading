@@ -3,19 +3,22 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from downloads._common import setup_logger, sleep_sec_for
+from database.sec_statics.exclusion_rules_store import excluded_codes
+
+from downloads._common import service_urls, setup_logger, sleep_sec_for
 
 # Service name for the external_request_config JSON row (pacing source).
 SERVICE = "downloads.index.csindex.composition"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 
 # ---------------------------------------------------------------------------
 # HTTP endpoint
 # ---------------------------------------------------------------------------
 
-CLOSEWEIGHT_URL_TEMPLATE = (
-    "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/"
-    "file/autofile/closeweight/{index_code}closeweight.xls"
-)
+CLOSEWEIGHT_URL_TEMPLATE = URLS["closeweight_url_template"]
 
 # ---------------------------------------------------------------------------
 # Column mapping (bilingual xls headers → normalized names)
@@ -46,12 +49,16 @@ SLEEP_SEC: float = sleep_sec_for(SERVICE)
 # Skip-sets
 # ---------------------------------------------------------------------------
 
-# Legacy fallback for codes with no importance-rank exchange row (fresh
-# install before the first monthly build). The primary routing is the
-# exchange column of stats.sec_importance_ranks (see runner: codes marked
-# SZSE are owned by the SZSE downloader; csindex.com.cn does not serve
-# them).
-CSINDEX_SKIP_CODES = {"399001", "399006", "399348", "399346"}
+# Codes csindex.com.cn cannot serve (exclusion store: scope "csindex" or
+# "all") — the SZSE-published 399xxx family the SZSE downloader owns, the
+# cnindex-owned 399303/399310/399311 trio, and the 0008xx/000170/000974
+# indices whose daily data SSE bulk trend carries. Curated in
+# database/sec_statics/exclusion_rules/index_excluded.json — edit that
+# list, not this module. The exchange-map routing (SZSE marker via
+# _common.importance) stays the PRIMARY SZSE routing; this set also
+# covers codes with no rank row (fresh install before the first monthly
+# build) because the JSON ships with the repo.
+CSINDEX_SKIP_CODES = excluded_codes("index", scopes=("csindex",))
 
 # Bond-market indices track bonds (not stocks), so they don't have meaningful
 # composition (closeweight) data. They are tracked via daily index OHLCV

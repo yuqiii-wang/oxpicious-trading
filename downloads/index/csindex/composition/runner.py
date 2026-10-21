@@ -120,9 +120,11 @@ def download_index_composition(
     # Download-service routing by exchange (stats.sec_importance_ranks
     # via _common.importance, cache-first): codes whose curated exchange
     # carries the SZSE published-index marker are OWNED by the SZSE
-    # downloader — csindex.com.cn does not serve them. CSINDEX_SKIP_CODES
-    # stays as the legacy fallback for codes with no rank row (fresh
-    # install before the first monthly build).
+    # downloader — csindex.com.cn does not serve them.
+    # CSINDEX_SKIP_CODES (exclusion-store backed, see _config) adds the
+    # codes csindex.com.cn never serves regardless of routing — and
+    # covers codes with no rank row (fresh install before the first
+    # monthly build).
     _szse_owned = (set(szse_downloader_codes(exchange_map_or_empty()))
                    | CSINDEX_SKIP_CODES)
 

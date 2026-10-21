@@ -20,7 +20,7 @@
  * If no backtest run exists for the requested (code, sec_type), an empty
  * decisions array is returned (the UI shows an "info" alert).
  */
-import { getMovAveSpreadChart } from "../analysis/mov-ave-spreads.js";
+import { getMovAveSpreadChart } from "../analysis/mov-ave-spreads/index.js";
 import { queryRows, formatDate, toNum } from "../db.service.js";
 import type { MaSpreadSecType, StrategyDailyRow } from "../../../shared/types.js";
 import {

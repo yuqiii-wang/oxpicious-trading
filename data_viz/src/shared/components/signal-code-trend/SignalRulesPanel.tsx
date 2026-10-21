@@ -1,50 +1,60 @@
 /**
- * SignalRulesPanel — the RULES surface of the signals era (2026-10-15):
- * ONE row per RULE CELL of the picked code (analysis_signals.signal_rules
- * — the (sub signal · trend · regime · action) key), showing the
- * SELF-ADAPTIVE prepared parameters the engine measured on the code's
- * OWN history for THAT cell: the breach bar, the measured evidence
- * (episodes · blended dir_ave · hit rate), the on-bar confidence base
- * and the ohlcv boost's trust-weighted base (ohlcv_boost_conf — null
- * where the side boosted nothing). Expanding a row surfaces the rule's
- * KNOWLEDGE — the family document's sub-signal meaning + trigger and
- * the cell's gate digest.
+ * SignalRulesPanel — the RULES surface of the signals era (2026-10-15,
+ * merged 2026-10-19): ONE row per RULE CELL of the picked code
+ * (analysis_signals.signal_rules — the (sub signal · trend · regime ·
+ * action) key). The table's columns show the CONSTANT rule — the sub
+ * signal, the action chip (ramped by the measured base), the trend /
+ * regime split axes, the breach BAR definition and the engine entry;
+ * EXPANDING a row reveals the cell's measured PERFORMANCE — the latest
+ * dated snapshot of analysis_signals.history_signal_performance
+ * (merged per cell by the API): the gate verdict line, the evidence
+ * (episodes · blended dir_ave · hit · σ · t), the POOLED evidence
+ * tier's full block (decay curve + expanding-year legs), the
+ * confidence base, the boost base and the as-of date — alongside the
+ * family KNOWLEDGE (the document's sub-signal meaning + trigger) and
+ * the constant parameter digest (K, reentry flags, gate bars, scale).
  *
  * Replaces the retired depth-response CURVE overlay (SignalOverlayPanel
  * + signalOverlayOption, retired with the signal_curves /
  * signal_thresholds tables 2026-10-14): where the overlay drew a fitted
- * μ(s) shape, the rules tier STATES the prepared bar and the measured
+ * μ(s) shape, the rules tier STATES the constant bar and the measured
  * evidence per cell — the trend column IS the per-PK asymmetry axis
  * (the same sub signal measures different bars in different trends).
  *
- * Rendered on the SHARED ExpandedTable (2026-10-16 — the hand-rolled
- * MUI table retired): the expanded-table grammar + per-column HEADER
- * FILTERS (the trend / regime columns carry ticks menus — a colored
- * dot per label, matching the cells' own accents), the old header
- * tooltips became the shared InfoMark `info` descriptions, and the
- * knowledge expansion rides the shared table's caller-owned expansion
- * slot (expandedRowKey + expandedContent; an outside expansion scrolls
- * its row into view). The family pick is the HOST panel's (one pick
- * drives rules + markers + history).
+ * Rendered on the SHARED ExpandedTable: the expanded-table grammar +
+ * per-column HEADER FILTERS (the trend / regime columns carry ticks
+ * menus — a colored dot per label, matching the cells' own accents),
+ * header tooltips are the shared InfoMark `info` descriptions, and the
+ * expansion rides the shared table's caller-owned expansion slot
+ * (expandedRowKey + expandedContent; an outside expansion scrolls its
+ * row into view — the host chart's marker click bolds the same cell).
+ * The family pick is the HOST panel's (one pick drives rules + markers
+ * + history). The expansion block is the SHARED ruleDetails renderer
+ * (./ruleDetails — the same block the portfolio tier's member rows
+ * expand), so a rule's story reads identically on every surface.
  */
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useMemo } from "react";
 import { Box, Chip, Paper, Typography, useTheme } from "@mui/material";
 import ExpandedTable, {
   type ExpandedTableColumn,
 } from "@/shared/components/ExpandedTable";
 import { SignalActionChip } from "@/shared/components/signal-action";
-import { signalRecordName } from "./families";
-import { ruleBarLabel, ruleCellKey } from "./ruleParams";
-import { tickDotItem } from "./tickDotItem";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
 import type { SignalRule } from "@/lib/api-client";
+import { signalRecordName } from "./families";
+import { ruleBarLabel, ruleCellKey } from "./ruleParams";
+import { ruleDetails } from "./ruleDetails";
+import { tickDotItem } from "./tickDotItem";
 
 export interface SignalRulesPanelProps {
   /** The code's rule cells (server-ordered: family, sub, trend, regime,
-   *  action) — ALREADY family-filtered by the host's SIGNAL pick. */
+   *  action) — ALREADY family-filtered by the host's SIGNAL pick. The
+   *  measured performance rides each row (the API-merged latest
+   *  history_signal_performance snapshot). */
   rules: SignalRule[];
   /** The currently expanded cell key ("sub|trend|regime|action"), one
-   *  at a time; null = none. */
+   *  at a time; null = none. Drives the expansion AND the host chart's
+   *  bolded cell. */
   expandedKey: string | null;
   onExpandedKeyChange: (key: string | null) => void;
 }
@@ -90,60 +100,6 @@ function withAlpha(color: string, alpha: number): string {
   return color;
 }
 
-/** The expanded row's KNOWLEDGE block — the family document's
- *  sub-signal meaning + trigger and the cell's gate digest. Module
- *  scope (pure over the rule row): the expandedContent prop stays
- *  identity-stable for the memoized shared table. */
-function ruleKnowledge(r: SignalRule): ReactNode {
-  const knowledge = r.document.sub_signals?.[r.signal_sub_type] ?? null;
-  const gate = r.rule_params.gate;
-  const ungated = gate?.ungated === true;
-  return (
-    <Box sx={{ p: 1, px: 1.5 }}>
-      {knowledge ? (
-        <>
-          <Typography variant="body2" sx={{ mb: 0.25 }}>
-            {String(knowledge.meaning ?? "")}
-          </Typography>
-          {knowledge.trigger != null && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block" }}
-            >
-              trigger: {String(knowledge.trigger)}
-            </Typography>
-          )}
-        </>
-      ) : (
-        <Typography variant="caption" color="text.secondary">
-          (no sub-signal knowledge in the document)
-        </Typography>
-      )}
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{ display: "block", mt: 0.5 }}
-      >
-        episode merge K=
-        {String(r.rule_params.episode_merge_days ?? "—")}
-        {" · gate "}
-        {ungated
-          ? "observational (ungated)"
-          : `dir_ave ≥ ${gate?.min_pct ?? "—"}% @ floor ${
-              gate?.sample_floor ?? "—"
-            }`}
-        {" · scale ×"}
-        {String(r.rule_params.confidence?.depth_factor ?? 0)}
-        {" · entry "}
-        {r.rule_entry}
-        {" · measured "}
-        {r.created_at}
-      </Typography>
-    </Box>
-  );
-}
-
 export default function SignalRulesPanel({
   rules,
   expandedKey,
@@ -158,6 +114,13 @@ export default function SignalRulesPanel({
   );
   const nValid = useMemo(
     () => rules.filter((r) => r.is_valid).length,
+    [rules],
+  );
+  const asOf = useMemo(
+    () =>
+      rules.reduce<string | null>(
+        (acc, r) => (r.performance_as_of ?? acc), null,
+      ),
     [rules],
   );
 
@@ -203,8 +166,8 @@ export default function SignalRulesPanel({
         render: (r) => (
           <SignalActionChip
             action={r.action}
-            // the chip's ramp reads the 1..100 (bp) scale
-            // — feed base_pct × 100, not the raw pct
+            // the chip's ramp reads the 1..100 (bp) scale — feed the
+            // measured base × 100 (the performance snapshot's dir_ave)
             confidence={
               (r.rule_params.confidence?.base_pct ?? 1) * 100
             }
@@ -217,12 +180,13 @@ export default function SignalRulesPanel({
         label: "Valid",
         align: "center",
         info:
-          "The per-cell gate verdict (is_valid): true iff the cell's " +
-          "measured future returns cleared its side's dir_ave bar at " +
-          "the sample floor (buy ≥ 0.25% @ n ≥ 3 / sell ≥ 0% @ n ≥ 2). " +
-          "False = observational (the wait watchlist / the ungated " +
-          "twin) — negative future returns are discouraged: never " +
-          "valid, never trades, never fires live",
+          "The per-cell gate verdict (is_valid — the latest performance " +
+          "snapshot's gate.passed): true iff the cell's measured future " +
+          "returns cleared its side's dir_ave bar at the sample floor " +
+          "(buy ≥ 0.25% @ n ≥ 3 / sell ≥ 0% @ n ≥ 2). False = " +
+          "observational (the wait watchlist / the ungated twin) — " +
+          "negative future returns are discouraged: never valid, never " +
+          "trades, never fires live",
         render: (r) =>
           r.is_valid ? (
             <Box
@@ -291,18 +255,21 @@ export default function SignalRulesPanel({
         key: "bar",
         label: "Bar",
         info:
-          "The cell's SELF-ADAPTIVE breach bar (rule_params.bar_def) — " +
-          "the engine picked it per (code, sub, trend, regime) from the " +
-          "candidate grid on the code's own history",
+          "The cell's CONSTANT breach bar definition " +
+          "(rule_params.bar_def) — the engine picked it per (code, sub, " +
+          "trend, regime) from the candidate grid on the code's own " +
+          "history",
         render: (r) => ruleBarLabel(r.rule_params.bar_def),
       },
       {
         key: "evidence",
         label: "Evidence",
         info:
-          "The cell's measured evidence on its trigger days: episodes, " +
-          "the sign-aligned blended dir_ave (0/3/5/10/20d fixed mix) " +
-          "and the hit rate",
+          "The cell's measured evidence on its trigger days (the latest " +
+          "performance snapshot): episodes, the sign-aligned blended " +
+          "dir_ave (0/3/5/10/20d fixed mix) and the hit rate — expand " +
+          "the row for the full measured block (σ · t · base · the " +
+          "recomputed starvation haircut · as-of)",
         render: (r) => {
           const m = r.rule_params.measure;
           const ungated = r.rule_params.gate?.ungated === true;
@@ -341,49 +308,6 @@ export default function SignalRulesPanel({
         },
       },
       {
-        key: "base",
-        label: "Base",
-        align: "right",
-        info:
-          "The on-bar confidence base in percent (the measured " +
-          "dir_ave); the event's confidence amplifies it over the " +
-          "breach depth (depth_factor, capped)",
-        render: (r) =>
-          r.rule_params.confidence?.base_pct != null
-            ? `${r.rule_params.confidence.base_pct.toFixed(2)}%`
-            : "—",
-      },
-      {
-        key: "boost",
-        label: "Boost",
-        align: "right",
-        info:
-          "The ohlcv boost's trust-weighted confidence base in " +
-          "percent — the cell's measured dir_ave re-weighted by the " +
-          "day-0 anatomy trust score (sum w·y / sum w over the cell's " +
-          "triggers). Null = the side boosted nothing (its derivation " +
-          "failed the ship gates / the family did not opt in) — an " +
-          "honest absence, never a gate",
-        render: (r) => (
-          <Box
-            component="span"
-            sx={{
-              color:
-                r.ohlcv_boost_conf == null
-                  ? "text.disabled"
-                  : r.ohlcv_boost_conf >= 0
-                    ? theme.palette.success.main
-                    : theme.palette.error.main,
-              fontWeight: 600,
-            }}
-          >
-            {r.ohlcv_boost_conf != null
-              ? `${r.ohlcv_boost_conf.toFixed(2)}%`
-              : "—"}
-          </Box>
-        ),
-      },
-      {
         key: "entry",
         label: "Entry",
         render: (r) => (
@@ -404,9 +328,9 @@ export default function SignalRulesPanel({
       >
         Signal rules · {nSubs} sub signal{nSubs === 1 ? "" : "s"} · {nCells}{" "}
         cell{nCells === 1 ? "" : "s"} · {nValid} valid (gate-passed, future
-        returns ≥ the side&apos;s bar) — one per (sub · trend · regime ·
-        action); bars re-measured on the code&apos;s own history — click a row
-        for the rule&apos;s knowledge
+        returns ≥ the side&apos;s bar) · measured through {asOf ?? "—"} — one
+        per (sub · trend · regime · action); click a row for the rule&apos;s
+        knowledge and its measured performance
       </Typography>
       <ExpandedTable
         columns={columns}
@@ -418,7 +342,7 @@ export default function SignalRulesPanel({
         onRowClick={handleRowClick}
         selectedRowKey={expandedKey}
         expandedRowKey={expandedKey}
-        expandedContent={ruleKnowledge}
+        expandedContent={ruleDetails}
         emptyState={
           <Typography variant="body2" color="text.secondary" sx={{ px: 0.5, pb: 1 }}>
             No rule cells shipped for this code — run the signals pipeline to

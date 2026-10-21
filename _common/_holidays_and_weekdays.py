@@ -13,109 +13,130 @@ Central source of truth for trading-day decisions across the project:
   - date_range_backward / date_range_forward : raw calendar-day iterators
   - parse_date_window      : resolve a (start, end) pair from CLI-style args
 
+The holiday TABLE lives in the static JSON tree
+database/sql/static/holiday_calendar/ — one file per country
+(cn.json), dates grouped by year, loaded here at import time (static
+reference data, sibling of the label_dim tree; same JSON-as-source-of-
+truth pattern as _common.request_config over external_request_config/).
+The CN table covers 2020-01-01 through 2026-12-31; update the JSON each
+January when the State Council publishes the next year's schedule (see
+the file's notes for the market-vs-State-Council differences and the
+2026-09-10 verification against real sessions).
+
 Previously these lived in ``_download_commons.py``; they were migrated here
 so that both build scripts (which import ``_db_commons`` only) and download
 scripts can share the same calendar without pulling in HTTP/session helpers.
-
-The holiday table is hand-maintained and covers 2020-01-01 through 2026-12-31.
-Update it each January when the State Council publishes the next year's
-holiday schedule.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
-from typing import Iterable, List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Set, Tuple
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_HOLIDAY_CALENDAR_DIR = (
+    _REPO_ROOT / "database" / "sql" / "static" / "holiday_calendar"
+)
 
 
-def _parse_dates(date_strings: List[str]) -> Set[date]:
-    return {datetime.strptime(s, "%Y-%m-%d").date() for s in date_strings}
+def _load_country_calendar(country_code: str) -> Tuple[Set[date], Set[date]]:
+    """Load (holidays, adjusted_workdays) from holiday_calendar/<code>.json.
+
+    One file per country; each file groups its dates by year
+    (``{"holidays": {"2026": ["2026-01-01", ...]}, "adjusted_workdays": {}}``).
+
+    Fails LOUDLY on any problem. Unlike _common.request_config's
+    skip-broken-field contract (a bad pacing value must not block a
+    pipeline), a silently empty calendar would flip holidays into trading
+    days across every pipeline — wrong results, not just wrong pacing —
+    so a crash at import time is the safe failure mode.
+
+    Validation guards hand edits to the JSON: year keys are 4-digit
+    strings, every date parses as YYYY-MM-DD, and each date's year equals
+    its year key. All problems are collected and raised together.
+    """
+    path = _HOLIDAY_CALENDAR_DIR / f"{country_code}.json"
+    try:
+        payload: Dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"public holidays file unreadable: {path} ({exc}) — the "
+            "trading-day calendar is load-bearing; fix the JSON before "
+            "running pipelines"
+        ) from exc
+    problems: List[str] = []
+    country = payload.get("country")
+    if not (
+        isinstance(country, str) and country.lower() == country_code.lower()
+    ):
+        problems.append(
+            f'"country" field {country!r} does not match file name '
+            f'"{country_code}.json"'
+        )
+    holidays: Set[date] = set()
+    adjusted: Set[date] = set()
+    for field, target in (("holidays", holidays), ("adjusted_workdays", adjusted)):
+        by_year = payload.get(field)
+        if not isinstance(by_year, dict):
+            problems.append(f'"{field}" must be an object keyed by year')
+            continue
+        for year_key, entries in by_year.items():
+            if not (
+                isinstance(year_key, str)
+                and len(year_key) == 4
+                and year_key.isascii()
+                and year_key.isdigit()
+            ):
+                problems.append(
+                    f'"{field}" year key {year_key!r} is not a 4-digit year'
+                )
+                continue
+            if not isinstance(entries, list):
+                problems.append(f'"{field}"["{year_key}"] must be a list of dates')
+                continue
+            for entry in entries:
+                if not isinstance(entry, str):
+                    problems.append(
+                        f'"{field}"["{year_key}"] entry {entry!r} is not a string'
+                    )
+                    continue
+                try:
+                    parsed = datetime.strptime(entry, "%Y-%m-%d").date()
+                except ValueError:
+                    problems.append(
+                        f'"{field}"["{year_key}"] entry {entry!r} '
+                        "is not a YYYY-MM-DD date"
+                    )
+                    continue
+                if parsed.year != int(year_key):
+                    problems.append(
+                        f'"{field}"["{year_key}"] entry {entry} '
+                        "is outside its year key"
+                    )
+                    continue
+                target.add(parsed)
+    if problems:
+        raise RuntimeError(
+            f"invalid public holidays file {path}:\n  " + "\n  ".join(problems)
+        )
+    return holidays, adjusted
 
 
 # ---------------------------------------------------------------------------
 # Chinese A-share market calendar
 #
-# VERIFIED 2026-09-10 against actual exchange sessions (union of real —
-# i.e. non-estimated — stats.index_basic_stats rows for 000001/399001,
-# 2020-01-02 .. 2026-09-09):
-#   * exchanges also CLOSE on the pre-holiday eve / observed weekdays the
-#     State Council table does not always list (e.g. 2024-02-09 CNY eve,
-#     2025-01-28, 2025-10-08, 2022-01-03, 2023-01-02, 2021-09-20,
-#     2024-09-16, 2026-02-16, 2026-06-19) — those are included below;
-#   * five former entries were real trading days and were REMOVED
-#     (2021-04-06, 2023-05-04, 2023-05-05, 2025-09-08, 2026-06-22);
-#   * the A-share market NEVER opens on weekend 调休 workdays, so
-#     CN_ADJUSTED_WORKDAYS is empty (see its comment).
+# The table is the JSON above; the verification history (2026-09-10 check
+# against real stats.index_basic_stats sessions, the pre-holiday-eve
+# closures included, the five removed false entries) lives in cn.json's
+# notes field. CN_ADJUSTED_WORKDAYS is intentionally EMPTY — the A-share
+# market NEVER opens on weekend 调休 workdays, so the labor calendar's
+# make-up days are irrelevant to market data (kept as a set for API
+# compatibility).
 # ---------------------------------------------------------------------------
-CN_HOLIDAYS: Set[date] = _parse_dates([
-    # 2020
-    "2020-01-01",
-    "2020-01-24", "2020-01-25", "2020-01-26", "2020-01-27", "2020-01-28",
-    "2020-01-29", "2020-01-30", "2020-01-31", "2020-02-01", "2020-02-02",
-    "2020-04-04", "2020-04-05", "2020-04-06",
-    "2020-05-01", "2020-05-02", "2020-05-03", "2020-05-04", "2020-05-05",
-    "2020-06-25", "2020-06-26", "2020-06-27",
-    "2020-10-01", "2020-10-02", "2020-10-03", "2020-10-04", "2020-10-05",
-    "2020-10-06", "2020-10-07", "2020-10-08",
-    # 2021
-    "2021-01-01",
-    "2021-02-11", "2021-02-12", "2021-02-13", "2021-02-14", "2021-02-15", "2021-02-16", "2021-02-17",
-    "2021-04-04", "2021-04-05",
-    "2021-05-01", "2021-05-02", "2021-05-03", "2021-05-04", "2021-05-05",
-    "2021-06-14",
-    "2021-09-20", "2021-09-21",
-    "2021-10-01", "2021-10-02", "2021-10-03", "2021-10-04", "2021-10-05", "2021-10-06", "2021-10-07",
-    # 2022
-    "2022-01-01", "2022-01-03",
-    "2022-01-31", "2022-02-01", "2022-02-02", "2022-02-03", "2022-02-04", "2022-02-05", "2022-02-06",
-    "2022-04-03", "2022-04-04", "2022-04-05",
-    "2022-05-01", "2022-05-02", "2022-05-03", "2022-05-04",
-    "2022-06-03", "2022-06-04", "2022-06-05",
-    "2022-09-10", "2022-09-11", "2022-09-12",
-    "2022-10-01", "2022-10-02", "2022-10-03", "2022-10-04", "2022-10-05", "2022-10-06", "2022-10-07",
-    # 2023
-    "2023-01-01", "2023-01-02",
-    "2023-01-21", "2023-01-22", "2023-01-23", "2023-01-24", "2023-01-25", "2023-01-26", "2023-01-27",
-    "2023-04-05",
-    "2023-05-01", "2023-05-02", "2023-05-03",
-    "2023-06-22", "2023-06-23", "2023-06-24",
-    "2023-09-29", "2023-09-30",
-    "2023-10-01", "2023-10-02", "2023-10-03", "2023-10-04", "2023-10-05", "2023-10-06",
-    # 2024
-    "2024-01-01",
-    "2024-02-09", "2024-02-10", "2024-02-11", "2024-02-12", "2024-02-13", "2024-02-14", "2024-02-15", "2024-02-16", "2024-02-17",
-    "2024-04-04", "2024-04-05", "2024-04-06",
-    "2024-05-01", "2024-05-02", "2024-05-03", "2024-05-04", "2024-05-05",
-    "2024-06-10",
-    "2024-09-16", "2024-09-17",
-    "2024-10-01", "2024-10-02", "2024-10-03", "2024-10-04", "2024-10-05", "2024-10-06", "2024-10-07",
-    # 2025
-    "2025-01-01",
-    "2025-01-28", "2025-01-29", "2025-01-30", "2025-01-31", "2025-02-01", "2025-02-02", "2025-02-03", "2025-02-04",
-    "2025-04-04",
-    "2025-05-01", "2025-05-02", "2025-05-03", "2025-05-04", "2025-05-05",
-    "2025-06-02",
-    "2025-10-01", "2025-10-02", "2025-10-03", "2025-10-04", "2025-10-05", "2025-10-06", "2025-10-07", "2025-10-08",
-    # 2026
-    "2026-01-01", "2026-01-02",
-    "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-21", "2026-02-22", "2026-02-23",
-    "2026-04-06",
-    "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05",
-    "2026-06-19",
-    "2026-09-25",
-    "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07",
-])
-
-
-CN_ADJUSTED_WORKDAYS: Set[date] = set()
-"""Intentionally EMPTY.
-
-The previous table listed the State Council's weekend 调休 workdays (e.g.
-2024-09-29, 2023-10-07/08) and made ``is_trading_day()`` return True on
-them.  The A-share exchanges do NOT hold sessions on those weekend
-make-up days — verified against real index sessions 2020-2026 (zero
-non-estimated index_basic_stats rows on every listed date).  The labor
-calendar's 调休 days are irrelevant to market data, so the set is empty.
-"""
+CN_HOLIDAYS: Set[date]
+CN_ADJUSTED_WORKDAYS: Set[date]
+CN_HOLIDAYS, CN_ADJUSTED_WORKDAYS = _load_country_calendar("cn")
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +166,39 @@ def last_business_day(ref: Optional[date] = None) -> date:
     while not is_trading_day(d):
         d -= timedelta(days=1)
     return d
+
+
+def expected_publish_session(
+    now: Optional[datetime] = None, *, eod_hour: int = 17,
+) -> date:
+    """Newest trading session whose EOD data a close-quote source may
+    have published — TIME-OF-DAY aware.
+
+    At/after ``eod_hour`` local on a CN trading day the session has
+    closed and the EOD exports start carrying the day's rows (CN close
+    15:00; index providers publish from ~16:00-17:30) — expect TODAY so
+    evening sweeps actually fetch it. Before that hour (morning runs)
+    only the previous session may exist (overseas/HK rows land mid-day);
+    weekends/holidays always expect the last completed session.
+
+    Consumers gate on CONTENT (a code whose local records lack this
+    session is merely re-fetched, bounded by the caller's retry
+    backoff), so an expectation running ahead of publication is safe.
+
+    Replaces the unconditional ``last_business_day(today - 1)`` in the
+    index close-quote downloaders (csindex/BSE/cnindex), which gated the
+    ~18:00-evening sweeps to the PREVIOUS session until midnight — the
+    day's rows for CSI-sourced codes then landed only on the NEXT
+    trading day's run (no weekend runs: a Friday gap waited until
+    Monday), leaving the nightly builds a partial frontier
+    (2026-10-17 study: 186 of 523 codes missing 2026-10-16).
+    """
+    if now is None:
+        now = datetime.now()
+    today = now.date()
+    if is_trading_day(today) and now.hour >= eod_hour:
+        return today
+    return last_business_day(today - timedelta(days=1))
 
 
 def next_business_day(ref: Optional[date] = None) -> date:

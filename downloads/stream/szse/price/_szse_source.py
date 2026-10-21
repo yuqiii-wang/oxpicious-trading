@@ -1,6 +1,6 @@
 """SZSE source B — SZSE ``/api/market/ssjjhq/getTimeData`` (fallback + index).
 
-Fallback source for SZSE stock intraday streaming (used when AkShare/EM
+Fallback source for SZSE stock intraday streaming (used when the Sina/EM
 sources fail or hit their circuit-breaker). Also the sole source for SZSE
 index intraday data.
 
@@ -23,17 +23,24 @@ from downloads._common import (
     HostStatusTracker,
     build_headers_with_referer,
     safe_get,
+    service_urls,
     setup_logger,
 )
 
-from ._akshare_source import MinuteSample
+from ._sina_source import MinuteSample
 
 logger = setup_logger("stream_szse")
 
+SERVICE = "downloads.stream.szse.price"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+
 # SZSE trend-page minute API (the JSON backing the "分时" chart on
 # https://www.szse.cn/market/trend/index.html?code=<code>).
-SZSE_TIMEDATA_URL = "https://www.szse.cn/api/market/ssjjhq/getTimeData"
-SZSE_REFERER = "https://www.szse.cn/market/trend/index.html"
+SZSE_TIMEDATA_URL = URLS["timedata_url"]
+SZSE_REFERER = URLS["referer"]
 
 
 def fetch_szse_minute(

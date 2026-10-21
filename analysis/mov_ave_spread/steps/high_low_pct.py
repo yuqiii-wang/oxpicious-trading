@@ -373,7 +373,12 @@ def _pairs_frame(
             continue
         codes_l, ym_dates = zip(*pairs)
         frames.append(pd.DataFrame({
-            "sec_type": np.full(len(pairs), st, dtype=object),
+            # sec_type as its stored int16 label CODE (the label-code
+            # contract) — this frame INNER-joins the bands frame, whose
+            # sec_type column carries the code; a label-string key here
+            # silently matched NOTHING (same bug class as the step-0
+            # code comparison, found 2026-10-18 via the industry backfill).
+            "sec_type": np.full(len(pairs), sec_type_code(st), dtype=np.int16),
             "code": np.asarray(codes_l, dtype=object),
             "date_year_month": np.array(ym_dates, dtype="datetime64[ns]"),
         }))
@@ -526,8 +531,15 @@ async def run_high_low_pct(
     else:
         missing_by_st = {}
         for st in sec_types:
+            # The frame's sec_type rides as its int16 label CODE (the
+            # label-code contract) — compare against the code, never the
+            # label string (a string comparison silently matched NOTHING
+            # and no-op'd the incremental bands step for every sec_type,
+            # found 2026-10-18 via the industry backfill).
             st_codes = sorted(set(host_array(
-                hlp_df.loc[hlp_df["sec_type"] == st, "code"].to_numpy()
+                hlp_df.loc[
+                    hlp_df["sec_type"] == sec_type_code(st), "code"
+                ].to_numpy()
             )))
             pairs = await find_missing_high_low_pct_pairs(
                 conn, SEC_TYPE_IDENTITY_TABLE[st], st, codes=st_codes,

@@ -2,7 +2,7 @@
 
 Refreshes the BSE index daily archive CSVs (temps/bse_index_archive) from
 www.bse.cn — each index page's own kline endpoint (北证50 bse_bz50.html,
-北证专精特新 bse_zjtx.html; see ``BSE_INDEX_ENDPOINTS``). Serves BOTH the
+北证专精特新 bse_zjtx.html; see the per-index urls roles). Serves BOTH the
 historical archive and the daily trend: each endpoint always returns the
 full daily series (899050 base date 2022-04-29, 899601 base date 2024-06-28
 → now), the run appends missing dates, and the 19:00 daily schedule lands

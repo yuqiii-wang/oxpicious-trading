@@ -8,7 +8,8 @@ description: >
   options_wall / options_vix / momentum / rf_break) as SELF-ADAPTIVE per-(code,
   sub signal, trend, regime, action) RULE CELLS written to
   analysis_signals.signal_rules (rule_params = the prepared bar +
-  measured evidence + gate + confidence scale), populates
+  the gate/confidence constants; the measured evidence lives on the
+  dated snapshots), populates
   analysis_signals.history_signals by REPLAYING those cells (episode
   FIRST days, delay 0), and stamps the family-agnostic
   analysis.trend_days store (the consolidated analysis.trends
@@ -26,8 +27,13 @@ description: >
 The repo has TWO signal tiers with a strict one-way dependency:
 
 - **analysis.analysis_signals** — the strategy tier: measures rule
-  cells on each code's own history, writes `signal_rules` (the cells)
-  + `history_signals` (the cells' triggers replayed) + `trend_days`
+  cells on each code's own history, writes `signal_rules` (the cells —
+  CONSTANT rule definitions only + the is_in_portfolio membership
+  flag), `history_signal_performance` (the cell's OWN MEASURED
+  evidence — n / dir_ave / std / t / hit + the membership flag, as
+  dated daily snapshots, NEVER purged; the 2026-10-19 split, slimmed
+  2026-10-20 — the combined tiers moved to the portfolio tier),
+  `history_signals` (the cells' triggers replayed) + `trend_days`
   (the per-(code, date) trend classification every cell splits on).
 - **live.live_signals** — the live tier: NEVER re-detects or
   re-computes anything. It reads the ACTIVE rule cells and records
@@ -40,7 +46,10 @@ regime-join bug fix, the rules-era live rewire, the momentum family,
 and the consolidated `analysis.trends` classifier (RSI(10) re-entry
 zones + Kaufman guard + deep-anchor turn); 2026-10-16 the trend-update
 force rebuild (216 cells / 1,458 events at index scope) and the rsi6
-entry-window addition. The financial semantics of the six families
+entry-window addition; 2026-10-21 the TRAVEL CLAIM trend redesign
+(a traveling gap-extreme claims rise/fall directly; stationed
+extremes keep top/bottom and yield to live opposite episodes — the
+trend re-`--force`d at index scope the same day). The financial semantics of the six families
 live in the sibling skill `signals-biz-logic`; this file stays on
 architecture.
 
@@ -58,9 +67,23 @@ OHLCV_BOOST class flag).
 
 `run.py` orchestrates per family:
 
-- **signal_rules is CURRENT-STATE**: the family's scope
+- **signal_rules is CURRENT-STATE and CONSTANT-ONLY** (the
+  2026-10-19 split): the family's scope
   (sec_type, signal_type) is DELETEd then freshly inserted every run —
-  cells that stopped passing the gate must not linger.
+  cells that stopped passing the gate must not linger; rule_params
+  carry only the constant rule (axis, K, reentry flags, bar_def /
+  family params, gate bar constants, confidence scale depth_factor +
+  depth_cap) + the is_in_portfolio membership flag (2026-10-20: the
+  cell's id rides a portfolio_signal_rules ids array). The MEASURED
+  items ride each row's `_performance` payload, peeled into
+  **history_signal_performance** (PK = the cell key + `date` = the
+  prepared frame's data horizon): the cell's OWN measure block (n /
+  dir_ave / std / t / hit) + the membership flag — one dated snapshot
+  per emitted cell per run (trading AND wait), upserted, NEVER purged
+  (not even --force — past snapshots are the point; a cell's evidence
+  evolution, graduation and death survive the rules tier's per-run
+  wipes). The pooled tier / gate digest / boost conf / dd lens /
+  cascade NEVER ride the cell snapshot since 2026-10-20.
 - **history_signals**: force purges the scope then COPYs;
   incremental `copy_or_upsert_split_async` past the table's max date
   (idempotent re-emission).
@@ -101,39 +124,49 @@ OHLCV_BOOST class flag).
   episode FIRST days (`EpisodeDetector`, K-absorb on the code's own
   traded rows, trend-aware when the family opts in) → per-cell
   measurement (`cell_stats`: n episodes, sign-aligned dir_ave + std
-  + t-stat, hit) → gate (`CellGate`: buy ≥ 0.25% @ n ≥ 3; sell ≥ 0 @
-  n ≥ 2 — the equity asymmetry IS the design; LOOSENED 2026-10-16
-  from 0.75% @ 4 / 0 @ 3, the moderate user-directed step) → per cell
+  + t-stat, hit) → gate (`CellGate`: buy ≥ 0.25%; sell ≥ 0 — the
+  equity asymmetry IS the design; LOOSENED 2026-10-16 from
+  0.75% @ 4 / 0 @ 3, the moderate user-directed step; 2026-10-19 the
+  SAMPLE FLOOR STOPPED BLOCKING — the dir_ave bar is the only
+  verdict, a cell under its floor trades at the starvation
+  confidence scale min(n/floor, 1)) → per cell
   the WINNING candidate (gate-passing, best dir_ave; ties → the
   first/widest bar) → the POOLED EVIDENCE TIER (2026-10-16: the
   (sub_type, action) pooled population of the winning cells'
   measurable triggers, judged by pooled t-stat ≥ 1 @ n ≥ 10 +
-  expanding-year sign majority — a BUY side whose pooled evidence
-  FAILS is demoted to measured-out: no trading rules rows, no
-  history replay that run, the starved wait replay untouched; SELL
-  records the block ungated, exit timing) → the cell's signal_rules
+  expanding-year sign majority; 2026-10-19 the POOLED STARVATION
+  RETREAT — the statistics legs (bar / t / year majority) stay the
+  verdict, n in [POOLED_TRADE_FLOOR=3, POOLED_MIN_N=10) TRADES at
+  the pooled completeness scale min(n/10, 1) folded into every
+  row's confidence and the snapshot's gate.conf_scale, below 3
+  demoted to measured-out: a BUY side that fails emits no rules
+  rows and no history replay that run; SELL
+  records the block ungated, exit timing — the verdict is computed
+  BEFORE row materialization so the scale can ride it) → the cell's
+  signal_rules
   row + history rows for the winning cells' triggers. `rule_params`
-  carry: axis, episode_merge_days, reentry_trend_split, gate digest,
+  carry the CONSTANT rule only: axis, episode_merge_days, reentry
+  flags, the gate BAR constants (min_pct / sample_floor (the
+  confidence reference) / the observational `ungated` designation),
+  the confidence SCALE (depth_factor, depth_cap 2) plus the
+  candidate's own bar_def/params. The MEASURED half rides the row's
+  `_performance` payload — the history_signal_performance snapshot:
   measure (n/dir_ave_pct/dir_std_pct/t_stat/hit_rate), `pooled`
-  (n/t/hit + the per-horizon decay curve + the expanding-year legs,
-  stamped on trading rows), confidence (base_pct = the measured
-  dir_ave, depth_factor, cap 2), plus the candidate's own
-  bar_def/params. `ungated=True` marks
+  (n/t/hit + the per-horizon decay curve + the expanding-year legs
+  + starved/conf_scale, stamped on trading rows), the gate VERDICT
+  digest (passed/starved/
+  conf_scale), confidence base (= measure.dir_ave_pct) and
+  `ohlcv_boost_conf` (boost finalize stamps it). `ungated=True` marks
   observational twins (options_wall's VRP-fail `_rej`, action
-  wait 2 — never a trading row). STARVED cells (episodes but
-  below the sample floor, 2026-10-16; label RENAMED no_action →
-  wait the same day) are the WAIT population: their history
-  triggers ALWAYS replay as wait events (the extreme-event
-  monotone guarantee — a deepest-claim breach never vanishes
-  because its cell is under-floored) and upsert to the real
-  action once the cell graduates (action is no history PK
-  member); the signal_rules WAIT row is SELECTIVE — only cells
-  blocked SOLELY by the floor (n = floor−1 with dir_ave already
-  at the side's bar: one confirming episode from trading; gate
-  .starved + gate.intended_action; one row per rules PK, twin
-  sides dedup). Measured-out cells (n ≥ floor, dir_ave below the
-  bar) still emit NOTHING — that is the gate rejecting on
-  evidence. Wait rows never feed the ohlcv-boost derivation.
+  wait 2 — never a trading row). STARVED cells (n below the sample
+  floor) TRADE since 2026-10-19 at the reduced confidence (the
+  2026-10-16 wait replay + the selective wait watchlist are
+  RETIRED): the extreme-event monotone guarantee is kept as a
+  REDUCED-CONFIDENCE trading record — the deepest-claim breach at an
+  extreme corner records its real action with gate.starved +
+  gate.conf_scale on the snapshot. Measured-out cells (dir_ave below
+  the bar, any n) still emit NOTHING — that is the gate rejecting on
+  evidence.
 - `engines/evaluation.py` — `CellGate` (the plain gate +
   depth-scaled confidence: base_pct × (1 + factor × min(depth, 2))),
   `cell_stats` (n / dir_ave / dir_std / hit) and `pooled_evidence`
@@ -148,13 +181,13 @@ OHLCV_BOOST class flag).
   pattern + (vol_state, px_speed) cell + tail depth + the cell keys +
   the blend_ok flag), derives its coefficients SELF-ADAPTIVELY per run
   from that anchor population (host-pandas frame, one scipy boundary;
-  ship gates G1 improv / G2 expanding-year OOS / G3 top-quintile), and
-  stamps the per-cell TRUST-WEIGHTED CONFIDENCE BASE onto the rule
-  rows — `signal_rules.ohlcv_boost_conf` = sum(w·y)/sum(w) over the
-  cell's MEASURABLE triggers, w = max(1 + score/K, 0.5), NULL where
-  the side boosted nothing. NEVER a gate; history carries ONE
-  population per event (the boost-twin rows were retired 2026-10-16 —
-  only confidence is tuned, and it lives on the rule cell). Opt-ins:
+  ship gates G1 improv / G2 expanding-year OOS / G3 top-quintile).
+  Its ONLY product was the per-cell `ohlcv_boost_conf` snapshot stamp
+  (2026-10-16..2026-10-20) — RETIRED with the column in the
+  2026-10-20 slimming; the collaborator now leaves the per-run
+  DERIVATION AUDIT (the report run_family logs). NEVER a gate;
+  history carries ONE population per event (the boost-twin rows were
+  retired 2026-10-16). Opt-ins:
   RsiTailEntry / BollBandEntry / MomentumTailEntry / RoofFloorEntry.
 
 ## The consolidated trends component (`analysis/trends/`)
@@ -166,9 +199,6 @@ engines/). Family-agnostic:
 - `trend_state.attach_trend` stamps each (code, date) row an int8
   `trend` (0 top / 1 bottom / 2 rise / 3 fall / 5 unknown; 4 'all' is
   the POOLED stamp of sparse families' rule rows, never a day state):
-  - **top/bottom** = the price_vs_ma255 gap beyond its own TRAILING
-    255d q90/q10 (shifted, no look-ahead) with a matching 20d MA
-    slope — the overextended extremes.
   - **rise/fall** = RSI RE-ENTRY episodes: Wilder RSI(TREND_RSI_WINDOW
     = 10) vs the FIXED 50 ± TREND_RSI_ZONE_SPREAD (12.5) momentum
     zones (fixed, not per-code percentiles — RSI is bounded and its
@@ -178,6 +208,33 @@ engines/). Family-agnostic:
     GUARD agreeing — the sign of the Kaufman net change over
     TREND_GUARD_WINDOW (10) rows (the 2026-10-15 measured replacement
     of the MA20-slope guard).
+  - **the TRAVEL CLAIM (2026-10-21, user-directed)**: a gap-extreme
+    day whose leg has traveled ≥ TREND_TRAVEL_MIN (4.0) close-vol
+    units (the Wilder ewm of |dClose| over 14 rows — the family
+    frames carry no high/low) from the prior TREND_TRAVEL_WINDOW (60)-
+    row high/low, with the GUARD AGREEING, claims rise/fall DIRECTLY
+    — a large fluctuation in progress is a directional state, not an
+    extreme state; the RSI episode's zone edge sits weeks away once a
+    leg consolidates, so the old extremes-override chain masked whole
+    legs (the prompt case: 000001's 2026 Sep-Oct decline read bottom
+    20+ sessions; it now reads fall). The travel bar is the semantic
+    floor, not the working discriminator (the below-extreme
+    population's leg sits ≥ 3.7 cvol everywhere — the GUARD SIGN
+    splits traveling vs stationed); T=3..6 profiles identical
+    (temp_scripts/trend_study/travel60_calib.py). Regressions all
+    hold: Apr-2020 flip 2020-04-07, synthetic quiet occupancy 162/200
+    (retired MA60 rule's 167), V-turn +3d / crash +0d; the four state
+    populations are forward-coherent (rise(travel) continues +0.6%
+    hit 52%, fall(travel) +1.1% — the capitulation edge now lives in
+    the fall-trend cells, stationed top/bottom revert); most old top
+    days flip to rise (above-extremes with an agreeing guard are the
+    measured continuation population, +1.4% at guard > 3 ATR).
+  - **top/bottom** (the STATIONED extremes, 2026-10-21 reshape) = the
+    price_vs_ma255 gap beyond its own TRAILING 255d q90/q10
+    (shifted, no look-ahead) with a matching 20d MA slope, KEPT only
+    when the day is not traveling — the small-fluctuation-parked-at-
+    the-band-edge mean-reversion state — and yielding to a live
+    opposite episode label.
   - **the DEEP-ANCHOR TURN**: a deep RSI touch (≤ 30 / ≥ 70) opens a
     40-row window in which the midline re-cross with the guard flips
     the trend — the post-crash-rebound fix (000001's Apr-2020
@@ -205,9 +262,10 @@ engines/). Family-agnostic:
 | mov_rsi | RsiTailEntry | rsi{14,10,6}_{1,2,3}pct buy/sell | code×trend×regime, trend-aware absorb | 5 | rsi |
 | bollinger | BollBandEntry | boll20_{2,2.5,3}std buy/sell (window 20 ONLY) | code×trend×regime | 5 | boll |
 | ma_cross | MaCrossReclaimEntry (ma20/60_cross buy, cross-excess {1,2,3}%), MaRetestEntry (ma20_retest sell), MaGdepthEntry (ma120/255_gap buy ONLY, {3,5,8}%), MaBreadthEntry (ma_breadth_thrust buy, ma_9to1_up buy / ma_9to1_dn sell — the MARKET-LEVEL breadth rules over the sec_type's own universe, joined per date onto every code) | kind×window grids | code×trend (regime 4) | 5 | no |
-| options_wall | WallBreachEntry | ow_put_025pct (buy, VRP-gated), ow_put_025pct_rej (wait twin), ow_call_025pct (sell) | code (trend 4, regime 4) | 0 | no |
-| options_vix | OvixSpikeEntry (ovix_spike, ovix_spike_hivol), OvixPanicPeakEntry (ovix_panic_peak), OvixAtrBreakEntry (ovix_atr_break buy — the spot day-return in close-to-close ATR units past the self-adaptive {2,2.5,3} bar while slope5 fires; the 2026-10-15 low-base repricing class), OvixFearUnwindEntry (ovix_fear_unwind sell) | multi-axis detects | code (trend 4, regime 4) | 8 | no |
+| options_wall | WallBreachEntry | ow_put_025pct (buy, VRP-gated), ow_put_025pct_rej (wait twin), ow_call_025pct (sell) — the breach WIDTH collapsed to the SINGLE 0.10% bar (2026-10-19 sparsity study: breach-day counts identical across widths; the sub_type NAME's 025 is historical label vocabulary only) | code (trend 4, regime 4) | 0 | no |
+| options_vix | OvixSpikeEntry (ovix_spike, ovix_spike_hivol), OvixPanicPeakEntry (ovix_panic_peak buy + ovix_euphoria_peak sell — the 2026-10-19 mirror: ONE shared vol-ATH escalation bar, the spot-vs-5d-ago leg picks the direction), OvixAtrBreakEntry (ovix_atr_break buy — the spot day-return in close-to-close ATR units past the self-adaptive {1.5,2,2.5,3} bar while slope5 fires; the 2026-10-15 low-base repricing class; k=1.5 added 2026-10-19), OvixFearUnwindEntry (ovix_fear_unwind sell) | multi-axis detects | code (trend 4, regime 4) | 8 | no |
 | momentum | MomentumTailEntry | mom{5,20,short,mid,long}_{1,2,3}pct buy/sell (log-return ln(1+momentum) of analysis.mov_ave_momentum; the vol-adaptive lookbacks + fixed 5/20d anchors) | code×trend×regime, plain absorb | 5 | no |
+| hedge_pairs | HedgeRsiEntry (registry entry0 — owns the ONE fetch + all three wipe scopes: hp_rsi + hedge_pairs at the pair codes, mov_rsi at the component codes; stamps the sourced type-0 component rows via the _ComponentRsiEntry shim) + HedgePairEntry (pair-native) | hp_rsi (8): hp_entry_legs_rsi / hp_exit_mkt_high / hp_catchup_rsi_hi / hp_entry_wash120_mkt (2026-10-19) — orchestration composites whose portfolio_signal_rules groups reference the sourced mov_rsi ids; hedge_pairs (7): hp_harvest (2026-10-21 dedup — the z15/z20 pair merged, the z grid the run_cells candidate set) / hp_mom_strong / hp_mom_lag (2026-10-20 tilt) / hp_stop_regime + the 2026-10-19 pair-native graduates hp_entry_wash (the same dedup merged the per-window wash{60,120,255} trio — the window grid the run_cells candidate set) / hp_entry_rho50 / hp_entry_catchup_reclaim60 (own one-id groups; the observational hp_regime_flip retired 2026-10-21 — rho50 is the hedgeable turn-on's one record). The family also stamps the DRAWDOWN LENS dd block (ddmin20_{price,px_strong,px_lag} forward-trough gauges) on every hedge performance snapshot — run.py combines the orchestrating fragments' `dd` lenses into the portfolio audit's dd column — AND (2026-10-20, re-shaped the same day's cell-level redesign) the PORTFOLIO tier's two PER-SUB fragment stamps on every orchestrating row: `_portfolio_rule_params` (portfolio_signal_rules.rule_params — the shared legs / market / aim / inverse-vol weighting blocks + the sub's own spec, merged per portfolio into rule_params.subs) and `_portfolio_performance` (history_portfolio_signal_performance — the max_drawdown_reduction audit: the pair value's own max DD vs the legs' standalone as reduction pp + the cell's dd lens fragment; run.py merges the fragments per portfolio and adds the members' COMBINED STATS as `pooled`; dated, upserted, never purged) | pair (trend 4, regime 4 — both POOLED; codes 'A~B') | 5 | no |
 | rf_break | RoofFloorEntry | rf{60,120,255,500}_roof buy / rf{60,120,255,500}_floor sell + the rf{W}_med_{roof,floor} twins — the close vs the PRIOR day's roof/floor level per (method, window): donchian (method 1, the window extreme) and median (method 5, the five-method consensus) from analysis.mov_ave_spreads_roof_floor_estimates; a STRUCTURAL bar, not a percentile tail; NO cross-window carving (each window its own population) | code×trend (regime 4) | 5 | no |
 
 Nested widest-first carving everywhere: the deeper tail claims first,
@@ -229,19 +287,33 @@ never a detection, no per-family logic (the rules-era rewire of
   (`SIGNAL_VALUE_SOURCE` in `analysis/fetch/_values.py`: mov_rsi →
   "rsi", bollinger → "boll" — the boll z computed on the fly from the
   code's last closes, no source table). A family without an entry is
-  not live. wait rows are EXCLUDED from the set (the VRP twin +
-  the starved cells since 2026-10-16) — not-trading-yet records are
-  never a live bar.
+  not live. wait rows are EXCLUDED from the set (the ungated VRP twin
+  only since 2026-10-19 — under-floor cells are trading rows now) —
+  observational records are never a live bar.
 - Each cell carries its own action, bar_def (resolved per check:
   bollinger's fixed ±kσ constant; mov_rsi's per-code ADAPTIVE
   trailing-2550d percentile tail recomputed at check time over the
   rows strictly before the value anchor — bit-parity verified against
-  history_signals.signal_reference) and confidence scale (the history
-  writer's identical formula).
+  history_signals.signal_reference) and confidence scale (rule_params.
+  confidence: depth_factor/cap) + BASE (the latest performance
+  snapshot's dir_ave_pct at-or-before the checked date — the live
+  fetch merges it into the confidence dict together with the
+  STARVATION scale from the same snapshot's gate digest
+  (gate.conf_scale → confidence.sample_scale, applied by
+  rules_confidence_bp); a --date replay uses the
+  measurement known that day).
 - THE DAY-CONTEXT MATCH is the gate: only the cell whose (trend,
   regime) equals the day's own trend (`analysis.trend_days`) and
   regime (stats.market_regimes, calm default) may fire — the same
-  population the cell measured.
+  population the cell measured. A POOLED axis (the 'all' 4 stamp)
+  measured EVERY day state, so it matches any day context on that
+  axis (strict equality could never fire it — fixed 2026-10-21); the
+  hedge_pairs ORCHESTRATION stamps (`_ComponentRsiEntry` — REAL
+  mov_rsi cells at the market + leg codes, pooled both axes) are
+  EXCLUDED from the live active set (their history replay is
+  deliberately dropped — the portfolio source layer never fires
+  standalone; without the exclusion the pooled match would wake them
+  at HP_MARKET_CODE 000300, a live-checked study index).
 - The evaluator compares sell value > bar / buy value < bar (the
   row's OWN action decides direction; signal_excess = value − bar);
   missing value / underivable bar / no trend context ⇒ skipped,
@@ -264,24 +336,52 @@ never a detection, no per-family logic (the rules-era rewire of
 3. A cell's rule_params are SELF-ADAPTIVE per PK — the same sub
    signal measures different bars per (trend, regime); identical bars
    across all trends of one sub signal would be a red flag.
-4. signal_rules is wiped + reinserted per run (current-state);
-   history is append/upsert; trend_days is per-code horizon-gated.
+4. signal_rules is wiped + reinserted per run (current-state,
+   CONSTANT-only rule_params + the is_in_portfolio membership flag);
+   history is append/upsert; performance
+   snapshots are upsert-only and NEVER purged (--force included);
+   trend_days is per-code horizon-gated; portfolio_signal_rules is
+   wiped + rewritten with them (one row per portfolio) while
+   history_portfolio_signal_performance is upsert-only like 04;
+   portfolio_history_signals (2026-10-21, the PORTFOLIO tier's EVENT
+   history — one row per coordinated event with THE EVENT DATE + the
+   ``member_signals`` JSONB, the sourced component CELL EVENTS that
+   triggered it each with its OWN date, resolved ACROSS the tail grid
+   since the raw-tail witness stays lit while the deeper claim carves
+   the shallower cell's episodes) follows the history_signals
+   lifecycle (--force purges the (sec_type, portfolio_type) tier).
 5. The live tier NEVER writes a bar the strategy tier didn't stamp.
 6. Sparse options families POOL at the gate (per-code cells, trend 4
    / regime 4); the VRP-fail twin is wait, never live.
-7. The boost is a TRUST-WEIGHTED MEASUREMENT, never a gate: it stamps
-   the per-cell `ohlcv_boost_conf` (NULL where the side boosted
-   nothing) and never touches the history population — the plain rows
-   are the population of record.
-8. STARVED cells RECORD (2026-10-16, tightened + renamed to WAIT the
-   same day): a cell with episodes below the sample floor replays
-   ALL its triggers into history as wait events, graduating to the
-   real action in place once the gate passes — an extreme event's
-   deepest claim never vanishes. The signal_rules wait row is
-   SELECTIVE (floor-blocked imminent cells only, n = floor−1 at the
-   bar). Measured-out cells still emit nothing, and wait rows never
-   fire live.
-9. After any run that wrote: ANALYZE the tables; verify by row counts
+7. The boost is a TRUST-WEIGHTED MEASUREMENT, never a gate: since
+   2026-10-20 it leaves only the per-run DERIVATION AUDIT (the
+   per-cell ohlcv_boost_conf stamp retired with its column) and never
+   touches the history population — the plain rows are the population
+   of record.
+8. STARVED cells TRADE (2026-10-19, retiring the 2026-10-16 wait
+   replay): the sample floor is the confidence reference, not a
+   verdict — a cell under its floor emits its REAL action at the
+   starvation scale min(n/floor, 1) (readers RECOMPUTE it since
+   2026-10-20 from the snapshot's n_episodes + the rule's
+   gate.sample_floor — the digest left the slimmed cell snapshot; the
+   live tier applies the same scale). An
+   extreme event's deepest claim still records — as a
+   reduced-confidence trading row. Measured-out cells (dir_ave below
+   the bar, any n) emit nothing, and the only wait rows left are the
+   ungated VRP twins (never live). The POOLED n floor is the same
+   kind of reference (same day): the statistics legs (bar / t / year
+   majority) are the BUY verdict, n in [POOLED_TRADE_FLOOR,
+   POOLED_MIN_N) trades at min(n/10, 1) folded into the in-run
+   confidence, below the trade floor emits nothing.
+9. The PORTFOLIO tier is CELL-LEVEL-SIGNALS-IN-PORTFOLIO
+   (2026-10-20): one portfolio_signal_rules row per portfolio holds
+   ALL member ids; the member cells carry is_in_portfolio and keep
+   their OWN unified dir_ave test; history_portfolio_signal_performance
+   audits the members' COMBINED stats (pooled) + the structure
+   benefit + the combined dd lens, and its gate.conf_scale is the
+   member confidence cascade the live tier applies beside the
+   starvation scale (is_valid groups only — never a discount).
+10. After any run that wrote: ANALYZE the tables; verify by row counts
    per signal_type/sub_type, the trading-signals API, and the UI.
 
 ## Where things live
@@ -299,9 +399,35 @@ never a detection, no per-family logic (the rules-era rewire of
   datetime64[us] + boost axes as int8 codes)
 - Pipeline: `run.py` + `__main__.py`; regimes: `fetch/regimes.py`
 - Tables: `database/sql/analysis/analysis_signals/` — 00_schema.sql,
-  01_signal_rules.sql, 02_history_signals.sql (headers/COMMENTs are
-  the tables' documentation; keep them current). trend_days:
-  `database/sql/analysis/trends/`
+  01_signal_rules.sql (is_in_portfolio since 2026-10-20),
+  02_history_signals.sql,
+  03_portfolio_signal_rules.sql (ONE ROW PER PORTFOLIO — no sub_type
+  axis; its rule_params JSONB in the
+  signal_rules GRAMMAR: the shared top-level axis / universe /
+  pair_weighting / episode_merge_days / gate bars / confidence
+  cascade scale / the portfolio {legs, market, aim} block + the
+  PER-SUB coordination specs under subs; is_valid = the audited
+  benefit cleared the portfolio gate AND at least one orchestrating
+  cell's own verdict — the GATING conjunction for the CONFIDENCE
+  CASCADE),
+  04_history_signal_performance.sql (the cell's OWN measure + the
+  membership flag — slimmed 2026-10-20),
+  05_history_portfolio_signal_performance.sql (the portfolios' dated
+  AUDIT snapshots — what the portfolio took; hedge: max
+  drawdown reduction; `pooled` = the COMBINED STATS of the
+  individual in-portfolio signals; `dd` = the orchestrating cells'
+  combined lens; `gate` carries the verdict digest with conf_scale =
+  the member cascade; headers/COMMENTs are the tables' documentation;
+  keep them current),
+  06_portfolio_history_signals.sql (the PORTFOLIO tier's EVENT
+  history — one row per coordinated event, THE EVENT DATE +
+  `member_signals`; the portfolio history panel's expandable rows,
+  served by the `/api/live-data/trading-signals/portfolio-history`
+  route). The PORTFOLIO type knowledge
+  docs: `database/sql/static/portfolio_signal_docs/` (the
+  analysis_signal_docs convention at the portfolio tier, one JSONB
+  per portfolio_type, joined by the portfolio API).
+  trend_days: `database/sql/analysis/trends/`
 - Live: `live/live_signals/` — `analysis/evaluator.py` (the ONE
   generic breach check), `analysis/fetch/` (_values the
   SIGNAL_VALUE_SOURCE map, _sources value fetchers, _bars as-of bar
@@ -368,4 +494,75 @@ never a detection, no per-family logic (the rules-era rewire of
   t-stat ≥ 1 @ n ≥ 10 + expanding-year sign majority, a failing BUY
   side demoted to measured-out (no rows that run); cell_stats gained
   dir_std/t_stat; every trading rule row carries rule_params.pooled
-  (the decay curve + the expanding-year legs, the boost-G2 lift).
+  (the decay curve + the expanding-year legs, the boost-G2 lift). LAST
+  (2026-10-19): the CONSTANT/PERFORMANCE SPLIT — signal_rules.
+  rule_params slimmed to the constant rule (bar def, K, reentry flags,
+  gate bars, confidence scale) and the MEASURED items (measure /
+  pooled / gate verdict / confidence base / the boost conf — its rules
+  column dropped) moved to analysis_signals.history_signal_performance
+  as dated daily snapshots (date = the frame's data horizon, upserted,
+  never purged); the rules API re-merges the latest snapshot per cell
+  and the live tier reads its confidence base as-of the checked date.
+  LAST (2026-10-19, later the same day): the STARVATION RETREAT —
+  the sample floor stopped blocking (user-directed, answering the
+  2025-04-08 tariff-crash wait records): CellGate.passes judges the
+  dir_ave bar only, under-floor cells emit their REAL action at
+  conf_scale = min(n/floor, 1) (digest fields starved + conf_scale
+  replace intended_action; the selective wait watchlist and the
+  starved history replay are deleted; the live lateral join reads
+  conf_scale into confidence.sample_scale for rules_confidence_bp;
+  the pooled demotion now drops the whole side — no wait population
+  survives it). LAST (2026-10-19, the OPTIONS LOOSENING — user-
+  directed "more signals on the Options page"): the wall width
+  became a per-cell candidate grid {0.25, 0.10}% (the ma_cross
+  cross-excess precedent), the put-side VRP gate 0.80 → 0.70 (the
+  gated put population was empty at 0.80), the ovix corr bar −0.80 →
+  −0.75 (the spike_wide coverage play graduating into the main bar),
+  and ovix_atr_break's k grid gained 1.5 — AND the POOLED
+  STARVATION RETREAT one level up (the pooled verdict moved BEFORE
+  row materialization; the statistics legs stay verdict legs, n in
+  [3, 10) trades at min(n/10, 1) folded into gate.conf_scale): the
+  first-ever ow_put BUY cells (000852 n=7 +6.17% t=3.96 at ×0.7) and
+  starved-trading ovix_spike/hivol cells (×0.9/×0.6) date from this
+  rebuild; the UI decoders gained the atr_multiple bar word and the
+  wall_dist_pct percent-unit fix (fmtNum — it read ×100 off), and
+  the vol-index corr companion's guide lines moved to −0.75/−0.5.
+  LAST (2026-10-19, the EUPHORIA MIRROR — the off-spike study's
+  productized leg, temp_scripts/ovix_off_spike_study.py +
+  ovix_grid_study.py): OvixPanicPeakEntry owns a second sub type,
+  ovix_euphoria_peak (label 4307, SELL) — the SAME vol-ATH
+  escalation bar (vol > prior 120-session max × 1.05 & slope5 >
+  +10%) with the spot leg ABOVE its 5-sessions-ago close (the
+  blow-off-top exit the buy legs exclude; 000852 2024-10-08 n=1
+  +8.15% at the starvation ×0.5, sells never pooled-gated; the other
+  codes' euphoria cells measured out — tops continue). The same
+  study MEASURED OUT every candidate bar grid (corr {−0.75,−0.70} ×
+  slope-window {5,3} on spike/hivol/peak: +0/−0 events; the atr
+  slope3 grid: −9 net events on precision-noise winner flips) — the
+  production bars stand; rule_params gained the vol_ath_euphoria
+  bar_def kind (the UI decoder renders "spot > 5d-ago").
+  LAST (2026-10-19, the SPARSITY STUDY — docs/
+  options_wall_sparsity_study_2026-10-19.md, temp_scripts/
+  ow_sparsity_study.py + ow_gamma_wall_study.py): the family's low
+  counts are INTRINSIC (the dominant OI zone's outer edge — the bar —
+  sits median ~12% from spot; only 1.2% of days breach it) with the
+  255-row VRP warmup erasing whole codes (000016's entire put
+  population). The user-directed implementation: the VRP bar's
+  min_periods dropped to OW_VRP_PCTL_MIN_PERIODS=120 (60 identical —
+  the rescued 000016 put cell: n=8 +0.56% hit 75%), the VRP bar
+  0.70 → 0.60 (p50 halves the edge — do not go lower), and the
+  no-op width grid collapsed to (0.10,). Rebuilt: the put side
+  trades TWO cells (000852 n=8 +5.44%, 000016 n=8 +0.56%) at FULL
+  pooled confidence (pooled n=16 t=3.07 — the starvation scale is
+  gone), call pooled n=13 t=1.29, index history 52 rows (29
+  trading). Two honest negatives recorded the same day: the
+  NEAREST-EXPIRY dominant-wall pick (denser breach days, 1 gated
+  pass, weaker edge) and the walls-as-STRIKES counterfactuals
+  (max-OI and gamma×OI strike picks from stats.options_greeks —
+  hundreds of gated events at +0.16%/+0.04%, far below the bar;
+  the deep zone-edge breach IS the edge). P2 (SZSE ETF option chain
+  backfill) is SOURCE-BLOCKED: the SZSE trend service serves only
+  from 2025-07-01 (downloads/options/szse/trend
+  TREND_ARCHIVE_DATE); a backfill needs SZSE's historical-archive
+  endpoint (undiscovered — reportdocs probes 404) or a vendor
+  (Tushare opt_daily class).

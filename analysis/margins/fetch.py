@@ -138,11 +138,15 @@ async def fetch_index_margin_series(conn) -> pd.DataFrame:
     AGGREGATED series in Python (aggregate-then-compute — slope is a ratio
     and non-additive, so per-stock slopes cannot be averaged directly).
 
-    Returns a DataFrame with columns: code, date, rz_balance, rz_buy —
-    the SAME shape as fetch_margin_history so compute_tech_stats can
-    consume it uniformly. ``code`` is the bare 6-digit index code
-    (e.g. '000970'); ``rz_balance`` = index_margin_balance (weighted-avg
-    yuan); ``rz_buy`` = index_margin_buy (weighted-avg yuan, FLOW).
+    Returns a DataFrame with columns: code, date, rz_balance, rz_buy,
+    n_members — the SAME shape as fetch_margin_history (plus the
+    population passenger) so compute_tech_stats can consume it uniformly.
+    ``code`` is the bare 6-digit index code (e.g. '000970');
+    ``rz_balance`` = index_margin_balance (weighted-avg yuan);
+    ``rz_buy`` = index_margin_buy (weighted-avg yuan, FLOW);
+    ``n_members`` = n_with_balance (constituents behind that date's
+    weighted average — a change marks a section boundary so index trend
+    episodes never attribute the re-weighting jump as a margin rise/drop).
     Sorted by (code, date).
 
     Args:
@@ -154,14 +158,15 @@ async def fetch_index_margin_series(conn) -> pd.DataFrame:
             index_code            AS code,
             date,
             index_margin_balance AS rz_balance,
-            index_margin_buy      AS rz_buy
+            index_margin_buy      AS rz_buy,
+            n_with_balance       AS n_members
         FROM analysis.margin_index_series
         ORDER BY index_code, date
         """
     )
     if not rows:
         return pd.DataFrame(
-            columns=["code", "date", "rz_balance", "rz_buy"]
+            columns=["code", "date", "rz_balance", "rz_buy", "n_members"]
         )
     return pd.DataFrame(
         {
@@ -173,6 +178,10 @@ async def fetch_index_margin_series(conn) -> pd.DataFrame:
             ],
             "rz_buy": [
                 float(r["rz_buy"]) if r["rz_buy"] is not None else float("nan")
+                for r in rows
+            ],
+            "n_members": [
+                float(r["n_members"]) if r["n_members"] is not None else float("nan")
                 for r in rows
             ],
         }

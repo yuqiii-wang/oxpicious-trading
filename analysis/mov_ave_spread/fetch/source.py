@@ -25,11 +25,20 @@ from _common.build_commons import (
     recent_trading_day_cutoff,
     rec_cols,
 )
-from _common.df_utils import epoch_col_to_dt64, to_dt64
+from _common.df_utils import (
+    compute_emas,
+    compute_moving_averages,
+    epoch_col_to_dt64,
+    to_dt64,
+)
 from _common.importance import order_codes_or_sorted_async
 from _common.labels import SEC_TYPE_CODE
 
-from analysis.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
+from analysis.mov_ave_spread.config import (
+    MA_WINDOWS,
+    SEC_TYPE_IDENTITY_TABLE,
+    TECH_STATS_EMA_COLUMNS,
+)
 from analysis.mov_ave_spread._common import (
     compute_slopes_curvatures,
     compute_ema_slopes_curvatures,
@@ -50,6 +59,26 @@ logger = logging.getLogger(__name__)
 _SLOPE_LOOKBACK_ROWS = 2
 
 
+# Source SELECT column order shared by the etf / index / stock branches —
+# their MA/EMA columns arrive pre-computed from the stats.*_tech_stats
+# tables.
+_TECH_SOURCE_COLUMNS = [
+    "code", "date", "price", "open", "low", "high",
+    "ma5", "ma20", "ma60", "ma120", "ma255",
+    "ema6", "ema20", "ema60", "ema120", "ema255",
+    "trading_amount",
+    "is_ohl_estimated",
+]
+
+# Industry branch base columns (no tech_stats table — the MA/EMA columns
+# are computed below the load with the builds' own helpers).
+_INDUSTRY_SOURCE_COLUMNS = [
+    "code", "date", "price", "open", "low", "high",
+    "trading_amount",
+    "is_ohl_estimated",
+]
+
+
 def _fetch_sql_for_sec_type(sec_type: str) -> str:
     """Build the per-(code, date) source-fetch SQL for the given sec_type,
     scoped to a caller-supplied code list via the ``$1`` placeholder
@@ -66,6 +95,15 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
     Stocks JOIN stock_identity + stock_basic_stats + JOIN stock_tech_stats
     + JOIN stock_liquidity_margin (for trading_amount) (no adjustment
     table — stocks use raw close as price).
+
+    Industry (sec_type='industry') JOINs the stats.industry_identity view
+    (code = industry_id, name = industry_label) + industry_basic_stats'
+    pool-'all' slice: price/open/low/high are the REBASED-TO-100 composite
+    OHLC (mean_close / mean_open / mean_low / mean_high), trading_amount
+    is the slice's union-stock turnover. Industry has NO *_tech_stats
+    table — the MA/EMA columns are computed by fetch_source_data after
+    the load (same compute_moving_averages / compute_emas conventions
+    the builds use), so this SQL returns the 8 base columns only.
     """
     if sec_type == "etf":
         return """
@@ -136,6 +174,25 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
               AND b.close IS NOT NULL
             ORDER BY i.code, i.date ASC
         """
+    if sec_type == "industry":
+        return """
+            SELECT
+                i.code,
+                extract(epoch from i.date)::float8 AS date,
+                b.mean_close::float8 AS price,
+                b.mean_open::float8  AS open,
+                b.mean_low::float8   AS low,
+                b.mean_high::float8  AS high,
+                b.total_trading_amount::float8,
+                FALSE AS is_ohl_estimated
+            FROM stats.industry_identity i
+            JOIN stats.industry_basic_stats b
+              ON b.date = i.date AND b.industry_id = i.code
+            WHERE i.code = ANY($1::text[])
+              AND b.pool_size = 3
+              AND b.mean_close IS NOT NULL
+            ORDER BY i.code, i.date ASC
+        """
     raise ValueError(f"Unknown sec_type: {sec_type!r}")
 
 
@@ -188,8 +245,8 @@ async def fetch_source_data(
     code_filter: Optional[str] = None,
 ) -> pd.DataFrame:
     """Fetch per-(code, date) price + MAs from the stats schema for the
-    given sec_type ('etf', 'index', or 'stock'), then compute per-(code)
-    slope and curvature for each MA window.
+    given sec_type ('etf', 'index', 'stock', or 'industry'), then compute
+    per-(code) slope and curvature for each MA window.
 
     Pre-filter: only codes with at least one identity-table row in the last
     RECENT_TRADING_DAYS trading days are loaded. A code with no recent data
@@ -346,15 +403,15 @@ async def fetch_source_data(
                                      "trading_amt_market_share_vs_ma255"])
     # One positional-unpack pass over the asyncpg records (repo
     # convention) — the per-row ``dict(r)`` construction is O(rows)
-    # python and per-row proxy dispatch under cudf.pandas. All three
-    # sec_types share the same SELECT column order.
-    df = pd.DataFrame(rec_cols(rows), columns=[
-        "code", "date", "price", "open", "low", "high",
-        "ma5", "ma20", "ma60", "ma120", "ma255",
-        "ema6", "ema20", "ema60", "ema120", "ema255",
-        "trading_amount",
-        "is_ohl_estimated",
-    ])
+    # python and per-row proxy dispatch under cudf.pandas. The etf /
+    # index / stock branches share one 18-column SELECT order; industry
+    # loads its 8-column base set (no tech_stats) and derives the
+    # MA/EMA columns below.
+    source_columns = (
+        _INDUSTRY_SOURCE_COLUMNS if sec_type == "industry"
+        else _TECH_SOURCE_COLUMNS
+    )
+    df = pd.DataFrame(rec_cols(rows), columns=source_columns)
     # df is always constructed with the explicit column list above, so
     # "code" exists even when rows is empty (avoids the proxied
     # Index.__contains__ fallback under cudf.pandas).
@@ -385,6 +442,25 @@ async def fetch_source_data(
     # Numeric columns arrive as native float64 via the ::float8 SQL casts
     # (asyncpg NUMERIC → Python Decimal → object column would make every
     # pd.to_numeric fall back per column) — no post-parse conversion.
+    # ---- Industry-only: derive the tech columns the other sec_types load
+    # from their stats.*_tech_stats tables. The composite industry series
+    # (rebased-to-100 mean OHLC) has no build-side tech_stats, so the
+    # MA/EMA columns are computed here with the SAME helpers + conventions
+    # the builds use for tech_stats: compute_moving_averages
+    # (min_periods=1 partial windows, 6dp round) and compute_emas
+    # (adjust=False, 6dp round). Whole-frame grouped passes (GPU under
+    # cudf.pandas); the universe is ~106 industries — small.
+    if sec_type == "industry":
+        df = compute_moving_averages(
+            df, group_key="code", value_col="price",
+            windows=list(MA_WINDOWS), add_ratio=False,
+        )
+        df = compute_emas(
+            df, group_key="code", value_col="price",
+            spans=list(TECH_STATS_EMA_COLUMNS.keys()),
+        )
+        logger.info(f"      industry tech columns derived in-pipeline: "
+              f"ma{list(MA_WINDOWS)} + ema{list(TECH_STATS_EMA_COLUMNS.keys())}")
     # Compute slope (1st derivative) and curvature (2nd derivative) per code.
     # This is computed over the FULL per-code history so the diff() values
     # are correct for the first target date of each code (incremental mode).

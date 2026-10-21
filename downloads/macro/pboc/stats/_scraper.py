@@ -27,8 +27,15 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
+from downloads._common import service_urls
+
 from ._catalog import StatsItem, find_matching_item
-from ._session import PBOC_BASE, CffiAntiBotSession
+from ._session import PBOC_BASE, CffiAntiBotSession, REQUEST_TYPE, SERVICE
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE, REQUEST_TYPE)
+CENTRAL_INDEX_URL = URLS["central_index"]
 
 
 # Regex to extract year from link text like "2026年统计数据"
@@ -245,7 +252,7 @@ def discover_year_archives(
     logger: logging.Logger,
 ) -> List[YearArchive]:
     """Fetch the central index and parse year archive URLs."""
-    central_url = f"{PBOC_BASE}/diaochatongjisi/116219/116319/index.html"
+    central_url = CENTRAL_INDEX_URL
     logger.info("[discover] fetching central index: %s", central_url)
     html = session.get_text(central_url)
     if html is None:
@@ -264,7 +271,7 @@ def discover_sub_pages(
 ) -> SubPageLinks:
     """Fetch a year's index page and discover shrzgm/hbtjgl sub-page URLs."""
     logger.info("[discover] year %d index: %s", archive.year, archive.index_url)
-    html = session.get_text(archive.index_url, referer=f"{PBOC_BASE}/diaochatongjisi/116219/116319/index.html")
+    html = session.get_text(archive.index_url, referer=CENTRAL_INDEX_URL)
     if html is None:
         logger.error("[discover] failed to fetch year %d index", archive.year)
         return SubPageLinks(year=archive.year)

@@ -15,13 +15,24 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from _common._holidays_and_weekdays import is_trading_day
+from _common.request_config import request_config_for, service_urls
+
+# ---------------------------------------------------------------------------
+# Service row — the runtime source for the URLs, the page timeouts and the
+# post-navigation settle sleep (external_request_config JSON, request_type
+# "playwright": timeout_connect_sec = page-nav timeout, timeout_read_sec =
+# data-load timeout, settle_sleep_sec = post-navigation settle wait).
+# ---------------------------------------------------------------------------
+SERVICE = "downloads.options.cffex.trend"
+_PLAYWRIGHT_ROW = request_config_for(SERVICE, "playwright")
+_URLS = service_urls(SERVICE, "playwright")
 
 # ---------------------------------------------------------------------------
 # URLs and paths
 # ---------------------------------------------------------------------------
-CFFEX_TREND_URL = "http://www.cffex.com.cn/cn/rtj.html"
-CFFEX_TREND_REFERER = "http://www.cffex.com.cn/cn/"
-CFFEX_BASE_ORIGIN = "http://www.cffex.com.cn"
+CFFEX_TREND_URL = _URLS["trend_page"]
+CFFEX_TREND_REFERER = _URLS["trend_referer"]
+CFFEX_BASE_ORIGIN = _URLS["base_origin"]
 
 TREND_DIRNAME = "cffex_options_trend"
 OUTPUT_CSV_ENCODING = "utf-8-sig"
@@ -38,11 +49,15 @@ HEADLESS = True
 VIEWPORT_WIDTH = 1920
 VIEWPORT_HEIGHT = 1080
 
-PAGE_NAVIGATION_TIMEOUT = 30000
-DATA_LOAD_TIMEOUT = 15000
+# Timeout for page navigation (ms) — the row's timeout_connect_sec.
+PAGE_NAVIGATION_TIMEOUT = int(_PLAYWRIGHT_ROW.timeout_connect_sec * 1000)
+# Timeout for waiting for data to load (ms) — the row's timeout_read_sec.
+DATA_LOAD_TIMEOUT = int(_PLAYWRIGHT_ROW.timeout_read_sec * 1000)
 
-# (Per-day sleep pacing lives in the external_request_config JSON row —
-# request_type "playwright", resolved via _common/request_config.)
+# Post-navigation settle wait before interacting with the page — the row's
+# settle_sleep_sec, jittered by the row's sleep_jitter fraction.
+SETTLE_SLEEP_SEC: float = _PLAYWRIGHT_ROW.settle_sleep_sec
+SETTLE_JITTER: float = _PLAYWRIGHT_ROW.sleep_jitter
 
 # ---------------------------------------------------------------------------
 # CSV format (matches archive CSV columns)

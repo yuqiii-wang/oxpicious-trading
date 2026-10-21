@@ -72,7 +72,9 @@ function searchPlaceholderFor(secType: SecNavSecType): string {
     ? "ETF code (e.g. 510050)"
     : secType === "index"
       ? "Index code (e.g. 000300)"
-      : "Stock code (e.g. 600000)";
+      : secType === "industry"
+        ? "Industry code (e.g. BANKS)"
+        : "Stock code (e.g. 600000)";
 }
 
 export default function SecNavShell({
@@ -168,7 +170,7 @@ export default function SecNavShell({
           themeSlug={nav.themeSlug}
           onStrategyChange={nav.handleStrategyChange}
           onThemeChange={nav.handleThemeChange}
-          itemKind={nav.secType === "etf" ? "ETF" : nav.secType === "index" ? "Index" : "Stock"}
+          itemKind={nav.secType === "etf" ? "ETF" : nav.secType === "index" ? "Index" : nav.secType === "industry" ? "Industry" : "Stock"}
           selectedItemCode={nav.searchCode}
           onItemSelected={nav.onItemSelected}
           onClearItemSelection={nav.onClearItemSelection}

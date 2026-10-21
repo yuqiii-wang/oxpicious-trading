@@ -10,13 +10,18 @@ from __future__ import annotations
 
 import argparse
 
-from downloads._common.exchanges.sse import SSE_FUND_LIST_URL
+from downloads._common import service_urls
 from downloads._common.exchanges.sse import run_snapshot_download
 
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("trend")
 
 SERVICE = "downloads.etf.sse.trend"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SSE_FUND_LIST_URL = URLS["list_fund"]
 
 
 if __name__ == "__main__":

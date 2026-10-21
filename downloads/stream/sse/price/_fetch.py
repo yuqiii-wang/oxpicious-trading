@@ -22,12 +22,15 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
-from downloads._common import AntiBotProxy, setup_logger
+from downloads._common import (
+    AntiBotProxy,
+    build_headers_with_referer,
+    service_urls,
+    setup_logger,
+)
 from downloads._common.exchanges.sse import (
     JSONP_CALLBACK,
     PAGE_SIZE,
-    SSE_HEADERS,
-    SSE_LIST_URL,
     STREAM_SELECT_FIELDS,
     _num,
     _parse_jsonp,
@@ -36,6 +39,12 @@ from downloads._common.exchanges.sse import (
 logger = setup_logger("stream_sse")
 
 SERVICE = "downloads.stream.sse.price"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SSE_LIST_URL = URLS["list_equity"]
+SSE_HEADERS = build_headers_with_referer(URLS["referer"], extra={"Accept": "*/*"})
 
 
 def _extract_update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:

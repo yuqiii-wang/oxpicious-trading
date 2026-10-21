@@ -38,6 +38,7 @@ from downloads._common import (
     is_error_html,
     parse_date_window,
     resolve_out_dir,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -47,8 +48,11 @@ from downloads._common import (
 # external_request_config JSON row.
 SERVICE = "downloads.options.sse.risk"
 
-SSE_DOWNLOAD_URL = "https://query.sse.com.cn/derivative/downloadRisk.do"
-SSE_REFERER = "https://www.sse.com.cn/assortment/options/risk/"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SSE_DOWNLOAD_URL = URLS["download"]
+SSE_REFERER = URLS["referer"]
 
 logger = setup_logger("sse_options_risk_download")
 

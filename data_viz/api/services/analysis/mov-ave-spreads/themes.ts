@@ -1,0 +1,145 @@
+/**
+ * MA-Spread themes trees — listMovAveSpreadThemes (L1 sector → L2 industry
+ * → items) and listMovAveSpreadStrategyThemes (L1 strategy → L2 theme →
+ * items) for the MA-Spread page's ThemeSelector.
+ * Split out of the former monolithic mov-ave-spreads.ts.
+ */
+import { queryRows } from "@api/lib/db";
+import { stripExchangeSuffix, matchesExchange } from "@api/lib/classify-etf";
+import { buildIndustryFlatThemes, buildStrategyThemesFromRows } from "@api/services/_shared";
+import type {
+  SectorNode,
+  IndustryNode,
+  StrategyNode,
+} from "@shared/types";
+import { normalizeSecType, secTypeParam } from "./sec-sources.js";
+import { buildCodesSql, type DbCodeRow } from "./codes.js";
+import { MA_SPREAD_META_SQL, MA_SPREAD_META_TYPE, type DbMaSpreadMetaRow } from "./meta.js";
+
+// ----------------------------------------------------------------------------
+//  listMovAveSpreadThemes — two-level L1 sector → L2 industry → items tree for
+//  the MA-Spread page's ThemeSelector. Mirrors listPerfAttrThemes() in
+//  perf-attribution but draws codes from analysis.mov_ave_spreads_detail
+//  (filtered by sec_type) and supports etf / index / stock.
+//
+//  Labels come precomputed from stats.sec_classification (denormalized onto
+//  the table by build_classification.py — no catalog JOIN needed). Codes that
+//  don't have a sec_classification row are bucketed under sector 'OTHER' /
+//  industry '未分类' so the user still sees them in the selector.
+// ----------------------------------------------------------------------------
+export async function listMovAveSpreadThemes(
+  rawSecType: string | undefined | null,
+  rawExchange?: string | null,
+): Promise<SectorNode[]> {
+  const secType = normalizeSecType(rawSecType);
+  // Industry: one flat 'INDUSTRY' -> '全部行业' group built from the
+  // per-code summary (no sec_classification above the industry entity).
+  if (secType === "industry") {
+    const rows = await queryRows<DbCodeRow>(buildCodesSql(),
+      [secTypeParam(secType)]);
+    return buildIndustryFlatThemes(rows);
+  }
+  const exFilter = (rawExchange ?? "").trim() || null;
+  const metaType = MA_SPREAD_META_TYPE[secType];
+  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,
+    [secTypeParam(secType), metaType]);
+
+  const sectorMap = new Map<string, {
+    sector_label: string;
+    industries: Map<string, IndustryNode>;
+  }>();
+
+  for (const r of rows) {
+    // LEFT column: only industry-primary securities. Strategy-primary rows
+    // (is_industry_not_strategy=FALSE) carry strategy/theme in
+    // sector_id/industry_id and belong in the RIGHT column only.
+    if (!r.is_industry_not_strategy) continue;
+    // Apply exchange filter so the nav tree respects the selected exchange
+    // (e.g. HK indices are excluded when "All (primary)" is selected).
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
+    // Strip exchange suffix so item codes match the codes returned by
+    // listMovAveSpreadCodes (which also strips the suffix).
+    const code = stripExchangeSuffix(r.code);
+    if (!code) continue;
+    const item = { code, name: r.name ?? "" };
+
+    if (!sectorMap.has(r.sector_id)) {
+      sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
+    }
+    const sector = sectorMap.get(r.sector_id)!;
+    if (!sector.industries.has(r.industry_id)) {
+      sector.industries.set(r.industry_id, {
+        industry_id: r.industry_id,
+        industry_label: r.industry_label,
+        industry_slug: r.industry_slug,
+        count: 0,
+        items: [],
+      });
+    }
+    const ind = sector.industries.get(r.industry_id)!;
+    ind.items.push(item);
+    ind.count++;
+  }
+
+  const sectors: SectorNode[] = [];
+  for (const [sector_id, sector] of sectorMap) {
+    const industries = Array.from(sector.industries.values()).sort((a, b) => {
+      if (a.industry_id === "OTHER") return 1;
+      if (b.industry_id === "OTHER") return -1;
+      return b.count - a.count;
+    });
+    sectors.push({
+      sector_id,
+      sector_label: sector.sector_label,
+      count: industries.reduce((sum, i) => sum + i.count, 0),
+      industries,
+    });
+  }
+  sectors.sort((a, b) => {
+    if (a.sector_id === "OTHER") return 1;
+    if (b.sector_id === "OTHER") return -1;
+    return b.count - a.count;
+  });
+  return sectors;
+}
+
+// ----------------------------------------------------------------------------
+//  listMovAveSpreadStrategyThemes — parallel L1 strategy → L2 theme → items
+//  tree built from the same MA_SPREAD_META_SQL but using the strategy-primary
+//  rows (is_industry_not_strategy=FALSE). sector_id/industry_id on those rows
+//  carry the strategy/theme classification. Tree-building is delegated to the
+//  shared buildStrategyThemesFromRows helper to avoid duplicating the
+//  grouping/sorting logic.
+// ----------------------------------------------------------------------------
+export async function listMovAveSpreadStrategyThemes(
+  rawSecType: string | undefined | null,
+  rawExchange?: string | null,
+): Promise<StrategyNode[]> {
+  const secType = normalizeSecType(rawSecType);
+  // Industry has no strategy/theme classification — an empty RIGHT column.
+  if (secType === "industry") return [];
+  const exFilter = (rawExchange ?? "").trim() || null;
+  const metaType = MA_SPREAD_META_TYPE[secType];
+  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,
+    [secTypeParam(secType), metaType]);
+
+  // Filter by exchange BEFORE building the strategy tree so cross-border
+  // securities are excluded when "All (primary)" is selected (same behavior
+  // as listMovAveSpreadThemes and listIndexThemes).
+  const filteredRows = exFilter
+    ? rows.filter((r) => matchesExchange(r.exchange, exFilter))
+    : rows;
+
+  const mappedRows = filteredRows.map((r) => ({
+    code: stripExchangeSuffix(r.code),
+    name: r.name,
+    sector_id: r.sector_id,
+    sector_label: r.sector_label,
+    industry_id: r.industry_id,
+    industry_label: r.industry_label,
+    industry_slug: r.industry_slug,
+    is_industry_not_strategy: r.is_industry_not_strategy,
+  }));
+
+  return buildStrategyThemesFromRows(mappedRows);
+}

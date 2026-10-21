@@ -17,7 +17,7 @@
  *    triangles, the grey ◆ diamond on gate-rejected events), a
  *    selected-day pin + click-to-select (the page's history-row
  *    clicks move it; clicking the chart moves the page), and the
- *    family's corr BARS (-0.8 fear / -0.5 unwind) as guide lines on
+ *    family's corr BARS (-0.75 fear / -0.5 unwind) as guide lines on
  *    the corr companion — the emphasized bar (the picked trigger-bar
  *    chip's config, the wall-panel chip→bold-wall analog) thick.
  *
@@ -38,6 +38,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Box, Typography } from "@mui/material";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import { useStore } from "@/store/filters";
 import {
   fetchEtfOhlcv,
@@ -69,6 +70,11 @@ export type VolIndexPanelMode = "in-analysis" | "in-signal";
 export interface VolIndexPanelProps {
   /** The rendering mode — see the module doc. Default in-analysis. */
   mode?: VolIndexPanelMode;
+  /** Underlying override — defaults to the shared store's underlyingCode.
+   *  The signals page passes its VENUE-RESOLVED pick (empty while the
+   *  venue's underlyings list is in flight) so no fetch fires with the
+   *  stale (venue, code) pair mid-switch. */
+  underlying?: string;
   /** in-signal: the underlying's options_vix signal history narrowed
    *  by the page's sub-type pick (markers on the vol curve). */
   signalEvents?: readonly VolIndexSignalEvent[];
@@ -77,19 +83,21 @@ export interface VolIndexPanelProps {
   /** in-signal: chart canvas click → select that trading day. */
   onDateSelect?: (date: string) => void;
   /** in-signal: the emphasized corr bar (the picked trigger-bar
-   *  chip's config bar, -0.8 / -0.5); null = none emphasized. */
+   *  chip's config bar, -0.75 / -0.5); null = none emphasized. */
   emphasizedCorrBar?: number | null;
 }
 
 export default function VolIndexPanel({
   mode = "in-analysis",
+  underlying,
   signalEvents,
   selectedDate = null,
   onDateSelect,
   emphasizedCorrBar = null,
 }: VolIndexPanelProps) {
   const themeMode = useChartThemeMode();
-  const underlyingCode = useStore((s) => s.underlyingCode);
+  const storeUnderlying = useStore((s) => s.underlyingCode);
+  const underlyingCode = underlying ?? storeUnderlying;
   const optionsVenue = useStore((s) => s.optionsVenue);
   const [rows, setRows] = useState<VolIndexRow[] | null>(null);
   const [corrRows, setCorrRows] = useState<VolIndexCorrRow[] | null>(null);
@@ -99,12 +107,14 @@ export default function VolIndexPanel({
   const inSignal = mode === "in-signal";
 
   useEffect(() => {
-    if (!underlyingCode) return;
-    let cancelled = false;
+    // resets BEFORE the guard — an empty-scope pass (the signals page's
+    // venue-resolved underlying mid-switch) drops the stale curves
     setRows(null);
     setCorrRows(null);
     setError(null);
     setCorrError(null);
+    if (!underlyingCode) return;
+    let cancelled = false;
     fetchOptionsVolIndex(underlyingCode)
       .then((resp) => {
         if (!cancelled) setRows(resp.rows);
@@ -194,11 +204,12 @@ export default function VolIndexPanel({
             themeMode,
             inSignal
               ? {
-                  // the options_vix family's corr bars: the -0.8 fear
-                  // bar (the three BUY configs) and the -0.5 unwind
-                  // bar — the picked chip's bar thick + labeled
+                  // the options_vix family's corr bars: the -0.75 fear
+                  // bar (the BUY configs, loosened from -0.8 2026-10-19)
+                  // and the -0.5 unwind bar — the picked chip's bar
+                  // thick + labeled
                   corrBars: [
-                    { value: -0.8, emphasized: emphasizedCorrBar === -0.8 },
+                    { value: -0.75, emphasized: emphasizedCorrBar === -0.75 },
                     { value: -0.5, emphasized: emphasizedCorrBar === -0.5 },
                   ],
                   selectedDate,
@@ -212,6 +223,7 @@ export default function VolIndexPanel({
   // AI Ask — concise formula + pointer; the card shows only the identity.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: inSignal ? INSIGHT_PAGES.optionsSignals : INSIGHT_PAGES.volIndex,
       intro:
         "CBOE-VIX analog for the selected underlying: 100·√(30d constant-maturity model-free " +
         "variance) from the OTM-strip replication on settlement prices (CBOE method, r = 2%) " +
@@ -225,7 +237,7 @@ export default function VolIndexPanel({
         "leverage effect); ρ rising toward 0 = vol decoupling from direction." +
         (inSignal
           ? " IN-SIGNAL mode: the options_vix family's events mark the vol curve " +
-            "(buy ▲ / sell ▼ / the grey ◆ no-action diamond); the corr bars -0.8 " +
+            "(buy ▲ / sell ▼ / the grey ◆ no-action diamond); the corr bars -0.75 " +
             "(deep fear) and -0.5 (unwind) ride the corr chart — click the chart " +
             "to move the selected day."
           : ""),
@@ -309,7 +321,7 @@ export default function VolIndexPanel({
             255d windows · stride samples interpolated to daily ·
             hover-synced with the chart above
             {inSignal
-              ? " · the options_vix bars: -0.8 deep fear (BUY configs) / -0.5 unwind (exit)"
+              ? " · the options_vix bars: -0.75 deep fear (BUY configs) / -0.5 unwind (exit)"
               : ""}
           </Typography>
           <BaseChart

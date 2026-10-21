@@ -7,13 +7,13 @@ from typing import Dict, List, Optional
 import requests
 
 from downloads._common.exchanges.szse import (
-    REFERER_MARGIN,
     build_headers,
     run_szse_download,
 )
 from downloads._common import (
     DEFAULT_START_DATE,
     last_business_day,
+    service_urls,
     single_instance_lock,
 )
 
@@ -24,6 +24,10 @@ logger = setup_logging("szse")
 # Pacing (sleep/jitter/timeouts/anti-bot toggles) resolves from this service's
 # external_request_config JSON row via run_szse_download(service=...).
 SERVICE = "downloads.margin.szse"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 
 
 REPORT_CFGS: Dict[str, Dict[str, str]] = {
@@ -39,7 +43,7 @@ REPORT_CFGS: Dict[str, Dict[str, str]] = {
     },
 }
 
-MARGIN_HEADERS = build_headers(REFERER_MARGIN)
+MARGIN_HEADERS = build_headers(URLS["referer_margin"])
 
 
 def _build_margin_params(report_type: str, trade_date: date) -> Dict[str, object]:

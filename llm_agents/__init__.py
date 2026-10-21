@@ -61,19 +61,9 @@ Modules:
 
     (``python -m llm_agents digest|digestions …`` dispatches there too.)
 
-  * ``industry_qa_weekly`` — the industry hypes & drains Q&A HISTORY
-    backfill: picks the top-5 HYPE / top-5 DRAIN industries of the anchor
-    month from analysis.industry_hypes_seasonal — the exact block the
-    Market Trend view renders (default period 120 trading days) — and
-    asks the online-search summarize agent WHY each rose/dropped,
-    storing the Q&A into text.llm_qa (category='industry', the ranking
-    date added to the question, 60-trading-day same-direction dedupe —
-    a direction flip always asks;
-    backfill steps the 5-trading-day grid; the live weekly `run` step
-    was removed — the live flow is downloads.macro.ai_daily).
-    CLI::
-
-        python -m llm_agents.industry_qa_weekly backfill --start YYYY-MM-DD
-
-    (``python -m llm_agents industry-qa …`` dispatches there too.)
+The historical industry hypes & drains Q&A backfill (category
+'industry' / 'market' rows in text.llm_qa) was removed with its
+``industry_qa_weekly`` package — the live daily flow is
+``downloads.macro.ai_daily`` (category 'market_daily'); the historical
+rows remain queryable in text.llm_qa.
 """

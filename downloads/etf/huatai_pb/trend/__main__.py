@@ -87,7 +87,8 @@ def download_nav_trend(
     proxy = build_proxy(SERVICE, sleep_sec)
     stats = RunStats()
 
-    html_text = fetch_products_index_html(session, proxy, logger=logger)
+    html_text = fetch_products_index_html(
+        session, proxy, service=SERVICE, logger=logger)
     if not html_text:
         logger.warning("[trend] products index fetch failed; nothing written")
         stats.failed += 1

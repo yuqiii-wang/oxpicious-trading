@@ -18,8 +18,8 @@ from typing import Dict, Optional
 
 import requests
 
+from downloads._common import service_urls
 from downloads._common.exchanges.szse import (
-    REFERER_TREND,
     build_headers,
     run_szse_download,
 )
@@ -28,6 +28,10 @@ from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("trend")
 
 SERVICE = "downloads.stock.szse.trend"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 
 
 TREND_ARCHIVE_DATE = "2025-07-01"
@@ -44,7 +48,7 @@ DB_TABLE_BY_TYPE: Dict[str, str] = {
     "stock": "stats.stock_identity",
 }
 
-TREND_HEADERS = build_headers(REFERER_TREND)
+TREND_HEADERS = build_headers(URLS["referer_trend"])
 
 
 def _build_trend_params(security_type: str, trade_date: date) -> Dict[str, object]:

@@ -24,14 +24,16 @@ import type { ThemeMode } from "@/store/filters";
 import { baseChartOption } from "@/shared/charts/base-chart";
 import {
   GROUP_MAJOR_COLORS,
+  MARKER_EDGE_GRAY,
   MUTED_PALETTE,
+  TRIGGER_DATE_COLOR,
   UP_COLOR,
   DOWN_COLOR,
   axisColors,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { MarginAnalytics, PivotResult } from "./types";
-import { RET_SUFFIX, VOL_SUFFIX } from "./types";
+import { MEMBERS_SUFFIX, RET_SUFFIX, VOL_SUFFIX } from "./types";
 import type { MarginAttribution, MarginSeries } from "../constants";
 import { buildTrendTooltip } from "./trendTooltip";
 
@@ -54,12 +56,17 @@ export interface TrendChartArgs {
   themeMode: ThemeMode;
   isSingleItemMode: boolean;
   selectedItemCode: string | null | undefined;
+  /** Industry attribution: the pivot carries the NORMALIZED curve (SUM of
+   *  the per-side member averages) — switches the y-axis unit label. The
+   *  analytics are raw-based regardless. */
+  normalized?: boolean;
 }
 
 export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | null {
   const {
     seriesData, pivot, analytics, displaySecurities, selectedCodes,
     attribution, series, themeMode, isSingleItemMode, selectedItemCode,
+    normalized,
   } = args;
   if (!seriesData || seriesData.rows.length === 0 || displaySecurities.length === 0) {
     return null;
@@ -73,7 +80,11 @@ export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | nul
 
   const c = axisColors(themeMode);
   const seriesLabel = series === "balance" ? "RZ Balance" : "RZ Buy";
-  const unit = attribution === "index" ? "100M yuan (w-avg)" : "100M yuan";
+  const unit =
+    attribution === "index" ? "100M yuan (w-avg)"
+    : attribution === "industry"
+      ? (normalized ? "100M yuan (member-avg stock+ETF)" : "100M yuan (SUM stock+ETF)")
+      : "100M yuan";
 
   const codeToLabel = new Map<string, string>();
   for (const sec of displaySecurities) {
@@ -112,6 +123,56 @@ export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | nul
       z: isSelected ? 5 : 1,
     };
   });
+
+  // ---- Member-change dots (industry rows carry n_members) -----------------
+  // One dot on the margin line per date whose n_members differs from the
+  // previous row of that code — the population behind the industry's
+  // averages shifted, so the curve moved for composition reasons, not
+  // margin reasons. Rendered in BOTH raw and normalized modes (whenever
+  // the rows carry member counts). Dates where the line itself is null
+  // are skipped (nothing to anchor a dot to).
+  const hasMemberData = seriesData.rows.some((r) => r.n_members != null);
+  const memberChangeData = new Map<string, Array<[string, number]>>();
+  if (hasMemberData) {
+    const prevByCode = new Map<string, number | null>();
+    for (const r of seriesData.rows) {
+      const n = r.n_members ?? null;
+      const prev = prevByCode.get(r.code);
+      if (prev != null && n != null && n !== prev) {
+        const v = codeMargin.get(r.code)?.get(r.date) ?? null;
+        if (v != null) {
+          let arr = memberChangeData.get(r.code);
+          if (!arr) {
+            arr = [];
+            memberChangeData.set(r.code, arr);
+          }
+          arr.push([r.date, v]);
+        }
+      }
+      prevByCode.set(r.code, n);
+    }
+  }
+  const memberChangeSeries = displaySecurities
+    .map((sec) => ({ sec, data: memberChangeData.get(sec.code) ?? [] }))
+    .filter((m) => m.data.length > 0)
+    .map(({ sec, data }) => ({
+      name: `${sec.label || sec.code}${MEMBERS_SUFFIX}`,
+      type: "scatter" as const,
+      xAxisIndex: 0,
+      yAxisIndex: 0,
+      data,
+      // Pinpoint style (the signal-trigger convention): the marker must
+      // read against ANY line color — line-colored dots are invisible on
+      // the line itself.
+      symbolSize: 7,
+      itemStyle: {
+        color: TRIGGER_DATE_COLOR,
+        borderColor: MARKER_EDGE_GRAY,
+        borderWidth: 1,
+      },
+      z: 6,
+      emphasis: { focus: "series" as const },
+    }));
 
   // ---- BOTTOM grid: daily return bars, saturation = margin intensity ----
   // Bar color: sign → global CSS red/green (UP_COLOR/DOWN_COLOR); opacity:
@@ -168,6 +229,14 @@ export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | nul
   }).filter((s) => s.data.some((v) => v != null));
   const hasVol = volSeries.length > 0;
 
+  // date×code member count behind the averages (rows carry n_members) —
+  // the tooltip appends "· N members (Δ ±k)" to margin rows.
+  const membersByCodeDate = hasMemberData
+    ? new Map(
+        seriesData.rows.map((r) => [`${r.code}|${r.date}`, r.n_members ?? null]),
+      )
+    : undefined;
+
   const tooltip = buildTrendTooltip({
     dates,
     analytics,
@@ -175,6 +244,7 @@ export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | nul
     effectiveSelectedSet,
     unit,
     themeMode,
+    membersByCodeDate,
   });
 
   return baseChartOption(themeMode, {
@@ -250,6 +320,6 @@ export function buildTrendChartOption(args: TrendChartArgs): EChartsOption | nul
           }]
         : []),
     ],
-    series: [...marginSeries, ...retBarSeries, ...volSeries],
+    series: [...marginSeries, ...memberChangeSeries, ...retBarSeries, ...volSeries],
   });
 }

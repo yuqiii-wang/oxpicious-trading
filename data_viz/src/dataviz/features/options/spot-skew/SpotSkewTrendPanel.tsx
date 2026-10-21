@@ -36,6 +36,7 @@ import {
 } from "@mui/material";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import { useStore } from "@/store/filters";
 import { PRICE_SCALE } from "@/theme/chart-palette";
 import { fetchOptionsVolIndex, venueToTargetType } from "@/lib/api-client/options";
@@ -204,6 +205,7 @@ export default function SpotSkewTrendPanel({
   // delta / date.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      insight: INSIGHT_PAGES.volSmile,
       intro:
         "Smile skew vs time in delta space — strikes drift with spot, so full smiles overplot; " +
         "we track the spot-centered scalar instead. Today: " +

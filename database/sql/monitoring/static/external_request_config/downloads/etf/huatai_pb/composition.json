@@ -14,8 +14,14 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "Huatai fund PB holdings composition; all huatai_pb endpoints share build_proxy().",
-    "source_ref": "downloads/etf/huatai_pb/_endpoints.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "settle_sleep_sec": null,
+    "urls": {
+      "site_base": "https://www.huatai-pb.com",
+      "pcf": "https://www.huatai-pb.com/etf-web/etf/index.json",
+      "product_page": "https://www.huatai-pb.com/products/zhishu/{code}/index.html"
+    },
+    "notes": "Huatai fund PB holdings composition; all huatai_pb endpoints share build_proxy().; URLs migrated from the shared _endpoints.py constants 2026-10-17 - code reads the urls object via service_urls()",
+    "source_ref": "downloads/etf/huatai_pb/_endpoints.py; downloads/etf/huatai_pb/composition/__main__.py",
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

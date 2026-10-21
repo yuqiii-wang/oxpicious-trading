@@ -14,7 +14,7 @@ import { getSecBaselineBundle } from "../services/sec-baseline.service.js";
 
 const router = Router();
 
-const VALID_SEC_TYPES = new Set(["index", "etf", "stock"]);
+const VALID_SEC_TYPES = new Set(["index", "etf", "stock", "industry"]);
 
 router.get("/", async (req: Request, res: Response) => {
   try {
@@ -24,7 +24,7 @@ router.get("/", async (req: Request, res: Response) => {
     const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
     if (!VALID_SEC_TYPES.has(secType)) {
       res.status(400).json({
-        error: `Invalid or missing 'sec_type': ${secType}. Expected 'index', 'etf', or 'stock'.`,
+        error: `Invalid or missing 'sec_type': ${secType}. Expected 'index', 'etf', 'stock', or 'industry'.`,
       });
       return;
     }
@@ -32,7 +32,8 @@ router.get("/", async (req: Request, res: Response) => {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    const bundle = await getSecBaselineBundle(secType as "index" | "etf" | "stock", code);
+    const bundle = await getSecBaselineBundle(
+      secType as "index" | "etf" | "stock" | "industry", code);
     res.json({ sec_type: secType, code, bundle });
   } catch (err) {
     console.error("[sec-baseline] error:", err);

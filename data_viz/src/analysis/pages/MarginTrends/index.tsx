@@ -6,8 +6,8 @@
  *   • SecClassificationNav — single-select industry (no multi-select, no L3
  *     code chips). Only ONE industry can be selected at a time.
  *   • MarginTrendsCharts (components/) — the plot for the selected industry:
- *       TOP grid — margin lines (Index | ETF attribution, Balance | Buy),
- *       selected highlighted, rest muted. BOTTOM grid —
+ *       TOP grid — margin lines (Index | ETF | Industry attribution,
+ *       Balance | Buy), selected highlighted, rest muted. BOTTOM grid —
  *       volatility-amplification view: daily return bars saturated by
  *       margin-buy-share tercile (drained → hyped), trailing-20d vol line.
  *       Below it, one HypedVsDrained regime chart per selected security.
@@ -44,14 +44,17 @@ import { ArrowBack } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import RefreshButton from "@/components/RefreshButton";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
+import SecClassificationNavExchange from "@/shared/components/sec-classification/SecClassificationNavExchange";
 import {
   fetchMarginTrendThemes,
   fetchMarginTrendStrategyThemes,
+  fetchMarginTrendUnderlyings,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
 import type {
   SectorNode,
   StrategyNode,
+  MarginUnderlyingEntry,
 } from "@shared/types";
 import { MarginTrendsCharts } from "./components/MarginTrendsCharts";
 import type { MarginAttribution } from "./constants";
@@ -69,11 +72,31 @@ export default function MarginTrendsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [attribution, setAttribution] = useState<MarginAttribution>("index");
+  // Default view: Exchange attribution with 上交所 (SSE) selected.
+  const [attribution, setAttribution] = useState<MarginAttribution>("exchange");
+  /** Exchange-attribution selection ("SS" | "SZ") — the plotted entity IS
+   *  the exchange's own market-wide total curve. Defaults to "SS" (上交所);
+   *  only ever reassigned by the nav (never back to null). */
+  const [exchangeCode, setExchangeCode] = useState<string | null>("SS");
+  // Exchange-attribution mapped underlying (broad-market index feeding the
+  // daily-return / hyped-vs-drained views). Defaults to 沪深300 (000300);
+  // the dropdown in the controls row offers ALL broad-market codes
+  // (stats.sec_index_tags.is_broad_market).
+  const [underlyingCode, setUnderlyingCode] = useState<string>("000300");
+  const [underlyings, setUnderlyings] = useState<MarginUnderlyingEntry[]>([]);
   const [selectedItemCode, setSelectedItemCode] = useState<string | null>(null);
 
   // ---- Load themes on mount / refresh / attribution change -----------------
+  // The Exchange attribution replaces the classification tree with the
+  // exchange-only nav variant — no themes fetch at all.
   useEffect(() => {
+    if (attribution === "exchange") {
+      setSectors([]);
+      setStrategies([]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -119,6 +142,33 @@ export default function MarginTrendsPage() {
   };
 
   // ---- Resolve selected industry_id from the nav --------------------------
+  // Exchange attribution (the default): the plotted entity key IS the
+  // exchange code, pre-set to "SS" at init so charts render immediately.
+  const isExchangeAttribution = attribution === "exchange";
+
+  // ---- Load the broad-market underlying options for the controls row ----
+  // Fetched once when the exchange attribution is active; non-fatal — a
+  // failed fetch leaves the dropdown empty while the default 000300 still
+  // works (the series SQL falls back to it too).
+  useEffect(() => {
+    if (!isExchangeAttribution || underlyings.length > 0) return;
+    let cancelled = false;
+    fetchMarginTrendUnderlyings()
+      .then((opts) => {
+        if (cancelled) return;
+        setUnderlyings(opts);
+        // Keep the selection valid when the default isn't offered.
+        setUnderlyingCode((cur) =>
+          opts.some((o) => o.code === cur) ? cur : opts[0]?.code ?? cur,
+        );
+      })
+      .catch(() => {
+        // Non-fatal — dropdown stays empty; default underlying still loads.
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isExchangeAttribution]);
+
   const slugToIndustryId = new Map<string, string>();
   for (const s of sectors) {
     for (const ind of s.industries) {
@@ -143,9 +193,11 @@ export default function MarginTrendsPage() {
       }
     }
   }
-  const effectiveIndustryId = strategyId
-    ? (strategyIndustryIds[0] ?? null)
-    : selectedIndustryId;
+  const effectiveIndustryId = isExchangeAttribution
+    ? exchangeCode
+    : strategyId
+      ? (strategyIndustryIds[0] ?? null)
+      : selectedIndustryId;
 
   // Clear single-item selection when industry or attribution changes
   useEffect(() => {
@@ -207,10 +259,15 @@ export default function MarginTrendsPage() {
           </Box>
           <Typography variant="body2" color="text.secondary">
             Single-industry RONGZI (融资 / cash-borrow) margin flows:
-            per-security margin trends (toggle Index | ETF, Balance | Buy)
-            with daily returns shaded by margin-buy-share intensity.
-            RONQIN (融券 / sec borrow) is excluded.
-            Select ONE industry to begin.
+            per-security margin trends (toggle Index | ETF | Industry |
+            Exchange, Balance | Buy; Industry also Raw | Normalized =
+            member-total vs per-member-average curve) with daily returns
+            shaded by margin-buy-share intensity. Industry = the industry's
+            own SUM(stock+etf) curve (analysis.margin_industry_stats);
+            Exchange = the exchange's OFFICIAL market-wide totals
+            (analysis.exchange_margin_summary — not derivable from the
+            detail exports). RONQIN (融券 / sec borrow) is excluded. Select
+            ONE industry to begin.
           </Typography>
         </Box>
         <RefreshButton
@@ -221,7 +278,7 @@ export default function MarginTrendsPage() {
         />
       </Box>
 
-      {/* ---- Attribution toggle (Index | ETF) — drives nav itemKind + charts ---- */}
+      {/* ---- Attribution toggle (Index | ETF | Industry | Exchange) — drives nav variant + charts ---- */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, my: 1 }}>
         <Typography variant="body2" sx={{ fontWeight: 600 }}>
           Attribution:
@@ -234,29 +291,43 @@ export default function MarginTrendsPage() {
         >
           <ToggleButton value="index">Index</ToggleButton>
           <ToggleButton value="etf">ETF</ToggleButton>
+          <ToggleButton value="industry">Industry</ToggleButton>
+          <ToggleButton value="exchange">Exchange</ToggleButton>
         </ToggleButtonGroup>
       </Box>
 
-      {/* ---- SecClassificationNav (single-select industry, L3 = securities) ---- */}
-      <SecClassificationNav
-        sectors={sectors}
-        sectorId={sectorId}
-        industrySlug={industrySlug}
-        onSectorChange={handleSectorChange}
-        onIndustryChange={handleIndustryChange}
-        onExchangeChange={() => { /* no exchange filter for margins */ }}
-        exchange={null}
-        strategies={strategies}
-        strategyId={strategyId}
-        themeSlug={themeSlug}
-        onStrategyChange={handleStrategyChange}
-        onThemeChange={handleThemeChange}
-        itemKind={attribution === "index" ? "Index" : "ETF"}
-        selectedItemCode={selectedItemCode}
-        onItemSelected={handleItemSelected}
-        onClearItemSelection={handleClearItemSelection}
-        loading={loading}
-      />
+      {/* ---- Classification nav — Exchange attribution swaps in the
+              exchange-only INHERITED VARIANT (exchanges are the plotted
+              entities; no sector/industry tree, no L3 items). ---- */}
+      {isExchangeAttribution ? (
+        <SecClassificationNavExchange
+          exchange={exchangeCode}
+          onExchangeChange={setExchangeCode}
+          loading={loading}
+        />
+      ) : (
+        <SecClassificationNav
+          sectors={sectors}
+          sectorId={sectorId}
+          industrySlug={industrySlug}
+          onSectorChange={handleSectorChange}
+          onIndustryChange={handleIndustryChange}
+          onExchangeChange={() => { /* no exchange filter for margins */ }}
+          exchange={null}
+          strategies={strategies}
+          strategyId={strategyId}
+          themeSlug={themeSlug}
+          onStrategyChange={handleStrategyChange}
+          onThemeChange={handleThemeChange}
+          itemKind={
+            attribution === "index" ? "Index" : attribution === "etf" ? "ETF" : undefined
+          }
+          selectedItemCode={selectedItemCode}
+          onItemSelected={handleItemSelected}
+          onClearItemSelection={handleClearItemSelection}
+          loading={loading}
+        />
+      )}
 
       {/* ---- Charts ---- */}
       {loading && (
@@ -271,7 +342,9 @@ export default function MarginTrendsPage() {
       )}
       {!loading && !error && !effectiveIndustryId && (
         <Alert severity="warning">
-          Select an industry to see its margin trends.
+          {isExchangeAttribution
+            ? "Select an exchange to see its market-wide margin trends."
+            : "Select an industry to see its margin trends."}
         </Alert>
       )}
       {!loading && !error && effectiveIndustryId && (
@@ -279,6 +352,9 @@ export default function MarginTrendsPage() {
           industryId={effectiveIndustryId}
           attribution={attribution}
           selectedItemCode={selectedItemCode}
+          underlyingCode={isExchangeAttribution ? underlyingCode : null}
+          underlyingOptions={isExchangeAttribution ? underlyings : undefined}
+          onUnderlyingChange={isExchangeAttribution ? setUnderlyingCode : undefined}
         />
       )}
     </Box>

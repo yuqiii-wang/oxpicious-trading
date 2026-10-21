@@ -12,7 +12,7 @@
 --  purpose-scoped sibling INSERT files, one per business area:
 --    10_market_state          regime / side / px_speed / vol_state
 --    20_signal_detection      signal_type / signal_sub_type / action /
---                             analysis_cache_kind
+--                             analysis_cache_kind / portfolio_type
 --    30_industry_aggregation  weighting / rank_side / pool_size /
 --                             attribution_type
 --    40_security_identity     sec_type / board / sec_owner_type /
@@ -45,6 +45,8 @@
 --    pool_size  stats.industry_basic_stats, analysis.industry_correlations,
 --               analysis.industry_etf_contribution,
 --               analysis_composites.industry_corr_benchmark_offsets
+--    pair_grain analysis.pair_pct_change_ratios (0 = per-index pair rows,
+--               1 = industry aggregate AVG over member-index rows)
 --    px_speed   analysis.mov_ave_price_vs_amt
 --    vol_state  analysis.mov_ave_price_vs_amt
 --    board      stats.stock_identity (NULLable), stats.sec_board_map
@@ -79,6 +81,11 @@
 --    analysis_cache_kind
 --               analysis_signals.analysis_cache (kind): the generic
 --               intermediate-result cache's tenant discriminator.
+--    portfolio_type
+--               analysis_signals.portfolio_signal_rules
+--               (portfolio_type): the kind of portfolio a row groups —
+--               0 neg_corr_hedge_pair = the two-leg long–long
+--               negatively-correlated hedge pair ('A~B' code).
 --
 --  PENDING (vocabulary registered, columns STILL TEXT — convert table +
 --  writers before using the codes): skew_type
@@ -112,7 +119,7 @@ CREATE TABLE static.label_dim (
 );
 
 COMMENT ON TABLE  static.label_dim IS 'Closed-vocabulary label <-> SMALLINT code map (the label-code contract): every SMALLINT-coded label column stores the code and decodes through this table at the API boundary. Mirrors: _common/labels.py (Python), data_viz/api/services/label-codes.ts (TS) — temp_scripts/check_label_dim.py asserts the three stay identical. Labels never ride cudf compute frames as strings (cuDF 26.08 string host-transfer fault class). Seed rows: the database/sql/static/label_dim/10..60 purpose files.';
-COMMENT ON COLUMN static.label_dim.domain     IS 'Vocabulary name = the owning column family: regime / side / action / weighting / rank_side / pool_size / px_speed / vol_state / board / sec_owner_type / contract_type / option_type / signal_type / sec_type (mov_ave family + analysis_signals) / ext_resource / ext_http_source / ext_llm_provider / db_instance / db_replication_state / analysis_cache_kind are CONVERTED (columns store the code); skew_type / attribution_type / trade_side are PENDING (vocabulary registered, columns still TEXT).';
+COMMENT ON COLUMN static.label_dim.domain     IS 'Vocabulary name = the owning column family: regime / side / action / weighting / rank_side / pool_size / pair_grain / px_speed / vol_state / board / sec_owner_type / contract_type / option_type / signal_type / sec_type (mov_ave family + analysis_signals) / ext_resource / ext_http_source / ext_llm_provider / db_instance / db_replication_state / analysis_cache_kind are CONVERTED (columns store the code); skew_type / attribution_type / trade_side are PENDING (vocabulary registered, columns still TEXT).';
 COMMENT ON COLUMN static.label_dim.code       IS 'The value stored in the owning table''s converted column (0-based, SMALLINT).';
 COMMENT ON COLUMN static.label_dim.label      IS 'The human/API string the code decodes to (calm, buy, HYPE, all, ...).';
 COMMENT ON COLUMN static.label_dim.sort_order IS 'Presentation order for listings that enumerate a domain. pool_size deliberately differs from code order: it preserves the pre-refactor alphabetical TEXT order (all, large, mid, small) the API/UI already render; code order is semantic (small, mid, large, all).';

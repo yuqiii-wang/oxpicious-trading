@@ -35,13 +35,17 @@ from downloads._common import (
     is_valid_file,
     resolve_out_dir,
     safe_write_bytes,
+    service_urls,
     setup_logger,
 )
 
 SERVICE = "downloads.futures.cffex.archive"
 
-CFFEX_BASE_URL = "http://www.cffex.com.cn/sj/historysj"
-CFFEX_REFERER = "http://www.cffex.com.cn/cn/lssjxz.html"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+CFFEX_BASE_URL = URLS["historysj_base"]
+CFFEX_REFERER = URLS["referer"]
 
 ARCHIVE_DIRNAME = "cffex_archive"
 SOURCE_CSV_ENCODING = "gbk"

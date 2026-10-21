@@ -152,7 +152,9 @@ def aggregate_1min_to_5min(
             close_v = _to_float(bar[COL_CURRENT])
 
         # Skip null rows (non-trading minutes: lunch break, after close)
-        if close_v is None:
+        # and zero closes (source no-quote placeholder — a zero close
+        # would surface downstream as a -100% move vs the prev close).
+        if close_v is None or close_v <= 0:
             continue
 
         # Fix first bar's open=0 (API quirk): use preClose or current

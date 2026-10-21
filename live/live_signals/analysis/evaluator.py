@@ -62,7 +62,7 @@ from live.live_signals.config import (
     rules_confidence_bp,
 )
 
-from _common.labels import ACTION_LABEL
+from _common.labels import ACTION_LABEL, REGIME_CODE, TREND_CODE
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,12 @@ class AnalysisEvaluator:
                     logger.info(f"  [{sec_type}] {code} daily-close fallback "
                           f"on {as_of}: close={close}")
 
-        sigs = await fetch_active_signals(self._conn, sec_type, code)
+        # the active cells with their confidence bases as-of the bar
+        # date (the measured dir_ave of the latest performance snapshot
+        # at-or-before that day — the 2026-10-19 split)
+        sigs = await fetch_active_signals(
+            self._conn, sec_type, code, as_of=bar_date,
+        )
         if not sigs:
             return [], True
         if verbose:
@@ -178,12 +183,15 @@ class AnalysisEvaluator:
 
         # THE RULES-ERA GATE — the day-context cell match: only the
         # cells whose (trend, regime) equals the day's own context may
-        # fire (the same population the cell measured on history).
+        # fire (the same population the cell measured on history). A
+        # POOLED axis (the 4 'all' stamp of the regime-free / sparse
+        # families) measured EVERY day state, so it matches any day
+        # context on that axis — strict equality could never fire it.
         cells = [
             sig for sig in sigs
             if trend_state is not None
-            and sig["trend"] == trend_state
-            and sig["regime_state"] == regime_state
+            and sig["trend"] in (trend_state, TREND_CODE["all"])
+            and sig["regime_state"] in (regime_state, REGIME_CODE["all"])
         ]
         if verbose and len(cells) < len(sigs):
             logger.info(f"  [{sec_type}] {code}: day context "

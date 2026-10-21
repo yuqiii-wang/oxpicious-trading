@@ -67,8 +67,11 @@ import {
   NUM_GTE0_OR_NULL,
   REL_PATH_LIST,
   REQUIRED_TEXT,
+  URL_LINES_OR_NULL,
   firstRuleError,
   numOrNull,
+  urlLinesOrNull,
+  urlsToLines,
 } from "@/config/components/fieldRules";
 import { fmtDateTimeShanghai } from "@/shared/datetime";
 
@@ -87,6 +90,9 @@ interface RowForm {
   addRandomParam: boolean;
   enableHostTracking: boolean;
   hostBlockCooldownSec: string;
+  settleSleepSec: string;
+  /** "role = url" lines — the row's endpoint inventory ("" = none). */
+  urls: string;
   notes: string;
   sourceRef: string;
 }
@@ -111,6 +117,8 @@ function toRowForm(r: ExtRequestConfigEntry): RowForm {
     addRandomParam: r.addRandomParam,
     enableHostTracking: r.enableHostTracking,
     hostBlockCooldownSec: s(r.hostBlockCooldownSec),
+    settleSleepSec: s(r.settleSleepSec),
+    urls: urlsToLines(r.urls),
     notes: r.notes ?? "",
     sourceRef: r.sourceRef,
   };
@@ -131,6 +139,8 @@ function blankRowForm(): RowForm {
     addRandomParam: true,
     enableHostTracking: true,
     hostBlockCooldownSec: "",
+    settleSleepSec: "",
+    urls: "",
     notes: "",
     sourceRef: "",
   };
@@ -149,6 +159,8 @@ function rowRuleError(f: RowForm): string | null {
     ["Connect timeout (s)", NUM_GTE0_OR_NULL, f.timeoutConnectSec],
     ["Read timeout (s)", NUM_GTE0_OR_NULL, f.timeoutReadSec],
     ["Host block cooldown (s)", NUM_GTE0_OR_NULL, f.hostBlockCooldownSec],
+    ["Settle (s)", NUM_GTE0_OR_NULL, f.settleSleepSec],
+    ["URLs", URL_LINES_OR_NULL, f.urls],
     ["Source ref", REL_PATH_LIST, f.sourceRef],
   ]);
 }
@@ -181,8 +193,13 @@ function togglesCell(r: ExtRequestConfigEntry): string {
   return on.length > 0 ? on.join(" · ") : "none";
 }
 
+/** Endpoint-inventory cell: the url count, role = url list on hover. */
+function urlsCount(r: ExtRequestConfigEntry): number {
+  return r.urls == null ? 0 : Object.keys(r.urls).length;
+}
+
 /** Collapsed accordion-row summary from the typed form strings — pacing,
- *  poll cadence, retries ("" numeric = null, so skipped). */
+ *  poll cadence, retries, endpoint count ("" numeric = null, so skipped). */
 function rowSummary(f: RowForm): string {
   const parts: string[] = [];
   if (f.sleepSec !== "") {
@@ -192,6 +209,8 @@ function rowSummary(f: RowForm): string {
   }
   if (f.pollIntervalSec !== "") parts.push(`poll ${f.pollIntervalSec}s`);
   if (f.maxRetries !== "") parts.push(`${f.maxRetries} retries`);
+  const urlLines = f.urls.split("\n").filter((l) => l.trim() !== "").length;
+  if (urlLines > 0) parts.push(`${urlLines} url${urlLines === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
 
@@ -309,6 +328,8 @@ export default function ExtRequestConfigPage() {
         addRandomParam: f.addRandomParam,
         enableHostTracking: f.enableHostTracking,
         hostBlockCooldownSec: numOrNull(f.hostBlockCooldownSec),
+        settleSleepSec: numOrNull(f.settleSleepSec),
+        urls: urlLinesOrNull(f.urls),
         notes: f.notes === "" ? null : f.notes,
         sourceRef: f.sourceRef.trim(),
       }));
@@ -350,6 +371,13 @@ export default function ExtRequestConfigPage() {
           : `${num(r.timeoutConnectSec)} / ${num(r.timeoutReadSec)}`}
       </TableCell>
       <TableCell>{togglesCell(r)}</TableCell>
+      <TableCell align="right">
+        <Tooltip title={urlsToLines(r.urls)} disableHoverListener={urlsCount(r) === 0}>
+          <Typography variant="body2">
+            {urlsCount(r) === 0 ? "—" : String(urlsCount(r))}
+          </Typography>
+        </Tooltip>
+      </TableCell>
       <TableCell sx={{ maxWidth: 280 }}>
         <Tooltip title={r.notes ?? ""}>
           <Typography variant="body2" noWrap sx={{ maxWidth: 280 }}>
@@ -404,6 +432,7 @@ export default function ExtRequestConfigPage() {
                 <TableCell>Retries</TableCell>
                 <TableCell>Conn / read (s)</TableCell>
                 <TableCell>Toggles</TableCell>
+                <TableCell align="right">URLs</TableCell>
                 <TableCell>Notes</TableCell>
                 <TableCell>Updated</TableCell>
               </TableRow>
@@ -436,6 +465,7 @@ export default function ExtRequestConfigPage() {
                 <TableCell>Retries</TableCell>
                 <TableCell>Conn / read (s)</TableCell>
                 <TableCell>Toggles</TableCell>
+                <TableCell align="right">URLs</TableCell>
                 <TableCell>Notes</TableCell>
                 <TableCell>Updated</TableCell>
               </TableRow>
@@ -448,7 +478,7 @@ export default function ExtRequestConfigPage() {
               )}
               {rows != null && visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} align="center">
+                  <TableCell colSpan={10} align="center">
                     <Typography variant="caption" color="text.secondary" sx={{ my: 2, display: "inline-block" }}>
                       No request config matches “{query}”
                     </Typography>
@@ -633,6 +663,17 @@ export default function ExtRequestConfigPage() {
                       inputProps={{ inputMode: "decimal" }}
                       sx={{ width: 190 }}
                     />
+                    <RuleTextField
+                      rule={NUM_GTE0_OR_NULL}
+                      label="Settle (s)"
+                      value={f.settleSleepSec}
+                      onChange={(v) =>
+                        setForm((s) => (s == null ? s : patchRow(s, i, { settleSleepSec: v })))
+                      }
+                      hint="post-navigation settle (Playwright)"
+                      inputProps={{ inputMode: "decimal" }}
+                      sx={{ width: 150 }}
+                    />
                   </Box>
                   <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
                     {(
@@ -659,6 +700,16 @@ export default function ExtRequestConfigPage() {
                       />
                     ))}
                   </Box>
+                  <RuleTextField
+                    rule={URL_LINES_OR_NULL}
+                    label="URLs"
+                    value={f.urls}
+                    onChange={(v) => setForm((s) => (s == null ? s : patchRow(s, i, { urls: v })))}
+                    hint="the service's endpoint inventory, one per line: role = url ('{code}' templates ok)"
+                    multiline
+                    minRows={2}
+                    sx={{ width: 520, maxWidth: "100%", fontFamily: "monospace" }}
+                  />
                   <RuleTextField
                     rule={FREE_TEXT_OR_NULL}
                     label="Notes"

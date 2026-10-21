@@ -62,13 +62,16 @@ DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_roof_floor_e
 --    today_close           — close price on `date` (the estimate reference)
 --    roof_estimate         — the estimated RESISTANCE level at `date`
 --    floor_estimate        — the estimated SUPPORT level at `date`
+--    is_recently_breached  — TRUE when ALL of the last 5 trading days
+--                            closed beyond the d−5 line (see the column
+--                            comment)
 --
 --  Populated by the internal estimate step of `analysis.mov_ave_spread`
 --  (roof_floor_estimate step package). Reuses the same source DataFrame
 --  as the parent pipeline — no second DB round-trip.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_spreads_roof_floor_estimates (
-    sec_type          SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
+    sec_type          SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
     code              TEXT         NOT NULL,
     date              DATE         NOT NULL,
     period            INTEGER      NOT NULL,  -- window size in trading days: {60,120,255,500,750,1275}
@@ -77,6 +80,7 @@ CREATE TABLE analysis.mov_ave_spreads_roof_floor_estimates (
     today_close       NUMERIC(18,6) NOT NULL,
     roof_estimate     NUMERIC(18,6),
     floor_estimate    NUMERIC(18,6),
+    is_recently_breached BOOLEAN NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_mov_ave_spreads_roof_floor_estimates
         PRIMARY KEY (code, sec_type, date, period, method)
@@ -87,7 +91,7 @@ CREATE TABLE analysis.mov_ave_spreads_roof_floor_estimates (
 SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_roof_floor_estimates', 32);
 
 COMMENT ON TABLE  analysis.mov_ave_spreads_roof_floor_estimates IS 'Quantitative roof/floor level estimates (LONG format): one row per (sec_type, code, date, period, method) with the estimated resistance (roof_estimate) / support (floor_estimate) price level AT `date` under one quantitative method, computed from the strictly-causal rolling window of `period` ∈ {60,120,255,500,750,1275} trading days ending at `date`. method is its static.label_dim (''roof_floor_method'') SMALLINT code: 0 trendline (the roof/floor anchor LINE of mov_ave_spreads_roof_and_floor_lines extrapolated to `date`: high_2nd + high_line_slope × days_since_last_high on each side), 1 donchian (window max intraday high / min intraday low), 2 quantile (rolling 90th/10th percentile of valid closes), 3 channel (OLS close-on-position regression fit at `date` ± 2 residual σ, ≥3 valid closes), 4 boll (SMA(period) ± 2 population σ), 5 median (the NaN-skipping median of methods 0-4 per (date, period) — the cross-method consensus). Same window region rule as the anchors: [max(0, i-period+1), i] in trading-day positions; partial windows at history start; NaN closes skipped. Source: same DataFrame as the mov_ave_spread parent pipeline (no second DB round-trip). sec_type ∈ {etf, index, stock}.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.code IS 'Ticker. ETFs bare 6-digit (e.g. "510050"); indices bare code (e.g. "000300"); stocks keep their exchange suffix (e.g. "600008.SS").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.date IS 'Business date (trading day) the estimate applies AT — every method reads only the window ending at this date (strictly causal).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.period IS 'Rolling-window size in trading days: one of {60, 120, 255, 500, 750, 1275}. Part of the PK — the long format stores one row per (code, sec_type, date, period, method).';
@@ -95,3 +99,4 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.method IS 'The q
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.today_close IS 'Close price on `date` (COALESCE(adj_close, close) for ETFs; close for index/stock). NOT NULL.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.roof_estimate IS 'The estimated RESISTANCE (roof) price level at `date` under this row''s method — see the method codes in the table comment. NULL when the method cannot determine a level for this window (e.g. trendline with no 2nd anchor, channel with < 3 valid closes).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.floor_estimate IS 'The estimated SUPPORT (floor) price level at `date` under this row''s method — see the method codes in the table comment. NULL when the method cannot determine a level for this window.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_roof_floor_estimates.is_recently_breached IS 'Level-breach state of the estimate LINE AS IT STOOD 5 trading days ago: TRUE when ALL of the row''s LAST 5 trading days (the span ending at `date`, inclusive) closed BEYOND that fixed d−5 level — roof side: today_close > the same (code, period, method) row''s roof_estimate 5 trading days earlier on every one of the 5 days, OR floor side: today_close < that floor_estimate on every one of the 5 days. FALSE (the default) otherwise: fewer than 5 rows of history for the code, a NULL d−5 level (no line to breach), or any non-breach day inside the span. The span is measured against the FIXED d−5 level — not the daily-moving estimate — so a rolling line that merely tracks price does not self-breach; a TRUE row marks a persistent 5-day breakout beyond (roof) / breakdown below (floor) the level as it stood when the span began.';

@@ -14,8 +14,13 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "SSE options margin / risk.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "download": "https://query.sse.com.cn/derivative/downloadRisk.do",
+      "referer": "https://www.sse.com.cn/assortment/options/risk/"
+    },
+    "notes": "SSE options margin / risk; URLs migrated from code constants 2026-10-17",
     "source_ref": "downloads/options/sse/risk/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

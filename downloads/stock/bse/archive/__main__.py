@@ -53,10 +53,10 @@ from downloads._common import (
     is_valid_file,
     last_business_day,
     resolve_out_dir,
+    service_urls,
     setup_logger,
 )
 from downloads._common.exchanges.bjs import (
-    BSE_KLINE_URL,
     CSV_ENCODING,
     _write_page,
     fetch_bse_kline,
@@ -67,6 +67,10 @@ from downloads._common.exchanges.bjs import (
 logger = setup_logger("bse_archive")
 
 SERVICE = "downloads.stock.bse.archive"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
 
 # Per-stock archive directory, sibling of temps/bse_trend/ (mirrors
 # temps/sse_archive/ next to temps/sse_trend/).
@@ -141,7 +145,7 @@ def download_bse_archive(
     # Quotation-list pagination — the service's "list" external_request_config
     # row (stable UA, no rotation; pacing/timeouts resolve from the JSON).
     list_proxy = AntiBotProxy(service=SERVICE, request_type="list")
-    stocks = fetch_bse_stock_list(sess, proxy=list_proxy)
+    stocks = fetch_bse_stock_list(sess, proxy=list_proxy, service=SERVICE)
     if not stocks:
         logger.error("No BSE stocks found")
         return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
@@ -177,12 +181,12 @@ def download_bse_archive(
             continue
         if limit is not None and fetched >= limit:
             break
-        if kline_proxy.is_blocked(BSE_KLINE_URL.format(code=code)):
+        if kline_proxy.is_blocked(URLS["kline"].format(code=code)):
             logger.warning("[host-blocked] bse.cn blocked, stopping kline sweep")
             break
 
         # Auto-sleep handled by proxy.get() inside fetch_bse_kline.
-        records = fetch_bse_kline(sess, code, proxy=kline_proxy)
+        records = fetch_bse_kline(sess, code, proxy=kline_proxy, service=SERVICE)
         fetched += 1
         if records is None:
             logger.error("kline fetch failed for %s, skipping", code)

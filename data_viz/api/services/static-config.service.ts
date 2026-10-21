@@ -48,10 +48,16 @@
  *     poll_interval_sec, max_retries, retry_backoff_sec,
  *     timeout_connect_sec, timeout_read_sec, rotate_browser_profile,
  *     add_random_param, enable_host_tracking, host_block_cooldown_sec,
- *     notes, source_ref (the config's code location(s) as RELATIVE FILE
- *     PATHS only — never line numbers; ';'-separated when several),
- *     updated_at } — the per-(service, request_type)
- *     pacing / anti-bot inventory.
+ *     settle_sleep_sec, urls, notes, source_ref (the config's code
+ *     location(s) as RELATIVE FILE PATHS only — never line numbers;
+ *     ';'-separated when several), updated_at } — the
+ *     per-(service, request_type) pacing / anti-bot inventory.
+ *     settle_sleep_sec is the Playwright flows' post-navigation settle
+ *     wait (null elsewhere); urls is the row's ENDPOINT INVENTORY
+ *     ({role: url} — the URLs the service's requests hit, '{code}'-style
+ *     templates allowed), read at runtime ONLY from the service's own
+ *     file by _common/request_config.py service_urls() — the
+ *     default.json fallback carries neither field.
  *
  *     default.json (tree ROOT, not part of the inventory) is the
  *     FALLBACK for services without their own file: extRequestConfigFor
@@ -148,6 +154,12 @@ export interface ExtRequestConfigRow {
   add_random_param: boolean;
   enable_host_tracking: boolean;
   host_block_cooldown_sec: number | null;
+  /** Playwright flows' post-navigation settle wait (null = the flow keeps
+   *  its own behavior). */
+  settle_sleep_sec: number | null;
+  /** The row's endpoint inventory {role: url} (null = none) — the same
+   *  map _common/request_config.py service_urls() reads at runtime. */
+  urls: Record<string, string> | null;
   notes: string | null;
   source_ref: string;
   updated_at: string;

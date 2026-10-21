@@ -69,6 +69,7 @@ from downloads._common import (
     build_headers_with_referer,
     is_valid_file,
     resolve_out_dir,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -81,11 +82,14 @@ from downloads._common.monthly import is_month_start
 
 SERVICE = "downloads.etf.sse.composition"
 
-SSE_SUGGEST_DATA_URL = "https://www.sse.com.cn/js/common/ssesuggestfunddata.js"
-SSE_REFERER = "https://www.sse.com.cn/assortment/fund/list/"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SSE_SUGGEST_DATA_URL = URLS["suggest_data"]
+SSE_REFERER = URLS["referer"]
 
 # PCF download endpoint — returns the current trading day's XML snapshot.
-PCF_DOWNLOAD_URL = "https://query.sse.com.cn/etfDownload/downloadETF2Bulletin.do"
+PCF_DOWNLOAD_URL = URLS["pcf_download"]
 
 # ETF code prefixes (NO overlap with SZSE ETF prefixes 15/16).
 SSE_ETF_PREFIXES: Tuple[str, ...] = ("510", "511", "512", "513", "515", "516", "518", "56")

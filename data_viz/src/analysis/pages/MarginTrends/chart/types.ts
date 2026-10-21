@@ -75,6 +75,9 @@ export interface PivotResult {
 // Chart labels are ENGLISH (user preference); security names stay as data.
 export const RET_SUFFIX = " · Ret%";
 export const VOL_SUFFIX = " · Vol20d";
+/** Member-change dot overlay on the margin line (normalized industry rows):
+ *  one dot per date whose n_members differs from the previous date. */
+export const MEMBERS_SUFFIX = " · MembersΔ";
 
 /** RZ-buy-share display unit: ‱ (per-ten-thousand, U+2031). Index attribution
  *  shares are scale-offset (weighted-AVG constituent rz_buy vs WHOLE-index

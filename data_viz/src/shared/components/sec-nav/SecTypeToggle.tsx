@@ -19,6 +19,7 @@ const LABELS: Record<SecNavSecType, string> = {
   etf: "ETF",
   index: "Index",
   stock: "Stock",
+  industry: "Industry",
 };
 
 export default function SecTypeToggle({ value, onChange, options = ["etf", "index", "stock"], disabled = false }: SecTypeToggleProps) {

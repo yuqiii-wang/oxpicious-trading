@@ -66,6 +66,25 @@ export interface AiAskSpec {
   /** Free-form caveats worth telling the LLM (e.g. "rebased to 100"). */
   notes?: string[];
   /**
+   * The analysis page this chart is on (the insight-registry identity —
+   * the tabs/pages of analysis_insights.insight_templates, e.g.
+   * { tab: "commons", page: "ma-spread" }). When set, the Ask AI modal
+   * replaces the series-tags strip with the page's METRICS TABLE
+   * (analysis_insights.insight_templates — the metrics of particular
+   * interest, values resolved from the analysis tables / on-demand
+   * computed) reacting to the ask's instrument (the classification-nav
+   * chosen security) and as-of date. Use the INSIGHT_PAGES constants
+   * (shared/ai-ask/insightPages.ts), the mirror of the registry slugs.
+   */
+  insight?: { tab: string; page: string };
+  /**
+   * The chart's own chosen/anchor date (e.g. the code trend's clicked
+   * date, the roof/floor anchor) — "YYYY-MM-DD". Seeds the modal's as-of
+   * date selector ahead of the plotted window's end so the metrics table
+   * reflects the date the user chose IN the chart.
+   */
+  asOfDate?: string;
+  /**
    * Whether the modal gets the as-of date selector (pin the question to an
    * exact date "YYYY-MM-DD" or a year-month "YYYY-MM"). Omitted =
    * auto-detect: on when the plotted window (x-axis labels or this spec's
@@ -145,4 +164,33 @@ export interface AiAskPlotInfo {
    * the plotted window parses as dates).
    */
   dateSelectable?: boolean;
+  /**
+   * The chart's own chosen/anchor date (the spec's `asOfDate`) — seeds
+   * the modal's as-of selector ahead of the plotted window end.
+   */
+  asOfDate?: string;
+  /**
+   * The analysis page identity (the spec's `insight`), when this chart is
+   * a registered analysis page. Drives the modal's metrics table; at
+   * submit time the modal attaches the RESOLVED metric values
+   * (`metrics`) so the adviser answers with the actual curve values.
+   */
+  insight?: { tab: string; page: string; metrics?: AiAskInsightMetric[] };
+}
+
+/** One resolved insight metric (GET /api/analysis-insights/metrics). */
+export interface AiAskInsightMetric {
+  template_id: string;
+  metric: string;
+  label: string;
+  unit: string;
+  description: string;
+  scope: string;
+  value: number | string | boolean | null;
+  value_date: string | null;
+  prev_value: number | string | boolean | null;
+  delta: number | null;
+  source_kind: string;
+  computed: boolean;
+  unresolved: string | null;
 }

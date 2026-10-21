@@ -57,6 +57,7 @@ from downloads._common import (  # noqa: E402
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
     retry_policy_for,
+    service_urls,
 )
 from downloads.macro.gov.main_gov import (  # noqa: E402
     SourceConfig,
@@ -76,8 +77,11 @@ from downloads.macro.gov.articles import download_articles  # noqa: E402
 # ----------------------------------------------------------------------------
 SERVICE = "downloads.macro.gov.news"
 
-GOV_JIEDU_LIST_URL = "https://www.gov.cn/zhengce/jiedu/index.htm"
-GOV_JIEDU_JSON_URL = "https://www.gov.cn/zhengce/jiedu/ZCJD_QZ.json"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+GOV_JIEDU_LIST_URL = URLS["gov_jiedu_list_url"]
+GOV_JIEDU_JSON_URL = URLS["gov_jiedu_json_url"]
 
 CONFIG = SourceConfig(
     name="gov_news",
@@ -220,6 +224,7 @@ def main() -> None:
         logger.info("=== Step 2/3: ndrc.gov.cn 新闻发布 title list ===")
         s2 = download_source(
             NDRC_CONFIG, fetch_ndrc_pages, parse_ndrc_items,
+            service="downloads.macro.gov.ndrc",
             out_root=args.out_root,
             start_date=args.start_date,
             sleep_sec=args.sleep_sec,

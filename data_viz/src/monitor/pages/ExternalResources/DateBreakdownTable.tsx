@@ -9,9 +9,11 @@
  * the component's life — same fetch-on-first-expand pattern as the
  * stream page's run history). The config inventory is fetched once for
  * the whole table (one small row per request type per service) and keyed
- * by service.
+ * by service. Inside a bucket the raw audit rows are collapsed to one
+ * expandable row per URL — a summary (requests, failed, latest time, avg
+ * duration); clicking it expands to that URL's raw records.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Chip,
@@ -143,6 +145,209 @@ function ServiceConfigs({ configs }: { configs: ExtRequestConfigEntry[] }) {
   );
 }
 
+/** Audit rows of ONE url — entries keep the fetch order (newest first). */
+interface UrlAuditGroup {
+  url: string;
+  entries: ExtResourceAuditEntry[];
+}
+
+/** Group the bucket's audit rows by url, keeping the order each url first
+ *  appears in (the API returns rows newest-first). */
+function groupByUrl(entries: ExtResourceAuditEntry[]): UrlAuditGroup[] {
+  const byUrl = new Map<string, ExtResourceAuditEntry[]>();
+  for (const e of entries) {
+    const list = byUrl.get(e.url);
+    if (list) list.push(e);
+    else byUrl.set(e.url, [e]);
+  }
+  return [...byUrl].map(([url, es]) => ({ url, entries: es }));
+}
+
+/** The raw records behind one URL's collapsed summary row — same columns
+ *  as the pre-grouping flat table minus URL (the summary row shows it). */
+function UrlAuditRecords({ entries }: { entries: ExtResourceAuditEntry[] }) {
+  return (
+    <Table size="small">
+      <TableHead>
+        <TableRow>
+          <TableCell>Time</TableCell>
+          <TableCell>Type</TableCell>
+          <TableCell>Source</TableCell>
+          <TableCell align="right">Status</TableCell>
+          <TableCell align="right">Duration</TableCell>
+          <TableCell>Result</TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {entries.map((e) => (
+          <TableRow key={e.id}>
+            <TableCell>{fmtTimeWithZoneShanghai(e.createdAt)}</TableCell>
+            <TableCell>{e.resourceType ?? "?"}</TableCell>
+            <TableCell>{e.subType ?? "?"}</TableCell>
+            <TableCell align="right">{e.statusCode ?? "—"}</TableCell>
+            <TableCell align="right">{fmtMs(e.durationMs)}</TableCell>
+            <TableCell>
+              {e.isFailed ? (
+                <Tooltip title={e.failureReason ?? "failed"}>
+                  <Typography
+                    variant="caption"
+                    color="error"
+                    sx={{
+                      display: "inline-block",
+                      maxWidth: 260,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      verticalAlign: "bottom",
+                    }}
+                  >
+                    {e.failureReason ?? "failed"}
+                  </Typography>
+                </Tooltip>
+              ) : (
+                <Typography variant="caption" color="text.secondary">
+                  ok
+                </Typography>
+              )}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+/** One URL's slice of the bucket's audit: a clickable summary row
+ *  (request / failed counts, latest request time, avg duration) that
+ *  expands to the raw records on click. */
+function UrlGroupRow({
+  url,
+  entries,
+  open,
+  onToggle,
+}: {
+  url: string;
+  entries: ExtResourceAuditEntry[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const failed = entries.filter((e) => e.isFailed);
+  const durations = entries
+    .map((e) => e.durationMs)
+    .filter((d): d is number => d != null);
+  const avgMs =
+    durations.length > 0
+      ? durations.reduce((a, d) => a + d, 0) / durations.length
+      : null;
+  return (
+    <>
+      <TableRow hover onClick={onToggle} sx={{ cursor: "pointer" }}>
+        <TableCell sx={{ fontFamily: "monospace", fontSize: "0.7rem" }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            {open ? (
+              <ExpandLess fontSize="small" sx={{ color: "text.secondary" }} />
+            ) : (
+              <ExpandMore fontSize="small" sx={{ color: "text.secondary" }} />
+            )}
+            <Tooltip title={url}>
+              <Typography
+                variant="caption"
+                sx={{
+                  fontFamily: "monospace",
+                  maxWidth: 380,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {url}
+              </Typography>
+            </Tooltip>
+          </Box>
+        </TableCell>
+        <TableCell align="right">{entries.length}</TableCell>
+        <TableCell
+          align="right"
+          sx={{ color: failed.length > 0 ? "error.main" : undefined }}
+        >
+          {failed.length}
+        </TableCell>
+        {/* entries arrive newest-first (ORDER BY created_at DESC), so the
+            first one is this url's latest request. */}
+        <TableCell>{fmtTimeWithZoneShanghai(entries[0].createdAt)}</TableCell>
+        <TableCell align="right">{fmtMs(avgMs)}</TableCell>
+        <TableCell>
+          {failed.length > 0 ? (
+            <Tooltip title={failed[0].failureReason ?? "failed"}>
+              <Typography
+                variant="caption"
+                color="error"
+                sx={{ whiteSpace: "nowrap" }}
+              >
+                {failed.length} failed
+              </Typography>
+            </Tooltip>
+          ) : (
+            <Typography variant="caption" color="text.secondary">
+              ok
+            </Typography>
+          )}
+        </TableCell>
+      </TableRow>
+      <TableRow>
+        <TableCell colSpan={6} sx={{ py: 0, border: 0 }}>
+          <Collapse in={open} unmountOnExit>
+            <Box sx={{ px: 3, py: 1 }}>
+              <UrlAuditRecords entries={entries} />
+            </Box>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </>
+  );
+}
+
+/** The bucket's audit rows collapsed to one expandable row per URL;
+ *  open/closed state lives here so it survives the bucket's audit-state
+ *  updates and resets only when the bucket itself is collapsed. */
+function AuditByUrlTable({ entries }: { entries: ExtResourceAuditEntry[] }) {
+  const groups = useMemo(() => groupByUrl(entries), [entries]);
+  const [openUrls, setOpenUrls] = useState<ReadonlySet<string>>(new Set());
+  const toggle = useCallback((url: string) => {
+    setOpenUrls((prev) => {
+      const next = new Set(prev);
+      if (next.has(url)) next.delete(url);
+      else next.add(url);
+      return next;
+    });
+  }, []);
+  return (
+    <Table size="small">
+      <TableHead>
+        <TableRow>
+          <TableCell>URL</TableCell>
+          <TableCell align="right">Requests</TableCell>
+          <TableCell align="right">Failed</TableCell>
+          <TableCell>Last request</TableCell>
+          <TableCell align="right">Avg duration</TableCell>
+          <TableCell>Result</TableCell>
+        </TableRow>
+      </TableHead>
+      <TableBody>
+        {groups.map((g) => (
+          <UrlGroupRow
+            key={g.url}
+            url={g.url}
+            entries={g.entries}
+            open={openUrls.has(g.url)}
+            onToggle={() => toggle(g.url)}
+          />
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
 function BucketRow({
   date,
   row,
@@ -210,66 +415,7 @@ function BucketRow({
               </Typography>
             )}
             {audit.entries.length > 0 && (
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Time</TableCell>
-                    <TableCell>Type</TableCell>
-                    <TableCell>Source</TableCell>
-                    <TableCell>URL</TableCell>
-                    <TableCell align="right">Status</TableCell>
-                    <TableCell align="right">Duration</TableCell>
-                    <TableCell>Result</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {audit.entries.map((e) => (
-                    <TableRow key={e.id}>
-                      <TableCell>
-                        {fmtTimeWithZoneShanghai(e.createdAt)}
-                      </TableCell>
-                      <TableCell>{e.resourceType ?? "?"}</TableCell>
-                      <TableCell>{e.subType ?? "?"}</TableCell>
-                      <TableCell
-                        sx={{
-                          fontFamily: "monospace",
-                          fontSize: "0.7rem",
-                          wordBreak: "break-all",
-                          maxWidth: 420,
-                        }}
-                      >
-                        {e.url}
-                      </TableCell>
-                      <TableCell align="right">{e.statusCode ?? "—"}</TableCell>
-                      <TableCell align="right">{fmtMs(e.durationMs)}</TableCell>
-                      <TableCell>
-                        {e.isFailed ? (
-                          <Tooltip title={e.failureReason ?? "failed"}>
-                            <Typography
-                              variant="caption"
-                              color="error"
-                              sx={{
-                                display: "inline-block",
-                                maxWidth: 260,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                verticalAlign: "bottom",
-                              }}
-                            >
-                              {e.failureReason ?? "failed"}
-                            </Typography>
-                          </Tooltip>
-                        ) : (
-                          <Typography variant="caption" color="text.secondary">
-                            ok
-                          </Typography>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <AuditByUrlTable entries={audit.entries} />
             )}
             {audit.entries.length >= AUDIT_LIMIT && (
               <Typography
@@ -387,7 +533,7 @@ export default function DateBreakdownTable({
           GMT day — runs Beijing 08:00 → next 08:00 · {rows.length} bucket(s)
           · {totalRequests.toLocaleString()} requests ·{" "}
           {totalFailed.toLocaleString()} failed · click a row for its request
-          configs and the raw audit
+          configs and the raw audit, collapsed by url
         </Typography>
       </Box>
       <Table size="small">

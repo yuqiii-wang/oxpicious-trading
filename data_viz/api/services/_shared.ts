@@ -1,4 +1,4 @@
-import type { StrategyNode, ThemeNode } from "../../shared/types";
+import type { SectorNode, StrategyNode, ThemeNode } from "../../shared/types";
 
 /** Row shape required by buildStrategyThemesFromRows.
  *  Each service maps its own Db*MetaRow to this shape before calling the
@@ -113,4 +113,37 @@ export function matchesClassification(
     return sectorOk && industryOk;
   }
   return true;
+}
+
+// ----------------------------------------------------------------------------
+//  buildIndustryFlatThemes — the sec_type='industry' LEFT-column tree.
+//
+//  Industry entities (code = stats.sec_classification.industry_id) have
+//  NO classification ABOVE them — the industry IS the top of its own
+//  taxonomy — so instead of the L1 sector -> L2 industry cascade they
+//  render ONE flat group: a single 'INDUSTRY' L1 with a single '全部'
+//  L2 holding every industry as an L3 item chip. Both the codes and
+//  their names come precomputed from the per-code summary tables
+//  (analysis.mov_ave_spreads_codes / analysis.pe_codes — the codes'
+//  name column is the stats.industry_identity label).
+// ----------------------------------------------------------------------------
+export function buildIndustryFlatThemes(
+  codes: Array<{ code: string; name: string | null }>,
+): SectorNode[] {
+  const items = codes
+    .map((c) => ({ code: c.code, name: c.name ?? "" }))
+    .sort((a, b) => a.code.localeCompare(b.code));
+  if (items.length === 0) return [];
+  return [{
+    sector_id: "INDUSTRY",
+    sector_label: "行业",
+    count: items.length,
+    industries: [{
+      industry_id: "ALL",
+      industry_label: "全部行业",
+      industry_slug: "all",
+      count: items.length,
+      items,
+    }],
+  }];
 }

@@ -33,12 +33,14 @@ import {
   fetchMovAveSpreadStrategyThemes,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
+import type { MaSpreadSecType } from "@shared/types";
 import type { SecNavThemesSource } from "@/shared/components/sec-nav";
 import { PAGE_SIZE } from "./constants";
 import { MaSpreadPanel } from "./MaSpreadPanel";
 
-/** Nav trees endpoints per sec_type (all MA-Spread scoped). */
-const THEMES_SOURCES: Record<"etf" | "index" | "stock", SecNavThemesSource> = {
+/** Nav trees endpoints per sec_type (all MA-Spread scoped). Industry
+ *  renders the flat one-group tree (no classification above the entity). */
+const THEMES_SOURCES: Record<MaSpreadSecType, SecNavThemesSource> = {
   etf: {
     themes: (exchange) => fetchMovAveSpreadThemes("etf", exchange),
     strategyThemes: (exchange) => fetchMovAveSpreadStrategyThemes("etf", exchange),
@@ -50,6 +52,10 @@ const THEMES_SOURCES: Record<"etf" | "index" | "stock", SecNavThemesSource> = {
   stock: {
     themes: (exchange) => fetchMovAveSpreadThemes("stock", exchange),
     strategyThemes: (exchange) => fetchMovAveSpreadStrategyThemes("stock", exchange),
+  },
+  industry: {
+    themes: (exchange) => fetchMovAveSpreadThemes("industry", exchange),
+    strategyThemes: (exchange) => fetchMovAveSpreadStrategyThemes("industry", exchange),
   },
 };
 
@@ -68,6 +74,7 @@ export default function MaSpreadPage() {
             Price/MA pairs. Click a pair chip to switch the chart; the
             date-range slider drives all 9 pairs (they share one date axis).`}
       themesSources={THEMES_SOURCES}
+      secTypes={["etf", "index", "stock", "industry"]}
       // All MA-Spread endpoints share the "/api/analysis/mov-ave-spread/" prefix.
       onInvalidateCache={() => invalidateCacheForPrefix("/api/analysis/mov-ave-spread/")}
       fetchCodes={(secType, exchange) => fetchMovAveSpreadCodes(secType, exchange)}

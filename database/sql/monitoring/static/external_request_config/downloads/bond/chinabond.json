@@ -14,8 +14,16 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "Chinabond yield curves; fallback proxies also 5.0s. Timeouts (20,180) migrated from the code's CHINABOND_TIMEOUT (chinabond endpoints answer slowly; synced 2026-10-10) - code now reads this row.",
+    "settle_sleep_sec": null,
+    "urls": {
+      "yield_main": "https://yield.chinabond.com.cn/cbweb-mn/yield_main?locale=zh_CN",
+      "query_tree": "https://yield.chinabond.com.cn/cbweb-mn/yc/queryTree?locale=zh_CN",
+      "down_bzqx_detail": "https://yield.chinabond.com.cn/cbweb-mn/yc/downBzqxDetail",
+      "down_year_bzqx_list": "https://yield.chinabond.com.cn/cbweb-mn/yc/downYearBzqxList",
+      "down_year_bzqx": "https://yield.chinabond.com.cn/cbweb-mn/yc/downYearBzqx"
+    },
+    "notes": "Chinabond yield curves; fallback proxies also 5.0s. Timeouts (20,180) migrated from the code's CHINABOND_TIMEOUT (chinabond endpoints answer slowly; synced 2026-10-10). URLs migrated from the module's inline constants 2026-10-17 - code reads the urls object via service_urls().",
     "source_ref": "downloads/bond/chinabond/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
+    "updated_at": "2026-10-17T00:00:00.000000+00:00"
   }
 ]

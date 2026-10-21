@@ -23,29 +23,15 @@ from downloads._common import (
     build_default_session,
     RunStats,
     business_days,
+    service_urls,
     sleep_sec_for,
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
-PBOC_BASE = "https://www.pbc.gov.cn"
-
 CATEGORY_OMO_TRANSACTION = "omo_transaction"
 CATEGORY_OUTRIGHT_REPO = "outright_repo"
-
-CATEGORY_CONFIGS: Dict[str, Dict[str, str]] = {
-    CATEGORY_OMO_TRANSACTION: {
-        "label": "公开市场业务交易公告",
-        "list_base": "/zhengcehuobisi/125207/125213/125431/125475/",
-        "file_prefix": "pboc_omo_trans",
-    },
-    CATEGORY_OUTRIGHT_REPO: {
-        "label": "公开市场买断式逆回购业务公告",
-        "list_base": "/zhengcehuobisi/125207/125213/125431/5492845/",
-        "file_prefix": "pboc_outright_repo",
-    },
-}
 
 RE_PAGING_TAG = re.compile(r"""tagname=(['"])([^'"]*/(\w+)-(\d+)\.html)\1""")
 
@@ -53,6 +39,25 @@ PBOC_MIN_VALID_BYTES = 200
 # Anti-bot pacing source — the service's external_request_config JSON row
 # (sleep_sec=5, sleep_jitter=0.5).
 SERVICE = "downloads.macro.pboc.repo_news"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+PBOC_BASE = URLS["site"]
+
+CATEGORY_CONFIGS: Dict[str, Dict[str, str]] = {
+    CATEGORY_OMO_TRANSACTION: {
+        "label": "公开市场业务交易公告",
+        "list_base": URLS["omo_transaction_list_base"],
+        "file_prefix": "pboc_omo_trans",
+    },
+    CATEGORY_OUTRIGHT_REPO: {
+        "label": "公开市场买断式逆回购业务公告",
+        "list_base": URLS["outright_repo_list_base"],
+        "file_prefix": "pboc_outright_repo",
+    },
+}
+
 SLEEP_SEC = sleep_sec_for(SERVICE)
 EMPTY_PLACEHOLDER_SUFFIX = "_empty.md"
 
@@ -958,10 +963,10 @@ def list_page_url(
     cfg = CATEGORY_CONFIGS[category]
     base = cfg["list_base"]
     if page <= 1:
-        return PBOC_BASE + base + "index.html"
+        return base + "index.html"
     if page_prefix_fmt:
-        return PBOC_BASE + base + page_prefix_fmt.format(page=page)
-    return PBOC_BASE + base + f"index_{page}.html"
+        return base + page_prefix_fmt.format(page=page)
+    return base + f"index_{page}.html"
 
 
 def fetch_list_page(
@@ -1015,7 +1020,8 @@ def fetch_list_page(
             if not href.startswith("/"):
                 base = CATEGORY_CONFIGS[category]["list_base"]
                 href = base + href
-            href = PBOC_BASE + href
+            else:
+                href = PBOC_BASE + href
         # Skip the list page itself (breadcrumb / nav self-link)
         if href == list_page_self_url:
             continue

@@ -15,14 +15,18 @@ from typing import Dict, Optional
 
 import requests
 
-from downloads._common import DEFAULT_START_DATE
+from downloads._common import DEFAULT_START_DATE, service_urls
 from downloads._common.exchanges.szse import (
-    REFERER_ARCHIVE,
     build_headers,
     run_szse_download,
 )
 
 SERVICE = "downloads.etf.szse.archive"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+REFERER_ARCHIVE = URLS["referer_archive"]
 
 
 ETF_EXTRA_PARAMS: Dict[str, Optional[str]] = {

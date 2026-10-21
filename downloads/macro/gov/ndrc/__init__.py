@@ -37,7 +37,7 @@ from bs4 import BeautifulSoup  # noqa: E402
 from downloads._common import (  # noqa: E402
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
-    DEFAULT_TIMEOUT,
+    service_urls,
 )
 from downloads.macro.gov.main_gov import (  # noqa: E402
     SourceConfig,
@@ -49,9 +49,14 @@ from downloads.macro.gov.main_gov import setup_logger  # noqa: E402
 # ----------------------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------------------
-NDRC_LIST_BASE = "https://www.ndrc.gov.cn/xwdt/xwfb/"
+SERVICE = "downloads.macro.gov.ndrc"
+
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+NDRC_LIST_BASE = URLS["ndrc_list_base"]
 NDRC_LIST_PAGE1 = NDRC_LIST_BASE  # page 1 is the bare directory URL
-NDRC_HOST = "https://www.ndrc.gov.cn"
+NDRC_HOST = URLS["ndrc_host"]
 
 MAX_PAGES = 200  # safety cap; the site currently has ~40 pages
 
@@ -157,7 +162,7 @@ def fetch_ndrc_pages(
         logger.info("[%s] page %d (%s)", config.name, page, url)
         resp = proxy.get(
             session, url,
-            headers=headers, timeout=DEFAULT_TIMEOUT,
+            headers=headers,
             logger=logger, log_tag="  ",
         )
         if resp is None:

@@ -57,6 +57,7 @@ from downloads._common import (  # noqa: E402
     build_default_session,
     resolve_out_dir,
     retry_policy_for,
+    service_urls,
     setup_logger,
     sleep_sec_for,
 )
@@ -67,8 +68,11 @@ from downloads.macro.gov.main_gov import latest_csv_date, read_csv_rows  # noqa:
 # ----------------------------------------------------------------------------
 SERVICE = "downloads.macro.gov.articles"
 
-GOV_HOST = "https://www.gov.cn"
-GOV_LIST_URL = "https://www.gov.cn/zhengce/jiedu/index.htm"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+GOV_HOST = URLS["gov_host"]
+GOV_LIST_URL = URLS["gov_list_url"]
 KEYWORDS_PATH = Path(__file__).resolve().parent.parent / "keywords.json"
 OUTPUT_DIRNAME = "gov_news"
 ARTICLES_SUBDIR = "articles"

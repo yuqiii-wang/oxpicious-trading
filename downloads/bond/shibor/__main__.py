@@ -17,6 +17,7 @@ from downloads._common import (
     DEFAULT_START_DATE,
     AntiBotProxy,
     antibot_config_for,
+    service_urls,
     sleep_sec_for,
     setup_logger,
     resolve_out_dir,
@@ -35,26 +36,25 @@ from downloads._common import (
 
 SERVICE = "downloads.bond.shibor"
 
-SHIBOR_BASE = "https://www.shibor.sh.cn"
+# Endpoint URLs — the service's external_request_config JSON row (urls
+# object) is the single source; a missing role raises at the point of use.
+URLS = service_urls(SERVICE)
+SHIBOR_BASE = URLS["site"]
 
-BK_PATH = "/ags/ms/"
-DQS_PATH = "/dqs/rest/"
-DURL_PATH = "/r/cms/www/chinamoney/data/"
+API_CHECK_SHIBOR_HIS = URLS["check_shibor_his"]
+API_XLSX_SHIBOR_HIS = URLS["xlsx_shibor_his"]
 
-API_CHECK_SHIBOR_HIS = BK_PATH + "cm-u-bk-shibor/ShiborHis"
-API_XLSX_SHIBOR_HIS = DQS_PATH + "cm-u-bk-shibor/ShiborHisExcel"
+API_CHECK_SHIBOR_PRI = URLS["check_shibor_pri"]
+API_XLSX_SHIBOR_PRI = URLS["xlsx_shibor_pri"]
 
-API_CHECK_SHIBOR_PRI = BK_PATH + "cm-u-bk-shibor/ShiborPriHis"
-API_XLSX_SHIBOR_PRI = DQS_PATH + "cm-u-bk-shibor/ShiborPriHisExcel"
+API_PNL_BK = URLS["pnl_bk"]
 
-API_PNL_BK = DURL_PATH + "/shibor/shibor-pnl-bk.json"
+API_CHECK_SHIBOR_MN = URLS["check_shibor_mn"]
+API_XLSX_SHIBOR_MN = URLS["xlsx_shibor_mn"]
+API_CFG_SHIBOR_MN = URLS["cfg_shibor_mn"]
 
-API_CHECK_SHIBOR_MN = BK_PATH + "cm-u-bk-shibor/ShiborMnHis"
-API_XLSX_SHIBOR_MN = DQS_PATH + "cm-u-bk-shibor/ShiborMnHisExcel"
-API_CFG_SHIBOR_MN = BK_PATH + "cm-u-bk-shibor/ShiborMnHisCFG"
-
-API_CHECK_LPR_HIS = BK_PATH + "cm-u-bk-currency/LprHis"
-API_XLSX_LPR_HIS = DQS_PATH + "cm-u-bk-currency/LprHisExcel"
+API_CHECK_LPR_HIS = URLS["check_lpr_his"]
+API_XLSX_LPR_HIS = URLS["xlsx_lpr_his"]
 
 T_SHIBOR_HIS = "shibor_his"
 T_SHIBOR_PRI = "shibor_pri_his"
@@ -80,7 +80,7 @@ DATA_TYPES = {
     },
 }
 
-REFERER_DATASERVICES = "https://www.shibor.sh.cn/shibor/dataservices/"
+REFERER_DATASERVICES = URLS["referer_dataservices"]
 
 AJAX_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)
 AJAX_HEADERS.update(
@@ -156,7 +156,7 @@ def _fetch_member_info(session: requests.Session, proxy: Optional[AntiBotProxy] 
     
     resp = proxy.post(
         session,
-        SHIBOR_BASE + API_PNL_BK,
+        API_PNL_BK,
         headers=AJAX_HEADERS,
         logger=logger,
         log_tag="[member-info]",
@@ -218,7 +218,7 @@ def _check_data(
         params = {"lang": "cn", "startDate": s_s, "endDate": s_e}
         resp = proxy.post(
             session,
-            SHIBOR_BASE + API_CHECK_SHIBOR_HIS,
+            API_CHECK_SHIBOR_HIS,
             params=params,
             headers=AJAX_HEADERS,
             logger=logger,
@@ -237,7 +237,7 @@ def _check_data(
         }
         resp = proxy.post(
             session,
-            SHIBOR_BASE + API_CHECK_SHIBOR_PRI,
+            API_CHECK_SHIBOR_PRI,
             data=data,
             headers=AJAX_HEADERS,
             logger=logger,
@@ -252,7 +252,7 @@ def _check_data(
         }
         resp = proxy.post(
             session,
-            SHIBOR_BASE + API_CHECK_SHIBOR_MN,
+            API_CHECK_SHIBOR_MN,
             params=params,
             headers=AJAX_HEADERS,
             logger=logger,
@@ -262,7 +262,7 @@ def _check_data(
         params = {"lang": "CN", "startDate": s_s, "endDate": s_e}
         resp = proxy.post(
             session,
-            SHIBOR_BASE + API_CHECK_LPR_HIS,
+            API_CHECK_LPR_HIS,
             params=params,
             headers=AJAX_HEADERS,
             logger=logger,
@@ -311,7 +311,7 @@ def _download_excel(
         params = {"lang": "cn", "startDate": s_s, "endDate": s_e}
         resp = proxy.post(
             session,
-            SHIBOR_BASE + API_XLSX_SHIBOR_HIS,
+            API_XLSX_SHIBOR_HIS,
             params=params,
             headers=FORM_HEADERS,
             logger=logger,
@@ -331,7 +331,7 @@ def _download_excel(
         }
         resp = proxy.post(
             session,
-            SHIBOR_BASE + API_XLSX_SHIBOR_PRI,
+            API_XLSX_SHIBOR_PRI,
             params=params,
             headers=FORM_HEADERS,
             logger=logger,
@@ -346,7 +346,7 @@ def _download_excel(
         }
         resp = proxy.post(
             session,
-            SHIBOR_BASE + API_XLSX_SHIBOR_MN,
+            API_XLSX_SHIBOR_MN,
             params=params,
             headers=FORM_HEADERS,
             logger=logger,
@@ -356,7 +356,7 @@ def _download_excel(
         params = {"lang": "CN", "startDate": s_s, "endDate": s_e}
         resp = proxy.post(
             session,
-            SHIBOR_BASE + API_XLSX_LPR_HIS,
+            API_XLSX_LPR_HIS,
             params=params,
             headers=FORM_HEADERS,
             logger=logger,

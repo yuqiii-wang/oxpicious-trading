@@ -228,7 +228,10 @@ def aggregate_bars(
                 continue
             last = entry.get("last")
             cumvol = entry.get("volume")
-            if last is not None:
+            # Zero (or negative) last = the source's no-quote placeholder
+            # (e.g. SSE serves all-zero records for some indices) — treat
+            # as null and skip so no zero bar is loaded.
+            if last is not None and last > 0:
                 lasts.append(last)
             if cumvol is not None:
                 cumvols.append(cumvol)
