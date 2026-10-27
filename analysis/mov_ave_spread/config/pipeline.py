@@ -78,15 +78,15 @@ TECH_STATS_MA_COLUMNS = {
 }
 
 # stats.*_tech_stats EMA column names by EMA window. EMAs come from the same
-# tech_stats tables as MAs (stats.{etf,index,stock}_tech_stats.ema{6,20,60,
-# 120,255}). ema10 exists in the source tables but is not used by this
-# analysis (the EMA detail table mirrors the MA window set: 6/20/60/120/255).
+# tech_stats tables as MAs — the TYPICAL EMA spans (2026-10-26, the
+# typical-EMA study: 6 the A-share short + the classic MACD pair 12/26,
+# which tech_stats carries since the same day). The EMA detail table's
+# pair vocabulary covers exactly these (config/ema.py EMA_PAIRS); the
+# SMA-convention windows stay in the Simple-MA section.
 TECH_STATS_EMA_COLUMNS = {
     6:   "ema6",
-    20:  "ema20",
-    60:  "ema60",
-    120: "ema120",
-    255: "ema255",
+    12:  "ema12",
+    26:  "ema26",
 }
 
 # MA windows for which slope (1st derivative) is computed in the source

@@ -16,6 +16,7 @@
 import { useMemo } from "react";
 import { BaseChart, useChartData, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import { fetchIndustryBenchmarkAttribution } from "@/lib/api-client";
 import type { AttributionChartProps } from "./types";
 import { buildIndustryBenchmarkAttributionOption } from "./industryBenchmarkAttributionOption";
@@ -39,24 +40,19 @@ export function IndustryBenchmarkAttributionChart({
   );
 
   // Rich AI Ask semantics for this chart (instruments/scope + series units).
+  const docs = useDocs();
   const aiAsk = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `Benchmark attribution for ${industryLabel || industryId}: per benchmark index, ` +
-        "Contribution (left) = the industry's share of that benchmark's return; right axis " +
-        "pits the industry's weight inside the benchmark (Benchmark Wt) against its " +
-        "broad-market weight (Industry Wt). Contribution ≫ weight ⇒ the industry " +
-        "over-drives that benchmark; ≪ ⇒ it merely rides. Selected benchmark's bar " +
-        "highlighted.",
+      intro: docs.text("ui.industry-sentiments.attribution", {
+        industry: industryLabel || industryId,
+      }),
       instruments: [{ code: industryId, name: industryLabel || undefined, assetClass: "industry" }],
-      series: [
-        { name: "Contribution", unit: "pp", description: "return contribution to the benchmark index, percentage points" },
-        { name: "Benchmark Wt", unit: "%", description: "the industry's weight inside the benchmark index" },
-        { name: "Industry Wt", unit: "%", description: "the industry's broad-market reference weight" },
-      ],
-      notes: [`As-of date: ${date || "latest"}`],
+      series: docs.series("ui.industry-sentiments.attribution"),
+      notes: docs.notes("ui.industry-sentiments.attribution", undefined, {
+        date: date || "latest",
+      }),
     }),
-    [industryId, industryLabel, date],
+    [docs, industryId, industryLabel, date],
   );
 
   return (

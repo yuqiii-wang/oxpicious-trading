@@ -1,7 +1,9 @@
 # Manual one-shot starter for the intraday pollers. In normal operation
-# scripts/stream_watchdog.sh (wired into main_run.sh) keeps these running
-# and restarts them when they die or wedge; running this script while a
-# watchdog is active can duplicate pollers.
+# the stream_watchdog supervisor (python -m database.stream_watchdog,
+# started by scripts/stream_watchdog.sh) keeps these running and restarts
+# them when they die or wedge. Idempotent: a poller already running is
+# skipped (the pgrep guard), so a redundant start — the UI's stream-always
+# session, main_run.sh, a second click — is a no-op.
 _log_dir="logs/$(date +%F)"
 mkdir -p "$_log_dir"
 
@@ -15,6 +17,10 @@ for m in \
   downloads.stream.csindex.price \
   downloads.stream.cnindex.price
 do
-  nohup python -u -m "$m" >> "$_log_dir/$m.log" 2>&1 &
-  sleep 1
+  if pgrep -f "python.* -m ${m//./\.}" > /dev/null 2>&1; then
+    echo "$m already running"
+  else
+    nohup python -u -m "$m" >> "$_log_dir/$m.log" 2>&1 &
+    sleep 1
+  fi
 done

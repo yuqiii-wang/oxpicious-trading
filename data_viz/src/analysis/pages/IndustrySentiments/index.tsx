@@ -43,6 +43,7 @@
  *              lines and overlay).
  *   • Tooltip = per-index actual close (raw value) + rebased % + stock_num.
  */
+import { useDocs } from "@/shared/docs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -514,39 +515,14 @@ export default function IndustrySentimentsPage() {
     return "Select industries";
   })();
 
+  const docs = useDocs();
   return (
     <SecNavShell
       nav={nav}
       title="Industry Sentiments"
       backPath="/analysis/commons"
       backLabel="back to commons"
-      subtitle={`${headerLabel} — each member index's daily close (actual value shown in
-            tooltip), rebased to 100 at the start of the visible (zoom) window.
-            Multi-select: tick multiple industry chips (across sectors — switch
-            the active sector to browse, picked industries persist) to merge
-            their member indices into one plot. Toggle pool size to filter by
-            member count (small <51, mid 51-180, large >180). The dashed mean
-            line and ±1σ band are precomputed server-side (anchored at history
-            start — aligned with lines only at full slider range). In
-            single-industry mode the mean/var overlay is always shown; in
-            multi-industry mode, toggle Mean only to hide the per-index lines
-            and render one mean curve PER industry (each in a distinct color
-            with its own ±1σ band) for cross-industry comparison. Below the
-            price chart, two sub-plots show the cross-sectional mean PE and
-            mean trading amount (in yuan, displayed in 亿元) of member indices
-            — in single-industry mode one line per pool_size, in
-            multi-industry mode one line per industry (for the selected pool).
-            Only indices WITH composition data are shown; indices without any
-            composition snapshot are excluded entirely. Broad-market indices
-            (BROAD_CSI/SSE/SZSE/STAR) appear under the FIN sector. L3 Index
-            multi-select: tick multiple index chips (across the picked
-            industries) to narrow the displayed lines to just those member
-            indices; click All to clear the filter. All <industry> chips (one
-            per selected industry) appear alongside — click one to DROP that
-            whole industry from the selection. The per-industry mean/±σ
-            overlay always aggregates ALL member indices of the selected
-            industries (L3 narrowing affects displayed lines only).`}
-      // Index-only page with no code search — both render DISABLED.
+      subtitle={docs.text("ui.industry-sentiments.page", { label: headerLabel })}      // Index-only page with no code search — both render DISABLED.
       secTypes={["index"]}
       disableToggle
       disableSearch

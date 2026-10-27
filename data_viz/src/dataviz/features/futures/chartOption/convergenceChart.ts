@@ -7,19 +7,18 @@
  * contract ages toward expiry its line visibly collapses into zero,
  * making the spot-vs-futures deviation (and its decay) obvious.
  *
- * Markers:
- *   - Matured contracts (history mode): a dot at the contract's LAST
- *     trading day labelled with the expiry gap ("expiry ±X bps") — the
- *     convergence endpoint.
- *   - Active contracts: a dot at the product's latest trading date
- *     labelled with yesterday's gap ("yesterday ±X bps") — where each
- *     contract stands now.
+ * Expiry markers are HOVER-DRIVEN (see the analysis page's expiryDots
+ * module): every contract LIVE on the hovered date gets one dot ANCHORED AT
+ * its expiry date, on its gap curve's endpoint there (the convergence
+ * endpoint), labelled with the expiry date and the final gap. This module
+ * just hosts the empty scatter series that the hook pushes data into
+ * (merge by id).
  *
  * Colors/order/dataZoom follow computeFuturesContractStyles so the
  * plot matches the price and correlation charts exactly.
  */
 import React from "react";
-import type { EChartsOption } from "echarts";
+import type { EChartsOption, SeriesOption } from "echarts";
 import {
   baseChartOption,
   commonTooltip,
@@ -27,6 +26,8 @@ import {
 import type { ThemeMode } from "@/store/filters";
 import {
   AXIS_POINTER_LINE,
+  FUTURES_EXPIRY_DOT,
+  FUTURES_EXPIRY_DOT_BORDER,
   TOOLTIP_CARD_BG,
   TOOLTIP_CARD_BORDER,
   TOOLTIP_CARD_TEXT,
@@ -34,21 +35,9 @@ import {
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type { FuturesCombinedResponse } from "@shared/types";
 import { computeFuturesContractStyles } from "./contractStyles";
-import type { ViewMode, ZoomRange } from "./types";
-
-function addDays(dateStr: string, days: number): string {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setDate(d.getDate() + Math.round(days));
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-interface MarkerDataItem {
-  coord: [string, number];
-  labelText: string;
-}
+import { buildExpiryDotsSeriesData } from "./expiryDots";
+import { EXPIRY_DOTS_SERIES_ID, EXPIRY_DOTS_SERIES_NAME } from "./types";
+import type { ExpiryDot, ExpiryDotDataItem, ViewMode, ZoomRange } from "./types";
 
 export function buildBasisConvergenceChartOption(
   mode: ThemeMode,
@@ -56,38 +45,15 @@ export function buildBasisConvergenceChartOption(
   gapByCodeDate: Map<string, Map<string, number | null>>,
   viewMode: ViewMode,
   zoomRange?: ZoomRange,
+  convDotsRef?: { current: ExpiryDot[] },
 ): EChartsOption | null {
   const { dates } = data;
   if (!dates.length) return null;
-  const lastDate = dates[dates.length - 1];
 
   const { styleByCode, qualifying, matured, maturedCodeSet, rowByCodeDate } =
     computeFuturesContractStyles(data, viewMode, zoomRange);
 
-  const fmtBps = (bps: number) => `${bps >= 0 ? "+" : ""}${bps.toFixed(1)} bps`;
-
-  // Last non-null gap for a contract, walking back from `fromDate` at
-  // most `maxLookback` calendar dates (handles the final trading day
-  // missing from futures_ext for the current session).
-  const lastGap = (
-    code: string,
-    fromDate: string,
-    maxLookback = 7,
-  ): { date: string; gap: number } | null => {
-    const dm = gapByCodeDate.get(code);
-    if (!dm) return null;
-    let d = fromDate;
-    for (let i = 0; i < maxLookback; i++) {
-      const g = dm.get(d);
-      if (g != null && Number.isFinite(g)) return { date: d, gap: g };
-      const prev = new Date(d + "T00:00:00");
-      prev.setDate(prev.getDate() - 1);
-      d = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}-${String(prev.getDate()).padStart(2, "0")}`;
-    }
-    return null;
-  };
-
-  const mkSeries = (code: string, lastDateForCode: string) => {
+  const mkSeries = (code: string) => {
     const st = styleByCode.get(code)!;
     const dm = gapByCodeDate.get(code);
     const rowData = rowByCodeDate.get(code);
@@ -96,57 +62,11 @@ export function buildBasisConvergenceChartOption(
       const g = dm?.get(d);
       if (g == null || !Number.isFinite(g)) return null;
       const bps = g * 1e4;
+      // Object item so the tooltip formatter can read signed bps + the
+      // row's days_to_expiry (true days remaining on that date).
       const dte = rowData?.get(d)?.days_to_expiry ?? null;
-      // Object item so the tooltip formatter can read signed bps + dte.
       return { value: bps, signed: bps, dte };
     });
-
-    // Markers near the edges of the VISIBLE zoom window get their label
-    // pushed inward ("left" at the right edge, "right" at the left edge);
-    // otherwise the label sits on top of the dot. Uses the current zoom
-    // range (the option rebuilds on every zoom change).
-    const totalDates = dates.length;
-    let visStartIdx = 0;
-    let visEndIdx = totalDates - 1;
-    if (zoomRange) {
-      visStartIdx = Math.floor((zoomRange.start / 100) * totalDates);
-      visEndIdx = Math.ceil((zoomRange.end / 100) * totalDates);
-    }
-    const visLen = Math.max(visEndIdx - visStartIdx + 1, 1);
-    const labelPosFor = (dateStr: string): "top" | "left" | "right" => {
-      const idx = dates.indexOf(dateStr);
-      if (idx >= visEndIdx - visLen * 0.05) return "left";
-      if (idx <= visStartIdx + visLen * 0.08) return "right";
-      return "top";
-    };
-
-    // --- Markers: expiry (matured, history mode) + yesterday (active) ---
-    const markers: Array<MarkerDataItem & { position: "top" | "left" | "right" }> = [];
-    if (st.isActive) {
-      const lg = lastGap(code, lastDate);
-      if (lg) {
-        markers.push({
-          coord: [lg.date, lg.gap * 1e4],
-          labelText: `${code} yesterday: ${fmtBps(lg.gap * 1e4)}`,
-          position: labelPosFor(lg.date),
-        });
-      }
-    } else if (viewMode === "history") {
-      // Matured contracts stopped trading long ago — walk back from the
-      // contract's OWN last trading day, not the product calendar's end.
-      const lg = lastGap(code, lastDateForCode, 14);
-      if (lg) {
-        // Expiry calendar date = contract's last trading day + remaining
-        // days_to_expiry (0 on the final trading day for CFFEX).
-        const dte = rowData?.get(lg.date)?.days_to_expiry ?? 0;
-        const expiryDateStr = addDays(lg.date, dte);
-        markers.push({
-          coord: [lg.date, lg.gap * 1e4],
-          labelText: `${code} expiry ${expiryDateStr}: ${fmtBps(lg.gap * 1e4)}`,
-          position: labelPosFor(lg.date),
-        });
-      }
-    }
 
     return {
       name: code,
@@ -162,40 +82,55 @@ export function buildBasisConvergenceChartOption(
         opacity: st.opacity,
       },
       z: st.isActive ? 10 : 5,
-      markPoint: markers.length
-        ? {
-            symbol: "circle",
-            symbolSize: 7,
-            itemStyle: {
-              color: st.color,
-              borderColor: "#fff",
-              borderWidth: 1,
-              opacity: st.isActive ? 1 : Math.max(st.opacity, 0.55),
-            },
-            label: {
-              show: true,
-              position: "top",
-              distance: 6,
-              fontSize: 10,
-              color: "#666",
-              formatter: (p: { data: MarkerDataItem & { position?: "top" | "left" | "right" } }) =>
-                p.data.labelText,
-            },
-            data: markers.map((m) => ({ ...m, label: { position: m.position } })),
-          }
-        : undefined,
     };
   };
 
   // Series order MUST match the price + correlation plots
   // ([...qualifying, ...matured]) — see the correlation chart note.
-  // Matured contracts anchor their expiry marker at their own last
-  // trading day (contract meta last_date); active ones at the product's
-  // latest date ("yesterday").
-  const series = [
-    ...qualifying.map((c) => mkSeries(c.code, lastDate)),
-    ...matured.map((c) => mkSeries(c.code, c.last_date)),
+  const series: SeriesOption[] = [
+    ...qualifying.map((c) => mkSeries(c.code)),
+    ...matured.map((c) => mkSeries(c.code)),
   ];
+
+  // Hover-fed expiry/yesterday dots (data pushed by useExpiryDots; merge by
+  // id keeps this series config while only the data swaps on hover).
+  if (convDotsRef) {
+    series.push({
+      id: EXPIRY_DOTS_SERIES_ID,
+      name: EXPIRY_DOTS_SERIES_NAME,
+      type: "scatter",
+      symbolSize: 10,
+      symbol: "circle",
+      data: buildExpiryDotsSeriesData(convDotsRef.current),
+      itemStyle: {
+        color: FUTURES_EXPIRY_DOT,
+        borderColor: FUTURES_EXPIRY_DOT_BORDER,
+        borderWidth: 2,
+      },
+      label: {
+        show: true,
+        position: "top",
+        distance: 6,
+        fontSize: 10,
+        fontWeight: 600,
+        lineHeight: 13,
+        color: FUTURES_EXPIRY_DOT,
+        textBorderColor: FUTURES_EXPIRY_DOT_BORDER,
+        textBorderWidth: 2,
+        formatter: (p: unknown) => {
+          const dot = (p as { data?: ExpiryDotDataItem }).data?.dot;
+          if (!dot) return "";
+          const bps = dot.value;
+          const valStr =
+            bps != null && Number.isFinite(bps)
+              ? `${bps >= 0 ? "+" : ""}${bps.toFixed(1)} bps`
+              : "";
+          return `${dot.code} expiry ${dot.expiryDate}\n${valStr}`;
+        },
+      },
+      z: 30,
+    });
+  }
 
   return baseChartOption(mode, {
     // No legend: per-contract identity is read from the hover tooltip.
@@ -222,6 +157,8 @@ export function buildBasisConvergenceChartOption(
         if (arr.length === 0) return "";
         const dateStr = arr[0].axisValue ?? dates[arr[0].dataIndex ?? 0] ?? "";
         const filtered = arr.filter((p) => {
+          // Skip the hover-fed dots series — it carries no per-date value.
+          if (p.seriesName === EXPIRY_DOTS_SERIES_NAME) return false;
           const v = Array.isArray(p.value) ? p.value[1] : p.value;
           if (v == null || !Number.isFinite(v as number)) return false;
           if (viewMode !== "history" && maturedCodeSet.has(p.seriesName ?? "")) return false;
@@ -263,9 +200,10 @@ export function buildBasisConvergenceChartOption(
       axisLabel: { fontSize: 11, color: "#888" },
       splitLine: { lineStyle: { color: "#eee", type: "dashed", opacity: 0.4 } },
     },
-    // The zero line (last series, silent + excluded from tooltip) is the
-    // convergence target — futures price meeting spot. Placed last so the
-    // preceding series indices keep matching the price/correlation plots.
+    // The zero line (silent + excluded from tooltip) is the convergence
+    // target — futures price meeting spot. Placed after the contract lines
+    // so those indices keep matching the price/correlation plots; the dots
+    // scatter comes last (tooltip skips it by name).
     series: [
       ...series,
       {

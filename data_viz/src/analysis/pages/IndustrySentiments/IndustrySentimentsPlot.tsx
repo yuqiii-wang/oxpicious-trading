@@ -18,6 +18,7 @@ import EChart from "@/shared/charts/EChart";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import type { ECharts, EChartsOption } from "echarts";
 import { buildGroupColorScheme } from "@/theme/group-colors";
 import type { PoolSize, PerIndustryAggregation, PlotProps } from "./types";
@@ -253,21 +254,12 @@ export function IndustrySentimentsPlot({
 
   // AI Ask — state carries the CURRENT pool/benchmark/mean toggles so the
   // modal and the LLM describe the view on screen.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.sentimentPlot,
-      intro:
-        `Industry sentiment for ${chartTitle}: member closes rebased to 100 × P_t/P_0 on a ` +
-        "shared date axis; pool-size toggle isolates small/mid/large members; selected " +
-        "broad-market benchmarks overlaid. Mean only: member lines → precomputed mean ±1σ " +
-        "band (single industry) or per-industry means (multi-industry). Sub-plots: industry " +
-        "mean PE, total trading amount (亿元). Indication: tight band = consensus tape, " +
-        "wide σ = dispersion; benchmark outrunning members = industry lagging its own beta.",
-      series: [
-        { name: `mean (${poolSize})`, description: "precomputed cross-member mean close (rebased), dashed" },
-        { name: "+1σ", description: "upper +1σ band edge of the member dispersion" },
-        { name: "-1σ", description: "lower −1σ band edge of the member dispersion" },
-      ],
+      intro: docs.text("ui.industry-sentiments.plot", { title: chartTitle }),
+      series: docs.series("ui.industry-sentiments.plot", { pool: poolSize }),
       state: {
         mode: multiIndustry ? `multi-industry (${numIndustries})` : "single-industry",
         pool: poolSize,
@@ -275,13 +267,9 @@ export function IndustrySentimentsPlot({
         mean_only: meanOnly,
         visible_members: visibleCount,
       },
-      notes: [
-        "Member lines and benchmark lines are dynamic series names (index/benchmark names); one color per industry in multi-industry mode.",
-        "The PE sub-plot is unitless mean PE per pool; the amount sub-plot is total trading amount in 亿元 (yuan / 1e8).",
-        "Crosshair syncs across the main chart and both sub-plots via the shared chart group.",
-      ],
+      notes: docs.notes("ui.industry-sentiments.plot"),
     }),
-    [chartTitle, multiIndustry, numIndustries, poolSize, selectedBenchmarks, meanOnly, visibleCount],
+    [docs, chartTitle, multiIndustry, numIndustries, poolSize, selectedBenchmarks, meanOnly, visibleCount],
   );
   const extraOptions = useMemo(
     () => [peOption, amtOption] as const,

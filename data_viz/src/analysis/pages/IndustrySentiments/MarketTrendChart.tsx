@@ -32,6 +32,7 @@ import ChartCard from "@/shared/components/ChartCard";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import {
   fetchSecBaseline,
@@ -178,31 +179,26 @@ export function MarketTrendChart() {
   // the CURRENT sub-view / amount toggle / benchmark so the modal and the
   // LLM describe the view on screen.
   const trendRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.marketTrend,
-      intro:
-        "Broad-market overview: the four A-share indices' closes rebased to " +
-        "100 × P_t/P_0 (left axis) for direct relative comparison; each index's " +
-        "turnover embedded as stacked bars on the right (toggle: Trading Amt). " +
-        "Indication: the ascendant rebased line flags leadership; rotation between " +
-        "lines = cross-market money migration; bars expose where turnover pools.",
+      intro: docs.text("ui.industry-sentiments.market-trend"),
       instruments: MARKET_TREND_INDICES.map((m) => ({ code: m.code, name: m.name, assetClass: "index" as const })),
-      series: MARKET_TREND_INDICES.flatMap((m) => [
-        { name: m.name, description: "daily close rebased to 100 at the common start" },
-        { name: `${m.name} Amt`, unit: "亿", description: `${m.name} daily trading amount (stacked bar)` },
-      ]),
+      series: compactDefined(
+        MARKET_TREND_INDICES.flatMap((m) => [
+          docs.seriesEntry("ui.industry-sentiments.market-trend", m.code, { name: m.name }),
+          docs.seriesEntry("ui.industry-sentiments.market-trend", `${m.code}-amt`, { name: m.name }),
+        ]),
+      ),
       state: {
         sub_view: subView,
         trading_amt: showAmt ? "shown (stacked bars)" : "hidden",
         ...(subView === "hypes_drains" ? { benchmark: benchmarkCode } : {}),
       },
-      notes: [
-        "Closes are REBASED to 100 — absolute price levels are not comparable across indices.",
-        "A shared date-range slider windows the chart; all four indices share one date axis (union of their dates).",
-      ],
+      notes: docs.notes("ui.industry-sentiments.market-trend"),
     }),
-    [subView, showAmt, benchmarkCode],
+    [docs, subView, showAmt, benchmarkCode],
   );
   const aiAskAddon = useAiAskAddon({
     title: "Market Trend",

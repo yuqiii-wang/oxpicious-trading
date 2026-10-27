@@ -17,8 +17,9 @@ import {
 } from "@/theme/chart-palette";
 import FuturesTooltip, { type TooltipItem } from "@/dataviz/features/futures/FuturesTooltip";
 import type { FuturesCombinedResponse } from "@shared/types";
-import { buildExpiryDotsSeriesData } from "./expiryDots";
+import { buildExpiryDotsSeriesData, expiryDateFromDte } from "./expiryDots";
 import { computeFuturesContractStyles } from "./contractStyles";
+import { buildContractDisplayNames } from "./contractDisplay";
 import {
   type ViewMode,
   type ZoomRange,
@@ -46,7 +47,7 @@ import {
  * The tooltip only lists contracts that were actually TRADING on the hovered
  * date (null values are skipped), so at any date only the handful of active
  * contracts at that time appear. Matured (history) curves are listed only in
- * history mode.
+ * history mode. Each contract row carries its expiry date (meta last_date).
  */
 export function buildFuturesChartOption(
   mode: ThemeMode,
@@ -67,6 +68,16 @@ export function buildFuturesChartOption(
 
   // For tooltip filtering: the spot series name
   const spotName = data.underlying_name || data.product_name;
+
+  // Tooltip/dot labels show the CFFEX-style product+YYMM name ("MCA2611"),
+  // while every map key below stays on the raw encoded code.
+  const displayByCode = buildContractDisplayNames(data.contracts);
+  // Fallback expiry for matured contracts whose row lacks days_to_expiry —
+  // for them meta last_date IS the expiry (for alive contracts it is merely
+  // the data end, never an expiry).
+  const lastDateByCode = new Map<string, string>(
+    data.contracts.filter((c) => !c.is_alive).map((c) => [c.code, c.last_date]),
+  );
 
   // Build dataZoom defaults (last 120 days by default for readability)
   const defaultZoomStart = Math.max(0, 100 - (120 / Math.max(dates.length, 1)) * 100);
@@ -151,15 +162,23 @@ export function buildFuturesChartOption(
     });
   }
 
-  // --- Expiry dots (history mode, hover-triggered) ---
-  if (viewMode === "history" && extra?.expiryDotsRef) {
+  // --- Expiry dots (hover-triggered: one dot per contract LIVE on the
+  // hovered date, anchored at its expiry date on the curve endpoint) ---
+  if (extra?.expiryDotsRef) {
     series.push({
       id: EXPIRY_DOTS_SERIES_ID,
       name: EXPIRY_DOTS_SERIES_NAME,
       type: "scatter",
       symbolSize: 10,
       symbol: "circle",
-      data: buildExpiryDotsSeriesData(extra.expiryDotsRef.current),
+      data: buildExpiryDotsSeriesData(extra.expiryDotsRef.current, dates.length),
+      // The line series use emphasis.focus:"series", which blurs siblings
+      // on hover — keep the expiry dots + labels at full opacity in the
+      // blur state so they never fade under the hovered curve.
+      blur: {
+        itemStyle: { opacity: 1 },
+        label: { show: true, opacity: 1 },
+      },
       itemStyle: {
         color: FUTURES_EXPIRY_DOT,
         borderColor: FUTURES_EXPIRY_DOT_BORDER,
@@ -178,7 +197,7 @@ export function buildFuturesChartOption(
         formatter: (p: unknown) => {
           const dot = (p as { data?: ExpiryDotDataItem }).data?.dot;
           if (!dot) return "";
-          return `${dot.code}\n${dot.expiryDate}`;
+          return `${displayByCode.get(dot.code) ?? dot.code}\n${dot.expiryDate}`;
         },
       },
       z: 30,
@@ -239,12 +258,21 @@ export function buildFuturesChartOption(
 
           const gapVal = gapMap ? gapMap.get(pp.seriesName)?.get(date) ?? null : null;
 
+          // Expiry as known on the hovered date: date + the row's
+          // days_to_expiry (true days remaining on that date).
+          const dte = rowByCodeDate.get(pp.seriesName)?.get(date)?.days_to_expiry;
+          const expiryVal =
+            dte != null && Number.isFinite(dte) && dte >= 0
+              ? expiryDateFromDte(date, dte)
+              : lastDateByCode.get(pp.seriesName);
+
           items.push({
-            seriesName: pp.seriesName,
+            seriesName: displayByCode.get(pp.seriesName) ?? pp.seriesName,
             value: Number(rawVal),
             color: colorMap.get(pp.seriesName) ?? FUTURES_GREY_DARK,
             isSpot: pp.seriesName === spotName,
             gap: gapVal,
+            expiryDate: expiryVal,
           });
         }
 

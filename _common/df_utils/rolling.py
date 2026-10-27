@@ -14,7 +14,7 @@ Consolidates two patterns that share the same ``groupby(keys)[col]
     industry_sentiments/etf_contribution MA5+MA20).
 
 Also provides ``compute_emas`` for exponential moving averages
-(ema6 / ema10 / ema20 / ema60), computed via a shift-doubling
+(ema6 / ema12 / ema20 / ema26 / ema60), computed via a shift-doubling
 parallel-prefix discounted sum — pure multiplication/addition on whole
 columns (no ewm primitive, no per-group loop), so it runs on GPU under
 cudf.pandas (cuDF lacks grouped-ewm; pandas groupby.ewm falls back to
@@ -221,9 +221,9 @@ def compute_emas(
         df = df.sort_values(["code", "date"]).reset_index(drop=True)
         df = compute_emas(
             df, group_key="code", value_col="close",
-            spans=[6, 10, 20, 60],
+            spans=[6, 12, 20, 26],
         )
-        # df now has columns: ema6, ema10, ema20, ema60
+        # df now has columns: ema6, ema12, ema20, ema26
     """
     if df.empty:
         for s in spans:

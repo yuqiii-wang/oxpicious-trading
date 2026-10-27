@@ -15,6 +15,7 @@ import type { ECharts } from "echarts";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { BaseChartProps } from "@/shared/charts/base-chart";
 import { INSIGHT_PAGES, useAiAskAddon, type AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { buildHypedDrainedOption } from "../chart/hypedDrainedOption";
 import { amplificationRatio } from "../chart/derive";
 import type { CodeDerived } from "../chart/types";
@@ -49,24 +50,18 @@ export function HypedVsDrainedChart({ code, label, derived, ...base }: Props) {
   );
   const ratio = amplificationRatio(derived?.bins ?? null);
 
-  // ---- AI Ask (insight: derivatives.hyped-vs-drained) ----------------------
+  // ---- AI Ask (insight: derivatives.hyped-vs-drained). Authored text:
+  // static.docs `ui.margin.hyped-drained`. ----
   const chartRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.hypedVsDrained,
-      intro:
-        "Hyped vs Drained by market regime: horizontal grouped bars of mean " +
-        "|daily return| % on Drained (low RZ-buy-share tercile, faint) vs " +
-        "Hyped (high, saturated) days within each market regime (calm/hot/" +
-        "panic/quiet), each labeled with its within-regime amplification " +
-        "×ratio. Hyped > Drained = margin chase amplifies moves in that " +
-        "regime.",
+      intro: docs.text("ui.margin.hyped-drained"),
       instruments: [{ code, name: label, assetClass: "industry" }],
-      notes: [
-        "Regime split needs stats.market_regimes rows for the code; codes without them degrade to the empty state.",
-      ],
+      notes: docs.notes("ui.margin.hyped-drained"),
     }),
-    [code, label],
+    [docs, code, label],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${label} — Hyped vs Drained`,

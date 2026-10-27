@@ -16,7 +16,7 @@ import type { MovAveSpreadPairSeries } from "@shared/types";
 import { SectionLabel } from "../SectionLabel";
 import {
   LONG_MA_ORDER,
-  LONG_EMA_ORDER,
+  EMA_PAIR_GRID,
   PERIOD_GRID_SX,
   PERIOD_CHIP_SX,
 } from "../constants";
@@ -102,30 +102,21 @@ export function PairChipGrid({
         })}
       </Box>
 
-      {/* ---- Exponential MA section ---- */}
+      {/* ---- Exponential MA section (the TYPICAL EMA pair grid:
+           Price/EMA{6,12,26} + the EMA/EMA pairs (6,12) (6,26) (12,26)
+           — the classic 12/26 spread IS the MACD line's components) ---- */}
       <SectionLabel id="pairsEma" standalone mt={1} suffix=" — click to switch" />
       <Box sx={PERIOD_GRID_SX}>
-        {/* Price/EMA row (ma_short = 0): one chip per long-EMA column. */}
-        {LONG_EMA_ORDER.map((emaLong, col) => {
-          const idx = pairIndexMap.get(`ema-0-${emaLong}`);
-          return (
-            <Box key={`ema-price-${col}`} sx={{ gridColumn: col + 1 }}>
-              {idx != null && renderPairChip(pairs[idx], idx)}
-            </Box>
-          );
-        })}
-        {/* EMA6/EMA row (ma_short = 6): no EMA6/EMA6 pair — col 0 empty. */}
-        {LONG_EMA_ORDER.map((emaLong, col) => {
-          if (emaLong === 6) {
-            return <Box key={`ema6-empty-${col}`} sx={{ gridColumn: col + 1 }} />;
-          }
-          const idx = pairIndexMap.get(`ema-6-${emaLong}`);
-          return (
-            <Box key={`ema6-${col}`} sx={{ gridColumn: col + 1 }}>
-              {idx != null && renderPairChip(pairs[idx], idx)}
-            </Box>
-          );
-        })}
+        {EMA_PAIR_GRID.map((row, rowIdx) =>
+          row.map(([emaShort, emaLong], col) => {
+            const idx = pairIndexMap.get(`ema-${emaShort}-${emaLong}`);
+            return (
+              <Box key={`ema-${rowIdx}-${col}`} sx={{ gridColumn: col + 1 }}>
+                {idx != null && renderPairChip(pairs[idx], idx)}
+              </Box>
+            );
+          }),
+        )}
       </Box>
 
       {/* ---- Trading Amt/MA section ---- */}

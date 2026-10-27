@@ -40,7 +40,8 @@ class RsiTailEntry(RuleEntry):
     RSI_ENTRY_WINDOWS × RSI_TAIL_PCTS). The family the ohlcv boost
     opted in FIRST (2026-10-15): the day-0 anatomy trust score rides
     the fetched axes and re-derives its coefficients on this run's own
-    anchor population (see engines/boost.OhlcvBoost)."""
+    anchor population (see engines/_ohlcv_boost.measurement.
+    OhlcvBoost)."""
 
     FAMILY = "mov_rsi"
     PACKAGE = "mov_rsi"

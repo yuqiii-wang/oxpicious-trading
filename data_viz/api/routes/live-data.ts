@@ -634,7 +634,7 @@ router.get("/trading-signals/portfolio-history", async (req: Request, res: Respo
  *  (analysis_signals.signal_rules, the 2026-10-15 rules tier): one row
  *  per (sub signal, trend, regime, action) with the engine entry, the
  *  SELF-ADAPTIVE prepared params (bar def, gate, measured evidence)
- *  and the family knowledge document (static.analysis_signal_docs,
+ *  and the family knowledge document (static.signal_rules_docs,
  *  joined per family). The Recent Movements
  *  code-trend's
  *  RULES panel; the history events below are populated by REPLAYING

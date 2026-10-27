@@ -1,6 +1,9 @@
 /**
  * MA-Spread pair configuration — the canonical 9 price pairs + 5 amt pairs
- * + 9 EMA pairs, the pair-label formatter, the DEFAULT chart's DB row type,
+ * + the 6 TYPICAL EMA pairs (2026-10-26 rebase: the EMA vocabulary covers
+ * exactly the typical EMA spans {6, 12, 26} — 6 the A-share short, 12/26
+ * the classic MACD pair; the SMA-convention windows stay in the Simple-MA
+ * section), the pair-label formatter, the DEFAULT chart's DB row type,
  * and the per-window column pickers the pair-series mappers fan out with.
  * Split out of the former monolithic mov-ave-spreads.ts.
  */
@@ -45,21 +48,17 @@ export const AMT_PAIR_ORDER: PairSpec[] = [
   [-1, 255, ""],
 ];
 
-/** 9 Exponential MA pairs (EMA). gap_column is the EMA detail table column.
- *  Mirrors PAIR_ORDER but for EMAs: 5 Price/EMA pairs (ma_short=0) + 4
- *  EMA6/EMA pairs (ma_short=6). Windows are 6/20/60/120/255 (EMA6 replaces
- *  MA5 — EMAs use 6 instead of 5 as the short window). Source:
- *  analysis.mov_ave_spreads_detail_ema. */
+/** 6 TYPICAL Exponential MA pairs (EMA). gap_column is the EMA detail table
+ *  column. 3 Price/EMA pairs (ma_short=0) + 3 EMA/EMA pairs over the
+ *  typical EMA spans {6, 12, 26} — the classic 12/26 spread IS the MACD
+ *  line's components. Source: analysis.mov_ave_spreads_detail_ema. */
 export const EMA_PAIR_ORDER: PairSpec[] = [
   [0, 6,   "price_vs_ema6"],
-  [0, 20,  "price_vs_ema20"],
-  [0, 60,  "price_vs_ema60"],
-  [0, 120, "price_vs_ema120"],
-  [0, 255, "price_vs_ema255"],
-  [6, 20,  "ema6_vs_ema20"],
-  [6, 60,  "ema6_vs_ema60"],
-  [6, 120, "ema6_vs_ema120"],
-  [6, 255, "ema6_vs_ema255"],
+  [0, 12,  "price_vs_ema12"],
+  [0, 26,  "price_vs_ema26"],
+  [6, 12,  "ema6_vs_ema12"],
+  [6, 26,  "ema6_vs_ema26"],
+  [12, 26, "ema12_vs_ema26"],
 ];
 
 /** Build the display label for a (ma_short, ma_long) pair.
@@ -78,7 +77,8 @@ export function pairLabel(maShort: number, maLong: number, kind: MovAveSpreadPai
 }
 
 // ----------------------------------------------------------------------------
-//  DB row types — DEFAULT chart query (18 Simple-MA + EMA pair series +
+//  DB row types — DEFAULT chart query (9 Simple-MA + 6 typical EMA pair
+//  series +
 //  the ONE shared per-date tooltip-metrics array; every other metric group
 //  is served by getMovAveSpreadChartExtras on demand).
 // ----------------------------------------------------------------------------
@@ -119,37 +119,30 @@ export interface DbChartRow {
   std_60days: number | null;
   std_120days: number | null;
   std_255days: number | null;
-  // 5 EMA value columns from stats.{sec_type}_tech_stats (alias `t`).
+  // 3 TYPICAL EMA value columns from stats.{sec_type}_tech_stats (alias `t`).
   ema6: number | null;
-  ema20: number | null;
-  ema60: number | null;
-  ema120: number | null;
-  ema255: number | null;
-  // 9 EMA gap columns from analysis.mov_ave_spreads_detail_ema (alias `ema`).
+  ema12: number | null;
+  ema26: number | null;
+  // 6 EMA gap columns from analysis.mov_ave_spreads_detail_ema (alias `ema`).
   price_vs_ema6: number | null;
-  price_vs_ema20: number | null;
-  price_vs_ema60: number | null;
-  price_vs_ema120: number | null;
-  price_vs_ema255: number | null;
-  ema6_vs_ema20: number | null;
-  ema6_vs_ema60: number | null;
-  ema6_vs_ema120: number | null;
-  ema6_vs_ema255: number | null;
+  price_vs_ema12: number | null;
+  price_vs_ema26: number | null;
+  ema6_vs_ema12: number | null;
+  ema6_vs_ema26: number | null;
+  ema12_vs_ema26: number | null;
   // EMA slope + EMA curvature columns from the EMA detail table — the
-  // persisted EMA windows 6/20 (direct diffs of the EMA lines; the
-  // 60/120/255-day derivatives were dropped across 2026-09).
+  // persisted EMA windows 6/12, the pair set's two shortest legs (direct
+  // diffs of the EMA lines; the 26 leg carries none).
   ema6_slope: number | null;
-  ema20_slope: number | null;
+  ema12_slope: number | null;
   ema6_curvature: number | null;
-  ema20_curvature: number | null;
-  // 5 rolling population σ columns of price (Bollinger band widths) from the
+  ema12_curvature: number | null;
+  // 3 rolling population σ columns of price (Bollinger band widths) from the
   // EMA detail table (alias `ema`), aliased as ema_std_*days — the long_std
-  // source for Price/EMA pair Bollinger envelopes.
+  // source for Price/EMA pair Bollinger envelopes over the typical windows.
   ema_std_5days: number | null;
-  ema_std_20days: number | null;
-  ema_std_60days: number | null;
-  ema_std_120days: number | null;
-  ema_std_255days: number | null;
+  ema_std_12days: number | null;
+  ema_std_26days: number | null;
   // Wilder RSI columns (0..100) from analysis.mov_ave_rsi — shared tooltip metrics.
   rsi_3days: number | null;
   rsi_6days: number | null;
@@ -246,36 +239,34 @@ export function pickStd(r: DbChartRow, window: number): number | null {
 
 /** Pick the long EMA value for a chart row given the ma_long window.
  *  EMA values come from stats.{sec_type}_tech_stats (aliased as `t` in
- *  the chart SQL). Windows: 6/20/60/120/255 (EMA6 replaces MA5). */
+ *  the chart SQL). Windows: the typical 6/12/26. */
 export function pickEmaLong(r: DbChartRow, maLong: number): number | null {
   switch (maLong) {
     case 6:   return toNum(r.ema6);
-    case 20:  return toNum(r.ema20);
-    case 60:  return toNum(r.ema60);
-    case 120: return toNum(r.ema120);
-    case 255: return toNum(r.ema255);
+    case 12:  return toNum(r.ema12);
+    case 26:  return toNum(r.ema26);
     default:  return null;
   }
 }
 
 /** Pick the EMA slope (1st derivative) for the given window from a chart
  *  row — a direct diff of the EMA line (EMA{W}[t] - EMA{W}[t-1]), from
- *  analysis.mov_ave_spreads_detail_ema. Only the persisted windows 6/20
- *  return a value; 60/120/255 return null (dropped across 2026-09). */
+ *  analysis.mov_ave_spreads_detail_ema. Only the persisted windows 6/12
+ *  (the pair set's two shortest legs) return a value; 26 returns null. */
 export function pickEmaSlope(r: DbChartRow, window: number): number | null {
   switch (window) {
     case 6:   return toNum(r.ema6_slope);
-    case 20:  return toNum(r.ema20_slope);
+    case 12:  return toNum(r.ema12_slope);
     default:  return null;
   }
 }
 
 /** Pick the EMA curvature (2nd derivative) for the given window from a
- *  chart row. Only the persisted windows 6/20 return a value. */
+ *  chart row. Only the persisted windows 6/12 return a value. */
 export function pickEmaCurvature(r: DbChartRow, window: number): number | null {
   switch (window) {
     case 6:   return toNum(r.ema6_curvature);
-    case 20:  return toNum(r.ema20_curvature);
+    case 12:  return toNum(r.ema12_curvature);
     default:  return null;
   }
 }
@@ -285,16 +276,14 @@ export function pickEmaCurvature(r: DbChartRow, window: number): number | null {
  *  as ema_std_{W}days (aliased from ema.std_{W}days in the chart SQL).
  *
  *  Window mapping: EMA6 → ema_std_5days (5-day σ, closest available window
- *  to 6), EMA20 → ema_std_20days, EMA60 → ema_std_60days, etc. Same source
+ *  to 6), EMA12 → ema_std_12days, EMA26 → ema_std_26days. Same source
  *  data as the SMA detail table's std_*days (σ of price over W days, ddof=0).
  *  Used to draw the ±k×σ envelope around the long EMA on Price/EMA charts. */
 export function pickEmaStd(r: DbChartRow, window: number): number | null {
   switch (window) {
     case 6:   return toNum(r.ema_std_5days);
-    case 20:  return toNum(r.ema_std_20days);
-    case 60:  return toNum(r.ema_std_60days);
-    case 120: return toNum(r.ema_std_120days);
-    case 255: return toNum(r.ema_std_255days);
+    case 12:  return toNum(r.ema_std_12days);
+    case 26:  return toNum(r.ema_std_26days);
     default:  return null;
   }
 }

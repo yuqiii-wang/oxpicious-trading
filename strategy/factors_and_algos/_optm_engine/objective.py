@@ -51,7 +51,7 @@ class OptmContext:
     ``dfs``     — Stage A evaluation set (IS split, or the full series
                   when ``--oos-frac 0``). Maps code → DataFrame slice
                   with all model columns present (e.g. MACD's
-                  ema10/60/120/255), fetched ONE time before the study.
+                  ema6/12/20/26/60/120/255), fetched ONE time before the study.
     ``oos_dfs`` — Stage B evaluation set (OOS split, or the full series).
     ``statics`` carries the fixed execution assumptions (fee_rate,
     slippage_band, buy_notional) merged into every trial's params;

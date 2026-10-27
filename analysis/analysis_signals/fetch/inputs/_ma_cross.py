@@ -1,8 +1,13 @@
 """The ma_cross family's value source (analysis.analysis_signals.
 fetch.inputs._ma_cross) — the EXISTING mov_ave gap table (analysis.
 mov_ave_spreads_detail; NO new analysis table, NO in-engine SMA — the
-table's price_vs_ma{W} columns ARE the values) with its EMA twin
-(mov_ave_spreads_detail_ema) LEFT JOINed per (code, date).
+table's price_vs_ma{W} columns ARE the values).
+
+(The former EMA-twin LEFT JOIN — the egap{20,60,120,255} columns off
+mov_ave_spreads_detail_ema — retired 2026-10-26: no EMA rule ever
+graduated (the 2026-10-16 re-measure, the signals-biz-logic record)
+and the EMA detail table's TYPICAL-EMA rebase dropped the
+SMA-mirrored gap columns the join read.)
 """
 from __future__ import annotations
 
@@ -26,11 +31,9 @@ from ._shared import (
 MA_GAP_TABLE = "analysis.mov_ave_spreads_detail"
 _MA_GAP_WINDOWS = (20, 60, 120, 255)
 
-_MA_EMA_TABLE = "analysis.mov_ave_spreads_detail_ema"
-_MA_EMA_WINDOWS = (20, 60, 120, 255)
 _MA_FETCH_COLUMNS = ["code", "date", "price", "price_slope"] + [
     f"gap{w}" for w in _MA_GAP_WINDOWS
-] + [f"egap{w}" for w in _MA_EMA_WINDOWS]     + [
+] + [
     "pattern", "vol_state", "px_speed", "amt_climax",
     # the market-level breadth state columns (MaBreadthEntry's values;
     # identical per date for every code — joined AFTER finalize)
@@ -52,7 +55,6 @@ async def fetch_ma_inputs(
     adjusted close) LEFT JOINed from the base OHLCV table for the
     in-engine forward changes, plus the day-0 ohlcv-boost axis columns
     (pattern / vol_state / px_speed as int8 codes).
-
     KEYED ON THE DETAIL TABLE (the family's value source owns the
     population — e.g. 931594's OHLC-estimated back-history carries
     table gaps but only part of it passes the base tables' clean-row
@@ -78,18 +80,11 @@ async def fetch_ma_inputs(
                {price_expr}::float8 AS price,
                d.price_slope::float8 AS price_slope,
                {gap_cols},
-               e.price_vs_ema20::float8 AS egap20,
-               e.price_vs_ema60::float8 AS egap60,
-               e.price_vs_ema120::float8 AS egap120,
-               e.price_vs_ema255::float8 AS egap255,
                g.pattern,
                p.vol_state::float8 AS vol_state,
                p.px_speed::float8 AS px_speed,
                {amt_select}
         FROM {MA_GAP_TABLE} d
-        LEFT JOIN {_MA_EMA_TABLE} e
-               ON e.sec_type = {st_code}
-              AND e.code = d.code AND e.date = d.date
         LEFT JOIN {base}
                ON b.code = d.code AND b.date = d.date
         LEFT JOIN {PATTERN_TABLE} g

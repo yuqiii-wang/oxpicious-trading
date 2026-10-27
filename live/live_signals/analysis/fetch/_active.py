@@ -9,18 +9,14 @@ run), one row per (code, sec_type, signal_type, signal_sub_type,
 trend, regime_state, action) cell, carrying its own action, bar
 definition (rule_params.bar_def) and confidence scale
     (rule_params.confidence) — plus the per-code market-regime label and
-    the signal rules tier's own TREND classification recorded as breach
+the signal rules tier's own TREND classification recorded as breach
 context. Plain SELECTs — the direction / decision live on the stored
 rows. The starvation scale (a cell under its sample floor trades at
 min(n/floor, 1) of the confidence, 2026-10-19) is RECOMPUTED here
 since 2026-10-20 (the gate digest left the slimmed cell snapshot):
 the LATEST performance snapshot's n_episodes against the rule's own
 rule_params.gate.sample_floor constant — merged into the confidence
-dict like the base. The GATED PORTFOLIO CASCADE (the confidence
-INCREASE from a passing portfolio group) reads the PORTFOLIO tier:
-the strongest is_valid portfolio_signal_rules group claiming the
-cell's signal_rule_id, its latest history_portfolio_signal_performance
-snapshot's gate.conf_scale.
+dict like the base.
 """
 from __future__ import annotations
 
@@ -40,25 +36,10 @@ from _common.labels import (
 
 from live.live_signals.analysis.fetch._values import SIGNAL_VALUE_SOURCE
 from live.live_signals.config import (
-    PORTFOLIO_PERFORMANCE_TABLE,
-    PORTFOLIO_RULES_TABLE,
     SIGNALS_TABLE,
     SIGNAL_PERFORMANCE_TABLE,
     TREND_DAYS_TABLE,
 )
-
-# The hedge_pairs family's SOURCED component stamps
-# (analysis.analysis_signals.engines.signal_families.hedge_pairs
-# .engine._ComponentRsiEntry): REAL mov_rsi cells (signal_type 0) at
-# the market + leg codes, POOLED on both axes — the portfolio tier's
-# SOURCE layer, whose history replay is deliberately dropped ("the
-# recorded events are the ORCHESTRATED composites'"). They are
-# orchestration inputs, never standalone live bars — and the
-# evaluator's pooled day-context match ('all' 4 matches any day state)
-# would otherwise wake them at exactly the live-checked codes
-# (HP_MARKET_CODE 000300 is a study index). Kept in step with the
-# shim's class name.
-ORCHESTRATION_ENTRIES = ("_ComponentRsiEntry",)
 
 
 async def fetch_regime_state(
@@ -135,8 +116,15 @@ async def fetch_active_signals(
     are the strategy tier's observational records (options_wall's
     VRP-declined twin; the starvation wait era ended 2026-10-19 —
     under-floor cells now trade at a reduced confidence), never a live
-    bar; the hedge_pairs ORCHESTRATION stamps (_ComponentRsiEntry) are
-    excluded too — the portfolio source layer never fires standalone."""
+    bar; the is_in_portfolio tier rows are excluded too (the schema's
+    tier flag — the hedge family's mov_rsi SOURCE layer rides it since
+    the 2026-10-24 fresh trio; those cells fire only inside their
+    portfolio coordination, never standalone), and so are the SHARED
+    VARIANT-AXIS cells (2026-10-26: is_pe_boosted / is_ohlcv_boosted
+    TRUE — the analysis tier's conditioned populations; the live
+    breach check has no PE / turnover condition machinery, so a
+    variant cell would fire its bar without the confirmation — their
+    events live in the history tier only)."""
     live_type_codes = [
         SIGNAL_TYPE_CODE[t] for t in sorted(SIGNAL_VALUE_SOURCE)
     ]
@@ -146,7 +134,7 @@ async def fetch_active_signals(
         f"       s.rule_params->'bar_def'    AS bar_def, "
         f"       s.rule_params->'confidence' AS confidence, "
         f"       s.rule_params->>'window'    AS window, "
-        f"       perf.base_pct, perf.sample_scale, pf.portfolio_scale "
+        f"       perf.base_pct, perf.sample_scale "
         f"FROM {SIGNALS_TABLE} s "
         # the confidence base = the cell's measured dir_ave at the
         # LATEST performance snapshot at-or-before the checked date (a
@@ -172,33 +160,11 @@ async def fetch_active_signals(
         f"      AND ($4::date IS NULL OR p.date <= $4::date) "
         f"    ORDER BY p.date DESC LIMIT 1 "
         f") perf ON TRUE "
-        # the GATED PORTFOLIO CASCADE (2026-10-20, re-homed by the
-        # cell-level redesign): the strongest PASSING portfolio group
-        # claiming this cell's signal_rule_id (an is_in_portfolio
-        # member), that group's LATEST audit snapshot's conf_scale —
-        # the confidence INCREASE from the portfolio tier; NULL = no
-        # passing group claimed the cell (the default — never a
-        # discount)
-        f"LEFT JOIN LATERAL ( "
-        f"    SELECT (q.gate->>'conf_scale')::float8 AS portfolio_scale "
-        f"    FROM {PORTFOLIO_RULES_TABLE} g "
-        f"    JOIN LATERAL ( "
-        f"        SELECT q.gate "
-        f"        FROM {PORTFOLIO_PERFORMANCE_TABLE} q "
-        f"        WHERE q.code = g.code "
-        f"          AND q.portfolio_type = g.portfolio_type "
-        f"          AND ($4::date IS NULL OR q.date <= $4::date) "
-        f"        ORDER BY q.date DESC LIMIT 1 "
-        f"    ) q ON TRUE "
-        f"    WHERE s.signal_rule_id = ANY(g.signal_rule_ids) "
-        f"      AND g.is_valid "
-        f"    ORDER BY (q.gate->>'conf_scale')::float8 DESC NULLS LAST "
-        f"    LIMIT 1 "
-        f") pf ON TRUE "
         f"WHERE s.sec_type = $1 AND s.code = $2 "
         f"  AND s.signal_type = ANY($3) "
         f"  AND s.action <> {ACTION_CODE['wait']} "
-        f"  AND s.rule_entry <> ALL($5::text[]) "
+        f"  AND NOT s.is_in_portfolio "
+        f"  AND NOT s.is_pe_boosted AND NOT s.is_ohlcv_boosted "
         f"ORDER BY s.signal_type, s.signal_sub_type, s.trend, "
         f"         s.regime_state, s.action",
         # the stored sec_type / signal_type columns are SMALLINT label
@@ -206,7 +172,6 @@ async def fetch_active_signals(
         # and the returned codes decode to the labels the rest of the
         # live tier speaks (SIGNAL_VALUE_SOURCE / the live row write)
         SEC_TYPE_CODE[sec_type], code, live_type_codes, as_of,
-        list(ORCHESTRATION_ENTRIES),
     )
     out: list[dict] = []
     for r in rows:
@@ -247,18 +212,6 @@ async def fetch_active_signals(
                 if isinstance(rec["confidence"], dict) else {}
             rec["confidence"] = {**conf,
                                  "sample_scale": float(sample_scale)}
-        # the GATED PORTFOLIO CASCADE (2026-10-20, re-homed by the
-        # cell-level redesign): the confidence INCREASE from the
-        # strongest passing portfolio group claiming the cell's
-        # signal_rule_id (the portfolio tables lateral); None = no
-        # passing group claimed the cell (the default 1.0 — never a
-        # discount)
-        portfolio_scale = rec.pop("portfolio_scale", None)
-        if portfolio_scale is not None:
-            conf = rec["confidence"] \
-                if isinstance(rec["confidence"], dict) else {}
-            rec["confidence"] = {**conf,
-                                 "portfolio_scale": float(portfolio_scale)}
         if rec["window"] is not None:
             rec["window"] = int(rec["window"])
         out.append(rec)
@@ -268,14 +221,20 @@ async def fetch_active_signals(
 async def fetch_active_codes(conn: Connection, sec_type: str) -> list[str]:
     """Codes with rule cells of the LIVE-WIRED families for the
     sec_type (the batch mode's universe) — wait rows excluded, the
-    observational records never define the live universe."""
+    observational records never define the live universe, the
+    is_in_portfolio tier rows never define it either (the schema's
+    tier flag), and neither do the shared VARIANT-AXIS cells (the
+    analysis tier's conditioned populations — history-only)."""
     live_type_codes = [
         SIGNAL_TYPE_CODE[t] for t in sorted(SIGNAL_VALUE_SOURCE)
     ]
     rows = await conn.fetch(
         f"SELECT DISTINCT code FROM {SIGNALS_TABLE} "
         f"WHERE sec_type = $1 AND signal_type = ANY($2) "
-        f"  AND action <> {ACTION_CODE['wait']} ORDER BY code",
+        f"  AND action <> {ACTION_CODE['wait']} "
+        f"  AND NOT is_in_portfolio "
+        f"  AND NOT is_pe_boosted AND NOT is_ohlcv_boosted "
+        f"ORDER BY code",
         SEC_TYPE_CODE[sec_type], live_type_codes,
     )
     return [r["code"] for r in rows]

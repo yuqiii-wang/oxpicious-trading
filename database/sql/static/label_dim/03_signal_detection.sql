@@ -126,12 +126,18 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 200, 'rsi6_1pct', 200),
     ('signal_sub_type', 201, 'rsi6_2pct', 201),
     ('signal_sub_type', 202, 'rsi6_3pct', 202),
+    ('signal_sub_type', 204, 'rsi6_5pct', 204),
+    ('signal_sub_type', 209, 'rsi6_10pct', 209),
     ('signal_sub_type', 300, 'rsi10_1pct', 300),
     ('signal_sub_type', 301, 'rsi10_2pct', 301),
     ('signal_sub_type', 302, 'rsi10_3pct', 302),
+    ('signal_sub_type', 304, 'rsi10_5pct', 304),
+    ('signal_sub_type', 309, 'rsi10_10pct', 309),
     ('signal_sub_type', 400, 'rsi14_1pct', 400),
     ('signal_sub_type', 401, 'rsi14_2pct', 401),
     ('signal_sub_type', 402, 'rsi14_3pct', 402),
+    ('signal_sub_type', 404, 'rsi14_5pct', 404),
+    ('signal_sub_type', 409, 'rsi14_10pct', 409),
     ('signal_sub_type', 500, 'rsi20_1pct', 500),
     ('signal_sub_type', 501, 'rsi20_2pct', 501),
     ('signal_sub_type', 502, 'rsi20_3pct', 502),
@@ -283,11 +289,12 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 5502, 'momlong_3pct', 5502),
     -- rf_break (2026-10-16, THRESHOLD block 5600-5699): the close
     -- beyond the PRIOR day's roof/floor level (the turtle breakout on
-    -- the roof_floor_estimates store) per window x method. Roof
-    -- = BUY (the significant-high continuation), floor = SELL (the
-    -- breakdown exit); each day claims at its DEEPEST breached window
-    -- (widest-first — donchian windows nest: the 500d max high
-    -- contains the 255d's). Plain labels = the donchian method (the
+    -- the roof_floor_estimates store) per window x method. RETIRED
+    -- 2026-10-26 (the legacy cleanup, user-directed): the catch-all
+    -- roof-buy / floor-sell decisions 5600-5633 below are decode-only
+    -- vocabulary now — the depth/gap studies replaced them with the
+    -- deep tiers (5640-5673) and the floor bounce (5680-5683); the
+    -- family trades ALL-BUY. Plain labels = the donchian method (the
     -- window's max intraday high / min low, method 1); _med_ = the
     -- median consensus of the five estimate methods per (date,
     -- period) (method 5)
@@ -307,6 +314,45 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 5631, 'rf120_med_floor', 5631),
     ('signal_sub_type', 5632, 'rf255_med_floor', 5632),
     ('signal_sub_type', 5633, 'rf500_med_floor', 5633),
+    -- rf_break deep tiers (2026-10-26, the depth-split study's
+    -- graduates, temp_scripts/rf_depth_split_study.py): the DEEP
+    -- breach legs as their own sub types, BOTH action BUY.
+    -- roof_deep = the depth-gated continuation (> the self-adaptive k
+    -- bar beyond the prior day's roof; the study's monotone-UP
+    -- gradient, ~2x the catch-all's forward blend at k 1-2%).
+    -- floor_deep = the capitulation V-bottom (> the k bar below the
+    -- prior day's floor; the deeper the breakdown the harder the
+    -- forward bounce — the study REVERSED the hypothesized deep-floor
+    -- sell). Bars self-adaptive per cell from the config grids
+    ('signal_sub_type', 5640, 'rf60_roof_deep', 5640),
+    ('signal_sub_type', 5641, 'rf120_roof_deep', 5641),
+    ('signal_sub_type', 5642, 'rf255_roof_deep', 5642),
+    ('signal_sub_type', 5643, 'rf500_roof_deep', 5643),
+    ('signal_sub_type', 5650, 'rf60_floor_deep', 5650),
+    ('signal_sub_type', 5651, 'rf120_floor_deep', 5651),
+    ('signal_sub_type', 5652, 'rf255_floor_deep', 5652),
+    ('signal_sub_type', 5653, 'rf500_floor_deep', 5653),
+    ('signal_sub_type', 5660, 'rf60_med_roof_deep', 5660),
+    ('signal_sub_type', 5661, 'rf120_med_roof_deep', 5661),
+    ('signal_sub_type', 5662, 'rf255_med_roof_deep', 5662),
+    ('signal_sub_type', 5663, 'rf500_med_roof_deep', 5663),
+    ('signal_sub_type', 5670, 'rf60_med_floor_deep', 5670),
+    ('signal_sub_type', 5671, 'rf120_med_floor_deep', 5671),
+    ('signal_sub_type', 5672, 'rf255_med_floor_deep', 5672),
+    ('signal_sub_type', 5673, 'rf500_med_floor_deep', 5673),
+    -- rf_break floor bounce (2026-10-26, the two-method gap study's
+    -- graduate, temp_scripts/rf_gap_study.py): the close breaks the
+    -- prior day's MEDIAN consensus floor while the DONCHIAN wick
+    -- floor still holds below it — the consensus-broken /
+    -- wick-intact bounce BUY. Cross-method by construction (ONE
+    -- population per window, no method infix); measured t 3.0-4.5 /
+    -- hit 57-67% at all four windows. Shipped with the legacy
+    -- cleanup that retired the catch-all roof/floor sub types
+    -- (5600-5633) — the family is ALL-BUY now
+    ('signal_sub_type', 5680, 'rf60_floor_bounce', 5680),
+    ('signal_sub_type', 5681, 'rf120_floor_bounce', 5681),
+    ('signal_sub_type', 5682, 'rf255_floor_bounce', 5682),
+    ('signal_sub_type', 5683, 'rf500_floor_bounce', 5683),
     -- options_vix addition (2026-10-16): ovix_atr_break BUY — the
     -- volatility-EXPANSION breakout: the spot day-return in close-to-
     -- close ATR units beyond the k bar while the vol index slope5
@@ -435,6 +481,114 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- identity; the recorded value is the fetch's combined washdepth
     -- gauge (the deepest alive witness's window)
     ('signal_sub_type', 5824, 'hp_entry_wash', 5824),
+    -- the 2026-10-23 more-triggers graduates II (docs/
+    -- portfolio_more_triggers_study_2026-10-23.md): the coordination
+    -- WIDENING subs — every member a SOURCED cell on >= 2 codes (the
+    -- member-action invariant holds at two), each measured on the
+    -- 36-pair universe (all pooled t >= 6.8, year-majority positive,
+    -- drawdown troughs better than the wash entries'):
+    -- hp_entry_rsi_legs = both legs' RSI capitulation, MARKET-FREE
+    -- (the trio's two-leg core without its rarest conjunct; raw
+    -- episodes 225 at tail 3, winner-picked ~138); hp_entry_wash_rsi =
+    -- ONE leg's Donchian-floor breakdown + the OTHER leg's RSI-3pct
+    -- witness (the wash's cross-gauge cousin; winner-picked ~256);
+    -- hp_entry_wash_mkt1 = ONE leg's floor breakdown + the market's
+    -- RSI-3pct witness (the wash120_mkt trio with one leg;
+    -- winner-picked ~361). The tail/window grids ride bar_def (the
+    -- run_cells candidate convention); the coordinated SELL side
+    -- measured OUT (both legs' RSI exhaustion is sign-aligned
+    -- NEGATIVE — tops continue; the equity asymmetry on the pair).
+    ('signal_sub_type', 5825, 'hp_entry_rsi_legs', 5825),
+    ('signal_sub_type', 5826, 'hp_entry_wash_rsi', 5826),
+    ('signal_sub_type', 5827, 'hp_entry_wash_mkt1', 5827),
+    -- the fresh typical-solution trio (2026-10-24, user-directed
+    -- "most typical negative correlation two curve and one broadmarket,
+    -- typical and simple"; the prior sub inventory 5812-5827 stays
+    -- registered for old-history decode only): hp_entry_trio = ALL
+    -- THREE curves (both offset-opposite legs + the broad market
+    -- 000300) in their own RSI capitulation tails the same day — the
+    -- co-wash BUY of the inverse-vol long-long pair (3 sourced mov_rsi
+    -- member cells, one per curve) — the ONE shipped sub type; the
+    -- blow-off mirror is the engine's MEASURED asymmetry check
+    -- (measured thin — coordinated tops CONTINUE; rows discarded), so
+    -- hp_exit_trio stays the check's registered vocabulary with no
+    -- writer. The tail grid rides bar_def (the run_cells candidate
+    -- convention; nested deepest-tail-first carving).
+    ('signal_sub_type', 5828, 'hp_entry_trio', 5828),
+    ('signal_sub_type', 5829, 'hp_exit_trio', 5829),
+    -- the SIMPLIFIED portfolio's witness vocabulary (2026-10-24):
+    -- the triggered portfolio signal sets its own cell-level member
+    -- records (one per curve, at each curve's own day); no rule rows
+    -- carry the label — payload vocabulary only. 2026-10-25 (user-
+    -- directed "diff legs or roles should have diff sub types"): the
+    -- per-ROLE witness labels supersede 5830 for new rows (each
+    -- curve's role is its own sub type — market / leg A / leg B);
+    -- 5830 stays registered for old-history decode only
+    ('signal_sub_type', 5830, 'hp_rsi_witness', 5830),
+    ('signal_sub_type', 5831, 'hp_rsi_witness_mkt', 5831),
+    ('signal_sub_type', 5832, 'hp_rsi_witness_leg_a', 5832),
+    ('signal_sub_type', 5833, 'hp_rsi_witness_leg_b', 5833),
+    -- the SPREAD one-buy-one-sell sub (2026-10-25, user-directed "one
+    -- buy one sell by the spread between two negative corr curves,
+    -- disregarding the benchmark curve"; study temp_scripts/
+    -- spread_pair_study.py): hp_entry_spread = the pair's long-short
+    -- SPREAD curve (w_a*r_a - w_b*r_b compounded over the fetch's own
+    -- lagged inverse-vol weights, NO market curve) in its own Wilder-
+    -- RSI(14/10) bottom tail vs its own adaptive percentile bar — the
+    -- classic pairs CONVERGENCE trade: BUY the laggard leg A, SELL the
+    -- leader leg B (response = the spread value's forward blend).
+    -- Measured: the RAW population is negative (pooled -0.08..-0.17%
+    -- every window x tail — the 2026-10-20 ratio-z negative
+    -- reproduces on the RSI axis); the edge lives in the per-pair
+    -- winners (25/48 pairs, pooled +0.55% t=4.70 hit 61% 5/6 yrs).
+    -- hp_exit_spread = the top-tail convergence MIRROR — the engine's
+    -- measured asymmetry check, rows discarded (no writer); the
+    -- per-ROLE witness labels hp_spread_buy_leg / hp_spread_sell_leg
+    -- are payload vocabulary only (the bought laggard leg A and the
+    -- sold leader leg B at the event day)
+    ('signal_sub_type', 5834, 'hp_entry_spread', 5834),
+    ('signal_sub_type', 5835, 'hp_spread_buy_leg', 5835),
+    ('signal_sub_type', 5836, 'hp_spread_sell_leg', 5836),
+    ('signal_sub_type', 5837, 'hp_exit_spread', 5837),
+    -- signal_type 9 (2026-10-26, user-directed): the REBOUND family —
+    -- the drop→rebound→resolution episodes of the ma-spread rebound
+    -- study (temp_scripts/ma_spread_rebound_study.py +
+    -- docs/ma_spread_rebound_study_2026-10-26.md): a big drop from the
+    -- trailing-Wd high (>= the depth bar), the running trough, the
+    -- rebound peak, and the causal RESOLUTION (trough-break /
+    -- rollover / high-reclaim). Each sub type emits PLAIN and
+    -- PE-conditioned cells (is_pe_boosted, the PK axis: the gate is
+    -- the code's own trailing PE-percentile condition).
+    ('signal_type', 9, 'rebound', 9),
+    -- the rebound family's sub types (block 5900+): {kind}_{window} —
+    -- capit = the CAPITULATION trough-break (further-drop resolution;
+    -- the study's strongest fwd20 population after big drops, PE
+    -- barbell: cheap strongest, rich delayed, middle dead);
+    -- fail = the FAILED RECLAIM (rollover with the recovery ratio in
+    -- [0.90, 1.0) — the stall just below the last high, the
+    -- further-drop population, exit timing; works only outside cheap
+    -- PE); reclaim = the FULL RECLAIM (close above the prior high —
+    -- the next rebound measures the strongest, H2's graduate).
+    ('signal_sub_type', 5900, 'rebound_capit_60', 5900),
+    ('signal_sub_type', 5901, 'rebound_capit_255', 5901),
+    ('signal_sub_type', 5902, 'rebound_fail_60', 5902),
+    ('signal_sub_type', 5903, 'rebound_fail_255', 5903),
+    ('signal_sub_type', 5904, 'rebound_reclaim_60', 5904),
+    ('signal_sub_type', 5905, 'rebound_reclaim_255', 5905),
+    -- signal_type 10 (2026-10-26): the MACD family — the typical-EMA
+    -- study's product (the most typical EMA usage is the classic MACD
+    -- set 12/26/9; the tech_stats tables carry ema12/ema26 since the
+    -- same day, replacing the nearby non-standard span 10). The
+    -- classic signal-line crossover: MACD line = ema12 - ema26
+    -- (computed in the family's fetch from the base closes), signal
+    -- line = its own EMA9.
+    ('signal_type', 10, 'macd', 10),
+    -- the macd family's sub types (block 6000+): the classic
+    -- signal-line crossover — macd_cross_up = the bullish crossover
+    -- BUY (the momentum turn), macd_cross_dn = the bearish crossover
+    -- SELL (exit timing — the equity asymmetry)
+    ('signal_sub_type', 6000, 'macd_cross_up', 6000),
+    ('signal_sub_type', 6001, 'macd_cross_dn', 6001),
     -- analysis_cache_kind: analysis_signals.analysis_cache.kind — the
     -- generic intermediate-result cache's tenant (which analysis owns
     -- the row's cache jsonb)
@@ -446,4 +600,18 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- outlive family renames). 0 neg_corr_hedge_pair = the two-leg
     -- long–long negatively-correlated hedge pair (code 'A~B',
     -- lexicographic — the hedge_pairs family's universe)
-    ('portfolio_type', 0, 'neg_corr_hedge_pair', 0);
+    ('portfolio_type', 0, 'neg_corr_hedge_pair', 0),
+    -- portfolio_sub_type (2026-10-25): WHICH PORTFOLIO RULE the row is
+    -- within its portfolio_type — one row per (code, portfolio_type,
+    -- portfolio_sub_type) since the split (the merged single row per
+    -- pair carried both rules' subs under one rule_params.subs before).
+    -- Selected by the row's own orchestrating signal_sub_type:
+    -- 0 trio_wash = hp_entry_trio (all three curves in their own RSI
+    --   capitulation tails the same day, bought through the pair);
+    -- 1 spread = hp_entry_spread + hp_exit_spread (the long-short
+    --   spread curve in its own RSI bottom/top tail — one buy one
+    --   sell). The registered mov_rsi cells (rsi{w}_{p}pct, the
+    --   is_in_portfolio TRUE tier) map INTO these rows through
+    --   signal_rule_ids only — they never are portfolio rows themselves.
+    ('portfolio_sub_type', 0, 'trio_wash', 0),
+    ('portfolio_sub_type', 1, 'spread', 1);

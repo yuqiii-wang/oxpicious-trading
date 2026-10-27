@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS stats.index_identity (
 
     CONSTRAINT pk_index_identity PRIMARY KEY (code, date),
     CONSTRAINT chk_index_identity_code_format
-        CHECK (code ~ '^(\d{6}|H\d{5})$')
+        CHECK (code ~ '^(\d{6}|H\d{5}|[A-Z][A-Z0-9]{3,11})$')
 ) PARTITION BY HASH (code);
 
 -- Native hash partitions (8) keyed by code — created via the shared util
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS stats.index_identity (
 SELECT public.create_hash_partitions('stats', 'index_identity', 8);
 
 COMMENT ON TABLE  stats.index_identity                 IS 'Index identity: one row per (date, index_code). PK (code, date) shared by all index sub-tables. Native HASH partitioned by code.';
-COMMENT ON COLUMN stats.index_identity.code            IS 'Index code, e.g. "000300" (CSI300), "H30007" (chip industry).';
+COMMENT ON COLUMN stats.index_identity.code            IS 'Index code: onshore "000300" (CSI300), "H30007" (chip industry); offshore uppercase-alnum e.g. "MICN0A5C0PCY" (MSCI China A 50 Connect, HKEX marquee RIC).';
 
 -- ----------------------------------------------------------------------------
 -- Table: index_basic_stats
@@ -97,8 +97,9 @@ CREATE TABLE IF NOT EXISTS stats.index_tech_stats (
     ma120                     NUMERIC(18,4),
     ma255                     NUMERIC(18,4),
     ema6                      NUMERIC(18,4),
-    ema10                     NUMERIC(18,4),
+    ema12                     NUMERIC(18,4),
     ema20                     NUMERIC(18,4),
+    ema26                     NUMERIC(18,4),
     ema60                     NUMERIC(18,4),
     ema120                    NUMERIC(18,4),
     ema255                    NUMERIC(18,4),
@@ -120,8 +121,9 @@ COMMENT ON COLUMN stats.index_tech_stats.ma60              IS '60-day moving ave
 COMMENT ON COLUMN stats.index_tech_stats.ma120             IS '120-day moving average of close.';
 COMMENT ON COLUMN stats.index_tech_stats.ma255             IS '255-day moving average of close.';
 COMMENT ON COLUMN stats.index_tech_stats.ema6              IS '6-day exponential moving average of close (span=6, adjust=False).';
-COMMENT ON COLUMN stats.index_tech_stats.ema10             IS '10-day exponential moving average of close (span=10, adjust=False).';
+COMMENT ON COLUMN stats.index_tech_stats.ema12             IS '12-day exponential moving average of close (span=12, adjust=False) — the classic MACD fast EMA (replaced the nearby non-standard span 10, 2026-10-26).';
 COMMENT ON COLUMN stats.index_tech_stats.ema20             IS '20-day exponential moving average of close (span=20, adjust=False).';
+COMMENT ON COLUMN stats.index_tech_stats.ema26             IS '26-day exponential moving average of close (span=26, adjust=False) — the classic MACD slow EMA.';
 COMMENT ON COLUMN stats.index_tech_stats.ema60             IS '60-day exponential moving average of close (span=60, adjust=False).';
 COMMENT ON COLUMN stats.index_tech_stats.ema120            IS '120-day exponential moving average of close (span=120, adjust=False).';
 COMMENT ON COLUMN stats.index_tech_stats.ema255            IS '255-day exponential moving average of close (span=255, adjust=False).';

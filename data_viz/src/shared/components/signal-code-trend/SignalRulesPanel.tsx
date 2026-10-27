@@ -34,13 +34,19 @@
  * expand), so a rule's story reads identically on every surface.
  */
 import { useCallback, useMemo } from "react";
-import { Box, Chip, Paper, Typography, useTheme } from "@mui/material";
+import { Box, Paper, Typography, useTheme } from "@mui/material";
+import { useDocs } from "@/shared/docs";
 import ExpandedTable, {
   type ExpandedTableColumn,
 } from "@/shared/components/ExpandedTable";
 import { SignalActionChip } from "@/shared/components/signal-action";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
 import type { SignalRule } from "@/lib/api-client";
+import {
+  TREND_COLOR,
+  RegimeWord,
+  TrendChip,
+} from "./cellContext";
 import { signalRecordName } from "./families";
 import { ruleBarLabel, ruleCellKey } from "./ruleParams";
 import { ruleDetails } from "./ruleDetails";
@@ -57,47 +63,6 @@ export interface SignalRulesPanelProps {
    *  bolded cell. */
   expandedKey: string | null;
   onExpandedKeyChange: (key: string | null) => void;
-}
-
-/** The trend chip's palette slot per trend label (theme tokens — theme
- *  reactive; top/bottom are the overextended extremes, rise/fall the
- *  RSI re-entry momentum states, all the POOLED stamp the sparse
- *  options families stamp, unknown the unclassified bucket). */
-const TREND_COLOR: Record<string, "error" | "success" | "info" | "warning"
-  | "secondary"> = {
-  top: "error",
-  bottom: "success",
-  rise: "info",
-  fall: "warning",
-  all: "secondary",
-  unknown: "secondary",
-};
-
-/** The trend chip's SHADE GRADE by trend class — the chip backgrounds
- *  shade in step with the chart's trend bands (trendBands' graded
- *  depths): the overextended extremes (top/bottom — the trend-split
- *  cells' strongest populations) fill deepest, the directional states
- *  (rise/fall) one step lighter, all/unknown the faintest grey. */
-const TREND_SHADE_ALPHA: Record<string, number> = {
-  top: 0.20,
-  bottom: 0.20,
-  rise: 0.10,
-  fall: 0.10,
-  all: 0.06,
-  unknown: 0.06,
-};
-
-/** "#RRGGBB" | "rgb(..)" → "rgba(.., a)" — the palette slots are plain
- *  CSS color strings at runtime. */
-function withAlpha(color: string, alpha: number): string {
-  const hex = /^#([0-9a-f]{6})$/i.exec(color.trim());
-  if (hex) {
-    const n = parseInt(hex[1], 16);
-    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-  }
-  const rgb = /^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/i.exec(color.trim());
-  if (rgb) return `rgba(${rgb[1]}, ${rgb[2]}, ${rgb[3]}, ${alpha})`;
-  return color;
 }
 
 export default function SignalRulesPanel({
@@ -132,6 +97,7 @@ export default function SignalRulesPanel({
     [expandedKey, onExpandedKeyChange],
   );
 
+  const docs = useDocs();
   const columns = useMemo<ExpandedTableColumn<SignalRule>[]>(() => {
     const trendDot = tickDotItem(
       (v) => theme.palette[TREND_COLOR[v] ?? "secondary"].main,
@@ -179,14 +145,7 @@ export default function SignalRulesPanel({
         key: "valid",
         label: "Valid",
         align: "center",
-        info:
-          "The per-cell gate verdict (is_valid — the latest performance " +
-          "snapshot's gate.passed): true iff the cell's measured future " +
-          "returns cleared its side's dir_ave bar at the sample floor " +
-          "(buy ≥ 0.25% @ n ≥ 3 / sell ≥ 0% @ n ≥ 2). False = " +
-          "observational (the wait watchlist / the ungated twin) — " +
-          "negative future returns are discouraged: never valid, never " +
-          "trades, never fires live",
+        info: docs.text("ui.signal-rules.col.valid"),
         render: (r) =>
           r.is_valid ? (
             <Box
@@ -210,23 +169,7 @@ export default function SignalRulesPanel({
           value: (r) => r.trend,
           renderItem: trendDot,
         },
-        render: (r) => (
-          <Chip
-            size="small"
-            label={r.trend}
-            sx={{
-              height: 18,
-              fontSize: "0.65rem",
-              color: theme.palette[TREND_COLOR[r.trend] ?? "secondary"].main,
-              borderColor:
-                theme.palette[TREND_COLOR[r.trend] ?? "secondary"].main,
-              bgcolor: withAlpha(
-                theme.palette[TREND_COLOR[r.trend] ?? "secondary"].main,
-                TREND_SHADE_ALPHA[r.trend] ?? 0.06,
-              ),
-            }}
-          />
-        ),
+        render: (r) => <TrendChip trend={r.trend} />,
       },
       {
         key: "regime",
@@ -237,39 +180,18 @@ export default function SignalRulesPanel({
           value: (r) => r.regime_state,
           renderItem: regimeDot,
         },
-        render: (r) => (
-          <Box
-            component="span"
-            sx={{
-              color: regimeAccentColor(r.regime_state) ?? "text.disabled",
-              fontWeight: 600,
-            }}
-          >
-            {r.regime_state === "calm"
-              ? "·"
-              : r.regime_state === "all" ? "pool" : r.regime_state}
-          </Box>
-        ),
+        render: (r) => <RegimeWord regime={r.regime_state} />,
       },
       {
         key: "bar",
         label: "Bar",
-        info:
-          "The cell's CONSTANT breach bar definition " +
-          "(rule_params.bar_def) — the engine picked it per (code, sub, " +
-          "trend, regime) from the candidate grid on the code's own " +
-          "history",
+        info: docs.text("ui.signal-rules.col.bar"),
         render: (r) => ruleBarLabel(r.rule_params.bar_def),
       },
       {
         key: "evidence",
         label: "Evidence",
-        info:
-          "The cell's measured evidence on its trigger days (the latest " +
-          "performance snapshot): episodes, the sign-aligned blended " +
-          "dir_ave (0/3/5/10/20d fixed mix) and the hit rate — expand " +
-          "the row for the full measured block (σ · t · base · the " +
-          "recomputed starvation haircut · as-of)",
+        info: docs.text("ui.signal-rules.col.evidence"),
         render: (r) => {
           const m = r.rule_params.measure;
           const ungated = r.rule_params.gate?.ungated === true;
@@ -317,7 +239,7 @@ export default function SignalRulesPanel({
         ),
       },
     ];
-  }, [theme]);
+  }, [docs, theme]);
 
   return (
     <Paper variant="outlined" sx={{ p: 1.25 }}>

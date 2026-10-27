@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from _common.df_utils import host_array
 from strategy._risks.constants import (
     WINDOW_DAYS, HOTSPOT_SHARE_THRESHOLD,
     RISK_WINDOW_DAYS, _LOG_FIT_A, _LOG_FIT_B, MIN_LOSS_THRESHOLD,
@@ -49,7 +50,35 @@ from strategy._risks.constants import (
     GAIN_DISCOUNT_WEIGHT,
     FT_LOSS_THRESHOLD,
 )
-from strategy._risks.periods import period_value
+
+
+# ---------------------------------------------------------------------------
+#  Vectorized period labels
+# ---------------------------------------------------------------------------
+def _period_labels(dates: pd.Series, period_type: str) -> pd.Series:
+    """Vectorized ``period_value`` over a date column.
+
+    Yields the SAME label strings as
+    ``strategy._risks.periods.period_value`` ('YYYY' / 'YYYY-Qn' /
+    'YYYY-MM') — computed via datetime accessors + string kernels instead
+    of a per-row ``.apply`` (one cudf.pandas fast→slow dispatch per
+    element in production).
+    """
+    # Clean-data fast path — to_datetime(errors="coerce") on a Series is a
+    # cudf fallback per call (non-scalar arg); DB dates are clean anyway.
+    try:
+        ts = pd.to_datetime(dates)
+    except (ValueError, TypeError):
+        ts = pd.to_datetime(dates, errors="coerce")
+    year = ts.dt.year.astype(str)
+    if period_type == "year":
+        return year
+    if period_type == "month":
+        return year + "-" + ts.dt.month.astype(str).str.zfill(2)
+    if period_type == "season":
+        quarter = ((ts.dt.month - 1) // 3 + 1).astype(str)
+        return year + "-Q" + quarter
+    raise ValueError(f"Unknown period_type: {period_type}")
 
 
 # ---------------------------------------------------------------------------
@@ -63,25 +92,38 @@ def _compute_concentration(
 
     Returns (max_30d_abs_pnl, concentration_ratio, window_start, window_end).
     The window is anchored at each SELL's exec_date and spans [d-29, d].
+
+    The per-sell window sums MUST stay bit-identical to the former
+    mask-scan (they feed the exponential risk score), so the summation
+    itself cannot move to a sliding-window/rolling kernel — any
+    regrouping reorders the float adds. Instead the scan keeps the SAME
+    ``np.sum`` over the SAME contiguous slice per window (bit-identical
+    values) but drops the per-row ``ts.iloc[i]`` Series extraction and
+    the three boolean-Series mask ops: window bounds come from
+    ``np.searchsorted`` on the date array and the |pnl| column is
+    unwrapped ONCE via ``host_array``. ``sells`` must be exec_date-sorted
+    (compute_risk_seq guarantees it).
     """
     if sells.empty or total_abs_pnl <= 0:
         return 0.0, 0.0, None, None
 
-    # Convert exec_date (python date) to pandas Timestamp for vectorized math.
     ts = pd.to_datetime(sells["exec_date"])
-    abs_pnl = sells["abs_pnl"].to_numpy()  # already |realized_pnl|
+    dates_ord = host_array(ts.to_numpy())
+    abs_pnl = host_array(sells["abs_pnl"].to_numpy(dtype=np.float64,
+                                                   na_value=np.nan))
+    window = np.timedelta64(WINDOW_DAYS - 1, "D")
     max_window = 0.0
     best_start: Optional[datetime.date] = None
     best_end: Optional[datetime.date] = None
-    for i in range(len(ts)):
-        d = ts.iloc[i]
-        lo = d - pd.Timedelta(days=WINDOW_DAYS - 1)
-        mask = (ts >= lo) & (ts <= d)
-        w = float(abs_pnl[mask.to_numpy()].sum())
+    for i in range(len(dates_ord)):
+        d = dates_ord[i]
+        lo = np.searchsorted(dates_ord, d - window, side="left")
+        hi = np.searchsorted(dates_ord, d, side="right")
+        w = float(abs_pnl[lo:hi].sum())
         if w > max_window:
             max_window = w
-            best_start = lo.date()
-            best_end = d.date()
+            best_start = (d - window).astype("datetime64[D]").astype(object)
+            best_end = d.astype("datetime64[D]").astype(object)
     ratio = max_window / total_abs_pnl if total_abs_pnl > 0 else 0.0
     return max_window, ratio, best_start, best_end
 
@@ -236,16 +278,26 @@ def _compute_price_drawdowns(
 
     last_price_date = _as_date(prices["date"].iloc[-1])
 
+    # Per-row scalar reads come from pre-extracted host arrays — the
+    # former iterrows row-Series paid a cudf.pandas fast→slow dispatch
+    # per cell over the decision history. ``df`` arrives sorted by
+    # exec_date with a reset RangeIndex (compute_risk_seq), so "next
+    # decision row" is positional.
+    pa_arr = (
+        host_array(pd.to_numeric(df["position_after"], errors="coerce").fillna(0.0))
+        if "position_after" in df.columns else None
+    )
+    exec_dates = host_array(df["exec_date"])
+
     # ---- 1) deepest drop since unzero position -----------------------------
     # A maximal unzero period runs from the exec_date of the decision that
     # first makes position_after > 0 to the exec_date of the decision that
     # brings it back to 0.
     holding = False
     period_start = None
-    for _, d in df.iterrows():
-        pa = d.get("position_after")
-        pa = float(pa) if pa is not None and pd.notna(pa) else 0.0
-        exec_date = d["exec_date"]
+    for i in range(len(df)):
+        pa = float(pa_arr[i]) if pa_arr is not None else 0.0
+        exec_date = exec_dates[i]
         if not holding and pa > 0:
             holding = True
             period_start = exec_date
@@ -271,24 +323,20 @@ def _compute_price_drawdowns(
     # For each BUY, the window is [buy.exec_date, next_decision.exec_date]
     # (or the last price date if it is the final decision). The peak is
     # seeded with the BUY fill_price so the drop is measured from entry.
-    buy_mask = df["side"] == "BUY"
-    buy_positions = df.index[buy_mask].tolist()
-    for k, bi in enumerate(buy_positions):
-        buy = df.loc[bi]
-        start_date = buy["exec_date"]
-        seed = buy.get("fill_price")
-        seed = float(seed) if seed is not None and pd.notna(seed) else None
-        if k + 1 < len(buy_positions):
-            next_idx = buy_positions[k + 1]
-            # Window ends at the next decision after this buy (any side).
-            # Search the df for the first row whose index > bi.
-            after = df.index[df.index > bi]
-            end_date = df.loc[after[0], "exec_date"] if len(after) else last_price_date
-        else:
-            # Last buy: window extends to the next decision after it, or the
-            # last price date if it is the final decision overall.
-            after = df.index[df.index > bi]
-            end_date = df.loc[after[0], "exec_date"] if len(after) else last_price_date
+    buy_pos = np.flatnonzero(host_array(df["side"] == "BUY"))
+    fill_arr = (
+        host_array(pd.to_numeric(df["fill_price"], errors="coerce"))
+        if "fill_price" in df.columns else None
+    )
+    n_rows = len(df)
+    for pi in buy_pos:
+        start_date = exec_dates[pi]
+        seed = fill_arr[pi] if fill_arr is not None else None
+        seed = float(seed) if seed is not None and seed == seed else None
+        # Window ends at the next decision row (any side), or the last
+        # price date for the final decision — with the reset RangeIndex
+        # this matches the former first-index-label-greater lookup.
+        end_date = exec_dates[pi + 1] if pi + 1 < n_rows else last_price_date
         if end_date is None:
             end_date = last_price_date
         dd, pdate, tdate = _max_dd_in_range(
@@ -407,7 +455,7 @@ def _longest_losing_streak(sells: pd.DataFrame) -> int:
     if sells.empty:
         return 0
     s = sells[["exec_date", "realized_pnl"]].copy()
-    s["period"] = s["exec_date"].apply(lambda d: period_value(d, "month"))
+    s["period"] = _period_labels(s["exec_date"], "month")
     monthly = s.groupby("period")["realized_pnl"].sum().sort_index()
     longest = 0
     cur = 0
@@ -529,17 +577,13 @@ def _period_total_pnls(
     realized: Dict[str, float] = {}
     if not sells.empty:
         s = sells[["exec_date", "realized_pnl"]].copy()
-        s["period"] = s["exec_date"].apply(
-            lambda d: period_value(d, period_type)
-        )
+        s["period"] = _period_labels(s["exec_date"], period_type)
         realized = s.groupby("period")["realized_pnl"].sum().to_dict()
 
     end_unreal: Dict[str, float] = {}
     if not daily_df.empty:
         d = daily_df[["trade_date", "unrealized_pnl"]].copy()
-        d["period"] = d["trade_date"].apply(
-            lambda x: period_value(x, period_type)
-        )
+        d["period"] = _period_labels(d["trade_date"], period_type)
         d = d.sort_values("trade_date")
         ends = d.groupby("period", as_index=False).last()
         end_unreal = dict(zip(ends["period"], ends["unrealized_pnl"]))
@@ -571,9 +615,7 @@ def _period_realized_pnls(
     if sells.empty:
         return []
     s = sells[["exec_date", "realized_pnl"]].copy()
-    s["period"] = s["exec_date"].apply(
-        lambda d: period_value(d, period_type)
-    )
+    s["period"] = _period_labels(s["exec_date"], period_type)
     monthly = s.groupby("period")["realized_pnl"].sum().sort_index()
     return [float(v) for v in monthly]
 
@@ -1161,16 +1203,15 @@ def compute_risk_periods(
             rng = pd.date_range(range_start, range_end, freq="YS")
         else:
             return []
-        return sorted(set(period_value(d, period_type) for d in rng))
+        labels = _period_labels(pd.Series(rng), period_type)
+        return sorted(set(host_array(labels).tolist()))
 
     def _end_unrealized_by_period(period_type: str) -> Dict[str, float]:
         """{period_value: unrealized_pnl at the last trading day in that period}."""
         if daily_df.empty:
             return {}
-        pv_series = daily_df["trade_date"].apply(
-            lambda d: period_value(d, period_type)
-        )
-        tmp = daily_df.assign(period_value=pv_series)
+        tmp = daily_df.assign(
+            period_value=_period_labels(daily_df["trade_date"], period_type))
         ends = tmp.groupby("period_value", as_index=False).last()
         return dict(zip(ends["period_value"], ends["unrealized_pnl"]))
 
@@ -1184,10 +1225,8 @@ def compute_risk_periods(
         """
         if daily_df.empty:
             return {}, {}
-        pv_series = daily_df["trade_date"].apply(
-            lambda d: period_value(d, period_type)
-        )
-        tmp = daily_df.assign(period_value=pv_series)
+        tmp = daily_df.assign(
+            period_value=_period_labels(daily_df["trade_date"], period_type))
         aggs = tmp.groupby("period_value")["unrealized_pnl"].agg(["min", "max"])
         worst_loss = {pv: float(v) for pv, v in aggs["min"].items() if v < 0}
         peak_gain = {pv: float(v) for pv, v in aggs["max"].items() if v > 0}
@@ -1197,9 +1236,8 @@ def compute_risk_periods(
     for period_type in ("year", "season", "month"):
         if not sells.empty:
             sells_pt = sells.copy()
-            sells_pt["period_value"] = sells_pt["exec_date"].apply(
-                lambda d: period_value(d, period_type)
-            )
+            sells_pt["period_value"] = _period_labels(
+                sells_pt["exec_date"], period_type)
         else:
             sells_pt = pd.DataFrame(columns=["period_value", "realized_pnl", "abs_pnl"])
         end_unrealized = _end_unrealized_by_period(period_type)
@@ -1207,18 +1245,72 @@ def compute_risk_periods(
         # ALL periods in the date range (not just SELL periods). Periods
         # with no SELLs show realized_pnl=0, n_sells=0.
         all_pvs = _all_period_values(period_type)
+        # BUY count per period — ONE labeled value-count instead of the
+        # former per-period re-apply over every decision row.
+        if not df.empty:
+            buy_pvs = _period_labels(
+                df.loc[df["side"] == "BUY", "exec_date"], period_type)
+            buys_by_pv: Dict[str, int] = {
+                str(pv): int(c)
+                for pv, c in buy_pvs.value_counts().to_dict().items()
+            }
+        else:
+            buys_by_pv = {}
+        # Per-period SELL stats — ONE groupby instead of a boolean re-filter
+        # plus three column sums PER period value (an object-column slow
+        # path dispatch each under cudf.pandas).
+        if not sells_pt.empty:
+            agg_kwargs: Dict[str, Tuple[str, str]] = dict(
+                realized_pnl=("realized_pnl", "sum"),
+                abs_pnl=("abs_pnl", "sum"),
+                n_sells=("period_value", "size"),
+            )
+            if "_ft_amp_pnl" in sells_pt.columns:
+                agg_kwargs["ft_amp_pnl"] = ("_ft_amp_pnl", "sum")
+            grp_stats = sells_pt.groupby("period_value").agg(**agg_kwargs)
+            # ONE host extraction of the grouped table — the loop below then
+            # reads plain dict entries (a per-pv ``.loc`` on the proxied
+            # frame is a fast→slow dispatch each).
+            ft_vals = (
+                host_array(grp_stats["ft_amp_pnl"].to_numpy(
+                    dtype=np.float64, na_value=np.nan))
+                if "ft_amp_pnl" in grp_stats.columns
+                else np.zeros(len(grp_stats))
+            )
+            stats_by_pv: Dict[str, Dict[str, Any]] = {
+                str(pv): {
+                    "realized_pnl": float(rp),
+                    "abs_pnl": float(ap),
+                    "n_sells": int(ns),
+                    "ft_amp_pnl": float(fp) if fp == fp else 0.0,
+                }
+                for pv, rp, ap, ns, fp in zip(
+                    host_array(grp_stats.index.to_numpy()),
+                    host_array(grp_stats["realized_pnl"].to_numpy(
+                        dtype=np.float64, na_value=np.nan)),
+                    host_array(grp_stats["abs_pnl"].to_numpy(
+                        dtype=np.float64, na_value=np.nan)),
+                    host_array(grp_stats["n_sells"].to_numpy()),
+                    ft_vals,
+                )
+            }
+        else:
+            stats_by_pv = {}
         prev_end = 0.0
         for pv in all_pvs:
-            grp = sells_pt[sells_pt["period_value"] == pv] if not sells_pt.empty else pd.DataFrame()
-            grp_pnl = float(grp["realized_pnl"].sum()) if not grp.empty else 0.0
-            grp_abs = float(grp["abs_pnl"].sum()) if not grp.empty else 0.0
-            # Per-period FT amplified realized P&L (sum of amplified SELL
-            # P&Ls in this period). 0 when no SELLs or no FT data.
-            grp_ft_amp = float(grp["_ft_amp_pnl"].sum()) if not grp.empty and "_ft_amp_pnl" in grp.columns else 0.0
+            st = stats_by_pv.get(pv)
+            if st is not None:
+                grp_pnl = st["realized_pnl"]
+                grp_abs = st["abs_pnl"]
+                grp_ft_amp = st.get("ft_amp_pnl", 0.0)
+                n_sells = st["n_sells"]
+            else:
+                grp_pnl = 0.0
+                grp_abs = 0.0
+                grp_ft_amp = 0.0
+                n_sells = 0
             share = grp_abs / total_abs_pnl if total_abs_pnl > 0 else 0.0
-            n_buys = int(((df["side"] == "BUY") &
-                          (df["exec_date"].apply(
-                              lambda d: period_value(d, period_type)) == pv)).sum()) if not df.empty else 0
+            n_buys = buys_by_pv.get(pv, 0)
             is_hotspot = share >= HOTSPOT_SHARE_THRESHOLD
             cur_end = float(end_unrealized.get(pv, prev_end))
             cur_worst_loss = float(worst_loss_map.get(pv, 0.0))
@@ -1230,7 +1322,7 @@ def compute_risk_periods(
                 "code": code,
                 "period_type": period_type,
                 "period_value": pv,
-                "n_sells": int(len(grp)) if not grp.empty else 0,
+                "n_sells": n_sells,
                 "n_buys": n_buys,
                 "realized_pnl": round(grp_pnl, 4),
                 "ft_amplified_pnl": round(grp_ft_amp, 4),

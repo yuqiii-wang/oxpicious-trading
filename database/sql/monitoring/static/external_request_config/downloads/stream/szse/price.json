@@ -18,14 +18,11 @@
     "urls": {
       "timedata_url": "https://www.szse.cn/api/market/ssjjhq/getTimeData",
       "referer": "https://www.szse.cn/market/trend/index.html",
-      "sina_minute_url": "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_=/CN_MarketDataService.getKLineData",
-      "push2his_url": "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
-      "push2_url": "https://push2.eastmoney.com/api/qt/stock/trends2/get",
-      "em_referer": "https://quote.eastmoney.com/"
+      "sina_minute_url": "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_=/CN_MarketDataService.getKLineData"
     },
-    "notes": "Endpoint inventory for the Sina (source A) / SZSE (source B) / EastMoney (sources C+D) fetchers; pacing stays on the per-source rows. URLs migrated from code constants 2026-10-17",
-    "source_ref": "downloads/stream/szse/price/_sina_source.py; downloads/stream/szse/price/_szse_source.py; downloads/stream/szse/price/_em_source.py",
-    "updated_at": "2026-10-17T00:00:00.000000+00:00"
+    "notes": "Endpoint inventory for the Sina (source A) / SZSE (source B) fetchers; pacing stays on the per-source rows. The East Money sources C+D (push2his/push2 trends2) were removed 2026-10-23 — the push2 hosts need curl_cffi TLS impersonation and IP-block bursts with hard connection drops (2h+ outage the same day); their rows (source_c_em_hist / source_d_em_quote) and push2 urls were dropped with them.",
+    "source_ref": "downloads/stream/szse/price/_sina_source.py; downloads/stream/szse/price/_szse_source.py",
+    "updated_at": "2026-10-23T00:00:00.000000+00:00"
   },
   {
     "service": "downloads.stream.szse.price",
@@ -42,7 +39,7 @@
     "add_random_param": true,
     "enable_host_tracking": true,
     "host_block_cooldown_sec": null,
-    "notes": "Source A: direct Sina 1-min kline (jsonp v2, quotes.sina.cn); the worker's 90s cooldown paces fetches and the proxy sleep/host-tracking stay off (worker cooldown + breakers govern, same split as source_d_em_quote). Replaced the akshare wrapper 2026-10-17: akshare fired 4-5 unaudited Sina requests plus a V8 decode per fetch with no visible HTTP status.",
+    "notes": "Source A: direct Sina 1-min kline (jsonp v2, quotes.sina.cn); the worker's 90s cooldown paces fetches and the proxy sleep/host-tracking stay off (worker cooldown + breakers govern, same split as the former source_d_em_quote). Replaced the akshare wrapper 2026-10-17: akshare fired 4-5 unaudited Sina requests plus a V8 decode per fetch with no visible HTTP status.",
     "source_ref": "downloads/stream/szse/price/_constants.py; downloads/stream/szse/price/_sina_source.py",
     "updated_at": "2026-10-17T12:40:00.000000+00:00"
   },
@@ -63,44 +60,6 @@
     "host_block_cooldown_sec": null,
     "notes": "Source B: SZSE ssjjhq realtime snapshot; poll cadence (--interval default).",
     "source_ref": "downloads/stream/szse/price/_constants.py; downloads/stream/szse/price/__main__.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
-  },
-  {
-    "service": "downloads.stream.szse.price",
-    "request_type": "source_c_em_hist",
-    "resource_type": 0,
-    "sleep_sec": 300,
-    "sleep_jitter": null,
-    "poll_interval_sec": null,
-    "max_retries": null,
-    "retry_backoff_sec": null,
-    "timeout_connect_sec": null,
-    "timeout_read_sec": null,
-    "rotate_browser_profile": true,
-    "add_random_param": true,
-    "enable_host_tracking": true,
-    "host_block_cooldown_sec": null,
-    "notes": "Source C: push2his.eastmoney.com history backfill cooldown.",
-    "source_ref": "downloads/stream/szse/price/_constants.py",
-    "updated_at": "2026-10-09T16:23:04.847580+00:00"
-  },
-  {
-    "service": "downloads.stream.szse.price",
-    "request_type": "source_d_em_quote",
-    "resource_type": 0,
-    "sleep_sec": 300,
-    "sleep_jitter": null,
-    "poll_interval_sec": null,
-    "max_retries": 2,
-    "retry_backoff_sec": 1.5,
-    "timeout_connect_sec": 15,
-    "timeout_read_sec": 60,
-    "rotate_browser_profile": false,
-    "add_random_param": true,
-    "enable_host_tracking": false,
-    "host_block_cooldown_sec": null,
-    "notes": "Source D: push2.eastmoney.com realtime quote cooldown; curl_cffi chrome impersonation, 1.5s between retries, proxy sleep off (worker cooldown governs). Random-param stays on: the EM quote endpoint cache-busts via it (documented code override, synced 2026-10-10).",
-    "source_ref": "downloads/stream/szse/price/_constants.py; downloads/stream/szse/price/_em_source.py",
     "updated_at": "2026-10-09T16:23:04.847580+00:00"
   }
 ]

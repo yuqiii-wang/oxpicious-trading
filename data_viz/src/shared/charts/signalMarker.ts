@@ -136,6 +136,11 @@ export interface SignalEventPoint {
   action: string;
   /** TRUE = the gate-declined no-action record (the grey diamond). */
   is_rejection?: boolean;
+  /** Optional identity of the owning event row (the portfolio history
+   *  panel's row key) — the selected-EVENT emphasis matches it before
+   *  the date (a clicked portfolio row highlights its own markers even
+   *  when another event shares the day). */
+  key?: string;
 }
 
 /** Legend names of the three marker classes, in class order (buy /
@@ -155,6 +160,11 @@ export interface SignalEventSeriesOpts {
    *  `emphasizeSignalMarker` (grow + glow, the Recent Movements
    *  marker-click feedback), per point. */
   selectedDate?: string | null;
+  /** The selected EVENT's identity — when set it wins over
+   *  ``selectedDate`` for the points carrying a matching ``key`` (the
+   *  hedge-pairs page's clicked portfolio row), the date match still
+   *  applying to keyless points. */
+  selectedKey?: string | null;
   /** Scatter z (the hedge-pair curves ride 6, the options charts 5). */
   z?: number;
 }
@@ -176,6 +186,7 @@ export function signalEventScatterSeries(
 ): SeriesOption[] {
   const names = opts?.names ?? SIGNAL_EVENT_SERIES_NAMES;
   const selected = opts?.selectedDate ?? null;
+  const selectedKey = opts?.selectedKey ?? null;
   const z = opts?.z ?? 5;
   const classes: Array<{
     key: "buy" | "sell" | "noAction";
@@ -205,7 +216,10 @@ export function signalEventScatterSeries(
       if (!match) continue;
       const y = yByDate.get(ev.date);
       if (y == null || !Number.isFinite(y)) continue;
-      if (selected != null && ev.date === selected) {
+      const isSel = (selected != null && ev.date === selected)
+        || (selectedKey != null && ev.key != null
+          && ev.key === selectedKey);
+      if (isSel) {
         const em = emphasizeSignalMarker(cls.spec);
         data.push({
           value: [ev.date, y],

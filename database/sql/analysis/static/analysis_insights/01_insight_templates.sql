@@ -50,6 +50,17 @@
 --     the table read yields no row/value.
 --     `sec_types` lists the sec_type labels (etf/index/stock/industry) the
 --     metric applies to; `scope` is security | industry | market.
+--     pct_rank (every resolved row) — the RARITY quantile: the value's
+--       percentile within its PRIOR trailing history, i.e. the share of
+--       the metric's own prior observations (same scope filters, one row
+--       per date, trailing 10y window ending at the value's own date)
+--       at or below the value; 0.95 = the top 5% tail. pct_rank_n = the
+--       prior sample size. NULL for non-numeric values or < 120 prior
+--       observations; spec `"rank": false` opts out (categorical codes —
+--       trend states, 0/1 flags — must not wear a fake quantile).
+--       close/pct_change compute-kind metrics rank against their own
+--       prior series computed from the baseline closes; the other
+--       compute fns (rare fallbacks) leave the rank NULL.
 --
 --   No SMALLINT label-vocabulary column lives here (identity columns are
 --   TEXT slugs; sec_type VALUES inside spec jsonb are resolved against

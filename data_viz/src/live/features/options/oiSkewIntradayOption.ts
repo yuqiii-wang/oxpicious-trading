@@ -32,6 +32,7 @@ import {
   expiryBlueColor,
   FUTURES_BLUE_NEAR,
   IV_BLUE,
+  MUTED_PALETTE,
 } from "@/theme/chart-palette";
 import { fmtNum, fmtCompact } from "@/lib/series";
 import {
@@ -47,6 +48,10 @@ import type { EChartsOption } from "echarts";
  *  scaling as the daily chart's expiryOiWidths). */
 const OI_WIDTH_MIN = 0.7;
 const OI_WIDTH_MAX = 3.0;
+
+/** Accumulated-OI context line — muted orange, apart from the blue
+ *  spot/skew family. */
+const ACCUM_OI_COLOR = MUTED_PALETTE[1];
 
 /** "HH:MM:SS" tick (the Market Movements grid) → "HH:MM" (the keys the
  *  /api/live-options payload's time fields use). */
@@ -71,6 +76,10 @@ export interface OiSkewIntradayData {
     { price: number | null; pct: number | null; oiTotal: number | null }
   >;
   oiWidthByExpiry: Map<string, number>;
+  /** Total accumulated OI estimate per bar — Σ(oi_base + day-cum volume)
+   *  over all active contracts, the skew's weight denominator. Summed from
+   *  the per-expiry rows (the MEAN row carries no oi_total). */
+  accumOiByTime: Map<string, number>;
 }
 
 function shapeResponse(
@@ -110,6 +119,14 @@ function shapeResponse(
     const exp = key.split("|")[1] ?? "";
     if (row.oiTotal > (peak.get(exp) ?? 0)) peak.set(exp, row.oiTotal);
   }
+
+  // Total accumulated OI estimate per bar (sum of the per-expiry w_sums).
+  const accumOiByTime = new Map<string, number>();
+  for (const [key, row] of rowsByTimeExpiry) {
+    if (row.oiTotal == null || !Number.isFinite(row.oiTotal)) continue;
+    const t = key.split("|")[0] ?? "";
+    accumOiByTime.set(t, (accumOiByTime.get(t) ?? 0) + row.oiTotal);
+  }
   let maxOi = 0;
   for (const v of peak.values()) if (v > maxOi) maxOi = v;
   const oiWidthByExpiry = new Map<string, number>();
@@ -134,6 +151,7 @@ function shapeResponse(
     expiries: Array.from(expiries).sort(),
     rowsByTimeExpiry,
     oiWidthByExpiry,
+    accumOiByTime,
   };
 }
 
@@ -174,6 +192,15 @@ function makeTooltipFormatter(
           meanPct != null
             ? ` (${meanPct >= 0 ? "+" : ""}${fmtNum(meanPct, 2)}%)`
             : "",
+        ]),
+      );
+    }
+    const accumOi = data.accumOiByTime.get(time);
+    if (accumOi != null && Number.isFinite(accumOi)) {
+      children.push(
+        makeRow([
+          "Accum. OI (est.): ",
+          React.createElement(tooltipComponents.Bold, null, fmtCompact(accumOi)),
         ]),
       );
     }
@@ -314,6 +341,26 @@ export function buildOiSkewIntradayOption(
   const spotData = times.map((t) => data.spotByTime.get(byTick(t)) ?? null);
   const meanData = times.map((t) => data.meanPriceByTime.get(byTick(t)) ?? null);
 
+  // Accumulated OI estimate on a right axis (absent when the payload carries
+  // no oi_total — e.g. an all-NaN response for an underlying without options).
+  const hasAccumOi = data.accumOiByTime.size > 0;
+  const accumSeries: EChartsOption["series"] = hasAccumOi
+    ? [
+        {
+          type: "line" as const,
+          name: "Accum. OI (est.)",
+          yAxisIndex: 1,
+          showSymbol: false,
+          smooth: false,
+          connectNulls: false,
+          lineStyle: { color: ACCUM_OI_COLOR, width: 1.5, opacity: 0.9 },
+          itemStyle: { color: ACCUM_OI_COLOR },
+          data: times.map((t) => data.accumOiByTime.get(byTick(t)) ?? null),
+          z: 1,
+        },
+      ]
+    : [];
+
   // Last grid tick carrying data — the "Skew Δ" label anchors there (the
   // latest bar of the live session, not the 15:30 axis end).
   let lastDataIdx = -1;
@@ -332,6 +379,7 @@ export function buildOiSkewIntradayOption(
   const series: EChartsOption["series"] = [
     ...shadeSeries,
     ...perExpirySeries,
+    ...accumSeries,
     {
       type: "line",
       name: "Underlying Spot",
@@ -374,15 +422,58 @@ export function buildOiSkewIntradayOption(
     },
   ];
 
+  // Right axis for the accumulated OI estimate — hidden split lines so only
+  // the price axis grids the canvas (MarginTrends dual-axis convention).
+  const priceYAxis = {
+    type: "value" as const,
+    scale: true,
+    name: `Price (${data.unit})`,
+    nameLocation: "middle" as const,
+    nameGap: 40,
+    nameTextStyle: { color: textColor, fontSize: 9 },
+    axisLine: { lineStyle: { color: textColor } },
+    axisLabel: {
+      color: textColor,
+      fontSize: 9,
+      formatter: (v: number) => fmtNum(v),
+    },
+    splitLine: {
+      lineStyle: { color: c.splitLineColor, type: "dashed" as const, opacity: 0.4 },
+    },
+  };
+  const accumYAxis = {
+    type: "value" as const,
+    scale: true,
+    position: "right" as const,
+    name: "Accum. OI (contracts)",
+    nameTextStyle: { color: textColor, fontSize: 9 },
+    axisLine: { lineStyle: { color: textColor } },
+    axisLabel: {
+      color: textColor,
+      fontSize: 9,
+      formatter: (v: number) => fmtCompact(v),
+    },
+    splitLine: { show: false },
+  };
+
   return baseChartOption(mode, {
-    grid: commonGrid({ left: 56, right: 56, top: 36, bottom: 36 }),
+    grid: commonGrid({
+      left: 56,
+      right: hasAccumOi ? 64 : 56,
+      top: 36,
+      bottom: 36,
+    }),
     tooltip: commonTooltip(mode, {
       formatter: makeTooltipFormatter(data, expiryColorMap),
     }),
     legend: commonLegend(mode, {
       top: 0,
       left: "center",
-      data: ["Underlying Spot", "Skew (OI-wtd mean)"],
+      data: [
+        "Underlying Spot",
+        "Skew (OI-wtd mean)",
+        ...(hasAccumOi ? ["Accum. OI (est.)"] : []),
+      ],
     }),
     xAxis: {
       type: "category",
@@ -406,23 +497,7 @@ export function buildOiSkewIntradayOption(
       },
       splitLine: { show: false },
     },
-    yAxis: {
-      type: "value",
-      scale: true,
-      name: `Price (${data.unit})`,
-      nameLocation: "middle",
-      nameGap: 40,
-      nameTextStyle: { color: textColor, fontSize: 9 },
-      axisLine: { lineStyle: { color: textColor } },
-      axisLabel: {
-        color: textColor,
-        fontSize: 9,
-        formatter: (v: number) => fmtNum(v),
-      },
-      splitLine: {
-        lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 },
-      },
-    },
+    yAxis: hasAccumOi ? [priceYAxis, accumYAxis] : priceYAxis,
     series,
   });
 }

@@ -19,11 +19,15 @@
  * two main lines (reference-curve look).
  *
  * The portfolio's signal-history markers (`signalEvents` — the
- * vol-index in-signal precedent): the events mark BOTH legs' curves
- * at the event date (the event is PORTFOLIO-level — flagging the
- * date across the pair), buy/sell hugging their leg's point, the
- * wait diamond centered. One scatter series per class per leg, all
- * sharing the class name so the legend toggles the class.
+ * vol-index in-signal precedent): each leg draws ITS OWN member
+ * action at the event date (the spread sub's one-buy-one-sell puts a
+ * sell ▼ on the leader leg, the trio's both-legs buy unchanged; a leg
+ * without a member falls back to the event's own action), buy/sell
+ * hugging their leg's point, the wait diamond centered. One scatter
+ * series per class per leg, all sharing the class name so the legend
+ * toggles the class. The clicked history row's event key
+ * (`selectedEventKey`) draws that event's markers with the shared
+ * grow + glow emphasis.
  *
  * X is the sorted UNION of all curves' dates: each series maps its values
  * onto the union positions and bridges its null days with
@@ -54,11 +58,19 @@ export interface PairCurveSeries {
 
 /** One portfolio signal-history event for the marker layer (the
  *  vol-index VolIndexSignalEvent shape): wait/rejection events draw
- *  the grey diamond INSTEAD of a triangle. */
+ *  the grey diamond INSTEAD of a triangle. ``members`` carries the
+ *  event's member records' per-leg actions — the spread sub's one-buy-
+ *  one-sell renders its SELL leg's ▼ from the member's own action
+ *  (the portfolio event's own action is the ORCHESTRATING buy; both
+ *  shipped subs' sell actions live on the members), the trio's both-
+ *  legs-buy unchanged. ``key`` is the owning history row's identity
+ *  (the clicked-row emphasis). */
 export interface PairSignalEvent {
   date: string;
   action: string;
   is_rejection?: boolean;
+  key?: string;
+  members?: ReadonlyArray<{ code: string; action: string }>;
 }
 
 /** Identity-stable no-event default (a fresh [] per render dirties the
@@ -86,14 +98,35 @@ function closeOnUnion(
   return out;
 }
 
+/** The marker action ONE LEG renders for an event: the leg's OWN
+ *  member action when the event carries one (the spread's leg B is a
+ *  SELL member — its ▼), else the event's own action (the trio's
+ *  both-legs buy). The market witness member (000300) matches no leg
+ *  and falls through to the event action. */
+function legAction(
+  ev: PairSignalEvent,
+  legCode: string,
+): { action: string; isRejection: boolean } {
+  const m = ev.members?.find((x) => x.code === legCode);
+  const action = m?.action ?? ev.action;
+  return {
+    action,
+    isRejection: ev.is_rejection === true || action === "wait",
+  };
+}
+
 /** The portfolio's signal-history markers on BOTH legs' curves (see
  *  the module doc) — one scatter series per (class, leg), the class
- *  name shared so the legend toggles the whole class. */
+ *  name shared so the legend toggles the whole class. Per-leg events
+ *  resolve through ``legAction``; the clicked portfolio row's event
+ *  key draws its markers with the shared selected-event emphasis. */
 function pairSignalMarkerSeries(
   events: readonly PairSignalEvent[],
   aData: ReadonlyArray<number | null>,
   bData: ReadonlyArray<number | null>,
   dateIdx: Map<string, number>,
+  legCodes: [string, string],
+  selectedKey: string | null,
 ): SeriesOption[] {
   // the legs' date → close lookups (union-aligned value arrays)
   const closeByDate = (data: ReadonlyArray<number | null>) => {
@@ -111,9 +144,23 @@ function pairSignalMarkerSeries(
   // this family's no-action word is "Wait" — the grey diamond; no
   // white ring, z 6 — the plain Short-Term Tech look above the curves)
   const names = MARKER_CLASS_NAMES;
+  const legEvents = (legCode: string) =>
+    events.map((ev) => {
+      const r = legAction(ev, legCode);
+      return {
+        date: ev.date,
+        action: r.action,
+        is_rejection: r.isRejection,
+        key: ev.key,
+      };
+    });
   return [
-    ...signalEventScatterSeries(events, aByDate, { names, z: 6 }),
-    ...signalEventScatterSeries(events, bByDate, { names, z: 6 }),
+    ...signalEventScatterSeries(legEvents(legCodes[0]), aByDate, {
+      names, z: 6, selectedKey,
+    }),
+    ...signalEventScatterSeries(legEvents(legCodes[1]), bByDate, {
+      names, z: 6, selectedKey,
+    }),
   ];
 }
 
@@ -123,6 +170,7 @@ export function buildPairCurvesOption(
   mode: ThemeMode,
   benchmark?: PairCurveSeries | null,
   signalEvents?: readonly PairSignalEvent[],
+  selectedEventKey?: string | null,
 ): EChartsOption | null {
   if (a.rows.length === 0 && b.rows.length === 0) return null;
   const c = axisColors(mode);
@@ -151,12 +199,26 @@ export function buildPairCurvesOption(
     : null;
   const legendData = benchName ? [aName, bName, benchName] : [aName, bName];
   // the marker classes PRESENT in the event payload join the legend (an
-  // entry with no series behind it is a dead toggle)
-  const evClass = (ev: PairSignalEvent): "buy" | "sell" | "wait" =>
-    ev.is_rejection === true || ev.action === "wait"
-      ? "wait"
-      : ev.action === "buy" ? "buy" : ev.action === "sell" ? "sell" : "wait";
-  const presentClasses = new Set(events.map(evClass));
+  // entry with no series behind it is a dead toggle) — scanned over the
+  // PER-LEG resolved actions (the spread event's sell leg must surface
+  // the Signal Sell class even though the event's own action is buy)
+  const legCodes: [string, string] = [a.code, b.code];
+  const presentClasses = new Set<"buy" | "sell" | "wait">();
+  for (const ev of events) {
+    const evClass = (action: string, isRejection: boolean): "buy" | "sell" | "wait" =>
+      isRejection || action === "wait"
+        ? "wait"
+        : action === "buy" ? "buy" : action === "sell" ? "sell" : "wait";
+    presentClasses.add(evClass(ev.action, ev.is_rejection === true));
+    presentClasses.add(evClass(
+      legAction(ev, legCodes[0]).action,
+      legAction(ev, legCodes[0]).isRejection,
+    ));
+    presentClasses.add(evClass(
+      legAction(ev, legCodes[1]).action,
+      legAction(ev, legCodes[1]).isRejection,
+    ));
+  }
   const classKeys = ["buy", "sell", "wait"] as const;
   MARKER_CLASS_NAMES.forEach((name, ci) => {
     if (presentClasses.has(classKeys[ci])) legendData.push(name);
@@ -258,7 +320,10 @@ export function buildPairCurvesOption(
           ]
         : []),
       // The portfolio's signal-history markers (see the module doc).
-      ...pairSignalMarkerSeries(events, aData, bData, dateIdx),
+      ...pairSignalMarkerSeries(
+        events, aData, bData, dateIdx, legCodes,
+        selectedEventKey ?? null,
+      ),
     ],
   });
 }

@@ -1,0 +1,26 @@
+[
+  {
+    "service": "downloads.futures.hkex.msci_a50.daily",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 3,
+    "sleep_jitter": 0.35,
+    "poll_interval_sec": null,
+    "max_retries": 3,
+    "retry_backoff_sec": 15,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": false,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": 900,
+    "settle_sleep_sec": null,
+    "urls": {
+      "report_base": "https://www.hkex.com.hk/eng/stat/dmstat/dayrpt",
+      "referer_url": "https://www.hkex.com.hk/"
+    },
+    "notes": "HKEX MSCI China A 50 Connect (USD) Index Futures daily market report zips (mcaf{YYMMDD}.zip day+settlement+OI, mcafa{YYMMDD}.zip after-hours of that trading date). Static files behind Akamai but bot-lenient for plain GETs (2026-10-26 probes); 404 is a legitimate per-date miss (non-trading day / report not yet final / beyond the ~1y archive retention), and the tracker only blocks on 403/429. The product-page widget API (www1.hkex.com.hk/hkexwidget/data/getchartdata2) is IP/session-token gated and only serves ~1 month of per-contract daily bars, hence this report-zip source.",
+    "source_ref": "downloads/futures/hkex/msci_a50/__main__.py",
+    "updated_at": "2026-10-26T00:00:00.000000+00:00"
+  }
+]

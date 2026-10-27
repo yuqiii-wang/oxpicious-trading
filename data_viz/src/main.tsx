@@ -8,6 +8,7 @@ import App from "./App";
 import { useStore } from "@/store/filters";
 import { buildTheme } from "@/theme/mui-theme";
 import { connectChartsByGroup } from "@/shared/charts/EChart";
+import { DocsProvider } from "@/shared/docs";
 import "./theme/colors.css";
 import "./index.css";
 
@@ -18,7 +19,9 @@ function ThemedApp() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="en">
-        <App />
+        <DocsProvider>
+          <App />
+        </DocsProvider>
       </LocalizationProvider>
     </ThemeProvider>
   );

@@ -10,7 +10,8 @@ SZSE / SSE / CNINDEX supplements (see loaders.py), then:
   3. Backfills PE from CSIndex rows that lost the dedup (e.g. SSE trend won
      OHLCV for 000xxx codes but its PE is NULL).
   4. Computes moving averages (ma5, ma20, ma60, ma120, ma255) and exponential
-     moving averages (ema6, ema10, ema20, ema60, ema120, ema255) over the
+     moving averages (ema6, ema12, ema20, ema26, ema60, ema120, ema255 — the
+     classic MACD spans 12/26 included) over the
      FULL per-code history (must use ALL rows, not just missing, for correctness).
   5. Filters to rows that are NEW vs the DB: date > the code's latest DB
      date, or (date, code) in stale_keys.
@@ -601,7 +602,7 @@ async def build_daily_df(latest_dates: dict,
         combined,
         group_key="code",
         value_col="close",
-        spans=[6, 10, 20, 60, 120, 255],
+        spans=[6, 12, 20, 26, 60, 120, 255],
     )
 
     # trading_amt_per_pct_change = trading_amount / (close - open), signed.

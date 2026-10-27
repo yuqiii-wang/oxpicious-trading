@@ -306,8 +306,9 @@ def parse_instruments_from_body(body_text: str, pub_date: str) -> List[Dict]:
     """Parse raw body text into structured instrument data.
 
     Returns a list of dicts, each with:
-        instrument: 'reverse_repo' | 'MLF' | 'central_bank_bill' | 'outright_repo'
-        tenor: '7D' | '1Y' | '91D' | '3M' | ''
+        instrument: 'reverse_repo' | 'overnight_reverse_repo' | 'MLF'
+                    | 'central_bank_bill' | 'outright_repo'
+        tenor: '7D' | '1D' | '1Y' | '91D' | '3M' | ''
         start_date: 'YYYY-MM-DD'
         quantity: float (亿元)
         rate: float (%) or None
@@ -319,18 +320,58 @@ def parse_instruments_from_body(body_text: str, pub_date: str) -> List[Dict]:
     flat = re.sub(r"(?<=[\d.])\s+(?=[\d.%])", "", flat)
 
     # --- 1. Parse summary for quantity-instrument pairs ---
-    # Pattern: quantity亿元 + (optional 公开市场) + instrument name
+    # Pattern: quantity亿元 + (optional 公开市场) + (optional tenor 期 token,
+    # e.g. "1575亿元7天期逆回购" in modern bulletins) + instrument name.
+    # 隔夜逆回购 must precede 逆回购 in the alternation (ordered match).
+    #
+    # Coordinated summaries ("开展了1601亿元7天期和745亿元14天期逆回购操作")
+    # are handled by a dedicated chain pre-pass — the single pattern below
+    # can only attribute the LAST quantity of a chain, so chain spans are
+    # skipped when it runs.
     summary_pairs = []
+    chain_re = re.compile(
+        r"[\d.,]+\s*亿元\s*(?:\d+\s*天\s*期|\d+\s*个\s*月\s*期)?"
+        r"(?:\s*[和、，,]\s*[\d.,]+\s*亿元\s*(?:\d+\s*天\s*期|\d+\s*个\s*月\s*期)?)+"
+        r"\s*(隔夜逆回购|逆回购|中期借贷便利|MLF|买断式逆回购)"
+    )
+    chain_spans = []
+    seg_re = re.compile(r"([\d.,]+)\s*亿元\s*(\d+\s*天\s*期|\d+\s*个\s*月\s*期)?")
+    for m in chain_re.finditer(flat):
+        chain_spans.append(m.span())
+        inst_name = m.group(1)
+        overnight_tail = inst_name == "隔夜逆回购"
+        if inst_name in ("中期借贷便利", "MLF"):
+            base_inst = "MLF"
+        elif inst_name == "买断式逆回购":
+            base_inst = "outright_repo"
+        else:
+            base_inst = "reverse_repo"
+        for qty_s, tenor_s in seg_re.findall(m.group(0)):
+            qty = parse_quantity(qty_s)
+            if qty is None:
+                continue
+            if tenor_s:
+                summary_pairs.append({"instrument": base_inst, "quantity": qty})
+            elif overnight_tail:
+                summary_pairs.append({"instrument": "overnight_reverse_repo",
+                                      "quantity": qty})
+            else:
+                summary_pairs.append({"instrument": base_inst, "quantity": qty})
+
     for m in re.finditer(
-        r"([\d.,]+)\s*亿元\s*(?:公开市场)?\s*(逆回购|中期借贷便利|MLF|买断式逆回购)",
+        r"([\d.,]+)\s*亿元\s*(?:公开市场)?\s*(?:\d+\s*天\s*期\s*|\d+\s*个\s*月\s*期\s*)?(隔夜逆回购|逆回购|中期借贷便利|MLF|买断式逆回购)",
         flat,
     ):
+        if any(s <= m.start() < e for s, e in chain_spans):
+            continue  # already attributed by the chain pre-pass
         qty = parse_quantity(m.group(1))
         inst_raw = m.group(2)
         if inst_raw in ("中期借贷便利", "MLF"):
             inst = "MLF"
         elif inst_raw == "买断式逆回购":
             inst = "outright_repo"
+        elif inst_raw == "隔夜逆回购":
+            inst = "overnight_reverse_repo"
         else:
             inst = "reverse_repo"
         if qty is not None:
@@ -372,7 +413,13 @@ def parse_instruments_from_body(body_text: str, pub_date: str) -> List[Dict]:
             tenor = ""
             rate = None
             matched = False
-            if inst in section_data:
+            if inst == "overnight_reverse_repo":
+                # Fixed-rate / quantity-tender prose rider (公告[2026]第4号):
+                # no table section — the bulletin states quantity only, so
+                # tenor is fixed 1D and the rate is not restated (None).
+                tenor = "1D"
+                matched = True
+            elif inst in section_data:
                 for si, sd in enumerate(section_data[inst]):
                     if (inst, si) in used_sections:
                         continue

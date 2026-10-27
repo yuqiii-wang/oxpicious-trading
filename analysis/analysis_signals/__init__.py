@@ -4,8 +4,8 @@
 Three tables (database/sql/analysis/analysis_signals/): signal_rules
 (the per-(code, config, trend, regime, action) rule cells — the engine
 entry name and the SELF-ADAPTIVE prepared params),
-static.analysis_signal_docs (the family knowledge, one row per family,
-seeded from database/sql/static/analysis_signal_docs/) and
+static.signal_rules_docs (the family knowledge, one row per family,
+seeded from database/sql/static/signal_rules/) and
 history_signals (the
 history populated by REPLAYING those rules).
 

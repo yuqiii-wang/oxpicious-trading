@@ -1,10 +1,13 @@
 """Input loaders of the in-engine signal-family computations
 (analysis.analysis_signals.fetch.inputs) — one module per family,
 mirroring engines/signal_families: _mov_rsi, _boll_std, _ma_cross,
-_options_wall, _options_vix, _momentum and _rf_break, over the
-cross-family vocabulary in _shared (table names, the active-code /
-first-date lookups, the market-breadth states, the shared
-frame-finalize step).
+_options_wall, _options_vix, _momentum, _rf_break, _rebound and
+_macd (the classic MACD construction computed at the fetch
+boundary), plus
+_hedge_pairs (the portfolio family's pair universe + the three-curve
+trio frames), over the cross-family vocabulary in _shared (table
+names, the active-code / first-date lookups, the market-breadth
+states, the shared frame-finalize step).
 
 The signals tier computes its OWN buckets off the raw value data
 since the forecast layer was removed (2026-10-05): per sec_type the
@@ -60,10 +63,16 @@ from ._rf_break import (
     fetch_latest_rf_date,
     fetch_rf_inputs,
 )
+from ._rebound import (
+    fetch_latest_rebound_date,
+    fetch_rebound_inputs,
+)
+from ._macd import (
+    fetch_latest_macd_date,
+    fetch_macd_inputs,
+)
 from ._hedge_pairs import (
     fetch_hedge_pair_inputs,
-    parse_pair_code,
-    pair_code,
     resolve_hedge_pair_universe,
 )
 
@@ -74,22 +83,24 @@ __all__ = [
     "fetch_hedge_pair_inputs",
     "fetch_index_classes",
     "fetch_latest_boll_date",
+    "fetch_latest_macd_date",
     "fetch_latest_ma_date",
     "fetch_latest_options_vix_date",
     "fetch_latest_options_wall_date",
+    "fetch_latest_rebound_date",
     "fetch_latest_rf_date",
     "fetch_latest_rsi_date",
     "fetch_ma_inputs",
     "fetch_market_breadth",
+    "fetch_macd_inputs",
     "fetch_momentum_codes",
     "fetch_momentum_inputs",
     "fetch_options_universe",
     "fetch_options_vix_inputs",
     "fetch_options_wall_inputs",
+    "fetch_rebound_inputs",
     "fetch_rf_inputs",
     "fetch_rsi_codes",
     "fetch_rsi_inputs",
-    "parse_pair_code",
-    "pair_code",
     "resolve_hedge_pair_universe",
 ]

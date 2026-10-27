@@ -7,7 +7,10 @@ rows of analysis.mov_ave_spreads_roof_floor_estimates, pivoted to one
 level column per (method, window, side): roof{W}/floor{W} donchian,
 mroof{W}/mfloor{W} median, with the day-0 ohlcv-boost axes (pattern /
 (vol_state, px_speed) / the turnover-climax amt axis) LEFT JOINed per
-(code, date).
+(code, date) and the code's index PE (stats.index_valuation.pe — the
+shared PE-conditioning axis is_pe_boosted's input, 2026-10-26; NULL
+where the valuation store has no row — e.g. every non-index sec_type,
+whose PE-gated variants then legitimately starve).
 
 The levels are STRUCTURAL bars (window extremes / method consensus,
 not percentile tails): the engine's trigger is the close crossing the
@@ -50,7 +53,7 @@ def _level_columns() -> list[str]:
     return cols
 
 
-_RF_INPUT_COLUMNS = ["code", "date", "price"] + _level_columns() + [
+_RF_INPUT_COLUMNS = ["code", "date", "price", "pe"] + _level_columns() + [
     "pattern", "vol_state", "px_speed", "amt_climax",
 ]
 
@@ -116,12 +119,15 @@ async def fetch_rf_inputs(
         SELECT d.code,
                extract(epoch from d.date)::float8 AS date,
                d.price,
+               v.pe::float8 AS pe,
                {", d.".join(_level_columns())},
                g.pattern,
                p.vol_state::float8 AS vol_state,
                p.px_speed::float8 AS px_speed,
                {amt_select}
         FROM don d
+        LEFT JOIN stats.index_valuation v
+               ON v.code = d.code AND v.date = d.date
         LEFT JOIN {PATTERN_TABLE} g
                ON g.sec_type = {st_code}
               AND g.code = d.code AND g.date = d.date

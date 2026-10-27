@@ -96,6 +96,11 @@ async def main() -> None:
 
     if args.payload_file:
         payload = read_payload_file(args.payload_file)
+        # Flow start for the text.llm_qa_by_ask.request_ids backlink — all
+        # of the ask's LLM requests (plain completion, or search + compose
+        # + ask on the online-search path) happen below.
+        import datetime
+        flow_start = datetime.datetime.now(datetime.timezone.utc)
         # Payload-mode asks are persisted to the ask-history tables
         # (text.llm_qa_by_ask + context/images/keywords — see
         # llm_agents.llm_ask.storage) after the answer exists; failures
@@ -118,9 +123,10 @@ async def main() -> None:
                 result = await provider.ask(question, opts, context=context)
         except Exception as exc:
             await persist_ask(
-                payload, error_tail=f"{type(exc).__name__}: {exc}")
+                payload, error_tail=f"{type(exc).__name__}: {exc}",
+                flow_start=flow_start)
             raise
-        await persist_ask(payload, result)
+        await persist_ask(payload, result, flow_start=flow_start)
     else:
         opts = AskOptions(model=args.model, lang=args.lang, system=args.system,
                           temperature=args.temperature)

@@ -14,6 +14,7 @@ import {
 } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import type { ThemeMode } from "@/store/filters";
 import type { OptionsRow } from "@shared/types";
 import {
@@ -488,26 +489,24 @@ export default function GreeksPanel({ rows, selectedDate, greekKey }: Props) {
   const option = buildGreekOption(snap, greekKey, selectedDate, themeMode);
 
   const underlyingCode = rows[0]?.underlying_code ?? "";
-  // AI Ask — concise legend decoding + positioning-metric guide; the card
-  // keeps identity + units only.
+  // AI Ask — authored text: static.docs `ui.options.greeks`; the params
+  // carry the greek's unit + positioning-metric identity.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.greeks,
       product: "options-greeks",
-      intro:
-        "Per-expiry Greek vs moneyness m = K/S — calls solid, puts dashed, grouped by expiry " +
-        "month (blue: dark = near). Units:" +
-        `${GREEK_UNITS[greekKey] || " dimensionless"}.` +
-        (greekKey === "delta" || greekKey === "gamma" || greekKey === "vega"
-          ? ` Vertical line = OI-weighted mean moneyness of the combined CALL+PUT book, ` +
-            `labeled with the chain positioning metric ${GREEK_METRIC_META[greekKey].tag} ` +
-            `(${GREEK_METRIC_META[greekKey].formula}); tooltip reports the tilt. ` +
-            "Indication: the tilt flags the crowded side — crowded books unwind fastest."
-          : " Theta/rho have no positioning metric — no metric line."),
+      intro: docs.text("ui.options.greeks", {
+        units: GREEK_UNITS[greekKey] || " dimensionless",
+        positioning:
+          greekKey === "delta" || greekKey === "gamma" || greekKey === "vega",
+        tag: GREEK_METRIC_META[greekKey]?.tag ?? "",
+        formula: GREEK_METRIC_META[greekKey]?.formula ?? "",
+      }),
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
       state: { greek: greekKey, selectedDate },
     }),
-    [greekKey, selectedDate, underlyingCode],
+    [docs, greekKey, selectedDate, underlyingCode],
   );
 
   return (

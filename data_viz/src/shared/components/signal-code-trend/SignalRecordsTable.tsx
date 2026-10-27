@@ -5,7 +5,15 @@
  * inside outlined Paper under the muted caption line. Consumed by the
  * live row expansion (all configs at one tick) and the Recent Movements
  * history table's per-date expansion (all configs of one date), so the
- * two read identically.
+ * two read identically. `splitSignal` swaps the composed `Family · sub`
+ * Signal column for explicit Signal type + Signal sub type columns
+ * (the portfolio history expansion — the rows are CELL signals, so
+ * their family and sub rule read as their own columns; the raw sub
+ * literal rides the sub cell's tooltip). `showVariantFlags` appends the
+ * PE / OHLCV population-variant columns after the Signal column(s)
+ * (the Short-Term Tech surfaces — the PE-gated variant is a
+ * history_signals PK member, so a plain and a PE-gated record of the
+ * same sub type read as two rows only through these flags).
  */
 import {
   Box,
@@ -20,7 +28,11 @@ import {
   useTheme,
 } from "@mui/material";
 import { SignalActionChip } from "@/shared/components/signal-action";
-import { signalRecordName } from "./families";
+import {
+  SIGNAL_TYPE_LABELS,
+  signalSubWord,
+  signalRecordName,
+} from "./families";
 import type { TradingSignal } from "@/lib/api-client";
 
 export interface SignalRecordsTableProps {
@@ -38,11 +50,69 @@ export interface SignalRecordsTableProps {
   /** Prepend a Code column (cross-code records — a portfolio event's
    *  members sit at the component codes). Default false. */
   showCode?: boolean;
+  /** Replace the composed `Family · sub` Signal column with explicit
+   *  Signal type + Signal sub type columns (the portfolio history
+   *  expansion: the rows are cell signals — family and sub rule read
+   *  as their own columns; the raw sub literal rides the tooltip).
+   *  Default false. */
+  splitSignal?: boolean;
+  /** Append the PE / OHLCV population-variant columns after the Signal
+   *  column(s) (the Short-Term Tech surfaces — a plain and a PE-gated
+   *  record of the same sub type are two PK-distinct rows the flags
+   *  disambiguate). Default false. */
+  showVariantFlags?: boolean;
 }
 
 /** Stable React key for one signal record inside a shared scope. */
 function recordKey(s: TradingSignal): string {
   return `${s.code}-${s.date}-${s.time}-${s.signal_type}-${s.signal_sub_type}`;
+}
+
+/** One population-variant flag cell — a green ✓ when the record carries
+ *  the variant, a muted dash on the plain population. */
+function VariantFlagCell({ on }: { on: boolean }) {
+  const theme = useTheme();
+  return (
+    <TableCell
+      align="center"
+      sx={{
+        color: on ? theme.palette.success.main : "text.disabled",
+        fontWeight: on ? 600 : 400,
+      }}
+    >
+      {on ? "✓" : "–"}
+    </TableCell>
+  );
+}
+
+/** The two variant-flag header cells (with their meaning tooltips). */
+function VariantFlagHeaders() {
+  return (
+    <>
+      <Tooltip
+        title={
+          "The PE-conditioning variant: TRUE = the PE-gated population " +
+          "(the candidate masks AND-gated by the code's own " +
+          "PE-percentile condition — the rebound family emits both " +
+          "variants); FALSE = the plain population"
+        }
+        arrow
+      >
+        <TableCell align="center">PE boosted</TableCell>
+      </Tooltip>
+      <Tooltip
+        title={
+          "The retired OHLCV-boost variant marker (the boost twins were " +
+          "retired 2026-10-16 — their tuned confidence lives in the " +
+          "rules panel's performance snapshot): FALSE on every row; " +
+          "kept for the record's identity"
+        }
+        arrow
+      >
+        <TableCell align="center">OHLCV boosted</TableCell>
+      </Tooltip>
+    </>
+  );
 }
 
 export default function SignalRecordsTable({
@@ -51,6 +121,8 @@ export default function SignalRecordsTable({
   showTime = false,
   showDate = false,
   showCode = false,
+  splitSignal = false,
+  showVariantFlags = false,
 }: SignalRecordsTableProps) {
   const theme = useTheme();
   return (
@@ -68,7 +140,15 @@ export default function SignalRecordsTable({
             {showCode && <TableCell>Code</TableCell>}
             {showDate && <TableCell>Date</TableCell>}
             {showTime && <TableCell>Time</TableCell>}
-            <TableCell>Signal</TableCell>
+            {splitSignal ? (
+              <>
+                <TableCell>Signal type</TableCell>
+                <TableCell>Signal sub type</TableCell>
+              </>
+            ) : (
+              <TableCell>Signal</TableCell>
+            )}
+            {showVariantFlags && <VariantFlagHeaders />}
             <TableCell>Action</TableCell>
             <TableCell align="right">Signal value</TableCell>
             <TableCell align="right">Threshold</TableCell>
@@ -97,9 +177,28 @@ export default function SignalRecordsTable({
               {showTime && (
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{s.time}</TableCell>
               )}
-              <TableCell sx={{ whiteSpace: "nowrap" }}>
-                {signalRecordName(s.signal_type, s.signal_sub_type)}
-              </TableCell>
+              {splitSignal ? (
+                <>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>
+                    {SIGNAL_TYPE_LABELS[s.signal_type] ?? s.signal_type}
+                  </TableCell>
+                  <Tooltip title={s.signal_sub_type} arrow>
+                    <TableCell sx={{ whiteSpace: "nowrap" }}>
+                      {signalSubWord(s.signal_type, s.signal_sub_type)}
+                    </TableCell>
+                  </Tooltip>
+                </>
+              ) : (
+                <TableCell sx={{ whiteSpace: "nowrap" }}>
+                  {signalRecordName(s.signal_type, s.signal_sub_type)}
+                </TableCell>
+              )}
+              {showVariantFlags && (
+                <>
+                  <VariantFlagCell on={s.is_pe_boosted} />
+                  <VariantFlagCell on={s.is_ohlcv_boosted} />
+                </>
+              )}
               <TableCell>
                 <SignalActionChip
                   action={s.action}

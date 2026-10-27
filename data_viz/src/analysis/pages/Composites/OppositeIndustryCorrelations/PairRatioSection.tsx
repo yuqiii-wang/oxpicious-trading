@@ -36,6 +36,7 @@ import type {
   PairPctRatiosResponse,
 } from "@shared/types";
 import { INSIGHT_PAGES, useAiAskAddon, type AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { buildPairRatioChartOption } from "../../shared/pairRatioChart";
 import {
   PAIR_RATIO_MODES,
@@ -167,16 +168,11 @@ export default function PairRatioSection({ industryIds }: Props) {
 
   // ---- AI Ask (insight: composites.pair-hedge-ratio) ----------------------
   const chartRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.pairHedgeRatio,
-      intro:
-        "Minimum-variance hedge ratio h* = −Cov(A,B)/Var(A) of the selected " +
-        "subject industry vs benchmark industry over trailing 20/60/255-day " +
-        "windows on the stride grid. Above 0 = buy the subject to hedge the " +
-        "benchmark; below 0 = short it. Market-offset mode subtracts the " +
-        "broad-market pct from both sides first — where the page's " +
-        "opposite-moves finding becomes the buy-to-hedge answer.",
+      intro: docs.text("ui.composites.pair-ratio"),
       instruments: code ? [{ code, assetClass: "industry" }] : [],
       state: {
         mode: hedgeMode,
@@ -184,11 +180,9 @@ export default function PairRatioSection({ industryIds }: Props) {
         grain,
         stride: data?.interval ?? 20,
       },
-      notes: [
-        "Values appear only on stride-grid dates; null days are skipped, never zero-filled.",
-      ],
+      notes: docs.notes("ui.composites.pair-ratio"),
     }),
-    [code, hedgeMode, benchmark, grain, data?.interval],
+    [docs, code, hedgeMode, benchmark, grain, data?.interval],
   );
   const aiAskAddon = useAiAskAddon({
     title: "Pair hedge ratio vs benchmark industry",

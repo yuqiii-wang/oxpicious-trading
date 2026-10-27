@@ -81,7 +81,7 @@ async def hourly_cycle(
         current_biz_day, poll_interval, conns.conn,
     )
 
-    # 2. Fetch top-N stocks via 4 parallel workers.
+    # 2. Fetch top-N stocks via the parallel source workers.
     unfinished = [(c, nm) for (c, nm) in active_stocks
                   if _not_finished(latest_bar_time.get(c))]
     n_stock_ident = n_stock_bars = 0
@@ -186,14 +186,14 @@ async def full_cycle(
         await async_sleep_until(nxt)
         return False
 
-    # ---- Run ONE round via 4 parallel async workers ----
+    # ---- Run ONE round via the parallel async workers ----
     # split_groups filters empty groups, so the effective group count is
     # min(n_groups, len(unfinished)) — logged here before dispatching.
     n_groups_eff = min(n_groups, max(1, len(unfinished)))
     round_start = _time.time()
     round_label = datetime.now().strftime("%H:%M:%S")
     logger.info(
-        "=== FULL round @ %s biz=%s: %d unfinished / %d finished (groups=%d, 4 parallel procs: A/C/D primary + B fallback) ===",
+        "=== FULL round @ %s biz=%s: %d unfinished / %d finished (groups=%d, 2 parallel procs: A primary + B fallback) ===",
         round_label, current_biz_day, n_unfinished, n_finished, n_groups_eff,
     )
 

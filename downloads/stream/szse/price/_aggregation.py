@@ -85,8 +85,9 @@ def aggregate_5min(
     ``latest_time`` is returned as None so the stock is NOT marked as
     finished — it will be re-fetched until today's data arrives.
 
-    Sources like EM push2his return up to 5 days of data; only the most
-    recent trading day's samples are kept (``max(sample dates)``).
+    Some sources return more than the current day's samples (e.g. Sina's
+    kline endpoint can include earlier days); only the most recent trading
+    day's samples are kept (``max(sample dates)``).
 
     Emits a window when its end time is at or before the 5-min rounding
     cutoff (``_emission_cutoff_minute``) and it has not been emitted before.
@@ -105,8 +106,8 @@ def aggregate_5min(
     exchange = "SZ" if full_code.endswith(".SZ") else None
 
     # Derive trade_date from the samples' own dates (remote source logged
-    # date), NOT from the local request time. Use the latest date so multi-day
-    # sources (EM push2his ndays=5) only emit the most recent trading day.
+    # date), NOT from the local request time. Use the latest date so any
+    # multi-day source only emits the most recent trading day.
     derived_date = max(s[0].date() for s in samples)
 
     # Keep only samples that belong to the derived (remote) date.

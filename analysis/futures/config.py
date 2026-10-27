@@ -100,6 +100,15 @@ INDEX_PRODUCT_UNDERLYING: dict[str, str] = {
     "IF": "000300",
     "IH": "000016",
     "IM": "000852",
+    # Offshore China-A50 families (stats.futures_* are shared, see
+    # 12_futures.sql). MCA's underlying series is downloaded by
+    # downloads.index.hkex_msci.daily (HKEX LabCI widgets) into
+    # stats.index_basic_stats — ~6 months of daily bars + ~2 years of
+    # weekly bars per fetch, so basis rows exist only on those dates.
+    # CN's underlying (XIN9) is still not downloaded — forward-looking
+    # wiring; fetch() drops those rows until the index series exists.
+    "CN":  "XIN9",           # SGX FTSE China A50 index
+    "MCA": "MICN0A5C0PCY",   # MSCI China A 50 Connect (HKEX marquee RIC)
 }
 
 # ---- Numeric columns for sanitize_for_db_insert ---------------------------

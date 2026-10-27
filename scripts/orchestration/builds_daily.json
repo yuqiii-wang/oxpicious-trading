@@ -45,7 +45,8 @@
  },
  "10": {
   "script": "builds.futures",
-  "can_be_parallel": false
+  "can_be_parallel": false,
+  "note": "globs temps/cffex_archive + temps/cffex_trend into stats.futures_identity/basic_stats; the --force purge is CFFEX-code-scoped because the tables are SHARED with the SGX CN / HKEX MCA families written directly by their downloaders"
  },
  "11": {
   "script": "builds.text",

@@ -12,6 +12,8 @@ _tmp
 .backup_staging
 .codebuddy
 .zcode
-docs
+/docs
 
 nohup.out
+
+startup_on_login.bat

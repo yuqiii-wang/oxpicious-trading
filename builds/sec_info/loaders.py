@@ -23,9 +23,11 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
-from _common.build_commons import parse_num
+from _common.build_commons import parse_num, _NUM_INVALID_TOKENS
+from _common.df_utils import host_array
 
 
 # ============================================================================
@@ -210,6 +212,29 @@ _ASSET_MIX_MAP: Dict[str, Tuple[str, str]] = {
 _OTHER_KEYS = ("其他各项资产", "其他资产")
 
 
+def _stripped_text(col: pd.Series) -> pd.Series:
+    """CSV text column → stripped strings with NaN cells as '' (the exact
+    ``str(v).strip() if pd.notna(v) else ""`` per-row semantics)."""
+    return col.where(col.notna(), "").astype(str).str.strip()
+
+
+def _parse_num_series(col: pd.Series) -> pd.Series:
+    """Vectorized ``parse_num(v, default=None)`` over a text column.
+
+    Mirrors the shared parser exactly: NaN cells → NaN (None), invalid
+    tokens → NaN, comma/full-width-space stripping, then float coercion
+    with non-finite rejection. Values land as float64 NaN-for-None.
+    """
+    txt = _stripped_text(col)
+    txt = txt.mask(txt.isin(_NUM_INVALID_TOKENS), "")
+    txt = (txt.str.replace(",", "", regex=False)
+              .str.replace("，", "", regex=False)
+              .str.replace(" ", "", regex=False)
+              .str.replace("\u3000", "", regex=False))
+    vals = pd.to_numeric(txt, errors="coerce")
+    return vals.where(np.isfinite(vals))
+
+
 def load_asset_portfolio(path: str) -> Dict[str, Optional[float]]:
     """Load asset_portfolio.csv → dict of {col: value} for the sec_reports MIX.
 
@@ -225,13 +250,17 @@ def load_asset_portfolio(path: str) -> Dict[str, Optional[float]]:
     if df.empty or df.shape[1] < 4:
         return mix
     # Columns are positional: [序号, 项目, 金额(元), 占比(%)] — names vary in
-    # full-width vs half-width parens, so read by position.
-    for _, r in df.iterrows():
-        item = str(r.iloc[1]).strip() if pd.notna(r.iloc[1]) else ""
-        if not item:
-            continue
-        amt_raw = r.iloc[2] if df.shape[1] > 2 else ""
-        pct_raw = r.iloc[3] if df.shape[1] > 3 else ""
+    # full-width vs half-width parens, so read by position. Only the ≤9
+    # mapped 项目 rows are read (one vectorized isin instead of an
+    # iterrows pass over every row).
+    item_txt = _stripped_text(df.iloc[:, 1])
+    matched = host_array(item_txt.isin(set(_ASSET_MIX_MAP) | set(_OTHER_KEYS)))
+    amt_raw_col = df.iloc[:, 2]
+    pct_raw_col = df.iloc[:, 3]
+    for pos in np.flatnonzero(matched):
+        item = item_txt.iloc[pos]
+        amt_raw = amt_raw_col.iloc[pos]
+        pct_raw = pct_raw_col.iloc[pos]
         amt = parse_num(amt_raw, default=None) if amt_raw not in ("-", "--", "", None) else None
         pct = parse_num(pct_raw, default=None) if pct_raw not in ("-", "--", "", None) else None
         if item in _ASSET_MIX_MAP:
@@ -265,29 +294,28 @@ def load_top10_holdings(path: str) -> List[Dict[str, Any]]:
         return []
     if df.empty or df.shape[1] < 6:
         return []
-    rows: List[Dict[str, Any]] = []
-    seen: set = set()
-    for _, r in df.iterrows():
-        # stock_code is column 1 (positional), stock_name column 2.
-        sc = str(r.iloc[1]).strip() if pd.notna(r.iloc[1]) else ""
-        if not sc or not (sc.isdigit() and len(sc) == 6):
-            continue
-        if sc in seen:
-            continue
-        # weight = last column when numeric; non-numeric last col = remark row
-        # (新股锁定 / 新发未上市) → skip (it duplicates a main/new-stock row).
-        last_val = r.iloc[-1] if pd.notna(r.iloc[-1]) else ""
-        weight = parse_num(last_val, default=None)
-        if weight is None:
-            continue
-        sn = str(r.iloc[2]).strip() if pd.notna(r.iloc[2]) else ""
-        seen.add(sc)
-        rows.append({
-            "stock_code": sc,
-            "stock_name": sn,
-            "weight_pct": float(weight),
-        })
-    return rows
+    # stock_code is column 1 (positional), stock_name column 2; weight =
+    # last column when numeric. A non-numeric last col marks a remark row
+    # (新股锁定 / 新发未上市) → weight NaN → dropped BEFORE the dedup, so it
+    # duplicates neither a main/new-stock row nor the seen-set.
+    code_txt = _stripped_text(df.iloc[:, 1])
+    valid_code = code_txt.str.isdigit() & (code_txt.str.len() == 6)
+    weight = _parse_num_series(df.iloc[:, -1])
+    name_txt = _stripped_text(df.iloc[:, 2])
+    keep = valid_code & weight.notna()
+    sel = pd.DataFrame({
+        "stock_code": code_txt[keep],
+        "stock_name": name_txt[keep],
+        "weight_pct": weight[keep],
+    }).drop_duplicates("stock_code", keep="first")
+    return [
+        {"stock_code": sc, "stock_name": sn, "weight_pct": float(w)}
+        for sc, sn, w in zip(
+            host_array(sel["stock_code"]),
+            host_array(sel["stock_name"]),
+            host_array(sel["weight_pct"]),
+        )
+    ]
 
 
 # ============================================================================

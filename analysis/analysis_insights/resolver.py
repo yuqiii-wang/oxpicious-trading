@@ -47,6 +47,19 @@ DAILY_VIEWS = {
 # close history fetch cap — enough for Wilder RSI convergence (window*5)
 MAX_BARS = 400
 
+# The rarity rank (pct_rank): the value's percentile within its PRIOR
+# trailing history — the share of the metric's own prior observations
+# (same scope filters, one row per date) at or below the value, over a
+# trailing 10y window ending at the value's own date. 0.95 = the top 5%
+# tail. Mirrored by the Express fast path (analysis-insights.service.ts).
+RANK_WINDOW_YEARS = 10
+# Prior observations below this don't make a percentile (the ohlc-gap
+# flags' ≥120 convention) — a thin history would make every value look
+# extreme. pct_rank_n rides along so readers can discount further.
+RANK_MIN_N = 120
+# Close-history cap for the python-side ranks (≈10y of sessions).
+RANK_MAX_BARS = 2550
+
 
 def normalize_as_of(raw: Optional[str]) -> Optional[dt.date]:
     """'YYYY-MM-DD' | 'YYYY-MM' → the as-of date (month = its last day,
@@ -115,8 +128,54 @@ def load_page_templates(conn, tab: str, page: str) -> List[Dict[str, Any]]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def _shift_years(d: dt.date, years: int) -> dt.date:
+    """The date shifted by whole years (Feb-29 → Feb-28 on non-leap)."""
+    try:
+        return d.replace(year=d.year + years)
+    except ValueError:
+        return d.replace(year=d.year + years, day=28)
+
+
+def _prior_rank_sql(
+    value_col: str, date_col: str, filter_sql: str,
+) -> tuple:
+    """The prior-history percentile query for one metric: the share of the
+    metric's own prior rows (same scope filters, one row per date, the
+    trailing window ending at the value's own date) at or below the value.
+    Args order: value, then the filter args, then value_date, window start.
+    """
+    return (
+        "SELECT AVG(CASE WHEN v <= %s THEN 1.0 ELSE 0.0 END)::float8,"
+        " COUNT(*)::int FROM ("
+        f"  SELECT {date_col} AS d, {value_col} AS v,"
+        f"         ROW_NUMBER() OVER (PARTITION BY {date_col}"
+        f"                            ORDER BY {value_col} DESC NULLS LAST) AS rn"
+        f"  FROM {{table}} WHERE {filter_sql}"
+        ") t WHERE rn = 1 AND v IS NOT NULL"
+    )
+
+
+def _apply_prior_rank(
+    conn, out: Dict[str, Any], sql: str, args: List[Any],
+) -> None:
+    """Run one rank query and stamp pct_rank/pct_rank_n onto the result
+    (only above the sample floor; non-numeric values never rank)."""
+    value = out.get("value")
+    value_date = out.get("value_date")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return
+    if not value_date:
+        return
+    with conn.cursor() as cur:
+        cur.execute(sql, args)
+        pct_rank, n = cur.fetchone()
+    if n is not None and n >= RANK_MIN_N:
+        out["pct_rank"] = float(pct_rank) if pct_rank is not None else None
+        out["pct_rank_n"] = int(n)
+
+
 def _resolve_table_metric(
-    conn, spec: Dict[str, Any], ctx: AskContext,
+    conn, spec: Dict[str, Any], ctx: AskContext, rank: bool = True,
 ) -> Dict[str, Any]:
     """One table-kind metric per the contract in the module docstring."""
     table = _qt(spec["table"])
@@ -129,6 +188,12 @@ def _resolve_table_metric(
     order_by = order.get("by", "date")
     order_dir = order.get("dir", "desc")
 
+    # Scope filters WITHOUT the as-of bound (filter_preds/args), kept
+    # separate so the rarity-rank query can reuse them with its own
+    # strictly-prior date range; `where` = as-of + filters for the value
+    # and $latest queries (positional %s — order is the arg order).
+    filter_preds: List[str] = []
+    filter_args: List[Any] = []
     where: List[str] = []
     args: List[Any] = []
     if ctx.as_of is not None:
@@ -138,12 +203,18 @@ def _resolve_table_metric(
         code = ctx.code or ctx.industry
         if not code:
             return {"unresolved": "needs a security/industry"}
-        where.append(f"{_q(code_col)} = %s")
+        pred = f"{_q(code_col)} = %s"
+        where.append(pred)
+        filter_preds.append(pred)
+        filter_args.append(code)
         args.append(code)
     if sec_col:
         if ctx.sec_type_code is None:
             return {"unresolved": "needs a sec_type"}
-        where.append(f"{_q(sec_col)} = %s")
+        pred = f"{_q(sec_col)} = %s"
+        where.append(pred)
+        filter_preds.append(pred)
+        filter_args.append(ctx.sec_type_code)
         args.append(ctx.sec_type_code)
 
     latest_dims: List[str] = []
@@ -151,7 +222,10 @@ def _resolve_table_metric(
         if val == "$latest":
             latest_dims.append(key)
         else:
-            where.append(f"{_q(key)} = %s")
+            pred = f"{_q(key)} = %s"
+            where.append(pred)
+            filter_preds.append(pred)
+            filter_args.append(val)
             args.append(val)
     for key in latest_dims:
         cur_sql = f"SELECT MAX({_q(key)}) FROM {table}"
@@ -162,7 +236,10 @@ def _resolve_table_metric(
             found = cur.fetchone()[0]
         if found is None:
             return {"unresolved": f"no rows to pick $latest {key}"}
-        where.append(f"{_q(key)} = %s")
+        pred = f"{_q(key)} = %s"
+        where.append(pred)
+        filter_preds.append(pred)
+        filter_args.append(found)
         args.append(found)
 
     # one row per date (ties broken by value desc), newest / ordered first
@@ -194,6 +271,17 @@ def _resolve_table_metric(
         out["prev_value"] = prev
         if isinstance(out["value"], (int, float)) and isinstance(prev, (int, float)):
             out["delta"] = out["value"] - prev
+    if rank and filter_preds and out.get("value_date"):
+        value_date = out["value_date"]
+        if isinstance(value_date, str):
+            value_date = dt.date.fromisoformat(value_date)
+        filter_sql = " AND ".join(filter_preds) + (
+            f" AND {date_col} < %s AND {date_col} >= %s")
+        rank_sql = _prior_rank_sql(value_col, date_col, filter_sql).format(table=table)
+        _apply_prior_rank(conn, out, rank_sql, [
+            out["value"], *filter_args, value_date,
+            _shift_years(value_date, -RANK_WINDOW_YEARS),
+        ])
     return out
 
 
@@ -254,8 +342,15 @@ def _wilder_rsi(closes: Sequence[float], window: int) -> Optional[float]:
     return 100.0 - 100.0 / (1.0 + rs)
 
 
+def _rank_among(values: List[float], today: float) -> Optional[tuple]:
+    """(share of `values` <= today, n) above the sample floor, else None."""
+    if len(values) < RANK_MIN_N:
+        return None
+    return (sum(1 for x in values if x <= today) / len(values), len(values))
+
+
 def _resolve_compute(
-    conn, fn: str, args: Dict[str, Any], ctx: AskContext,
+    conn, fn: str, args: Dict[str, Any], ctx: AskContext, rank: bool = True,
 ) -> Dict[str, Any]:
     """One compute-fn value from the daily baseline view (on demand)."""
     code = args.get("code") or ctx.code
@@ -272,8 +367,24 @@ def _resolve_compute(
         last, first = closes[0][1], closes[days][1]
         if not first:
             return {"unresolved": "not enough close history"}
-        return {"value": (last / first - 1.0) * 100.0,
-                "value_date": _iso(closes[0][0])}
+        out: Dict[str, Any] = {"value": (last / first - 1.0) * 100.0,
+                               "value_date": _iso(closes[0][0])}
+        if rank:
+            # Rarity: today's N-day change among its own prior daily values
+            # (the same N-day change computed on each prior bar, 10y window).
+            hist = _fetch_closes(
+                conn, view, code, ctx.as_of, days + 1 + RANK_MAX_BARS)
+            seq = [c for _, c in reversed(hist)]  # oldest → newest
+            if len(seq) > days + 1:
+                changes = [
+                    (seq[i] / seq[i - days] - 1.0) * 100.0
+                    for i in range(days, len(seq))
+                    if seq[i - days]
+                ]
+                ranked = _rank_among(changes[:-1], changes[-1])
+                if ranked:
+                    out["pct_rank"], out["pct_rank_n"] = ranked
+        return out
     if fn == "wilder_rsi":
         closes = _fetch_closes(
             conn, view, code, ctx.as_of, min(MAX_BARS, window * 5 + 10))
@@ -319,7 +430,14 @@ def _resolve_compute(
     closes = _fetch_closes(conn, view, code, ctx.as_of, 1)
     if not closes or closes[0][1] is None:
         return {"unresolved": "no baseline row"}
-    return {"value": float(closes[0][1]), "value_date": _iso(closes[0][0])}
+    out = {"value": float(closes[0][1]), "value_date": _iso(closes[0][0])}
+    if rank:
+        hist = _fetch_closes(conn, view, code, ctx.as_of, RANK_MAX_BARS)
+        prior = [c for _, c in hist[1:] if c is not None]
+        ranked = _rank_among(prior, float(closes[0][1]))
+        if ranked:
+            out["pct_rank"], out["pct_rank_n"] = ranked
+    return out
 
 
 def _applies(spec: Dict[str, Any], ctx: AskContext) -> bool:
@@ -344,6 +462,10 @@ def resolve_page(
         if only and tpl["metric"] not in only:
             continue
         spec = tpl["spec"] or {}
+        # spec "rank": false opts a metric out of the rarity percentile
+        # (categorical codes — trend states, 0/1 flags — must not wear a
+        # fake quantile).
+        rank_ok = spec.get("rank") is not False
         out: Dict[str, Any] = {
             "template_id": tpl["template_id"],
             "metric": tpl["metric"],
@@ -355,6 +477,8 @@ def resolve_page(
             "value_date": None,
             "prev_value": None,
             "delta": None,
+            "pct_rank": None,
+            "pct_rank_n": None,
             "source_kind": spec.get("source", {}).get("kind", "table"),
             "computed": False,
             "unresolved": None,
@@ -373,7 +497,7 @@ def resolve_page(
                                  industry=ctx.industry, as_of=ctx.as_of)
         try:
             if source.get("kind") == "table":
-                found = _resolve_table_metric(conn, source, eff_ctx)
+                found = _resolve_table_metric(conn, source, eff_ctx, rank=rank_ok)
             else:
                 found = {"unresolved": "compute-only"}
             fallback = spec.get("compute")
@@ -386,7 +510,8 @@ def resolve_page(
                     found = computed
             if source.get("kind") == "compute":
                 computed = _resolve_compute(
-                    conn, source.get("fn", ""), source.get("args") or {}, ctx)
+                    conn, source.get("fn", ""), source.get("args") or {}, ctx,
+                    rank=rank_ok)
                 if not computed.get("unresolved"):
                     computed["computed"] = True
                     found = computed

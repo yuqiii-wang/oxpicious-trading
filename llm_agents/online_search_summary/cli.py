@@ -146,6 +146,10 @@ async def main() -> None:
             _print_json(resp.to_dict())
         return
 
+    # Flow start for the text.llm_requests backlink (the ask requests all
+    # happen inside this summarize call).
+    import datetime
+    flow_start = datetime.datetime.now(datetime.timezone.utc)
     summary = await provider.summarize(args.query, model=args.model,
                                        opts=opts, mode=args.mode,
                                        lang=args.lang)
@@ -164,9 +168,12 @@ async def main() -> None:
         try:
             await _run_tables_check(conn)
             store = OnlineSearchSummaryStore(conn)
+            from llm_agents._core.request_log import collect_request_ids
+            request_ids = await collect_request_ids(flow_start, conn=conn)
             qa_id, resolved = await store.store_summary(
                 summary, industry_id=args.industry, category=args.category,
-                language=args.lang, resolve=not args.no_resolve)
+                language=args.lang, resolve=not args.no_resolve,
+                request_ids=request_ids)
         finally:
             from _common.db_commons import close_pools_async
             await close_pools_async()

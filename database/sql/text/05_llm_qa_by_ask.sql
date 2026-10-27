@@ -52,12 +52,29 @@ CREATE TABLE IF NOT EXISTS text.llm_qa_by_ask (
     language      TEXT        DEFAULT 'zh',
     code          TEXT,                       -- first scope instrument code — the ask's primary subject
     product       TEXT,                       -- product/page identity tag (spec product, else page path)
+    request_ids   BIGINT[]    NOT NULL DEFAULT '{}',  -- the ask's text.llm_requests ids (source-log backlink)
     is_active     BOOLEAN     NOT NULL DEFAULT true,
     ask_date      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT ck_llm_qa_by_ask_status CHECK (status IN ('answered', 'failed'))
 );
+
+-- Retro-fit: request_ids (the source-log backlink) added 2026-10-27 —
+-- same-day as text.llm_requests (07_llm_requests.sql); existing rows keep
+-- the empty default (their asks predate the log).
+ALTER TABLE text.llm_qa_by_ask
+    ADD COLUMN IF NOT EXISTS request_ids BIGINT[] NOT NULL DEFAULT '{}';
+
+COMMENT ON COLUMN text.llm_qa_by_ask.request_ids IS
+  'The ask''s OWN LLM requests as text.llm_requests ids, in flow order — '
+  'one plain-completion ask, or search + compose + ask on the '
+  'online-search path (the backlink into the source log; join '
+  'text.llm_requests to recover each request''s full payload, response, '
+  'and context_ref_ids). Collected at persist time by '
+  'llm_agents.llm_ask.storage (service + flow-window match on the '
+  'chat-completions endpoint); empty for asks persisted before the log '
+  'existed or when collection failed (non-fatal — the ask still stores).';
 
 -- Code-scoped feeds: picked security -> its ask history, newest first.
 CREATE INDEX IF NOT EXISTS ix_llm_qa_by_ask_code_date

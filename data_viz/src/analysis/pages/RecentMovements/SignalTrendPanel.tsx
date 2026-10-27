@@ -273,6 +273,10 @@ export default function SignalTrendPanel({
           signals={signals}
           expandedDate={expandedDate}
           onExpandedDateChange={setExpandedDate}
+          // the PE / OHLCV variant columns — a plain and a PE-gated
+          // record of the same sub type read as two rows only through
+          // the flags
+          showVariantFlags
         />
       )}
     </Stack>

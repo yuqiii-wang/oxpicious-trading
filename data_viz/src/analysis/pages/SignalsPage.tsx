@@ -4,7 +4,7 @@
  * Each card navigates to the signal's detail page. New signals can be
  * added to the SIGNALS_ANALYSES array below.
  */
-import { Box, Card, CardActionArea, CardContent, Chip, Typography } from "@mui/material";
+import { Box, Card, CardActionArea, CardContent, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import { ShowChart } from "@mui/icons-material";
 
@@ -15,8 +15,6 @@ interface SignalItem {
   title: string;
   /** Short description of what the signal computes. */
   description: string;
-  /** Tag chips shown on the card. */
-  tags: string[];
 }
 
 const SIGNALS_ANALYSES: SignalItem[] = [
@@ -24,51 +22,24 @@ const SIGNALS_ANALYSES: SignalItem[] = [
     slug: "recent-movements",
     title: "Short-Term Tech",
     description:
-      "Per-security recent price-movement signals. Pick a security via the " +
-      "sec_type toggle (ETF / Index / Stock), the CodeSearchBar, or the " +
-      "shared SecClassificationNav (L1 sector → L2 industry + parallel " +
-      "strategy → theme column, exchange filter, L3 security chips) and the " +
-      "page renders the security's daily price-trend chart (OHLC + MAs).",
-    tags: ["ETF", "Index", "Stock", "signal", "classification nav"],
+      "Per-security short-term price-movement signals over the daily " +
+      "price-trend chart (OHLC + MAs).",
   },
   {
     slug: "hedge-pairs",
     title: "Hedge Pairs",
     description:
-      "Industry-pair hedge view on the SAME multi-select classification " +
-      "nav as Composites (industries + strategy themes, no per-index " +
-      "chips). Its nav carries a Pair-mode toggle (only here): pair mode " +
-      "allows exactly two picks — a 3rd pick auto-forgets the oldest; " +
-      "pick 1 = subject (hedging instrument), pick 2 = benchmark, with a " +
-      "role-swap button (default 红利 vs 科技). The upper plot — the " +
-      "PAIR PORTFOLIO chart — draws both industries' composite close " +
-      "curves on TWO separate y-axes (the MA-Spread dual-axis chart " +
-      "style) with the portfolio's signal events as buy/sell/wait " +
-      "markers; the lower plot charts the pair's hedge ratio (raw / " +
-      "market-offset, trailing 20/60/255d windows). The hedge_pairs " +
-      "SIGNAL tier frames the plots (market-decoupled: entries pair " +
-      "the legs' own Short-Term-Tech RSI capitulations within ~5 " +
-      "days, never a market gate): the pair portfolio's managed RULE " +
-      "GROUPS above (the shared portfolio-signal component takes the " +
-      "pair's two industry codes) and the replayed event HISTORY " +
-      "below.",
-    tags: ["Index", "signal", "industry pair", "pair mode", "hedge ratio", "dual axis", "signal rules + history"],
+      "Pick two industries (subject vs benchmark, role-swappable) to see " +
+      "the pair portfolio's close curves with signal events, the hedge-ratio " +
+      "trend (raw / market-offset, 20/60/255d), and the pair's signal rules " +
+      "and replayed history.",
   },
   {
     slug: "options",
     title: "Options",
     description:
-      "Options signals — pick the underlying via the venue toggle " +
-      "(ETF · SZSE / ETF · SSE / Index · CFFEX) and the Underlying " +
-      "dropdown: the page renders the OI-weighted Moneyness Skew panel " +
-      "(Underlying Price & Positioning) and the OPTIONS-WALL breach " +
-      "signals' own UI (the signal-marked trend with the grey-diamond " +
-      "no-action markers, and the shared signal-history table with the " +
-      "signal-type / sub-signal-type dropdowns — the family fixed as " +
-      "the type, its sub types narrowing the bars, rows and markers " +
-      "together) — the options_wall family lives here, never mixed " +
-      "into the shared signals pages.",
-    tags: ["ETF", "Index", "signal", "options", "OI skew", "options wall"],
+      "OI-weighted moneyness skew and options-wall breach signals for the " +
+      "picked underlying (ETF or index).",
   },
 ];
 
@@ -106,17 +77,6 @@ export default function SignalsPage() {
                 <Typography variant="body2" color="text.secondary" sx={{ flexGrow: 1 }}>
                   {a.description}
                 </Typography>
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                  {a.tags.map((t) => (
-                    <Chip
-                      key={t}
-                      label={t}
-                      size="small"
-                      variant="outlined"
-                      sx={{ fontSize: "0.7rem" }}
-                    />
-                  ))}
-                </Box>
               </CardContent>
             </CardActionArea>
           </Card>

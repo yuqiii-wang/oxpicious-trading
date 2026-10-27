@@ -27,22 +27,20 @@ logger = setup_logger("stream_szse")
 
 
 class StreamConns:
-    """The five dedicated psycopg connections used by the streamer.
+    """The three dedicated psycopg connections used by the streamer.
 
     One connection per worker: psycopg connections are NOT safe for
     concurrent use, so each async worker gets its own. ``conn`` is for
     load_target_stocks + index upserts.
     """
 
-    def __init__(self, conn, conn_a, conn_b, conn_c, conn_d) -> None:
+    def __init__(self, conn, conn_a, conn_b) -> None:
         self.conn = conn        # main + index upsert
         self.conn_a = conn_a    # sina
         self.conn_b = conn_b    # szse fallback
-        self.conn_c = conn_c    # em_push2his
-        self.conn_d = conn_d    # em_push2
 
     def __iter__(self):
-        return iter((self.conn, self.conn_a, self.conn_b, self.conn_c, self.conn_d))
+        return iter((self.conn, self.conn_a, self.conn_b))
 
     def close(self) -> None:
         for c in self:
@@ -53,9 +51,9 @@ class StreamConns:
 
 
 def open_db_connections() -> StreamConns:
-    """Open the 5 per-worker DB connections with startup timing logs."""
+    """Open the 3 per-worker DB connections with startup timing logs."""
     t_stream = _time.time()
-    logger.info("[startup] stream() entered; opening 5 DB connections...")
+    logger.info("[startup] stream() entered; opening 3 DB connections...")
 
     t_step = _time.time()
     conn = get_db_connection()
@@ -69,16 +67,9 @@ def open_db_connections() -> StreamConns:
     conn_b = get_db_connection()
     logger.info("[startup] DB conn_b (szse) ready in %.2fs.", _time.time() - t_step)
 
-    t_step = _time.time()
-    conn_c = get_db_connection()
-    logger.info("[startup] DB conn_c (em_push2his) ready in %.2fs.", _time.time() - t_step)
-
-    t_step = _time.time()
-    conn_d = get_db_connection()
-    logger.info("[startup] DB conn_d (em_push2) ready in %.2fs.", _time.time() - t_step)
-    logger.info("[startup] all 5 DB connections ready in %.2fs total (stats.stock_intraday_5min expected to pre-exist).",
+    logger.info("[startup] all 3 DB connections ready in %.2fs total (stats.stock_intraday_5min expected to pre-exist).",
                 _time.time() - t_stream)
-    return StreamConns(conn, conn_a, conn_b, conn_c, conn_d)
+    return StreamConns(conn, conn_a, conn_b)
 
 
 def load_stock_lists(conn) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
@@ -108,20 +99,12 @@ def load_stock_lists(conn) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]
 
 
 def import_heavy_modules() -> None:
-    """Pre-create the network stacks: the Sina source's requests.Session and
-    the curl_cffi session that drives the East Money sources C/D.
-    """
+    """Pre-create the network stack: the Sina source's requests.Session."""
     t0 = _time.time()
     logger.info("[startup] creating Sina requests.Session (source A)...")
     from ._sina_source import _get_sina_session
     _get_sina_session()
     logger.info("[startup] Sina Session created (source A ready) in %.2fs.", _time.time() - t0)
-
-    t0 = _time.time()
-    logger.info("[startup] creating curl_cffi Session (EM sources C/D)...")
-    from ._em_source import _get_em_session
-    _get_em_session()
-    logger.info("[startup] curl_cffi Session created (EM sources C/D ready) in %.2fs.", _time.time() - t0)
 
 
 def build_http_stack() -> Tuple[object, HostStatusTracker]:

@@ -52,6 +52,8 @@ interface DbDebtRow extends QueryResultRow {
   cb_30y: number | null;
   lpr_1y: number | null;
   lpr_5y: number | null;
+  omo_rate_1d: number | null;
+  omo_quantity_1d: number | null;
 }
 
 function transformRow(r: DbDebtRow): DebtDailyRow {
@@ -87,6 +89,8 @@ function transformRow(r: DbDebtRow): DebtDailyRow {
     cb_30y: toNum(r.cb_30y),
     lpr_1y: toNum(r.lpr_1y),
     lpr_5y: toNum(r.lpr_5y),
+    omo_rate_1d: toNum(r.omo_rate_1d),
+    omo_quantity_1d: toNum(r.omo_quantity_1d),
   };
 }
 
@@ -100,7 +104,8 @@ const SELECT_COLUMNS = `
   mlf_marker, mlf_quantity, mlf_tenor_days, mlf_tenor_label, mlf_serial,
   shibor_o_n, shibor_1w, shibor_1m, shibor_3m, shibor_6m, shibor_1y,
   cb_1y, cb_5y, cb_10y, cb_30y,
-  lpr_1y, lpr_5y
+  lpr_1y, lpr_5y,
+  omo_rate_1d, omo_quantity_1d
 `;
 
 export async function getDebtDaily(

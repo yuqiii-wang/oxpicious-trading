@@ -91,10 +91,12 @@ CREATE TABLE analysis_signals.history_signal_performance (
     t_stat          FLOAT8,                 -- measure.t_stat: the mean / (std / sqrt(n)) t-stat (NULL at n < 2 / zero std)
     hit_rate        FLOAT8,                 -- measure.hit_rate: the favorable-response share of episodes
     is_in_portfolio BOOLEAN      NOT NULL DEFAULT false,  -- the membership flag mirroring signal_rules.is_in_portfolio AT MEASUREMENT (2026-10-20): the cell was claimed by a portfolio group that run — the combined audit over those cells lives in history_portfolio_signal_performance
+    is_pe_boosted   BOOLEAN      NOT NULL DEFAULT false,  -- PK member (2026-10-26, user-directed): mirrors signal_rules.is_pe_boosted — the PE-conditioned variant of a cell is a SEPARATE cell with its OWN measured evidence, so its snapshot keys separately from the unconstrained variant's (the flag is a rules-PK member; the snapshot must not collide with the plain twin's row)
+    is_ohlcv_boosted BOOLEAN     NOT NULL DEFAULT false,  -- PK member (2026-10-26, user-directed): mirrors signal_rules.is_ohlcv_boosted (a PK member there since 2026-10-26, on history_signals since the boost-twin era) — the OHLCV-boost VARIANT axis of the cell key; reads FALSE on every row today (the boost-twin rows were retired 2026-10-16), kept so the rules tier's variant axis and the snapshot key stay joined column-for-column
 
     created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT pk_history_signal_performance PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, trend, regime_state, action, date),
+    CONSTRAINT pk_history_signal_performance PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, trend, regime_state, action, date, is_pe_boosted, is_ohlcv_boosted),
     CONSTRAINT chk_hsp_action CHECK (action BETWEEN 0 AND 2),
     CONSTRAINT chk_hsp_trend CHECK (trend BETWEEN 0 AND 5),
     CONSTRAINT chk_hsp_regime CHECK (regime_state BETWEEN 0 AND 4),

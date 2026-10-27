@@ -43,6 +43,7 @@ import {
 } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { invalidateCacheForUrl } from "@/lib/api-client";
 import type { LiveDataBundle } from "@shared/types";
 import type { ECharts, EChartsOption, CustomSeriesRenderItem } from "echarts";
@@ -312,36 +313,27 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
 
   // AI Ask — reading guide lifted from the panel header doc; state carries
   // the CURRENT OHLC mode so the modal / LLM describe the view on screen.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `5-min intraday chart of ${bundle.code} ${bundle.name} on ${date}: OHLC bars, ` +
-        "green/red on close-vs-open, on a time axis pinned to 09:30–15:30 (lunch break " +
-        "11:30–13:00 = gap; post-market bars excluded)" +
-        (hasVolume ? ", volume bars on a twin right axis" : "") +
-        ". % mode: bars rebased to % change from the first bar's close (volume stays " +
-        "absolute). Indication: volume bursts at session extremes = conviction; the " +
-        "close's place in the day range = carry into the next open.",
+      intro: docs.text("ui.live.intraday", {
+        code: bundle.code,
+        name: bundle.name,
+        date,
+        hasVolume,
+      }),
       instruments: [{ code: bundle.code, name: bundle.name }],
       window: { start: date, end: date, granularity: "intraday" },
       series: [
-        {
-          name: "OHLC",
+        docs.seriesEntry("ui.live.intraday", "ohlc", {
           unit: ohlcMode === "percentage" ? "%" : "元",
-          description: "5-minute candles (open/high/low/close), green when close ≥ open",
-        },
-        ...(hasVolume
-          ? [{ name: "Volume", unit: "shares", description: "5-minute volume bars on the twin axis" }]
-          : []),
+        }),
+        ...(hasVolume ? [docs.seriesEntry("ui.live.intraday", "volume")] : []),
       ],
       state: { ohlcMode },
-      notes: [
-        "Percentage mode rebases OHLC to % change from the first bar's close; volume is not rebased.",
-        "The x-axis is pinned to trading hours 09:30–15:30 — the lunch break renders as a gap.",
-        `${bundle.bars.length} 5-minute bars on the day.`,
-      ],
+      notes: docs.notes("ui.live.intraday", undefined, { n: bundle.bars.length }),
     }),
-    [bundle.code, bundle.name, bundle.bars.length, date, hasVolume, ohlcMode],
+    [docs, bundle.code, bundle.name, bundle.bars.length, date, hasVolume, ohlcMode],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${bundle.code} · ${bundle.name}`,

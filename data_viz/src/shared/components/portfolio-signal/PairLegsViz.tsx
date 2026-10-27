@@ -2,7 +2,8 @@
  * PairLegsViz — the portfolio signal's LEGS diagram: what legs a
  * coordinated cell coordinates, as chips instead of prose. The two
  * leg chips are joined by the response bond (⇄ the inverse-vol pair
- * portfolio) or carry the role word (▲ strong / ▼ laggard —
+ * portfolio; L/S the long-short spread curve — leg A long, leg B
+ * short) or carry the role word (▲ strong / ▼ laggard —
  * sign(ratio_z) picks the leg same day); the market-witness chip
  * appends when the bar watches the broad market. The leg codes ride
  * the tooltip (the row stays text-free).
@@ -20,8 +21,9 @@ import {
 /** Whether the bar kind watches the broad market (the market-witness
  *  chip): the RSI trio (market is the third witness), the market-high
  *  exit (the market IS the witness), the wash trio (the _mkt twin),
- *  and the offset-ρ axis subs (ρ_off is the legs' excess OVER the
- *  market — the market leg is the ρ basis). */
+ *  the ONE-leg wash + market witness (2026-10-23), and the offset-ρ
+ *  axis subs (ρ_off is the legs' excess OVER the market — the market
+ *  leg is the ρ basis). */
 function barWatchesMarket(barDef: SignalRuleParams["bar_def"]): boolean {
   if (!barDef || typeof barDef !== "object") return false;
   const kind = String(barDef.kind ?? "");
@@ -29,6 +31,7 @@ function barWatchesMarket(barDef: SignalRuleParams["bar_def"]): boolean {
     || kind === "hp_exit_mkt_high"
     || kind === "hp_stop_regime"
     || kind === "hp_entry_rho50"
+    || kind === "hp_entry_wash_mkt1"
     || (kind === "hp_entry_wash" && barDef.mkt_tail_pct != null);
 }
 
@@ -74,11 +77,22 @@ export default function PairLegsViz({
         display: "inline-flex", alignItems: "center", gap: 0.4,
         minWidth: 0, whiteSpace: "nowrap",
       }}>
-        {role === "pair" ? (
+        {role === "pair" || role === "spread" ? (
           <>
             <Chip size="small" variant="outlined" label={legA} sx={legChipSx} />
             <Link sx={{ fontSize: "0.8rem", color: "primary.main" }} />
             <Chip size="small" variant="outlined" label={legB} sx={legChipSx} />
+            {role === "spread" && (
+              <Box
+                component="span"
+                sx={{
+                  fontSize: "0.65rem", fontWeight: 700, whiteSpace: "nowrap",
+                  color: "text.secondary",
+                }}
+              >
+                L/S
+              </Box>
+            )}
           </>
         ) : (
           <>

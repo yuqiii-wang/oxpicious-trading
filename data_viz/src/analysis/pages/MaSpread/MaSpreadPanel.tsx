@@ -72,6 +72,7 @@ import {
   composeChartOption,
 } from "./shadeBuilders";
 import { buildMaSpreadAiAskSpec } from "./aiAskSpec";
+import { useDocs } from "@/shared/docs";
 import { PanelHeaderActions } from "./sections/PanelHeaderActions";
 import { PairChipGrid } from "./sections/PairChipGrid";
 import { RsiTrendsSection } from "./sections/RsiTrendsSection";
@@ -461,9 +462,10 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     anchorIdx != null && firstPairRows[anchorIdx]
       ? firstPairRows[anchorIdx].date
       : undefined;
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () =>
-      buildMaSpreadAiAskSpec({
+      buildMaSpreadAiAskSpec(docs, {
         code,
         name,
         secType,
@@ -486,6 +488,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         trendPicks,
       }),
     [
+      docs,
       code,
       name,
       secType,

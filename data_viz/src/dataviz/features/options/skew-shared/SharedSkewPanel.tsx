@@ -53,6 +53,15 @@ import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
+
+/** The per-greek positioning-metric docs — GREEK mode intros resolve
+ *  {{metric}} from the row matching the mode. */
+const GREEK_METRIC_DOC: Record<GreekSkewMode, string> = {
+  greek_delta: "ui.options.skew.metric.greek-delta",
+  greek_gamma: "ui.options.skew.metric.greek-gamma",
+  greek_vega: "ui.options.skew.metric.greek-vega",
+};
 import {
   fetchOptionsBands,
   fetchOptionsOiStats,
@@ -180,41 +189,14 @@ const NO_HL_SPANS: ReadonlyArray<{
  */
 const INITIAL_WINDOW_MAX_BARS = 420;
 
-/** Per-greek metric semantics for the panel subtitle (industry anchors). */
-const GREEK_METRIC_TEXT: Record<GreekSkewMode, string> = {
-  greek_delta:
-    "Delta-wtd Put/Call Ratio dpcr = Σ OI·|Δ| (puts) / Σ OI·|Δ| (all) per expiry — " +
-    "where DIRECTIONAL exposure sits (delta-weighted refinement of the put/call ratio; " +
-    "0.5 = balanced book, >0.5 put-tilted/bearish, <0.5 call-tilted/bullish; OI is two-sided " +
-    "— exposure concentration, not signed bets)",
-  greek_gamma:
-    "Gamma Balance = (Σ OI·Γ calls − Σ OI·Γ puts)/(Σ OI·Γ all) per expiry — GEX-style " +
-    "dealer-sign convention: >0 call OI dominates where gamma lives (long-gamma regime, vol " +
-    "suppression/pin), <0 put OI dominates (short-gamma regime, moves amplify)",
-  greek_vega:
-    "Vega Wing Balance = (Σ OI·ν calls − Σ OI·ν puts)/(Σ OI·ν wings) on the 0<|Δ|<0.5 OTM " +
-    "wings per expiry — the open-interest mirror of the 25Δ risk reversal: >0 upside vol demand, " +
-    "<0 downside (crash-hedge) vol demand",
-};
-
 function greekPanelMeta(mode: GreekSkewMode): {
   title: string;
-  /** Reading guide — lives in the AI Ask modal intro. */
-  subtitle: string;
   /** Concise card subtitle — just the decoding essentials. */
   short: string;
 } {
   const label = greekLabel(mode);
   return {
     title: `${label} Positioning · Underlying Price & CALL-vs-PUT Balance`,
-    subtitle:
-      `Spot vs Skew Price = S × (1 + (metric − neutral) × 10%). Metric: ${GREEK_METRIC_TEXT[mode]}. ` +
-      "Contracts vote with raw OI (zero OI = no vote); greeks from Black-76 IV off settlements — " +
-      `premium is the value, never the vote (skew_type=${mode}, neutral on the spot curve). ` +
-      "Dashed blue = mean skew price, thin dashed = per-expiry; shades = spot↔skew gap; " +
-      "dots = expiries; bottom = expiry convergence (contrarian). Indication: skew price " +
-      "riding above spot = positioning tailwind; converging gaps into expiry = positioning " +
-      "spent. Click to select date.",
     short:
       `Spot vs ${label} skew price · dashed: mean + per-expiry · shades: spot↔skew gap · ` +
       "convergence below · click to select date",
@@ -222,18 +204,10 @@ function greekPanelMeta(mode: GreekSkewMode): {
 }
 
 const META: Partial<
-  Record<SharedSkewMode, { title: string; subtitle: string; short: string }>
+  Record<SharedSkewMode, { title: string; short: string }>
 > = {
   oi_moneyness: {
     title: "OI-weighted Moneyness Skew · Underlying Price & Positioning",
-    subtitle:
-      "Spot vs Skew-Adjusted Price = S × E[M], E[M] = Σ(OI·K/S) / Σ(OI) per expiry — where " +
-      "open interest sits vs spot. Contracts vote with raw OI lots (floored at 1) — never " +
-      "premium/notional, no IV: a 500-lot deep-OTM strike outvotes a 100-lot ATM one " +
-      "(skew_type=oi_moneyness). Dashed blue = OI-wtd skew price, per-expiry dashed (line " +
-      "width ∝ expiry OI, plotted value stays the ratio); shades = spot↔skew gap; dots = " +
-      "expiries; bottom = OI convergence (contrarian). Indication: E[M] > 1 = OI parked " +
-      "overhead (supply), < 1 = support beneath. Click to select date.",
     short:
       "Spot vs OI-wtd skew price · dashed: mean + per-expiry (width ∝ OI) · shades: spot↔skew gap · " +
       "convergence below · click to select date",
@@ -656,9 +630,10 @@ export default function SharedSkewPanel({
 
   const meta = META[mode] ?? greekPanelMeta(mode as GreekSkewMode);
 
-  // AI Ask — the reading guide (META subtitle) lives in the intro; the
-  // card shows only the concise `short` decoding line.
-  // Suggested questions carry the guide's actionable angle.
+  // AI Ask — authored text: static.docs `ui.options.skew` (greek-shape
+  // intro, {{metric}} templated) + `ui.options.skew.intro.oi-moneyness`
+  // (the OI-moneyness shape's own intro); notes/series on the main row.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       // The signals page's in-signal instance (marker layer attached) maps
@@ -669,21 +644,18 @@ export default function SharedSkewPanel({
           : mode.startsWith("greek_")
             ? INSIGHT_PAGES.greeks
             : INSIGHT_PAGES.oiMoneynessSkew,
-      intro: meta.subtitle,
+      intro:
+        mode === "oi_moneyness"
+          ? docs.text("ui.options.skew.intro.oi-moneyness")
+          : docs.text("ui.options.skew", {
+              mode,
+              metric: docs.text(GREEK_METRIC_DOC[mode as GreekSkewMode]),
+            }),
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
-      series: [
-        {
-          name: "Underlying Spot",
-          unit: priceUnit === "index points" ? "pts" : "元",
-          description: "underlying daily closing price (the neutral anchor)",
-        },
-        {
-          name: spec.meanSeriesName,
-          unit: priceUnit === "index points" ? "pts" : "元",
-          description: `mean skew-adjusted price — spot rebased by the ${mode} positioning metric`,
-        },
-        { name: "Skew price vs spot gap (%)", unit: "%", description: "per-expiry convergence chart: skew price minus spot, collapsing to 0 at expiry" },
-      ],
+      series: docs.series("ui.options.skew", {
+        unit: priceUnit === "index points" ? "pts" : "元",
+        meanSeriesName: spec.meanSeriesName,
+      }),
       state: {
         mode,
         convergence: showConvergence ? "shown" : "hidden",
@@ -694,13 +666,9 @@ export default function SharedSkewPanel({
         emphasizedWallSide,
         selectedDate,
       },
-      notes: [
-        "Shade bands: spot↔skew gap per active expiry set; dots mark expiries; click the chart to select the date.",
-        "Bands layer (toggle top-right, analysis.options_bands v2 — OI-mass corridor): the gray shade = strikes enclosing the central 80% of pooled chain OI (P10..P90) — the options-bounded region; markers = fresh corridor crosses vs the prior session (EXIT_LOW green below the line — validated snap-back-up: close <= P10 = 90% up over the next 5 sessions, mean +4.5%; EXIT_HIGH red above — 89% down; REENTER gray diamond). AMPLIFIED exits render bigger with a colored glow when the exchange had just extended the strike grid the same way (>= 2 new strikes listed in the trailing 40 sessions — edge_sig; e.g. 000300 2025-08-28 EXIT_HIGH with 6 fresh higher strikes): the breach is into freshly-listed price territory, not routine corridor noise. The light green/red WALL SHADES mark each side's chain-dominant OI wall zone (analysis.options_walls, wall_type='zone' — same source the Options Trend OI Bands chart overlays per cohort; ranked chain-wide here): band = the zone's strike range, center line = its OI-weighted strike; CALL walls act as resistance/cap, PUT walls as support/floor; brightness = lifecycle (ACTIVE > ERODED > BREACHED, breach drawn dashed). Spot's OI-mass position (<=25% of OI below spot) is the UP lean zone, strongest when every expiry's moneyness skew sits above spot (mean 10-session +1.57%). Legend items toggle the corridor, the wall zones and each marker class.",
-        "Per-expiry line WIDTH encodes the expiry's absolute open interest (peak daily calls+puts contracts, sqrt-scaled); the plotted values remain ratio-based. Tooltips show each group's pipeline-computed OI stats (analysis.options_oi_stats): OI at the hovered date, its change vs 5/20 sessions (Δ5d/Δ20d, + = positions added / − = closed or rolled) and the trailing-20-session max (current OI at that max = a 20-session OI high). Hovering either chart shows both tooltips.",
-      ],
+      notes: docs.notes("ui.options.skew"),
     }),
-    [meta.subtitle, underlyingCode, spec.meanSeriesName, mode, showConvergence, showBandEvents, emphasizedWallSide, signalEvents, selectedDate, priceUnit],
+    [docs, underlyingCode, spec.meanSeriesName, mode, showConvergence, showBandEvents, emphasizedWallSide, signalEvents, selectedDate, priceUnit],
   );
   const extraOptions = useMemo(() => [convOption] as const, [convOption]);
   const aiAskAddon = useAiAskAddon({

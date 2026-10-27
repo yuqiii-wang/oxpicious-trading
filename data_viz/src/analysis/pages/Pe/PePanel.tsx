@@ -59,6 +59,7 @@ import type {
 import { buildStreakChartOption, type MetricObsRow } from "./chartOption/streakChartOption";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import type { PanelProps } from "./types";import {
   expandedTableBodyCellSx,
@@ -283,42 +284,29 @@ export function PePanel({
   }, [obsRows, streakPeriod, streakPct, streakAnchorIdx, selectedStreak, themeMode]);
 
   // ---- Streak chart AI Ask — state carries the CURRENT metric → window →
-  // tightness combo + anchor so the modal / LLM describe the shaded view. --
+  // tightness combo + anchor so the modal / LLM describe the shaded view.
+  // Authored text: static.docs `ui.pe.streaks`. --
   const streakChartRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const streakAiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.peStreaks,
-      intro:
-        "Valuation band-break streaks: PE plotted " +
-        "daily with the trailing window's static tightness-% zones shaded (light purple " +
-        "above, light yellow below); client-side break streaks drawn darker. Streak = " +
-        "maximal run of days above (high) / below (low) the anchor window's static band " +
-        "edge, bridging in-band gaps of ≤5 trading days. Click a table row or chart date " +
-        "to re-anchor. Indication: long excursions = valuation stretched past its recent " +
-        "envelope — historically snaps back once the band re-anchors.",
+      intro: docs.text("ui.pe.streaks"),
       instruments: [{ code, assetClass: secType === "etf" ? "etf" : secType === "index" ? "index" : "stock" }],
-      series: [
-        { name: "PE", unit: "×", description: "daily price/earnings multiple" },
-        { name: "High streaks", description: "merged spans of days above the window's static top band edge" },
-        { name: "Low streaks", description: "merged spans of days below the window's static bottom band edge" },
-        { name: "Selected streak", description: "the archive streak clicked in the table (bordered when it breaks this static edge)" },
-      ],
+      series: docs.series("ui.pe.streaks"),
       state: {
         metric: STREAK_METRIC,
         window: streakPeriod ?? "none",
         tightness: streakPct != null ? `${streakPct}%` : "none",
-        anchor: streakAnchorIdx != null ? "clicked chart date" : "latest",
+        anchor: streakAnchorIdx != null ? "explicit date" : "latest",
         selected_streak:
           selectedStreak != null
             ? `${selectedStreak.side} ${selectedStreak.startDate}→${selectedStreak.endDate}`
             : "none",
       },
-      notes: [
-        "Break bands are detected client-side against the anchor window's STATIC edge; the DB archive streaks (tested against each month's own moving band) only populate the table.",
-        "Shading only covers values inside the drawn zone — break streaks are clipped to the window's vertical extent.",
-      ],
+      notes: docs.notes("ui.pe.streaks"),
     }),
-    [code, secType, streakPeriod, streakPct, streakAnchorIdx, selectedStreak],
+    [docs, code, secType, streakPeriod, streakPct, streakAnchorIdx, selectedStreak],
   );
   const streakAiAskAddon = useAiAskAddon({
     title: "Valuation Streaks (band-break)",

@@ -1,0 +1,27 @@
+[
+  {
+    "service": "downloads.index.hkex_msci.daily",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 5,
+    "sleep_jitter": 0.35,
+    "poll_interval_sec": null,
+    "max_retries": 3,
+    "retry_backoff_sec": 20,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": 1800,
+    "settle_sleep_sec": null,
+    "urls": {
+      "prices_page": "https://www.hkex.com.hk/Market-Data/Futures-and-Options-Prices/Equity-Index/MSCI-China-A-50-Connect-(USD)-Index-Futures?sc_lang=en",
+      "widget_data_base": "https://www1.hkex.com.hk/hkexwidget/data",
+      "referer_url": "https://www.hkex.com.hk/"
+    },
+    "notes": "MSCI China A 50 Connect Index daily closes (underlying of the HKEX MCA futures family) from the HKEX quote widgets. Flow: render the product prices page (bot-lenient www.hkex.com.hk) and extract the per-render LabCI token from the inline getToken stub, then JSONP www1.hkex.com.hk/hkexwidget/data/getchartdata2 — requests MUST carry qid=<ms> and a jQuery-style callback name (jQuery<digits>_<digits>); without qid the endpoint answers Tomcat 403 (probed 2026-10-26). Chart granularity is span/int-joint: span=6&int=4 serves ~6 months of DAILY bars, span=7&int=6 ~2 years of WEEKLY bars (rows [ts_ms, open, high, low, close, vol, x]; null-valued rows pad non-trading days). No browser/curl_cffi needed.",
+    "source_ref": "downloads/index/hkex_msci/daily/__main__.py",
+    "updated_at": "2026-10-26T00:00:00.000000+00:00"
+  }
+]

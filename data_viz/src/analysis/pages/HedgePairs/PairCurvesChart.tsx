@@ -33,6 +33,7 @@ import {
 } from "@/lib/api-client";
 import type { IndustryAttributionBenchmarkEntry } from "@shared/types";
 import { INSIGHT_PAGES, useAiAskAddon, type AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import {
   buildPairCurvesOption,
   NO_PAIR_SIGNAL_EVENTS,
@@ -54,6 +55,10 @@ interface Props extends BaseChartProps {
    *  hedge_pairs record) drawn as action markers on both legs; default
    *  = none (the identity-stable module constant). */
   signalEvents?: readonly PairSignalEvent[];
+  /** The CLICKED portfolio history row's key — that event's markers
+   *  draw with the shared selected-event emphasis (grow + glow);
+   *  null = nothing selected. */
+  selectedEventKey?: string | null;
 }
 
 /** Extract the pool-"all" composite close series from a chart response,
@@ -106,6 +111,7 @@ export default function PairCurvesChart({
   industryA,
   industryB,
   signalEvents = NO_PAIR_SIGNAL_EVENTS,
+  selectedEventKey = null,
   ...base
 }: Props) {
   const themeMode = useChartThemeMode();
@@ -207,9 +213,11 @@ export default function PairCurvesChart({
             themeMode,
             benchSeries,
             signalEvents,
+            selectedEventKey,
           )
         : null,
-    [series, industryA, industryB, benchSeries, signalEvents, themeMode],
+    [series, industryA, industryB, benchSeries, signalEvents, themeMode,
+      selectedEventKey],
   );
 
   // The Autocomplete's value entry (matched from the list by code; while the
@@ -224,17 +232,14 @@ export default function PairCurvesChart({
   );
 
   // ---- AI Ask (insight: signals.hedge-pair-curves) — the "?" rides the
-  // benchmark dropdown row (the card's only in-chart header strip). ----
+  // benchmark dropdown row (the card's only in-chart header strip).
+  // Authored text: static.docs `ui.hedge-pairs.curves`. ----
   const chartRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.hedgePairCurves,
-      intro:
-        "Hedge-pair portfolio chart: the pair's two industries' composite " +
-        "close curves (pool-all mean_close) on two separate y-axes, with an " +
-        "optional broad-market benchmark rebased to 100 as a dashed left-axis " +
-        "reference, and the portfolio's signal-history events as buy ▲ / " +
-        "sell ▼ / wait ◆ markers on both legs at the event date.",
+      intro: docs.text("ui.hedge-pairs.curves"),
       instruments: [industryA, industryB]
         .filter((x): x is PairIndustryRef => x !== null)
         .map((x) => ({ code: x.code, name: x.label, assetClass: "industry" })),
@@ -245,11 +250,9 @@ export default function PairCurvesChart({
             : "—",
         benchmark: benchmarkCode || "none",
       },
-      notes: [
-        "Each leg's curve is its industry's pool-all aggregate (mean_close), not a single index.",
-      ],
+      notes: docs.notes("ui.hedge-pairs.curves"),
     }),
-    [industryA, industryB, benchmarkCode],
+    [docs, industryA, industryB, benchmarkCode],
   );
   const aiAskAddon = useAiAskAddon({
     title: "Hedge pair curves",

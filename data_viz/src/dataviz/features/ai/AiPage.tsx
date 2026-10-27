@@ -7,9 +7,10 @@
  * by llm_agents.llm_ask.storage for every AI Ask modal submit) through the
  * same nav kit as the other nav pages — it sits next to the News page,
  * whose date-event strip and feed idioms it reuses. The header's source
- * toggle ("LLM QA" / "QA by Ask") switches which feed the strip + cards
- * read; everything below it (nav scope, code trend, search, pagination)
- * is shared. Layout, top to bottom:
+ * toggle ("LLM QA" / "QA by Ask" / "Research" — the last the research-logic
+ * knowledge base text.llm_qa_by_research) switches which feed the strip +
+ * cards read; everything below it (nav scope, code trend, search,
+ * pagination) is shared. Layout, top to bottom:
  *
  *   1. Header — Index / Stock sec_type toggle (CodeSearchBar + Refresh):
  *      the toggle switches BOTH nav trees and the code trend's data source.
@@ -79,11 +80,14 @@ import PostFeed from "@/shared/components/post-feed/PostFeed";
 import { CodeTrendChart } from "@/ui/OhlcChart";
 import AiQaCard from "./AiQaCard";
 import AskQaCard from "./AskQaCard";
+import AiResearchQaCard from "./AiResearchQaCard";
 import {
   fetchAiAskCalendar,
   fetchAiAskItems,
   fetchAiCalendar,
   fetchAiItems,
+  fetchAiResearchCalendar,
+  fetchAiResearchItems,
   fetchIndexStrategyThemes,
   fetchIndexThemes,
   fetchStockStrategyThemes,
@@ -96,6 +100,8 @@ import type {
   AiCalendarResponse,
   AiQaItem,
   AiQaItemsResponse,
+  AiQaResearchItem,
+  AiQaResearchItemsResponse,
 } from "@shared/types";
 
 /** Nav trees endpoints per sec_type (baseline classification registries). */
@@ -143,9 +149,11 @@ export default function AiPage() {
   // ---- Q&A feed filters ----------------------------------------------------
   /** Feed source — the header toggle: "kb" = the curated knowledge base
    *  (text.llm_qa), "ask" = the persisted interactive ask history
-   *  (text.llm_qa_by_ask). Everything below (scope, search, date strip,
-   *  pagination) is shared between the two. */
-  const [source, setSource] = useState<"kb" | "ask">("kb");
+   *  (text.llm_qa_by_ask), "research" = the research-logic knowledge base
+   *  (text.llm_qa_by_research — five-request generation: four evaluation
+   *  dimensions + a summary/label request). Everything below (scope,
+   *  search, date strip, pagination) is shared. */
+  const [source, setSource] = useState<"kb" | "ask" | "research">("kb");
   /** Keyword filter over question OR answer (Enter submits); in ask mode a
    *  term also hits the derived keyword rows (codes, product, items). */
   const [searchInput, setSearchInput] = useState("");
@@ -331,7 +339,11 @@ export default function AiPage() {
     setCalendarLoading(true);
     setCalendarError(null);
     const req =
-      source === "kb" ? fetchAiCalendar(scopeParams) : fetchAiAskCalendar(askParams);
+      source === "kb"
+        ? fetchAiCalendar(scopeParams)
+        : source === "research"
+          ? fetchAiResearchCalendar(scopeParams)
+          : fetchAiAskCalendar(askParams);
     req
       .then((d) => {
         if (cancelled) return;
@@ -358,18 +370,21 @@ export default function AiPage() {
     : calendar?.max_date ?? null;
 
   // ---- Q&A items (one page) -------------------------------------------------
-  const [itemsData, setItemsData] = useState<AiQaItemsResponse | AiAskHistoryItemsResponse | null>(null);
+  const [itemsData, setItemsData] = useState<AiQaItemsResponse | AiAskHistoryItemsResponse | AiQaResearchItemsResponse | null>(null);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     setItemsLoading(true);
     setItemsError(null);
-    const base = source === "kb" ? scopeParams : askParams;
+    const base = source === "ask" ? askParams : scopeParams;
+    const pageArgs = { date: selectedDate, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE } as const;
     const req =
       source === "kb"
-        ? fetchAiItems({ ...base, date: selectedDate, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE })
-        : fetchAiAskItems({ ...base, date: selectedDate, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
+        ? fetchAiItems({ ...base, ...pageArgs })
+        : source === "research"
+          ? fetchAiResearchItems({ ...base, ...pageArgs })
+          : fetchAiAskItems({ ...base, ...pageArgs });
     req
       .then((d) => {
         if (cancelled) return;
@@ -394,7 +409,11 @@ export default function AiPage() {
         id: d.date, // the date string IS the selection id
         type: "qa",
         size: 8,
-        title: source === "kb" ? `${d.count} 条 AI 问答` : `${d.count} 条交互问答`,
+        title: source === "kb"
+          ? `${d.count} 条 AI 问答`
+          : source === "research"
+            ? `${d.count} 条研究问答`
+            : `${d.count} 条交互问答`,
       })),
     [calendar, source],
   );
@@ -426,7 +445,9 @@ export default function AiPage() {
         `${scopeLabel}${selectedDate ? ` · ${selectedDate}` : " · 全部日期"} — ` +
         (source === "kb"
           ? "LLM 问答知识库（text.llm_qa）· 点选日期圆点筛选当日问答"
-          : "交互问答历史（text.llm_qa_by_ask）· 图表上点 “?” 提问的记录 · 点选日期圆点筛选当日提问")
+          : source === "research"
+            ? "研究逻辑问答（text.llm_qa_by_research）· 四维度研究 + 摘要与逻辑标签 · 点选日期圆点筛选当日研究"
+            : "交互问答历史（text.llm_qa_by_ask）· 图表上点 “?” 提问的记录 · 点选日期圆点筛选当日提问")
       }
       secTypes={["index", "stock"]}
       refreshTooltip="Refresh the classification trees (bypass cache)"
@@ -444,13 +465,16 @@ export default function AiPage() {
               size="small"
               exclusive
               value={source}
-              onChange={(_, v: "kb" | "ask" | null) => { if (v) setSource(v); }}
+              onChange={(_, v: "kb" | "ask" | "research" | null) => { if (v) setSource(v); }}
             >
               <ToggleButton value="kb" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
                 LLM QA
               </ToggleButton>
               <ToggleButton value="ask" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
                 QA by Ask
+              </ToggleButton>
+              <ToggleButton value="research" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+                Research
               </ToggleButton>
             </ToggleButtonGroup>
           </Stack>
@@ -593,7 +617,9 @@ export default function AiPage() {
             typeMeta={
               source === "kb"
                 ? { qa: { label: "AI 问答", color: "#9a60b4" } }
-                : { qa: { label: "交互问答", color: "#2e8b6f" } }
+                : source === "research"
+                  ? { qa: { label: "研究问答", color: "#b4763a" } }
+                  : { qa: { label: "交互问答", color: "#2e8b6f" } }
             }
             minDate={stripMin}
             maxDate={stripMax}
@@ -605,7 +631,7 @@ export default function AiPage() {
             }}
             height={72}
             showLegend={false}
-            emptyText={calendarLoading ? "加载中…" : source === "kb" ? "无 AI 问答记录" : "无交互问答记录"}
+            emptyText={calendarLoading ? "加载中…" : source === "kb" ? "无 AI 问答记录" : source === "research" ? "无研究问答记录" : "无交互问答记录"}
             enableZoom={!trendLive}
             defaultWindowDays={92}
           />
@@ -630,21 +656,27 @@ export default function AiPage() {
         error={itemsError}
         errorLabel="Failed to load Q&A"
         scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${search ? ` · “${search}”` : ""}${source === "kb" && bigMvOnly ? " · On Big Fluctuations" : ""}`}
-        countNoun={source === "kb" ? "条问答" : "条提问"}
+        countNoun={source === "kb" ? "条问答" : source === "research" ? "条研究" : "条提问"}
         empty={!itemsLoading && (itemsData?.items ?? []).length === 0}
         emptyText={
           source === "kb"
             ? "没有匹配的 AI 问答 — 调整行业 / 日期 / 关键词后再试。"
-            : "没有匹配的交互问答 — 在图表标题旁点 “?” 向 AI 提问后，问答会记录在这里。"
+            : source === "research"
+              ? "没有匹配的研究问答 — 调整行业 / 日期 / 关键词后再试。"
+              : "没有匹配的交互问答 — 在图表标题旁点 “?” 向 AI 提问后，问答会记录在这里。"
         }
       >
         {source === "kb"
           ? ((itemsData?.items ?? []) as AiQaItem[]).map((it) => (
               <AiQaCard key={it.qa_id} item={it} />
             ))
-          : ((itemsData?.items ?? []) as AiAskHistoryItem[]).map((it) => (
-              <AskQaCard key={it.ask_id} item={it} />
-            ))}
+          : source === "research"
+            ? ((itemsData?.items ?? []) as AiQaResearchItem[]).map((it) => (
+                <AiResearchQaCard key={it.qa_id} item={it} />
+              ))
+            : ((itemsData?.items ?? []) as AiAskHistoryItem[]).map((it) => (
+                <AskQaCard key={it.ask_id} item={it} />
+              ))}
       </PostFeed>
     </SecNavShell>
   );

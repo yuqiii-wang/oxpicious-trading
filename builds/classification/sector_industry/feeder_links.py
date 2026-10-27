@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from _common.df_utils import host_array
 from builds.classification.sector_industry.paths import CSV_DIR
 
 import logging
@@ -56,33 +57,50 @@ def load_feeder_rows(csv_path: str) -> List[Dict[str, Any]]:
     """Feeder map CSV → list of row dicts keyed by table column names."""
     df = pd.read_csv(csv_path, dtype=str, encoding=CSV_ENCODING, keep_default_na=False)
     df.columns = [c.strip().lstrip("\ufeff") for c in df.columns]
-    rows: List[Dict[str, Any]] = []
-    for _, r in df.iterrows():
-        get = lambda chn: str(r.get(chn, "")).strip()  # noqa: E731
-        # strip guard: feeder-map CSVs written before 2026-09-30 carry a
-        # suffixed 目标ETF代码 — target codes are BARE now
-        target = get("目标ETF代码").split(".")[0]
-        feeder = get("联接基金代码")
-        if not feeder or not target:
-            continue
-        try:
-            aum = float(get("资产净值（亿元）")) if get("资产净值（亿元）") else None
-        except ValueError:
-            aum = None
-        inception = get("成立日期") or None
-        rows.append({
-            "feeder_code": feeder,
-            "feeder_name": get("联接基金名称"),
-            "is_initiator": get("发起式").lower() in ("true", "1"),
-            "target_etf_code": target,
-            "target_etf_name": get("目标ETF名称"),
-            "target_etf_type": get("目标ETF类型"),
-            "index_code": get("标的指数代码"),
-            "index_name": get("标的指数"),
-            "manager": get("管理人"),
-            "aum_yi": aum,
-            "inception_date": inception,
-        })
+
+    def _txt(chi: str) -> pd.Series:
+        """Column as stripped strings; a missing column reads as '' per row
+        (the exact ``str(row.get(chn, "")).strip()`` semantics)."""
+        if chi in df.columns:
+            return df[chi].astype(str).str.strip()
+        return pd.Series("", index=df.index)
+
+    # strip guard: feeder-map CSVs written before 2026-09-30 carry a
+    # suffixed 目标ETF代码 — target codes are BARE now
+    target = _txt("目标ETF代码").str.split(".").str[0]
+    feeder = _txt("联接基金代码")
+    keep = (feeder != "") & (target != "")
+    # AUM parse: float(...) when present, None on empty / non-numeric.
+    aum = pd.to_numeric(_txt("资产净值（亿元）"), errors="coerce")
+    inception = _txt("成立日期")
+    rows: List[Dict[str, Any]] = [
+        {
+            "feeder_code": fc,
+            "feeder_name": fn,
+            "is_initiator": bool(ii),
+            "target_etf_code": tg,
+            "target_etf_name": tn,
+            "target_etf_type": tt,
+            "index_code": ic,
+            "index_name": inm,
+            "manager": mgr,
+            "aum_yi": None if am != am else float(am),
+            "inception_date": inc if inc else None,
+        }
+        for fc, fn, ii, tg, tn, tt, ic, inm, mgr, am, inc in zip(
+            host_array(feeder[keep]),
+            host_array(_txt("联接基金名称")[keep]),
+            host_array(_txt("发起式").str.lower().isin(("true", "1"))[keep]),
+            host_array(target[keep]),
+            host_array(_txt("目标ETF名称")[keep]),
+            host_array(_txt("目标ETF类型")[keep]),
+            host_array(_txt("标的指数代码")[keep]),
+            host_array(_txt("标的指数")[keep]),
+            host_array(_txt("管理人")[keep]),
+            host_array(aum[keep]),
+            host_array(inception[keep]),
+        )
+    ]
     return rows
 
 

@@ -27,6 +27,7 @@
  *   MA5/MA20, MA5/MA60, MA5/MA120, MA5/MA255
  */
 import SecCodesPageShell from "@/analysis/pages/shared/SecCodesPageShell";
+import { useDocs } from "@/shared/docs";
 import {
   fetchMovAveSpreadCodes,
   fetchMovAveSpreadThemes,
@@ -60,19 +61,14 @@ const THEMES_SOURCES: Record<MaSpreadSecType, SecNavThemesSource> = {
 };
 
 export default function MaSpreadPage() {
+  const docs = useDocs();
   return (
     <SecCodesPageShell
       title="MA-Spread"
       dataLabel="MA-Spread"
       backPath="/analysis/commons"
       backLabel="back to commons"
-      subtitle={(headerLabel) => `${headerLabel} — 9 pairs (5 Price/MA + 4 MA5/MA). Each panel shows
-            two curves (short + long MA) with green fill when short > long
-            (growth) and red fill when short < long (decline). The chart
-            tooltip shows each series' slope (1st derivative) and curvature
-            (2nd derivative) — including price's own slope/curvature for
-            Price/MA pairs. Click a pair chip to switch the chart; the
-            date-range slider drives all 9 pairs (they share one date axis).`}
+      subtitle={(headerLabel) => docs.text("ui.ma-spread.page", { label: headerLabel })}
       themesSources={THEMES_SOURCES}
       secTypes={["etf", "index", "stock", "industry"]}
       // All MA-Spread endpoints share the "/api/analysis/mov-ave-spread/" prefix.

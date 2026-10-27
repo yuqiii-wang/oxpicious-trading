@@ -1,13 +1,28 @@
 /**
  * PortfolioSignalRulesPanel — the PORTFOLIO tier's host surface: ONE
- * ROW PER PORTFOLIO in the roster table (code · cells · gate verdict
- * · drawdown benefit), EXPANDING into the two surfaces of the pair:
+ * SIMPLE ROW PER PORTFOLIO in the roster table (code · trigger
+ * conditions · latest event), EXPANDING on click into the pair's two
+ * surfaces — the DD audit, the members' combined stats and the
+ * construction detail live THERE, never on the row:
  *
- *   • PortfolioSurface — construction · benefit audit · combined
- *     member stats · the gate (WHAT THE PORTFOLIO TOOK)
- *   • CellRulesSurface — the coordinated member cells grouped as the
- *     PAIR (one leg's action → the other leg ≤5d), each with its own
- *     evidence
+ *   • PortfolioRuleParams — the constant rule definition
+ *     (portfolio_signal_rules.rule_params) as a structured spec
+ *     sheet: the FIRST section of the expansion, FOLDED by default
+ *     (its header row expands it) — construction · per-sub
+ *     coordination · constants, loaded from the backend grammar
+ *   • CellRulesSurface — the sub type's PORTFOLIO RULE (the pair's
+ *     own orchestrating rows, deduped — the portfolio's coordination,
+ *     never a cell, no action) + the CELL SIGNAL RULES under it (one
+ *     witness rule per curve — conditions, never dated event records)
+ *   • PortfolioSurface — the PORTFOLIO ITSELF, the LAST section of
+ *     the expansion, FOLDED by default (its header row expands it):
+ *     its own audit — entry-rule trigger condition · measured
+ *     evidence · gate + benefit boost · DD benefit (WHAT THE PORTFOLIO
+ *     TOOK; the portfolio is never a cell and has no action)
+ *
+ * The row's trigger-conditions column explains WHEN the portfolio's
+ * signals fire — one plain-language line per coordinated sub rule,
+ * derived from rule_params.subs (common.portfolioTriggerLines).
  *
  * Data: GET /trading-signals/portfolio?codes=… — the server matches
  * the portfolio rows whose legs sit in the codes and expands the ids
@@ -16,6 +31,7 @@
  * The roster fetch (all managed codes) fills the no-match empty state.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useDocs } from "@/shared/docs";
 import {
   Alert,
   Box,
@@ -23,7 +39,6 @@ import {
   CircularProgress,
   Paper,
   Typography,
-  useTheme,
 } from "@mui/material";
 import {
   fetchPortfolioSignals,
@@ -37,38 +52,48 @@ import ExpandedTable, {
 
 import CellRulesSurface from "./cellSurface";
 import PortfolioSurface from "./portfolioSurface";
+import PortfolioRuleParams from "./PortfolioRuleParams";
 import {
   DEFAULT_SEC_TYPE,
-  portfolioAudit,
+  portfolioSubLabel,
+  portfolioTriggerLines,
   portfolioTypeLabel,
-  subOrderRank,
 } from "./common";
 
 export interface PortfolioSignalRulesPanelProps {
   /** The component codes (INDUSTRY ids for now) — every portfolio
-   *  whose legs all sit in this list renders its rule group. */
+   *  whose legs all sit in this list renders its rule groups. */
   codes: ReadonlyArray<string>;
   /** The rows' sec_type scope (the pipeline stamp); default "index". */
   secType?: string;
   /** Bump to refetch (the host panel's Refresh button). */
   reloadKey?: number;
-  /** The selected coordinated sub type (the host page's dropdown) —
-   *  null/undefined = all; the expanded CELL surface filters to it. */
-  subType?: string | null;
-  /** The matched portfolios' coordinated sub types (SUB_ORDER-sorted),
-   *  reported whenever the fetch resolves — the host dropdown's
-   *  options. */
-  onSubTypes?: (subs: string[]) => void;
+  /** The matched portfolio rules' OWN portfolio sub types (the roster
+   *  rows' identity, roster order), reported whenever the fetch
+   *  resolves — the host dropdown's options: ONE ROW PER PORTFOLIO
+   *  RULE since the 2026-10-25 portfolio_sub_type split (trio wash /
+   *  spread are the rows themselves), so the dropdown lists the
+   *  portfolios 1:1. */
+  onPortfolioSubTypes?: (subs: string[]) => void;
+  /** The host dropdown's portfolio sub-type focus (null = all): the
+   *  matching portfolio row renders SELECTED + EXPANDED and the roster
+   *  NARROWS to it (the other subs' rows hidden — the dropdown
+   *  choosing the portfolio); a null focus shows every row and never
+   *  touches the expansion. */
+  subTypeFocus?: string | null;
+  /** The clicked roster row's portfolio sub type (null when the click
+   *  collapsed the row) — the host dropdown syncs to the row. */
+  onRowSelect?: (portfolioSubType: string | null) => void;
 }
 
 export default function PortfolioSignalRulesPanel({
   codes,
   secType = DEFAULT_SEC_TYPE,
   reloadKey = 0,
-  subType,
-  onSubTypes,
+  onPortfolioSubTypes,
+  subTypeFocus = null,
+  onRowSelect,
 }: PortfolioSignalRulesPanelProps) {
-  const theme = useTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [portfolios, setPortfolios] = useState<PortfolioSignalGroup[]>([]);
@@ -135,44 +160,61 @@ export default function PortfolioSignalRulesPanel({
     () => new Map(rules.map((r) => [r.signal_rule_id, r])),
     [rules],
   );
-  // the Hedge Pairs layer's own rows per portfolio code (the
-  // composite + the exits — NOT the imported components)
-  const ownByCode = useMemo(() => {
-    const m = new Map<string, SignalRule[]>();
-    for (const r of rules) {
-      if (r.rule_params.portfolio_role === "component") continue;
-      const list = m.get(r.code) ?? [];
-      list.push(r);
-      m.set(r.code, list);
-    }
-    return m;
-  }, [rules]);
 
-  // the coordinated sub types present across the matched portfolios
-  // (the orchestrating cells only — the mov_rsi components carry the
-  // source families' own sub types), SUB_ORDER-sorted; reported to the
-  // host dropdown
-  const subTypes = useMemo(() => {
+  // ONE ROSTER ROW PER PORTFOLIO RULE (the 2026-10-25 sub split):
+  // trio wash / spread are separate portfolio signals — the row key
+  // carries the rule's sub identity
+  const rowKeyOf = (p: PortfolioSignalGroup) =>
+    `${p.code}|${p.portfolio_sub_type}`;
+
+  // the matched portfolio rules' OWN sub types (the roster rows'
+  // identity — the host dropdown lists the portfolios 1:1), reported
+  // in roster order
+  const portfolioSubTypes = useMemo(() => {
     const set = new Set<string>();
-    for (const r of rules) {
-      if (r.rule_params.portfolio_role !== "component") set.add(r.signal_sub_type);
-    }
-    return [...set].sort(
-      (a, b) => subOrderRank(a) - subOrderRank(b) || a.localeCompare(b),
-    );
-  }, [rules]);
-  const subTypesKey = subTypes.join("|");
+    for (const p of portfolios) set.add(p.portfolio_sub_type);
+    return [...set];
+  }, [portfolios]);
+  const portfolioSubTypesKey = portfolioSubTypes.join("|");
   useEffect(() => {
-    onSubTypes?.(subTypesKey ? subTypesKey.split("|") : []);
-  }, [subTypesKey, onSubTypes]);
+    onPortfolioSubTypes?.(
+      portfolioSubTypesKey ? portfolioSubTypesKey.split("|") : [],
+    );
+  }, [portfolioSubTypesKey, onPortfolioSubTypes]);
+
+  // the host dropdown's focus selects + expands the matching portfolio
+  // row (the dropdown choosing the portfolio); a null focus — "all",
+  // or a row the click collapsed — never touches the expansion
+  useEffect(() => {
+    if (subTypeFocus == null) return;
+    const hit = portfolios.find(
+      (p) => p.portfolio_sub_type === subTypeFocus,
+    );
+    if (hit != null) setExpandedKey(rowKeyOf(hit));
+  }, [subTypeFocus, portfolios]);
+
+  // the focus ALSO narrows the roster: a non-null sub type hides the
+  // other subs' rows (trio wash chosen → the spread row does not
+  // render; null = all). The reported dropdown options stay the FULL
+  // matched set so the choice can still move between subs.
+  const visiblePortfolios = useMemo(
+    () =>
+      subTypeFocus == null
+        ? portfolios
+        : portfolios.filter((p) => p.portfolio_sub_type === subTypeFocus),
+    [portfolios, subTypeFocus],
+  );
 
   const handleRowClick = useCallback(
     (p: PortfolioSignalGroup) => {
-      setExpandedKey(expandedKey === p.code ? null : p.code);
+      const next = expandedKey === rowKeyOf(p) ? null : rowKeyOf(p);
+      setExpandedKey(next);
+      onRowSelect?.(next == null ? null : p.portfolio_sub_type);
     },
-    [expandedKey],
+    [expandedKey, onRowSelect],
   );
 
+  const docs = useDocs();
   const columns = useMemo<ExpandedTableColumn<PortfolioSignalGroup>[]>(
     () => [
       {
@@ -189,54 +231,39 @@ export default function PortfolioSignalRulesPanel({
               sx={{ fontSize: "0.65rem", height: 20 }}
               label={portfolioTypeLabel(p.portfolio_type)}
             />
+            <Chip
+              size="small"
+              sx={{ fontSize: "0.65rem", height: 20 }}
+              label={portfolioSubLabel(p.portfolio_sub_type)}
+            />
           </Box>
         ),
       },
       {
-        key: "rules",
-        label: "Cells",
-        info: "member cells · coordinated sub rules",
-        align: "right",
-        render: (p) => `${p.n_rules} cells · ${p.n_sub_types} subs`,
-      },
-      {
-        key: "valid",
-        label: "Valid",
-        align: "center",
-        info: "cells clearing the side's dir_ave bar",
-        render: (p) => (
-          <Box component="span" sx={{ fontWeight: 600 }}>
-            <Box component="span" sx={{ color: p.n_valid > 0 ? theme.palette.success.main : "text.disabled" }}>
-              {p.n_valid}
-            </Box>
-            <Box component="span" sx={{ color: "text.secondary" }}>
-              {" / "}
-              {p.n_rules}
-            </Box>
-          </Box>
-        ),
-      },
-      {
-        key: "benefit",
-        label: "DD benefit",
-        info: "pair max drawdown vs the worst leg — positive = shallower (the hedge paid)",
+        key: "triggers",
+        label: "Trigger conditions",
+        info: docs.text("ui.portfolio-rules.col.triggers"),
         render: (p) => {
-          const a = portfolioAudit(p);
-          if (a == null) return "—";
-          const r = a.maxDd.reduction_vs_worst_pct;
-          if (!Number.isFinite(r)) return "—";
+          const lines = portfolioTriggerLines(p, null);
+          if (lines.length === 0) return "—";
           return (
-            <Box
-              component="span"
-              sx={{
-                fontWeight: 600,
-                color: r >= 0
-                  ? theme.palette.success.main
-                  : theme.palette.error.main,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {`${r >= 0 ? "+" : "−"}${Math.abs(r).toFixed(1)}pp vs worst leg`}
+            <Box sx={{ display: "grid", gap: 0.25, py: 0.25 }}>
+              {lines.map((l) => (
+                <Typography
+                  key={l.word}
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", whiteSpace: "normal" }}
+                >
+                  <Box
+                    component="span"
+                    sx={{ fontWeight: 700, color: "text.primary" }}
+                  >
+                    {l.word}
+                  </Box>
+                  {` — ${l.text}`}
+                </Typography>
+              ))}
             </Box>
           );
         },
@@ -252,7 +279,7 @@ export default function PortfolioSignalRulesPanel({
         render: (p) => p.latest_built,
       },
     ],
-    [theme],
+    [docs],
   );
 
   return (
@@ -262,7 +289,7 @@ export default function PortfolioSignalRulesPanel({
         color="text.secondary"
         sx={{ display: "block", mb: 0.75, px: 0.5 }}
       >
-        Portfolio signal rules · {portfolios.length} — click a row to
+        Portfolio signal rules · {visiblePortfolios.length} — click a row to
         expand its construction + cells
       </Typography>
       {error && (
@@ -287,24 +314,23 @@ export default function PortfolioSignalRulesPanel({
       {!error && !loading && portfolios.length > 0 && (
         <ExpandedTable
           columns={columns}
-          rows={portfolios}
-          rowKey={(p) => p.code}
-          maxHeight={320}
+          rows={visiblePortfolios}
+          rowKey={rowKeyOf}
+          maxHeight={760}
           onRowClick={handleRowClick}
           selectedRowKey={expandedKey}
           expandedRowKey={expandedKey}
           expandedContent={(p) => (
             <>
-              <PortfolioSurface portfolio={p} />
+              <PortfolioRuleParams ruleParams={p.rule_params} />
               <CellRulesSurface
                 portfolio={p}
                 byId={byId}
-                ownRows={ownByCode.get(p.code) ?? []}
                 openMember={openMember}
-                subType={subType ?? null}
                 onToggleMember={(key) =>
                   setOpenMember(openMember === key ? null : key)}
               />
+              <PortfolioSurface portfolio={p} />
             </>
           )}
           emptyState={

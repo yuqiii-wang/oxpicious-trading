@@ -55,8 +55,10 @@ from __future__ import annotations
 import math
 from typing import Any, Callable, Dict, List
 
+import numpy as np
 import pandas as pd
 
+from _common.df_utils import host_array, safe_columns
 from strategy._trading import formula as F
 from strategy._trading.constants import (
     FEE_RATE,
@@ -98,6 +100,59 @@ def _round2(x: float) -> float:
 
 def _fmt(x) -> str:
     return f"{x:.4f}" if pd.notna(x) else "NA"
+
+
+# ---------------------------------------------------------------------------
+# Per-bar row reads — one host-array cache instead of an iloc Series per bar
+# ---------------------------------------------------------------------------
+class _BarColumns:
+    """Lazily unwrapped host column arrays for one code's frame.
+
+    The engine loop reads a handful of scalars per bar; ``cd.iloc[i]``
+    materializes a WHOLE Series per bar (one cudf.pandas fast→slow
+    dispatch per read in production). Each read column is unwrapped ONCE
+    via ``host_array`` here; ``arr`` returns None for absent columns so
+    ``.get``-style optional reads keep their Series semantics.
+    """
+
+    def __init__(self, df: pd.DataFrame):
+        self._names = frozenset(safe_columns(df))
+        self._df = df
+        self._arrs: Dict[str, Any] = {}
+
+    def arr(self, col: str):
+        """Host array for ``col``; None when the column is absent."""
+        a = self._arrs.get(col)
+        if a is None:
+            a = host_array(self._df[col]) if col in self._names else None
+            self._arrs[col] = a
+        return a
+
+
+class _RowView:
+    """Read-only per-bar row view passed to ``signal_reason_fn``.
+
+    Backed by the ``_BarColumns`` cache so reason builders keep their
+    ``row.get(col)`` / ``row[col]`` Series semantics (``.get`` → default
+    for absent columns, ``[]`` → KeyError) with no per-bar Series
+    construction. Constructed only on decision rows.
+    """
+
+    __slots__ = ("_cols", "_i")
+
+    def __init__(self, cols: _BarColumns, i: int):
+        self._cols = cols
+        self._i = i
+
+    def get(self, key, default=None):
+        a = self._cols.arr(key)
+        return default if a is None else a[self._i]
+
+    def __getitem__(self, key):
+        a = self._cols.arr(key)
+        if a is None:
+            raise KeyError(key)
+        return a[self._i]
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +226,20 @@ def backtest_single_code(
     # so the buy cost is higher. Precompute |Δclose| per bar (first row → 0).
     ft = float(params.get("fault_tolerance", 0) or 0)
     _ft_delta_close_abs = (
-        cd["close_price"].diff().abs().fillna(0.0).to_numpy()
+        host_array(cd["close_price"].diff().abs().fillna(0.0))
         if ft > 0 else None
     )
+
+    # Per-bar scalar reads come from ONE lazily-unwrapped host column
+    # cache — ``cd.iloc[i]`` built a Series per bar (a cudf.pandas
+    # fast→slow dispatch per read in production).
+    bars = _BarColumns(cd)
+    date_arr = bars.arr("date")
+    code_arr = bars.arr("code")
+    high_arr = bars.arr("high_price")
+    low_arr = bars.arr("low_price")
+    close_arr = bars.arr("close_price")
+    sig_arr = bars.arr("signal_confidence")
 
     # Portfolio state (all in normalized units).
     cash = 0.0               # cumulative qty × norm_price (BUY −, SELL +)
@@ -185,14 +251,17 @@ def backtest_single_code(
     decisions: List[Dict[str, Any]] = []
 
     for i in range(n):
-        row = cd.iloc[i]
         if i >= n - 1:
             break  # last bar reserved for final liquidation
         # Worst-case fill prices derived from the signal day's OHLC.
-        high = row.get("high_price")
-        low = row.get("low_price")
-        close = row.get("close_price")
-        if pd.isna(high) or pd.isna(low) or pd.isna(close):
+        # (Missing column → None; NaN bar → x != x — pure scalar checks,
+        # no pandas dispatch per bar.)
+        high = high_arr[i] if high_arr is not None else None
+        low = low_arr[i] if low_arr is not None else None
+        close = close_arr[i] if close_arr is not None else None
+        if high is None or high != high \
+                or low is None or low != low \
+                or close is None or close != close:
             continue
         high = float(high)
         low = float(low)
@@ -201,10 +270,13 @@ def backtest_single_code(
             continue
         buy_fill = F.worst_case_buy_fill(high, low, close, band=band)
         sell_fill = F.worst_case_sell_fill(high, low, close, band=band)
-        exec_date = row["date"]
+        exec_date = date_arr[i]
 
         # Singular b/s confidence from the signal layer: >0 BUY, <0 SELL.
-        sig = float(row.get("signal_confidence") or 0.0)
+        # NaN stays truthy-or → float(nan), exactly like the former
+        # Series.get read (NaN signals match neither branch below).
+        sig_v = sig_arr[i] if sig_arr is not None else None
+        sig = float(sig_v or 0.0) if sig_v is not None else 0.0
 
         # ---- BUY: positive consolidated signal ------------------------
         if sig > 0.0:
@@ -240,9 +312,10 @@ def backtest_single_code(
             cash_after = cash + F.cash_delta_buy(qty, norm_price, fee)
             total_qty = new_total_qty
             position_after = F.position_value(total_qty, norm_price)
+            row = _RowView(bars, i)
             decisions.append({
                 "sec_type": sec_type,
-                "code": row["code"],
+                "code": code_arr[i],
                 "side": "BUY",
                 "qty": _round2(qty),
                 "exec_date": exec_date,
@@ -303,9 +376,10 @@ def backtest_single_code(
             if total_qty_after <= 0:
                 cost_basis_norm = 0.0
 
+            row = _RowView(bars, i)
             decisions.append({
                 "sec_type": sec_type,
-                "code": row["code"],
+                "code": code_arr[i],
                 "side": "SELL",
                 "qty": _round2(qty_sold),
                 "exec_date": exec_date,
@@ -333,11 +407,11 @@ def backtest_single_code(
     # ---- Final liquidation: sell all remaining total_qty on the last day.
     skip_final_liq = bool(params.get("skip_final_liquidation", False))
     if total_qty > 0 and n > 0 and anchor_price is not None and not skip_final_liq:
-        last_row = cd.iloc[n - 1]
-        last_date = last_row["date"]
-        last_high = last_row.get("high_price")
-        last_low = last_row.get("low_price")
-        last_close = last_row.get("close_price")
+        last_i = n - 1
+        last_date = date_arr[last_i]
+        last_high = high_arr[last_i] if high_arr is not None else None
+        last_low = low_arr[last_i] if low_arr is not None else None
+        last_close = close_arr[last_i] if close_arr is not None else None
         # A live partial bar may carry a valid close with NULL high/low —
         # the projected fill (close + vol-scaled momentum) only needs
         # closes, so liquidate whenever the close is valid. Full OHLC is
@@ -368,7 +442,7 @@ def backtest_single_code(
             cash_after = cash + F.cash_delta_sell(qty_sold, norm_price)
             decisions.append({
                 "sec_type": sec_type,
-                "code": last_row["code"],
+                "code": code_arr[last_i],
                 "side": "SELL",
                 "qty": _round2(qty_sold),
                 "exec_date": last_date,
@@ -384,7 +458,7 @@ def backtest_single_code(
                 "realized_pnl": _round6(realized),
                 "slippage": _round6(slippage),
                 "fee": _round6(0.0),
-                "signal_value": _round6(last_row.get("signal_value")),
+                "signal_value": _round6(_RowView(bars, last_i).get("signal_value")),
                 "signal_reason": ("LAST DAY SELL: liquidate all remaining qty "
                                   f"({qty_sold:.4f}) at projected fill "
                                   "close + (std255/std20)×(ma20 − close_20d_ago)"),
@@ -501,10 +575,16 @@ def _compute_sharpe_ratios(daily_rows: List[Dict[str, Any]]) -> None:
         deltas.rolling(window=500, min_periods=2).std(ddof=1),
     )
 
-    for i, row in enumerate(daily_rows):
-        row["sharpe_ratio"] = _round6(float(sharpe_full.iloc[i]) if pd.notna(sharpe_full.iloc[i]) else 0.0)
-        row["sharpe_ratio_255d"] = _round6(float(sharpe_255.iloc[i]) if pd.notna(sharpe_255.iloc[i]) else 0.0)
-        row["sharpe_ratio_500d"] = _round6(float(sharpe_500.iloc[i]) if pd.notna(sharpe_500.iloc[i]) else 0.0)
+    # One host-array unwrap per window — the former three ``.iloc[i]``
+    # reads per row each paid a cudf.pandas dispatch.
+    full_a = host_array(sharpe_full.to_numpy(dtype=np.float64, na_value=np.nan))
+    arr255 = host_array(sharpe_255.to_numpy(dtype=np.float64, na_value=np.nan))
+    arr500 = host_array(sharpe_500.to_numpy(dtype=np.float64, na_value=np.nan))
+
+    for row, v, v255, v500 in zip(daily_rows, full_a, arr255, arr500):
+        row["sharpe_ratio"] = _round6(float(v)) if v == v else 0.0
+        row["sharpe_ratio_255d"] = _round6(float(v255)) if v255 == v255 else 0.0
+        row["sharpe_ratio_500d"] = _round6(float(v500)) if v500 == v500 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +627,14 @@ def compute_daily_rows(
 
     cd = code_df.reset_index(drop=True)
 
+    # Per-day scalar reads come from the ONE lazily-unwrapped host column
+    # cache (the former per-day ``cd.iloc[i]`` built a Series per bar).
+    bars = _BarColumns(cd)
+    date_arr = bars.arr("date")
+    if date_arr is None or len(date_arr) == 0:
+        return []
+    close_arr = bars.arr("close_price")
+
     # Build a lookup: exec_date → decision (at most one decision per day in
     # this backtest model — the main loop processes one signal per day).
     decision_by_date = {d["exec_date"]: d for d in decisions}
@@ -556,12 +644,10 @@ def compute_daily_rows(
         return []
     first_buy_date = first_buy["exec_date"]
 
-    # Find the index of the first BUY's exec_date — daily rows start here.
-    start_idx = None
-    for i in range(len(cd)):
-        if cd.iloc[i]["date"] == first_buy["exec_date"]:
-            start_idx = i
-            break
+    # Index of the first BUY's exec_date — daily rows start here. One
+    # host-array comparison instead of a per-row ``cd.iloc[i]`` scan.
+    date_hits = date_arr == first_buy_date
+    start_idx = int(np.argmax(date_hits)) if date_hits.any() else None
     if start_idx is None:
         return []
 
@@ -581,10 +667,10 @@ def compute_daily_rows(
 
     daily_rows: List[Dict[str, Any]] = []
     for i in range(start_idx, len(cd)):
-        row = cd.iloc[i]
-        trade_date = row["date"]
-        close_price = row.get("close_price")
-        if pd.isna(close_price) or close_price <= 0:
+        trade_date = date_arr[i]
+        close_price = close_arr[i] if close_arr is not None else None
+        if close_price is None or close_price != close_price \
+                or close_price <= 0:
             continue
 
         normalized_close = F.normalized_price(float(close_price), anchor_price)

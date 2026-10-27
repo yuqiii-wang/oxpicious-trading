@@ -6,6 +6,7 @@
  * thin.
  */
 import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import type { OhlcMode } from "@/lib/ohlc";
 import type { CodeTrendRow, CodeTrendSecType } from "./codeTrendTypes";
@@ -49,6 +50,8 @@ export function CodeTrendAiAsk({
   // builds its option internally, so the intro + live screenshot carry
   // the value (derivePlotInfo tolerates the omitted option). A fresh
   // plotInfo per render is fine — the button keeps its own open state.
+  // Authored text: static.docs `ui.code-trend.panel`.
+  const docs = useDocs();
   const nBars = allRows.length;
   return (
     <AiAskButton
@@ -59,15 +62,7 @@ export function CodeTrendAiAsk({
           : undefined,
         spec: {
           ...(insightPage ? { insight: insightPage } : {}),
-          intro:
-            `Daily trend for ${code} (${secType}): OHLC candles (close line when sparse) ` +
-            "with MA5/20/60/120 overlays and turnover bars on the right; where data " +
-            "allows, margin fills (RZ cash borrow up / RQ sec borrow down) and a PE line " +
-            "on an offset axis. Gold diamonds = ex-dividend dates; Regimes toggle shades " +
-            "market-regime bands. % mode: OHLC + MAs as % change from the first valid " +
-            "close (tooltips keep prices); date gaps broken so holidays draw no cliffs. " +
-            "Indication: price commanding the MA stack = trend regime; RZ swelling = " +
-            "leveraged chase, RQ swelling = short pressure — squeeze fuel either way.",
+          intro: docs.text("ui.code-trend.panel", { code, secType }),
           instruments: [
             {
               code,
@@ -93,9 +88,7 @@ export function CodeTrendAiAsk({
             // web search can use (trend terms + the shaded episodes)
             ...(showRegimes ? ["market regimes"] : []),
           ],
-          notes: [
-            "MAs are computed client-side from close; Amount bars are in 亿 (raw yuan / 1e8).",
-          ],
+          notes: docs.notes("ui.code-trend.panel"),
         },
       })}
       getInstance={getInstance}

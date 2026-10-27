@@ -113,9 +113,17 @@ def download_index(
     sleep_sec: Optional[float] = None,
     skip_intraday: bool = False,
     ensure_prev_trading_day: bool = False,
+    refresh_history: bool = False,
 ) -> dict:
     """Download iconic CSI index daily history (OHLCV + amount + PE).
 
+    ``refresh_history``: the nightly default skips the PE fetch +
+    history merge entirely (the SSE trend / SZSE / CNINDEX / BSE
+    snapshots carry the recent rows to the DB via builds CSINDEX
+    DAILY's source ladder; the history CSVs are only the
+    deep-history fallback). --refresh-history runs the full PE fetch
+    + history merge (also the one-time convergence for a pe
+    cache/history pair left behind by skipped runs).
     ``ensure_prev_trading_day``: targeted mode — skip ALL network work for
     codes whose local 1m/history CSV already contains the previous trading
     day (computed from the holiday calendar). Laggard codes run only the
@@ -263,6 +271,26 @@ def download_index(
             if proxy.is_blocked(CSINDEX_BASE):
                 logger.warning("  [host-blocked] csindex.com.cn blocked after 1m download, skipping remaining tasks for %s", code)
                 stats.failed += 2
+                continue
+
+            if not refresh_history:
+                # Default increment: skip the PE fetch + history merge —
+                # the recent rows reach the DB via SSE trend / SZSE /
+                # CNINDEX / BSE snapshots (builds CSINDEX DAILY source
+                # ladder); the pe cache + history CSV converge on
+                # --refresh-history.
+                logger.info("  [pe]/[history] %s: skipped (default "
+                            "increment; --refresh-history fetches)",
+                            code)
+                stats.skipped_cached += 1
+                if not skip_intraday:
+                    intraday_data = fetch_intraday(session, code, proxy)
+                    if intraday_data is not None:
+                        saved = save_intraday(intraday_data, code, name, out_dir)
+                        if saved:
+                            stats.files.append(str(saved))
+                    else:
+                        logger.info("  [intraday] %s: 1-day data not available, skipping", code)
                 continue
 
             if "csindex_pe" in exclusion_scopes("index", code):

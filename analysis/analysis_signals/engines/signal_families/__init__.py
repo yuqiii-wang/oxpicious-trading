@@ -1,6 +1,6 @@
 """The signal family registry (analysis.analysis_signals.engines.
-signal_families) — the eight detection families, each a set of
-RuleEntry subclasses (engines/rule_base.py).
+signal_families) — the detection families, each a set of RuleEntry
+subclasses (engines/rule_base.py).
 
   mov_rsi       RSI percentile tails (per-code adaptive quantile bars)
   bollinger     fixed-±kσ band breach (z computed in-engine)
@@ -16,26 +16,41 @@ RuleEntry subclasses (engines/rule_base.py).
                 momentum lookbacks (per-code adaptive quantile bars)
   rf_break      the roof/floor Donchian breakout (the prior day's
                 window-extreme level — a STRUCTURAL bar; 2026-10-16)
-  hedge_pairs   the long–long anti-correlated industry-pair family
-                (2026-10-18, market-decoupled then merged into the
-                TWO-LAYER design same day): the SOURCE layer is the
-                components' existing Short-Term-Tech rsi signal rules
-                (REAL mov_rsi rows at the market + leg codes); the
-                ORCHESTRATION layer (HedgeRsiEntry, signal_type
-                hp_rsi) coordinates them into the portfolio composites
-                at the pair codes — the three-component capitulation
-                entry paired within ~5 traded days, the market-high
-                exit, the laggard's catch-up — each group referencing
-                the sourced rule ids it orchestrates; the PAIR-NATIVE
-                layer (HedgePairEntry, signal_type hedge_pairs) keeps
-                the harvest ratio trims, the hedge-regime break stop
-                and the observational flip — universe = the offsets
-                table's top offset-opposite pairs (SELF_UNIVERSE)
+  rebound       the drop→rebound→resolution family (2026-10-26): the
+                ma-spread rebound study's graduates as rule cells —
+                the big drop from the trailing-Wd high activates the
+                episode, the trough-break (capitulation BUY), the
+                stall just below the last high (failed-reclaim SELL,
+                exit timing) and the full reclaim (continuation BUY)
+                are the causal resolutions; each sub type emits a
+                PLAIN and a PE-conditioned variant (the is_pe_boosted
+                PK axis)
+  macd          the classic MACD crossover family (2026-10-26): the
+                typical-EMA study's product — the classic 12/26/9
+                spans (the tech_stats ema12/ema26 replaced the nearby
+                non-standard span 10 the same day) and the classic
+                signal-line crossover as a rule cell: cross-up BUY /
+                cross-down SELL (exit timing), the value source
+                computing the construction in its fetch from the base
+                closes
+  hedge_pairs   the PORTFOLIO family (fresh 2026-10-24): the typical
+                negative-correlation trio — two offset-opposite leg
+                curves + the broad market, all three in their own RSI
+                capitulation tails the same day (the co-wash BUY of
+                the inverse-vol long-long pair) + the blow-off mirror
+                as the equity-asymmetry check; one registry entry
+                owns the pair-native cells, the mov_rsi SOURCE layer
+                at the market + leg codes (the is_in_portfolio TRUE
+                tier) and all wipe scopes
 
 The options families run their OWN universe — the sec_type's option
 underlyings from stats.options_terms
 (fetch/inputs.resolve_options_universe; options_wall drops the SSE ETF
-underlyings, whose chain OI is an accumulated-volume estimator).
+underlyings, whose chain OI is an accumulated-volume estimator). The
+hedge_pairs universe is likewise data-driven — the disjoint
+offset-opposite industry pairs from the offsets table
+(fetch/inputs._hedge_pairs.resolve_hedge_pair_universe; --codes is
+ignored for the family).
 """
 from __future__ import annotations
 
@@ -44,8 +59,10 @@ from analysis.analysis_signals.engines.signal_families.boll_std import (
     BollBandEntry,
 )
 from analysis.analysis_signals.engines.signal_families.hedge_pairs import (
-    HedgePairEntry,
-    HedgeRsiEntry,
+    HedgePairTrioEntry,
+)
+from analysis.analysis_signals.engines.signal_families.macd import (
+    MacdCrossEntry,
 )
 from analysis.analysis_signals.engines.signal_families.ma_cross import (
     MaBreadthEntry,
@@ -71,6 +88,9 @@ from analysis.analysis_signals.engines.signal_families.options_wall import (
 from analysis.analysis_signals.engines.signal_families.rf_break import (
     RoofFloorEntry,
 )
+from analysis.analysis_signals.engines.signal_families.rebound import (
+    ReboundEntry,
+)
 
 # registry order = pipeline order (the signal_type label's canonical
 # ordering); each family's entries run over ONE shared fetch
@@ -84,28 +104,24 @@ SIGNAL_FAMILY_ENTRIES: dict[str, list[type[RuleEntry]]] = {
                     OvixAtrBreakEntry, OvixFearUnwindEntry],
     "momentum": [MomentumTailEntry],
     "rf_break": [RoofFloorEntry],
-    # the hedge pair runs TWO entries over ONE shared prepared frame:
-    # the RSI-sourced orchestration first (it also writes the sourced
-    # type-0 component rows), then the pair-native rules
-    "hedge_pairs": [HedgeRsiEntry, HedgePairEntry],
+    "rebound": [ReboundEntry],
+    "macd": [MacdCrossEntry],
+    "hedge_pairs": [HedgePairTrioEntry],
 }
 
 # families whose universe is the option underlyings, not the study
 # indices (resolved per sec_type by fetch/inputs.resolve_options_
-# universe — options_wall drops the SSE ETF underlyings)
+# universe; options_wall drops the SSE ETF underlyings)
 OPTIONS_FAMILIES = frozenset({"options_wall", "options_vix"})
 
-# families whose universe is a DERIVED pair/industry scope, not the
-# --codes list (resolved at run time from their own analysis tables —
-# --codes is ignored for them)
-SELF_UNIVERSE_FAMILIES = frozenset({"hedge_pairs"})
-
-# families whose codes are PORTFOLIOS → the portfolio_type label their
-# groups register under (analysis_signals.portfolio_signal_rules, the
-# per-sub-type groups with the signal_rule_ids BIGINT[] arrays; the
-# codes are composite group ids, not securities). The portfolio_type
-# is the PORTFOLIO tier's own vocabulary (static.label_dim
-# 'portfolio_type') — deliberately not the signal family.
+# the PORTFOLIO families (label → the portfolio_type label their
+# groups ride in analysis_signals.portfolio_signal_rules): the family
+# writes the portfolio tier tables in the same run as its rules —
+# portfolio_signal_rules (one row per portfolio, wiped + rewritten),
+# history_portfolio_signal_performance (the dated benefit audit,
+# upsert-only) and portfolio_history_signals (the event tier with the
+# member association; force purges the (sec_type, portfolio_type)
+# scope, incremental upserts past max date)
 FAMILY_PORTFOLIO_TYPE: dict[str, str] = {
     "hedge_pairs": "neg_corr_hedge_pair",
 }
@@ -120,7 +136,6 @@ __all__ = [
     "RuleEntry",
     "SIGNAL_FAMILY_ENTRIES",
     "OPTIONS_FAMILIES",
-    "SELF_UNIVERSE_FAMILIES",
     "FAMILY_PORTFOLIO_TYPE",
     "family_label",
 ]

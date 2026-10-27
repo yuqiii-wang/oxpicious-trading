@@ -32,6 +32,7 @@ import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import type { ECharts, EChartsOption } from "echarts";
 import type { OptionsOiCellsResponse, OptionsOiDailyResponse, OptionsExpiryMetaResponse, OptionsWallRow } from "@shared/types";
 import {
@@ -417,39 +418,23 @@ export default function OptionsTrendPanel({
   const underlyingCode = underlying;
   // AI Ask — intro + series semantics; state carries the CURRENT cohort
   // selection so the modal / LLM always describe the view on screen.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.optionsTrend,
-      intro:
-        `Three synchronized option-flow charts for ${underlyingCode || "(n/a)"}: ` +
-        "(1) Expiry OI Bands — per-expiry OI vs the spot line (where exposure concentrates " +
-        "by expiry); (2) P/C OI ratio = put OI / call OI of the selected cohorts, with " +
-        "MA5/MA20, dashed neutral at 1; (3) call vs put total OI (mil contracts). " +
-        "Indication: ratio >1 = hedging tilt (bear lean), <1 = chase; band walls mark the " +
-        "strike zones spot grinds against. All follow the cohort selection, one slider + " +
-        "crosshair; dots = expiries.",
+      intro: docs.text("ui.options.options-trend", {
+        underlying: underlyingCode || "(n/a)",
+      }),
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
-      series: [
-        { name: "Spot", unit: "元", description: "underlying daily closing price" },
-        { name: "OI Bands", description: "per-expiry open-interest bands by strike over time" },
-        { name: "P/C OI Ratio", unit: "ratio", description: "put OI / call OI of the selected cohorts" },
-        { name: "MA5", unit: "ratio", description: "5-day mean of the P/C ratio" },
-        { name: "MA20", unit: "ratio", description: "20-day mean of the P/C ratio" },
-        { name: "Call OI", unit: "mil contracts", description: "daily total call open interest" },
-        { name: "Put OI", unit: "mil contracts", description: "daily total put open interest" },
-      ],
+      series: docs.series("ui.options.options-trend"),
       state: {
         "expiry cohorts": cohortMode === "active" ? "Active (unexpired)" : "History (expired)",
         month: monthFilter,
         expiries_selected: selectedExpiryKeys.length,
       },
-      notes: [
-        "Charts 2 and 3 aggregate ONLY the selected expiry cohorts; lines break on dates where the selection has no data.",
-        "All three charts share one time slider and a synchronized crosshair/tooltip.",
-        `Latest data date: ${lastDate || "—"}.`,
-      ],
+      notes: docs.notes("ui.options.options-trend", undefined, { lastDate: lastDate || "—" }),
     }),
-    [underlyingCode, cohortMode, monthFilter, selectedExpiryKeys.length, lastDate],
+    [docs, underlyingCode, cohortMode, monthFilter, selectedExpiryKeys.length, lastDate],
   );
   const aiAskAddon = useAiAskAddon({
     title: "Options Trend — OI Bands · P/C Ratio · Total OI",

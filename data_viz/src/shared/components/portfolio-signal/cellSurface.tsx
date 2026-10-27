@@ -1,333 +1,493 @@
 /**
- * CellRulesSurface — the CELL tier's surface of one portfolio: reads
- * ONLY the signal-tier tables (signal_rules merged with each cell's
- * own measured evidence: n / dir_ave / hit). The member cells render
- * grouped AS THE PAIR: the two legs side by side with the catch-up
- * badge between them — ONE leg's action commits the pair, the OTHER
- * leg's witness should fire within ≤5 traded days; the market
- * witness, the pair-native cells and the orchestrating composites
- * follow. Rows are VIZ-FIRST (the 2026-10-21 text diet): the short
- * sub word + action chip + the PairLegsViz legs diagram + the
- * evidence — the full record name and the decoded bar ride the
- * sub-word chip's tooltip, the details stay one click away. The
- * portfolio-level verdicts live on the sibling PortfolioSurface.
+ * CellRulesSurface — the CELL tier's surface of one PORTFOLIO RULE. THE
+ * CELL DEFINITION (user-directed 2026-10-25): a CELL is a SIGNAL
+ * UNDER the portfolio — NEVER the portfolio itself. Since the same
+ * day's portfolio_sub_type SPLIT each surface renders ONE portfolio
+ * rule (trio wash / spread — its own ids array, coordination spec and
+ * audit), so the row's OWN subs render here (no host-sub filtering).
+ *
+ * The WITNESS MIGRATION (2026-10-25, user-directed "migrate
+ * rsi·witness mkt / hp_rsi_witness_mkt, etc, from DB signals to rule
+ * params json ... on portfolio level there is no Portfolio signal no
+ * portfolio Sub type, but in rule params json should have all"):
+ * the witness definitions (the per-curve cell-signal conditions +
+ * their MAPPED SIGNALS — the registered mov_rsi sub types each
+ * witness maps at its own curve, action-side aligned) live ONLY in
+ * the portfolio rule_params JSON (rule_params.subs.<sub>.cell_signals
+ * — engine-written; the top-level rule_params also carries the
+ * portfolio_sub_type word, so the JSON is self-describing). At the
+ * PORTFOLIO LEVEL the surface renders NO "Portfolio signal" group and
+ * NO "Sub type" column — the only population is the MAPPED RSI
+ * SIGNALS table: the registered cells retrieved through the row's
+ * signal_rule_ids (real signal_rules rows riding the is_in_portfolio
+ * TRUE tier — a SEPARATE row from any standalone twin; the flag is a
+ * signal_rules PK member) laid out directly under ONE expandable
+ * WITNESS group per sub — each witness row expanding to
+ * ITS mapped registered cells CLASSIFIED BY RSI WINDOW (2026-10-25
+ * user-refined "rsi10 and rsi14 both are mixed, there should have been
+ * classification between rsi14 vs rsi10": a window group row —
+ * RSI(14) the classic first, then RSI(10), RSI(6), window-desc over
+ * the cells' own rule_params.window — sits between the witness and
+ * its cells; duplication across witnesses/rules is fine — every
+ * witness carries its own mapped_signals list).
  */
-import type { ReactNode } from "react";
-import { Box, Chip, Tooltip, Typography } from "@mui/material";
-import { SyncAlt } from "@mui/icons-material";
+import { Fragment, useState } from "react";
+import {
+  Box,
+  Chip,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  Tooltip,
+  Typography,
+} from "@mui/material";
 
-import type { PortfolioSignalGroup, SignalRule } from "@/lib/api-client";
+import type {
+  PortfolioSignalGroup,
+  SignalRule,
+} from "@/lib/api-client";
 
-import { SignalActionChip } from "@/shared/components/signal-action";
 import {
   signalRecordName,
   signalSubWord,
+  signalSubWordLoose,
+  signalTailSide,
 } from "@/shared/components/signal-code-trend/families";
-import { ruleBarLabel } from "@/shared/components/signal-code-trend/ruleParams";
-import { ruleDetails } from "@/shared/components/signal-code-trend/ruleDetails";
+import {
+  ruleDetails,
+} from "@/shared/components/signal-code-trend/ruleDetails";
+import {
+  RegimeWord,
+  TrendChip,
+} from "@/shared/components/signal-code-trend/cellContext";
+import { SignalActionChip } from "@/shared/components/signal-action";
 
-import PairLegsViz from "./PairLegsViz";
-import { pairLegs, pairWitnessWindow, subOrderRank } from "./common";
+import {
+  subSpecCells,
+  type SubCellSignalSpec,
+} from "./common";
 
-/** One contained signal cell's compact row — clicking expands the
- *  SHARED ruleDetails block (knowledge + the latest measured
- *  performance snapshot). The row is viz-first, text-light: the SHORT
- *  sub word chip (full record name + decoded bar ride its tooltip),
- *  the action chip, the LEGS DIAGRAM (PairLegsViz — what legs the
- *  portfolio signal coordinates), and the evidence; hideCode drops
- *  the code chip (leg columns already carry the code in their
- *  header). */
-function memberRow(
-  r: SignalRule,
-  open: boolean,
-  onToggle: () => void,
-  cascadeScale: number,
-  portfolioCode: string,
-  legs: { legA: string; legB: string; market: string },
-  hideCode = false,
-): ReactNode {
-  const m = r.rule_params.measure;
-  const role = String(r.rule_params.portfolio_role ?? "");
-  const key = `${r.code}|${r.signal_sub_type}|${r.signal_rule_id}`;
-  const bar = ruleBarLabel(r.rule_params.bar_def);
-  const full = signalRecordName(r.signal_type, r.signal_sub_type);
-  return (
-    <Box key={key} sx={{ borderBottom: "1px solid", borderColor: "divider",
-      "&:last-child": { borderBottom: "none" } }}>
-      <Box
-        onClick={onToggle}
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          flexWrap: "wrap",
-          py: 0.35,
-          cursor: "pointer",
-          borderRadius: 0.5,
-          px: 0.25,
-          "&:hover": { bgcolor: "action.hover" },
-        }}
-      >
-        {!hideCode && (
-          <Chip
-            size="small"
-            label={r.code}
-            variant={role === "component" ? "outlined" : "filled"}
-            sx={{ fontSize: "0.65rem", height: 20 }}
-          />
-        )}
-        <Tooltip
-          title={`${full}${bar !== "—" ? ` — bar: ${bar}` : ""}`}
-          arrow
-        >
-          <Chip
-            size="small"
-            variant={role === "component" ? "outlined" : "filled"}
-            label={signalSubWord(r.signal_type, r.signal_sub_type)}
-            sx={{ fontSize: "0.65rem", height: 20, maxWidth: 170 }}
-          />
-        </Tooltip>
-        <SignalActionChip
-          action={r.action}
-          confidence={(r.rule_params.confidence?.base_pct ?? 1) * 100}
-          rejected={r.rule_params.gate?.ungated === true}
-        />
-        {cascadeScale > 1 && (
-          <Tooltip title={`portfolio cascade ×${cascadeScale.toFixed(2)} from ${portfolioCode}`}>
-            <Chip
-              size="small"
-              label={`pf ×${cascadeScale.toFixed(2)}`}
-              sx={{
-                fontSize: "0.6rem", height: 18,
-                color: "success.main",
-                borderColor: "success.main",
-              }}
-              variant="outlined"
-            />
-          </Tooltip>
-        )}
-        <PairLegsViz
-          legA={legs.legA}
-          legB={legs.legB}
-          market={legs.market}
-          response={r.rule_params.response}
-          barDef={r.rule_params.bar_def}
-        />
-        {m?.n_episodes != null && (
-          <Box component="span" sx={{ fontSize: "0.7rem", color: "text.secondary" }}>
-            n={m.n_episodes}
-            {m.dir_ave_pct != null
-              && ` · ${m.dir_ave_pct >= 0 ? "+" : ""}${m.dir_ave_pct.toFixed(2)}%`}
-            {m.hit_rate != null && ` · hit ${(m.hit_rate * 100).toFixed(0)}%`}
-          </Box>
-        )}
-        <Box
-          component="span"
-          sx={{
-            fontSize: "0.75rem",
-            fontWeight: 700,
-            color: r.is_valid ? "success.main" : "text.disabled",
-          }}
-        >
-          {r.is_valid ? "✓" : "—"}
-        </Box>
-        <Box
-          component="span"
-          sx={{ ml: "auto", fontSize: "0.7rem", color: "text.disabled" }}
-        >
-          {open ? "▾" : "▸"}
-        </Box>
-      </Box>
-      {open && (
-        <Box sx={{ px: 1, pb: 0.75 }}>
-          {ruleDetails(r)}
-        </Box>
-      )}
-    </Box>
-  );
-}
 
-/** One leg's bordered column of the pair block: the leg code chip over
- *  its own component cells (code chip hidden — the header carries it). */
-function LegColumn({
-  leg,
-  cells,
-  row,
-}: {
-  leg: string;
-  cells: SignalRule[];
-  row: (r: SignalRule) => ReactNode;
-}) {
-  return (
-    <Box sx={{
-      border: "1px dashed", borderColor: "divider", borderRadius: 1,
-      p: 0.5, minWidth: 0,
-    }}>
-      <Chip
-        size="small"
-        label={leg}
-        color="primary"
-        variant="outlined"
-        sx={{ fontSize: "0.65rem", height: 20, mb: 0.25 }}
-      />
-      {cells.length > 0
-        ? cells.map(row)
-        : (
-          <Typography variant="caption" color="text.disabled" sx={{ px: 0.25 }}>
-            — no cells
-          </Typography>
-        )}
-    </Box>
-  );
-}
-
-/** The CELL surface: the portfolio's coordinated signal cells grouped
- *  AS THE PAIR — legs side by side joined by the ≤{w}d catch-up badge
- *  (one leg's action → the other leg's witness within the window),
- *  then the market witness, the pair-native cells and the
- *  orchestrating composites. subType (the host page's dropdown)
- *  filters the cells to ONE coordinated sub rule and hides the source
- *  witnesses (they belong to no single sub); null = all. */
+/** The CELL surface of one PORTFOLIO RULE: the MAPPED RSI SIGNALS
+ *  table only — the registered mov_rsi cells (via signal_rule_ids)
+ *  laid out directly under their stored witness definitions
+ *  (rule_params.subs.<sub>.cell_signals, verbatim from the DB —
+ *  conditions + mapped_signals). The portfolio signal itself and its
+ *  sub types render nowhere here: the rule's whole definition lives
+ *  in the sibling PortfolioRuleParams (the rule params JSON) and the
+ *  roster row. */
 export default function CellRulesSurface({
   portfolio,
   byId,
-  ownRows,
   openMember,
-  subType,
   onToggleMember,
 }: {
   portfolio: PortfolioSignalGroup;
   byId: Map<number, SignalRule>;
-  ownRows: SignalRule[];
   openMember: string | null;
-  /** The selected coordinated sub rule; null = all. */
-  subType?: string | null;
   onToggleMember: (key: string) => void;
 }) {
+  // the MAPPED REGISTERED cells: real mov_rsi rule rows riding the
+  // is_in_portfolio TRUE tier (a SEPARATE signal_rules row from any
+  // standalone twin — the flag is a PK member there), retrieved
+  // through the portfolio rule's signal_rule_ids ONLY (user-directed
+  // "the signals must register and retrieve under signal rules"; they
+  // are never portfolio rows themselves)
   const members = portfolio.signal_rule_ids
     .map((id) => byId.get(id))
     .filter((r): r is SignalRule => r != null);
-  const [legA, legB] = pairLegs(portfolio.code);
-  const market = String(
-    (portfolio.rule_params?.portfolio as { market?: string } | undefined)
-      ?.market ?? "000300",
+  const mappedCells = members.filter(
+    (r) => r.rule_params.portfolio_role === "component",
   );
-  const witness = pairWitnessWindow(portfolio);
-  // the portfolio-level GATED cascade: the confidence increase every
-  // member takes once the portfolio passed the gate + an entry rule
-  const cascadeScale = portfolio.is_valid
-    ? Number(
-        (portfolio.performance?.gate as
-          | { conf_scale?: number }
-          | undefined)?.conf_scale ?? 1,
-      )
-    : 1;
-  const bySub = (a: SignalRule, b: SignalRule) =>
-    subOrderRank(a.signal_sub_type) - subOrderRank(b.signal_sub_type)
-    || a.signal_sub_type.localeCompare(b.signal_sub_type);
-  // the sourced components grouped as the pair: leg A, leg B, the
-  // market witness, and any residual codes (defensive) — visible only
-  // in the unfiltered view (no sub selected)
-  const components = subType == null
-    ? members.filter((r) => r.rule_params.portfolio_role === "component")
-    : [];
-  const legACells = components.filter((r) => r.code === legA).sort(bySub);
-  const legBCells = components.filter((r) => r.code === legB).sort(bySub);
-  const marketCells = components
-    .filter((r) => r.code === market)
-    .sort(bySub);
-  const restCells = components
-    .filter((r) => r.code !== legA && r.code !== legB && r.code !== market)
-    .sort((a, b) => a.code.localeCompare(b.code) || bySub(a, b));
-  // the pair-native self-members + the ORCHESTRATING composites,
-  // narrowed to the selected sub rule when one is picked
-  const inSub = (r: SignalRule) => subType == null || r.signal_sub_type === subType;
-  const pairNative = members
-    .filter((r) => r.rule_params.portfolio_role !== "component" && inSub(r))
-    .sort(bySub);
-  const own = ownRows
-    .filter((r) => !r.is_in_portfolio && inSub(r))
-    .sort(bySub);
-  const row = (r: SignalRule, hideCode = false) => memberRow(
-    r,
-    openMember === `${r.code}|${r.signal_sub_type}|${r.signal_rule_id}`,
-    () => onToggleMember(
-      `${r.code}|${r.signal_sub_type}|${r.signal_rule_id}`,
-    ),
-    cascadeScale,
-    portfolio.code,
-    { legA, legB, market },
-    hideCode,
+  // the WITNESS groups — the engine-written condition records of the
+  // rule's OWN subs (rule_params.subs.<sub>.cell_signals), verbatim,
+  // ONE group per sub: the trio's THREE witness curves (market + both
+  // legs — the per-RSI-window groups were removed 2026-10-26,
+  // user-directed "there are RSI(10) · 3 witnesses vs RSI(14) · 3
+  // witnesses, remove them"), the spread subs' two role legs each
+  const subs = Object.keys(
+    (portfolio.rule_params?.subs ?? {}) as Record<string, unknown>,
   );
-  const groupHeader = (text: string) => (
-    <Typography variant="caption" sx={{ fontWeight: 700, display: "block" }}>
-      {text}
-    </Typography>
+  const witnessGroups: Array<{ sub: string; rows: SubCellSignalSpec[] }> = [];
+  for (const sub of subs) {
+    const rows = subSpecCells(portfolio, sub) ?? [];
+    if (rows.length > 0) witnessGroups.push({ sub, rows });
+  }
+  // a witness's MAPPED cells: the registered rows at the witness's OWN
+  // code whose sub type the witness's stored mapped_signals list names
+  // ("ensure mapping" — engine-written, action-side aligned; an empty
+  // legacy list falls back to the code match) — resolved ACTION-SIDE
+  // ALIGNED through the witness's OWN stored action (user-directed
+  // 2026-10-26 "if the rules say buy, why the registered cell signals
+  // still have sell action"): the sub-type label alone is side-ambiguous
+  // (mov_rsi registers the same sub type on BOTH sides), so matching the
+  // name only leaked the sell twins under a buy witness. Legacy records
+  // without the action key keep the name-only match.
+  const mappedFor = (w: SubCellSignalSpec): SignalRule[] =>
+    mappedCells.filter((r) => r.code === w.code
+      && (w.mapped_signals.length === 0
+        || w.mapped_signals.includes(r.signal_sub_type))
+      && (w.action == null || r.action === w.action));
+  // the WINDOW CLASSIFICATION inside one witness's mapped cells
+  // (user-directed "rsi10 and rsi14 both are mixed, there should have
+  // been classification between rsi14 vs rsi10"): the witness's cells
+  // grouped by their own RSI window (the registered rows'
+  // rule_params.window), window-desc — rsi14 the classic first, then
+  // rsi10, rsi6; a row without a window rides the 0 bucket last
+  const mappedWindows = (cells: SignalRule[]): Array<
+    [number, SignalRule[]]
+  > => {
+    const byWin = new Map<number, SignalRule[]>();
+    for (const r of cells) {
+      const win = typeof r.rule_params.window === "number"
+        ? r.rule_params.window : 0;
+      const list = byWin.get(win) ?? [];
+      list.push(r);
+      byWin.set(win, list);
+    }
+    return [...byWin.entries()].sort((a, b) => b[0] - a[0]);
+  };
+  // the rules table's dense cell styles
+  const th = {
+    fontSize: "0.65rem", fontWeight: 700, py: 0.25,
+    whiteSpace: "nowrap", borderBottom: "1px solid",
+  } as const;
+  const td = { fontSize: "0.7rem", py: 0.25 } as const;
+  // the registered cell's TAIL-SIDE marker on the name (user-directed
+  // "for the name, rsi14_1pct add it is bottom or top to indicate rise
+  // vs drop", then "all sourced from backend data as exact, not to add
+  // UI-only text"): both action sides of one mov_rsi sub share the sub
+  // literal, and the side word is READ from the row's own ENGINE-
+  // WRITTEN rule_params.condition ("… own bottom … tail" = the drop
+  // side, "… own top … tail" = the rise side) — signalTailSide returns
+  // null when the condition carries no side word and the bare name
+  // renders (never a UI-side action→side mapping)
+  const sideWord = (r: SignalRule): string | null =>
+    signalTailSide(r.rule_params.condition);
+  // the expand states: one per witness (its mapped cells nested under
+  // it), then the window classification inside the open witness (rsi14 /
+  // rsi10 / rsi6 groups, one open at a time)
+  const [openWitness, setOpenWitness] = useState<string | null>(null);
+  const [openWitnessWin, setOpenWitnessWin] = useState<string | null>(null);
+  const witnessKey = (sub: string, w: SubCellSignalSpec) =>
+    `${sub}|${w.code}|${w.role}`;
+  // one full-width group separator row inside the rules table
+  const groupRow = (text: string) => (
+    <TableRow>
+      <TableCell
+        colSpan={5}
+        sx={{
+          color: "text.secondary", fontWeight: 700, fontSize: "0.65rem",
+          py: 0.35, borderBottom: "1px solid", borderColor: "divider",
+          whiteSpace: "normal",
+        }}
+      >
+        {text}
+      </TableCell>
+    </TableRow>
   );
   return (
     <Box sx={{ p: 1, px: 1.5, borderLeft: 3, borderColor: "divider" }}>
-      <Typography variant="caption" sx={{ fontWeight: 700, display: "block", mb: 0.5 }}>
-        Coordinated cells
-      </Typography>
-      {(legACells.length > 0 || legBCells.length > 0) && (
-        <Box sx={{ mb: 1 }}>
-          {groupHeader(`Pair legs · paired ≤${witness}d`)}
-          <Box sx={{
-            display: "grid",
-            gridTemplateColumns: "minmax(0,1fr) auto minmax(0,1fr)",
-            gap: 1,
-            alignItems: "stretch",
-          }}>
-            <LegColumn leg={legA} cells={legACells} row={(r) => row(r, true)} />
-            <Tooltip
-              title={`One leg's action commits the pair — the other leg's witness should fire within ≤${witness} traded days`}
-            >
-              <Box sx={{
-                display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center", px: 0.25,
-              }}>
-                <SyncAlt sx={{ fontSize: "1rem", color: "primary.main" }} />
-                <Typography sx={{
-                  fontSize: "0.65rem", fontWeight: 700,
-                  color: "primary.main", whiteSpace: "nowrap",
-                }}>
-                  ≤{witness}d
-                </Typography>
-              </Box>
-            </Tooltip>
-            <LegColumn leg={legB} cells={legBCells} row={(r) => row(r, true)} />
-          </Box>
-        </Box>
-      )}
-      {marketCells.length > 0 && (
-        <Box sx={{ mb: 1 }}>
-          {groupHeader(`Market witness · ${market}`)}
-          {marketCells.map((r) => row(r, true))}
-        </Box>
-      )}
-      {restCells.length > 0 && (
-        <Box sx={{ mb: 1 }}>
-          {groupHeader("Other components")}
-          {restCells.map((r) => row(r))}
-        </Box>
-      )}
-      {pairNative.length > 0 && (
-        <Box sx={{ mb: 1 }}>
-          {groupHeader(`Pair-native cells · ${pairNative.length}`)}
-          {pairNative.map((r) => row(r, true))}
-        </Box>
-      )}
-      {own.length > 0 && (
-        <Box>
-          {groupHeader(`Composites · ${own.length}`)}
-          {own.map((r) => row(r, true))}
-        </Box>
-      )}
-      {components.length === 0 && pairNative.length === 0 && own.length === 0 && (
+      <Box sx={{
+        display: "flex", alignItems: "center", flexWrap: "wrap", gap: 1, mb: 0.5,
+      }}>
+        <Typography variant="caption" sx={{ fontWeight: 700 }}>
+          {(typeof portfolio.rule_params?.name === "string"
+            && portfolio.rule_params.name) || "Portfolio signal"}
+        </Typography>
         <Typography variant="caption" color="text.secondary">
-          {subType != null
-            ? `(no cells for ${subType})`
-            : "(no member cells resolved — run the signals pipeline)"}
+          cell signals — mapped rsi rules under the stored witnesses
+        </Typography>
+      </Box>
+      {(witnessGroups.length > 0 || mappedCells.length > 0) && (
+        <Box sx={{ mb: 1 }}>
+          <Table size="small" sx={{ maxWidth: 1080 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell sx={th}>Code</TableCell>
+                <TableCell sx={th}>Signal</TableCell>
+                <TableCell sx={th}>Action</TableCell>
+                <TableCell sx={{ ...th, minWidth: 420 }}>
+                  Rule condition
+                </TableCell>
+                <TableCell sx={th}>Context</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {witnessGroups.map((g) => [
+                groupRow(`${signalSubWordLoose(g.sub)} · ${g.rows.length}`
+                  + ` witness${g.rows.length === 1 ? "" : "es"}`),
+                ...g.rows.map((w) => {
+                  const key = witnessKey(g.sub, w);
+                  const open = openWitness === key;
+                  const cells = mappedFor(w);
+                  return (
+                    <Fragment key={`witness|${key}`}>
+                      <TableRow
+                        hover
+                        onClick={() => setOpenWitness(open ? null : key)}
+                        sx={{ cursor: "pointer" }}
+                      >
+                        <TableCell sx={{ ...td, pl: 5 }}>
+                          <Box
+                            component="span"
+                            sx={{
+                              display: "inline-flex", alignItems: "center",
+                              gap: 0.5, pl: 1.5, borderLeft: "2px solid",
+                              borderColor: "divider",
+                            }}
+                          >
+                            <Box
+                              component="span"
+                              sx={{
+                                color: "text.disabled", fontSize: "0.7rem",
+                              }}
+                            >
+                              {open ? "▾" : "└"}
+                            </Box>
+                            <Chip
+                              size="small"
+                              label={w.code}
+                              variant="outlined"
+                              sx={{ fontSize: "0.65rem", height: 20 }}
+                            />
+                          </Box>
+                        </TableCell>
+                        <TableCell sx={td}>
+                          <Tooltip
+                            title={`${w.role} — ${w.condition} (${w.bar})`}
+                            arrow
+                          >
+                            <Chip
+                              size="small"
+                              label={w.role}
+                              sx={{ fontSize: "0.65rem", height: 20 }}
+                            />
+                          </Tooltip>
+                        </TableCell>
+                        {/* the PORTFOLIO LEVEL carries NO action (the
+                         *  2026-10-25 semantics — the portfolio has no
+                         *  action, only its cell signals do; user
+                         *  re-directed 2026-10-26 "the portfolio level
+                         *  should not have action"): the witness rows
+                         *  are rule-params records — the stored action
+                         *  key rides the JSON for the side-aligned
+                         *  mapping (mappedFor above), never a chip
+                         *  here. The Action column chips only the
+                         *  REGISTERED cell rows below. */}
+                        <TableCell sx={td}>—</TableCell>
+                        <TableCell sx={{ ...td, whiteSpace: "normal" }}>
+                          {`${w.condition} · ${w.bar}`}
+                        </TableCell>
+                        <TableCell sx={td}>
+                          {`${cells.length} mapped`}
+                        </TableCell>
+                      </TableRow>
+                      {open && mappedWindows(cells).map(([win, rows]) => {
+                        const winKey = `${key}|${win}`;
+                        const winOpen = openWitnessWin === winKey;
+                        return (
+                          <Fragment key={`mapped-win|${winKey}`}>
+                            <TableRow
+                              hover
+                              onClick={() =>
+                                setOpenWitnessWin(winOpen ? null : winKey)}
+                              sx={{ cursor: "pointer" }}
+                            >
+                              <TableCell sx={{ ...td, pl: 7 }}>
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    display: "inline-flex",
+                                    alignItems: "center", gap: 0.5,
+                                    pl: 1.5, borderLeft: "2px solid",
+                                    borderColor: "divider",
+                                  }}
+                                >
+                                  <Box
+                                    component="span"
+                                    sx={{
+                                      color: "text.disabled",
+                                      fontSize: "0.7rem",
+                                    }}
+                                  >
+                                    {winOpen ? "▾" : "└"}
+                                  </Box>
+                                  <Chip
+                                    size="small"
+                                    label={win > 0 ? `RSI(${win})` : "—"}
+                                    variant="outlined"
+                                    sx={{ fontSize: "0.65rem", height: 20 }}
+                                  />
+                                </Box>
+                              </TableCell>
+                              <TableCell sx={td}>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  {`${rows.length} registered cell${rows.length === 1 ? "" : "s"}`}
+                                </Typography>
+                              </TableCell>
+                              <TableCell sx={td}>—</TableCell>
+                              <TableCell
+                                sx={{ ...td, whiteSpace: "normal" }}
+                              >
+                                {rows[0]
+                                  ? String(
+                                      rows[0].rule_params.condition ?? "—")
+                                  : "—"}
+                              </TableCell>
+                              <TableCell sx={td}>
+                                {win > 0 ? `RSI(${win})` : "—"}
+                              </TableCell>
+                            </TableRow>
+                            {winOpen && rows.map((r) => {
+                              const memberOpen = openMember
+                                === `${r.code}|${r.signal_sub_type}|${r.signal_rule_id}`;
+                              return (
+                                <Fragment
+                                  key={`sourced|${r.signal_rule_id}`}
+                                >
+                                  <TableRow
+                                    hover
+                                    onClick={() => onToggleMember(
+                                      `${r.code}|${r.signal_sub_type}|${r.signal_rule_id}`,
+                                    )}
+                                    sx={{ cursor: "pointer" }}
+                                  >
+                                    <TableCell sx={{ ...td, pl: 9 }}>
+                                      <Box
+                                        component="span"
+                                        sx={{
+                                          display: "inline-flex",
+                                          alignItems: "center", gap: 0.5,
+                                          pl: 1.5, borderLeft: "2px solid",
+                                          borderColor: "divider",
+                                        }}
+                                      >
+                                        <Box
+                                          component="span"
+                                          sx={{
+                                            color: "text.disabled",
+                                            fontSize: "0.7rem",
+                                          }}
+                                        >
+                                          └
+                                        </Box>
+                                        <Chip
+                                          size="small"
+                                          label={r.code}
+                                          variant="outlined"
+                                          sx={{
+                                            fontSize: "0.65rem", height: 20,
+                                          }}
+                                        />
+                                        <Tooltip
+                                          title={"is_in_portfolio — the in-portfolio "
+                                            + "tier copy of the mov_rsi rule (a "
+                                            + "SEPARATE signal_rules row from any "
+                                            + "standalone twin: the flag is a PK "
+                                            + "member); mapped into this portfolio "
+                                            + "rule by signal_rule_ids"}
+                                          arrow
+                                        >
+                                          <Chip
+                                            size="small"
+                                            label="in-portfolio"
+                                            variant="outlined"
+                                            sx={{
+                                              fontSize: "0.6rem", height: 18,
+                                              color: "text.secondary",
+                                            }}
+                                          />
+                                        </Tooltip>
+                                      </Box>
+                                    </TableCell>
+                                    <TableCell sx={td}>
+                                      {(() => {
+                                        const side = sideWord(r);
+                                        return (
+                                          <Tooltip
+                                            title={side == null
+                                              ? signalRecordName(
+                                                r.signal_type,
+                                                r.signal_sub_type,
+                                              )
+                                              : `${signalRecordName(
+                                                r.signal_type,
+                                                r.signal_sub_type,
+                                              )} · ${side}`}
+                                            arrow
+                                          >
+                                            <Chip
+                                              size="small"
+                                              label={side == null
+                                                ? signalSubWord(
+                                                  r.signal_type,
+                                                  r.signal_sub_type,
+                                                )
+                                                : `${signalSubWord(
+                                                  r.signal_type,
+                                                  r.signal_sub_type,
+                                                )} · ${side}`}
+                                              sx={{
+                                                fontSize: "0.65rem", height: 20,
+                                              }}
+                                            />
+                                          </Tooltip>
+                                        );
+                                      })()}
+                                    </TableCell>
+                                    <TableCell sx={td}>
+                                      <SignalActionChip action={r.action} />
+                                    </TableCell>
+                                    <TableCell
+                                      sx={{ ...td, whiteSpace: "normal" }}
+                                    >
+                                      {String(r.rule_params.condition ?? "—")}
+                                    </TableCell>
+                                    <TableCell sx={td}>
+                                      <Box sx={{
+                                        display: "inline-flex", gap: 0.5,
+                                        alignItems: "center",
+                                      }}>
+                                        <TrendChip trend={r.trend} />
+                                        <RegimeWord regime={r.regime_state} />
+                                      </Box>
+                                    </TableCell>
+                                  </TableRow>
+                                  {memberOpen && (
+                                    <TableRow>
+                                      <TableCell
+                                        colSpan={5}
+                                        sx={{ py: 0.5,
+                                              borderBottom: "1px solid",
+                                              borderColor: "divider" }}
+                                      >
+                                        {ruleDetails(r)}
+                                      </TableCell>
+                                    </TableRow>
+                                  )}
+                                </Fragment>
+                              );
+                            })}
+                          </Fragment>
+                        );
+                      })}
+                    </Fragment>
+                  );
+                }),
+              ])}
+            </TableBody>
+          </Table>
+        </Box>
+      )}
+      {witnessGroups.length === 0 && mappedCells.length === 0 && (
+        <Typography variant="caption" color="text.secondary">
+          (no cell signals resolved — run the signals pipeline)
         </Typography>
       )}
     </Box>

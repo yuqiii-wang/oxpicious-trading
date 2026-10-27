@@ -13,6 +13,7 @@
 import { useMemo } from "react";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import type { LiveOptionsOiSkewResponse } from "@shared/types";
 import { buildOiSkewIntradayOption } from "./oiSkewIntradayOption";
 
@@ -67,41 +68,17 @@ export default function OiSkewIntradayPanel({
     ? `${date} · 5-min bars · OI base = ${resp?.snapshot_date ?? "—"} daily snapshot + day volume`
     : spotGap ?? "No data for this underlying / date";
 
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `Intraday OI-weighted moneyness skewness of ${underlying} on ${date} — ` +
-        "the Live sibling of the dataviz Open Interests tab's skew chart, with the " +
-        "x-axis switched from daily dates to 5-minute bars. Solid = underlying spot " +
-        "(5-min closes); dashed = OI-weighted moneyness skew price S × E[M] where " +
-        "E[M] = Σ(OI·K/S)/Σ(OI) per expiry group (line width ∝ the group's OI; the " +
-        "thick dashed line blends all groups); the shade band is spot↔skew. Open " +
-        "interest per bar is ESTIMATED as the previous trading day's daily OI plus " +
-        "the day-cumulative traded volume (an upper bound — closing trades are not " +
-        "netted out). Indication: skew riding above spot = OI parked overhead " +
-        "(supply); below spot = support beneath.",
+      intro: docs.text("ui.live.oi-skew", { underlying, date }),
       instruments: underlying ? [{ code: underlying }] : [],
       window: { start: date, end: date, granularity: "intraday" },
-      series: [
-        { name: "Underlying Spot", unit, description: "5-minute close of the option's underlying" },
-        {
-          name: "Skew (OI-wtd mean)",
-          unit,
-          description: "spot rebased by the all-expiry OI-weighted mean moneyness (sentinel expiry 9998-12-31 rows)",
-        },
-        {
-          name: "Skew <expiry>",
-          unit,
-          description: "per-expiry-group skew price; line width encodes the group's OI",
-        },
-      ],
+      series: docs.series("ui.live.oi-skew", { unit }),
       state: { date, snapshotDate: resp?.snapshot_date ?? null },
-      notes: [
-        "The series is computed server-side (python -m live.options_intraday_skewness) into live.options_intraday_skewness; the route spawns it on demand when missing/stale.",
-        "SSE contracts carry OI base 0 (no daily per-contract OI source) so their intraday OI is traded volume only; SZSE/CFFEX contracts hold the flat prev-day daily OI.",
-      ],
+      notes: docs.notes("ui.live.oi-skew"),
     }),
-    [underlying, date, unit, resp?.snapshot_date],
+    [docs, underlying, date, unit, resp?.snapshot_date],
   );
 
   return (

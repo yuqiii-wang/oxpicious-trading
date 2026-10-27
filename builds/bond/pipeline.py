@@ -3,7 +3,8 @@
 Aggregates daily-frequency data sources into the 8 debt_* tables:
 
   1. PBoC OMO (Open Market Operations) daily reverse-repo announcements
-     → debt_omo table
+     → debt_omo table (incl. the overnight variety 隔夜逆回购 as
+     omo_rate_1d / omo_quantity_1d, parsed from the same bulletins)
   2. PBoC outright-repo tender announcements as date markers
      → debt_outright_repo table
   3. PBoC MLF (Medium-term Lending Facility) tender → debt_mlf table

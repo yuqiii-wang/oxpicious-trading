@@ -1,16 +1,19 @@
 /**
  * Futures service — queries stats.v_futures_daily (futures_identity
- * JOIN futures_basic_stats) for CFFEX futures products.
+ * JOIN futures_basic_stats) across the futures families: CFFEX
+ * (IC/IF/IH/IM/T/TF/TL/TS) plus the offshore China-A50 index futures
+ * (CN = SGX FTSE A50, MCA = HKEX MSCI China A 50 Connect).
  *
  * Endpoints:
- *   listProducts()   → list of 8 products (IC/IF/IH/IM/T/TF/TL/TS)
+ *   listProducts()   → list of distinct product_code values
  *   getCombined()    → full combined response for one product
  *                      (dates calendar + contract meta + all daily rows)
  *
  * Continuity rule: a contract is marked is_continuous=TRUE only when every
  * product trading day between the contract's first and last appearance has
- * trading_amount > 0 — no zero-amount days and no gaps inside its active
- * window.
+ * turnover > 0 — no zero days and no gaps inside its active window. The
+ * offshore families (CN/MCA) publish no turnover, so trading_shares is the
+ * fallback measure there.
  */
 import { queryRows, toNum } from "../lib/db.js";
 import { labelDecodeSql } from "./label-codes.js";
@@ -31,6 +34,7 @@ interface DbFuturesDailyRow extends QueryResultRow {
   settlement_price: string | number | null;
   close: string | number | null;
   trading_amount: string | number | null;
+  trading_shares: string | number | null;
   open_interest: string | number | null;
 }
 
@@ -91,6 +95,7 @@ export async function getCombined(
       b.settlement_price,
       b.close,
       b.trading_amount,
+      b.trading_shares,
       b.open_interest
     FROM stats.futures_identity i
     LEFT JOIN stats.futures_basic_stats b
@@ -108,26 +113,26 @@ export async function getCombined(
     days_to_expiry: toNum(r.days_to_expiry),
   }));
 
-  // Build product-level calendar + per-contract maps
+  // Build product-level calendar + per-contract maps (from the raw rows,
+  // which additionally carry trading_shares for the continuity measure)
   const datesSet = new Set<string>();
   const codeDates: Map<string, Set<string>> = new Map();
   const codeTradingAmt: Map<string, Map<string, number>> = new Map();
-  const codeRows: Map<string, FuturesRow[]> = new Map();
 
-  for (const r of rows) {
-    const date = r.date;
-    const code = r.code;
+  for (const r of dbRows) {
+    const date = String(r.date);
+    const code = String(r.code);
     datesSet.add(date);
 
     if (!codeDates.has(code)) {
       codeDates.set(code, new Set());
       codeTradingAmt.set(code, new Map());
-      codeRows.set(code, []);
     }
     codeDates.get(code)!.add(date);
-    const amt = r.trading_amount ?? 0;
+    // Turnover measure for the continuity test: the offshore CN/MCA
+    // families publish no trading_amount — trading_shares stands in.
+    const amt = toNum(r.trading_amount) ?? toNum(r.trading_shares) ?? 0;
     codeTradingAmt.get(code)!.set(date, amt);
-    codeRows.get(code)!.push(r);
   }
 
   const dates = Array.from(datesSet).sort();

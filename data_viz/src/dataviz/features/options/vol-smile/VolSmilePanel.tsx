@@ -12,6 +12,7 @@
 import { useMemo } from "react";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { OptionsRow } from "@shared/types";
 import { fmtNum } from "@/lib/series";
@@ -50,27 +51,20 @@ export default function VolSmilePanel({ rows, selectedDate }: Props) {
 
   // AI Ask — concise legend decoding; per-expiry skewness readout rides in
   // the notes, the card keeps the identity.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.volSmile,
-      intro:
-        "IV (%) vs moneyness m = K/S — calls solid, puts dashed, grouped by expiry month " +
-        "(blue gradient: dark = near). ATM line at m = 1; markers = per-expiry OI-weighted " +
-        "smile skewness γ₁ = μ₃/σ³, IV weighted by raw OI count (floored at 1) — premium " +
-        "never weights. Indication: fat negative γ₁ = put-wing bid (crash-hedge demand); " +
-        "stretched positive = call chase — crowded wings both snap back.",
+      intro: docs.text("ui.options.vol-smile"),
       instruments: rows[0]?.underlying_code
         ? [{ code: rows[0].underlying_code }]
         : [],
       state: { selectedDate },
-      notes: [
-        "The skew-over-time + correlation charts for this data live in the shared skew panel (skew-shared/).",
-        ...(skewTags
-          ? [`Per-expiry OI-wtd skewness (3rd moment): ${skewTags}`]
-          : []),
-      ],
+      notes: skewTags
+        ? docs.notes("ui.options.vol-smile", undefined, { skewTags })
+        : [],
     }),
-    [rows, selectedDate, skewTags],
+    [docs, rows, selectedDate, skewTags],
   );
 
   return (

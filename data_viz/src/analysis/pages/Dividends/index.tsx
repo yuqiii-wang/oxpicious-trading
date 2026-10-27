@@ -18,6 +18,7 @@
  * only the per-security baseline plot.
  */
 import SecCodesPageShell from "@/analysis/pages/shared/SecCodesPageShell";
+import { useDocs } from "@/shared/docs";
 import {
   VALUATION_THEMES_SOURCES,
   fetchValuationPageCodes,
@@ -27,13 +28,14 @@ import { PAGE_SIZE } from "./constants";
 import { DividendsPanel } from "./DividendsPanel";
 
 export default function DividendsPage() {
+  const docs = useDocs();
   return (
     <SecCodesPageShell
       title="Dividends"
       dataLabel="Dividends"
       backPath="/analysis/commons"
       backLabel="back to commons"
-      subtitle={(headerLabel) => `${headerLabel} — per-security dividends view: the shared baseline plot (ETF/Stock mark ex-dividend dates as gold diamonds on the price chart). Same security universe as the PE page; no streaks card here (the dividend_yield streak tables were removed).`}
+      subtitle={(headerLabel) => docs.text("ui.dividends.page", { label: headerLabel })}
       themesSources={VALUATION_THEMES_SOURCES}
       secTypes={["etf", "index", "stock", "industry"]}
       onInvalidateCache={invalidateValuationCache}

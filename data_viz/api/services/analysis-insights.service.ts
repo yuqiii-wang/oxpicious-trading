@@ -40,6 +40,9 @@ export interface InsightSpecSource {
 export interface InsightSpec {
   scope?: "security" | "industry" | "market";
   page_title?: string;
+  /** false = the metric is categorical (trend states, 0/1 flags) — the
+   *  resolvers must not stamp a rarity percentile on it. */
+  rank?: boolean;
   source: InsightSpecSource;
   compute?: { fn?: string; args?: Record<string, string | number> };
   sec_types?: string[];
@@ -68,9 +71,29 @@ export interface InsightMetricValue {
   value_date: string | null;
   prev_value: number | string | boolean | null;
   delta: number | null;
+  /** Rarity: the value's percentile within its PRIOR trailing history —
+   *  the share of the metric's own prior observations (same scope filters,
+   *  10y window, one row per date) at or below this value; 0.95 = the top
+   *  5% tail. NULL for non-numeric values, thin history (< RANK_MIN_N), or
+   *  spec `"rank": false` (categorical codes). pct_rank_n = the prior
+   *  sample size behind it. */
+  pct_rank: number | null;
+  pct_rank_n: number | null;
   source_kind: string;
   computed: boolean;
   unresolved: string | null;
+}
+
+/** Prior-history window + sample floor for the rarity rank (the repo's
+ *  per-code trailing-tail convention; ≥120 = the ohlc-gap flags' floor). */
+const RANK_WINDOW_YEARS = 10;
+const RANK_MIN_N = 120;
+
+/** 'YYYY-MM-DD' shifted by whole years (leap-safe via UTC). */
+function shiftYears(iso: string, years: number): string {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const dt = new Date(Date.UTC(y + years, m - 1, d));
+  return dt.toISOString().slice(0, 10);
 }
 
 export interface InsightResolveResult {
@@ -127,6 +150,7 @@ async function resolveTableMetric(
   source: InsightSpecSource,
   ctx: ResolveCtx,
   scope: string,
+  rank = true,
 ): Promise<Partial<InsightMetricValue> | { unresolved: string }> {
   if (!source.table || !source.value) {
     return { unresolved: "bad table source" };
@@ -134,15 +158,19 @@ async function resolveTableMetric(
   const table = q(source.table);
   const dateCol = q(source.date ?? "date");
   const valueCol = q(source.value);
-  const where: string[] = [];
+
+  // One shared positional-args pool: every predicate's placeholder indexes
+  // into it, so the value query and the rarity-rank query reuse the same
+  // scope filters with different date bounds (as-of vs strictly-prior).
   const args: (string | number)[] = [];
-  if (ctx.asOf) {
-    where.push(`${dateCol} <= $${args.push(ctx.asOf)}`);
-  }
+  const pred = (p: string, arg: string | number) =>
+    p.replace("?", `$${args.push(arg)}`);
+
+  const filterPreds: string[] = [];
   if (source.code) {
     const code = ctx.code ?? ctx.industry;
     if (!code) return { unresolved: "needs a security/industry" };
-    where.push(`${q(source.code)} = $${args.push(code)}`);
+    filterPreds.push(pred(`${q(source.code)} = ?`, code));
   }
   const secCol = source.sec_type;
   let secType = ctx.secType;
@@ -150,32 +178,40 @@ async function resolveTableMetric(
   if (secCol) {
     const code = secType ? LABEL_CODE.sec_type[secType as "etf"] : undefined;
     if (code === undefined) return { unresolved: "needs a sec_type" };
-    where.push(`${q(secCol)} = $${args.push(code)}`);
+    filterPreds.push(pred(`${q(secCol)} = ?`, code));
   }
   const latestDims: string[] = [];
   for (const [key, val] of Object.entries(source.match ?? {})) {
     if (val === "$latest") latestDims.push(key);
-    else where.push(`${q(key)} = $${args.push(val as string | number)}`);
+    else filterPreds.push(pred(`${q(key)} = ?`, val as string | number));
   }
+  const asOfPred = ctx.asOf ? pred(`${dateCol} <= ?`, ctx.asOf) : null;
+  const whereFor = (extra: string[] = []) => [
+    ...(asOfPred ? [asOfPred] : []),
+    ...filterPreds,
+    ...extra,
+  ];
   for (const key of latestDims) {
     let sql = `SELECT MAX(${q(key)}) AS m FROM ${table}`;
-    if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
+    const maxWhere = whereFor();
+    if (maxWhere.length) sql += ` WHERE ${maxWhere.join(" AND ")}`;
     const rows = await queryRows<{ m: string | number | null }>(sql, args);
     if (rows.length === 0 || rows[0].m === null) {
       return { unresolved: `no rows to pick $latest ${key}` };
     }
-    where.push(`${q(key)} = $${args.push(rows[0].m)}`);
+    filterPreds.push(pred(`${q(key)} = ?`, rows[0].m));
   }
   const order = source.order ?? {};
   const orderAlias = order.by === "value" ? "v" : "d";
   const dir = order.dir === "asc" ? "ASC" : "DESC";
+  const valueWhere = whereFor();
   const sql =
     `SELECT d, v FROM (` +
     `  SELECT ${dateCol} AS d, ${valueCol} AS v,` +
     `         ROW_NUMBER() OVER (PARTITION BY ${dateCol}` +
     `                            ORDER BY ${valueCol} DESC NULLS LAST) AS rn` +
     `  FROM ${table}` +
-    (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
+    (valueWhere.length ? ` WHERE ${valueWhere.join(" AND ")}` : "") +
     `) t WHERE rn = 1 AND v IS NOT NULL` +
     ` ORDER BY ${orderAlias} ${dir} NULLS LAST, d DESC LIMIT 2`;
   const rows = await queryRows<{ d: string; v: string | number | null }>(sql, args);
@@ -191,6 +227,36 @@ async function resolveTableMetric(
     out.prev_value = prev;
     if (typeof out.value === "number" && typeof prev === "number") {
       out.delta = out.value - prev;
+    }
+  }
+
+  // Rarity rank: the value's percentile within its PRIOR trailing history
+  // (same scope filters, one row per date, the 10y window ending at the
+  // value's own date). Skip non-numeric values and spec rank:false
+  // (categorical codes — trend states, 0/1 flags — wear no quantile).
+  if (rank && typeof out.value === "number" && out.value_date) {
+    const lePred = pred(`v <= ?`, out.value);
+    const rankPreds = whereFor([
+      pred(`${dateCol} < ?`, out.value_date),
+      pred(`${dateCol} >= ?`, shiftYears(out.value_date, -RANK_WINDOW_YEARS)),
+    ]);
+    const rankSql =
+      `SELECT AVG(CASE WHEN ${lePred} THEN 1.0 ELSE 0.0 END) AS pct_rank,` +
+      ` COUNT(*)::int AS n FROM (` +
+      `  SELECT ${dateCol} AS d, ${valueCol} AS v,` +
+      `         ROW_NUMBER() OVER (PARTITION BY ${dateCol}` +
+      `                            ORDER BY ${valueCol} DESC NULLS LAST) AS rn` +
+      `  FROM ${table} WHERE ${rankPreds.join(" AND ")}` +
+      `) t WHERE rn = 1 AND v IS NOT NULL`;
+    const rankRows = await queryRows<{
+      pct_rank: string | number | null;
+      n: number;
+    }>(rankSql, args);
+    const n = rankRows.length ? Number(rankRows[0].n) : 0;
+    if (n >= RANK_MIN_N) {
+      const r = Number(rankRows[0].pct_rank);
+      out.pct_rank = Number.isFinite(r) ? r : null;
+      out.pct_rank_n = n;
     }
   }
   return out;
@@ -255,6 +321,8 @@ export async function resolveInsightMetrics(params: {
     value_date: null,
     prev_value: null,
     delta: null,
+    pct_rank: null,
+    pct_rank_n: null,
     source_kind: tpl.spec?.source?.kind ?? "table",
     computed: false,
     unresolved: null,
@@ -278,6 +346,7 @@ export async function resolveInsightMetrics(params: {
     try {
       const found = await resolveTableMetric(
         spec.source, ctx, spec.scope ?? "security",
+        spec.rank !== false,
       );
       if ("unresolved" in found && found.unresolved) {
         if (spec.compute?.fn) needPython.push(tpl.metric);

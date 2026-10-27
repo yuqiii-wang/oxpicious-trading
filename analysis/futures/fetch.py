@@ -177,6 +177,14 @@ async def fetch_futures_identity_dates(conn) -> list:
     """Fetch distinct (date, code) pairs from futures_identity that need
     computation (not yet in analysis.futures_ext).
 
+    Scoped to pairs the analysis can actually process — an underlying
+    data point must exist for the (date, contract_type): an index close
+    in stats.index_basic_stats, or a treasury row for bond yields. The
+    shared futures tables also carry the offshore CN/MCA families whose
+    underlying index series is not downloaded yet; without the scope
+    those pairs would re-report as missing on every run (fetch() drops
+    them again at the underlying join).
+
     Returns list of (date, code) tuples.
     """
     sql = """
@@ -184,8 +192,17 @@ async def fetch_futures_identity_dates(conn) -> list:
         FROM stats.futures_identity i
         LEFT JOIN analysis.futures_ext e
           ON e.date = i.date AND e.code = i.code
+        LEFT JOIN stats.index_basic_stats u
+          ON u.code = i.underlying_code AND u.date = i.date
+        LEFT JOIN stats.debt_treasury t
+          ON t.date = i.date
         WHERE e.date IS NULL
+          AND (
+            (i.contract_type = $1 AND u.close IS NOT NULL)
+            OR (i.contract_type = $2 AND t.date IS NOT NULL)
+          )
         ORDER BY i.code, i.date
     """
-    rows = await conn.fetch(sql)
+    rows = await conn.fetch(sql, CONTRACT_TYPE_CODE["index"],
+                            CONTRACT_TYPE_CODE["bond"])
     return [(r["date"], r["code"]) for r in rows]

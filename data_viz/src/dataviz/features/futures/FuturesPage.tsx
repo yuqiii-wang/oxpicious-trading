@@ -1,7 +1,9 @@
 ﻿/**
- * Futures page — CFFEX futures curve visualization.
+ * Futures page — futures curve visualization (CFFEX + the offshore
+ * China-A50 families: CN = SGX FTSE A50, MCA = HKEX MSCI A50 Connect).
  *
- *  • Product selector (IC/IF/IH/IM index or T/TF/TL/TS bond)
+ *  • Product selector (CFFEX IC/IF/IH/IM index, T/TF/TL/TS bond, plus the
+ *    offshore CN/MCA index futures)
  *  • Top plot: multi-line ECharts (one line per contract)
  *      - Blue gradient for active qualifying contracts (nearer = darker)
  *      - Ghost very-light-grey for matured contracts
@@ -122,9 +124,7 @@ export default function FuturesPage() {
 
   const summary = useMemo(() => {
     if (!data) return null;
-    const active = data.contracts.filter(
-      (c) => c.is_alive && c.is_continuous,
-    ).length;
+    const active = data.contracts.filter((c) => c.is_alive).length;
     const matured = data.contracts.filter((c) => !c.is_alive).length;
     return {
       active,
@@ -156,7 +156,7 @@ export default function FuturesPage() {
       >
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            CFFEX Futures
+            Futures
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {productLabel} · {data?.contract_type === "bond" ? "bond" : "index"} future{" "}

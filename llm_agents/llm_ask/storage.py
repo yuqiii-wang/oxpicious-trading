@@ -240,16 +240,21 @@ async def _check_tables(conn) -> bool:
 
 async def persist_ask(payload: AiAskPayload,
                       result: Optional[AskResult] = None,
-                      error_tail: Optional[str] = None) -> Optional[int]:
+                      error_tail: Optional[str] = None,
+                      flow_start: Optional[datetime.datetime] = None,
+                      ) -> Optional[int]:
     """Append one ask (and its context, images, keywords) to the history.
 
     ``result`` is the ``AskResult`` of a successful ask; when None the ask
     failed and a ``status='failed'`` row is written with *error_tail*.
-    Returns the new ask_id, or None when persistence was skipped/failed —
-    always fail-soft: the ask's answer must still reach the UI.
+    *flow_start* (tz-aware, captured by the caller before the ask's LLM
+    requests) enables the text.llm_requests backlink: request_ids are
+    collected (fail-soft) and stored on the row. Returns the new ask_id,
+    or None when persistence was skipped/failed — always fail-soft: the
+    ask's answer must still reach the UI.
     """
     try:
-        return await _persist_ask(payload, result, error_tail)
+        return await _persist_ask(payload, result, error_tail, flow_start)
     except Exception:
         logger.warning("ask persist: failed (ask not stored, answering "
                        "unaffected)", exc_info=True)
@@ -257,8 +262,10 @@ async def persist_ask(payload: AiAskPayload,
 
 
 async def _persist_ask(payload: AiAskPayload,
-                      result: Optional[AskResult],
-                      error_tail: Optional[str]) -> Optional[int]:
+                       result: Optional[AskResult],
+                       error_tail: Optional[str],
+                       flow_start: Optional[datetime.datetime],
+                       ) -> Optional[int]:
     answered = result is not None and bool(result.answer)
 
     plot_info = payload.plot_info
@@ -270,12 +277,17 @@ async def _persist_ask(payload: AiAskPayload,
     try:
         if not await _check_tables(conn):
             return None
+        request_ids: list = []
+        if flow_start is not None:
+            from llm_agents._core.request_log import collect_request_ids
+            request_ids = await collect_request_ids(flow_start, conn=conn)
+
         async with conn.transaction():
             ask_id = await conn.fetchval(
                 f"INSERT INTO {ASK_TABLE} (question, answer, status, "
                 f"error_tail, online_search, search_query, provider, "
-                f"llm_model, code, product) "
-                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
+                f"llm_model, code, product, request_ids) "
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
                 f"RETURNING ask_id",
                 payload.question,
                 result.answer if answered else None,
@@ -287,6 +299,7 @@ async def _persist_ask(payload: AiAskPayload,
                 result.model if answered else None,
                 code,
                 product,
+                request_ids,
             )
 
             sql, params = _context_row(ask_id, payload,

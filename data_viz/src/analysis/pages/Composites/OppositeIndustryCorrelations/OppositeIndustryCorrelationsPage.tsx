@@ -64,6 +64,7 @@ import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { AiAskButton, derivePlotInfo, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import { useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
@@ -360,17 +361,11 @@ export default function OppositeIndustryCorrelationsPage() {
   // metric/window controls row. State carries the CURRENT metric / window /
   // pool / benchmark so the modal and the LLM describe the view on screen.
   const chartRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.offsetCorrelations,
-      intro:
-        "Benchmark-offset industry correlations: each industry's MA trend has the benchmark " +
-        "rebased to its window-start level subtracted (common market factor removed), then " +
-        "every industry PAIR's Pearson r is charted per rolling 20/60/255-day window as " +
-        "horizontal segments from each window date. Metric toggle: Overall = raw r (benchmark " +
-        "still in); Benchmark Offset = r after removal — offset −1 = perfectly opposite " +
-        "ex-market, 0 = uncorrelated, +1 = co-moving. Indication: Benchmark Offset ≈ −1 " +
-        "pairs are natural market-neutral candidates — long one, hedge with the other.",
+      intro: docs.text("ui.composites.offset-correlations"),
       instruments: [
         { code: benchmark, assetClass: "index" },
         ...selectedIds.map((id) => ({ code: id, assetClass: "industry" as const })),
@@ -383,12 +378,9 @@ export default function OppositeIndustryCorrelationsPage() {
         industries_selected: selectedIds.length,
         pairs: numPairs,
       },
-      notes: [
-        "One line per industry pair (dynamic series names); windows start every 20 trading days.",
-        "An industry up while the benchmark rises MORE is DOWN after the offset — that is the opposite-industry detector.",
-      ],
+      notes: docs.notes("ui.composites.offset-correlations"),
     }),
-    [metric, win, pool, benchmark, selectedIds, numPairs],
+    [docs, metric, win, pool, benchmark, selectedIds, numPairs],
   );
   const aiAskPlotInfo = useMemo(
     () =>

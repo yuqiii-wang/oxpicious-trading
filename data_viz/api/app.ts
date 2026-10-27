@@ -36,6 +36,7 @@ import aiRoutes from "./routes/ai.js";
 import cacheRoutes from "./routes/cache.js";
 import monitorRoutes from "./routes/monitor.js";
 import configRoutes from "./routes/config.js";
+import docsRoutes from "./routes/docs.js";
 
 const app: express.Application = express();
 
@@ -66,6 +67,7 @@ app.use("/api/ai", aiRoutes);
 app.use("/api/cache", cacheRoutes);
 app.use("/api/monitor", monitorRoutes);
 app.use("/api/config", configRoutes);
+app.use("/api/docs", docsRoutes);
 
 /**
  * Health check

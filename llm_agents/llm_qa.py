@@ -109,6 +109,7 @@ async def upsert_qa(
     industry_id: Optional[str] = None,
     sector_id: Optional[str] = None,
     news_ids: Optional[Sequence[int]] = None,
+    request_ids: Optional[Sequence[int]] = None,
     llm_model: Optional[str] = None,
     language: str = "zh",
     is_active: bool = True,
@@ -152,12 +153,12 @@ async def upsert_qa(
                 f'category = $4, industry_id = $5, sector_id = $6, '
                 f'llm_model = $7, language = $8, is_active = $9, '
                 f'qa_date = COALESCE($10::timestamptz, qa_date), '
-                f'is_failed_explanation = $11, '
+                f'is_failed_explanation = $11, request_ids = $12, '
                 f'updated_at = now() '
                 f'WHERE qa_id = $1',
                 qa_id, answer, context, category, industry_id, sector_id,
                 llm_model, language, is_active, qa_date,
-                failed_explanation)
+                failed_explanation, list(request_ids or []))
             return qa_id
 
     row = {
@@ -169,6 +170,7 @@ async def upsert_qa(
         "sector_id": sector_id,
         "news_group_id": news_group_id,
         "llm_model": llm_model,
+        "request_ids": list(request_ids or []),
         "language": language,
         "is_active": is_active,
         "is_failed_explanation": failed_explanation,

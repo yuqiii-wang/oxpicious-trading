@@ -179,7 +179,10 @@ def bulk_upsert(
     Args:
         conn: psycopg3 connection
         table_name: target table (may include schema prefix like "stats.debt_identity")
-        rows: list of dictionaries, each representing a row
+        rows: list of dictionaries, each representing a row. The column
+                    set is the ordered union of the rows' keys; a key
+                    absent from a row writes NULL (heterogeneous batches
+                    are allowed; key columns must exist on every row)
         key_columns: list of column names forming the primary key
         batch_size: chunk size for pipelined executemany (capped at 1000).
         commit_chunk_rows: rows per COMMIT (default 100K).
@@ -198,7 +201,14 @@ def bulk_upsert(
     if not rows:
         return 0
 
-    columns = list(rows[0].keys())
+    # Rows may be heterogeneous (optional payload keys on some rows
+    # only): the column set is the ordered union of every row's keys,
+    # and a key absent from a row writes NULL — inferring from rows[0]
+    # alone both aborted the whole write (KeyError in the tuple build)
+    # and silently dropped keys the first row lacked.
+    columns = list(dict.fromkeys(
+        key for row in rows for key in row.keys()
+    ))
     if not columns:
         return 0
 
@@ -259,8 +269,11 @@ def bulk_upsert(
                     f"    [WARN] {table_name}: dropped "
                     f"{len(chunk) - len(by_pk):,} duplicate-PK row(s) "
                     f"within a commit chunk (last occurrence wins)")
+            # Optional keys a row doesn't carry write NULL (see the
+            # column union above); key columns must exist on every row —
+            # by_pk already raised on those.
             chunk_values = [
-                tuple(row[c] for c in columns) for row in by_pk.values()
+                tuple(row.get(c) for c in columns) for row in by_pk.values()
             ]
             # One COMMIT per chunk: without an explicit transaction each
             # executemany call would be its own implicit transaction

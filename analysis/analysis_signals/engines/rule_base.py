@@ -11,9 +11,14 @@ the implementation machinery lives in sibling components:
                         (the per-cell measurement); the episode
                         machinery (EpisodeDetector) lives in the
                         consolidated analysis.trends component
-  boost.py              the ohlcv boost — the day-0 trust-score
-                        collaborator (OhlcvBoost), composed by
-                        delegation; a family opts in via OHLCV_BOOST
+  _ohlcv_boost/         the ohlcv boost — the day-0 trust-score
+                        collaborator (OhlcvBoost, measurement.py),
+                        composed by delegation; a family opts in via
+                        OHLCV_BOOST — plus the shared VARIANT-GATE
+                        stack (_variant_base.VariantGate + the
+                        _pe_boost / _ohlcv_boost axis packages): the
+                        boosted-variant populations the engines run
+                        beside their plain cells
   analysis.trends       the consolidated TRENDS + EPISODES component
                         (package level): attach_trend (every family's
                         prepared frame) + EpisodeDetector
@@ -66,10 +71,7 @@ different prepared bars. The MEASURED evidence (the cell's own measure
 block) is NOT rule_params — it is the dated per-run snapshot of
 analysis_signals.history_signal_performance (never purged: a cell's
 evidence evolution, graduation and death survive the rules tier's
-per-run wipes). The COMBINED tiers (pooled evidence block, gate
-digest, cascade) moved to the portfolio tier 2026-10-20
-(history_portfolio_signal_performance — the combined stats of the
-individual in-portfolio signals).
+per-run wipes).
 
 Cell axes per family shape:
   trend split + regime split   mov_rsi, bollinger
@@ -105,7 +107,7 @@ from _common.labels import (
 )
 
 from analysis.analysis_signals import config as cfg
-from analysis.analysis_signals.engines.boost import OhlcvBoost
+from analysis.analysis_signals.engines._ohlcv_boost import OhlcvBoost
 from analysis.analysis_signals.engines.evaluation import (
     CellGate,
     cell_stats,
@@ -117,6 +119,52 @@ from analysis.trends import EpisodeDetector, attach_trend
 logger = logging.getLogger(__name__)
 
 _DAY_CLOSE = time(15, 0)
+
+# the frequency floor's warmup guard: calendar days before which a
+# code's trailing-bar population cannot be complete (HP_LEG_BAR_MIN_
+# PERIODS ~ 255 traded rows ≈ 400 calendar days) — the year containing
+# a code's first ~400 days can never carry triggers, so it is not an
+# eligible year (2026-10-25, the per-year coverage floor)
+FREQ_WARMUP_DAYS = 400
+
+
+def eligible_freq_years(df: pd.DataFrame) -> dict[str, list[int]]:
+    """The per-code ELIGIBLE YEARS for the frequency floor (the
+    2026-10-25 PER-YEAR COVERAGE semantics): calendar years that carry
+    rows, whose Jan-1 sits past the trailing-bar warmup (first date +
+    FREQ_WARMUP_DAYS), COMPLETE years only (the running year is exempt
+    until it ends — a January rebuild must not loosen every pair to the
+    shallowest tail for a year that has barely started). ONE host
+    unwrap of code/date, then a single pass — the tiny per-code
+    summary is the sanctioned host boundary."""
+    if df.empty:
+        return {}
+    codes = host_array(df["code"]).tolist()
+    dates = host_array(df["date"]).astype("datetime64[D]")
+    years = dates.astype("datetime64[Y]").astype("int64") + 1970
+    first: dict[str, np.datetime64] = {}
+    last: dict[str, np.datetime64] = {}
+    present: dict[str, set] = {}
+    for i, c in enumerate(codes):
+        f = first.get(c)
+        if f is None:
+            first[c] = dates[i]
+            last[c] = dates[i]
+            present[c] = {int(years[i])}
+        else:
+            if dates[i] < f:
+                first[c] = dates[i]
+            if dates[i] > last[c]:
+                last[c] = dates[i]
+            present[c].add(int(years[i]))
+    out: dict[str, list[int]] = {}
+    for c, lo in first.items():
+        y0 = int((lo + np.timedelta64(FREQ_WARMUP_DAYS, "D"))
+                 .astype("datetime64[Y]").astype("int64")) + 1970
+        last_y = int(last[c].astype("datetime64[Y]").astype("int64")) \
+            + 1970
+        out[c] = sorted(y for y in present[c] if y0 <= y < last_y)
+    return out
 
 
 @dataclass(frozen=True)
@@ -135,6 +183,11 @@ class Candidate:
     reference: float | pd.Series
     depth: pd.Series
     params: dict = field(default_factory=dict)
+    # the candidate's own recorded-value column override (the history
+    # rows' ``signal``): None = the run_cells call's ``value_col`` —
+    # the hedge trio's window grid records the winning window's own
+    # rsi_mean (rsi14 vs rsi10 means are different scales)
+    value_col: str | None = None
 
 
 class RuleEntry(ABC):
@@ -172,10 +225,19 @@ class RuleEntry(ABC):
     # pass; every family inherits the machinery off and opts in by
     # flipping this)
     OHLCV_BOOST: bool = False
+    # The PORTFOLIO-tier flag (2026-10-24): True on entries whose rows
+    # are SOURCED by a portfolio family — every emitted rule/history
+    # row then rides is_in_portfolio TRUE, the PK's tier axis (a
+    # sourced variant of a rule is a SEPARATE row from the standalone
+    # one; the live active set and the standalone families' wipe
+    # scopes exclude the tier). The hedge family's source layer
+    # (_ComponentRsiEntry) is the writer; standalone families keep the
+    # default FALSE and the ORCHESTRATING composite rows carry FALSE
+    # (the group IS the composite).
+    PORTFOLIO_TIER: bool = False
     # Whether the family's frame codes belong in analysis.trend_days
-    # (run_family's _write_trend_days). Composite-scope families
-    # (hedge_pairs' 'A~B' pair ids) opt OUT — their codes are not
-    # securities and must not pollute the trends store.
+    # (run_family's _write_trend_days). Composite-scope families whose
+    # codes are not securities opt OUT.
     WRITES_TREND_DAYS: bool = True
     # The forward-blend RESPONSE price columns (the multi-response
     # extension, 2026-10-18): a family that measures cells against
@@ -185,10 +247,7 @@ class RuleEntry(ABC):
     # _blend_ok / _fwd{h}; extras carry the column suffix —
     # _blend_{col} / _blend_ok_{col} / _fwd{h}_{col}), and
     # run_cells(response_col=...) measures that call's cells against
-    # the named set. The hedge_pairs precedent: the inverse-vol pair
-    # portfolio is the primary response, the strong/laggard legs the
-    # harvest-exit responses (the sell gates judge the leg they
-    # trim, not the portfolio).
+    # the named set.
     FORWARD_PRICE_COLS: tuple[str, ...] = ("price",)
 
     def __init__(self, conn, sec_type: str, codes: Sequence[str],
@@ -223,25 +282,22 @@ class RuleEntry(ABC):
     def sub_type_code(self, sub_type: str) -> int:
         return SIGNAL_SUB_TYPE_CODE[sub_type]
 
-    def rule_wipe_scopes(self) -> list[tuple[int, list[str]]]:
-        """The (signal_type code, codes) scopes this run's
-        signal_rules rows live at — run_family's PRE-INSERT WIPE
-        (code-scoped: concurrent writers of the SAME signal_type at
-        other codes — the hedge_pairs family writes typical mov_rsi
-        component rows at the market + industry codes — never
-        collide). Default: the family's own type at the run's codes.
-        Composite families override with additional scopes."""
-        return [(self.signal_type_code, self.codes)]
+    def rule_wipe_scopes(self) -> list[tuple[int, list[str], bool | None]]:
+        """The (signal_type code, codes, tier) scopes this run's
+        signal_rules rows live at — run_family's PRE-INSERT WIPE.
+        CODE-SCOPED (concurrent writers of the SAME signal_type at
+        other codes never collide) and TIER-PARTITIONED (the PK's
+        is_in_portfolio axis since 2026-10-23: standalone runs own the
+        FALSE tier, a portfolio family's source layer owns the TRUE
+        tier of the family vocabulary it stamps; None = both tiers —
+        the composite scopes that own their codes outright). Default:
+        the family's own type at the run's codes, FALSE tier."""
+        return [(self.signal_type_code, self.codes, False)]
 
-    def history_purge_scopes(self) -> list[tuple[int, list[str]]]:
-        """The (signal_type code, codes) scopes this family owns in
-        history_signals — run_family's --force purge. Default: the
-        rule wipe scopes (families replay history only under their
-        own type); a family that stamps additional rule scopes
-        inherits the same coverage — the hedge_pairs precedent: its
-        rules live under THREE types (hp_rsi + hedge_pairs at the
-        pair codes, mov_rsi at the component codes), so the purge
-        must cover them all."""
+    def history_purge_scopes(self) -> list[tuple[int, list[str], bool | None]]:
+        """The (signal_type code, codes, tier) scopes this family owns
+        in history_signals — run_family's --force purge, partitioned
+        exactly like the rule wipe scopes."""
         return self.rule_wipe_scopes()
 
     @property
@@ -410,34 +466,93 @@ class RuleEntry(ABC):
         is_typical: pd.Series | None = None,
         extra_params: dict | None = None,
         response_col: str = "price",
+        freq_floor_per_year: float | None = None,
+        gate_min: dict[str, float] | None = None,
+        pooled_dir_ave_min: float | None = None,
+        signal_type_code: int | None = None,
+        portfolio_tier: bool | None = None,
+        pe_boosted: bool = False,
+        ohlcv_boosted: bool = False,
     ) -> tuple[list[dict], list[dict]]:
         """Measure every candidate per cell, pick each cell's WINNING
-        candidate (the gate-passing one with the best dir_ave; ties →
-        the FIRST candidate — the widest bar), run the POOLED EVIDENCE
+        candidate (the gate-passing one with the best dir_ave; or,
+        under ``freq_floor_per_year``, the deepest gate-passer meeting
+        the frequency floor; ties → the FIRST candidate — the widest
+        bar), run the POOLED EVIDENCE
         TIER, and emit the cell's signal_rules row (rule_params = the
         CONSTANT rule definition only — axis, K, the reentry flags, the
         family's bar_def/params, the gate bar constants, the confidence
         scale) plus history rows for the winning cells' episode-first
         triggers. The MEASURED items ride each row's ``_performance``
         payload — the cell's OWN measure block only (n / dir_ave /
-        std / t / hit + the as-of date), slimmed 2026-10-20: run_family
-        peels it into analysis_signals.history_signal_performance as
-        the run's dated snapshot; the COMBINED tiers (the pooled
-        evidence block, the gate digest, the cascade) live on the
-        PORTFOLIO tier (history_portfolio_signal_performance), never
-        on the cell snapshot.
+        std / t / hit + the as-of date): run_family peels it into
+        analysis_signals.history_signal_performance as the run's dated
+        snapshot.
 
         ``ungated`` marks observational populations (the VRP-rejection
         twin): cells emit regardless of the gate (still n >= 1),
         recording the measured evidence as-is (no pooled tier either).
 
         ``response_col`` selects WHICH declared FORWARD_PRICE_COLS
-        response this call's cells measure against (default "price"
-        — the frame's own price; hedge_pairs' harvest exits pass the
-        strong/laggard leg columns so the sell gates judge the leg
-        they trim). The blend set for that column must exist on the
-        frame — prepare_frame attaches every FORWARD_PRICE_COLS
-        member's set.
+        response this call's cells measure against (default "price" —
+        the frame's own price). The blend set for that column must
+        exist on the frame — prepare_frame attaches every
+        FORWARD_PRICE_COLS member's set.
+
+        ``freq_floor_per_year`` (optional) switches the winner policy
+        to the FREQUENCY FLOOR — the 2026-10-25 PER-YEAR COVERAGE
+        semantics (user-directed "portfolio event should be at least
+        once per year"): among the gate-passing candidates (iterated
+        in the caller's order — deepest bar first) the cell picks the
+        FIRST whose episode-first triggers cover EVERY eligible
+        calendar year of the code (>= ``floor`` triggers in each year
+        past the trailing-bar warmup; the running year exempt),
+        loosening the bar just enough; the best-dir_ave winner stays
+        the fallback for cells no candidate carries to the floor. The
+        prior horizon-AVERAGE semantics (n/yr over the whole span,
+        2026-10-25 morning) retired the same day: it let a pair's
+        events cluster in the wash years while whole calendar years
+        stayed empty (21/44 hedge spread winners carried an empty
+        year). None (default) = the best-dir_ave winner everywhere.
+        The measured population is the winner's own — the emitted
+        evidence describes exactly what fires.
+
+        ``gate_min`` / ``pooled_dir_ave_min`` (optional) override the
+        evidence bars for THIS call (family-scoped loosening — the
+        config globals stay the standalone families' discipline): the
+        per-candidate dir_ave bar and the pooled tier's mean bar; the
+        pooled statistics legs (t bar, expanding-year majority) stay
+        the shared contract.
+
+        ``signal_type_code`` / ``portfolio_tier`` (optional) override
+        the row identity for THIS call: the registered STANDALONE
+        cells stamp ANOTHER family's type (the hedge trio's sourced
+        mov_rsi cells — signal_type mov_rsi) and the PORTFOLIO tier
+        (is_in_portfolio TRUE — the sourced layer's own axis); the
+        default is the entry's own identity.
+
+        ``pe_boosted`` (optional) stamps the row identity's PE-
+        CONDITIONING axis (signal_rules / history_signals /
+        history_signal_performance PK member is_pe_boosted, 2026-10-26
+        user-directed, the is_ohlcv_boosted/is_in_portfolio
+        PK-member precedent): TRUE = this call's cells are the
+        PE-gated variant of the sub type (the candidate masks are
+        AND-gated by the code's own PE-percentile condition) — a
+        SEPARATE row set from the unconstrained variant's, whose call
+        runs with the default False. The gate definition rides the
+        candidates' rule_params (bar_def.pe_gate).
+
+        ``ohlcv_boosted`` (optional) stamps the row identity's
+        OHLCV-boost VARIANT axis (signal_rules PK member
+        is_ohlcv_boosted since 2026-10-26, user-directed — mirrored
+        from history_signals, where it has keyed since the boost-twin
+        era; history_signal_performance carries it in its PK too):
+        TRUE = this call's cells are the OHLCV-boosted variant of the
+        sub type — a SEPARATE row set from the unconstrained one.
+        RETIRED as a live variant 2026-10-16 (the twins became the
+        per-cell trust-weighted measurement): no emitter passes True
+        today, the flag rides FALSE on every row and exists for the
+        key's shape — the kwarg keeps the two variant axes symmetric.
 
         THE POOLED EVIDENCE TIER (2026-10-16; starvation-trading since
         2026-10-19): the per-cell floors cannot reach statistical
@@ -474,6 +589,12 @@ class RuleEntry(ABC):
         twin) stay observational wait rows: every cell with episodes
         emits, confidence flat."""
         action_code = ACTION_CODE[action]
+        # the row-identity overrides (the registered STANDALONE cells
+        # stamp another family's type + the PORTFOLIO tier)
+        st_code = self.signal_type_code if signal_type_code is None \
+            else signal_type_code
+        tier = self.PORTFOLIO_TIER if portfolio_tier is None \
+            else portfolio_tier
         keys = self.cell_keys
         sub_code = self.sub_type_code(sub_type)
         # this call's response axis: the declared FORWARD_PRICE_COLS
@@ -481,7 +602,7 @@ class RuleEntry(ABC):
         # "price" the legacy unsuffixed names)
         blend_col, ok_col, fwd_tmpl = self._blend_col_names(response_col)
         detector = EpisodeDetector(k)
-        gate = CellGate()
+        gate = CellGate(gate_min=gate_min)
         # the boost's day-0 axes ride the family frame? (mov_rsi and
         # bollinger fetch them; the options frames do not — the boost
         # then silently stays off for the run)
@@ -494,7 +615,15 @@ class RuleEntry(ABC):
         # emission loop). Ungated populations (the VRP twin) take any
         # candidate with episodes.
         chosen: dict[tuple, tuple[Candidate, dict]] = {}
+        freq_chosen: dict[tuple, tuple[Candidate, dict]] = {}
         per_cand: list[tuple[Candidate, pd.Series, pd.DataFrame]] = []
+        # the frequency floor's per-code ELIGIBLE YEARS (one shared
+        # whole-frame helper — the same map hedge_pairs'
+        # _pick_window_tails reads)
+        freq_elig: dict[str, list[int]] = {}
+        cand_year_counts: dict[int, dict[tuple, dict[int, int]]] = {}
+        if freq_floor_per_year is not None:
+            freq_elig = eligible_freq_years(df)
         trend_series = df["trend"] if self.TREND_AWARE_REENTRY else None
         # the cell-split context column: the family's own cell axes
         # packed into ONE int group key ((trend, regime) for the full
@@ -506,7 +635,7 @@ class RuleEntry(ABC):
             if not self.REGIME_FREE:
                 ctx = ctx * 8 + df["regime"].astype("int64")
             ctx_series = ctx
-        for cand in candidates:
+        for ci, cand in enumerate(candidates):
             trig_mask = detector.triggers(df, cand.mask,
                                           trend=trend_series,
                                           context=ctx_series)
@@ -514,6 +643,34 @@ class RuleEntry(ABC):
             trig = per_cand[-1][2]
             if trig.empty:
                 continue
+            if freq_floor_per_year is not None:
+                # the candidate's per-cell PER-YEAR trigger counts
+                # (episode FIRST days — all of them, the newest
+                # unmeasurable included: the frequency counts what
+                # fires) — the small trigger frames are the sanctioned
+                # boundary
+                counts: dict[tuple, dict[int, int]] = {}
+                t_codes = host_array(trig["code"]).tolist()
+                t_years = host_array(trig["date"]) \
+                    .astype("datetime64[D]").astype("datetime64[Y]") \
+                    .astype("int64").tolist()
+                t_trend = host_array(trig["trend"]).astype("int64") \
+                    .tolist() if "trend" in keys else None
+                t_regime = host_array(trig["regime"]).astype("int64") \
+                    .tolist() if "regime" in keys else None
+                for i in range(len(t_codes)):
+                    c = (str(t_codes[i]),)
+                    if t_trend is not None:
+                        c = c + (t_trend[i],)
+                    if t_regime is not None:
+                        c = c + (t_regime[i],)
+                    cell_years = counts.setdefault(c, {})
+                    # datetime64[Y] ints are years SINCE 1970 — the
+                    # shared +1970 epoch convention (the pooled facts
+                    # line below does the same)
+                    y = int(t_years[i]) + 1970
+                    cell_years[y] = cell_years.get(y, 0) + 1
+                cand_year_counts[ci] = counts
             measurable = trig[trig[ok_col].fillna(False)]
             if measurable.empty:
                 continue
@@ -530,26 +687,43 @@ class RuleEntry(ABC):
                     # measured-out: below the side's dir_ave bar — the
                     # gate rejecting on evidence, any n
                     continue
+                std = float(row["dir_std"])
+                t_stat = (dir_ave / (std / math.sqrt(n))
+                          if n >= 2 and math.isfinite(std)
+                          and std > 1e-12 else None)
+                meas = {"measure": {
+                    "n_episodes": n,
+                    "dir_ave_pct": round(dir_ave * 100.0, 4),
+                    # the dispersion pair (2026-10-16): the
+                    # per-cell std and its t-stat — honest
+                    # small-n evidence alongside the mean bar
+                    "dir_std_pct": round(std * 100.0, 4)
+                    if math.isfinite(std) else None,
+                    "t_stat": round(t_stat, 4)
+                    if t_stat is not None else None,
+                    "hit_rate": round(float(row["hit"]), 4),
+                }}
                 prev = chosen.get(cell)
-                if prev is None or dir_ave * 100.0 > prev[1]["measure"]["dir_ave_pct"]:
-                    std = float(row["dir_std"])
-                    t_stat = (dir_ave / (std / math.sqrt(n))
-                              if n >= 2 and math.isfinite(std)
-                              and std > 1e-12 else None)
-                    chosen[cell] = (cand, {
-                        "measure": {
-                            "n_episodes": n,
-                            "dir_ave_pct": round(dir_ave * 100.0, 4),
-                            # the dispersion pair (2026-10-16): the
-                            # per-cell std and its t-stat — honest
-                            # small-n evidence alongside the mean bar
-                            "dir_std_pct": round(std * 100.0, 4)
-                            if math.isfinite(std) else None,
-                            "t_stat": round(t_stat, 4)
-                            if t_stat is not None else None,
-                            "hit_rate": round(float(row["hit"]), 4),
-                        },
-                    })
+                if prev is None or dir_ave * 100.0 \
+                        > prev[1]["measure"]["dir_ave_pct"]:
+                    chosen[cell] = (cand, meas)
+                if freq_floor_per_year is None or cell in freq_chosen:
+                    continue
+                years_n = cand_year_counts.get(ci, {}).get(cell, {})
+                elig = freq_elig.get(cell[0], [])
+                if elig and all(years_n.get(y, 0) >= freq_floor_per_year
+                                for y in elig):
+                    # the PER-YEAR COVERAGE FLOOR: the FIRST
+                    # gate-passing candidate (the caller iterates
+                    # deepest-bar first) whose triggers cover EVERY
+                    # eligible year wins — loosen just enough
+                    freq_chosen[cell] = (cand, meas)
+
+        if freq_chosen:
+            # the frequency-floor picks override the best-dir_ave
+            # fallback wherever a candidate carried the cell to the
+            # floor
+            chosen = {**chosen, **freq_chosen}
 
         # the emitted winners — every chosen cell is a trading row
         # (starved cells emit their REAL action at the reduced
@@ -615,7 +789,7 @@ class RuleEntry(ABC):
                         **{f"f{h}": float(fwd_np[h][i]) * sgn0
                            for h in fwd_hs},
                     })
-            pooled = pooled_evidence(facts)
+            pooled = pooled_evidence(facts, dir_ave_min=pooled_dir_ave_min)
         pooled_demoted = bool(pooled is not None and action == "buy"
                               and not pooled["passed"])
         if pooled_demoted:
@@ -647,12 +821,10 @@ class RuleEntry(ABC):
             regime_code = int(cell[keys.index("regime")]) \
                 if "regime" in keys else 4
             m = meas["measure"]
-            # the 2026-10-19 CONSTANT/PERFORMANCE split, slimmed
-            # 2026-10-20: the gate's BAR constants (+ the observational
-            # designation) ride the rule; the VERDICT is the rule's
-            # is_valid boolean (the unified dir_ave test) — the gate
-            # digest no longer rides the cell snapshot (the combined
-            # tiers live on the portfolio tier)
+            # the 2026-10-19 CONSTANT/PERFORMANCE split: the gate's BAR
+            # constants (+ the observational designation) ride the
+            # rule; the VERDICT is the rule's is_valid boolean (the
+            # unified dir_ave test)
             gate_bars: dict = {
                 "metric": "dir_ave",
                 "min_pct": round(
@@ -678,10 +850,21 @@ class RuleEntry(ABC):
             params.update(cand.params)
             if extra_params:
                 params.update(extra_params)
+            # the VARIANT-AXIS stamp (2026-10-27, user-directed "update
+            # rule params if ohlcv and pe is used to boost"): a boosted
+            # variant's params name the axes beside the DB's
+            # is_pe_boosted / is_ohlcv_boosted columns — the
+            # self-describing JSON convention (the portfolio sub_type
+            # precedent); the plain population carries no key (the
+            # gate CONDITIONS ride bar_def.pe_gate / bar_def.ohlcv_gate)
+            if pe_boosted:
+                params["pe_boosted"] = True
+            if ohlcv_boosted:
+                params["ohlcv_boosted"] = True
             rules_rows.append({
                 "code": code,
                 "sec_type": self.sec_type_code,
-                "signal_type": self.signal_type_code,
+                "signal_type": st_code,
                 "signal_sub_type": sub_code,
                 "trend": trend_code,
                 "regime_state": regime_code,
@@ -694,16 +877,29 @@ class RuleEntry(ABC):
                 # returns never validate (measured-out cells do not
                 # emit; the ungated twin rows stay observational)
                 "is_valid": not ungated,
+                # the schema's tier flag (a signal_rules PK member):
+                # TRUE on the portfolio families' SOURCE-layer rows
+                # (the PORTFOLIO_TIER entry flag), FALSE on the
+                # standalone families' rows and the orchestrating
+                # composites (the group IS the composite)
+                "is_in_portfolio": tier,
+                # the schema's PE-conditioning flag (a signal_rules PK
+                # member): TRUE on this call's PE-gated variant cells
+                # (the pe_boosted kwarg), FALSE on the unconstrained
+                # population
+                "is_pe_boosted": pe_boosted,
+                # the schema's OHLCV-boost VARIANT flag (a signal_rules
+                # PK member since 2026-10-26 — mirrored from
+                # history_signals): TRUE only on a future boosted-
+                # variant call (the ohlcv_boosted kwarg); the twins era
+                # is retired and every emitter ships FALSE today
+                "is_ohlcv_boosted": ohlcv_boosted,
                 "rule_entry": self.entry_name,
                 "rule_params": params,
                 # the MEASURED half of the former rule_params (the
-                # 2026-10-19 split, slimmed 2026-10-20 to the cell's
-                # OWN measure): run_family peels this payload into
-                # analysis_signals.history_signal_performance as the
-                # run's dated snapshot — the pooled tier / gate digest /
-                # boost conf / dd lens / cascade never ride the CELL
-                # snapshot any more (the portfolio tier owns the
-                # combined audit)
+                # 2026-10-19 split, the cell's OWN measure): run_family
+                # peels this payload into analysis_signals.
+                # history_signal_performance as the run's dated snapshot
                 "_performance": {
                     "date": self._performance_as_of(df),
                     "n_episodes": m["n_episodes"],
@@ -760,7 +956,7 @@ class RuleEntry(ABC):
                 else pd.Series(float(cand.depth), index=trig.index),
             )
             sel_np = host_array(hit_mask.fillna(False)).astype(bool)
-            vals_np = host_array(fired[value_col])
+            vals_np = host_array(fired[cand.value_col or value_col])
             codes_np = host_array(fired["code"])
             trend_np = host_array(fired["trend"]).astype("int64") \
                 if "trend" in keys \
@@ -809,11 +1005,24 @@ class RuleEntry(ABC):
                 history_rows.append({
                     "code": code,
                     "sec_type": self.sec_type_code,
-                    "signal_type": self.signal_type_code,
+                    "signal_type": st_code,
                     "signal_sub_type": sub_code,
-                    "is_ohlcv_boosted": False,
+                    # the boost-variant flag (a history_signals PK
+                    # member): this call's ohlcv_boosted identity —
+                    # FALSE on every emitter since the twins' retirement
+                    "is_ohlcv_boosted": ohlcv_boosted,
                     "date": py_dates[i],
                     "time": _DAY_CLOSE,
+                    # the schema's tier flag (a history_signals PK
+                    # member): TRUE on the portfolio families' SOURCE-
+                    # layer events (the entry's PORTFOLIO_TIER flag),
+                    # FALSE on the standalone families' events and the
+                    # orchestrating composite events
+                    "is_in_portfolio": tier,
+                    # the schema's PE-conditioning flag (a
+                    # history_signals PK member): mirrors the rules
+                    # row's is_pe_boosted for this call's cells
+                    "is_pe_boosted": pe_boosted,
                     # starved cells record their REAL action at the
                     # reduced confidence (the 2026-10-19 starvation
                     # retreat — no wait replay any more)

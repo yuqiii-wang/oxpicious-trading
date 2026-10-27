@@ -3,6 +3,7 @@ the database (no intermediate CSV).
 
 Aggregates daily-frequency data sources into the 8 debt_* tables:
   1. PBoC OMO daily reverse-repo announcements     → stats.debt_omo
+     (incl. the overnight variety 隔夜逆回购 as omo_rate_1d / omo_quantity_1d)
   2. PBoC outright-repo tender announcements        → stats.debt_outright_repo
   3. PBoC MLF tender                                → stats.debt_mlf
   4. Repo lifecycle tracking (running cumulative)   → stats.debt_repo

@@ -273,7 +273,10 @@ async def bulk_upsert_async(
     Args:
         conn: asyncpg connection
         table_name: target table (may include schema prefix like "stats.debt_identity")
-        rows: list of dictionaries, each representing a row
+        rows: list of dictionaries, each representing a row. The column
+                    set is the ordered union of the rows' keys; a key
+                    absent from a row writes NULL (heterogeneous batches
+                    are allowed; key columns must exist on every row)
         key_columns: list of column names forming the primary key
         batch_size: chunk size for executemany calls (default 5000, capped at
                     10000).
@@ -298,7 +301,14 @@ async def bulk_upsert_async(
     if not rows:
         return 0
 
-    columns = list(rows[0].keys())
+    # Rows may be heterogeneous (optional payload keys on some rows only):
+    # the column set is the ordered union of every row's keys, and a key
+    # absent from a row writes NULL — inferring from rows[0] alone both
+    # aborted the whole write (KeyError in the tuple build) and silently
+    # dropped keys the first row lacked.
+    columns = list(dict.fromkeys(
+        key for row in rows for key in row.keys()
+    ))
     if not columns:
         return 0
 
@@ -371,9 +381,12 @@ async def bulk_upsert_async(
                     f"{len(chunk) - len(by_pk):,} duplicate-PK row(s) "
                     f"within a commit chunk (last occurrence wins)")
             # Tuples are built per commit chunk only — the full input's
-            # tuple list is never materialized at once.
+            # tuple list is never materialized at once. Optional keys a
+            # row doesn't carry write NULL (see the column union above);
+            # key columns must exist on every row — by_pk already raised
+            # on those.
             chunk_values = [
-                tuple(row[c] for c in columns) for row in by_pk.values()
+                tuple(row.get(c) for c in columns) for row in by_pk.values()
             ]
             # One COMMIT per chunk: asyncpg operates in implicit autocommit
             # by default, so without this each executemany call would be
@@ -421,8 +434,10 @@ async def copy_insert_async(conn, table_name: str, rows: list, columns: list | N
         table_name: target table (schema-qualified, e.g.
             "analysis.industry_correlations").
         rows: list of row dicts (same shape as ``bulk_upsert_async``).
-        columns: optional explicit column order. When None, inferred from
-            the first row's keys (same as ``bulk_upsert_async``).
+        columns: optional explicit column order. When None, inferred as
+            the ordered union of the rows' keys (same as
+            ``bulk_upsert_async``; a key absent from a row copies as
+            NULL).
 
     Returns:
         Number of rows inserted (``len(rows)``).
@@ -443,7 +458,12 @@ async def copy_insert_async(conn, table_name: str, rows: list, columns: list | N
             f"copy_frame_chunked_async to chunk by partition key.")
 
     if columns is None:
-        columns = list(rows[0].keys())
+        # Ordered union of every row's keys — inferring from rows[0]
+        # alone would silently DROP keys the first row lacks (the value
+        # read below is already null-safe via r.get).
+        columns = list(dict.fromkeys(
+            key for row in rows for key in row.keys()
+        ))
     if not columns:
         return 0
 

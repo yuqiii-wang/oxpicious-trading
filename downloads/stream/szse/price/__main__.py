@@ -22,26 +22,23 @@ Architecture (split across this package):
   * ``_constants.py``  — modes cutoffs, sampling sizes, per-source cooldowns.
   * ``_startup.py``    — DB connections, target stock lists, heavy imports,
                          HTTP session + host tracker.
-  * ``_rounds.py``     — one stock round via the 4 parallel workers
+  * ``_rounds.py``     — one stock round via the parallel source workers
                          (queue/state/task construction + shutdown protocol).
   * ``_stream.py``     — main loop: biz-day anchoring, hourly/full cycles,
                          pacing/backoff.
   * ``_workers.py``    — async fetch dispatch, circuit breakers, index rounds:
       proc A (sina)        — Sina 1-min kline direct fetch (jsonp v2 API).
-      proc C (em_push2his) — East Money push2his trends2 (ndays=5).
-      proc D (em_push2)    — East Money push2 trends2 (ndays=1, iscr=1;
-                             a DIFFERENT host from C).
       proc B (szse)        — SZSE ``/api/market/ssjjhq/getTimeData``.
-    A, C, D all pull from the primary queue; B drains the fallback queue first
+    A pulls from the primary queue; B drains the fallback queue first
     then the primary. The fallback queue is SEEDED with the highest-ranked
     B_PRIORITY_TOP_N unfinished stocks (list head; hourly mode = top-traded
-    rank) so the official SZSE source — the shortest cadence of the four —
-    fetches them with priority and A/C/D never see them; circuit-breaker
+    rank) so the official SZSE source — the shortest cadence of the two —
+    fetches them with priority and A never sees them; circuit-breaker
     remainders handed back later queue behind that slice (FIFO). Whoever
     finishes a group first takes the next group
     (dynamic dispatch). Each worker applies its own anti-bot cooldown between
-    fetches; the four hit different hosts (Sina, push2his.eastmoney.com,
-    push2.eastmoney.com, szse.cn) so they don't contend on rate limits.
+    fetches; the two hit different hosts (Sina, szse.cn) so they don't
+    contend on rate limits.
     Index streaming
     (hourly mode only) fetches the always-on indices sequentially via the
     SZSE ssjjhq API; index bars have NO volume column (index_intraday_5min).
@@ -60,10 +57,14 @@ Anti-bot: reuses safe_get(), build_headers_with_referer(), random_sleep,
 HostStatusTracker and build_default_session() from _download_commons.py.
 Cooldown: per-source anti-bot sleep between fetches (jittered ±50%),
 resolved from the service's external_request_config JSON rows (one row per
-source) — A (Sina) row source_a_sina (90s); C/D (East Money
-push2his / push2) rows source_c_em_hist / source_d_em_quote (300s); B (szse
+source) — A (Sina) row source_a_sina (90s); B (szse
 fallback) keeps --interval (row source_b_szse poll_interval_sec, 20s).
 NO_ADVANCE_BACKOFF_SEC (60s) when no stock advanced.
+
+The former East Money sources C/D (push2his/push2 trends2) were removed
+2026-10-23: the push2 hosts need curl_cffi TLS impersonation and IP-block
+request bursts with hard connection drops (a same-day incident left this
+host unreachable for 2+ hours), so stocks now stream from Sina + SZSE only.
 
 Termination: Ctrl-C cancels all async workers (state.stop + task.cancel) and
 exits cleanly after reaping them; the finally block closes the DB and session.
@@ -98,8 +99,6 @@ from _common.service_heartbeat import register_service
 from ._constants import (
     B_PRIORITY_TOP_N,
     COOLDOWN_A_SEC,
-    COOLDOWN_C_SEC,
-    COOLDOWN_D_SEC,
     DEFAULT_GROUPS,
     SERVICE,
 )
@@ -135,9 +134,8 @@ def main() -> None:
                 _time.time() - _MODULE_LOAD_T0)
     ap = argparse.ArgumentParser(
         description="Stream SZSE equity prices into 5-min OHLCV bars "
-                    "(4 parallel procs: A=sina %.0fs, C=em_push2his %.0fs, "
-                    "D=em_push2 %.0fs, B=szse fallback --interval)."
-                    % (COOLDOWN_A_SEC, COOLDOWN_C_SEC, COOLDOWN_D_SEC)
+                    "(2 parallel procs: A=sina %.0fs, B=szse fallback --interval)."
+                    % (COOLDOWN_A_SEC,)
     )
     ap.add_argument("--interval", type=float, default=None,
                     help="Cooldown between fetches for worker B (szse) in seconds "

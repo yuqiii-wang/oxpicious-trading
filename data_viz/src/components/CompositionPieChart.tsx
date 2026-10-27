@@ -43,6 +43,7 @@ import { MUTED_PALETTE, axisColors } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { fmtNum, fmtPct } from "@/lib/series";
 import type { SecCompositionResponse } from "@shared/types";
 import type { ECharts, EChartsOption } from "echarts";
@@ -283,31 +284,30 @@ export default function CompositionPieChart({
 
   // AI Ask — one spec per pie layer; state carries the CURRENT drill-down
   // selection so the modal / LLM always describe the view on screen.
+  const docs = useDocs();
   const industrySpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `Holdings composition of ${code} by industry (stats.sec_composition, snapshot ` +
-        `${data?.snapshot_date ?? "—"}${data?.quarter ? ` · ${data.quarter}` : ""}): pie slices ` +
-        "are industries aggregated by weight %. Click an industry slice to drill into its " +
-        "individual stocks in the second pie (click it again to close). Indication: a " +
-        "dominant slice = concentration risk; a swelling share = rotation into it.",
+      intro: docs.text("ui.composition-pie.industry", {
+        code,
+        snapshot: data?.snapshot_date ?? "—",
+        quarter: data?.quarter ?? "",
+      }),
       instruments: [{ code }],
       state: {
         selected_industry: selectedIndustry ?? "none",
       },
       notes: data?.source === "index"
-        ? ["Index-fallback mode: full constituent weights of the tracking index, not fund holdings."]
+        ? docs.notes("ui.composition-pie.industry")
         : [],
     }),
-    [code, data, selectedIndustry],
+    [docs, code, data, selectedIndustry],
   );
   const stockSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `Individual stocks within industry "${selectedIndustry}" of ${code}'s holdings ` +
-        "(stats.sec_composition): slice size = the stock's weight %. Click a slice to open " +
-        "its daily OHLC chart below (click it again to close). Indication: a heavy single " +
-        "name = idiosyncratic risk to the whole position.",
+      intro: docs.text("ui.composition-pie.stock", {
+        code,
+        industry: selectedIndustry ?? "",
+      }),
       instruments: [{ code }],
       state: {
         selected_industry: selectedIndustry ?? "none",

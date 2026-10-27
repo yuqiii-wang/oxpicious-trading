@@ -20,6 +20,14 @@ from builds.bond.paths import PBOC_INSTRUMENTS_CSV
 import logging
 logger = logging.getLogger(__name__)
 
+# Overnight reverse-repo pricing (隔夜逆回购): the daily bulletin states the
+# quantity only ("同时，开展了N亿元隔夜逆回购操作") — the tender is fixed-rate
+# / quantity招标 (公开市场业务公告[2026]第4号), priced off the 7-day OMO rate
+# plus 25bp per 公开市场业务公告[2026]第2号 (临时隔夜逆回购 = 7天期逆回购操作
+# 利率加点25bp; first operation 2026-06-29 operated at 1.65% with the 7d rate
+# at 1.40%, confirmed by press coverage).
+OVERNIGHT_RATE_ADD: float = 0.25
+
 
 def _tenor_days_vec(tenor_col: pd.Series) -> pd.Series:
     """Vectorized parse_duration_to_days over a str column ('7D','6M','1Y').
@@ -49,7 +57,8 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
 
     Returns DataFrame columns:
         date, omo_rate, omo_quantity, omo_tenor_days, omo_tenor_label,
-        omo_all_rates, omo_all_tenors, omo_all_quantities, omo_dur_qty_pairs
+        omo_all_rates, omo_all_tenors, omo_all_quantities, omo_dur_qty_pairs,
+        omo_rate_1d, omo_quantity_1d
     """
     if verbose:
         logger.info(f"    [PBOC-OMO] reading {PBOC_INSTRUMENTS_CSV}")
@@ -76,36 +85,55 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
     acc: dict = {}
     for d, ins, r, q, t in zip(dates_l, instrs_l, rates_l, qtys_l, tenors_l):
         st = acc.setdefault(d, {"has_rr": False, "rate": np.nan,
-                                 "qty": np.nan, "tenor": "", "rows": []})
+                                 "qty": np.nan, "tenor": "", "rows": [],
+                                 "on_qty": np.nan})
         if ins == "reverse_repo" and not st["has_rr"]:
             st["has_rr"] = True
             st["rate"] = r
             st["qty"] = q
             st["tenor"] = t or ""
+        if ins == "overnight_reverse_repo" and st["on_qty"] != st["on_qty"]:
+            st["on_qty"] = q
         if ins == "reverse_repo" or ins == "MLF":
             st["rows"].append((t, r, q))
 
     rows = []
+    last_rr_rate: float = np.nan  # running 7d policy rate (changes only on 7d-op days)
     for d in sorted(acc):
         st = acc[d]
-        # only dates with a reverse-repo record feed the OMO table (the
-        # former omo_has_reverse_repo post-filter dropped the rest)
-        if not st["has_rr"]:
+        # Dates with a reverse-repo record OR an overnight op feed the OMO
+        # table: PBoC deliberately runs the overnight variety on zero-7d-op
+        # days (corridor-ceiling use), so the former reverse-repo-only gate
+        # would drop exactly those days. On overnight-only days the 7d-side
+        # columns stay NaN (the repo lifecycle drops them via its own
+        # dropna) and omo_rate_1d derives from the running 7d policy rate —
+        # the fixed rate only ever changes alongside a 7d tender.
+        has_rr = st["has_rr"]
+        on_qty = st["on_qty"]
+        if not has_rr and on_qty != on_qty:
             continue
+        if has_rr and st["rate"] == st["rate"]:
+            last_rr_rate = st["rate"]
         all_rates = [f"{v:g}" for v in (x[1] for x in st["rows"]) if v == v]
         all_tenors = [str(x[0]) for x in st["rows"] if x[0]]
         all_qtys = [f"{v:g}" for v in (x[2] for x in st["rows"]) if v == v]
         dur_pairs = [f"{x[0]}:{x[2]:g}" for x in st["rows"] if x[0] and x[2] == x[2]]
+        # Overnight op on this date: bulletin quantity + the derived fixed
+        # rate (running 7d OMO rate + 25bp — see OVERNIGHT_RATE_ADD).
+        on_rate = last_rr_rate + OVERNIGHT_RATE_ADD \
+            if last_rr_rate == last_rr_rate and on_qty == on_qty else np.nan
         rows.append({
             "date": d,
-            "omo_rate": st["rate"],
-            "omo_quantity": st["qty"],
-            "omo_tenor_days": parse_duration_to_days(st["tenor"]),
-            "omo_tenor_label": st["tenor"],
+            "omo_rate": st["rate"] if has_rr else np.nan,
+            "omo_quantity": st["qty"] if has_rr else np.nan,
+            "omo_tenor_days": parse_duration_to_days(st["tenor"]) if has_rr else None,
+            "omo_tenor_label": st["tenor"] if has_rr else "",
             "omo_all_rates": "|".join(all_rates),
             "omo_all_tenors": "|".join(all_tenors),
             "omo_all_quantities": "|".join(all_qtys),
             "omo_dur_qty_pairs": "|".join(dur_pairs),
+            "omo_rate_1d": on_rate,
+            "omo_quantity_1d": on_qty if on_qty == on_qty else np.nan,
         })
 
     if not rows:
@@ -125,6 +153,8 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
         "omo_all_tenors": [r["omo_all_tenors"] for r in rows],
         "omo_all_quantities": [r["omo_all_quantities"] for r in rows],
         "omo_dur_qty_pairs": [r["omo_dur_qty_pairs"] for r in rows],
+        "omo_rate_1d": np.array([r["omo_rate_1d"] for r in rows], dtype="float64"),
+        "omo_quantity_1d": np.array([r["omo_quantity_1d"] for r in rows], dtype="float64"),
     })
 
     if verbose:
@@ -137,6 +167,10 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
             if df["omo_quantity"].notna().any():
                 logger.info(f"    [PBOC-OMO] omo_quantity range: "
                       f"{df['omo_quantity'].min():g} → {df['omo_quantity'].max():g} 亿元")
+            n_on = int(df["omo_quantity_1d"].notna().sum())
+            if n_on:
+                logger.info(f"    [PBOC-OMO] overnight ops: {n_on} days, "
+                      f"rate {df['omo_rate_1d'].min():.4f}% → {df['omo_rate_1d'].max():.4f}%")
         else:
             logger.info(f"    [PBOC-OMO] no records in range")
     return df

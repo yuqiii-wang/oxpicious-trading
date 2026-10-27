@@ -121,15 +121,19 @@ def cell_stats(trig: pd.DataFrame, action: str,
     ).reset_index()
 
 
-def pooled_evidence(facts: list[dict]) -> dict | None:
+def pooled_evidence(facts: list[dict],
+                    dir_ave_min: float | None = None) -> dict | None:
     """The (sub_type, action) POOLED evidence tier — the shared
     evaluation contract's statistical layer (2026-10-16). ``facts`` =
     one dict per MEASURABLE trigger of the side's WINNING cells across
     codes: {year, fav, f3, f5, f10, f20} with fav and the fwd legs
     SIGN-ALIGNED in PERCENT (+ for buy, - for sell — cell_stats's
-    convention). Returns the pooled block stamped onto the winning
-    rules rows' performance snapshots (``_performance.pooled``, the
-    history_signal_performance row):
+    convention). ``dir_ave_min`` optionally overrides the pooled mean
+    bar for this call (the family-scoped loosening — None = the global
+    POOLED_DIR_AVE_MIN); the t bar and the expanding-year majority
+    stay the shared contract. Returns the pooled block stamped onto
+    the winning rules rows' performance snapshots
+    (``_performance.pooled``, the history_signal_performance row):
 
       n / dir_ave_pct / t_stat / hit_rate   the pooled measurement
       decay_pct                             the per-horizon mean
@@ -204,7 +208,8 @@ JSONB ride."""
     # trades at full confidence, POOLED_TRADE_FLOOR <= n < it trades
     # at min(n / POOLED_MIN_N, 1), below the trade floor no claim at all
     stat_ok = bool(
-        mean_pct >= cfg.POOLED_DIR_AVE_MIN * 100.0
+        mean_pct >= (cfg.POOLED_DIR_AVE_MIN if dir_ave_min is None
+                     else dir_ave_min) * 100.0
         and t_stat is not None
         and t_stat >= cfg.POOLED_T_STAT_MIN
         and (not meas or pos * 2 > len(meas))

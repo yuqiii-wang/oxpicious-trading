@@ -1,15 +1,17 @@
 /**
  * SectionLabel — one MA-Spread button-group title row.
  *
- * Renders the group's title (from groupDescriptions.ts) in the panel's
- * caption style — highlighted when the section's buttons are toggled on —
- * plus the shared InfoMark; clicking the mark opens the popover with the
- * group's description text. Titles and descriptions live in
- * groupDescriptions.ts, so the panel only passes the group id.
+ * Renders the group's title in the panel's caption style — highlighted
+ * when the section's buttons are toggled on — plus the shared InfoMark;
+ * the mark opens the popover with the group's description. Title and
+ * description live in static.docs (`ui.ma-spread.group.<id>`, seeded by
+ * database/sql/static/docs/static/10_ui_ma_spread.sql) — this component
+ * only resolves them by group id.
  */
 import { Box, Typography } from "@mui/material";
 import { InfoMark } from "@/shared/components/description";
-import { MA_SPREAD_GROUP_INFO, type MaSpreadGroupId } from "./groupDescriptions";
+import { useDocs } from "@/shared/docs";
+import type { MaSpreadGroupId } from "./groupDescriptions";
 
 interface SectionLabelProps {
   /** Which button group — picks the title and the popover description. */
@@ -32,7 +34,9 @@ export function SectionLabel({
   standalone = false,
   mt,
 }: SectionLabelProps) {
-  const group = MA_SPREAD_GROUP_INFO[id];
+  const docs = useDocs();
+  const title = docs.title(`ui.ma-spread.group.${id}`);
+  const description = docs.text(`ui.ma-spread.group.${id}`);
 
   return (
     <Box
@@ -52,9 +56,9 @@ export function SectionLabel({
           fontWeight: active ? 700 : 400,
         }}
       >
-        {group.title}
+        {title}
         {suffix}
-        <InfoMark title={group.title} description={group.description} />
+        <InfoMark title={title} description={description} />
       </Typography>
     </Box>
   );

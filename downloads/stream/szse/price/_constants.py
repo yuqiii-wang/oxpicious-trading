@@ -60,8 +60,8 @@ TOP_TRADED_N = 500
 # from the head of the active stock list (rank = list order: hourly mode is
 # yesterday's trading_amount DESC; full mode is code order). Those codes are
 # seeded onto B's queue so the official SZSE host — the shortest cadence
-# (poll_interval_sec) of the four sources — fetches them first and
-# exclusively; A/C/D never see them. B still helps A/C/D on the rest of the
+# (poll_interval_sec) of the two sources — fetches them first and
+# exclusively; A never sees them. B still helps A on the rest of the
 # list afterwards, and circuit-breaker remainders queue behind the priority
 # slice (FIFO). 0 disables the priority split (B reverts to pure
 # fallback/overflow duty). Overridable via --b-top-n.
@@ -79,11 +79,8 @@ DEFAULT_GROUPS = 10
 # async_random_sleep). Sources hit different hosts so cadences are tuned per
 # host aggressiveness; each resolves once at import from the service's
 # external_request_config JSON row for that source (request_type):
-# Sina (A) sleep=90, both East Money hosts (C/D) sleep=300. B (szse
-# fallback) keeps its poll cadence below.
+# Sina (A) sleep=90. B (szse fallback) keeps its poll cadence below.
 COOLDOWN_A_SEC: float = sleep_sec_for(SERVICE, "source_a_sina")      # sina (Sina 1-min)
-COOLDOWN_C_SEC: float = sleep_sec_for(SERVICE, "source_c_em_hist")   # em_push2his
-COOLDOWN_D_SEC: float = sleep_sec_for(SERVICE, "source_d_em_quote")  # em_push2
 
 # Default per-fetch cooldown for B (szse fallback) and the index round
 # (same ssjjhq endpoint as B): the source_b_szse row's poll_interval_sec —

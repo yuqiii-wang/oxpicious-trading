@@ -210,6 +210,7 @@ class OnlineSearchSummaryStore:
         language: str = "zh",
         resolve: bool = True,
         qa_date: Optional[datetime.datetime] = None,
+        request_ids: Optional[Sequence[int]] = None,
     ) -> Tuple[int, List[ResolvedRef]]:
         """Store the summary; return (qa_id, per-ref resolutions).
 
@@ -274,6 +275,7 @@ class OnlineSearchSummaryStore:
             context=context or None, category=category,
             industry_id=qa_industry, sector_id=qa_sector,
             news_ids=group_ids or None,
+            request_ids=request_ids or None,
             llm_model=summary.model, language=language, qa_date=qa_date)
         logger.info("    [DB] stored text.llm_qa qa_id=%s (sources=%d)",
                     qa_id, len(group_ids))

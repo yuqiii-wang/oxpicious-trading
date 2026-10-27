@@ -39,6 +39,12 @@ export interface DebtDailyRow {
   cb_30y: number | null;
   lpr_1y: number | null;
   lpr_5y: number | null;
+  /** Overnight reverse-repo rate (%) — same PBoC bulletins as omo_rate;
+   *  fixed rate = 7d OMO rate + 25bp (tool since 2026-06-29). The 1d side
+   *  of the OMO panel's 1d/7d toggle. */
+  omo_rate_1d: number | null;
+  /** Overnight reverse-repo operation quantity (亿元) on op days. */
+  omo_quantity_1d: number | null;
 }
 
 export interface DebtDailyResponse {
@@ -1205,16 +1211,16 @@ export interface MovAveSpreadPairRow {
   /**
    * 1st derivative of the short series — the DB-stored DIRECT diff
    * value[t] − value[t−1] (price_slope for the price legs; ma5_slope /
-   * ema6_slope for the short MA/EMA legs). Null on amt rows and where
-   * the window has no stored derivative.
+   * ema6_slope / ema12_slope for the short MA/EMA legs). Null on amt rows
+   * and where the window has no stored derivative.
    */
   short_slope: number | null;
   /** 2nd derivative of the short series — the slope's diff. See short_slope. */
   short_curvature: number | null;
   /**
    * 1st derivative of the long MA/EMA — the DB-stored direct diff
-   * (ma{5,20}_slope / ema{6,20}_slope). Null for the 60/120/255-day
-   * windows (their derivative columns were dropped 2026-09).
+   * (ma{5,20}_slope / ema{6,12}_slope). Null for the windows without a
+   * persisted derivative (SMA 60/120/255; the EMA26 leg).
    */
   long_slope: number | null;
   /** 2nd derivative of the long MA/EMA — see long_slope. */
@@ -1474,10 +1480,11 @@ export interface MovAveSpreadPairSeries {
    *        switches to "amt envelope" mode: OHLC + price MAs are shown
    *        lowkey (dimmed), and the trading amount + all 5 trading_amt_ma
    *        lines form a prominent envelope on the secondary y-axis.
-   * "ema" = the 9 Exponential MA pairs (short=price or ema6, long=emaW).
+   * "ema" = the 6 TYPICAL Exponential MA pairs (2026-10-26 rebase:
+   *        short=price or ema6 or ema12, long over the typical spans
+   *        {6,12,26} — the classic 12/26 spread IS the MACD line).
    *        Rendered like price pairs but using EMA values from
-   *        analysis.mov_ave_spreads_detail_ema. No Bollinger envelope
-   *        (EMA detail table has no σ columns).
+   *        analysis.mov_ave_spreads_detail_ema.
    * Defaults to "price" for backward compatibility.
    */
   kind?: MovAveSpreadPairKind;
@@ -4042,6 +4049,94 @@ export interface AiAskHistoryDetail extends Omit<AiAskHistoryItem, "answer_snipp
 export interface AiAskHistoryItemsResponse {
   total: number;
   items: AiAskHistoryItem[];
+}
+
+// ----------------------------------------------------------------------------
+// AI research Q&A (text.llm_qa_by_research, written by
+// llm_agents.llm_qa_by_research's FIVE-request generation flow: four
+// evaluation-dimension requests — intro / return / risks / capitalization —
+// then a 5th summary+label request). The AiPage "Research" feed renders it;
+// answer is the 5th request's SUMMARY (the display content), the four
+// dimensions are the expandable detail, and the row's news group is the
+// refs mapping (no per-ref table — text.llm_qa_refs FKs text.llm_qa only).
+// ----------------------------------------------------------------------------
+
+/** One research Q&A row (item-list shape — the summary truncated to a
+ *  240-char snippet). */
+export interface AiQaResearchItem {
+  qa_id: number;
+  question: string;
+  answer_snippet: string | null;
+  industry_id: string | null;
+  sector_id: string | null;
+  category: string | null;
+  /** Dominant investing logic, decoded from the static.label_dim
+   *  research_logic code at the API boundary: growth | value | dividend |
+   *  commodity | cyclical | defensive | quality | theme | other. */
+  logic_label: string;
+  llm_model: string | null;
+  language: string | null;
+  /** qa_date mapped to the latest trading day on/before it (the calendar
+   *  key — same contract as AiQaItem.date). */
+  date: string;
+  updated_at: string;
+  /** Articles in the row's merged news-group provenance (0 when none). */
+  n_sources: number;
+}
+
+/** One source article of a research Q&A row (the news group expanded —
+ *  the by-research refs mapping). */
+export interface AiQaResearchSource {
+  news_id: number;
+  title: string;
+  source: string | null;
+  url: string | null;
+  /** Article publish date (text.news.date's day). */
+  date: string | null;
+  /** Content preview (first 4000 chars, server-truncated). */
+  content: string | null;
+}
+
+/** Per-dimension reference resolutions of a research Q&A row — each
+ *  dimension's [来源：ref_N] citation tags resolved to their articles
+ *  (the AiQaRefItem shape, from the row's dim_refs column joined to
+ *  text.news). All research refs are exact / summary provenance: they
+ *  are the search echoes of the dimension's own request. */
+export interface AiQaResearchDimensionRefs {
+  intro: AiQaRefItem[];
+  return: AiQaRefItem[];
+  risks: AiQaRefItem[];
+  capitalization: AiQaRefItem[];
+}
+
+/** Full research Q&A row for the card's click-to-expand fetch. */
+export interface AiQaResearchDetail extends Omit<AiQaResearchItem, "answer_snippet"> {
+  /** The 5th request's SUMMARY (complete, untruncated) — the card body. */
+  answer: string;
+  /** The per-dimension reference blocks (【维度】+ formatted hits), kept so
+   *  each dimension answer's inline [来源：ref_N] citations stay aligned. */
+  context: string | null;
+  /** Dimension 1 — general investors' logic (null when its request failed). */
+  intro: string | null;
+  /** Dimension 2 — returns. */
+  return: string | null;
+  /** Dimension 3 — risks. */
+  risks: string | null;
+  /** Dimension 4 — current market-capital interests. */
+  capitalization: string | null;
+  /** Average text.news_digestions sentiment across the row's source
+   *  articles that have one (null when none digested yet). */
+  avg_ref_sentiment: number | null;
+  /** Per-dimension expandable refs (dim_refs joined to text.news); null
+   *  on rows stored before dim_refs existed — texts render plain. */
+  dimension_refs: AiQaResearchDimensionRefs | null;
+  sources: AiQaResearchSource[];
+}
+
+/** Response for GET /api/ai/research-items. */
+export interface AiQaResearchItemsResponse {
+  total: number;
+  items: AiQaResearchItem[];
 }
 
 // ---------------------------------------------------------------------------

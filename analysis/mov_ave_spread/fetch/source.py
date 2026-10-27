@@ -65,7 +65,7 @@ _SLOPE_LOOKBACK_ROWS = 2
 _TECH_SOURCE_COLUMNS = [
     "code", "date", "price", "open", "low", "high",
     "ma5", "ma20", "ma60", "ma120", "ma255",
-    "ema6", "ema20", "ema60", "ema120", "ema255",
+    "ema6", "ema12", "ema26",
     "trading_amount",
     "is_ohl_estimated",
 ]
@@ -116,8 +116,7 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 COALESCE(a.adj_high, b.high)::float8   AS high,
                 t.ma5::float8, t.ma20::float8, t.ma60::float8,
                 t.ma120::float8, t.ma255::float8,
-                t.ema6::float8, t.ema20::float8, t.ema60::float8,
-                t.ema120::float8, t.ema255::float8,
+                t.ema6::float8, t.ema12::float8, t.ema26::float8,
                 m.trading_amount::float8,
                 b.is_ohl_estimated
             FROM stats.etf_identity i
@@ -140,8 +139,7 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 b.high::float8  AS high,
                 t.ma5::float8, t.ma20::float8, t.ma60::float8,
                 t.ma120::float8, t.ma255::float8,
-                t.ema6::float8, t.ema20::float8, t.ema60::float8,
-                t.ema120::float8, t.ema255::float8,
+                t.ema6::float8, t.ema12::float8, t.ema26::float8,
                 b.trading_amount::float8,
                 b.is_ohl_estimated
             FROM stats.index_identity i
@@ -162,8 +160,7 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 b.high::float8  AS high,
                 t.ma5::float8, t.ma20::float8, t.ma60::float8,
                 t.ma120::float8, t.ma255::float8,
-                t.ema6::float8, t.ema20::float8, t.ema60::float8,
-                t.ema120::float8, t.ema255::float8,
+                t.ema6::float8, t.ema12::float8, t.ema26::float8,
                 m.trading_amount::float8,
                 b.is_ohl_estimated
             FROM stats.stock_identity i
@@ -274,15 +271,16 @@ async def fetch_source_data(
 
     Returns a DataFrame with columns:
         sec_type, code, date, price, ma5, ma20, ma60, ma120, ma255,
-        ema6, ema20, ema60, ema120, ema255,
+        ema6, ema12, ema26,
         trading_amount,
         is_ohl_estimated,
         price_slope, price_curvature,
         ma5_slope, ma20_slope, ma60_slope, ma120_slope, ma255_slope,
         ma5_curvature, ma20_curvature,
-        ema6_slope, ema20_slope,
-        ema6_curvature, ema20_curvature,
-        std_5days, std_20days, std_60days, std_120days, std_255days,
+        ema6_slope, ema12_slope,
+        ema6_curvature, ema12_curvature,
+        std_5days, std_12days, std_26days, std_20days, std_60days,
+        std_120days, std_255days,
         trading_amt_ma5, trading_amt_ma20, trading_amt_ma60,
         trading_amt_ma120, trading_amt_ma255,
         trading_amt_market_share_ma5, trading_amt_market_share_ma20,
@@ -298,7 +296,7 @@ async def fetch_source_data(
     NOTE: ma{60,120,255}_slope are carried for the trading_amt_ratios
     step's denominators (TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS) but are
     NOT persisted to the detail table. The persisted derivatives are
-    price + ma{5,20} slope/curvature (detail table) and ema{6,20}
+    price + ma{5,20} slope/curvature (detail table) and ema{6,12}
     slope/curvature (EMA detail table) — each a direct diff of the
     series line (config.MA_DERIV_WINDOWS / EMA_DERIV_WINDOWS).
 
@@ -325,16 +323,17 @@ async def fetch_source_data(
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
                                      "ma5", "ma20", "ma60", "ma120", "ma255",
-                                     "ema6", "ema20", "ema60", "ema120", "ema255",
+                                     "ema6", "ema12", "ema26",
                                      "trading_amount",
                                      "is_ohl_estimated",
                                      "price_slope", "price_curvature",
                                      "ma5_slope", "ma20_slope", "ma60_slope",
                                      "ma120_slope", "ma255_slope",
                                      "ma5_curvature", "ma20_curvature",
-                                     "ema6_slope", "ema20_slope",
-                                     "ema6_curvature", "ema20_curvature",
-                                     "std_5days", "std_20days", "std_60days",
+                                     "ema6_slope", "ema12_slope",
+                                     "ema6_curvature", "ema12_curvature",
+                                     "std_5days", "std_12days", "std_26days",
+                                     "std_20days", "std_60days",
                                      "std_120days", "std_255days",
                                      "trading_amt_ma5", "trading_amt_ma20",
                                      "trading_amt_ma60", "trading_amt_ma120",
@@ -372,16 +371,17 @@ async def fetch_source_data(
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
                                      "ma5", "ma20", "ma60", "ma120", "ma255",
-                                     "ema6", "ema20", "ema60", "ema120", "ema255",
+                                     "ema6", "ema12", "ema26",
                                      "trading_amount",
                                      "is_ohl_estimated",
                                      "price_slope", "price_curvature",
                                      "ma5_slope", "ma20_slope", "ma60_slope",
                                      "ma120_slope", "ma255_slope",
                                      "ma5_curvature", "ma20_curvature",
-                                     "ema6_slope", "ema20_slope",
-                                     "ema6_curvature", "ema20_curvature",
-                                     "std_5days", "std_20days", "std_60days",
+                                     "ema6_slope", "ema12_slope",
+                                     "ema6_curvature", "ema12_curvature",
+                                     "std_5days", "std_12days", "std_26days",
+                                     "std_20days", "std_60days",
                                      "std_120days", "std_255days",
                                      "trading_amt_ma5", "trading_amt_ma20",
                                      "trading_amt_ma60", "trading_amt_ma120",
@@ -516,15 +516,15 @@ async def fetch_source_data(
     # Reorder columns for readability.
     df = df[["sec_type", "code", "date", "price", "open", "low", "high",
              "ma5", "ma20", "ma60", "ma120", "ma255",
-             "ema6", "ema20", "ema60", "ema120", "ema255",
+             "ema6", "ema12", "ema26",
              "trading_amount",
              "is_ohl_estimated",
              "price_slope", "price_curvature",
              "ma5_slope", "ma20_slope", "ma60_slope", "ma120_slope", "ma255_slope",
              "ma5_curvature", "ma20_curvature",
-             "ema6_slope", "ema20_slope",
-             "ema6_curvature", "ema20_curvature",
-             "std_5days", "std_20days", "std_60days", "std_120days", "std_255days",
+             "ema6_slope", "ema12_slope",
+             "ema6_curvature", "ema12_curvature",
+             "std_5days", "std_12days", "std_26days", "std_20days", "std_60days", "std_120days", "std_255days",
              "trading_amt_ma5", "trading_amt_ma20", "trading_amt_ma60",
              "trading_amt_ma120", "trading_amt_ma255",
              "trading_amt_market_share_ma5", "trading_amt_market_share_ma20",

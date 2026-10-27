@@ -12,7 +12,8 @@
 --  purpose-scoped sibling INSERT files, one per business area:
 --    10_market_state          regime / side / px_speed / vol_state
 --    20_signal_detection      signal_type / signal_sub_type / action /
---                             analysis_cache_kind / portfolio_type
+--                             analysis_cache_kind / portfolio_type /
+--                             portfolio_sub_type
 --    30_industry_aggregation  weighting / rank_side / pool_size /
 --                             attribution_type
 --    40_security_identity     sec_type / board / sec_owner_type /
@@ -21,6 +22,7 @@
 --    60_monitoring_infra      ext_resource / ext_http_source /
 --                             ext_llm_provider / db_instance /
 --                             db_replication_state
+--    07_text_llm              research_logic
 --  Adding a domain = add its rows to the matching purpose file (and
 --  the mirrors above).
 --
@@ -86,6 +88,18 @@
 --               (portfolio_type): the kind of portfolio a row groups —
 --               0 neg_corr_hedge_pair = the two-leg long–long
 --               negatively-correlated hedge pair ('A~B' code).
+--    portfolio_sub_type
+--               analysis_signals.portfolio_signal_rules
+--               (portfolio_sub_type): WHICH PORTFOLIO RULE the row is
+--               within its portfolio_type (one row per code x type x
+--               sub since 2026-10-25) — 0 trio_wash, 1 spread.
+--    research_logic
+--               text.llm_qa_by_research (logic_label): the dominant
+--               investing logic a research-logic Q&A row classifies —
+--               0 growth / 1 value / 2 dividend / 3 commodity /
+--               4 cyclical / 5 defensive / 6 quality / 7 theme,
+--               99 other = the fallback (did not fit / unclassifiable).
+--               First text.* LLM-layer enum converted (2026-10-27).
 --
 --  PENDING (vocabulary registered, columns STILL TEXT — convert table +
 --  writers before using the codes): skew_type
@@ -99,7 +113,10 @@
 --  (API-facing identity + filter columns; exchange additionally blocked
 --  by a partition-key table), signal_sub_type
 --  (open parameterized family identifier), scale_method (reserved
---  vocabulary), and the text.* LLM-layer enums. In cudf frames sec_type / industry_id
+--  vocabulary), and the REMAINING text.* LLM-layer enums
+--  (research_logic converted 2026-10-27 — the others, e.g.
+--  llm_qa_refs.ref_type / resolved_via, still TEXT until table +
+--  writers convert). In cudf frames sec_type / industry_id
 --  ride as INTERNAL int16 codes materialized back at the Python write
 --  boundary — _common.labels.SEC_TYPE_CODE.
 -- ============================================================================

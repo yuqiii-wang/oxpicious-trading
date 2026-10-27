@@ -133,7 +133,7 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
     # trading_amt_per_pct_change is absent when no source CSV carried
     # trading_amount (build_daily skips the metric then) — conditional emit.
     _tech_cols = ["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
-                  "ema6", "ema10", "ema20", "ema60", "ema120", "ema255",
+                  "ema6", "ema12", "ema20", "ema26", "ema60", "ema120", "ema255",
                   "trading_amt_per_pct_change"]
 
     pk = ["date", "code"]

@@ -1,10 +1,9 @@
-"""SZSE streamer rounds — one stock round via the 4 parallel workers.
+"""SZSE streamer rounds — one stock round via the parallel source workers.
 
 Extracted from ``__main__.py``: both hourly and full modes dispatch the same
-worker set (A=sina, C=em_push2his, D=em_push2 pull the primary queue; B=szse
-fallback queue), so the queue/state/task construction and the shutdown
-protocol are shared here. The highest-ranked stocks (list head) are seeded
-onto B's queue
+worker set (A=sina pulls the primary queue; B=szse the fallback queue), so
+the queue/state/task construction and the shutdown protocol are shared here.
+The highest-ranked stocks (list head) are seeded onto B's queue
 so the official SZSE source fetches them with priority (split_rank_priority);
 cancellation (Ctrl-C) propagates up to the caller after reaping the worker
 tasks.
@@ -21,8 +20,6 @@ from ._constants import (
     AFTERNOON_START,
     B_PRIORITY_TOP_N,
     COOLDOWN_A_SEC,
-    COOLDOWN_C_SEC,
-    COOLDOWN_D_SEC,
     SHUTDOWN_TIMEOUT_SEC,
 )
 from ._io import write_cycle_csv
@@ -86,13 +83,13 @@ async def run_stock_round(
     poll_interval_b: float,
     b_top_n: int = B_PRIORITY_TOP_N,
 ) -> RoundState:
-    """Run ONE round of the 4 parallel source workers over ``unfinished``.
+    """Run ONE round of the parallel source workers over ``unfinished``.
 
     Rank-priority: the highest-ranked ``b_top_n`` unfinished stocks (list
     head) are seeded onto q_fallback so B (szse) fetches them first and
-    exclusively — A/C/D never see them; A/C/D circuit-breaker remainders
-    handed to q_fallback later queue behind that slice (FIFO). The rest is
-    split onto q_primary; A/C/D pull groups and hand failures back through
+    exclusively — A never sees them; A's circuit-breaker remainder
+    handed to q_fallback later queues behind that slice (FIFO). The rest is
+    split onto q_primary; A pulls groups and hands failures back through
     q_fallback for B to resume, and B helps on the primary queue once the
     priority slice is done. Bars are upserted per-stock inside the workers;
     returns the round state dict with accumulated "identity" / "bars" lists
@@ -103,7 +100,7 @@ async def run_stock_round(
     """
     b_priority_groups, round_groups = split_rank_priority(unfinished, b_top_n, n_groups)
     logger.info(
-        "rank-priority: top %d codes -> B (szse) exclusive slice; %d stocks -> %d primary groups (A/C/D)",
+        "rank-priority: top %d codes -> B (szse) exclusive slice; %d stocks -> %d primary groups (A)",
         sum(len(g) for g in b_priority_groups), len(unfinished) - sum(len(g) for g in b_priority_groups),
         len(round_groups),
     )
@@ -125,12 +122,6 @@ async def run_stock_round(
         asyncio.create_task(_parallel_source_worker(
             "sina", "A", q_primary, q_fallback, state, session,
             host_tracker, emitted_map, trade_date, COOLDOWN_A_SEC, conns.conn_a)),
-        asyncio.create_task(_parallel_source_worker(
-            "em_push2his", "C", q_primary, q_fallback, state, session,
-            host_tracker, emitted_map, trade_date, COOLDOWN_C_SEC, conns.conn_c)),
-        asyncio.create_task(_parallel_source_worker(
-            "em_push2", "D", q_primary, q_fallback, state, session,
-            host_tracker, emitted_map, trade_date, COOLDOWN_D_SEC, conns.conn_d)),
         asyncio.create_task(_szse_worker(
             q_primary, q_fallback, state, session, host_tracker,
             emitted_map, trade_date, poll_interval_b, conns.conn_b)),

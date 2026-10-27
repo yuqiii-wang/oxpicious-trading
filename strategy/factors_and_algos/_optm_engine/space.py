@@ -123,7 +123,8 @@ def snap_categorical_params(algo: AlgoBase, params: dict) -> dict:
     ``suggest_categorical`` already samples only legal choices, but params
     can ALSO arrive from outside sources — stale ``algo_configs`` rows,
     hand-written ``--params-json``, repaired fallbacks — carrying illegal
-    values (e.g. classic MACD 12/26 with no ema12/ema26 columns → KeyError).
+    values (e.g. a retired span like the pre-2026-10-26 MACD ema10, whose
+    column no longer exists → KeyError).
 
     This snaps any out-of-choices numeric value to the NEAREST legal
     choice (ties → smaller), in place. Runs after :func:`_repair_params`

@@ -36,6 +36,7 @@ import {
 } from "@mui/material";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import { useStore } from "@/store/filters";
 import { PRICE_SCALE } from "@/theme/chart-palette";
@@ -203,68 +204,34 @@ export default function SpotSkewTrendPanel({
   // AI Ask — concise per-view guide (the long-form rationale lives in
   // docs/options_vol_smile_study.md); state carries the CURRENT view /
   // delta / date.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.volSmile,
-      intro:
-        "Smile skew vs time in delta space — strikes drift with spot, so full smiles overplot; " +
-        "we track the spot-centered scalar instead. Today: " +
-        `RR${delta} = IV(${delta}Δ call) − IV(${delta}Δ put) per real expiry, vol pts — ` +
-        "green = call wing rich, red = put wing rich; line = ATM IV. Nearest-|δ| contract per " +
-        "expiry, no OI weighting; IVs Black-76 off settlements (OI-wtd positioning skews: " +
-        "shared skew panel). History: 3 grids, shared time axis — spot / ATM IV (level, VIX " +
-        "analog) / RR (tilt, SKEW analog); hover any grid for one tooltip listing all three; " +
-        "solid = front expiry (≥7 DTE), dashed = all-expiry " +
-        "mean, ±2σ(20d) = extreme band. Indication: fade ±2σ skew extremes — they historically " +
-        "mean-revert; RR rising on a falling level = fear premium, quick to bleed. Click a " +
-        "History date to move the snapshot. Rationale: docs/options_vol_smile_study.md.",
+      intro: docs.text("ui.options.spot-skew", { delta }),
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
       series:
         view === "today"
           ? [
-              {
-                name: `RR${delta} (C−P)`,
-                unit: "vol pts",
-                description: `risk reversal per real expiry: IV(${delta}Δ OTM call) − IV(${delta}Δ OTM put)`,
-              },
-              { name: "ATM IV", unit: "%", description: "at-the-money IV per expiry (line)" },
+              docs.seriesEntry("ui.options.spot-skew", "rrToday", { delta }),
+              docs.seriesEntry("ui.options.spot-skew", "atmToday"),
             ]
           : [
-              { name: "Spot", description: "underlying price (top grid)" },
-              {
-                name: "ATM IV",
-                unit: "%",
-                description: "smile LEVEL per date (middle grid — the VIX analog)",
-              },
-              {
-                name: `RR${delta} front`,
-                unit: "vol pts",
-                description: "front-expiry risk reversal — the smile TILT, SKEW analog (solid)",
-              },
-              {
-                name: `RR${delta} mean`,
-                unit: "vol pts",
-                description: "all-expiry mean risk reversal (dashed)",
-              },
+              docs.seriesEntry("ui.options.spot-skew", "spot"),
+              docs.seriesEntry("ui.options.spot-skew", "atmHist"),
+              docs.seriesEntry("ui.options.spot-skew", "rrFront", { delta }),
+              docs.seriesEntry("ui.options.spot-skew", "rrMean", { delta }),
               ...(volIndexAligned != null
-                ? [
-                    {
-                      name: "MF Vol 30d",
-                      unit: "vol pts",
-                      description:
-                        "30-day model-free VIX-style index on the LEVEL grid (analysis.options_vol_index)",
-                    },
-                  ]
+                ? [docs.seriesEntry("ui.options.spot-skew", "mfVol")]
                 : []),
             ],
       state: { view, delta, selectedDate },
-      notes: [
-        `Gaps in the RR series = no contract with |δ| near ${delta / 100} that day` +
-          (delta === 10 ? " (the deep wing is sparse)" : "") +
-          ".",
-      ],
+      notes: docs.notes("ui.options.spot-skew", undefined, {
+        deltaRatio: delta / 100,
+        deepWing: delta === 10,
+      }),
     }),
-    [view, delta, selectedDate, underlyingCode, volIndexAligned],
+    [docs, view, delta, selectedDate, underlyingCode, volIndexAligned],
   );
 
   return (

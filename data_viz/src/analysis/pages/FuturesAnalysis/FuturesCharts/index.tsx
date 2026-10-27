@@ -3,15 +3,17 @@
  *
  * Layout (top → bottom):
  *   1. Futures price curves (identical to Data Viz) with gap_price_vs_underlying
- *      added to the tooltip for each contract.
+ *      and each contract's expiry date added to the tooltip, plus hover
+ *      expiry dots anchored on the curves of contracts live on the
+ *      hovered date.
  *   2. Correlation (corr_price_vs_underlying) — one line per contract
  *      (active + matured), y-axis fixed at -1 to 1. Built by
  *      buildCorrelationChartOption.
  *   3. Basis convergence (contrarian) — signed gap between futures and spot
  *      (bps) per contract with an emphasized zero line: as a contract ages
- *      toward expiry its deviation collapses into zero. Dots mark each
- *      matured contract's expiry gap (history mode) and each active
- *      contract's yesterday gap. Built by buildBasisConvergenceChartOption.
+ *      toward expiry its deviation collapses into zero. Hover-driven dots
+ *      anchor at each LIVE contract's expiry date on its curve endpoint.
+ *      Built by buildBasisConvergenceChartOption.
  *
  * All plots share:
  *   - A synced time slider (dataZoom) via shared zoomRange state.
@@ -33,9 +35,9 @@ import type { FuturesCombinedResponse } from "@shared/types";
 import {
   buildFuturesChartOption,
   buildBasisConvergenceChartOption,
-  EXPIRY_DOTS_SERIES_NAME,
   type FuturesChartExtra,
 } from "@/dataviz/features/futures/chartOption";
+import { useDocs, compactDefined } from "@/shared/docs";
 import { useFuturesExt } from "./useFuturesExt";
 import { useExpiryDots } from "./expiryDots";
 import { syncTipTo } from "./tooltipSync";
@@ -61,13 +63,17 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   // Shared zoom range (percentages 0-100) for both plots' dataZoom sliders
   const [zoomRange, setZoomRange] = useState<{ start: number; end: number } | null>(null);
 
-  // Expiry dots (history mode, hover-triggered) — ref store + targeted push
-  // to the price chart, kept out of React state to avoid tooltip flicker.
-  const { expiryDotsRef, applyExpiryDots, computeExpiryDots } = useExpiryDots(
+  // Expiry dots (hover-triggered) — ref stores + targeted pushes to BOTH
+  // the price and basis charts, kept out of React state to avoid tooltip
+  // flicker. Hovering a date dots every contract LIVE on that date, each
+  // anchored at its own expiry date on the curve endpoint.
+  const { priceDotsRef, convDotsRef, applyHover } = useExpiryDots(
     product,
     combinedData,
     viewMode,
+    gapMap,
     priceChartRef,
+    convChartRef,
   );
 
   // Default zoom: show last 120 days
@@ -98,36 +104,42 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
 
   // ---- Cross-chart tooltip sync (manual showTip/hideTip) ------------------
   // Forward the hovered category index to the other charts as a pixel point
-  // (see tooltipSync.ts for why echarts.connect is not used).
+  // (see tooltipSync.ts for why echarts.connect is not used). Every chart's
+  // hover also refreshes the hover-driven expiry dots on BOTH marker plots.
+  const handleMarkerHover = useCallback(
+    (params: unknown) => {
+      const p = params as { dataIndex?: number; currTrigger?: string };
+      if (p.dataIndex != null && Number.isFinite(p.dataIndex)) {
+        applyHover(p.dataIndex);
+      } else if (p.currTrigger === "leave") {
+        applyHover(null);
+      }
+    },
+    [applyHover],
+  );
   const handlePriceTipSync = useCallback(
     (params: unknown) => {
       syncTipTo(corrChartRef.current, params, syncingRef);
       syncTipTo(convChartRef.current, params, syncingRef);
-      // Compute expiry dots for history mode
-      if (viewMode === "history") {
-        const p = params as { dataIndex?: number; currTrigger?: string };
-        if (p.dataIndex != null && Number.isFinite(p.dataIndex)) {
-          applyExpiryDots(computeExpiryDots(p.dataIndex));
-        } else if (p.currTrigger === "leave") {
-          applyExpiryDots([]);
-        }
-      }
+      handleMarkerHover(params);
     },
-    [viewMode, computeExpiryDots, applyExpiryDots],
+    [handleMarkerHover],
   );
   const handleCorrTipSync = useCallback(
     (params: unknown) => {
       syncTipTo(priceChartRef.current, params, syncingRef);
       syncTipTo(convChartRef.current, params, syncingRef);
+      handleMarkerHover(params);
     },
-    [],
+    [handleMarkerHover],
   );
   const handleConvTipSync = useCallback(
     (params: unknown) => {
       syncTipTo(priceChartRef.current, params, syncingRef);
       syncTipTo(corrChartRef.current, params, syncingRef);
+      handleMarkerHover(params);
     },
-    [],
+    [handleMarkerHover],
   );
 
   // Leaving any chart hides the tooltip + axis pointer on ALL charts
@@ -135,8 +147,8 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
     priceChartRef.current?.dispatchAction({ type: "hideTip" });
     corrChartRef.current?.dispatchAction({ type: "hideTip" });
     convChartRef.current?.dispatchAction({ type: "hideTip" });
-    applyExpiryDots([]);
-  }, [applyExpiryDots]);
+    applyHover(null);
+  }, [applyHover]);
 
   const priceEvents = useMemo(() => ({
     dataZoom: handleZoom,
@@ -162,11 +174,11 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
     const extra: FuturesChartExtra | undefined = gapMap
       ? {
           gapByCodeDate: gapMap,
-          expiryDotsRef: viewMode === "history" ? expiryDotsRef : undefined,
+          expiryDotsRef: priceDotsRef,
         }
       : undefined;
     return buildFuturesChartOption(themeMode, combinedData, viewMode, currentZoom, extra);
-  }, [themeMode, combinedData, gapMap, currentZoom, viewMode, expiryDotsRef]);
+  }, [themeMode, combinedData, gapMap, currentZoom, viewMode, priceDotsRef]);
 
   // Second plot — correlation curves (active + matured contracts)
   const corrOption = useMemo<EChartsOption | null>(() => {
@@ -176,7 +188,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
 
   // Third plot — basis convergence (contrarian): signed futures−spot gap
   // per contract in bps, decaying into the zero line toward expiry; with
-  // expiry-gap dots (matured, history mode) and yesterday-gap dots (active).
+  // hover-driven dots anchored at each LIVE contract's expiry date.
   const convOption = useMemo<EChartsOption | null>(() => {
     if (!combinedData || !gapMap) return null;
     return buildBasisConvergenceChartOption(
@@ -185,8 +197,9 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
       gapMap,
       viewMode,
       currentZoom,
+      convDotsRef,
     );
-  }, [themeMode, combinedData, gapMap, currentZoom, viewMode]);
+  }, [themeMode, combinedData, gapMap, currentZoom, viewMode, convDotsRef]);
 
   const nActive = combinedData?.contracts.filter((c) => c.is_alive && c.is_continuous).length ?? 0;
   const nMatured = combinedData?.contracts.filter((c) => !c.is_alive).length ?? 0;
@@ -203,61 +216,45 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
     [product, combinedData],
   );
   const spotName = combinedData.underlying_name || combinedData.product_name;
+  const docs = useDocs();
   const priceSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.futuresPriceCurves,
-      intro:
-        `Futures price curves for ${product} (${combinedData.product_name}): one ` +
-        "settlement-price line per contract — active in a blue gradient (farther maturity " +
-        "= lighter), matured in grey — plus the underlying spot line for index futures. " +
-        "Tooltip: per-contract gap vs the underlying; history-mode hover shows expiry-gap " +
-        "dots. Indication: the contract fan at any date = the term structure — ascending " +
-        "= contango (carry cost), inverted = tension.",
+      intro: docs.text("ui.futures.price-curves", {
+        product,
+        name: combinedData.product_name,
+      }),
       instruments: aiInstruments,
-      series: [
-        { name: spotName, unit: "index pts", description: "underlying (spot) daily close" },
-        { name: EXPIRY_DOTS_SERIES_NAME, description: "expiry-gap dots (history mode, hover-triggered)" },
-      ],
+      series: compactDefined([
+        docs.seriesEntry("ui.futures.price-curves", "spot", { name: spotName }),
+        docs.seriesEntry("ui.futures.price-curves", "expiryDots"),
+      ]),
       state: { view_mode: viewMode },
-      notes: [
-        "Blue gradient = active contracts (farther maturity lighter); grey = matured.",
-        "Time slider + hover crosshair are synchronized across the price / correlation / basis plots.",
-      ],
+      notes: docs.notes("ui.futures.price-curves"),
     }),
-    [product, combinedData.product_name, aiInstruments, spotName, viewMode],
+    [docs, product, combinedData.product_name, aiInstruments, spotName, viewMode],
   );
   const corrSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.futuresCorr,
-      intro:
-        "20-day rolling correlation vs the underlying (corr_price_vs_underlying): " +
-        `one line per contract — ${nActive} active · ${nMatured} matured — same colors ` +
-        "as the price curves, y ∈ [−1, 1]. Indication: ρ ebbing toward 0 = the contract " +
-        "decoupling from spot (idiosyncratic drift); pinned near 1 = pure beta. Follows " +
-        "the shared slider/crosshair.",
+      intro: docs.text("ui.futures.corr", { nActive, nMatured }),
       instruments: aiInstruments,
       state: { view_mode: viewMode },
-      notes: ["+1 = the contract moves in lockstep with the underlying; 0 = no linear relation."],
+      notes: docs.notes("ui.futures.corr"),
     }),
-    [aiInstruments, nActive, nMatured, viewMode],
+    [docs, aiInstruments, nActive, nMatured, viewMode],
   );
   const convSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.futuresBasis,
-      intro:
-        "Basis convergence (contrarian): per-contract signed gap (futures − spot) in bps, " +
-        "collapsing to 0 as each contract ages toward expiry. Dots: matured contracts' " +
-        "expiry gaps and active contracts' yesterday gap (history mode). Indication: fat " +
-        "positive basis = carry-rich short-vs-spot; the collapse into expiry is the " +
-        "tradable decay.",
+      intro: docs.text("ui.futures.basis"),
       instruments: aiInstruments,
-      series: [
-        { name: "__zero_line__", unit: "bps", description: "the convergence target — futures meets spot (gap = 0)" },
-      ],
+      series: compactDefined([
+        docs.seriesEntry("ui.futures.basis", "zeroLine"),
+      ]),
       state: { view_mode: viewMode },
-      notes: ["Contract line colors match the price curves above (blue active / grey matured)."],
     }),
-    [aiInstruments, viewMode],
+    [docs, aiInstruments, viewMode],
   );
   const priceAddon = useAiAskAddon({
     title: "Futures Price Curves",
@@ -337,15 +334,16 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
       </ChartSection>
 
       {/* Third plot — basis convergence (contrarian): futures−spot gap in
-          bps collapsing into the zero line toward expiry, with expiry-gap
-          and yesterday-gap markers (synced slider & hover) */}
+          bps collapsing into the zero line toward expiry; hovering a date
+          anchors a dot at each LIVE contract's expiry date (synced slider
+          & hover) */}
       <ChartSection
         title={(
           <>
             Basis Convergence (contrarian) — futures vs spot gap, bps
             {combinedData && (
               <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                (zero = futures meets spot · dots mark expiry &amp; yesterday gaps)
+                (zero = futures meets spot · dots anchor at live contracts&rsquo; expiries)
               </Typography>
             )}
           </>

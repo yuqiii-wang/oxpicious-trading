@@ -152,11 +152,20 @@ export function momentumChipLabel(
 export const LONG_MA_ORDER = [5, 20, 60, 120, 255] as const;
 
 /**
- * Long-EMA column order for the 9 EMA pair chips. EMA windows are
- * 6/20/60/120/255 (EMA6 replaces MA5 — EMAs use 6 instead of 5 as the
- * short window). Same structure as LONG_MA_ORDER but with 6 in column 0.
+ * The TYPICAL EMA pair grid (2026-10-26 rebase — user-directed "the
+ * Exponential MA pairs are still using non-typical ema"): row 0 =
+ * Price/EMA over the typical windows {6, 12, 26}, row 1 = the EMA/EMA
+ * pairs (6,12) (6,26) (12,26) — the classic 12/26 spread IS the MACD
+ * line's components. The SMA-convention windows stay in the Simple-MA
+ * grid (LONG_MA_ORDER).
  */
-export const LONG_EMA_ORDER = [6, 20, 60, 120, 255] as const;
+export const EMA_PAIR_GRID: readonly (readonly [
+  maShort: number,
+  maLong: number,
+])[][] = [
+  [[0, 6], [0, 12], [0, 26]],
+  [[6, 12], [6, 26], [12, 26]],
+];
 
 /**
  * Shared period-column grid — one column per period (5, 20, 60, 120, 255,

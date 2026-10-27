@@ -6,7 +6,7 @@ import * as futuresService from "../services/futures.service.js";
 
 const router = Router();
 
-// GET /api/futures/products — list available CFFEX products
+// GET /api/futures/products — list available futures products
 router.get("/products", async (_req: Request, res: Response) => {
   try {
     const products = await futuresService.listProducts();

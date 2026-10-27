@@ -32,6 +32,7 @@ import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import {
   fetchPerfAttrAttribution,
   fetchPerfAttrChart,
@@ -232,60 +233,35 @@ export function PerfAttrPanel({ code, name, secType }: PanelProps) {
     ? `${data.code} · ${data.name || name || "—"} · ${data.latest_date || "—"}`
     : `${code} · ${name || "—"}`;
 
-  // AI Ask — intro + series semantics; state carries the CURRENT toggle /
-  // benchmark selection so the modal and the LLM describe the view on screen.
+  // AI Ask — authored text: static.docs `ui.perf-attr.panel`; state
+  // carries the CURRENT toggle / benchmark selection so the modal and the
+  // LLM describe the view on screen.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `Performance attribution for ${code} vs its benchmark family. Top: per-benchmark ` +
-        "bars of shared-weight contribution = fractional benchmark return × composition " +
-        "overlap, with overlap % behind — click a bar to expand its time series. Below: " +
-        "benchmark vs subject ETF turnover (liquidity ratio in tooltip) and close trends — " +
-        "% mode rebases both to 0% at the first common date, Abs = raw closes on dual " +
-        "axes. Indication: contribution earned on thin overlap = concentrated edge; fat " +
-        "overlap with thin contribution = dead weight.",
+      intro: docs.text("ui.perf-attr.panel", { code }),
       instruments: [
         { code, name: name || data?.name, assetClass: "index" },
         ...(selectedBenchmark
           ? [{ code: selectedBenchmark.code, name: selectedBenchmark.name, assetClass: "index" as const }]
           : []),
       ],
-      series: [
-        { name: "Contribution", unit: "%", description: "benchmark fractional return × composition overlap (shared weight)" },
-        { name: "Shared Wt %", unit: "%", description: "share of the subject's composition the benchmark overlaps" },
-        ...(chartData
-          ? [
-              {
-                name: `${chartData.benchmark_name || chartData.benchmark_code} ETF Amt`,
-                unit: "亿元",
-                description: "benchmark index ETF turnover (click tooltip for the bench/code liquidity ratio)",
-              },
-              {
-                name: `${chartData.name || chartData.code} ETF Amt`,
-                unit: "亿元",
-                description: "subject index ETF turnover",
-              },
-              { name: chartData.name || chartData.code, description: "subject close / % change vs the common base date" },
-              {
-                name: chartData.benchmark_name || chartData.benchmark_code,
-                description: "benchmark close / % change vs the common base date",
-              },
-            ]
-          : []),
-      ],
+      series: chartData
+        ? docs.series("ui.perf-attr.panel", {
+            benchName: chartData.benchmark_name || chartData.benchmark_code,
+            subjectName: chartData.name || chartData.code,
+          })
+        : docs.series("ui.perf-attr.panel").slice(0, 2),
       state: {
         benchmarks: showBroadMarket ? "all (incl. broad-market)" : "sector/industry only",
         benchmark_selected: selectedBenchmark
           ? `${selectedBenchmark.code} ${selectedBenchmark.name}`
-          : "none — click a bar above",
+          : "none (summary bars only)",
         comparison_mode: chartMode === "percentage" ? "% (rebased to first common date)" : "absolute",
       },
-      notes: [
-        "Returns are computed on the fly in SQL (fractional, scale-invariant) — not stored in the DB.",
-        "The %/Abs toggle applies to both expanded charts; tooltips surface rolling 5/20/60/255-day close correlations.",
-      ],
+      notes: docs.notes("ui.perf-attr.panel"),
     }),
-    [code, name, data, chartData, showBroadMarket, selectedBenchmark, chartMode],
+    [docs, code, name, data, chartData, showBroadMarket, selectedBenchmark, chartMode],
   );
   const aiAskAddon = useAiAskAddon({
     title: "Perf Attribution",

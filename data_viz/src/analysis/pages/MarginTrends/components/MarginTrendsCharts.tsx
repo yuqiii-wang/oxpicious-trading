@@ -15,6 +15,7 @@ import type { ECharts } from "echarts";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { MarginSecurity, MarginUnderlyingEntry } from "@shared/types";
 import { INSIGHT_PAGES, useAiAskAddon, type AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { useMarginData } from "../hooks/useMarginData";
 import { pivotSeriesData, deriveAnalytics } from "../chart/derive";
 import { buildTrendChartOption } from "../chart/trendChartOption";
@@ -129,29 +130,23 @@ export function MarginTrendsCharts({
   }, [selectedCodes, seriesData]);
 
   // ---- AI Ask (insight: derivatives.margin-composite) — the "?" rides
-  // the section title strip inside the bare BaseChart. ----
+  // the section title strip inside the bare BaseChart. Authored text:
+  // static.docs `ui.margin.trends`. ----
   const trendsChartRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const trendsAiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.marginComposite,
-      intro:
-        "Margin trend composite: the industry's aggregate RONGZI margin " +
-        "line (RZ balance outstanding or RZ daily buy flow) on top, " +
-        "intensity-coded daily return bars + a trailing-20d return-vol " +
-        "dashed line below. Bar shade = margin intensity (RZ-buy share of " +
-        "turnover tercile). Leverage chasing into rising returns = crowded " +
-        "trend; balance falling while returns rise = deleveraging rally.",
+      intro: docs.text("ui.margin.trends"),
       instruments: [{ code: industryId, assetClass: "industry" }],
       state: {
         attribution,
         series: series === "balance" ? "RZ balance" : "RZ buy",
         value_mode: normalized ? "normalized (member-avg)" : "raw (SUM)",
       },
-      notes: [
-        "Industry attribution aggregates member stock+ETF margin; exchange attribution is the official market-wide total.",
-      ],
+      notes: docs.notes("ui.margin.trends"),
     }),
-    [industryId, attribution, series, normalized],
+    [docs, industryId, attribution, series, normalized],
   );
   const trendsAiAskAddon = useAiAskAddon({
     title: "Margin trend composite",

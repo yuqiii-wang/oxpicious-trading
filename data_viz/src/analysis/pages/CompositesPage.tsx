@@ -5,7 +5,7 @@
  * /analysis/composites/<slug>. Add new composite analyses to the
  * COMPOSITE_ANALYSES array below.
  */
-import { Box, Card, CardActionArea, CardContent, Chip, Typography } from "@mui/material";
+import { Box, Card, CardActionArea, CardContent, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import { Layers } from "@mui/icons-material";
 
@@ -16,8 +16,6 @@ interface CompositeAnalysis {
   title: string;
   /** Short description of what the analysis computes. */
   description: string;
-  /** Tag chips shown on the card. */
-  tags: string[];
 }
 
 const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
@@ -25,23 +23,16 @@ const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
     slug: "opposite-industry-correlations",
     title: "Opposite Industry Correlations",
     description:
-      "Industry MA trends offset by a broad-market benchmark (rebased to each " +
-      "industry's level, subtracted — market factor removed, prices recomputed). " +
-      "Audits the raw overall correlation against the benchmark-removed " +
-      "correlation and the opposite score over 20/60/255-day windows.",
-    tags: ["correlation", "benchmark offset", "audit"],
+      "Industry MA trends with the broad-market benchmark removed, auditing " +
+      "raw vs benchmark-removed correlation and the opposite score over " +
+      "20/60/255-day windows.",
   },
   {
     slug: "ai-market-sentiments",
     title: "Market Sentiments by AI and News",
     description:
-      "Industry Sentiments' benchmark-price top (classification nav + clickable " +
-      "benchmark chart with per-industry shades) over the LLM Q&A knowledge " +
-      "base (text.llm_qa) and the news corpus (text.news): the classification " +
-      "pick scopes either feed — an AI / News toggle picks the source — and a " +
-      "date picked on the benchmark chart (or a calendar dot) narrows the " +
-      "feed to that day.",
-    tags: ["AI", "news", "market sentiments", "llm qa", "benchmark price"],
+      "AI Q&A and news feeds scoped by the classification pick, shown over " +
+      "the benchmark price chart for the picked date.",
   },
 ];
 
@@ -98,17 +89,6 @@ export default function CompositesPage() {
                   <Typography variant="body2" color="text.secondary" sx={{ flexGrow: 1 }}>
                     {a.description}
                   </Typography>
-                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                    {a.tags.map((t) => (
-                      <Chip
-                        key={t}
-                        label={t}
-                        size="small"
-                        variant="outlined"
-                        sx={{ fontSize: "0.7rem" }}
-                      />
-                    ))}
-                  </Box>
                 </CardContent>
               </CardActionArea>
             </Card>

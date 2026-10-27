@@ -4,7 +4,7 @@
  * Each card navigates to the analysis's detail page. New analyses can be
  * added to the COMMONS_ANALYSES array below.
  */
-import { Box, Card, CardActionArea, CardContent, Chip, Typography } from "@mui/material";
+import { Box, Card, CardActionArea, CardContent, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import { ShowChart } from "@mui/icons-material";
 
@@ -15,8 +15,6 @@ interface CommonsAnalysis {
   title: string;
   /** Short description of what the analysis computes. */
   description: string;
-  /** Tag chips shown on the card. */
-  tags: string[];
 }
 
 const COMMONS_ANALYSES: CommonsAnalysis[] = [
@@ -24,71 +22,37 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
     slug: "ma-spread",
     title: "MA-Spread",
     description:
-      "Per-security 9-pair grid (5 Price/MA + 4 MA5/MA): each pair shows two curves " +
-      "(short + long MA) with green fill when short > long (growth) and red fill " +
-      "when short < long (decline). Monthly/quarterly/yearly summary stats per pair. " +
-      "Toggle ETF / Index / Stock via the top-bar toggle; ThemeSelector + " +
-      "CodeSearchBar mirror the other analysis-commons pages " +
-      "(Stock is reserved until stock_tech_stats is created). " +
-      "Backed by analysis.mov_ave_spreads_detail + _summary.",
-    tags: ["ETF", "Index", "Stock", "MA spread", "2-curve + fill"],
+      "Per-security 9-pair MA grid (5 price/MA + 4 MA5/MA): short vs long " +
+      "curves with growth/decline fill and monthly/quarterly/yearly stats.",
   },
   {
     slug: "industry-sentiments",
     title: "Industry Sentiments",
     description:
-      "Each industry's member INDEX VALUES plotted directly, rebased to 100 " +
-      "at the start of the visible (zoom) window. Rebased-to-100 makes member " +
-      "indices comparable regardless of absolute price level. Toggle pool " +
-      "size to filter by member count (small <51 stocks, mid <301, large " +
-      "otherwise). The dashed mean line and ±1σ band are precomputed " +
-      "server-side across member indices per pool_size slice (anchored at " +
-      "history start). Broad-market indices (BROAD_CSI/SSE/SZSE/STAR) appear " +
-      "under the FIN sector and are aggregated identically. Tooltip shows " +
-      "actual close + rebased % + stock_num per index.",
-    tags: ["Index", "industry sentiment", "rebased to 100", "multi-line", "pool size", "mean/var overlay"],
+      "Each industry's member indices rebased to 100 over the visible " +
+      "window, with the mean line and ±1σ band per pool size.",
   },
   {
     slug: "pe",
     title: "PE",
     description:
-      "Per-security valuation: close price (left y-axis) vs PE + " +
-      "trailing-12m dividend yield (right y-axis). Index securities show " +
-      "all series; ETF/Stock show close + dividend_yield only (no PE " +
-      "source). Beneath each chart: the band-break valuation streaks card " +
-      "(PE breaks of its trailing percentile band, with archive streak " +
-      "tables). Backed by " +
-      "analysis.pe / analysis.dividends; close + " +
-      "raw PE are JOINed live from stats so the UI always shows the freshest " +
-      "source values.",
-    tags: ["ETF", "Index", "Stock", "PE", "dividend yield", "valuation"],
+      "Per-security close vs PE and trailing-12m dividend yield, with the " +
+      "band-break valuation-streaks card.",
   },
   {
     slug: "dividends",
     title: "Dividends",
     description:
-      "Per-security dividends view: the PE page's baseline plot alone " +
-      "(no band-break streaks card — the dividend_yield streak tables were " +
-      "removed). ETF/Stock securities mark ex-dividend dates as gold " +
-      "diamonds on the price chart; Index securities show the standard " +
-      "OHLC + MAs + Amt + PE twin-axis baseline. Backed by analysis.pe / " +
-      "analysis.dividends (same security universe as the PE page — both " +
-      "tables are built together by analysis.pe_and_dividends).",
-    tags: ["ETF", "Index", "Stock", "dividend yield", "valuation"],
+      "Per-security dividend view: ex-dividend dates marked on the price " +
+      "chart (ETF/Stock) or the OHLC + PE baseline (Index).",
   },
   {
     slug: "etf-holdings",
     title: "ETF Holdings",
     description:
-      "Per-ETF holdings inspection: browse the ETF classification nav " +
-      "(sector → industry + strategy → theme, exchange filter, ETF chips) " +
-      "and drill into what each ETF holds — full stock weights / composition " +
-      "with L1/L2 classification labels, falling back to the tracking " +
-      "index's constituents when an ETF has no holdings snapshot. Scaffolding " +
-      "stage: the page currently loads the ETF classification nav only; the " +
-      "holdings view is coming next. Backed by stats.sec_composition " +
-      "(/api/sec-composition).",
-    tags: ["ETF", "holdings", "composition", "stock weights", "classification nav"],
+      "Browse the ETF classification nav and drill into each ETF's stock " +
+      "weights and composition, falling back to the tracking index's " +
+      "constituents.",
   },
 ];
 
@@ -126,17 +90,6 @@ export default function CommonsPage() {
                 <Typography variant="body2" color="text.secondary" sx={{ flexGrow: 1 }}>
                   {a.description}
                 </Typography>
-                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                  {a.tags.map((t) => (
-                    <Chip
-                      key={t}
-                      label={t}
-                      size="small"
-                      variant="outlined"
-                      sx={{ fontSize: "0.7rem" }}
-                    />
-                  ))}
-                </Box>
               </CardContent>
             </CardActionArea>
           </Card>

@@ -1,6 +1,6 @@
 """builds.stock.tech_stats — Stock technical indicator computation.
 
-Computes MA5/20/60/120/255 + MA5 ratio + EMA6/10/20/60/120/255 from
+Computes MA5/20/60/120/255 + MA5 ratio + EMA6/12/20/26/60/120/255 from
 stats.stock_basic_stats.close, plus trading_amt_per_pct_change
 (trading_amount / (close - open), signed — trading_amount LEFT JOINed
 from stats.stock_liquidity_margin), storing results in
@@ -139,7 +139,7 @@ def _compute_tech_indicators(df: pd.DataFrame) -> pd.DataFrame:
     )
     df = compute_emas(
         df, group_key="code", value_col="close",
-        spans=[6, 10, 20, 60, 120, 255],
+        spans=[6, 12, 20, 26, 60, 120, 255],
     )
     # trading_amt_per_pct_change = trading_amount / (close - open), signed.
     # Row-wise — no lookback state, safe on the windowed incremental load.
@@ -301,7 +301,7 @@ async def run_tech_stats_chunked(
         # then single to_dict(records) call.
         _numeric_cols = [
             "ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
-            "ema6", "ema10", "ema20", "ema60", "ema120", "ema255",
+            "ema6", "ema12", "ema20", "ema26", "ema60", "ema120", "ema255",
             "trading_amt_per_pct_change",
         ]
         _out_cols = ["date", "code"] + _numeric_cols

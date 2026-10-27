@@ -165,6 +165,7 @@ async def run_movers_phase(
     lang: str = "zh",
     count: Optional[int] = None,
     force: bool = False,
+    no_research: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Plan + ask the day's industry movers; persist the movers artifact.
 
@@ -172,6 +173,12 @@ async def run_movers_phase(
     artifact cache (``ai_daily_<plan-date>_movers.json``), then delegates
     to :func:`movers.run_movers` on one open pool. Returns the movers
     envelope (None-candidates when cross_stats has no data yet).
+
+    On an OK run the AI Research auto-run is EMBEDDED here: every
+    industry the plan loaded gets one ``generate_research_qa`` pass
+    (quarterly cooldown by default; ``force`` overrides; ``no_research``
+    skips entirely) — the envelope carries the outcomes under
+    ``research``.
     """
     from _common.build_commons import get_db_or_exit
 
@@ -190,9 +197,18 @@ async def run_movers_phase(
             logger.info("movers: cached artifact %s exists — skipping",
                         out_path.name)
             return cached
-        return await movers.run_movers(
+        env = await movers.run_movers(
             conn, benchmark=benchmark, provider_name=provider_name,
             model=model, lang=lang, count=count)
+        if env.get("status") == "ok" and not no_research:
+            from .research_autorun import run_research_autorun
+            candidates = [p for side in ("rises", "drops")
+                          for p in env.get("candidates", {}).get(side, [])]
+            if candidates:
+                env["research"] = await run_research_autorun(
+                    conn, candidates, provider_name=provider_name,
+                    model=model, lang=lang, force=force)
+        return env
     finally:
         from _common.db_commons import close_pools_async
         await close_pools_async()
@@ -230,6 +246,10 @@ def main() -> None:
     parser.add_argument("--movers-benchmark", default=movers.MOVERS_BENCHMARK,
                         help=f"Benchmark of the industry-grain offsets "
                              f"(default {movers.MOVERS_BENCHMARK} = 中证A股).")
+    parser.add_argument("--no-research", action="store_true",
+                        help="Skip the AI Research auto-run embedded in the "
+                             "movers phase (per-industry research-logic Q&A "
+                             "generation, quarterly cooldown by default).")
     parser.add_argument("--force", action="store_true",
                         help="Re-run even when a cached artifact exists "
                              "for the target biz date.")
@@ -283,7 +303,8 @@ def main() -> None:
         movers_env = asyncio.run(run_movers_phase(
             out_dir, benchmark=args.movers_benchmark,
             provider_name=args.provider, model=args.model, lang=args.lang,
-            count=args.count, force=args.force))
+            count=args.count, force=args.force,
+            no_research=args.no_research))
         if movers_env and movers_env.get("status") == "ok":
             movers_path = movers.movers_artifact_path(
                 out_dir,

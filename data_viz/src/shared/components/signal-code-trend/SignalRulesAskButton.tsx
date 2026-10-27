@@ -15,6 +15,7 @@
 import { useMemo } from "react";
 import { AiAskButton, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskPlotInfo } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 
 export interface SignalRulesAskButtonProps {
   /** The ask's security type (label vocabulary: etf / index / stock). */
@@ -35,6 +36,7 @@ export default function SignalRulesAskButton({
   name,
   signalType,
 }: SignalRulesAskButtonProps) {
+  const docs = useDocs();
   const plotInfo = useMemo<AiAskPlotInfo>(() => {
     const state: Record<string, string> = {};
     if (signalType) state.signal = signalType;
@@ -43,19 +45,11 @@ export default function SignalRulesAskButton({
         kind: "table",
         title: "Signal rules — self-adaptive cells",
         subtitle: name,
-        intro:
-          `Rule cells of ${name ?? code} (${secType}) — one row per ` +
-          "(sub signal · trend · regime · action) key of the picked " +
-          "family: the cell's CONSTANT breach bar (self-adaptively picked " +
-          "per key on the code's own history), its gate verdict and its " +
-          "measured evidence (episodes · blended forward return · hit). " +
-          "A cell fires when the live value pierces its bar from the " +
-          "trigger side under a matching day context; buys and sells are " +
-          "NOT mirror images — sharp falls revert (buy the capitulation), " +
-          "sharp rises continue (sells are exit timing). The metrics table " +
-          "below resolves the cells' INPUT values (trend state, the RSI " +
-          "14/10/6 entry grid, the momentum axes) for this security at " +
-          "the latest close.",
+        intro: docs.text("ui.signal-rules.ask", {
+          name: name ?? code,
+          code,
+          secType,
+        }),
       },
       scope: { instruments: [{ code, name, assetClass: secType }] },
       window: {},
@@ -63,18 +57,11 @@ export default function SignalRulesAskButton({
       state: Object.keys(state).length > 0 ? state : undefined,
       searchKeywords: ["signal rules", name ?? code, signalType ?? ""]
         .filter(Boolean),
-      notes: [
-        "Rule cells are the CURRENT measured state (signal_rules is wiped " +
-          "and re-inserted per pipeline run) — there is no as-of replay; " +
-          "the metrics table resolves at the latest available close.",
-        "Confidence is the cell's measured dir_ave (the fixed " +
-          "0/3/5/10/20d blend), depth- and sample-scaled — never a fitted " +
-          "curve; a 'Valid ✓' cell cleared its side's measured bar.",
-      ],
+      notes: docs.notes("ui.signal-rules.ask"),
       insight: INSIGHT_PAGES.signalRules,
       product: "signal-rules",
     };
-  }, [secType, code, name, signalType]);
+  }, [docs, secType, code, name, signalType]);
   // No echarts instance — the modal skips the screenshot capture.
   return <AiAskButton plotInfo={plotInfo} getInstance={() => null} />;
 }

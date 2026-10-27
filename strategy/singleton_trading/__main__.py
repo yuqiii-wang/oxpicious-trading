@@ -174,7 +174,17 @@ class SingletonTradingStrategy(StrategyPipeline):
             strategy_name = append_ft_suffix(algo_name, ft)
             collector = AlgoSignalCollector({algo_name: 1.0})
 
-            params = dict(STRATEGY_PARAMS)
+            # Trading-layer defaults + the algo's model-param defaults. The
+            # codes_by_st branch below re-merges DB algo_configs on top;
+            # without an explicit code list there is no (sec_type, code) to
+            # load a config for, so the algo defaults ARE the params (the
+            # former bare STRATEGY_PARAMS copy hit apply_signals without
+            # ema_signal/hist_threshold and crashed on every all-codes run).
+            from strategy.factors_and_algos import get_algo
+            params = {
+                **get_algo(algo_name).DEFAULT_PARAMS,
+                **dict(STRATEGY_PARAMS),
+            }
             params["buy_notional"] = args.buy_notional
             if ft > 0:
                 params["fault_tolerance"] = ft

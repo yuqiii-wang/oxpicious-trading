@@ -26,8 +26,9 @@ Pipeline
      (previous-day trading/weekend/holiday status + today's intraday
      gaps) from the SAME source data -> analysis.mov_ave_rsi_holiday
      (see steps/holiday.py). Must run AFTER RSI due to FK.
-  7. INTERNAL STEP: compute EMA spread detail (9 EMA gap pairs + the
-     EMA6/EMA20 slope + curvature) from the SAME source data
+  7. INTERNAL STEP: compute EMA spread detail (the 6 TYPICAL EMA gap
+     pairs over {6,12,26} + the EMA6/EMA12 slope + curvature) from the
+     SAME source data
      -> analysis.mov_ave_spreads_detail_ema (see steps/ema.py). Reuses the
      same DB connection + source DataFrame.
   8. INTERNAL STEP: compute rolling OHLC detail (today_close +

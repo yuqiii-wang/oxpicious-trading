@@ -190,6 +190,14 @@ export interface AiAskInsightMetric {
   value_date: string | null;
   prev_value: number | string | boolean | null;
   delta: number | null;
+  /** Rarity: the value's percentile within its PRIOR trailing history —
+   *  the share of the metric's own prior observations (same scope filters,
+   *  10y window, one row per date) at or below this value; 0.95 = the top
+   *  5% tail. NULL for non-numeric values, thin history (<120 prior
+   *  observations), or spec `"rank": false` (categorical codes).
+   *  pct_rank_n = the prior sample size behind it. */
+  pct_rank: number | null;
+  pct_rank_n: number | null;
   source_kind: string;
   computed: boolean;
   unresolved: string | null;

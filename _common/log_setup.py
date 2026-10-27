@@ -81,7 +81,8 @@ def _process_log_name() -> str | None:
     """The process's dotted entry-module name — the service identity the
     log file is keyed by (mirrors ``service_heartbeat.autoregister``'s
     derivation, minus the DB import: ``builds/etf/__main__.py`` →
-    ``builds.etf``, ``database/monitoring.py`` → ``database.monitoring``).
+    ``builds.etf``, ``database/stream_watchdog.py`` →
+    ``database.stream_watchdog``).
     None when there is no entry file under the repo root (REPL, tests,
     embedded interpreters)."""
     main_file = getattr(sys.modules.get("__main__"), "__file__", None)

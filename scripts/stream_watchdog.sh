@@ -4,8 +4,8 @@
 # Idempotent: starts `python -m database.stream_watchdog` only if no
 # watchdog process is already running. The watchdog restarts dead or
 # wedged downloads.stream.* pollers (see database/stream_watchdog.py);
-# stream_always.sh stays the manual one-shot starter, but running it
-# while the watchdog is active can duplicate pollers.
+# scripts/stream_always.sh is the one-shot poller starter — its pgrep
+# guard makes a run over a healthy stream a no-op.
 #
 # Requires the conda env on PATH (run via main_run.sh / an activated
 # WSL shell), like scripts/stream_always.sh.

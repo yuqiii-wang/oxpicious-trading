@@ -23,6 +23,7 @@ import { InfoMark } from "@/shared/components/description";
 import { fetchPairPctRatios } from "@/lib/api-client";
 import type { PairPctRatiosResponse } from "@shared/types";
 import { INSIGHT_PAGES, useAiAskAddon, type AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import {
   PAIR_RATIO_MODES,
   PAIR_RATIO_MODE_LABELS,
@@ -83,18 +84,14 @@ export default function HedgeRatioPanel({ subject, benchmark }: Props) {
     [data, themeMode, hedgeMode],
   );
 
-  // ---- AI Ask (insight: signals.hedge-ratio) ------------------------------
+  // ---- AI Ask (insight: signals.hedge-ratio). Authored text:
+  // static.docs `ui.hedge-pairs.ratio` (+ `.ratio.info` popover). ----
   const chartRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.hedgeRatio,
-      intro:
-        "Minimum-variance hedge ratio h² = −Cov(A,B)/Var(A) of the subject " +
-        "industry vs the benchmark industry over trailing 20/60/255-day " +
-        "windows, plotted on the stride-grid dates. Above 0 = BUY the subject " +
-        "to hedge the benchmark (opposite-moves regime); below 0 = short it. " +
-        "Market-offset mode subtracts the 沪深300 pct from both sides first — " +
-        "where the buy-to-hedge answer lives.",
+      intro: docs.text("ui.hedge-pairs.ratio"),
       instruments: subject
         ? [{ code: subject.code, name: subject.label, assetClass: "industry" }]
         : [],
@@ -103,11 +100,9 @@ export default function HedgeRatioPanel({ subject, benchmark }: Props) {
         benchmark: benchmarkCode || "—",
         stride: data?.interval ?? 20,
       },
-      notes: [
-        "Values appear only on stride-grid dates; null days are skipped, never zero-filled.",
-      ],
+      notes: docs.notes("ui.hedge-pairs.ratio"),
     }),
-    [subject, hedgeMode, benchmarkCode, data?.interval],
+    [docs, subject, hedgeMode, benchmarkCode, data?.interval],
   );
   const aiAskAddon = useAiAskAddon({
     title: "Pair hedge ratio vs benchmark industry",
@@ -124,19 +119,8 @@ export default function HedgeRatioPanel({ subject, benchmark }: Props) {
         </Typography>
         {aiAskAddon}
         <InfoMark
-          title="Pair hedge ratio vs benchmark industry"
-          description={
-            "Both sides come from the nav's pair selection — subject industry = the " +
-            "hedging instrument, benchmark industry = the position.\n" +
-            "The plotted value is the minimum-variance hedge h² = −Cov(A,B) / Var(A) over " +
-            "trailing 20/60/255-day windows — how many units of the subject industry to " +
-            "hold per unit long of the benchmark industry. Above 0 = BUY the subject " +
-            "(negative covariance — the opposite-moves regime); below 0 = short it.\n" +
-            "Raw mode uses the industries' aggregate daily pct changes directly; Market " +
-            "offset subtracts the 沪深300 (000300) pct from both sides first — where the " +
-            "buy-to-hedge answer lives. Values appear only on stride-20 grid dates; null " +
-            "days are skipped, never zero-filled."
-          }
+          title={docs.title("ui.hedge-pairs.ratio.info")}
+          description={docs.text("ui.hedge-pairs.ratio.info")}
         />
       </Box>
 

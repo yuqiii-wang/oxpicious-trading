@@ -19,7 +19,15 @@
  * above the chart, the replayed history below the curve plots):
  *   1. Pair summary — subject × benchmark chips + role swap.
  *   2. Hedge Pair Signals header + Refresh — the signals section's
- *      one refresh (rules, markers and history together).
+ *      one refresh (rules, markers and history together) and the
+ *      sub-type focus dropdown: it lists the PAIR'S PORTFOLIO RULES
+ *      (the roster rows' own portfolio_sub_type: trio wash / spread,
+ *      one option per portfolio row; DEFAULTS to the trio wash, null
+ *      = all) — choosing one narrows the rules roster to THAT
+ *      portfolio row (selected + expanded; the other sub's row does
+ *      not render) and narrows the curve markers + the history
+ *      rows to its events; a roster-row click syncs the dropdown
+ *      back.
  *   3. The pair's RULE GROUPS (the shared PortfolioSignalRulesPanel —
  *      it takes the pair's two industry codes; the server matches the
  *      managed 'A~B' portfolio whose legs sit in them and expands its
@@ -29,15 +37,17 @@
  *      y-axes in one grid (the MA-Spread dual-axis chart style; x = the
  *      union of both calendars), an OPTIONAL broad-market benchmark
  *      curve (rebased to 100, dashed) with an in-chart dropdown, and
- *      the portfolio's signal-history events as buy ▲ / sell ▼ /
- *      wait ◆ markers on BOTH legs at the event date.
+ *      the portfolio's signal-history events as PER-LEG action markers
+ *      (each leg's own member action — the spread sub's sell leg
+ *      renders sell ▼; the trio's both-legs buy) with the clicked
+ *      history row's markers emphasized.
  *   5. Lower plot — the pair's industry × industry Pair hedge ratio
  *      (HedgeRatioPanel over the shared pairRatioChart kit).
  *   6. The pair's signal HISTORY (the shared PortfolioSignalHistoryPanel —
- *      the portfolio EVENT tier, ONE row per event day with the day's
- *      portfolio-level classes; expanding a row reveals the event
- *      records AND the triggering cell-level signals, each with its
- *      own date — different sub signals on different nearby days).
+ *      the portfolio EVENT tier, ONE row per coordinated PORTFOLIO
+ *      SIGNAL at the day its coordination completed; expanding a row
+ *      reveals THAT signal's coordinated cell-level signals, each with
+ *      its own date — different sub signals on different nearby days).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -61,7 +71,10 @@ import {
   type PortfolioHistorySignal,
 } from "@/lib/api-client";
 import { PortfolioSignalHistoryPanel, PortfolioSignalRulesPanel } from "@/shared/components/portfolio-signal";
-import { signalSubWordLoose } from "@/shared/components/signal-code-trend/families";
+import {
+  portfolioEventRowKey,
+  portfolioSubLabel,
+} from "@/shared/components/portfolio-signal/common";
 import RefreshButton from "@/components/RefreshButton";
 import PairCurvesChart, { type PairIndustryRef } from "./PairCurvesChart";
 import HedgeRatioPanel from "./HedgeRatioPanel";
@@ -89,6 +102,16 @@ const DEFAULT_BENCHMARK_ID = "TECH_GENERAL";
 /** The hedge_pairs family runs the pipeline's default INDEX scope — its
  *  rows (composite pair codes) carry the index sec_type stamp. */
 const HP_SEC_TYPE = "index";
+
+/** The DEFAULT sub-type focus (the header dropdown): the TRIO WASH
+ *  portfolio rule. The dropdown lists the PAIR'S PORTFOLIO RULES (the
+ *  roster rows' own portfolio_sub_type: trio_wash / spread — one
+ *  option per portfolio row); choosing one SELECTS + EXPANDS that
+ *  portfolio row in the rules roster (the dropdown choosing the
+ *  portfolio; a roster-row click syncs the dropdown back) and
+ *  narrows the curve markers + the history rows to ITS events; a
+ *  pair whose reported subs lack it falls back to all. */
+const DEFAULT_PORTFOLIO_SUB_TYPE = "trio_wash";
 
 export default function HedgePairsPage() {
   const nav = useSecNav({
@@ -253,23 +276,36 @@ export default function HedgePairsPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [signalHistory, setSignalHistory] = useState<PortfolioHistorySignal[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
-  const [expandedDate, setExpandedDate] = useState<string | null>(null);
-  // the coordinated SUB PORTFOLIO TYPE focus (the header dropdown):
-  // null = all; narrows the curve markers, the history rows and the
-  // expanded cell surface to ONE orchestrated sub rule
-  const [subType, setSubType] = useState<string | null>(null);
+  // the expanded PORTFOLIO SIGNAL row (the event's row key — one at a
+  // time): the row's own coordinated cell signals render under it
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  // the PORTFOLIO SUB TYPE focus (the header dropdown): null = all;
+  // the value is the roster rows' own portfolio_sub_type (trio_wash /
+  // spread) — choosing one selects + expands that portfolio row in
+  // the rules roster (the dropdown choosing the portfolio; the panel
+  // reports a row click back through onRowSelect) and narrows the
+  // curve markers + the history rows to ITS events — defaults to the
+  // trio wash (DEFAULT_PORTFOLIO_SUB_TYPE)
+  const [subType, setSubType] = useState<string | null>(
+    DEFAULT_PORTFOLIO_SUB_TYPE);
   const [subTypes, setSubTypes] = useState<string[]>([]);
 
   // a pair switch changes the whole scope — reset the expansion and
-  // the sub-type focus (the new portfolio may not carry it)
+  // re-seed the sub-type focus at the default (the new portfolio may
+  // not carry it; the reported options then fall back to all) and drop
+  // the stale options so the fallback below never fires on them
   useEffect(() => {
-    setExpandedDate(null);
-    setSubType(null);
+    setExpandedRow(null);
+    setSubType(DEFAULT_PORTFOLIO_SUB_TYPE);
+    setSubTypes([]);
   }, [pairCode]);
 
   // the reported sub types no longer carrying the selection (e.g. the
-  // refresh dropped a sub) — fall back to all
+  // refresh dropped a sub) — fall back to all; only judged once the
+  // options have actually been reported (the empty pre-fetch state
+  // would void the default on mount)
   useEffect(() => {
+    if (subTypes.length === 0) return;
     if (subType != null && !subTypes.includes(subType)) setSubType(null);
   }, [subType, subTypes]);
 
@@ -282,10 +318,11 @@ export default function HedgePairsPage() {
     let cancelled = false;
     setHistoryLoading(true);
     // the PORTFOLIO EVENT history (2026-10-21): every coordinated
-    // event of the pair with its member cell-level signals — BOTH
-    // orchestrating families' rows ride the one table (hedge_pairs
-    // pair-native + hp_rsi orchestrated), so the sub-type dropdown
-    // spans them all through this single fetch
+    // event of the pair with its member cell-level signals — the
+    // orchestrating family's rows ride the one table (hedge_pairs
+    // pair-native; the retired hp_rsi tier still decodes from old
+    // rows), so the sub-type dropdown spans them all through this
+    // single fetch
     fetchPortfolioSignalHistory(HP_SEC_TYPE, pairCode)
       .then((resp) => {
         if (cancelled) return;
@@ -302,13 +339,15 @@ export default function HedgePairsPage() {
     };
   }, [pairCode, refreshKey]);
 
-  // the sub-type focus narrows everything downstream: the curve
-  // markers and the history table read the filtered rows
+  // the portfolio sub-type focus narrows everything downstream: the
+  // curve markers and the history table read the events of THAT
+  // portfolio rule (the events carry the same portfolio_sub_type the
+  // roster rows and the dropdown value use)
   const visibleHistory = useMemo(
     () =>
       subType == null
         ? signalHistory
-        : signalHistory.filter((s) => s.signal_sub_type === subType),
+        : signalHistory.filter((s) => s.portfolio_sub_type === subType),
     [signalHistory, subType],
   );
 
@@ -321,14 +360,21 @@ export default function HedgePairsPage() {
   };
 
   // the chart's marker payload (identity-stable — the option memo keys
-  // on it): the sub-type-filtered coordinated events, buy/sell/wait
-  // through the shared marker language (wait = the grey diamond)
+  // on it): the sub-type-filtered coordinated events, each leg's marker
+  // action resolved from the event's OWN member records (the spread
+  // sub's one-buy-one-sell renders its SELL leg's ▼ from the member —
+  // the portfolio event's own action is the orchestrating buy; the
+  // trio's both-legs-buy unchanged), buy/sell/wait through the shared
+  // marker language (wait = the grey diamond). ``key`` is the history
+  // row's identity — a clicked row emphasizes its markers on the chart.
   const signalEvents = useMemo(
     () =>
       visibleHistory.map((s) => ({
         date: s.date,
         action: s.action,
         is_rejection: s.action === "wait",
+        key: portfolioEventRowKey(s),
+        members: s.members.map((m) => ({ code: m.code, action: m.action })),
       })),
     [visibleHistory],
   );
@@ -410,7 +456,7 @@ export default function HedgePairsPage() {
             </Typography>
             <Typography variant="caption" color="text.secondary">
               {pairCode
-                ? `${pairCode} — entry: both legs' capitulation witnesses pair within ~5 traded days (one leg's action → the other ≤5d); exits: harvest · laggard exhaustion · regime stop`
+                ? `${pairCode} — the pair portfolio's coordinated entries: trio·wash (both legs + the broad market in their own RSI capitulation tails, bought through the inverse-vol pair) and spread·conv (the long-short spread's RSI tail — one buy one sell); every event carries >= 2 cell signals`
                 : "pick two industries in the nav to load a pair portfolio's signals"}
             </Typography>
           </Box>
@@ -433,7 +479,7 @@ export default function HedgePairsPage() {
               <MenuItem value="">All sub types</MenuItem>
               {subTypes.map((s) => (
                 <MenuItem key={s} value={s} sx={{ fontSize: "0.75rem" }}>
-                  {signalSubWordLoose(s)}
+                  {portfolioSubLabel(s)}
                   <Box
                     component="span"
                     sx={{ ml: 1, fontSize: "0.6rem", color: "text.secondary" }}
@@ -453,14 +499,22 @@ export default function HedgePairsPage() {
         </Box>
       </Paper>
 
-      {/* ---- The RULE GROUPS (above the chart) — the sub-type focus
-              narrows the expanded cell surface ---- */}
+      {/* ---- The RULE GROUPS (above the chart) — ONE ROW PER
+              PORTFOLIO RULE since the portfolio_sub_type split (trio
+              wash / spread each expand to its own cells + the mapped
+              registered rsi signals); the sub-type dropdown lists the
+              portfolio rows 1:1, choosing one narrows the roster to
+              that sub's row — selected + expanded, the other sub's
+              row hidden (a row click syncs the dropdown back) — and
+              narrows the chart markers + the history rows to its
+              events ---- */}
       <PortfolioSignalRulesPanel
         codes={industryCodes}
         secType={HP_SEC_TYPE}
         reloadKey={refreshKey}
-        subType={subType}
-        onSubTypes={setSubTypes}
+        subTypeFocus={subType}
+        onRowSelect={setSubType}
+        onPortfolioSubTypes={setSubTypes}
       />
 
       {/* ---- Upper plot: the PAIR PORTFOLIO chart — both legs'
@@ -470,19 +524,21 @@ export default function HedgePairsPage() {
         industryA={subject}
         industryB={safeBenchmark}
         signalEvents={signalEvents}
+        selectedEventKey={expandedRow}
       />
 
       {/* ---- Lower plot: the pair's industry × industry hedge ratio ---- */}
       <HedgeRatioPanel subject={subject} benchmark={safeBenchmark} />
 
       {/* ---- The replayed HISTORY (below the curve plots) — the
-              sub-type-filtered PORTFOLIO events (one row per event
-              day; the event records + the triggering cell-level
-              signals, each on its own day, in the expansion) ---- */}
+              sub-type-filtered PORTFOLIO signals (one row per
+              coordinated portfolio signal; ITS triggering cell-level
+              signals, each on its own day, nested under the row in the
+              expansion) ---- */}
       <PortfolioSignalHistoryPanel
         events={visibleHistory}
-        expandedDate={expandedDate}
-        onExpandedDateChange={setExpandedDate}
+        expandedRow={expandedRow}
+        onExpandedRowChange={setExpandedRow}
       />
     </SecNavShell>
   );

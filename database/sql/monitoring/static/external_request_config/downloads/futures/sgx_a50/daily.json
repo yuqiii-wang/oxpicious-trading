@@ -1,0 +1,27 @@
+[
+  {
+    "service": "downloads.futures.sgx_a50.daily",
+    "request_type": "default",
+    "resource_type": 0,
+    "sleep_sec": 8,
+    "sleep_jitter": 0.35,
+    "poll_interval_sec": null,
+    "max_retries": 3,
+    "retry_backoff_sec": 20,
+    "timeout_connect_sec": 15,
+    "timeout_read_sec": 60,
+    "rotate_browser_profile": true,
+    "add_random_param": true,
+    "enable_host_tracking": true,
+    "host_block_cooldown_sec": 1800,
+    "settle_sleep_sec": null,
+    "urls": {
+      "kline_url": "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+      "clist_url": "https://push2.eastmoney.com/api/qt/clist/get",
+      "referer_url": "https://quote.eastmoney.com/"
+    },
+    "notes": "SGX FTSE China A50 futures daily klines (Eastmoney global futures, market 104, secid 104.CNxxxx). push2his requires curl_cffi TLS impersonation (see downloads/stream/szse/price/_em_source.py); the 2026-10-23 probes showed this host IP-blocks bursts with connection drops for 30+ minutes, hence the conservative sleep and the 1800s block cooldown.",
+    "source_ref": "downloads/futures/sgx_a50/__main__.py",
+    "updated_at": "2026-10-23T00:00:00.000000+00:00"
+  }
+]

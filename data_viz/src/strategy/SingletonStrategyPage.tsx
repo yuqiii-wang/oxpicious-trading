@@ -25,6 +25,7 @@ import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import {
   checkExistingStrategy,
   runSingletonStrategy,
@@ -178,17 +179,12 @@ export default function SingletonStrategyPage() {
   // AI Ask — semantics for the backtest chart; state carries the CURRENT
   // algo weights / fault tolerance / selected risk period so the modal and
   // the LLM always describe the view on screen.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `Singleton strategy backtest for ${displayBacktest?.code ?? nav.searchCode ?? ""} ` +
-        "(MA5/MA60 crossover, precomputed by strategy.singleton_trading): OHLC candles + " +
-        "MA5/MA60, amount bars on the right, Total P&L curve, and BUY (green) / SELL (red) / " +
-        "LAST DAY SELL (purple) markers at fill prices. All price-derived series rebased so " +
-        "the FIRST BUY fill = 100 (dashed Base-100 line; tooltips show actual prices). " +
-        "Clicking a period in the Risk Analytics chart shades the matching range here. " +
-        "Indication: marker clusters show where the crossover acted — entries chasing " +
-        "strength, exits banking it; the P&L curve's drawdowns = the pain budget.",
+      intro: docs.text("ui.strategy.singleton", {
+        code: displayBacktest?.code ?? nav.searchCode ?? "",
+      }),
       instruments: displayBacktest?.code
         ? [{ code: displayBacktest.code, name: displayBacktest.name, assetClass: nav.secType }]
         : [],
@@ -199,16 +195,7 @@ export default function SingletonStrategyPage() {
             granularity: "daily",
           }
         : undefined,
-      series: [
-        { name: "OHLC", unit: "rebased (first BUY = 100)", description: "daily candles, rebased to the first BUY fill" },
-        { name: "MA5", unit: "rebased", description: "5-day moving average of close" },
-        { name: "MA60", unit: "rebased", description: "60-day moving average of close" },
-        { name: "Trading Amt", unit: "元", description: "daily trading amount on its own right axis (not rebased)" },
-        { name: "Total P&L", unit: "元", description: "total P&L curve on its offset axis" },
-        { name: "BUY", description: "buy decision markers at the fill price (dark green = top-3 confidence)" },
-        { name: "SELL", description: "sell decision markers at the fill price (dark red = top-3 losses)" },
-        { name: "LAST DAY SELL", description: "projected final-day sell marker (purple, larger)" },
-      ],
+      series: docs.series("ui.strategy.singleton"),
       state: {
         algo_weights: Object.entries(selection).map(([k, v]) => `${k}:${v}`).join(","),
         fault_tolerance: faultTolerance,
@@ -216,11 +203,9 @@ export default function SingletonStrategyPage() {
           ? `${selectedPeriod.periodType} ${selectedPeriod.periodValue}`
           : "none",
       },
-      notes: [
-        "Rebased axis: price series are normalized to the first BUY fill = 100; tooltips always show actual prices.",
-      ],
+      notes: docs.notes("ui.strategy.singleton"),
     }),
-    [displayBacktest, nav.searchCode, nav.secType, selection, faultTolerance, selectedPeriod],
+    [docs, displayBacktest, nav.searchCode, nav.secType, selection, faultTolerance, selectedPeriod],
   );
   const aiAskAddon = useAiAskAddon({
     title: "Singleton Strategy Backtest",

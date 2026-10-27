@@ -24,7 +24,7 @@ import KeyValueTable, {
 } from "@/shared/components/key-value-table";
 
 /** pct with a unicode minus, 2dp — null-safe for the digest lines. */
-const fmtPct = (v: number | null | undefined): string | null =>
+export const fmtPct = (v: number | null | undefined): string | null =>
   v == null ? null : `${v >= 0 ? "" : "−"}${Math.abs(v).toFixed(2)}%`;
 
 /** rule_params.response → the response leg's words (the portfolio
@@ -50,6 +50,13 @@ export function ruleDetails(r: SignalRule): ReactNode {
   const response = r.rule_params.response != null
     ? RESPONSE_WORDS[String(r.rule_params.response)] ?? null
     : null;
+  // the VARIANT-AXIS stamp (rule_params.pe_boosted / ohlcv_boosted —
+  // 2026-10-27): the boosted-variant populations name the axes in
+  // their params; the plain population carries no key
+  const boosted = [
+    r.rule_params.pe_boosted === true ? "PE-conditioned" : null,
+    r.rule_params.ohlcv_boosted === true ? "turnover-climax" : null,
+  ].filter(Boolean).join(" + ");
   // composite pair codes carry the legs in the code itself ('A~B')
   const legs = r.code.includes("~")
     ? r.code.split("~").join(" + ")
@@ -70,6 +77,9 @@ export function ruleDetails(r: SignalRule): ReactNode {
         ? "observational (ungated)"
         : `dir_ave ≥ ${gate?.min_pct ?? "—"}% @ floor ${gate?.sample_floor ?? "—"}`,
     },
+    boosted != null
+      ? { label: "boost", value: `${boosted} variant population` }
+      : null,
     conf?.depth_factor != null
       ? {
           label: "scale",
@@ -122,10 +132,10 @@ export function ruleDetails(r: SignalRule): ReactNode {
       ? {
           label: "confidence",
           value: `base ${fmtPct(conf.base_pct)}`
-            + (r.is_in_portfolio ? " · in portfolio" : ""),
+            + (r.is_in_portfolio ? " · sourced by portfolio" : ""),
         }
       : r.is_in_portfolio
-        ? { label: "confidence", value: "in portfolio" }
+        ? { label: "confidence", value: "sourced by portfolio" }
         : null,
   ];
 

@@ -135,6 +135,29 @@ function fmtMetricDelta(m: AiAskInsightMetric): string {
   return `${sign}${fmtNum(Math.abs(m.delta))}${m.unit === "%" ? "pp" : ""}`;
 }
 
+/** Rarity cell — the value's prior-history percentile as pNN (p95 = only
+ *  5% of the trailing history sat higher). Tails (≤p5 / ≥p95) are the
+ *  rare readings and render highlighted. */
+function metricRankCell(m: AiAskInsightMetric): {
+  text: string;
+  rare: "high" | "low" | null;
+} {
+  if (m.pct_rank === null) return { text: "–", rare: null };
+  const p = Math.round(m.pct_rank * 100);
+  const rare = p >= 95 ? "high" : p <= 5 ? "low" : null;
+  return { text: `p${p}`, rare };
+}
+
+/** Row tooltip suffix for a rarity cell — the cell's one-line contract. */
+function metricRankTitle(m: AiAskInsightMetric): string {
+  if (m.pct_rank === null) return "";
+  return (
+    ` — rarity p${Math.round(m.pct_rank * 100)}: ` +
+    `${(m.pct_rank * 100).toFixed(0)}% of its prior 10y history sat at or ` +
+    `below this value (n=${m.pct_rank_n ?? "–"}); tails p≤5 / p≥95 are rare`
+  );
+}
+
 /** "12.3 → 15.6 (+26.8%)" — the one number a trader reads first. Percent
  *  series (unit "%", stats already in percent points) instead print the
  *  move as a Δ in percentage points: a ratio between two near-zero
@@ -582,7 +605,7 @@ export default function AiAskModal({
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
-                    {["Metric", "Value", "Δ", "As of"].map((h, i) => (
+                    {["Metric", "Value", "Δ", "Rarity", "As of"].map((h, i) => (
                       <TableCell
                         key={h}
                         align={i === 0 ? "left" : "right"}
@@ -603,7 +626,7 @@ export default function AiAskModal({
                   {insightLoading ? (
                     [0, 1, 2, 3, 4].map((i) => (
                       <TableRow key={i}>
-                        {[0, 1, 2, 3].map((c) => (
+                        {[0, 1, 2, 3, 4].map((c) => (
                           <TableCell key={c} sx={{ py: 0.5 }}>
                             <Skeleton height={14} />
                           </TableCell>
@@ -611,11 +634,14 @@ export default function AiAskModal({
                       </TableRow>
                     ))
                   ) : (
-                    insightMetrics.metrics.map((m) => (
+                    insightMetrics.metrics.map((m) => {
+                      const rank = metricRankCell(m);
+                      return (
                       <TableRow
                         key={m.template_id}
                         title={
                           m.description +
+                          metricRankTitle(m) +
                           (m.unresolved ? ` — ${m.unresolved}` : "")
                         }
                       >
@@ -668,6 +694,23 @@ export default function AiAskModal({
                           sx={{
                             py: 0.25,
                             fontSize: "0.7rem",
+                            whiteSpace: "nowrap",
+                            color:
+                              rank.rare === "high"
+                                ? "error.main"
+                                : rank.rare === "low"
+                                  ? "info.main"
+                                  : "var(--chart-subtitle)",
+                            fontWeight: rank.rare ? 700 : 400,
+                          }}
+                        >
+                          {rank.text}
+                        </TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{
+                            py: 0.25,
+                            fontSize: "0.7rem",
                             color: "var(--chart-subtitle)",
                             whiteSpace: "nowrap",
                           }}
@@ -675,7 +718,8 @@ export default function AiAskModal({
                           {m.value_date ?? "–"}
                         </TableCell>
                       </TableRow>
-                    ))
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>

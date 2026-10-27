@@ -65,7 +65,7 @@ def prepare_features(
     )
     compute_emas(
         merged, group_key="code", value_col="adj_close",
-        spans=[6, 10, 20, 60, 120, 255],
+        spans=[6, 12, 20, 26, 60, 120, 255],
     )
     # trading_amt_per_pct_change = trading_amount / (adj_close - adj_open),
     # signed. Adjusted-space move (matching the MA/EMA columns): raw
@@ -73,7 +73,7 @@ def prepare_features(
     compute_trading_amt_per_move(
         merged, open_col="adj_open", close_col="adj_close")
     logger.info(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma255; "
-          f"EMA columns added: ema6, ema10, ema20, ema60, ema120, ema255")
+          f"EMA columns added: ema6, ema12, ema20, ema26, ema60, ema120, ema255")
     return merged
 
 

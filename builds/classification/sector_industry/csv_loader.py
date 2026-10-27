@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from _common.df_utils import host_array, host_unique
 from builds.classification.sector_industry.exchange import _exchange_from_listed_at
 from builds.classification.sector_industry.paths import CSV_DIR
 
@@ -52,36 +53,59 @@ def load_etf_index_csv(csv_path: str) -> List[Dict[str, Any]]:
     # Normalize column names (strip BOM, whitespace)
     df.columns = [c.strip().lstrip("\ufeff") for c in df.columns]
 
-    results: List[Dict[str, Any]] = []
-    for _, row in df.iterrows():
-        etf_code = str(row.get("产品代码", "")).strip()
-        etf_name = str(row.get("产品名称", "")).strip()
-        index_code = str(row.get("标的指数代码", "")).strip()
-        index_name = str(row.get("标的指数", "")).strip()
-        listed_at = str(row.get("上市地", "")).strip()
-        if not etf_code or not index_code:
-            continue
-        exchange = _exchange_from_listed_at(listed_at)
-        # HK-listed ETFs have code format "XXXX HK Equity" — extract the
-        # numeric prefix so it can be stored as a bare code with .HK suffix.
-        if exchange == "HK" and " HK" in etf_code:
-            etf_code = etf_code.split(" ")[0]
-        # Parse AUM (资产净值 in 亿元) — may be empty for newly listed ETFs.
-        aum_str = str(row.get("资产净值（亿元）", "")).strip()
-        try:
-            aum_yi = float(aum_str) if aum_str else None
-        except (ValueError, TypeError):
-            aum_yi = None
-        # 管理人 (fund manager / issuer legal entity name) — used to match
-        # the owner_id from sec_owners.json. May be empty for some rows.
-        manager = str(row.get("管理人", "")).strip()
-        results.append({
-            "etf_code": etf_code,
-            "etf_name": etf_name,
-            "index_code": index_code,
-            "index_name": index_name,
-            "exchange": exchange,
-            "aum_yi": aum_yi,
-            "manager": manager,
-        })
-    return results
+    def _txt(chi: str) -> pd.Series:
+        """Column as stripped strings; a missing column reads as '' per row
+        (the exact ``str(row.get(chi, "")).strip()`` semantics — a NaN cell
+        becomes the string 'nan', same as the former per-row str() cast;
+        pandas' str dtype astype(str) keeps NaN, so fill it explicitly)."""
+        if chi in df.columns:
+            return df[chi].fillna("nan").astype(str).str.strip()
+        return pd.Series("", index=df.index)
+
+    etf_code = _txt("产品代码")
+    index_code = _txt("标的指数代码")
+    keep = (etf_code != "") & (index_code != "")
+
+    # 上市地 → exchange via a small dict over the venue values (map(dict)
+    # stays on the cudf-native path; a per-row _exchange_from_listed_at
+    # call would not). '' sentinel = no venue match (None in the output —
+    # Series.map would turn None values into NaN).
+    listed_at = _txt("上市地")
+    exchange = listed_at.map(
+        {v: (_exchange_from_listed_at(v) or "") for v in host_unique(listed_at)}
+    )
+    # HK-listed ETFs have code format "XXXX HK Equity" — extract the
+    # numeric prefix so it can be stored as a bare code with .HK suffix.
+    hk = (exchange == "HK") & etf_code.str.contains(" HK", regex=False)
+    etf_code = etf_code.where(~hk, etf_code.str.split(" ").str[0])
+
+    # Parse AUM (资产净值 in 亿元): '' → None, non-numeric → None, and a NaN
+    # cell → float('nan') — the exact ``float(aum_str) if aum_str else None``
+    # per-row semantics (the string 'nan' parses to NaN, it is not empty).
+    aum_txt = _txt("资产净值（亿元）")
+    aum_yi = pd.to_numeric(aum_txt, errors="coerce").astype(object).where(
+        aum_txt != "", None)
+
+    etf_name = _txt("产品名称")
+    index_name = _txt("标的指数")
+    manager = _txt("管理人")
+    return [
+        {
+            "etf_code": ec,
+            "etf_name": en,
+            "index_code": ic,
+            "index_name": inm,
+            "exchange": ex if ex else None,
+            "aum_yi": None if a is None else float(a),
+            "manager": mg,
+        }
+        for ec, en, ic, inm, ex, a, mg in zip(
+            host_array(etf_code[keep]),
+            host_array(etf_name[keep]),
+            host_array(index_code[keep]),
+            host_array(index_name[keep]),
+            host_array(exchange[keep]),
+            host_array(aum_yi[keep]),
+            host_array(manager[keep]),
+        )
+    ]

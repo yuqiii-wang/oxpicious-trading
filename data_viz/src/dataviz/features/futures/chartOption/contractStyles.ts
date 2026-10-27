@@ -40,10 +40,11 @@ export function computeFuturesContractStyles(
     rowByCodeDate.get(r.code)!.set(r.date, r);
   }
 
-  // Split contracts by category
-  const qualifying = contracts.filter(
-    (c) => c.is_alive && c.is_continuous,
-  );
+  // Split contracts by category — aliveness alone decides the bucket.
+  // is_continuous is a data-quality flag, not a display gate: the offshore
+  // CN/MCA contracts routinely carry zero-lot days (thin liquidity) and
+  // would vanish from the chart if continuity gated the active style.
+  const qualifying = contracts.filter((c) => c.is_alive);
   const matured = contracts.filter((c) => !c.is_alive);
 
   // Sort qualifying by contract_year_month ascending (front month first)

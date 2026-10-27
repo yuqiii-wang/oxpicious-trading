@@ -51,6 +51,7 @@ import {
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import {
   fetchBenchmarkPriceChart,
   fetchIndustryAttributionPriceSeries,
@@ -391,30 +392,26 @@ export function BenchmarkPriceChart({
 
   // Rich AI Ask semantics (intro + instruments; series stats auto-derive —
   // series names here are dynamic: the benchmark name + industry labels).
+  const docs = useDocs();
   const aiAsk = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.benchmarkPrice,
-      intro:
-        `Benchmark ${benchmarkCode || "(none selected)"} daily price. ` +
-        (priceMode === "rolling"
-          ? "Rebased mode: 100 × P_t/P_window-start so slopes compare cumulative performance; each selected industry overlays its contribution-excluded curve (benchmark − industry); the shaded gap = that industry's added/removed return over the trailing rolling window. Indication: swelling shade = the industry propels the benchmark; ebbing shade = its pull decays."
-          : "Absolute mode: raw daily closes on a shared price axis (benchmark + each selected industry's ex-this-industry series).") +
-        (showTradingAmt
-          ? " Bars (right axis): benchmark turnover, 亿 CNY; colored base segment = selected industries' shared weight."
-          : ""),
+      intro: docs.text("ui.industry-sentiments.benchmark-price", {
+        benchmark: benchmarkCode || "(none selected)",
+        rolling: priceMode === "rolling",
+        showAmt: showTradingAmt,
+      }),
       instruments: benchmarkCode
         ? [{ code: benchmarkCode, assetClass: "index" }]
         : [],
       granularity: "daily",
-      series: [
-        { name: "Trading Amt", unit: "亿 CNY", description: "benchmark daily trading amount" },
-      ],
-      notes: [
-        "Clicking the plot selects the as-of date used by the attribution charts below.",
-        `Rolling window for the industry shades: ${ROLLING_DAYS_LABELS[rollingDays]} (${rollingDays} trading days).`,
-      ],
+      series: docs.series("ui.industry-sentiments.benchmark-price"),
+      notes: docs.notes("ui.industry-sentiments.benchmark-price", undefined, {
+        windowLabel: ROLLING_DAYS_LABELS[rollingDays],
+        rollingDays,
+      }),
     }),
-    [benchmarkCode, priceMode, showTradingAmt, rollingDays],
+    [docs, benchmarkCode, priceMode, showTradingAmt, rollingDays],
   );
 
   return (

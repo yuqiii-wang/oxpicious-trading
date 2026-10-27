@@ -14,25 +14,27 @@ export interface FuturesChartExtra {
 }
 
 export interface ExpiryDot {
-  /** Index in the dates[] array (x-axis position). */
+  /** Index in the dates[] array of the dot's ANCHOR: the contract's expiry
+   *  date (nearest axis trading date on/after it). */
   dateIndex: number;
-  /** Spot price value at that mapped date (y-axis position). */
+  /** Settlement price (price plot) or signed gap in bps (basis plot) at the
+   *  anchor — the curve's endpoint at expiry. */
   value: number | null;
-  /** Contract code expiring. */
+  /** Contract code — a contract LIVE (trading) on the hovered date. */
   code: string;
-  /** Computed expiry date string (YYYY-MM-DD). */
+  /** Expiry date (YYYY-MM-DD) as known on the hovered date: hovered date +
+   *  the row's days_to_expiry. */
   expiryDate: string;
-  /** The mapped trading date (YYYY-MM-DD) — the nearest trading date at or after expiry. */
-  mappedDate: string;
-  /** days_to_expiry on the hovered date. */
-  dte: number;
 }
 
 /** Scatter data item for the expiry-dots series. Carries the dot payload so
- *  the always-on label formatter can read code/expiryDate directly. */
+ *  the always-on label formatter can read code/expiryDate directly. Dots
+ *  near the axis end flip their label to the left so it stays on the
+ *  canvas. */
 export interface ExpiryDotDataItem {
   value: [number, number];
   dot: ExpiryDot;
+  label?: { position: "top" | "left" };
 }
 
 /** Per-contract visual style (shared by the price plot and any companion

@@ -18,7 +18,9 @@ import type { SignalFamily } from "./index";
 /** The sub type's short display word (raw literal when unmapped). */
 const RECORD_WORDS: Record<string, string> = {
   hp_entry_legs_rsi: "trio·rsi",
+  hp_entry_rsi_legs: "legs·rsi",
   hp_entry_wash120_mkt: "wash·120+mkt",
+  hp_entry_wash_mkt1: "wash·1leg+mkt",
   hp_exit_mkt_high: "exit·mkt hi",
   hp_catchup_rsi_hi: "catchup·rsi hi",
 };

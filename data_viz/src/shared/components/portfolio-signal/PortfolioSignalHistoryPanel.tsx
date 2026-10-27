@@ -1,15 +1,22 @@
 /**
  * PortfolioSignalHistoryPanel — the PORTFOLIO tier's HISTORY surface
  * (analysis_signals.portfolio_history_signals, the 2026-10-21 event
- * tier; the SignalHistoryPanel's portfolio sibling): ONE ROW PER EVENT
- * DAY, the day's coordinated PORTFOLIO events (the event classes —
- * entry · exit · tilt — with the strongest event's confidence). The
- * EVENT DATE is the day the coordination COMPLETED; the triggering
- * cell-level signals sit one click away: expanding a row renders the
- * day's event records AND the events' MEMBER cell signals — the
- * sourced component cells' own records, each WITH ITS OWN DATE
- * (different sub signals on different nearby days: the trio entry's
- * market capitulation up to ~5 traded days before the legs').
+ * tier; the SignalHistoryPanel's portfolio sibling): ONE ROW PER
+ * PORTFOLIO SIGNAL — the coordinated composite event at its own event
+ * date (the day the coordination completed), the row carrying the
+ * event's identity (the orchestrating family's word + the coordinated
+ * sub rule). Expanding a row renders THAT event's
+ * coordinated CELL SIGNALS under it (2026-10-23, user-directed: the
+ * cell signals sit under their RESPECTIVE portfolio signal, never
+ * merged across a day's events) — the member records at their OWN
+ * days under the member-action invariant: at least TWO actions on at
+ * least TWO codes per event, different dates allowed. A member is a
+ * record the TRIGGERED PORTFOLIO SIGNAL sets itself (the simplified
+ * 2026-10-24 design: no sourcing from the standalone families' tiers)
+ * — the hedge family's per-curve WITNESS records (each curve's
+ * deepest-alive RSI-tail breach run start, on its OWN day); a legacy
+ * row may still resolve a sourced cell event through cell_signals
+ * (the documented fallback kind).
  *
  * Rendered on the SHARED ExpandedTable with the per-column header
  * filters (the Date range + the regime ticks, the per-code panel's
@@ -23,123 +30,82 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import { useDocs } from "@/shared/docs";
 import ExpandedTable, {
   type ExpandedTableColumn,
 } from "@/shared/components/ExpandedTable";
 import { SignalRecordsTable } from "@/shared/components/signal-code-trend";
-import { signalRecordName } from "@/shared/components/signal-code-trend/families";
+import {
+  SIGNAL_TYPE_LABELS,
+  signalRecordName,
+  signalSubWord,
+} from "@/shared/components/signal-code-trend/families";
 import { tickDotItem } from "@/shared/components/signal-code-trend/tickDotItem";
 import { regimeAccentColor } from "@/shared/charts/regimeBands";
 import type {
   PortfolioEventMemberSignal,
   PortfolioHistorySignal,
-  TradingSignal,
 } from "@/lib/api-client";
 
-import { subEventClasses } from "./common";
+import {
+  portfolioEventRowKey,
+  portfolioMemberToRecord as toRecord,
+  portfolioTypeLabel,
+  subEventClass,
+} from "./common";
 
 export interface PortfolioSignalHistoryPanelProps {
-  /** The portfolio's coordinated EVENTS (the composite/pair-native
-   *  rule cells' replayed triggers, each with its member cell-level
-   *  signals), newest first — already sub-type-filtered by the host. */
+  /** The portfolio's coordinated SIGNAL events (the composite/
+   *  pair-native rule cells' replayed triggers, each with its member
+   *  cell-level signals), newest first — already sub-type-filtered by
+   *  the host. */
   events: PortfolioHistorySignal[];
-  /** The currently expanded event date (one at a time), or null. */
-  expandedDate: string | null;
+  /** The currently expanded event row key (one at a time), or null. */
+  expandedRow: string | null;
   /** Row click — set or clear the expansion. */
-  onExpandedDateChange: (date: string | null) => void;
+  onExpandedRowChange: (key: string | null) => void;
   /** Optional caller-supplied block rendered inside the panel above
    *  the caption. */
   headerExtra?: ReactNode;
 }
 
-/** One rendered row = one EVENT DAY: the day's coordinated portfolio
- *  events (classes + the strongest event's confidence); the group
- *  carries the day's event records AND their member cell-level
- *  signals (the expansion population, deduped across the day's
- *  events). NO action column: a portfolio day's actions are per-EVENT
- *  (the tilt buys the strong leg and sells the laggard the same day) —
- *  the event class is the row's vocabulary, the actions live in the
- *  expansion. */
-interface EventDayRow {
-  date: string;
-  events: PortfolioHistorySignal[];
-  /** The day's events' triggering cell signals, deduped across the
-   *  events (an entry + a wash can share the market's witness). */
+/** One rendered row = ONE PORTFOLIO SIGNAL (a coordinated composite
+ *  event) with its OWN member cell signals — the coordinated cells
+ *  sit under their respective portfolio signal. */
+export interface PortfolioEventRow {
+  key: string;
+  event: PortfolioHistorySignal;
   members: PortfolioEventMemberSignal[];
-  classes: string[];
-  /** The day's highest-confidence event — the confidence column's
-   *  number and the regime stamp. */
-  rep: PortfolioHistorySignal;
 }
 
 /** The member records' fixed display order (the members fired on their
  *  own days — oldest witness first tells the coordination's story). */
 const ACTION_ORDER = ["buy", "sell", "wait"];
 
-/** Map one event/member record into the shared records-table row
- *  shape (the excess / excess-pct derivations are the history
- *  endpoint's). Both payloads carry the same event fields. */
-function toRecord(x: Pick<PortfolioEventMemberSignal, "code"
-  | "signal_type" | "signal_sub_type" | "action" | "date" | "signal"
-  | "signal_reference" | "confidence"> & { time?: string }): TradingSignal {
-  const excess = x.signal - x.signal_reference;
-  return {
-    code: x.code,
-    code_name: null,
-    sec_type: "index",
-    signal_type: x.signal_type,
-    signal_sub_type: x.signal_sub_type,
-    date: x.date,
-    time: x.time ?? "15:00",
-    action: x.action,
-    signal_excess: excess,
-    signal_excess_pct: x.signal_reference !== 0
-      ? (excess / Math.abs(x.signal_reference)) * 100
-      : null,
-    signal: x.signal,
-    signal_threshold: x.signal_reference,
-    confidence: x.confidence,
-    confidence_pct: x.confidence / 100,
-    is_day_close_trigger: true,
-    regime_state: "all",
-    is_ohlcv_boosted: false,
-    is_typical: null,
-    is_rejection: x.action === "wait",
-    count_20d: 0,
-  };
-}
-
-/** The expanded row's content — the day's event records + the events'
- *  member cell-level signals through the shared records table (the
- *  members carry their OWN dates — different sub signals on different
- *  nearby days). Module scope (pure over the group): stays
- *  identity-stable for the memoized shared table. */
-function dateCellRecords(g: EventDayRow): ReactNode {
+/** The expanded row's content — THIS portfolio signal's coordinated
+ *  CELL SIGNALS through the shared records table (the sourced
+ *  component cells' own records and the legs' witnesses on their OWN
+ *  days, plus the pair response legs on the event day). Module scope
+ *  (pure over the row): stays identity-stable for the memoized shared
+ *  table. */
+function eventCellRecords(row: PortfolioEventRow): ReactNode {
+  const e = row.event;
   return (
-    <Box sx={{ p: 1, display: "flex", flexDirection: "column", gap: 1 }}>
-      <SignalRecordsTable
-        caption={
-          `Portfolio event records on ${g.date} · ` +
-          `${g.events.length} event${g.events.length === 1 ? "" : "s"}`
-        }
-        rows={g.events.map(toRecord)}
-        showTime
-      />
-      {g.members.length > 0 ? (
+    <Box sx={{ p: 1 }}>
+      {row.members.length > 0 ? (
         <SignalRecordsTable
           caption={
-            "Triggering cell-level signals — the member components' " +
-            "own records, each on its OWN day (the witnesses pair " +
-            "within the coordination window)"
+            `Coordinated cell signals under ${signalRecordName(
+              e.signal_type, e.signal_sub_type)}`
           }
-          rows={g.members.map(toRecord)}
+          rows={row.members.map(toRecord)}
           showDate
           showCode
+          splitSignal
         />
       ) : (
         <Typography variant="caption" color="text.secondary" sx={{ px: 0.5 }}>
-          Pair-native event — triggered by the pair&apos;s own gauge
-          (no member cell signals).
+          No cell signals recorded for this portfolio signal.
         </Typography>
       )}
     </Box>
@@ -152,90 +118,82 @@ const regimeDot = tickDotItem((v) => regimeAccentColor(v));
 
 export default function PortfolioSignalHistoryPanel({
   events,
-  expandedDate,
-  onExpandedDateChange,
+  expandedRow,
+  onExpandedRowChange,
   headerExtra,
 }: PortfolioSignalHistoryPanelProps) {
-  // One event row per event date, insertion-ordered (newest first —
-  // the server order); the classes dedupe the day's events, the
-  // members dedupe across them (code + sub + action + own date).
-  const rows = useMemo<EventDayRow[]>(() => {
-    const groups = new Map<string, PortfolioHistorySignal[]>();
-    for (const e of events) {
-      const group = groups.get(e.date);
-      if (group) group.push(e);
-      else groups.set(e.date, [e]);
-    }
-    return [...groups.entries()].map(([date, group]) => {
-      const seen = new Set<string>();
-      const members: PortfolioEventMemberSignal[] = [];
-      for (const e of group) {
-        for (const m of e.members) {
-          const key = `${m.code}|${m.signal_sub_type}|${m.action}|${m.date}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            members.push(m);
-          }
-        }
-      }
-      members.sort((a, b) =>
+  // One row per PORTFOLIO SIGNAL, the server order (newest first);
+  // each row carries ITS OWN member cell signals — never merged across
+  // the day's other events.
+  const rows = useMemo<PortfolioEventRow[]>(() => {
+    return events.map((e) => {
+      const members = [...e.members].sort((a, b) =>
         a.date.localeCompare(b.date)
-        || ACTION_ORDER.indexOf(a.action) - ACTION_ORDER.indexOf(b.action));
-      return {
-        date,
-        events: group,
-        members,
-        classes: subEventClasses(group.map((e) => e.signal_sub_type)),
-        rep: group.reduce(
-          (a, b) => (b.confidence > a.confidence ? b : a),
-          group[0]!,
-        ),
-      };
+          || ACTION_ORDER.indexOf(a.action) - ACTION_ORDER.indexOf(b.action));
+      return { key: portfolioEventRowKey(e), event: e, members };
     });
   }, [events]);
 
   const handleRowClick = useCallback(
-    (g: EventDayRow) => {
-      onExpandedDateChange(expandedDate === g.date ? null : g.date);
+    (row: PortfolioEventRow) => {
+      onExpandedRowChange(expandedRow === row.key ? null : row.key);
     },
-    [expandedDate, onExpandedDateChange],
+    [expandedRow, onExpandedRowChange],
   );
 
-  const columns = useMemo<ExpandedTableColumn<EventDayRow>[]>(() => {
+  const docs = useDocs();
+  const columns = useMemo<ExpandedTableColumn<PortfolioEventRow>[]>(() => {
     return [
       {
         key: "date",
         label: "Date",
-        render: (g) => g.date,
-        filter: { type: "date", value: (g) => g.date },
+        render: (row) => row.event.date,
+        filter: { type: "date", value: (row) => row.event.date },
       },
       {
-        key: "event",
-        label: "Event",
-        info:
-          "The day's PORTFOLIO events — the coordinated event classes " +
-          "(entry: buy the pair · exit: harvest/catch-up/stop · tilt: " +
-          "momentum shift); expand for the triggering cell-level signals",
-        render: (g) => (
-          <Box component="span" sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>
-            {g.classes.length > 0 ? g.classes.join(" · ") : "—"}
-          </Box>
-        ),
+        key: "portfolio_type",
+        label: "Portfolio signal type",
+        info: docs.text("ui.portfolio-history.col.type"),
+        render: (row) =>
+          SIGNAL_TYPE_LABELS[row.event.signal_type] ??
+          row.event.signal_type,
+      },
+      {
+        key: "portfolio_sub_type",
+        label: "Portfolio signal sub type",
+        align: "center",
+        info: docs.text("ui.portfolio-history.col.sub-type"),
+        render: (row) => {
+          const e = row.event;
+          return (
+            <Tooltip
+              title={
+                `${e.signal_sub_type} — ` +
+                `${portfolioTypeLabel(e.portfolio_type)} · ` +
+                `${subEventClass(e.signal_sub_type) ?? "event"}`
+              }
+              arrow
+            >
+              <Chip
+                size="small"
+                variant="outlined"
+                label={signalSubWord(e.signal_type, e.signal_sub_type)}
+                sx={{ fontSize: "0.65rem", height: 20, maxWidth: 220 }}
+              />
+            </Tooltip>
+          );
+        },
       },
       {
         key: "members",
-        label: "Cells",
+        label: "Cell signals",
         align: "right",
-        info:
-          "The CELL-LEVEL signals that triggered the day's events — " +
-          "the sourced component cells' own records, each on its OWN " +
-          "day (different sub signals on different nearby days, within " +
-          "the coordination window) — expand the row for them",
-        render: (g) => (
+        info: docs.text("ui.portfolio-history.col.members"),
+        render: (row) => (
           <Tooltip
             title={
               <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
-                {g.members.map((m) => (
+                {row.members.map((m) => (
                   <Typography key={`${m.code}-${m.signal_sub_type}-${m.date}`}
                     variant="caption"
                     sx={{ display: "block", whiteSpace: "nowrap" }}
@@ -245,9 +203,9 @@ export default function PortfolioSignalHistoryPanel({
                     {" @ "}{m.date}
                   </Typography>
                 ))}
-                {g.members.length === 0 && (
+                {row.members.length === 0 && (
                   <Typography variant="caption" sx={{ display: "block" }}>
-                    pair-native event — no member cell signals
+                    no cell signals recorded
                   </Typography>
                 )}
               </Box>
@@ -257,7 +215,9 @@ export default function PortfolioSignalHistoryPanel({
             <Chip
               size="small"
               variant="outlined"
-              label={`${g.members.length} cell${g.members.length === 1 ? "" : "s"}`}
+              label={`${row.members.length} cell signal${
+                row.members.length === 1 ? "" : "s"
+              }`}
               sx={{ fontSize: "0.65rem", height: 18 }}
             />
           </Tooltip>
@@ -267,41 +227,38 @@ export default function PortfolioSignalHistoryPanel({
         key: "confidence",
         label: "Confidence",
         align: "right",
-        info:
-          "The day's strongest event's scaled expected-move confidence " +
-          "(basis points / 100, shown as a %); per-event and per-member " +
-          "values in the expansion",
-        render: (g) => `${g.rep.confidence_pct.toFixed(2)}%`,
+        info: docs.text("ui.portfolio-history.col.confidence"),
+        render: (row) => `${row.event.confidence_pct.toFixed(2)}%`,
       },
       {
         key: "regime",
         label: "regime",
         align: "center",
-        info:
-          "The event day's market regime (stats.market_regimes: " +
-          "calm / hot / panic / quiet; pool = the regime-free " +
-          "families' stamp) — recorded context, never a gate",
+        info: docs.text("ui.portfolio-history.col.regime"),
         filter: {
           type: "ticks",
-          value: (g) => g.rep.regime_state,
+          value: (row) => row.event.regime_state,
           renderItem: regimeDot,
         },
-        render: (g) => (
+        render: (row) => (
           <Box
             component="span"
             sx={{
-              color: regimeAccentColor(g.rep.regime_state) ?? "text.disabled",
+              color:
+                regimeAccentColor(row.event.regime_state) ?? "text.disabled",
               fontWeight: 600,
             }}
           >
-            {g.rep.regime_state === "calm"
+            {row.event.regime_state === "calm"
               ? "·"
-              : g.rep.regime_state === "all" ? "pool" : g.rep.regime_state}
+              : row.event.regime_state === "all"
+                ? "pool"
+                : row.event.regime_state}
           </Box>
         ),
       },
     ];
-  }, []);
+  }, [docs]);
 
   return (
     <Paper variant="outlined" sx={{ p: 1.25 }}>
@@ -311,23 +268,21 @@ export default function PortfolioSignalHistoryPanel({
         color="text.secondary"
         sx={{ display: "block", mb: 0.75, px: 0.5 }}
       >
-        Portfolio history signals · {rows.length} event
-        {rows.length === 1 ? "" : " days"} · {events.length} coordinated
-        {" "}event{events.length === 1 ? "" : "s"} — each row dates the
-        coordination&apos;s completion; click it to expand the triggering
-        cell-level signals (their own days)
+        Portfolio history signals · {rows.length} coordinated portfolio
+        {" "}signal{rows.length === 1 ? "s" : ""} — click a row to expand
+        its cell signals
       </Typography>
       <ExpandedTable
         columns={columns}
         rows={rows}
-        rowKey={(g) => g.date}
+        rowKey={(row) => row.key}
         maxHeight={300}
         enableFilters
         filterScopeDeps={[events]}
         onRowClick={handleRowClick}
-        selectedRowKey={expandedDate}
-        expandedRowKey={expandedDate}
-        expandedContent={dateCellRecords}
+        selectedRowKey={expandedRow}
+        expandedRowKey={expandedRow}
+        expandedContent={eventCellRecords}
         emptyState={
           <Typography variant="body2" color="text.secondary" sx={{ px: 0.5, pb: 1 }}>
             No recorded portfolio signals for this pair.

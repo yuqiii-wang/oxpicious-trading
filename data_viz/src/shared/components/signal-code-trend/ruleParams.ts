@@ -7,7 +7,9 @@
 import type { SignalRule } from "@/lib/api-client";
 
 export const ruleCellKey = (r: SignalRule): string =>
-  `${r.signal_sub_type}|${r.trend}|${r.regime_state}|${r.action}`;
+  `${r.signal_sub_type}|${r.trend}|${r.regime_state}|${r.action}`
+  + `|${r.is_pe_boosted ? "pe" : "plain"}`
+  + `|${r.is_ohlcv_boosted ? "boost" : "plain"}`;
 
 const fmtPct = (v: number): string => {
   const s = (v * 100).toFixed(v * 100 % 1 === 0 ? 0 : 2).replace("-", "−");
@@ -15,16 +17,53 @@ const fmtPct = (v: number): string => {
 };
 
 /** Plain number word (no ×100 — for values already in display units:
- * the hedge_pairs bars carry pct/σ/ρ units natively). */
+ *  the hedge_pairs bars carry pct/σ/ρ units natively). */
 const fmtNum = (v: number): string =>
   Number.isInteger(v) ? String(v) : String(v).replace("-", "−");
 
+/** The is_pe_boosted axis's gate suffix (the shared variants module's
+ *  bar_def.pe_gate — the rebound study's capitulation barbell /
+ *  outside-cheap vocabulary; any family's bar word carries it). */
+function peGateSuffix(pe: unknown): string {
+  if (!pe || typeof pe !== "object") return "";
+  const rec = pe as Record<string, unknown>;
+  const rule = String(rec.rule ?? "");
+  return rule === "extremes"
+    ? ` · PE ≤${fmtNum(Number(rec.cheap_below))} or ≥${
+      fmtNum(Number(rec.rich_above))}`
+    : rule === "not_cheap"
+      ? ` · PE ≥${fmtNum(Number(rec.min))}`
+      : " · PE gate";
+}
+
+/** The is_ohlcv_boosted axis's gate suffix (bar_def.ohlcv_gate — the
+ *  turnover-climax confirmation: the day's amount ≥ the min grade ×
+ *  its 255d MA). */
+function ohlcvGateSuffix(g: unknown): string {
+  if (!g || typeof g !== "object") return "";
+  const rec = g as Record<string, unknown>;
+  const min = typeof rec.min_code === "number" ? rec.min_code : null;
+  return min == null ? " · AMT boost"
+    : min >= 2 ? " · AMT ≥2.5× climax"
+      : " · AMT ≥1.5× heavy";
+}
+
 /** The breach-bar display word from the cell's rule_params.bar_def —
  *  each family's own bar vocabulary, read defensively (unknown kinds
- *  fall back to the raw def). Pure; exported for reuse/tests. */
+ *  fall back to the raw def), plus the shared variant-axes' gate
+ *  suffixes. Pure; exported for reuse/tests. */
 export function ruleBarLabel(barDef: Record<string, unknown> | undefined):
   string {
   if (!barDef || typeof barDef !== "object") return "—";
+  return baseBarWord(barDef)
+    + peGateSuffix(barDef.pe_gate)
+    + ohlcvGateSuffix(barDef.ohlcv_gate);
+}
+
+/** The family bar word without the shared variant suffixes (the
+ *  ruleBarLabel wrapper appends those from bar_def.pe_gate /
+ *  .ohlcv_gate on every kind). */
+function baseBarWord(barDef: Record<string, unknown>): string {
   const kind = String(barDef.kind ?? "");
   const num = (k: string): number | null => {
     const v = barDef[k];
@@ -80,6 +119,54 @@ export function ruleBarLabel(barDef: Record<string, unknown> | undefined):
       return `corr ≥ ${through ?? "−0.5"}`
         + (witness != null ? ` · witness ${witness}d` : "");
     }
+    // the hedge_pairs trio (2026-10-24; the tail grid widened and the
+    // BOTH-WINDOWS union cell landed 2026-10-25): all THREE curves
+    // (both legs + the broad market) in their own adaptive RSI tails
+    // the same day — bar_def.windows carries EACH surviving window's
+    // self-picked tail (the cell fires on either window's resonance;
+    // the single window/tail fields decode the pre-union rows); the
+    // mirror kind is the blow-off asymmetry check
+    case "trio_rsi_tail":
+    case "trio_rsi_tail_mirror": {
+      const tail = num("tail_pct");
+      const win = num("bar_window_days");
+      const rsi = num("window");
+      const cmp = kind === "trio_rsi_tail_mirror" ? "≥" : "≤";
+      const wins = Array.isArray(barDef.windows)
+        ? (barDef.windows as Array<Record<string, unknown>>)
+          .filter((w) => w != null && typeof w === "object")
+          .map((w) => ({
+            window: typeof w.window === "number" ? w.window : null,
+            tail: typeof w.tail_pct === "number" ? w.tail_pct : null,
+          }))
+          .filter((w) => w.tail != null)
+        : [];
+      if (wins.length > 0) {
+        return `trio ${wins.map((w) => `RSI(${w.window ?? "?"})${cmp}${fmtNum(w.tail as number)}%`).join(" · ")} tail`
+          + (win != null ? ` · ${win}d` : "");
+      }
+      return tail == null
+        ? "trio RSI own tail quantile"
+        : `trio RSI(${rsi ?? 14}) ${cmp} own ${fmtNum(tail)}% tail`
+          + (win != null ? ` · ${win}d` : "");
+    }
+    // the hedge_pairs SPREAD sub (2026-10-25): the pair's long-short
+    // spread curve (leg A long / leg B short, no market curve) vs its
+    // own adaptive RSI tail — tail_pct is the WINNING candidate's tail
+    // (the bar the measured gate self-picked for the pair); the mirror
+    // kind is the asymmetry check
+    case "spread_rsi_tail":
+    case "spread_rsi_tail_mirror": {
+      const tail = num("tail_pct");
+      const win = num("bar_window_days");
+      const rsi = num("window");
+      return tail == null
+        ? "spread RSI own tail quantile"
+        : `spread RSI(${rsi ?? 14}) ${
+          kind === "spread_rsi_tail_mirror" ? "≥" : "≤"
+        } own ${fmtNum(tail)}% tail`
+          + (win != null ? ` · ${win}d` : "");
+    }
     // hedge_pairs (2026-10-18 market-decoupled rework): the legs'
     // gauge is the Short-Term-Tech signal itself — Wilder RSI vs the
     // leg's OWN adaptive percentile tail (the mov_rsi convention);
@@ -91,6 +178,33 @@ export function ruleBarLabel(barDef: Record<string, unknown> | undefined):
       const witness = num("witness_window");
       return `legs' RSI ≤ own ${fmtNum(tail ?? 0)}% tail`
         + (witness != null ? ` · paired ≤ ${witness}d` : "");
+    }
+    // the 2026-10-23 more-triggers graduates II (docs/
+    // portfolio_more_triggers_study_2026-10-23.md): the market-free
+    // legs pair (the trio without the market witness) + the two
+    // ONE-leg cross-washes (a floor breakdown on one leg + an RSI
+    // capitulation witness on the other leg / the market)
+    case "hp_entry_rsi_legs": {
+      const tail = num("tail_pct");
+      const witness = num("witness_window");
+      return `both legs' RSI ≤ own ${fmtNum(tail ?? 0)}% tail`
+        + (witness != null ? ` · paired ≤ ${witness}d` : "");
+    }
+    case "hp_entry_wash_rsi": {
+      const w = num("window");
+      const wit = num("witness_window");
+      const rsi = num("rsi_tail_pct");
+      return `one leg < ${w ?? 120}d floor + other leg RSI ${
+        fmtNum(rsi ?? 3)}% lo`
+        + (wit != null ? ` · paired ≤ ${wit}d` : "");
+    }
+    case "hp_entry_wash_mkt1": {
+      const w = num("window");
+      const wit = num("witness_window");
+      const mkt = num("mkt_tail_pct");
+      return `one leg < ${w ?? 120}d floor + market RSI ${
+        fmtNum(mkt ?? 3)}% lo`
+        + (wit != null ? ` · paired ≤ ${wit}d` : "");
     }
     case "hp_exit_mkt_high": {
       const tail = num("tail_pct");
@@ -182,6 +296,33 @@ export function ruleBarLabel(barDef: Record<string, unknown> | undefined):
       const slope = num("slope5_gt");
       return (k != null ? `ret ≤ −${fmtNum(k)}×ATR` : "ATR breakout")
         + (slope != null ? ` & slope > +${fmtPct(slope)}%` : "");
+    }
+    // the rebound family (2026-10-26): the drop→rebound→resolution
+    // cells — the drop bar (min_drop_pct below the trailing-Wd high)
+    // resolved by capit / fail / reclaim; the PE-conditioned twin's
+    // gate word rides the shared pe_gate suffix (the is_pe_boosted
+    // axis)
+    case "rebound_resolution": {
+      const d = num("min_drop_pct");
+      const win = num("window");
+      const word = ({
+        capit: "drop",
+        fail: "stall",
+        reclaim: "reclaim",
+      } as Record<string, string>)[String(barDef.resolution ?? "")];
+      return `${word ?? "rebound"} ≥ ${d != null ? fmtNum(d) : "5"}%`
+        + (win != null ? ` · ${win}d high` : "");
+    }
+    // the macd family (2026-10-26): the classic signal-line crossover
+    // cells — the bar is the EMA9 signal line itself (value = the
+    // histogram as pct of close); the word renders the classic spans
+    case "macd_cross": {
+      const s = num("ema_short");
+      const l = num("ema_long");
+      const g = num("ema_signal");
+      return "signal-line cross"
+        + (s != null && l != null && g != null
+          ? ` · EMA${fmtNum(s)}/${fmtNum(l)}/${fmtNum(g)}` : "");
     }
     default:
       return kind ? kind : "—";

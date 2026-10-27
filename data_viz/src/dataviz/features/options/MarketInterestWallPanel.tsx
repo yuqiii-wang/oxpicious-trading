@@ -17,6 +17,7 @@ import {
   useChartThemeMode,
 } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { ThemeMode } from "@/store/filters";
 import type { OptionsRow } from "@shared/types";
@@ -293,24 +294,16 @@ export default function MarketInterestWallPanel({
   const code = underlyingCode ?? rows[0]?.underlying_code ?? "";
   // AI Ask — the full wall-decoding guide (former card subtitle) lives in
   // the intro; the card shows only the concise identity line.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.interestWall,
-      intro:
-        "Per-strike OI stacked by expiry month — calls right (+), puts left (−); blue " +
-        "gradient: dark = nearest. Bar height = raw OI contracts per strike (not premium- " +
-        "or notional-weighted): walls locate where contracts sit, not dollar exposure. " +
-        "Horizontal marks: spot, call/put wall, MaxPain, OI-wtd strike. Indication: spot " +
-        "gravitates toward MaxPain into expiry; a wall's surrender fuels the move. " +
-        "Mirrors plot_market_interest_evolution() in plot_szse_options.py.",
+      intro: docs.text("ui.options.interest-wall"),
       instruments: code ? [{ code }] : [],
       state: { selectedDate },
-      notes: [
-        "Wall dominance: only the dominant wall is drawn when one side's wall OI is >33% larger; comparable walls (within 33%) draw both — a balanced market.",
-        "The in-chart title carries the selected date's readouts: Spot, Call/Put Wall strikes, P/C ratio, ATM IV, IV skew and net GEX.",
-      ],
+      notes: docs.notes("ui.options.interest-wall"),
     }),
-    [code, selectedDate],
+    [docs, code, selectedDate],
   );
 
   return (

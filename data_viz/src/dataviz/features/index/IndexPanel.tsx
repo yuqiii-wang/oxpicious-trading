@@ -32,6 +32,7 @@ import { fetchIndexIntraday5min, invalidateCacheForPrefix, invalidateCacheForUrl
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import {
   MA20_COLOR,
   MA60_COLOR,
@@ -419,38 +420,32 @@ export default function IndexPanel({ index, onDateClick, insightPage = INSIGHT_P
   // AI Ask — reading guide for the daily OHLC/MAs/Amount/PE chart; state
   // carries the CURRENT OHLC mode so the modal / LLM describe the view on
   // screen. Must stay above the is_dummy early return (hook).
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: insightPage,
-      intro:
-        `Daily chart of index ${index.code} ${index.name}: ` +
-        (hasOhlc ? "OHLC candles" : "a close line") +
-        " + MA5/20/60/120 on the left price axis, turnover bars (亿元, colored by " +
-        "close-vs-open) on the right, PE on an offset twin axis. % mode: OHLC + MAs " +
-        "rebased to % change from the first valid close (Amount and PE stay absolute). " +
-        "The in-chart dataZoom owns the visible window. Indication: PE at its " +
-        "historical tail = valuation stretch; price vs the MA120 = the regime line.",
+      intro: docs.text("ui.index.panel", {
+        code: index.code,
+        name: index.name,
+        hasOhlc,
+      }),
       instruments: [{ code: index.code, name: index.name, assetClass: "index" }],
-      series: [
-        {
-          name: hasOhlc ? "OHLC" : "Close",
+      series: compactDefined([
+        docs.seriesEntry("ui.index.panel", hasOhlc ? "ohlc" : "close", {
           unit: ohlcMode === "percentage" ? "%" : "元",
-          description: hasOhlc ? "daily candlesticks (open/high/low/close)" : "daily closing price",
-        },
-        { name: "MA5", unit: ohlcMode === "percentage" ? "%" : "元", description: "5-day mean of close" },
-        { name: "MA20", unit: ohlcMode === "percentage" ? "%" : "元", description: "20-day mean of close" },
-        { name: "MA60", unit: ohlcMode === "percentage" ? "%" : "元", description: "60-day mean of close" },
-        { name: "MA120", unit: ohlcMode === "percentage" ? "%" : "元", description: "120-day mean of close" },
-        { name: "Trading Amt", unit: "亿元", description: "daily trading turnover (成交金额), bar color = close vs open" },
-        { name: "PE", description: "price/earnings ratio on the offset twin axis" },
-      ],
+        }),
+        ...["ma5", "ma20", "ma60", "ma120"].map((key) =>
+          docs.seriesEntry("ui.index.panel", key, {
+            unit: ohlcMode === "percentage" ? "%" : "元",
+          }),
+        ),
+        docs.seriesEntry("ui.index.panel", "amt"),
+        docs.seriesEntry("ui.index.panel", "pe"),
+      ]),
       state: { ohlcMode },
-      notes: [
-        "Percentage mode rebases OHLC + MAs to % change from the first valid close; Amount and PE are never rebased.",
-        "Clicking a date that has 5-min intraday bars (pointer cursor) expands the intraday chart below.",
-      ],
+      notes: docs.notes("ui.index.panel"),
     }),
-    [index.code, index.name, hasOhlc, ohlcMode, insightPage],
+    [docs, index.code, index.name, hasOhlc, ohlcMode, insightPage],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${index.code} · ${index.name}`,

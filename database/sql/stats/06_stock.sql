@@ -159,8 +159,9 @@ CREATE TABLE IF NOT EXISTS stats.stock_tech_stats (
     ma120                     NUMERIC(18,4),
     ma255                     NUMERIC(18,4),
     ema6                      NUMERIC(18,4),
-    ema10                     NUMERIC(18,4),
+    ema12                     NUMERIC(18,4),
     ema20                     NUMERIC(18,4),
+    ema26                     NUMERIC(18,4),
     ema60                     NUMERIC(18,4),
     ema120                    NUMERIC(18,4),
     ema255                    NUMERIC(18,4),
@@ -183,8 +184,9 @@ COMMENT ON COLUMN stats.stock_tech_stats.ma60               IS '60-day moving av
 COMMENT ON COLUMN stats.stock_tech_stats.ma120              IS '120-day moving average of close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma255              IS '255-day moving average of close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ema6               IS '6-day exponential moving average of close (span=6, adjust=False).';
-COMMENT ON COLUMN stats.stock_tech_stats.ema10              IS '10-day exponential moving average of close (span=10, adjust=False).';
+COMMENT ON COLUMN stats.stock_tech_stats.ema12              IS '12-day exponential moving average of close (span=12, adjust=False) — the classic MACD fast EMA (replaced the nearby non-standard span 10, 2026-10-26).';
 COMMENT ON COLUMN stats.stock_tech_stats.ema20              IS '20-day exponential moving average of close (span=20, adjust=False).';
+COMMENT ON COLUMN stats.stock_tech_stats.ema26              IS '26-day exponential moving average of close (span=26, adjust=False) — the classic MACD slow EMA.';
 COMMENT ON COLUMN stats.stock_tech_stats.ema60              IS '60-day exponential moving average of close (span=60, adjust=False).';
 COMMENT ON COLUMN stats.stock_tech_stats.ema120             IS '120-day exponential moving average of close (span=120, adjust=False).';
 COMMENT ON COLUMN stats.stock_tech_stats.ema255             IS '255-day exponential moving average of close (span=255, adjust=False).';

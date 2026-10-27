@@ -40,6 +40,8 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from _common.df_utils import host_array
+
 
 # ---------------------------------------------------------------------------
 #  Strategy-name suffix
@@ -106,16 +108,24 @@ def _stress_ohlc_directional(
 #  Stressed-confidence attachment (bidirectional)
 # ---------------------------------------------------------------------------
 def _build_conf_lookup(stressed_df: pd.DataFrame) -> Dict[tuple, float]:
-    """Build (code, date) → signal_confidence lookup from a stressed df."""
-    lookup: Dict[tuple, float] = {}
+    """Build (code, date) → signal_confidence lookup from a stressed df.
+
+    One host-array extraction per column — an ``iterrows`` here pays a
+    cudf.pandas fast→slow dispatch per cell over the FULL stressed OHLC
+    history of every code.
+    """
     if stressed_df.empty or "signal_confidence" not in stressed_df.columns:
-        return lookup
-    for _, row in stressed_df[["code", "date", "signal_confidence"]].iterrows():
-        key = (row["code"], row["date"])
-        val = row["signal_confidence"]
-        if pd.notna(val):
-            lookup[key] = float(val)
-    return lookup
+        return {}
+    sub = stressed_df[["code", "date", "signal_confidence"]].dropna(
+        subset=["signal_confidence"])
+    return {
+        (code, date): float(val)
+        for code, date, val in zip(
+            host_array(sub["code"]),
+            host_array(sub["date"]),
+            host_array(sub["signal_confidence"]),
+        )
+    }
 
 
 def _stressed_magnitude(stressed_sig: float, side: str) -> float:

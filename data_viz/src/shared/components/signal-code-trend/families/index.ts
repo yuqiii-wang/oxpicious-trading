@@ -1,7 +1,7 @@
 /**
  * families — the signal families' display REGISTRY (one file per
  * family: rsi / bollinger / macross / optionsWall / optionsVix /
- * momentum / rfBreak / hedgePairs). The
+ * momentum / rfBreak / rebound / macd / hedgePairs / hpRsi). The
  * rules/history panels and the shared tables consume THIS registry and
  * never name a family themselves — adding a family is one file + one
  * registry entry (the ENGINES-registry pattern the Python signals
@@ -20,6 +20,8 @@ import { optionsWallFamily } from "./optionsWall";
 import { optionsVixFamily } from "./optionsVix";
 import { momentumFamily } from "./momentum";
 import { rfBreakFamily } from "./rfBreak";
+import { reboundFamily } from "./rebound";
+import { macdFamily } from "./macd";
 import { hedgePairsFamily } from "./hedgePairs";
 import { hpRsiFamily } from "./hpRsi";
 
@@ -44,6 +46,8 @@ export const SIGNAL_FAMILIES: Record<string, SignalFamily> = {
   options_vix: optionsVixFamily,
   momentum: momentumFamily,
   rf_break: rfBreakFamily,
+  rebound: reboundFamily,
+  macd: macdFamily,
   hedge_pairs: hedgePairsFamily,
   hp_rsi: hpRsiFamily,
 };
@@ -83,13 +87,29 @@ export function signalSubWord(
 }
 
 /** The SHORT sub word from the literal alone — scans the families for
- *  the first recordLabel that maps it (the sub literals are unique
- *  across families; the dropdowns that carry bare sub strings use
- *  this). Raw literal when no family maps it. */
+ * the first recordLabel that maps it (the sub literals are unique
+ * across families; the dropdowns that carry bare sub strings use
+ * this). Raw literal when no family maps it. */
 export function signalSubWordLoose(subType: string): string {
   for (const f of Object.values(SIGNAL_FAMILIES)) {
     const w = f.recordLabel?.(subType);
     if (w != null) return w;
   }
   return subType;
+}
+
+/** The record's TAIL-SIDE word read from the ENGINE-WRITTEN condition
+ * (rule_params.condition — "RSI(14) < own bottom 1% tail" / "RSI(14) >
+ * own top 2% tail"): both action sides of one mov_rsi sub share the
+ * sub literal, so a name rendered without its action beside it
+ * disambiguates through the condition's own word — "bottom" (the
+ * drop side) or "top" (the rise side). VERBATIM backend vocabulary
+ * only: null when the condition carries no side word, and callers
+ * then render the bare name — the UI never derives the side itself
+ * (no action→side mapping, no UI-invented text). */
+export function signalTailSide(condition: unknown): string | null {
+  if (typeof condition !== "string") return null;
+  if (condition.includes("bottom")) return "bottom";
+  if (condition.includes("top")) return "top";
+  return null;
 }

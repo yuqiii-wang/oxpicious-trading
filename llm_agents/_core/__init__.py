@@ -14,9 +14,15 @@ packages used to duplicate between ``online_search_summary`` and
     project-root ``.env`` loader behind API-key resolution.
   * ``base``      — BaseLlmProvider: API-key resolution, retry policy,
     and the _post_json helpers every provider base inherits.
+  * ``request_log`` — the text.llm_requests source recorder: every
+    request's payload + response logged fire-and-forget from the
+    transport, context/reference source articles linkable by ref ids
+    (bind_ref_ids / load_request_sources).
 
-NOT a CLI / agent: nothing here parses args, touches the DB, or defines
-a domain contract — those stay in the per-agent packages.
+NOT a CLI / agent: nothing here parses args or defines a domain
+contract — those stay in the per-agent packages. (``request_log``'s DB
+access stays inside its lazy fire-and-forget writer thread; the module
+graph itself never opens a connection at import time.)
 """
 from __future__ import annotations
 
@@ -27,10 +33,15 @@ from llm_agents._core.transport import (
     RetryingJsonClient, load_project_env,
 )
 from llm_agents._core.base import BaseLlmProvider
+from llm_agents._core.request_log import (
+    bind_ref_ids, current_refs, load_request_sources, record_request,
+)
 
 __all__ = [
     "LlmProviderError", "SHANGHAI_TZ",
     "LANG_LABELS", "lang_label",
     "RetryingJsonClient", "load_project_env",
     "BaseLlmProvider",
+    "bind_ref_ids", "current_refs", "load_request_sources",
+    "record_request",
 ]

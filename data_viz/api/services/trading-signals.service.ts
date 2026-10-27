@@ -83,6 +83,12 @@ export interface TradingSignalRow {
    *  which variant renders. Live-tier rows carry no twins (always
    *  FALSE). */
   is_ohlcv_boosted: boolean;
+  /** The event's PE-CONDITIONING variant (a history_signals PK member
+   *  since 2026-10-26): FALSE = the plain population, TRUE = the
+   *  PE-gated variant of the same sub type (the rebound family emits
+   *  both; the gate rides the cell's rule_params.bar_def.pe_gate).
+   *  Live-tier rows carry no variants (always FALSE). */
+  is_pe_boosted: boolean;
   /** The event's episode-PASS attribution (the rsi analysis layer's
    *  side-mirrored is_typical flag at the day's own window): TRUE = the
    *  typical pass (buy: the isolated first touch; sell: the re-test),
@@ -262,6 +268,7 @@ export async function fetchTriggeredSignals(
                s.is_day_close_trigger,
                s.regime_state,
                s.is_ohlcv_boosted,
+               s.is_pe_boosted,
                s.is_typical,
                -- the is_rejection column was dropped 2026-10-14 — the
                -- grey-diamond wait event IS the action code now
@@ -292,11 +299,13 @@ export async function fetchTriggeredSignals(
         SELECT d.*,
                bool_or(d.is_typical) OVER (
                    PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_ohlcv_boosted, d.is_rejection
+                                d.is_ohlcv_boosted, d.is_pe_boosted,
+                                d.is_rejection
                ) AS event_is_typical,
                row_number() OVER (
                    PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_ohlcv_boosted, d.is_rejection
+                                d.is_ohlcv_boosted, d.is_pe_boosted,
+                                d.is_rejection
                    ORDER BY d.is_day_close_trigger, d.time,
                             d.confidence DESC
                ) AS rn
@@ -319,6 +328,7 @@ export async function fetchTriggeredSignals(
             r.is_day_close_trigger,
             ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
             r.is_ohlcv_boosted,
+            r.is_pe_boosted,
             r.event_is_typical AS is_typical,
             r.is_rejection,
             (SELECT count(DISTINCT ls.date)::int
@@ -523,6 +533,7 @@ export async function fetchTradingSignalHistory(
                s.is_day_close_trigger,
                s.regime_state,
                FALSE        AS is_ohlcv_boosted,
+               FALSE        AS is_pe_boosted,
                NULL::boolean AS is_typical,
                FALSE        AS is_rejection
         FROM live.live_signals s
@@ -559,6 +570,7 @@ export async function fetchTradingSignalHistory(
                s.is_day_close_trigger,
                s.regime_state,
                s.is_ohlcv_boosted,
+               s.is_pe_boosted,
                s.is_typical,
                -- the is_rejection column was dropped 2026-10-14 — the
                -- grey-diamond wait event IS the action code now
@@ -588,11 +600,13 @@ export async function fetchTradingSignalHistory(
         SELECT d.*,
                bool_or(d.is_typical) OVER (
                    PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_ohlcv_boosted, d.is_rejection
+                                d.is_ohlcv_boosted, d.is_pe_boosted,
+                                d.is_rejection
                ) AS event_is_typical,
                row_number() OVER (
                    PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_ohlcv_boosted, d.is_rejection
+                                d.is_ohlcv_boosted, d.is_pe_boosted,
+                                d.is_rejection
                    ORDER BY d.is_day_close_trigger, d.time,
                             d.confidence DESC
                ) AS rn
@@ -620,6 +634,7 @@ export async function fetchTradingSignalHistory(
             r.is_day_close_trigger,
             ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
             r.is_ohlcv_boosted,
+            r.is_pe_boosted,
             r.event_is_typical AS is_typical,
             r.is_rejection,
             (SELECT to_char(win_start, 'YYYY-MM-DD') FROM win)
@@ -689,15 +704,33 @@ export interface SignalRuleRow {
    *  — negative-future-return evidence is discouraged: it never
    *  validates, never trades, never fires live. */
   is_valid: boolean;
-  /** Whether the cell is a MEMBER of a portfolio group (2026-10-20,
-   *  the cell-level-signals-in-portfolio redesign): its
-   *  signal_rule_id rides some portfolio_signal_rules.signal_rule_ids
-   *  array (the hedge sourced components + the pair-native
-   *  self-members; the orchestrating composites carry FALSE — the
-   *  group IS the composite). Membership only — the cell's own test
-   *  stays the unified dir_ave gate; the portfolio tier's combined
-   *  audit lives in history_portfolio_signal_performance. */
+  /** Whether the cell belongs to the PORTFOLIO tier (a signal_rules PK
+   *  member since 2026-10-23): an existing signal rule SOURCED by a
+   *  portfolio is a SEPARATE row from the standalone one — true = a
+   *  portfolio family's source-layer row (the hedge mov_rsi /
+   *  rf_break component rows at the market + leg codes, claimed by an
+   *  orchestration or not) or a pair-native member; false = the
+   *  standalone families' rows and the orchestrating composites (the
+   *  group IS the composite). The cell's own test stays the unified
+   *  dir_ave gate; the portfolio tier's combined audit lives in
+   *  history_portfolio_signal_performance. */
   is_in_portfolio: boolean;
+  /** Whether the cell is the PE-CONDITIONED variant of its rule (a
+   *  signal_rules PK member since 2026-10-26, the
+   *  is_ohlcv_boosted/is_in_portfolio PK-member precedent): the
+   *  rebound family emits both variants — true = the candidate masks
+   *  are AND-gated by the code's own trailing PE-percentile condition
+   *  (rule_params.bar_def.pe_gate carries it); false = the plain,
+   *  PE-free population. Every non-PE family reads false. */
+  is_pe_boosted: boolean;
+  /** The cell's OHLCV-boost VARIANT axis (a signal_rules PK member
+   *  since 2026-10-26, mirrored from history_signals where it has
+   *  keyed since the boost-twin era): true = the OHLCV-boosted
+   *  variant of the rule — a SEPARATE row from the unconstrained one.
+   *  Retired as a live variant 2026-10-16 (the twins became the
+   *  per-cell trust-weighted measurement): reads false on every row
+   *  today, kept for the key's shape. */
+  is_ohlcv_boosted: boolean;
   /** The engine entry that runs the rule (the RuleEntry subclass name
    *  under analysis/analysis_signals/engines/signal_families/). */
   rule_entry: string;
@@ -711,9 +744,9 @@ export interface SignalRuleRow {
    *  snapshot (the frame data horizon the cell was last measured
    *  through); null when no snapshot exists (pre-migration residue). */
   performance_as_of: string | null;
-  /** The family knowledge document (static.analysis_signal_docs — the
-   *  knowledge seeded from database/sql/static/
-   *  analysis_signal_docs/, joined per family). */
+  /** The family knowledge document (static.signal_rules_docs — the
+   *  knowledge seeded from database/sql/static/signal_rules/, joined
+   *  per family). */
   document: Record<string, unknown>;
   created_at: string;
 }
@@ -753,6 +786,8 @@ const LATEST_PERFORMANCE_JOIN = `
           AND p.trend = r.trend
           AND p.regime_state = r.regime_state
           AND p.action = r.action
+          AND p.is_pe_boosted = r.is_pe_boosted
+          AND p.is_ohlcv_boosted = r.is_ohlcv_boosted
         ORDER BY p.date DESC LIMIT 1
      ) perf ON TRUE`;
 
@@ -806,7 +841,7 @@ export async function fetchSignalRules(
   // label-code contract) — the filter carries the code, the response
   // decodes back to the labels the UI speaks; the two JSONB payloads
   // arrive as parsed objects (node-pg's jsonb parser). The family
-  // document joins from static.analysis_signal_docs (one row per family —
+  // document joins from static.signal_rules_docs (one row per family —
   // byte-identical across a family's cells, so it lives there, not on
   // signal_rules); an unseeded family serves an empty document (the
   // rules panel degrades to the params digest). The latest performance
@@ -826,6 +861,8 @@ export async function fetchSignalRules(
             r.signal_rule_id::float8 AS signal_rule_id,
             r.is_valid,
             r.is_in_portfolio,
+            r.is_pe_boosted,
+            r.is_ohlcv_boosted,
             r.rule_entry,
             r.rule_params,
             perf.perf_date,
@@ -835,7 +872,7 @@ export async function fetchSignalRules(
             COALESCE(d.document, '{}'::jsonb) AS document,
             to_char(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at
      FROM analysis_signals.signal_rules r
-     LEFT JOIN static.analysis_signal_docs d
+     LEFT JOIN static.signal_rules_docs d
             ON d.signal_type = r.signal_type${LATEST_PERFORMANCE_JOIN}
      WHERE r.sec_type = ${LABEL_CODE.sec_type[st]} AND r.code = $1
      ORDER BY r.signal_type, r.signal_sub_type, r.trend,
@@ -861,9 +898,7 @@ export async function fetchSignalRules(
 //  AND the COMBINED STATS of the individual in-portfolio signals (the
 //  pooled block — the members' own measures meta-combined);
 //  fetchPortfolioSignals laterally joins each portfolio's LATEST
-//  snapshot into its response, plus the type's knowledge document
-//  (static.portfolio_signal_docs — the analysis_signal_docs
-//  convention at the portfolio tier) on every matched portfolio.
+//  snapshot into its response.
 //  portfolio_type is the tier's OWN vocabulary (0 neg_corr_hedge_pair
 //  — the two-leg 'A~B' long–long negatively-correlated hedge pair).
 //  fetchSignalPortfolios serves the per-code roster census;
@@ -872,20 +907,27 @@ export async function fetchSignalRules(
 //  and expands the ids to full rule rows.
 // ----------------------------------------------------------------------------
 
-/** One managed PORTFOLIO code's census (the roster row). */
+/** One managed PORTFOLIO code's census (the roster row) — one row per
+ *  PORTFOLIO RULE (code x portfolio_sub_type since the 2026-10-25
+ *  split: trio wash and spread are separate portfolio signals). */
 export interface SignalPortfolioRow {
   code: string;
   /** The portfolio tier's own vocabulary, decoded (today always
    *  neg_corr_hedge_pair — the two-leg 'A~B' hedge pair). */
   portfolio_type: string;
-  /** The portfolio's member rule cells (its whole ids array). */
+  /** The PORTFOLIO RULE within the type, decoded (static.label_dim
+   *  'portfolio_sub_type': trio_wash / spread — the 2026-10-25 split's
+   *  identity axis; one roster row per (code, sub)). */
+  portfolio_sub_type: string;
+  /** The portfolio rule's member rule cells (its whole ids array: the
+   *  sub's orchestrating cells + the mapped registered rsi cells). */
   n_rules: number;
-  /** The portfolio's gate-passed (is_valid) member cells. */
+  /** The portfolio rule's gate-passed (is_valid) member cells. */
   n_valid: number;
-  /** The portfolio's coordinated sub types (rule_params.subs keys). */
+  /** The rule's coordinated sub types (rule_params.subs keys). */
   n_sub_types: number;
-  /** 'YYYY-MM-DD' — the portfolio's latest replayed event date; null
-   *  when its rules have never triggered. */
+  /** 'YYYY-MM-DD' — the portfolio code's latest replayed event date;
+   *  null when its rules have never triggered. */
   latest_event: string | null;
   /** 'YYYY-MM-DD HH24:MI' — the pipeline run that emitted the
    *  portfolio's current row. */
@@ -912,6 +954,7 @@ export async function fetchSignalPortfolios(
   return queryRows<SignalPortfolioRow & QueryResultRow>(
     `SELECT p.code,
             ${labelDecodeSql("portfolio_type", "p.portfolio_type")} AS portfolio_type,
+            ${labelDecodeSql("portfolio_sub_type", "p.portfolio_sub_type")} AS portfolio_sub_type,
             cardinality(p.signal_rule_ids)::int AS n_rules,
             (SELECT count(*)::int
              FROM analysis_signals.signal_rules r
@@ -929,7 +972,7 @@ export async function fetchSignalPortfolios(
         WHERE h.code = p.code AND h.sec_type = p.sec_type
      ) e ON TRUE
      WHERE ${predicates.join(" AND ")}
-     ORDER BY p.code`,
+     ORDER BY p.code, p.portfolio_sub_type`,
     [],
   );
 }
@@ -942,7 +985,7 @@ export async function fetchSignalPortfolios(
  *  type — max_dd {portfolio_pct, leg_a_pct, leg_b_pct,
  *  worst_leg_pct, mean_leg_pct, reduction_vs_worst_pct,
  *  reduction_vs_mean_pct}), the gate VERDICT digest {metric, min_pp,
- *  passed, conf_scale} (conf_scale = the member confidence cascade),
+ *  passed, conf_scale} (conf_scale = the member benefit-boost scale),
  *  and the portfolio's dd lens {min20_pct, p10_pct, baseline_pct, n}
  *  (the orchestrating cells' lenses combined). */
 export interface PortfolioBenefitSnapshot {
@@ -953,26 +996,28 @@ export interface PortfolioBenefitSnapshot {
   dd: Record<string, unknown> | null;
 }
 
-/** One matched portfolio: its identity, census and PORTFOLIO row
- *  (2026-10-20's cell-level redesign — the sub-type groups merged
- *  into the one row per portfolio: ALL member ids in the single
- *  signal_rule_ids array, the shared construction + per-sub
- *  coordination specs in rule_params, the portfolio-level gate
- *  verdict + writing entries). */
+/** One matched portfolio rule: its identity, census and PORTFOLIO row
+ *  (2026-10-20's cell-level redesign; the 2026-10-25 SUB SPLIT — one
+ *  row per (code, portfolio_type, portfolio_sub_type): trio wash and
+ *  spread are SEPARATE portfolio signals, each with its OWN ids array
+ *  (the sub's orchestrating cells + the MAPPED registered rsi cells),
+ *  per-sub coordination spec, verdict + audit). */
 export interface PortfolioSignalGroupRow {
   code: string;
   portfolio_type: string;
+  /** The PORTFOLIO RULE within the type, decoded (trio_wash / spread). */
+  portfolio_sub_type: string;
   n_rules: number;
   n_valid: number;
   n_sub_types: number;
   latest_event: string | null;
   latest_built: string;
-  /** The portfolio's member rule ids (the whole ids array — the
-   *  members' is_in_portfolio cells; pair with the rules response on
-   *  (signal_rule_id)). */
+  /** The portfolio rule's member rule ids (the whole ids array — the
+   *  sub's orchestrating cells + the mapped registered rsi cells;
+   *  pair with the rules response on (signal_rule_id)). */
   signal_rule_ids: number[];
-  /** The portfolio's GATE VERDICT: the audited benefit cleared the
-   *  portfolio gate AND at least one orchestrating composite cell's
+  /** The portfolio rule's GATE VERDICT: the audited benefit cleared
+   *  the portfolio gate AND at least one orchestrating composite cell's
    *  own entry-rule verdict — the GATING conjunction (members see the
    *  confidence increase only on is_valid portfolios). */
   is_valid: boolean;
@@ -981,11 +1026,6 @@ export interface PortfolioSignalGroupRow {
   rule_entry: string;
   rule_params: Record<string, unknown>;
   performance: PortfolioBenefitSnapshot | null;
-  /** The portfolio type's knowledge document
-   *  (static.portfolio_signal_docs — {name, description, condition,
-   *  sources, principles, benefit}; the analysis_signal_docs
-   *  convention at the portfolio tier, 2026-10-20). */
-  document: Record<string, unknown>;
 }
 
 export interface PortfolioSignalsResult {
@@ -1017,12 +1057,16 @@ export async function fetchPortfolioSignals(
   // the PAIR types' leg matching: the composite code is 'A~B' — both
   // split parts must sit in the requested codes. neg_corr_hedge_pair
   // (0) is the only portfolio type today; multi-leg types extend this
-  // predicate when they arrive.
+  // predicate when they arrive. ONE ROW PER PORTFOLIO RULE (code x
+  // portfolio_sub_type — the 2026-10-25 split: a pair carrying both
+  // rules returns TWO rows)
   const groups = await queryRows<
-    { code: string; latest_event: string | null; latest_built: string } &
+    { code: string; portfolio_sub_type: string;
+       latest_event: string | null; latest_built: string } &
     QueryResultRow
   >(
     `SELECT p.code,
+            ${labelDecodeSql("portfolio_sub_type", "p.portfolio_sub_type")} AS portfolio_sub_type,
             to_char(e.latest_event, 'YYYY-MM-DD') AS latest_event,
             to_char(p.created_at, 'YYYY-MM-DD HH24:MI') AS latest_built
      FROM analysis_signals.portfolio_signal_rules p
@@ -1035,31 +1079,23 @@ export async function fetchPortfolioSignals(
        AND p.portfolio_type = ${LABEL_CODE.portfolio_type.neg_corr_hedge_pair}
        AND split_part(p.code, '~', 1) = ANY($1::text[])
        AND split_part(p.code, '~', 2) = ANY($1::text[])
-     ORDER BY p.code`,
+     ORDER BY p.code, p.portfolio_sub_type`,
     [cleaned],
   );
   if (groups.length === 0) {
     return { sec_type: st, codes: cleaned, portfolios: [], rules: [] };
   }
-  const matched = groups.map((g) => g.code);
-  // the portfolio type's knowledge document (static.portfolio_signal_
-  // docs — the analysis_signal_docs convention at the portfolio tier;
-  // one row per portfolio_type, so ONE fetch serves every portfolio)
-  const docRows = await queryRows<{ document: Record<string, unknown> }>(
-    `SELECT document FROM static.portfolio_signal_docs
-     WHERE portfolio_type = ${LABEL_CODE.portfolio_type.neg_corr_hedge_pair}`,
-    [],
-  );
-  const document = docRows[0]?.document ?? {};
-  // the matched portfolios' OWN rows (one row per portfolio since the
-  // 2026-10-20 cell-level redesign): the whole ids array, the shared
-  // construction + per-sub coordination specs (rule_params), the
-  // portfolio-level gate verdict + writing entries, and the LATEST
-  // history_portfolio_signal_performance snapshot (the portfolio
-  // audit — what the portfolio took + the members' COMBINED STATS;
-  // laterally joined newest-date-first)
+  const matched = [...new Set(groups.map((g) => g.code))];
+  // the matched portfolio rules' OWN rows (one per code x sub since
+  // the split): the whole ids array, the construction + the rule's
+  // per-sub coordination spec (rule_params), the rule-level gate
+  // verdict + writing entries, and the LATEST
+  // history_portfolio_signal_performance snapshot (the rule's audit —
+  // what the portfolio took + the members' COMBINED STATS; laterally
+  // joined newest-date-first, per sub)
   const portRows = await queryRows<
-    { code: string; signal_rule_ids: number[];
+    { code: string; portfolio_sub_type: number;
+       signal_rule_ids: number[];
        is_valid: boolean; rule_entry: string;
        rule_params: Record<string, unknown>;
        pp_as_of: string | null;
@@ -1069,6 +1105,7 @@ export async function fetchPortfolioSignals(
        pp_dd: Record<string, unknown> | null } & QueryResultRow
   >(
     `SELECT p.code,
+            p.portfolio_sub_type,
             p.signal_rule_ids,
             p.is_valid,
             p.rule_entry,
@@ -1085,20 +1122,20 @@ export async function fetchPortfolioSignals(
                q.dd AS pp_dd
         FROM analysis_signals.history_portfolio_signal_performance q
         WHERE q.code = p.code AND q.portfolio_type = p.portfolio_type
+          AND q.portfolio_sub_type = p.portfolio_sub_type
         ORDER BY q.date DESC LIMIT 1
      ) pp ON TRUE
      WHERE p.sec_type = ${LABEL_CODE.sec_type[st]}
        AND p.portfolio_type = ${LABEL_CODE.portfolio_type.neg_corr_hedge_pair}
        AND p.code = ANY($1::text[])
-     ORDER BY p.code`,
+     ORDER BY p.code, p.portfolio_sub_type`,
     [matched],
   );
   // the FULL rule rows: the matched portfolios' OWN rows (the
-  // composite entry + the pair-native exits — code = the pair id)
-  // UNION the portfolios' member ids expanded (the sourced
-  // typical-signal components at their own codes: the market + the
-  // leg industries — exactly the is_in_portfolio cells); each cell's
-  // latest performance snapshot laterally joins and
+  // composite orchestrating cells — code = the pair id) UNION the
+  // rules' member ids expanded (the MAPPED REGISTERED rsi cells at the
+  // market + leg codes, riding the is_in_portfolio TRUE tier); each
+  // cell's latest performance snapshot laterally joins and
   // mergeRulePerformance folds it back in (the 2026-10-19 split)
   const allIds = portRows.flatMap((s) =>
     s.signal_rule_ids.map(Number));
@@ -1115,6 +1152,8 @@ export async function fetchPortfolioSignals(
             r.signal_rule_id::float8 AS signal_rule_id,
             r.is_valid,
             r.is_in_portfolio,
+            r.is_pe_boosted,
+            r.is_ohlcv_boosted,
             r.rule_entry,
             r.rule_params,
             perf.perf_date,
@@ -1124,7 +1163,7 @@ export async function fetchPortfolioSignals(
             COALESCE(d.document, '{}'::jsonb) AS document,
             to_char(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at
      FROM analysis_signals.signal_rules r
-     LEFT JOIN static.analysis_signal_docs d
+     LEFT JOIN static.signal_rules_docs d
             ON d.signal_type = r.signal_type${LATEST_PERFORMANCE_JOIN}
      WHERE r.sec_type = ${LABEL_CODE.sec_type[st]}
        AND (r.code = ANY($1::text[])
@@ -1133,17 +1172,20 @@ export async function fetchPortfolioSignals(
               r.regime_state, r.action`,
     [matched, allIds],
   ).then((rows) => rows.map(mergeRulePerformance));
-  // the census per portfolio: its OWN members by id (the components +
-  // the pair-native exits; the composite's own row is not a member —
-  // the GROUP is the composite)
+  // the census per portfolio rule: its OWN members by id (the sub's
+  // orchestrating cells + the mapped registered cells; the composite's
+  // own row is not a member — the RULE is the composite)
   const byId = new Map(rules.map((r) => [r.signal_rule_id, r]));
-  const byCode = new Map(portRows.map((p) => [p.code, p]));
+  const byKey = new Map(portRows.map((p) =>
+    [`${p.code}|${p.portfolio_sub_type}`, p]));
   const portfolios: PortfolioSignalGroupRow[] = groups.map((g) => {
-    const p = byCode.get(g.code);
+    const p = byKey.get(`${g.code}|${
+      LABEL_CODE.portfolio_sub_type[g.portfolio_sub_type] ?? ""}`);
     const ids = (p?.signal_rule_ids ?? []).map(Number);
     return {
       code: g.code,
       portfolio_type: "neg_corr_hedge_pair",
+      portfolio_sub_type: g.portfolio_sub_type,
       n_rules: ids.length,
       n_valid: ids.filter((id) => byId.get(id)?.is_valid === true)
         .length,
@@ -1164,7 +1206,6 @@ export async function fetchPortfolioSignals(
         ? { as_of: p.pp_as_of, pooled: p.pp_pooled,
             benefit: p.pp_benefit, gate: p.pp_gate, dd: p.pp_dd }
         : null,
-      document,
     };
   });
   return { sec_type: st, codes: cleaned, portfolios, rules };
@@ -1174,21 +1215,31 @@ export async function fetchPortfolioSignals(
 //  fetchPortfolioSignalHistory — the PORTFOLIO tier's EVENT history
 //  (2026-10-21): analysis_signals.portfolio_history_signals holds ONE
 //  ROW PER PORTFOLIO EVENT (the composite/pair-native rule cells'
-//  replayed triggers at the pair codes) with THE EVENT DATE and the
-//  ``member_signals`` JSONB — the associated member CELL-LEVEL signal
-//  events that triggered it (the sourced component cells' own
+//  replayed triggers at the pair codes) with THE EVENT DATE, the
+//  ``member_signals`` JSONB — the coordinated MEMBER ACTIONS the event
+//  consists of (the MEMBER-ACTION INVARIANT: at least TWO actions on
+//  at least TWO codes per event, different dates allowed; hp_harvest
+//  the measured one-leg exception) — AND the ``cell_signals`` JSONB
+//  array: each SOURCED member's history_signals PK (carrying the
+//  is_in_portfolio tier flag — a PK member since 2026-10-23: the
+//  sourced cell events ride the TRUE tier, SEPARATE rows from the
+//  standalone families' events under the same vocabulary). The cell-level
+//  signals are fetched EXPLICITLY from signal history (2026-10-21,
+//  user-directed): the sourced members render the records
+//  history_signals holds NOW; the pair-frame facets (the legs'
+//  witness/response records — no cell behind them) and any dangling
+//  key fall back to the stored event-time snapshots. The source
+//  layer's component cell events LIVE in history_signals (the engines'
 //  episode-first records, each WITH ITS OWN DATE — different sub
-//  signals on different nearby days; the component cells' own history
-//  is deliberately dropped from history_signals, these member records
-//  are the one place the triggering cell events are kept). The member
-//  payload's label codes (signal_type / signal_sub_type / action
-//  SMALLINT codes inside the JSONB) decode here at the response
-//  boundary through the label-codes mirror. Feeds the portfolio
-//  history panel's expandable rows.
+//  signals on different nearby days), so one event hooks the cells of
+//  MULTIPLE sub types. Label codes decode at the response boundary.
+//  Feeds the portfolio history panel's expandable rows.
 // ----------------------------------------------------------------------------
 
-/** One member CELL-LEVEL signal event inside a portfolio event's
- *  member_signals association (decoded from the stored JSONB). */
+/** One member CELL-LEVEL action record inside a portfolio event's
+ *  member association: a sourced component cell event fetched from
+ *  signal history (through the event's cell_signals keys), or a
+ *  pair-frame facet record (the stored event-time snapshot). */
 export interface PortfolioEventMember {
   code: string;
   signal_type: string;
@@ -1209,6 +1260,10 @@ export interface PortfolioEventMember {
 export interface PortfolioHistorySignalRow {
   code: string;
   portfolio_type: string;
+  /** The event's PORTFOLIO RULE, decoded (trio_wash / spread — the
+   *  2026-10-25 split; derived exactly from the event's orchestrating
+   *  sub on the pre-split migration). */
+  portfolio_sub_type: string;
   signal_type: string;
   signal_sub_type: string;
   date: string;
@@ -1223,8 +1278,10 @@ export interface PortfolioHistorySignalRow {
   confidence_pct: number;
   regime_state: string;
   is_typical: boolean | null;
-  /** The triggering CELL-LEVEL events (different subs, nearby days);
-   *  empty for the pair-native subs. */
+  /** The event's coordinated MEMBER ACTIONS (sourced cell events /
+   *  leg witnesses at their own days / the pair response legs); the
+   *  member-action invariant holds >= 2 on >= 2 codes (hp_harvest the
+   *  measured one-leg exception). */
   members: PortfolioEventMember[];
 }
 
@@ -1262,6 +1319,7 @@ export async function fetchPortfolioSignalHistory(
     {
       code: string;
       portfolio_type: string;
+      portfolio_sub_type: string;
       signal_type: string;
       signal_sub_type: string;
       date: string;
@@ -1275,10 +1333,12 @@ export async function fetchPortfolioSignalHistory(
       regime_state: string;
       is_typical: boolean | null;
       member_signals: Array<Record<string, unknown>>;
+      cell_signals: Array<Record<string, unknown>> | null;
     } & QueryResultRow
   >(
     `SELECT h.code,
             ${labelDecodeSql("portfolio_type", "h.portfolio_type")} AS portfolio_type,
+            ${labelDecodeSql("portfolio_sub_type", "h.portfolio_sub_type")} AS portfolio_sub_type,
             ${labelDecodeSql("signal_type", "h.signal_type")} AS signal_type,
             ${labelDecodeSql("signal_sub_type", "h.signal_sub_type")} AS signal_sub_type,
             to_char(h.date, 'YYYY-MM-DD') AS date,
@@ -1291,28 +1351,150 @@ export async function fetchPortfolioSignalHistory(
             (h.confidence::float8 / 100.0) AS confidence_pct,
             ${labelDecodeSql("regime", "h.regime_state")} AS regime_state,
             h.is_typical,
-            h.member_signals
+            h.member_signals,
+            h.cell_signals
      FROM analysis_signals.portfolio_history_signals h
      WHERE ${predicates.join(" AND ")}
      ORDER BY h.date DESC, h.time DESC, h.signal_type, h.signal_sub_type`,
     params,
   );
-  return rows.map((r) => ({
-    ...r,
-    members: (r.member_signals ?? []).map((m) => ({
-      code: String(m.code ?? ""),
-      signal_type: decodeLabel("signal_type", m.signal_type as number)
-        ?? String(m.signal_type),
-      signal_sub_type: decodeLabel("signal_sub_type",
-        m.signal_sub_type as number) ?? String(m.signal_sub_type),
-      action: decodeLabel("action", m.action as number)
-        ?? String(m.action),
-      date: String(m.date ?? ""),
-      signal: Number(m.signal ?? 0),
-      signal_reference: Number(m.signal_reference ?? 0),
-      confidence: Number(m.confidence ?? 0),
-    })),
-  }));
+  // The cell-level signals are fetched EXPLICITLY from signal history
+  // (2026-10-21, user-directed): every sourced member's ``cell_signals``
+  // key (its history_signals PK) resolves against ONE history query for
+  // the whole page, and the fetched row REPLACES the event-time
+  // snapshot as the member's authoritative record. The pair-frame
+  // facets (the legs' witness/response records — no cell behind them)
+  // and any dangling key fall back to the stored member_signals
+  // snapshots.
+  const keySet = new Set<string>();
+  for (const r of rows) {
+    for (const k of r.cell_signals ?? []) keySet.add(JSON.stringify(k));
+  }
+  const fetched = new Map<string, PortfolioEventMember>();
+  if (keySet.size > 0) {
+    const cellRows = await queryRows<
+      {
+        code: string;
+        signal_type: number;
+        signal_sub_type: number;
+        action: number;
+        date: string;
+        time: string;
+        signal: number;
+        signal_reference: number;
+        confidence: number;
+        is_in_portfolio: boolean;
+      } & QueryResultRow
+    >(
+      `SELECT h.code,
+              h.signal_type, h.signal_sub_type,
+              ${labelDecodeSql("action", "h.action")} AS action,
+              to_char(h.date, 'YYYY-MM-DD') AS date,
+              to_char(h.time, 'HH24:MI')    AS time,
+              h.signal::float8              AS signal,
+              h.signal_reference::float8    AS signal_reference,
+              h.confidence,
+              h.is_in_portfolio
+       FROM analysis_signals.history_signals h
+       JOIN jsonb_to_recordset($1::jsonb) AS k(code text,
+              signal_type smallint, signal_sub_type smallint,
+              is_ohlcv_boosted boolean, is_in_portfolio boolean,
+              date date, time text)
+         ON h.code = k.code
+        AND h.signal_type = k.signal_type
+        AND h.signal_sub_type = k.signal_sub_type
+        AND h.is_ohlcv_boosted = k.is_ohlcv_boosted
+        AND h.is_in_portfolio = COALESCE(k.is_in_portfolio, false)
+        AND h.date = k.date
+        AND h.time = k.time::time
+       WHERE h.sec_type = ${LABEL_CODE.sec_type[st]}`,
+      [JSON.stringify([...keySet].map((s) => JSON.parse(s)))],
+    );
+    for (const cr of cellRows) {
+      fetched.set(
+        JSON.stringify({
+          code: cr.code,
+          signal_type: cr.signal_type,
+          signal_sub_type: cr.signal_sub_type,
+          is_ohlcv_boosted: false,
+          is_in_portfolio: cr.is_in_portfolio === true,
+          date: cr.date,
+          time: cr.time,
+        }),
+        {
+          code: cr.code,
+          signal_type: decodeLabel("signal_type", cr.signal_type)
+            ?? String(cr.signal_type),
+          signal_sub_type: decodeLabel("signal_sub_type",
+            cr.signal_sub_type as number) ?? String(cr.signal_sub_type),
+          action: String(cr.action),
+          date: cr.date,
+          signal: Number(cr.signal ?? 0),
+          signal_reference: Number(cr.signal_reference ?? 0),
+          confidence: Number(cr.confidence ?? 0),
+        },
+      );
+    }
+  }
+  const decodedKey = (k: Record<string, unknown>) => JSON.stringify({
+    code: k.code, signal_type: k.signal_type,
+    signal_sub_type: k.signal_sub_type,
+    is_ohlcv_boosted: k.is_ohlcv_boosted ?? false,
+    // the sourced cell events ride the is_in_portfolio TRUE tier (a
+    // history_signals PK member since 2026-10-23); pre-flag legacy
+    // keys read false and only ever matched FALSE-tier rows anyway
+    is_in_portfolio: k.is_in_portfolio ?? false,
+    date: k.date, time: k.time,
+  });
+  return rows.map((r) => {
+    // the sourced members, in their recorded order, each the record
+    // history_signals holds NOW (the stored snapshot as the fallback)
+    const members: PortfolioEventMember[] = [];
+    const served = new Set<string>();
+    for (const k of r.cell_signals ?? []) {
+      const dk = decodedKey(k);
+      const m = fetched.get(dk);
+      if (m) {
+        members.push(m);
+        served.add(dk);
+      }
+    }
+    // the facets (and any dangling key): the stored event-time records
+    // whose identity no fetched cell row covers — a member WITH a cell
+    // behind it is a SOURCED record (the TRUE tier), so its identity
+    // carries is_in_portfolio true to meet the fetched key's shape; a
+    // facet's identity matches nothing and falls through
+    for (const m of r.member_signals ?? []) {
+      const identity = JSON.stringify({
+        code: m.code, signal_type: m.signal_type,
+        signal_sub_type: m.signal_sub_type,
+        is_ohlcv_boosted: false,
+        is_in_portfolio: true,
+        date: m.date, time: m.time ?? "15:00",
+      });
+      if (served.has(identity)) continue;
+      members.push({
+        code: String(m.code ?? ""),
+        signal_type: decodeLabel("signal_type", m.signal_type as number)
+          ?? String(m.signal_type),
+        // a facet member's sub may be null (no cell behind it) — render
+        // the em dash, never the string "null"
+        signal_sub_type: decodeLabel("signal_sub_type",
+          m.signal_sub_type as number)
+          ?? (m.signal_sub_type == null ? "—" : String(m.signal_sub_type)),
+        action: decodeLabel("action", m.action as number)
+          ?? String(m.action),
+        date: String(m.date ?? ""),
+        signal: Number(m.signal ?? 0),
+        signal_reference: Number(m.signal_reference ?? 0),
+        confidence: Number(m.confidence ?? 0),
+      });
+    }
+    return {
+      ...r,
+      members,
+    };
+  });
 }
 
 // ----------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import { OhlcChart } from "@/ui/OhlcChart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import { fmtPct } from "@/lib/series";
 import { type OhlcMode } from "@/lib/ohlc";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
@@ -148,40 +149,33 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate, on
   // semantics (the screenshot + intro do the visual work); state tracks the
   // OHLC/percentage mode toggle.
   const aiAskChartRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: insightPage,
       product: "stock-baseline",
-      intro:
-        `Single-stock daily chart of ${stock.code} (${stock.name}, ` +
-        `${stock.industry_label}): ` +
-        (hasOhlc ? "candles (close line when sparse) " : "close line ") +
-        "+ MA5/20/60/120, amount bars on a twin axis (亿, close-vs-open colored)" +
-        (hasPe ? ", PE on an offset axis" : "") +
-        ", dividend diamonds on ex-dates. % mode: prices + MAs rebased to % change " +
-        "from the first valid close; the dataZoom slider windows the history. " +
-        "Indication: MA stack fanned upward = entrenched uptrend; ex-dividend gaps are " +
-        "mechanical, not flow.",
+      intro: docs.text("ui.stock.panel", {
+        code: stock.code,
+        name: stock.name,
+        industry: stock.industry_label,
+        hasOhlc,
+        hasPe,
+      }),
       instruments: [{ code: stock.code, name: stock.name, assetClass: "stock" }],
-      series: [
-        ...(hasOhlc
-          ? [{ name: "OHLC", description: "daily open/high/low/close candles" }]
-          : [{ name: "Close", unit: "元", description: "daily closing price" }]),
-        { name: "MA5", unit: "元", description: "5-day mean of close" },
-        { name: "MA20", unit: "元", description: "20-day mean of close" },
-        { name: "MA60", unit: "元", description: "60-day mean of close" },
-        { name: "MA120", unit: "元", description: "120-day mean of close" },
-        { name: "Amt (亿)", unit: "亿", description: "daily trading amount" },
-        ...(hasPe ? [{ name: "PE", unit: "×", description: "price/earnings ratio (SZSE stocks)" }] : []),
-        { name: "Dividend", description: "ex-dividend markers" },
-      ],
+      series: compactDefined([
+        docs.seriesEntry("ui.stock.panel", hasOhlc ? "ohlc" : "close"),
+        docs.seriesEntry("ui.stock.panel", "ma5"),
+        docs.seriesEntry("ui.stock.panel", "ma20"),
+        docs.seriesEntry("ui.stock.panel", "ma60"),
+        docs.seriesEntry("ui.stock.panel", "ma120"),
+        docs.seriesEntry("ui.stock.panel", "amt"),
+        ...(hasPe ? [docs.seriesEntry("ui.stock.panel", "pe")] : []),
+        docs.seriesEntry("ui.stock.panel", "dividend"),
+      ]),
       state: { mode: ohlcMode },
-      notes: [
-        "Return badges in the header: 1m/3m/6m/total % change of close.",
-        "Percentage mode rebases from the first VISIBLE close (zoom-dependent).",
-      ],
+      notes: docs.notes("ui.stock.panel"),
     }),
-    [stock.code, stock.name, stock.industry_label, ohlcMode, hasOhlc, hasPe, insightPage],
+    [docs, stock.code, stock.name, stock.industry_label, ohlcMode, hasOhlc, hasPe, insightPage],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${stock.code} · ${stock.name}`,

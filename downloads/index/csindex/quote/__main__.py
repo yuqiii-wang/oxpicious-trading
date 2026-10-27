@@ -1,12 +1,14 @@
 """Entry point: ``python -m downloads.index.csindex.quote``.
 
-Default (no args): full nightly sweep — from2020 (cached-skip) + 1m
-window + PE + history merge + intraday per code.
+Default (no args): nightly increment — from2020 (cached-skip) + 1m
+window + intraday per code. The PE fetch + history merge are SKIPPED by
+default (the recent rows reach the DB via SSE trend / SZSE / CNINDEX /
+BSE snapshots in builds CSINDEX DAILY's source ladder; the history CSVs
+are only the deep-history fallback).
 
---ensure-prev-trading-day: targeted mode for the "Build Yday Ref" UI
-button chain — skip ALL network work for codes whose local 1m/history
-CSV already contains the previous trading day; only laggards are
-fetched (1m window only; PE/intraday stay nightly-owned).
+--refresh-history: also run the PE fetch + history merge (the slow
+full-table exports) — the one-time convergence for caches left behind
+by skipped runs, or to re-capture restated CSIndex data.
 """
 from __future__ import annotations
 
@@ -30,6 +32,15 @@ if __name__ == "__main__":
         ),
     )
     ap.add_argument(
+        "--refresh-history",
+        action="store_true",
+        help=(
+            "Also run the PE fetch + history merge (the slow full-table "
+            "exports). Default: skipped — recent rows reach the DB via "
+            "SSE trend / SZSE / CNINDEX / BSE snapshots."
+        ),
+    )
+    ap.add_argument(
         "--sleep-sec", type=float, default=None,
         help="Sleep seconds between requests "
              f"(default: external_request_config JSON for {SERVICE})",
@@ -41,5 +52,6 @@ if __name__ == "__main__":
         download_index(
             ensure_prev_trading_day=args.ensure_prev_trading_day,
             sleep_sec=args.sleep_sec,
+            refresh_history=args.refresh_history,
         )
     )

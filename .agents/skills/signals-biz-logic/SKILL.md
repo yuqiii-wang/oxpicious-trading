@@ -1,9 +1,11 @@
 ---
 name: signals-biz-logic
 description: >
-  The FINANCIAL/BUSINESS semantics of the SEVEN signal families in
-  oxpicious-trading — mov_rsi (RSI percentile tails, entry windows
-  14/10/6), bollinger (fixed-σ band breach, window 20), ma_cross
+  The FINANCIAL/BUSINESS semantics of the NINE standalone signal
+  families plus the hedge_pairs PORTFOLIO family (the fresh typical
+  trio, 2026-10-24) in oxpicious-trading — mov_rsi (RSI percentile
+  tails, entry windows 14/10/6), bollinger (fixed-σ band breach,
+  window 20), ma_cross
   (price-vs-MA events, NOT a golden cross, + the market-level
   breadth thrust / 9:1 days), options_wall (VRP-gated
   OI-wall breach), options_vix (vol spike inside a deep-fear corr
@@ -11,7 +13,12 @@ description: >
   breakout), momentum (log-return tail breaches
   over vol-adaptive lookbacks), rf_break (the roof/floor Donchian
   breakout — the prior day's window-extreme level, a STRUCTURAL
-  bar): what each signal MEANS as a trade
+  bar), rebound (the drop→rebound→resolution family: the
+  capitulation trough-break BUY, the failed-reclaim exit-timing SELL,
+  the full-reclaim continuation BUY — each in a plain and a
+  PE-conditioned variant), macd (the
+  classic 12/26/9 signal-line crossover, 2026-10-26),
+  MEANS as a trade
   (side, population, trigger, exit timing), the measured discoveries
   behind every parameter (equity asymmetry, band walks, re-entry
   artifacts, VRP gating, spike-regime interaction, the 2026-10-16
@@ -376,82 +383,133 @@ sign) measured +3.05% BUT its falling-knife control measured +2.61% —
 the conditioning adds almost nothing and cells starve below the
 floor. Revisit when the population doubles.
 
-## hedge_pairs / hp_rsi — the long–long anti-correlated pair family (2026-10-18; graduates 2026-10-19)
+## hedge_pairs — the fresh typical trio (2026-10-24)
 
-The PORTFOLIO family: 36 disjoint offset-opposite industry pairs
-(analysis_composites offsets, trailing 255d opposite score > 0.5),
-inverse-vol long–long weighting, codes 'A~B'. The aim is negative-corr
-COORDINATION study, not profit — the DRAWDOWN LENS (ddmin20: the
-triggers' forward worst-trough vs the all-days baseline; the
-orchestrating cells' lenses combined into the portfolio audit's `dd`
-column since the 2026-10-20 redesign) is the
-family's recorded evidence axis; the dir_ave bar stays the verdict.
-The PORTFOLIO AUDIT (2026-10-20,
-analysis_signals.history_portfolio_signal_performance, ONE DATED
-SNAPSHOT PER PORTFOLIO since the same day's cell-level redesign):
-WHAT THE PORTFOLIO TOOK — kind
-max_drawdown_reduction, the pair value's OWN max drawdown vs each
-leg's standalone (reduction_vs_worst/mean in percentage points,
-positive = the hedge paid; the showcase pair audits −25.0% vs
-−20.3%/−48.6% legs = +23.6pp vs the worst leg) + the orchestrating
-cells' combined dd lens + `pooled` — the COMBINED STATS of the
-individual in-portfolio signals (the member cells' own measures
-meta-combined: n-weighted dir_ave / hit, the combined-moments t);
-portfolio_signal_rules.rule_params carries
-the CONSTANT construction (legs / market / aim / weighting + the
-per-sub coordination specs under subs) since the same day. Two layers: hp_rsi (type 8)
-orchestrates the components' REAL mov_rsi rows into portfolio
-composites; hedge_pairs (type 7) is pair-native.
-THE GATED CONFIDENCE CASCADE (2026-10-20, user-directed): the
-portfolio's confidence ADDS to the member cells' as an INCREASE,
-gated — the src data TOGETHER must pass the PORTFOLIO GATE (the
-audited drawdown reduction vs the MEAN leg ≥ 0pp — the worst-leg
-comparison is nearly automatic for any blend) AND the ENTRY RULES
-(the orchestrating composite's own is_valid); only then do members
-see the cell-level increase: scale = 1 + 0.25 × min(benefit_pp / 5,
-2) (cap ×1.5; PF_* in config), the strongest passing membership under
-max-scale aggregation, stamped as portfolio_cascade on the members'
-snapshots and multiplied by the live tier beside the starvation
-sample_scale. A failed gate stamps nothing — the portfolio tier only
-ever INCREASES a member's confidence, never discounts it.
+The PORTFOLIO family, re-implemented from scratch (user-directed:
+"most typical negative correlation two curve and one broadmarket
+solution, typical and simple; do not reference old demised logic, but
+do check asymmetry of buy sell actions"). The prior sub inventory
+(5812-5827 — washes, cross-washes, coordination widenings, harvest,
+tilts, stops) is DEMISED; its labels stay in static.label_dim for
+old-history decode only, and its honest negatives STAND (ratio-z mean
+reversion measured negative per-open under every stop rule; leg
+Donchian ROOF breakouts, naked Donchian-on-ratio, portfolio gdepth,
+the knife state all measured out — do not re-add without new
+evidence).
 
-- **hp_entry_legs_rsi** (BUY): the trio entry — market + both legs'
-  RSI capitulation witnesses paired ≤5d. Pooled t=12.45; dd_min20
-  +0.24% vs −3.14% baseline (the drawdown-optimal entry).
-- **THE 2026-10-19 GRADUATES** (docs/hedge_pairs_more_triggers_study_
-  2026-10-19.md — the measured study behind every bar): hp_entry_wash
-  (both legs' W-day Donchian-floor breakdown witnesses within 5
-  pair-days — the co-drawdown on a STRUCTURAL bar; each window its
-  own population, the rf_break no-carve precedent; the 2026-10-21
-  dedup merged the per-window trio — same semantics, only the window
-  differed, so the grid {60, 120, 255} is the run_cells candidate set
-  and the per-cell winner picks it), hp_entry_wash120_mkt (the wash
-  + the market's RSI-3pct witness — the trio's
-  structural cousin, the strongest graduate t=8.94, trough −1.58% vs
-  −3.14%), hp_entry_rho50 (offset corr's first day ≤ −0.50 — buy when
-  the covariance cancellation works hardest; the grid measured −0.40
-  flat / −0.50 the bar / −0.60 weaker), hp_entry_catchup_reclaim60
-  (the WEAK leg's first close back above its own MA60 — the ma_cross
-  reclaim in coordination form; RESPONSE = the PORTFOLIO: the px_lag
-  switching path measured NEGATIVE (−0.56% t=−6.07 — it abandons the
-  reclaimed leg at the ratio's zero-cross); MA20 measured worse on
-  both lenses; the |z|≥1 conditioning adds nothing).
-- MEASURED OUT by the same study: leg Donchian ROOF breakouts (any
-  form incl. coordinated — single-name momentum, not coordination),
-  naked Donchian-on-ratio, portfolio gdepth; the knife state (leg
-  floor + other leg roof) is a drawdown warning (deepest troughs),
-  not a directional trade.
-- Sells: hp_harvest (|ratio z|≥k trims the high leg; the 2026-10-21
-  dedup merged the z15/z20 subs — same semantics, only the bar
-  differed, so the grid {1.5, 2.0} is the run_cells candidate set
-  and the per-cell winner picks it), hp_stop_regime (rho_off ≥ 0
-  within 60d of a ≤ −0.30 reading), hp_catchup_rsi_hi (the laggard's
-  own RSI high-tail). The observational hp_regime_flip was RETIRED
-  by the same dedup — hp_entry_rho50 is the hedgeable turn-on's one
-  record (its deep gated anchor; the shallow ungated twin measured
-  nothing the deep anchor's cells didn't).
+THE TYPICAL SOLUTION on the trio structure: TWO negatively-correlated
+leg curves (the offsets table's disjoint offset-opposite industry
+pairs, trailing 255d opposite score > 0.5, greedy-disjoint, PLUS the
+PINNED showcase DIV_GENERAL~TECH_GENERAL — the page's default 红利 vs
+科技, reserved before the greedy pass) + ONE broad-market curve
+(000300). The construction is the classic:
+inverse-vol weights over the 60d return window, lagged one row,
+long-long; pair value = 100·exp(cumsum(log1p(w_a·r_a + w_b·r_b))) —
+the response axis AND the audited benefit gauge.
 
-## rf_break — the roof/floor breakout family (2026-10-16)
+- **hp_entry_trio** (BUY, 5828): all THREE curves in their own
+  Wilder-RSI(14) capitulation tails the SAME day (each vs its own
+  per-code adaptive trailing-2550d percentile bar — the mov_rsi
+  convention verbatim; the candidate grid HP_LEG_TAIL_PCTS holds
+  AT-LEAST populations, the per-cell winner picks the tail and records
+  it on rule_params.bar_def.tail_pct). The grid WIDENED 2026-10-25
+  (user-directed "tails 1/2/3% is too strict, update that portfolio
+  can self pick up rsi as well"): {1,2,3} → {1,2,3,5,10}. The same
+  day, LOOSENED TO A FREQUENCY FLOOR (user-directed "the signals are
+  too rare, loosen it to at least once per year", study
+  temp_scripts/trio_freq_study.py): the grid gained 15/20 (25/30
+  measured out at pooled +0.24%/+0.14% — the honest negative stands),
+  the candidates became AT-LEAST populations (the per-curve tail
+  conditions are MONOTONE — a deeper wash also satisfies a shallower
+  bar — so the cell's bar is its winner's tail percentile and the
+  deeper days fire inside it with more confidence; the old nested
+  carve would have dropped a pair's deepest washes from its own
+  shallow-winner cell), and run_cells gained the FREQUENCY-FLOOR
+  winner policy (config HP_MIN_EVENTS_PER_YEAR = 1.0): each pair's
+  bar = the DEEPEST gate-passing tail meeting >=1 trigger/yr over the
+  pair's own horizon — the best-dir_ave winner (always the deepest
+  tail) left 41/48 pairs under 1 event/yr, the floor policy puts all
+  48 at >=1/yr with the pooled verdict passing (n=501, +1.50%,
+  t=10.5, 6/6 measurable years positive); the best-dir_ave winner
+  stays the fallback when no tail reaches the floor. The same day,
+  the RSI WINDOW GRID, then the BOTH-WINDOWS UNION (user-directed
+  "also add rsi10 as trigger as well" → "ensure rsi10 be shown up" →
+  "both rsi10 and rsi14 are under the same trio wash rule sub type
+  ... rsi14 have three cell signals, but also rsi10 another three
+  cell signals"): the candidates span WINDOW x TAIL —
+  HP_LEG_RSI_WINDOWS (10, 14) — and the winner-takes-all across
+  windows was REPLACED by the per-window tail pre-selection
+  (_pick_window_tails: the deepest at-least tail meeting the
+  frequency floor under the loose gate per window, the best-dir_ave
+  fallback) with the CELL's population the UNION of both windows'
+  picks — a day fires when EITHER window's trio resonates (the
+  primary RSI(10) takes precedence on overlap; the K-absorb merges
+  same-wash episodes across windows); the emitted bar_def carries
+  BOTH windows' picks (bar_def.windows [{window, tail_pct}, ...] —
+  the UI's trio bar decoder renders both; the recorded signal is the
+  triggering window's own rsi_mean; the event witnesses DETECT the
+  event's own window and ride it on the payload). The same day, the
+  LOOSE GATE (user-directed "loosen the gate, only obviously bad
+  signals should get rejected"): the family's OWN evidence bars
+  HP_GATE_DIR_AVE_MIN / HP_POOLED_DIR_AVE_MIN = 0 — a candidate is
+  measured out ONLY when its measured forward mean is negative, and
+  the pooled verdict keeps its STATISTICS legs (t >= 1 + the
+  expanding-year sign majority) with the mean bar at "not negative";
+  the global 0.25% bars stay the standalone families' discipline
+  (run_cells gained gate_min / pooled_dir_ave_min overrides). The
+  market-wide
+  wash bought THROUGH the pair — the negative covariance is the hedge.
+  Recorded value = rsi_mean vs the trio bar mean; depth in RSI points
+  /10. The portfolio rule_params also carry a top-level NAME
+  ("trio wash", config HP_PORTFOLIO_NAME — user-directed the same
+  day). First index rebuild: 48 cells / 129 events / 120 measurable
+  episodes, avg dir_ave +4.82% @94.7% hit — the pooled member stats
+  t-stat 2.2-4.1 per pair. The widening's own rebuild (2026-10-25,
+  index --force): 48 cells / 128 events; winners 26× tail1 / 12×
+  tail2 / 7× tail3 / 3× tail5, NO tail10 (the dilute wash never beats
+  a deeper tail's dir_ave — the self-pick kept the edge where it
+  lives); the blow-off mirror (check-only) densified 27→37 cells /
+  33→98 events, still discarded.
+- **the blow-off mirror** (hp_exit_trio, 5829 — CHECK-ONLY, never
+  shipped; user-directed "just one as a start"): all three curves at
+  their RSI exhaustion tails, measured through the same candidate
+  machinery every run with the rows DISCARDED (one logged asymmetry
+  record). The measurement: 27 cells / 33 events / +1.90% —
+  STRUCTURALLY THINNER than the buy (a quarter of the episodes), the
+  pair-level continuation finding reproduced ("tops continue"). Do
+  not source coordinated sells without new evidence — twice measured
+  now.
+- MEMBERS (SIMPLIFIED 2026-10-24, user-directed): the TRIGGERED
+  portfolio signal sets its own cell-level member records — one
+  WITNESS per curve at the curve's OWN day (its deepest-alive RSI-tail
+  breach run start, RSI vs its own bar, the tail it sits at), each
+  carrying the curve's PER-ROLE sub type since 2026-10-25
+  (user-directed "diff legs or roles should have diff sub types"):
+  hp_rsi_witness_mkt 5831 / _leg_a 5832 / _leg_b 5833 — payload-only
+  labels, no rule rows behind them (the shared hp_rsi_witness 5830
+  decodes old rows). NO sourcing from the mov_rsi tier,
+  no component-code rule rows, cell_signals empty (every member is a
+  pair-frame record); the group ids = the pair's own orchestrating
+  rows. The same day, the STORED RULE CONDITIONS (user-directed "add
+  Rule condition in Rule params ... all UI data must be sourced from
+  DB"): the portfolio rule_params.subs.hp_entry_trio carries the sub's
+  plain-language `condition` line + the per-witness `cell_signals`
+  records KEYED BY RSI WINDOW ({rsi10: [...], rsi14: [...]} — each
+  record {sub_type, code, role, condition, bar}; user-directed "rsi10
+  and rsi14 should be part of key field rather than merged inside a
+  lengthy description for better search") — engine-written,
+  the UI parses them verbatim (the cell-signals table and the roster
+  trigger line no longer compose prose from the fragments; documented
+  in the 03_portfolio_signal_rules.sql header grammar).
+- THE BENEFIT AUDIT (history_portfolio_signal_performance): the
+  pair value's own max drawdown vs each leg's standalone — the first
+  rebuild's gate-passing pairs sit +5.5..+12.9pp shallower than the
+  MEAN leg (47/48 groups is_valid; the benefit-boost scale 1 + 0.25 ×
+  min(benefit/5, 2) recorded, never a discount). The dd lens
+  (forward worst-trough within 20 pair-days, clamped at 0) rides
+  beside it.
+
+## rf_break — the roof/floor breakout family (2026-10-16; ALL-BUY since 2026-10-26)
 
 The turtle breakout on the repo's own roof/floor machinery: the
 trigger is the close crossing the PRIOR day's level
@@ -467,17 +525,39 @@ corners where these events land, while options_wall's FIXED
 0.25%-past-the-wall bar caught the same days. A STRUCTURAL bar cannot
 thin out the way a trailing percentile does.
 
-- **rf{W}_roof BUY** — the first close above the prior day's W-day
-  roof: the significant-high continuation. The no-carve rebuild
-  (2026-10-16): 78 cells / 628 events; 2024-09-30 alone fires
-  rf60/rf120/rf255 roof buys on SIX study codes (931594 rf60 at
-  +9.9% beyond the roof).
-- **rf{W}_floor SELL** — the first close below the prior floor: exit
-  timing. The donchian floor cells ALL MEASURED OUT (breakdowns
-  CONTINUE over the 5d-heavy blend — the falling knife); only the
-  MEDIAN floor carries thin exit-timing cells (9-10 events, the
-  consensus-level breakdowns). Do not re-add a floor BUY without new
-  evidence.
+**THE 2026-10-26 LEGACY CLEANUP (user-directed "remove roof for buy,
+floor for sell decisions, but totally replace with the above
+findings")**: the CATCH-ALL sub types are RETIRED (labels 5600-5633
+decode-only now) — the any-breach roof BUY (diluted ~2x by the
+shallow band; 78 cells / 628 events in the last catch-all build) and
+the any-breach floor SELL (measured sign-flipping by level
+agreement — see the gap study below; 35 cells / 237 events after the
+inversion fix). The family is ALL-BUY (the gdepth/deep precedent —
+no sell rides it). The inventory:
+
+- **rf{W}{infix}_roof_deep BUY** — the depth-gated continuation past
+  the self-adaptive k bar from RF_ROOF_DEEP_BARS {1,2,3}% (the
+  depth-split study's monotone-UP gradient; rf255_med catch-all
+  +0.90% vs deep2 +2.00% @65.6 hit). The depth-split graduates
+  shipped 2026-10-26 morning.
+- **rf{W}{infix}_floor_deep BUY** — the capitulation V-bottom past
+  RF_FLOOR_DEEP_BARS {2,3,5}% (the deeper below the consensus floor
+  the harder the forward bounce; rf500_med deep5 forward +4.66% @85%
+  up-rate; the crash-era events 2024-02-02/05, 2025-04-07,
+  2026-10-15). Measured GAP-AGNOSTIC (twice — flat across both
+  solidity axes; the washout works regardless of level agreement).
+- **rf{W}_floor_bounce BUY** (5680-5683) — the two-method gap
+  study's graduate: the close breaks the prior day's MEDIAN
+  consensus floor while the DONCHIAN wick floor still holds below —
+  the consensus-broken / wick-intact dip, wick-bounded by
+  construction. Measured at ALL FOUR windows (t 3.0-4.5, hit 57-67%:
+  W60 +1.51% n=164, W120 +1.54% n=104, W255 +2.50% n=66, W500
+  +2.64% n=42); the mirrored sell measures −1.5..−2.6 everywhere.
+  The controlled-dip twin of floor_deep's washout — the two floor
+  buys tile the whole breach range, and the structural
+  wick-intact condition is what the depth study's numeric shallow
+  band could not express. Rebuild: 32 cells / 317 events, every
+  cell positive (+0.43..+7.59%), all in fall-trend cells.
 - **NO cross-window carving** — the carve-out variant (deepest
   window claims the day) was measured FIRST and STARVED the mid
   windows: the 255d cells lost their strongest days to the 500d
@@ -485,6 +565,86 @@ thin out the way a trailing percentile does.
   VANISHED with them. The windows are different claim strengths (a
   new 60d high and the simultaneous new 255d high are different
   facts); each fires its own sub type.
+- **THE DEPTH-SPLIT STUDY (2026-10-26, user-hypothesized
+  "shallow touch of the roof sells the valuation top, deep breach buys
+  the regime change; floor mirrored" — temp_scripts/
+  rf_depth_split_study.py): REFUTED in both shallow legs, CONFIRMED
+  and SHARPENED in both deep legs — with the floor's deep leg
+  REVERSED.** Measured on the directional breach depth per
+  (method, window), production contract, all 10 indices:
+  (1) roof SHALLOW (≤0.5..3% beyond the level) is NOT a sell —
+  pool% negative for the sell at every k (forward +0.5..+1.4%:
+  shallow roof breaches drift UP; the roof is anchoring support, not
+  resistance — George-Hwang 52-week-high underreaction); roof
+  approach-without-crossing measures the same (no sell edge).
+  (2) roof DEEP (>1-2%) IS the stronger buy — the depth gradient is
+  monotone UP (rf255_med: catch-all +0.90% vs deep2 +2.00% @65.6
+  hit; consistent across all 8 method×window sections) — SHIPPED
+  the same day as the rf{W}{infix}_roof_deep sub types (user-
+  directed): BUY past the self-adaptive k bar from
+  RF_ROOF_DEEP_BARS {1,2,3}%, the ma_cross gdepth precedent; the
+  catch-all cells stay (different claim strengths).
+  (3) floor SHALLOW (≤k below the level) has NO bounce edge
+  (pool% −0.83..+1.32, ~50% hit — the hypothesized floor-buy is
+  flat).
+  (4) floor DEEP measures EXACTLY BACKWARDS vs the hypothesis: the
+  deeper below the prior floor, the harder the forward bounce
+  (rf500_med_floor_deep5 sell pool −4.66% = forward +4.66% @85%
+  up-rate; the gradient worsens monotonically with depth in all 8
+  sections) — the deep consensus-floor breakdown is the CAPITULATION
+  V-BOTTOM (the falling knife reverses at depth; the fall-trend
+  mid-band floor SELL cells stood as exit timing until the same
+  day's legacy cleanup retired them).
+  SHIPPED the same day as the rf{W}{infix}_floor_deep sub types
+  (user-directed): the capitulation BUY past the self-adaptive k
+  bar from RF_FLOOR_DEEP_BARS {2,3,5}%. First deep rebuild (index,
+  --force): 276 cells / 1,955 events (the deep legs added 175 cells
+  / 857 events); 15 of the 16 deep sub types emit — donchian
+  rf255_roof_deep POOLED-REJECTED honestly (n=95, +1.71%, t=2.83,
+  but 3/6 years positive — the year-majority leg), the floor_deep
+  cells carry the washout class (best cells ~+5.23%; the crash-era
+  events land 2024-02-02/05, 2025-04-07 — 931160 fired five
+  floor_deep buys on the tariff-crash day — and 2026-10-15).
+  The shallow legs of the hypothesis (roof-touch sell,
+  floor-touch buy) MEASURED OUT — roof breaches drift up at
+  every depth, floor touches carry no bounce edge (the numeric
+  shallow band, that is — the gap study's structural wick-intact
+  condition below IS the bounce). The prompt case
+  000001@2026-05-13 (+0.264%) sits in the
+  shallow tier at every grid k — right call that day, systematic
+  loser across the population.
+- **THE SOLID/WEAK STUDIES (2026-10-26, user-directed; temp_scripts/
+  rf_solid_weak_study.py + rf_gap_study.py)**: whether the breached
+  level's AGREEMENT carries information. First axis — the five
+  methods' dispersion (relative terciles; the absolute spread scales
+  with the window, medians 7-25%): floor sells split cleanly (tight
+  tier +0.65% sell-aligned vs wide tier −1.31% POOLED, wide tier
+  negative in 8/8 method×window sections — the unconditioned floor
+  sell mixes exit edge and bounce) and roof_deep dilutes on wide
+  gaps (2.26 vs 1.48 pooled); roof catch-alls and floor_deep FLAT.
+  Second axis (user-directed "only need to care about donchian and
+  median") — the |donchian − median| gap on the engine's own frame:
+  the floor findings REPRODUCE (med floor sell tight −0.07 vs wide
+  −2.06 @35.9; 8/8 again), and the CONFIRMATION MATRIX found the
+  floor_bounce graduate above (medonly: consensus broken / wick
+  intact bounces, t>3 at all windows; dononly — wick broken /
+  consensus intact — too thin, n=4-42, honest negative). These
+  findings are WHY the catch-alls were retired rather than
+  re-conditioned: the pooled verdicts flip by level agreement, and
+  the buy legs own the reversion. THE ROOF-SELL FOLLOW-UP (same day,
+  user-directed "also study for sell signal as well for roof to
+  sell, on weak roof no action"; temp_scripts/
+  rf_roof_sell_study.py): MEASURED OUT COMPLETELY — every sell
+  variant (any breach / shallow ≤1,2% / approach-within-1,2% below)
+  x every tier x both methods pools NEGATIVE sell-aligned
+  (t −0.8..−6.0), and the SOLID tier — the hypothesized sellable
+  roof — is the STRONGEST up-drift (don_any_tight forward +1.13%
+  pooled, t=−5.36): a tight-agreement roof is anchoring SUPPORT,
+  not resistance; the roof side is purely the buy side. The wide
+  tier's rare positive pockets (W120/W255 donchian any_wide +1.2/
+  +1.1 @n≈40) pool to t=0.2 — noise, and the weak tier is no-action
+  by the hypothesis's own rule. Do not re-add a roof sell without
+  new evidence.
 - The trigger day's own level never sets its own bar (shift 1);
   regime-free with a trend split (the ma_cross precedent — and both
   studies' starving corners were regime artifacts).
@@ -513,7 +673,14 @@ thin out the way a trailing percentile does.
   its 255d MA bucketed {0 normal, 1 ≥1.5x heavy, 2 ≥2.5x climax} as
   the 4th trust axis (beta_amt); bollinger + momentum + rf_break opt
   in. First build: bollinger's TOP side SHIPS (g1 +0.3bp, g2 2/3
-  years); mov_rsi/momentum/rf sides honestly fail gates.
+  years); mov_rsi/momentum/rf sides honestly fail gates. SINCE
+  2026-10-26 (user-directed "create shared pe and ohlcv logic") the
+  same axis is ALSO the shared OHLCV-boost VARIANT gate
+  (engines/_ohlcv_boost.OhlcvBoostGate, amt_climax >= HEAVY) — bollinger (both sides)
+  and rf_break's deep legs emit turnover-confirmed variant rows on
+  the is_ohlcv_boosted PK beside their plain rows, each judged
+  independently by the measured gate; the PE-EXTREMES variant joined
+  rf_break's floor legs (the rebound barbell) the same day.
 - **the twins retirement (2026-10-16)**: the boost's only product is
   confidence, so the boost-twin history rows were replaced by the
   per-cell `signal_rules.ohlcv_boost_conf` column (the trust-weighted
@@ -521,6 +688,108 @@ thin out the way a trailing percentile does.
   shown next to the plain base in the rules panel. First stamping at
   index scope: bollinger top 26 cells (−0.94%..+3.40%); mov_rsi,
   momentum, rf_break all-NULL (gates/pool).
+
+## rebound — the drop→rebound→resolution family (2026-10-26)
+
+The ma-spread rebound study's graduates
+(temp_scripts/ma_spread_rebound_study.py,
+docs/ma_spread_rebound_study_2026-10-26.md) as rule cells, user-
+directed ("implement above as a new signal family rebound, there
+should be with and without pe"). A BIG DROP (close >= the depth
+candidate below the trailing-Wd running max of close, shifted 1)
+activates an episode; the trough-break, the stall just below the last
+high, and the full reclaim are the three causal RESOLUTIONS (sub
+types per window {60, 255}; the depths {10%, 5%} are the candidates
+the gate self-picks):
+
+- **rebound_capit_{W}** (BUY): the trough-break — the CAPITULATION
+  V-bottom. The study's strongest fwd20 population after big drops
+  (+3.42% pooled, +4.95% after >20% crashes) — the H1 claim measured
+  BACKWARDS at the bottom: the weak-rebound bucket is dominated by
+  new-lows and carries the strongest positive forwards, the repo's
+  standing asymmetry again (the rf floor_deep capitulation).
+  First rebuild: 28 cells (16 at W60 / 12 at W255), all gate-valid.
+- **rebound_fail_{W}** (SELL, exit timing): the FAILED RECLAIM — the
+  rebound stalls within 10% of the last high (recovery ratio R in
+  [0.90, 1.0)) and rolls over. THE REFINED H1: the further-drop
+  population lives at the TOP of the rebound range, not the bottom —
+  the last high is a CLIFF, not a gradient (clearing it flips the
+  forward sign +4.32% vs landing just short −1.5..−1.9% dir_ave).
+  18 cells.
+- **rebound_reclaim_{W}** (BUY): the FULL RECLAIM (R ≥ 1, close above
+  the prior high) — the study's H2 graduate, the strongest next-leg
+  population anywhere in the study (de-overlapped fwd20 +4.32% /
+  fwd60 +7.91%, the new-low rate 19% vs 77% base, fmax60 20.4% vs
+  13.0% — the NEXT rebound really is bigger). 13 cells.
+
+THE PE CONDITIONING (the is_pe_boosted PK axis — every sub type
+emits a PLAIN and a PE-gated cell set, judged independently): the
+capitulation bounce is BARBELL-shaped in the code's own PE percentile
+(cheap20 +6.64% fwd20 — the valuation floor; rich20 +2.18% but
++6.46% fwd60 — the knife takes a month to stop, the snapback real;
+middle-PE ±1% with NO 60d edge — the dead zone) → the PE-gated capit
+requires the EXTREMES (pe_pct ≤ 0.4 or ≥ 0.6). The failed-reclaim
+further-drop claim and the reclaim continuation only exist OUTSIDE
+cheap PE (stalled rebounds recover at cheap valuations +2.04%;
+zero cheap-PE reclaims in the study — expensive markets V-bottom,
+cheap markets bottom slowly) → their PE gate is pe_pct ≥ 0.2
+(pe_pct = today's PE among the code's own PRIOR PE readings, min 255
+obs — stats.index_valuation.pe). The gate definition rides
+rule_params.bar_def.pe_gate (the UI bar word renders it).
+
+First force rebuild (index): 117 cells / 598 events — every sub type
+trades in BOTH variants, all gate-valid; the study's per-window /
+per-depth candidate structure follows the rf_break precedent (no
+cross-window carving; the trigger day never sets its own bar).
+
+## macd — the classic MACD crossover family (2026-10-26)
+
+The typical-EMA study's product (user-directed "study what most
+typical ema is, eg used 6d 12d 26d, etc, and implement it to replace
+the nearby ema period if any" + "2nd task is macd signal in short
+term tech"). THE STUDY: the most typical EMA usage is the classic
+MACD set **12/26/9** — Gerald Appel's original, the industry default
+on every charting platform (Investopedia / Interactive Brokers);
+standalone EMAs cluster at 9/20/50/200. The repo's `ema10` was the
+nearby non-standard period standing in for the typical 12 (the
+strategy-tier MacdAlgo literally snapped 12→10 for lack of the
+column) — REPLACED the same day: `stats.{index,etf,stock}_tech_stats`
+now carry ema12 + ema26 (the backfill: temp_scripts/
+apply_ema_typical_spans.py, ~9M rows across the three sec_types,
+spot-checked against the pandas ewm convention), and MacdAlgo's
+defaults are the classic 12/26/9.
+
+- **macd_cross_up** (BUY, 6000): the MACD line (EMA12 − EMA26)
+  crosses ABOVE its EMA9 signal line — the classic momentum turn.
+  One episode per cross run, K=5 absorb (a re-cross within 5 traded
+  days is the same whipsaw episode, first day fired, delay 0).
+- **macd_cross_dn** (SELL, 6001): the bearish crossover — EXIT
+  TIMING for longs, never a short (the equity asymmetry).
+- Value source (REBASED 2026-10-27, user-directed "check if macd
+  uses the newly build ema data rather than self-customizing
+  re-compute"): the fetch READS the builds' precomputed ema12/ema26
+  columns (stats.{etf,index,stock}_tech_stats, LEFT JOINed — the
+  strategy-tier MacdAlgo's source verbatim, ONE EMA construction in
+  the repo) and only the EMA9 signal line computes inline (an EMA of
+  the MACD line has no precomputed column); the family's horizon is
+  the tech_stats max(date). A/B vs the self-computed build: cross
+  days preserved except 11 marginal flips (values within the
+  NUMERIC(18,4) storage rounding), 35→36 cells / 429→432 events, all
+  audited.
+- The recorded value = the histogram as a PCT OF CLOSE (cross-
+  security comparable, the strategy algo's normalization); reference
+  0.0; confidence depth = the cross day's |histogram| in its own
+  trailing-10y sigma (the momentum depth convention, factor 0.5).
+- REGIME-FREE with a trend split (the ma_cross cross-event
+  precedent). NOT live-wired.
+- First force rebuild (index, 2026-10-26): 35 cells / 429 events,
+  EVERY cell gate-valid — buys strongest in the fall-trend cells
+  (931743 fall +6.07% @77.8% hit, 000001 fall +1.51%, 931160 fall
+  +1.31% @69.2%), rise-trend cells the continuation population
+  (+0.67..+0.73%), sells exit timing across top/unknown trends
+  (000683 unknown +1.54%, 931160 unknown +1.43%). The fall-trend
+  buy edge + the rise-trend continuation is exactly the measured
+  asymmetry shape.
 
 ## Does it hold against published best practice? (audited 2026-10-14; momentum + the 2026-10-16 study folded in)
 
@@ -543,6 +812,18 @@ Whipsaw → the uninterrupted-run split + K=5 absorb; lag → the trigger
 is the price-vs-MA event itself; no blind following → every cell
 clears the measured gate. EMA superiority claims did NOT survive the
 rules-era measurement — SMA stands.
+
+**MACD — HOLDS as the textbook construction, made self-adaptive by
+the cell machinery.** The classic 12/26/9 spans ship verbatim (the
+typical-setting study, not a tuned grid); the whipsaw criticism is
+answered by the K=5 episode absorb (one signal per cross run); the
+zero-line/lag criticisms are the reason the cells split by trend and
+the gate judges each population on evidence; no blind following — a
+cell whose cross-up population doesn't clear the bar emits nothing.
+The EMA basis here is NOT in tension with ma_cross's SMA verdict:
+MACD is DEFINED on EMAs (the "moving average convergence/divergence"
+of two EMAs is the indicator), while ma_cross's price-vs-MA reclaim
+is a structural event where SMA measured better.
 
 **options_wall / options_vix — HOLD as the VRP/interaction
 literature.** The put side never trades ungated (the variance risk
@@ -575,7 +856,9 @@ hysteresis, trigger-time-observable conditioning only.
    momentum values are LOG-RETURN ln(1+momentum) — never raw ROC.
 4. Nested widest-first carving — a deep breach counts once, at its
    deepest claim.
-5. gdepth and deep are BUY-ONLY; momentum/bollinger/rsi sells are
+5. gdepth, deep and the rf_break legs (roof_deep / floor_deep /
+   floor_bounce — the family is ALL-BUY since the 2026-10-26 legacy
+   cleanup) are BUY-ONLY; momentum/bollinger/rsi sells are
    exit timing, never short entries.
 6. ma_cross conditioning uses trigger-time-observable state only.
 7. No curve without measured monotonicity (the curve tier died
@@ -601,11 +884,19 @@ hysteresis, trigger-time-observable conditioning only.
     (n−1)/√n); rsi3-sell, EMA variants, the wall-center approach,
     ovix_rollover and the squeeze breakout are MEASURED OUT (2026-10-
     16) — re-adding any requires new measurements.
-12. The boost is a trust-weighted measurement, never a gate: it stamps
-    the per-cell `ohlcv_boost_conf` on the cell's dated
-    history_signal_performance snapshot (NULL where the side boosted
-    nothing) and never adds/reweights history rows — the plain
-    rows are the population of record (the twin era ended 2026-10-16).
+12. The boost is a trust-weighted measurement, never a gate on the
+    PLAIN rows: the per-cell `ohlcv_boost_conf` stamp retired with
+    the 2026-10-20 slimming (the derivation audit remains) and the
+    measurement never adds/reweights the plain history rows — they
+    are the population of record. SINCE 2026-10-26 (user-directed)
+    the boost is ALSO a VARIANT axis again: the turnover-confirmed
+    population emits SEPARATE rows on the is_ohlcv_boosted PK
+    (bollinger, rf_break deep legs) — each variant judged
+    independently by the same gate, so a negatively-optimizing
+    variant emits nothing; the PE-conditioned variants (rebound all
+    subs, rf_break floor legs) share the machinery
+    (engines/_pe_boost / engines/_ohlcv_boost) and never fire live (excluded from the
+    live active set).
 13. STARVED cells (episodes below the floor) TRADE at the starvation
     confidence scale min(n / floor, 1) (2026-10-19, retiring the
     2026-10-16 wait rows; readers RECOMPUTE the scale since 2026-10-20
@@ -643,7 +934,7 @@ hysteresis, trigger-time-observable conditioning only.
   re-merges it into its rule_params response as `measure`) — the
   evidence the UI renders, one dated snapshot per daily run; the
   PORTFOLIO tier's combined audit (the members' pooled stats, the
-  drawdown benefit, the cascade scale) lives in
+  drawdown benefit, the benefit-boost scale) lives in
   `analysis_signals.history_portfolio_signal_performance`
 - The 2026-10-16 sub-rule study (graduates + honest negatives):
   `docs/sub_rules_proposal_2026-10-16.md`; the harness:
@@ -665,10 +956,14 @@ context). One signal-family pick drives rules + chart markers +
 history. Display rules that must not regress: regimes are CONTEXT
 columns never gates; the evidence column makes the gate visible; no
 depth-response curves; identical bars across all trends of one sub
-signal would be a red flag. The rules panel's BOOST column renders
-`ohlcv_boost_conf` (null where the side boosted nothing); history
-carries one population per event (the none/boost toggle is gone with
-the twins).
+signal would be a red flag. Variant-axes display (2026-10-26): the
+rules row's bar word renders the PE / AMT gate suffixes
+(bar_def.pe_gate / .ohlcv_gate — the ruleBarLabel generic suffix;
+the old BOOST column died with the ohlcv_boost_conf snapshot in the
+2026-10-20 slimming), and the Short-Term Tech history panel carries
+the PE boosted / OHLCV boosted columns (✓ where the event replays
+the boosted variant — i.e. generation actually used the boost; – on
+the plain population) in the main table AND the per-date expansion.
 
 ## References (the best-practice audit's sources)
 
@@ -683,3 +978,35 @@ the twins).
 - Episodes: Kothari & Warner 2006; Brown & Warner 1985.
 - VRP / contrarian vol: Carr & Wu, RFS 2009; Bollerslev-Tauchen-Zhou;
   Fassas 2019; ECB WP1675.
+
+## The portfolio_sub_type split (2026-10-25, latest)
+
+User-directed: "add portfolio_sub_type in portfolio_signal_rules, then
+migrate trio wash and spread to as portfolio_sub_type" + "rsi signals
+themselves should not sit in portfolio signals, by portfolio
+signal_rule_ids to map them". A pair now carries TWO portfolio RULES —
+**trio wash** (0: the hp_entry_trio orchestration, all three curves in
+their own RSI capitulation tails) and **spread** (1: the
+hp_entry_spread + hp_exit_spread orchestrations, the long-short
+spread's RSI bottom/top tail) — each its own portfolio_signal_rules
+row with its own ids, coordination spec, is_valid and audit. The
+REGISTERED mov_rsi cells (the is_in_portfolio TRUE tier) are NEVER
+portfolio rows: each rule MAPS them through signal_rule_ids only —
+the shared market cells (000300) map to trio wash alone (the spread
+disregards the benchmark curve BY CONSTRUCTION — its condition never
+reads the market), a leg cell maps to its pair's BOTH rules (the legs
+witness both). The mapping mirrors each rule's witness semantics
+verbatim; the rsi rows keep their own unified evidence and remain
+duplicated from any standalone twin purely by the PK's tier axis.
+
+### The witness mapping record (2026-10-25, last)
+
+The stored witness records (rule_params.subs.<sub>.cell_signals) now
+carry `mapped_signals` — the registered mov_rsi sub types the rule
+maps at that witness's own curve, action-side aligned (the trio's
+three witnesses are all buy-side washes; the spread entry's leg A
+maps buy cells / leg B sell cells, the exit flips). Duplicating the
+lists across the trio's two windows (and the legs across both
+portfolio rules) is deliberate: every witness states its own mapping,
+and the per-witness mapping is exactly what its condition claims —
+the market/leg curve's own RSI wash — nothing more.

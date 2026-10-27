@@ -38,6 +38,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Box, Typography } from "@mui/material";
 import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import { INSIGHT_PAGES } from "@/shared/ai-ask";
 import { useStore } from "@/store/filters";
 import {
@@ -221,61 +222,32 @@ export default function VolIndexPanel({
   );
 
   // AI Ask — concise formula + pointer; the card shows only the identity.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: inSignal ? INSIGHT_PAGES.optionsSignals : INSIGHT_PAGES.volIndex,
-      intro:
-        "CBOE-VIX analog for the selected underlying: 100·√(30d constant-maturity model-free " +
-        "variance) from the OTM-strip replication on settlement prices (CBOE method, r = 2%) " +
-        "— the smile LEVEL. Indication: swell = fear bid, hedges chased; trough = " +
-        "complacency — both extremes revert. docs/options_vol_smile_study.md §9. " +
-        "The chart below correlates it with spot: rolling Pearson ρ of the daily spot " +
-        "log-return vs the daily vol-index log-change over 5/20/60/255 sessions (the CBOE " +
-        "VIX-vs-spot 'fear gauge' convention — returns vs changes, never the trending " +
-        "levels; the 5-session stride samples are linearly interpolated to daily for " +
-        "display and signal reads). ρ toward -1 = spot down days bid vol (classic " +
-        "leverage effect); ρ rising toward 0 = vol decoupling from direction." +
-        (inSignal
-          ? " IN-SIGNAL mode: the options_vix family's events mark the vol curve " +
-            "(buy ▲ / sell ▼ / the grey ◆ no-action diamond); the corr bars -0.75 " +
-            "(deep fear) and -0.5 (unwind) ride the corr chart — click the chart " +
-            "to move the selected day."
-          : ""),
+      intro: docs.text("ui.options.vol-index", { inSignal }),
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
-      series: [
-        {
-          name: `${volIndexUnderlyingLabel(underlyingCode)} VIX`,
-          unit: "vol pts",
-          description: "daily 30-day model-free implied-volatility index (the smile LEVEL)",
-        },
+      series: compactDefined([
+        docs.seriesEntry("ui.options.vol-index", "vix", {
+          label: volIndexUnderlyingLabel(underlyingCode),
+        }),
         ...(hasSpot
           ? [
-              {
-                name: underlyingCode
+              docs.seriesEntry("ui.options.vol-index", "spot", {
+                spotName: underlyingCode
                   ? volIndexUnderlyingLabel(underlyingCode)
                   : "Spot",
-                unit: "price",
-                description:
-                  "underlying close on the right-hand axis (context overlay, v_etf_margin / v_index_daily)",
-              },
+              }),
             ]
           : []),
         ...(corrRows != null && corrRows.length > 0
-          ? [
-              {
-                name: "Corr 5d/20d/60d/255d",
-                unit: "ρ",
-                description:
-                  "rolling Pearson corr of daily spot log-return vs vol-index log-change (options_vol_index_vs_spot_price_corr)",
-              },
-            ]
+          ? [docs.seriesEntry("ui.options.vol-index", "corr")]
           : []),
-      ],
-      notes: [
-        "SZSE ETF legs inherit the known ETF settle-data condition; CFFEX index legs carry the deep history.",
-      ],
+      ]),
+      notes: docs.notes("ui.options.vol-index"),
     }),
-    [underlyingCode, hasSpot, corrRows, inSignal],
+    [docs, underlyingCode, hasSpot, corrRows, inSignal],
   );
 
   return (

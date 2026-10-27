@@ -2,9 +2,6 @@
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# Monitoring must run before scheduled writes.
-bash "$SCRIPT_DIR/scripts/monitoring_occasionally.sh"
-
 # Keep the intraday downloads stream alive: start the supervisor (no-op
 # if a watchdog is already running).
 bash "$SCRIPT_DIR/scripts/stream_watchdog.sh"

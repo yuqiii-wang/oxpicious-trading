@@ -44,6 +44,7 @@ from analysis.mov_ave_spread.config.ema import (
     EMA_PAIRS,
     EMA_SLOPE_COLUMNS,
     EMA_STD_COLUMNS,
+    EMA_STD_EXTRA_WINDOWS,
     EMA_VS_COLUMNS,
 )
 from analysis.mov_ave_spread.config.ohlc import (
@@ -180,7 +181,7 @@ __all__ = [
     # ema
     "EMA_ANALYSIS_NAME", "EMA_CURVATURE_COLUMNS", "EMA_DERIV_WINDOWS",
     "EMA_DETAIL_TABLE", "EMA_PAIRS", "EMA_SLOPE_COLUMNS",
-    "EMA_STD_COLUMNS", "EMA_VS_COLUMNS",
+    "EMA_STD_COLUMNS", "EMA_STD_EXTRA_WINDOWS", "EMA_VS_COLUMNS",
     # ohlc lines
     "OHLC_ANALYSIS_NAME", "OHLC_COLUMNS", "OHLC_DATE_COLUMNS",
     "OHLC_DESCRIPTION", "OHLC_GAP_FLOOR_TD", "OHLC_GAP_PCT",

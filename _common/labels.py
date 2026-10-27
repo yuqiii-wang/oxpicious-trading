@@ -67,6 +67,12 @@ DB — nullable exceptions noted):
                  unresolved=4 (analysis.mov_ave_spreads_roof_floor_
                  rebounds.outcome — the rebound-audit funnel of a
                  recorded extreme)
+  research_logic growth=0 value=1 dividend=2 commodity=3 cyclical=4
+                 defensive=5 quality=6 theme=7 other=99
+                 (text.llm_qa_by_research.logic_label — the dominant
+                 investing logic a research-logic Q&A row classifies;
+                 99 other = the fallback; first text.* LLM-layer enum
+                 converted, 2026-10-27)
 
 PENDING domains (vocabulary registered in label_dim and the mirrors, but
 the target columns are STILL TEXT and the writers still emit strings —
@@ -78,10 +84,11 @@ converted):
   trade_side  BUY=0 SELL=1 (strategy.trade_decision)
 
 NOT converted (deliberate — see static.label_dim's header): industry_id /
-sector_id / exchange (API-facing identity + filter columns; exchange
+sector_id / exchange (API-facing identity and filter columns; exchange
 additionally blocked by a partition-key table), signal_type /
 signal_sub_type (open family identifiers), scale_method
-(reserved vocabulary), and the text.* LLM-layer enums.
+(reserved vocabulary), and the REMAINING text.* LLM-layer enums
+(research_logic converted 2026-10-27 — the module mirror below).
 
 industry_id STAYS TEXT in the DB (API-facing identity and filter
 column). For frame-only traffic use the INTERNAL codes below: attach
@@ -135,6 +142,20 @@ SIGNAL_TYPE_CODE: dict[str, int] = {
     # stamped under THIS type at the pair codes; the pair-native
     # rules (harvest / stop / flip) stay under hedge_pairs 7
     "hp_rsi": 8,
+    # rebound (2026-10-26, user-directed): the drop→rebound→resolution
+    # family — the ma-spread rebound study's graduates as rule cells
+    # (capitulation trough-break BUY, failed-reclaim exit-timing SELL,
+    # full-reclaim continuation BUY), each in a PLAIN and a
+    # PE-conditioned variant (the is_pe_boosted PK axis)
+    "rebound": 9,
+    # macd (2026-10-26): the classic MACD crossover family — the
+    # typical EMA study's product (the classic 12/26/9 spans, ema12/
+    # ema26 precomputed in tech_stats since the same day). MACD line
+    # = ema12 - ema26 (computed in the family's fetch from the base
+    # closes), signal line = its own EMA9, trigger = the signal-line
+    # crossover (the classic MACD signal): cross-up BUY / cross-down
+    # SELL (exit timing — the equity asymmetry).
+    "macd": 10,
 }
 # the family config grid (analysis_signals.signal_thresholds /
 # history_signals / signal_curves — converted 2026-10-11).
@@ -205,12 +226,18 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "rsi6_1pct": 200,
     "rsi6_2pct": 201,
     "rsi6_3pct": 202,
+    "rsi6_5pct": 204,
+    "rsi6_10pct": 209,
     "rsi10_1pct": 300,
     "rsi10_2pct": 301,
     "rsi10_3pct": 302,
+    "rsi10_5pct": 304,
+    "rsi10_10pct": 309,
     "rsi14_1pct": 400,
     "rsi14_2pct": 401,
     "rsi14_3pct": 402,
+    "rsi14_5pct": 404,
+    "rsi14_10pct": 409,
     "rsi20_1pct": 500,
     "rsi20_2pct": 501,
     "rsi20_3pct": 502,
@@ -368,6 +395,41 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "rf120_med_floor": 5631,
     "rf255_med_floor": 5632,
     "rf500_med_floor": 5633,
+    # rf_break deep tiers (2026-10-26, the depth-split study's
+    # graduates): the DEEP breach legs as their own sub types —
+    # roof_deep BUY (the depth-gated continuation: > the k bar beyond
+    # the prior day's roof, ~2x the catch-all's forward blend) and
+    # floor_deep BUY (the capitulation V-bottom: > the k bar below the
+    # prior day's floor — the falling knife REVERSES at depth, the
+    # study's reversed leg). Bars self-adaptive per cell from the
+    # config grids (the ma_cross gdepth precedent)
+    "rf60_roof_deep": 5640,
+    "rf120_roof_deep": 5641,
+    "rf255_roof_deep": 5642,
+    "rf500_roof_deep": 5643,
+    "rf60_floor_deep": 5650,
+    "rf120_floor_deep": 5651,
+    "rf255_floor_deep": 5652,
+    "rf500_floor_deep": 5653,
+    "rf60_med_roof_deep": 5660,
+    "rf120_med_roof_deep": 5661,
+    "rf255_med_roof_deep": 5662,
+    "rf500_med_roof_deep": 5663,
+    "rf60_med_floor_deep": 5670,
+    "rf120_med_floor_deep": 5671,
+    "rf255_med_floor_deep": 5672,
+    "rf500_med_floor_deep": 5673,
+    # rf_break floor bounce (2026-10-26, the gap study's graduate):
+    # the close breaks the prior day's MEDIAN consensus floor while
+    # the DONCHIAN wick floor still holds below it — the
+    # consensus-broken / wick-intact bounce BUY, cross-method (one
+    # population per window, t 3.0-4.5 at all four windows). The same
+    # day's legacy cleanup RETIRED the catch-all roof-buy / floor-sell
+    # sub types 5600-5633 above (decode-only vocabulary now)
+    "rf60_floor_bounce": 5680,
+    "rf120_floor_bounce": 5681,
+    "rf255_floor_bounce": 5682,
+    "rf500_floor_bounce": 5683,
     # ovix_atr_break (2026-10-16): the volatility-expansion breakout —
     # the spot day-return in close-to-close ATR units beyond the k bar
     # while vol slope5 fires (the 2026-10-15 low-base repricing class)
@@ -475,6 +537,112 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # value is the fetch's combined washdepth gauge, the deepest
     # alive witness's window)
     "hp_entry_wash": 5824,
+    # the 2026-10-23 more-triggers graduates II (docs/
+    # portfolio_more_triggers_study_2026-10-23.md): the coordination
+    # WIDENING subs — every member a SOURCED cell on >= 2 codes (the
+    # member-action invariant holds at two; all pooled t >= 6.8,
+    # year-majority positive): hp_entry_rsi_legs = both legs' RSI
+    # capitulation, MARKET-FREE (the trio without its rarest
+    # conjunct); hp_entry_wash_rsi = ONE leg's Donchian-floor
+    # breakdown + the OTHER leg's RSI-3pct witness;
+    # hp_entry_wash_mkt1 = ONE leg's floor breakdown + the market's
+    # RSI-3pct witness. The tail/window grids ride bar_def (run_cells
+    # candidates); the coordinated SELL side measured OUT (both legs'
+    # RSI exhaustion is sign-aligned NEGATIVE — tops continue).
+    "hp_entry_rsi_legs": 5825,
+    "hp_entry_wash_rsi": 5826,
+    "hp_entry_wash_mkt1": 5827,
+    # the fresh typical-solution trio (2026-10-24, user-directed "most
+    # typical negative correlation two curve and one broadmarket,
+    # typical and simple"): hp_entry_trio = ALL THREE curves (both
+    # offset-opposite legs + the broad market 000300) in their own RSI
+    # capitulation tails the same day — the co-wash BUY of the
+    # inverse-vol long-long pair (the ONE shipped sub type); the
+    # blow-off mirror is the MEASURED asymmetry check in the engine
+    # (measured thin — coordinated tops CONTINUE; rows discarded), so
+    # hp_exit_trio stays the check's registered vocabulary with no
+    # writer. The tail grid rides bar_def (the run_cells candidate
+    # convention).
+    "hp_entry_trio": 5828,
+    "hp_exit_trio": 5829,
+    # the SIMPLIFIED portfolio's witness vocabulary (2026-10-24,
+    # user-directed: the triggered portfolio signal SETS its cell-level
+    # member records itself — no sourcing from the mov_rsi tier):
+    # hp_rsi_witness was the per-curve witness record's label inside
+    # portfolio_history_signals.member_signals — PAYLOAD VOCABULARY
+    # ONLY, no rule rows carry it (each witness = a curve's deepest
+    # alive RSI-tail breach run start, at its own day). 2026-10-25
+    # (user-directed "diff legs or roles should have diff sub types"):
+    # the per-ROLE labels supersede it for new rows — market / leg A /
+    # leg B each their own sub type; 5830 stays for old-history decode
+    "hp_rsi_witness": 5830,
+    "hp_rsi_witness_mkt": 5831,
+    "hp_rsi_witness_leg_a": 5832,
+    "hp_rsi_witness_leg_b": 5833,
+    # the SPREAD one-buy-one-sell sub (2026-10-25, user-directed "one
+    # buy one sell by the spread between two negative corr curves,
+    # disregarding the benchmark curve"; study temp_scripts/
+    # spread_pair_study.py): hp_entry_spread = the pair's long-short
+    # SPREAD curve (w_a*r_a - w_b*r_b compounded, the fetch's own
+    # lagged inverse-vol weights, NO market curve) in its own Wilder-
+    # RSI(14/10) bottom tail vs its own adaptive percentile bar — the
+    # classic pairs CONVERGENCE trade: BUY the laggard leg A, SELL the
+    # leader leg B (response axis = the spread value's forward blend).
+    # The study's measured record: the RAW population is negative
+    # (pooled -0.08..-0.17% every window x tail — the 2026-10-20
+    # ratio-z negative reproduces on the RSI axis), the edge lives in
+    # the per-pair winners (25/48 pairs, pooled +0.55% t=4.70 hit 61%
+    # 5/6 yrs — the rules-era self-adaptive cell mode verbatim); the
+    # top-tail CONTINUATION (buy the leader, +0.46% t=6.15 6/6 yrs) is
+    # the honest positive recorded for a future sub. hp_exit_spread =
+    # the TOP-TAIL EXIT, SHIPPED 2026-10-25 evening (user-directed
+    # "2024-04-18 can also be a good event date to pick" — the showcase
+    # pair's rotation blow-off): the spread at its RSI EXHAUSTION tail,
+    # SELL the leader leg A / BUY the laggard leg B (exit timing,
+    # never pooled-gated); per-year floor policy: 44 winners / 850
+    # events, pooled +0.20% t=3.41 6/6 yrs (study spread_peryear_
+    # study.py).
+    "hp_entry_spread": 5834,
+    "hp_exit_spread": 5837,
+    # the spread event's per-ROLE witness records (the 2026-10-25
+    # per-role precedent): the bought leg (leg A, the laggard) and the
+    # sold leg (leg B, the leader) each carry their own payload label —
+    # each leg's own RSI vs its own tail bar at the event day, its
+    # role-direction depth linking the portfolio confidence. Payload
+    # vocabulary only, no rule rows behind them.
+    "hp_spread_buy_leg": 5835,
+    "hp_spread_sell_leg": 5836,
+    # the REBOUND family (2026-10-26, user-directed — the ma-spread
+    # rebound study's graduates, temp_scripts/ma_spread_rebound_study.py
+    # + docs/ma_spread_rebound_study_2026-10-26.md): the causal
+    # drop→rebound→resolution episodes per the anchor window W. Each
+    # sub type emits PLAIN and PE-conditioned cells (the is_pe_boosted
+    # PK axis; the gate = the code's own trailing PE-percentile
+    # condition riding rule_params.bar_def.pe_gate).
+    #   capit  BUY  the CAPITULATION trough-break (the further-drop
+    #          resolution; the study's strongest fwd20 population after
+    #          big drops — PE barbell: cheap strongest +6.6% fwd20,
+    #          rich delayed-but-real by 60d, middle dead);
+    #   fail   SELL the FAILED RECLAIM (rollover with the recovery
+    #          ratio in [0.90, 1.0) — the stall just below the last
+    #          high, the refined further-drop population, exit timing
+    #          for longs; works only outside cheap PE);
+    #   reclaim BUY the FULL RECLAIM (close above the prior high — the
+    #          next rebound measures the strongest, the study's H2
+    #          graduate; a mid/rich-PE phenomenon).
+    "rebound_capit_60": 5900,
+    "rebound_capit_255": 5901,
+    "rebound_fail_60": 5902,
+    "rebound_fail_255": 5903,
+    "rebound_reclaim_60": 5904,
+    "rebound_reclaim_255": 5905,
+    # the MACD family (2026-10-26, the typical-EMA study's product):
+    # the classic signal-line crossover sub types over the classic
+    # 12/26/9 spans — macd_cross_up BUY (the bullish crossover, the
+    # momentum turn) / macd_cross_dn SELL (the bearish crossover, the
+    # exit-timing mirror — the equity asymmetry)
+    "macd_cross_up": 6000,
+    "macd_cross_dn": 6001,
 }
 SIGNAL_SUB_TYPE_CODE: dict[str, int] = {
     **SIGNAL_SUB_TYPE_SERIES, **SIGNAL_SUB_TYPE_THRESHOLD,
@@ -553,6 +721,15 @@ ANALYSIS_CACHE_KIND_CODE: dict[str, int] = {"boost_derivation": 0}
 # long–long negatively-correlated hedge pair ('A~B' composite code —
 # the hedge_pairs family's universe)
 PORTFOLIO_TYPE_CODE: dict[str, int] = {"neg_corr_hedge_pair": 0}
+# WHICH PORTFOLIO RULE a portfolio_signal_rules row is within its
+# portfolio_type (2026-10-25 split: one row per code x type x sub —
+# the merged row per pair carried both rules' subs under one
+# rule_params.subs before). Selected by the row's own orchestrating
+# signal_sub_type (hedge_pairs: hp_entry_trio -> trio_wash;
+# hp_entry_spread / hp_exit_spread -> spread). The registered mov_rsi
+# cells (the is_in_portfolio TRUE tier) map INTO these rows through
+# signal_rule_ids only — never portfolio rows themselves.
+PORTFOLIO_SUB_TYPE_CODE: dict[str, int] = {"trio_wash": 0, "spread": 1}
 # quantitative roof/floor (resistance/support) level estimate methods
 # (analysis.mov_ave_spreads_roof_floor_estimates.method) — registry order =
 # the roof_floor_estimate/methods registry; 'median' is the cross-method
@@ -567,6 +744,15 @@ ROOF_FLOOR_METHOD_CODE: dict[str, int] = {
 RF_REBOUND_OUTCOME_CODE: dict[str, int] = {
     "no_rebound": 0, "never_retested": 1, "held": 2,
     "broken": 3, "unresolved": 4,
+}
+# the dominant investing logic of a text.llm_qa_by_research row's
+# underlying industry/security (logic_label) — 99 other = the fallback
+# (the logic did not fit / the model could not classify); first text.*
+# LLM-layer enum converted to the label-code contract (2026-10-27)
+RESEARCH_LOGIC_CODE: dict[str, int] = {
+    "growth": 0, "value": 1, "dividend": 2, "commodity": 3,
+    "cyclical": 4, "defensive": 5, "quality": 6, "theme": 7,
+    "other": 99,
 }
 
 LABEL_MAPS: dict[str, dict[str, int]] = {
@@ -597,8 +783,10 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "db_replication_state": DB_REPLICATION_STATE_CODE,
     "analysis_cache_kind": ANALYSIS_CACHE_KIND_CODE,
     "portfolio_type": PORTFOLIO_TYPE_CODE,
+    "portfolio_sub_type": PORTFOLIO_SUB_TYPE_CODE,
     "roof_floor_method": ROOF_FLOOR_METHOD_CODE,
     "rf_rebound_outcome": RF_REBOUND_OUTCOME_CODE,
+    "research_logic": RESEARCH_LOGIC_CODE,
 }
 
 # code -> label per domain (int keys)
@@ -633,8 +821,10 @@ DB_INSTANCE_LABEL: dict[int, str] = CODE_MAPS["db_instance"]
 DB_REPLICATION_STATE_LABEL: dict[int, str] = CODE_MAPS["db_replication_state"]
 ANALYSIS_CACHE_KIND_LABEL: dict[int, str] = CODE_MAPS["analysis_cache_kind"]
 PORTFOLIO_TYPE_LABEL: dict[int, str] = CODE_MAPS["portfolio_type"]
+PORTFOLIO_SUB_TYPE_LABEL: dict[int, str] = CODE_MAPS["portfolio_sub_type"]
 ROOF_FLOOR_METHOD_LABEL: dict[int, str] = CODE_MAPS["roof_floor_method"]
 RF_REBOUND_OUTCOME_LABEL: dict[int, str] = CODE_MAPS["rf_rebound_outcome"]
+RESEARCH_LOGIC_LABEL: dict[int, str] = CODE_MAPS["research_logic"]
 
 # Display order for responses that list a domain's vocabulary —
 # pool_size deliberately NOT in code order here: API/UI lists keep the
@@ -669,8 +859,10 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "db_replication_state": tuple(DB_REPLICATION_STATE_CODE),
     "analysis_cache_kind": tuple(ANALYSIS_CACHE_KIND_CODE),
     "portfolio_type": tuple(PORTFOLIO_TYPE_CODE),
+    "portfolio_sub_type": tuple(PORTFOLIO_SUB_TYPE_CODE),
     "roof_floor_method": tuple(ROOF_FLOOR_METHOD_CODE),
     "rf_rebound_outcome": tuple(RF_REBOUND_OUTCOME_CODE),
+    "research_logic": tuple(RESEARCH_LOGIC_CODE),
 }
 
 

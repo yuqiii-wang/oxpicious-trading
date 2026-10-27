@@ -45,8 +45,10 @@ export type LabelDomain =
   | 'db_replication_state'
   | 'analysis_cache_kind'
   | 'portfolio_type'
+  | 'portfolio_sub_type'
   | 'roof_floor_method'
-  | 'rf_rebound_outcome';
+  | 'rf_rebound_outcome'
+  | 'research_logic';
 
 /** label -> code, per domain (mirror of static.label_dim). */
 export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
@@ -64,7 +66,15 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // RSI-sourced orchestration layer — the components' existing rsi
   // signal rules (type 0) are the source, orchestrated into
   // hp_entry_legs_rsi / hp_exit_mkt_high / hp_catchup_rsi_hi
-  signal_type: { mov_rsi: 0, bollinger: 1, ma_cross: 2, options_wall: 3, options_vix: 4, momentum: 5, rf_break: 6, hedge_pairs: 7, hp_rsi: 8 },
+  signal_type: { mov_rsi: 0, bollinger: 1, ma_cross: 2, options_wall: 3, options_vix: 4, momentum: 5, rf_break: 6, hedge_pairs: 7, hp_rsi: 8,
+    // rebound (9, 2026-10-26): the drop→rebound→resolution family —
+    // the ma-spread rebound study's graduates as rule cells, each in a
+    // plain and a PE-conditioned variant (the is_pe_boosted PK axis)
+    rebound: 9,
+    // macd (10, 2026-10-26): the classic MACD crossover family — the
+    // typical-EMA study's product (classic 12/26/9 spans; ema12/ema26
+    // precomputed in tech_stats since the same day)
+    macd: 10 },
   // the family config grid (converted 2026-10-11): SERIES codes
   // (curves) 0.., THRESHOLD codes (thresholds/history)
   // (series + 1) * 100 + width ordinal; the SINGLE-WIDTH retest
@@ -107,12 +117,18 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     rsi6_1pct: 200,
     rsi6_2pct: 201,
     rsi6_3pct: 202,
+    rsi6_5pct: 204,
+    rsi6_10pct: 209,
     rsi10_1pct: 300,
     rsi10_2pct: 301,
     rsi10_3pct: 302,
+    rsi10_5pct: 304,
+    rsi10_10pct: 309,
     rsi14_1pct: 400,
     rsi14_2pct: 401,
     rsi14_3pct: 402,
+    rsi14_5pct: 404,
+    rsi14_10pct: 409,
     rsi20_1pct: 500,
     rsi20_2pct: 501,
     rsi20_3pct: 502,
@@ -254,8 +270,10 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     momlong_3pct: 5502,
     // rf_break (2026-10-16): the roof/floor breakout family — the
     // close beyond the PRIOR day's roof/floor level per window x
-    // method (roof BUY / floor SELL; deepest breached window claims
-    // the day). Plain = donchian (window extremes), _med_ = the
+    // method. RETIRED 2026-10-26 (the legacy cleanup): the catch-all
+    // roof-buy / floor-sell entries 5600-5633 are decode-only
+    // vocabulary — the family trades the deep tiers + floor bounce,
+    // ALL-BUY. Plain = donchian (window extremes), _med_ = the
     // median consensus of the five estimate methods
     rf60_roof: 5600,
     rf120_roof: 5601,
@@ -273,6 +291,35 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     rf120_med_floor: 5631,
     rf255_med_floor: 5632,
     rf500_med_floor: 5633,
+    // rf_break deep tiers (2026-10-26, the depth-split study's
+    // graduates): roof_deep BUY (depth-gated continuation beyond the
+    // prior day's roof) and floor_deep BUY (the capitulation V-bottom
+    // below the prior day's floor) — bars self-adaptive per cell
+    rf60_roof_deep: 5640,
+    rf120_roof_deep: 5641,
+    rf255_roof_deep: 5642,
+    rf500_roof_deep: 5643,
+    rf60_floor_deep: 5650,
+    rf120_floor_deep: 5651,
+    rf255_floor_deep: 5652,
+    rf500_floor_deep: 5653,
+    rf60_med_roof_deep: 5660,
+    rf120_med_roof_deep: 5661,
+    rf255_med_roof_deep: 5662,
+    rf500_med_roof_deep: 5663,
+    rf60_med_floor_deep: 5670,
+    rf120_med_floor_deep: 5671,
+    rf255_med_floor_deep: 5672,
+    rf500_med_floor_deep: 5673,
+    // rf_break floor bounce (2026-10-26, the two-method gap study's
+    // graduate): the close breaks the prior day's MEDIAN consensus
+    // floor while the DONCHIAN wick floor still holds — the
+    // consensus-broken / wick-intact bounce BUY (cross-method, one
+    // population per window; t 3.0-4.5 at all four windows)
+    rf60_floor_bounce: 5680,
+    rf120_floor_bounce: 5681,
+    rf255_floor_bounce: 5682,
+    rf500_floor_bounce: 5683,
     // ovix_atr_break (2026-10-16): the volatility-expansion breakout
     // (spot day-return in ATR units beyond k while vol slope5 fires)
     ovix_atr_break: 4306,
@@ -341,6 +388,69 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // trio's one most-semantic survivor — the W window is a
     // run_cells candidate in bar_def.window)
     hp_entry_wash: 5824,
+    // the 2026-10-23 more-triggers graduates II (docs/
+    // portfolio_more_triggers_study_2026-10-23.md): the coordination
+    // widening subs — every member a sourced cell on >= 2 codes:
+    // hp_entry_rsi_legs = both legs' RSI capitulation, market-free;
+    // hp_entry_wash_rsi = one leg's floor breakdown + the other leg's
+    // RSI-3pct witness; hp_entry_wash_mkt1 = one leg's floor
+    // breakdown + the market's RSI-3pct witness. The coordinated
+    // SELL side measured OUT (tops continue).
+    hp_entry_rsi_legs: 5825,
+    hp_entry_wash_rsi: 5826,
+    hp_entry_wash_mkt1: 5827,
+    // the fresh typical-solution trio (2026-10-24, user-directed):
+    // hp_entry_trio = all three curves (both offset-opposite legs +
+    // the broad market 000300) in their own RSI capitulation tails the
+    // same day — the co-wash BUY of the inverse-vol long-long pair,
+    // the ONE shipped sub type; hp_exit_trio = the blow-off mirror,
+    // the engine's MEASURED asymmetry check (thin — tops continue;
+    // rows discarded, registered for decode only)
+    hp_entry_trio: 5828,
+    hp_exit_trio: 5829,
+    // the simplified portfolio's per-curve witness record — payload
+    // vocabulary only, no rule rows carry it. 2026-10-25: the per-ROLE
+    // labels supersede 5830 for new rows (market / leg A / leg B each
+    // their own sub type); 5830 stays for old-history decode
+    hp_rsi_witness: 5830,
+    hp_rsi_witness_mkt: 5831,
+    hp_rsi_witness_leg_a: 5832,
+    hp_rsi_witness_leg_b: 5833,
+    // the SPREAD one-buy-one-sell sub (2026-10-25, user-directed "one
+    // buy one sell by the spread between two negative corr curves,
+    // disregarding the benchmark curve"): hp_entry_spread = the pair's
+    // long-short SPREAD curve (w_a*r_a - w_b*r_b compounded, the
+    // fetch's own lagged inverse-vol weights, NO market curve) in its
+    // own Wilder-RSI(14/10) bottom tail vs its own adaptive percentile
+    // bar — the classic pairs CONVERGENCE trade: BUY the laggard leg
+    // A, SELL the leader leg B (response = the spread value's forward
+    // blend). hp_exit_spread = the TOP-TAIL EXIT, shipped 2026-10-25
+    // evening (the spread at its RSI exhaustion tail: SELL the leader
+    // leg A / BUY the laggard leg B — exit timing, never pooled-gated);
+    // hp_spread_buy_leg / hp_spread_sell_leg = the event's per-ROLE
+    // witness records (payload vocabulary, no rule rows behind them)
+    hp_entry_spread: 5834,
+    hp_spread_buy_leg: 5835,
+    hp_spread_sell_leg: 5836,
+    hp_exit_spread: 5837,
+    // the REBOUND family (block 5900+, 2026-10-26): the
+    // drop→rebound→resolution sub types per anchor window —
+    // capit = the capitulation trough-break BUY, fail = the failed
+    // reclaim SELL (the stall at 0.90–1.0 recovery), reclaim = the
+    // full-reclaim continuation BUY; each emits plain +
+    // PE-conditioned cells (is_pe_boosted)
+    rebound_capit_60: 5900,
+    rebound_capit_255: 5901,
+    rebound_fail_60: 5902,
+    rebound_fail_255: 5903,
+    rebound_reclaim_60: 5904,
+    rebound_reclaim_255: 5905,
+    // the MACD family (block 6000+, 2026-10-26): the classic
+    // signal-line crossover sub types over the classic 12/26/9 spans —
+    // macd_cross_up BUY (the momentum turn) / macd_cross_dn SELL
+    // (exit timing)
+    macd_cross_up: 6000,
+    macd_cross_dn: 6001,
   },
   weighting: { equal: 0, amt: 1 },
   rank_side: { HYPE: 0, DRAIN: 1 },
@@ -413,6 +523,12 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // as a portfolio, not the signal family): 0 = the two-leg long–long
   // negatively-correlated hedge pair ('A~B' composite code)
   portfolio_type: { neg_corr_hedge_pair: 0 },
+  // WHICH PORTFOLIO RULE a portfolio_signal_rules row is within its
+  // portfolio_type (2026-10-25 split — one row per code x type x sub;
+  // the registered mov_rsi cells map INTO these rows through
+  // signal_rule_ids only): 0 = the trio co-wash (hp_entry_trio),
+  // 1 = the long-short spread entry/exit (hp_entry_/hp_exit_spread)
+  portfolio_sub_type: { trio_wash: 0, spread: 1 },
   // quantitative roof/floor level estimate methods
   // (analysis.mov_ave_spreads_roof_floor_estimates.method; median = the
   // cross-method consensus row)
@@ -420,6 +536,21 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // rebound-audit outcome of a recorded extreme
   // (analysis.mov_ave_spreads_roof_floor_rebounds.outcome)
   rf_rebound_outcome: { no_rebound: 0, never_retested: 1, held: 2, broken: 3, unresolved: 4 },
+  // text.llm_qa_by_research.logic_label — the dominant investing logic a
+  // research-logic Q&A row classifies; 99 other = the fallback (did not
+  // fit / unclassifiable). First text.* LLM-layer enum converted
+  // (2026-10-27)
+  research_logic: {
+    growth: 0,
+    value: 1,
+    dividend: 2,
+    commodity: 3,
+    cyclical: 4,
+    defensive: 5,
+    quality: 6,
+    theme: 7,
+    other: 99,
+  },
 };
 
 /** code -> label, per domain. */

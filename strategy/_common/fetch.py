@@ -88,11 +88,14 @@ async def fetch_strategy_seqs(
             )
     else:
         if strategy_name:
+            # No codes param — the name filter is $2 here (the shared
+            # $3-numbered name_clause would leave $3 unbound and asyncpg
+            # refuses to prepare the statement).
             rows = await conn.fetch(
-                f"SELECT seq_id, code "
-                f"FROM strategy.strategy_identity "
-                f"WHERE sec_type = $1{name_clause} "
-                f"ORDER BY seq_id, code",
+                "SELECT seq_id, code "
+                "FROM strategy.strategy_identity "
+                "WHERE sec_type = $1 AND strategy_name = $2 "
+                "ORDER BY seq_id, code",
                 sec_type, strategy_name,
             )
         else:
@@ -158,6 +161,7 @@ async def fetch_close_prices(
         f"SELECT date, close AS close_price "
         f"FROM {table} "
         "WHERE code = $1 AND date >= $2 AND date <= $3 "
+        "AND close IS NOT NULL "
         "ORDER BY date ASC",
         code, start_date, end_date,
     )

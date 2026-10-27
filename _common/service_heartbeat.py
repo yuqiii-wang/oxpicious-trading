@@ -253,7 +253,7 @@ def service_from_module_path(module: str) -> tuple[str, str, str | None]:
     """Dotted module path → (service, scope, sub_scope).
 
     ``builds.stock.__main__`` → ("builds.stock", "builds", "stock");
-    ``database.monitoring``   → ("database.monitoring", "database",
+    ``database.stream_watchdog`` → ("database.stream_watchdog", "database",
                                  "monitoring"). scope is the top-level
     pipeline area (first segment), sub_scope the second — the same
     taxonomy the MONITORED_SERVICES registry uses.
@@ -286,7 +286,7 @@ def autoregister(
     """Register the running process by its ENTRY file, derived from
     ``sys.modules["__main__"].__file__`` relative to the repo root
     (``downloads/macro/gov/news/__main__.py`` → downloads.macro.gov.news;
-    ``database/monitoring.py`` → database.monitoring).
+    ``database/stream_watchdog.py`` → database.stream_watchdog).
 
     Best effort — a registration failure (no DB, odd layout) warns on
     stderr and returns None so the pipeline runs unmonitored rather than
@@ -724,7 +724,10 @@ WHERE service = %s
   AND ended_at IS NULL
 """
 
-_ROW_PID_SQL = f"SELECT pid FROM {HEARTBEAT_TABLE} WHERE service = %s"
+_ROW_PID_BEAT_SQL = (
+    f"SELECT pid, EXTRACT(EPOCH FROM (now() - beat_at))::bigint "
+    f"FROM {HEARTBEAT_TABLE} WHERE service = %s"
+)
 
 
 def _claim_attempt(cur, service: str, cap: int, pid: int) -> tuple[int] | None:
@@ -756,17 +759,38 @@ def _heal_leaked_parallel_slot(cur, service: str) -> bool:
     holder keeps its count and the caller's refusal stands (no duplicate
     is admitted).
 
+    A claimant counts as alive only while the row's beat is ALSO fresh:
+    a genuinely-running holder beats every HEARTBEAT_INTERVAL_S, so a
+    stale beat proves there is NO live holder no matter what /proc says.
+    The /proc test alone false-positives on WSL's aggressive pid
+    recycling — a stale open-audit pid routinely points at an unrelated
+    fresh process after the distro restarts (2026-10-23: exactly that
+    deadlocked the stream watchdog's own restart — the heal refused to
+    zero the leaked slot, the starter auto-exited, and the always-on
+    stream stayed down). A /proc-alive pid with a stale beat is a wedged
+    runtime — the stream watchdog's kill path, not something a newcomer
+    must wait behind.
+
     Assumption shared with the watchdog's reset: an open audit life is a
     faithful liveness record (a registration whose audit INSERT failed
     would be counted dead — DB hiccups at registration only).
     """
     cur.execute(_OPEN_LIVES_PIDS_SQL, (service,))
     pids = {r[0] for r in cur.fetchall()}
-    cur.execute(_ROW_PID_SQL, (service,))
+    cur.execute(_ROW_PID_BEAT_SQL, (service,))
     row = cur.fetchone()
     if row is not None and row[0] is not None:
         pids.add(row[0])
-    alive = [p for p in pids if pid_alive_for_service(p, service)]
+    # Row-level gate (the beat is per service, not per pid): with no
+    # fresh beat no claimant can be a live holder; with one, the pid
+    # test picks the survivors (a fresh-beating sibling keeps its slot,
+    # a dead co-claimant does not).
+    beat_fresh = row is not None and row[1] is not None and row[1] <= STALE_AFTER_S
+    alive = (
+        [p for p in pids if pid_alive_for_service(p, service)]
+        if beat_fresh
+        else []
+    )
     cur.execute(
         f"UPDATE {HEARTBEAT_TABLE} SET live_parallel = %s "
         f"WHERE service = %s AND live_parallel <> %s",

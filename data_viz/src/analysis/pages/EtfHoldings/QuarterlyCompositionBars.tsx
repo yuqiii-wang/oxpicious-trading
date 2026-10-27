@@ -46,6 +46,7 @@ import {
 } from "@/shared/charts/base-chart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import { fetchQuarterlyComposition, invalidateCacheForUrl } from "@/lib/api-client";
 import { axisColors, commonGrid, expiryBlueColor } from "@/theme/chart-palette";
@@ -409,17 +410,13 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
 
   // ---- AI Ask — wire the OUTER card (the chart body is a bare BaseChart).
   // Series names are the industries (dynamic) — semantics travel via notes.
+  // Authored text: static.docs `ui.etf-holdings.composition-bars`.
   const barsAiAskRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: INSIGHT_PAGES.etfHoldings,
-      intro:
-        `Quarterly holdings of ${code}${name ? ` (${name})` : ""} by industry: one 100% ` +
-        "stacked bar per quarter — each segment = industry weight / quarter total × 100. " +
-        "One color per industry on a weight-ordered blue ramp (darkest = heaviest in the " +
-        "latest quarter). Click bars to tick: 1 tick → composition pie below, 2+ ticks → " +
-        "quarter-over-quarter changes table. Indication: a swelling slice = the fund " +
-        "rotating in; a shrinking one = trimmed.",
+      intro: docs.text("ui.etf-holdings.composition-bars", { code, name: name || "" }),
       instruments: [{ code, name, assetClass: "etf" }],
       state: {
         ticked_quarters: tickedIdxs.map((i) => quarters[i]?.quarter).filter(Boolean).join(", ") || "none",
@@ -431,16 +428,20 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
               : "none",
       },
       notes: [
-        "Each stacked segment = industry weight / quarter total × 100; quarters without a snapshot are absent (no carry-forward in the bars — the tooltip carry-forwards the last available pct).",
-        "Colors are assigned by weight in the LATEST quarter (desc), then max weight across quarters.",
+        ...docs.notes("ui.etf-holdings.composition-bars", ["segMath", "colors"]),
         ...(data?.source === "index" && data.index_source
-          ? [
-              `The ETF itself has no holdings snapshots — composition comes from its tracking index ${data.index_source.code} (${data.index_source.name || "—"}).`,
-            ]
+          ? docs.notes(
+              "ui.etf-holdings.composition-bars",
+              ["indexSource"],
+              {
+                indexCode: data.index_source.code,
+                indexName: data.index_source.name || "—",
+              },
+            )
           : []),
       ],
     }),
-    [code, name, tickedIdxs, quarters, data],
+    [docs, code, name, tickedIdxs, quarters, data],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${code}${name ? ` · ${name}` : ""} — Quarterly Holdings by Industry`,

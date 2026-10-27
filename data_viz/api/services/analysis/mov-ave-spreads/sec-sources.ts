@@ -158,10 +158,8 @@ export const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
             AVG(mean_close) OVER (PARTITION BY industry_id ORDER BY date
               ROWS BETWEEN 254 PRECEDING AND CURRENT ROW) AS ma255,
             NULL::double precision AS ema6,
-            NULL::double precision AS ema20,
-            NULL::double precision AS ema60,
-            NULL::double precision AS ema120,
-            NULL::double precision AS ema255
+            NULL::double precision AS ema12,
+            NULL::double precision AS ema26
           FROM stats.industry_basic_stats
           WHERE pool_size = 3 AND mean_close IS NOT NULL
         )`,

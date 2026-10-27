@@ -14,9 +14,11 @@ Missing-data detection flow:
   6. Parse contract codes → build identity + basic_stats DataFrames
   7. Bulk upsert into stats.futures_identity + stats.futures_basic_stats
 
-With --force: truncate both tables first, so all source dates are treated
-as missing. With --force --code <contract>: only that contract's rows are
-deleted instead of truncating.
+With --force: purge this build's CFFEX rows (code-matched) first, so all
+source dates are treated as missing — the futures tables are SHARED with
+the SGX CN / HKEX MCA offshore families (12_futures.sql), so the purge is
+code-scoped, never a TRUNCATE. With --force --code <contract>: only that
+contract's rows are deleted instead.
 
 With --date YYYY-MM-DD: build ONLY that single date and bypass the DB
 missing-date skip — the date is (re)built even if already present (existing
@@ -57,7 +59,6 @@ from _common.build_commons import (
     print_build_header,
     print_wall_time,
     TODAY_STR,
-    truncate_table_async,
 )
 from builds._commons.code_filter import (
     find_missing_dates_code_aware,
@@ -65,8 +66,9 @@ from builds._commons.code_filter import (
 from builds._commons.row_emission import records_from_frame
 from _common.df_utils import to_py_dates
 from _common.log_setup import setup_logging
+from _common.db_commons import chunked_purge_async
 
-from builds.futures.paths import CFFEX_ARCHIVE_DIR
+from builds.futures.paths import CFFEX_ARCHIVE_DIR, CFFEX_TREND_DIR
 from builds.futures.loader import (
     glob_futures_files,
     filter_files_by_dates,
@@ -74,10 +76,19 @@ from builds.futures.loader import (
     ymd_to_date,
     build_futures_df,
 )
+from builds.futures.config import PRODUCT_CODES
 
 from _common.data_build import DataBuild
 
 logger = setup_logging("futures")
+
+# --force purge scope: CFFEX codes only. stats.futures_identity /
+# stats.futures_basic_stats are SHARED with the offshore China-A50 families
+# (CN = SGX, MCA = HKEX — downloads/futures/*), which this build must never
+# touch. Longest-first alternation keeps the T/TF/TL/TS prefixes distinct.
+_CFFEX_CODE_SCOPE = "^(?:" + "|".join(
+    sorted(PRODUCT_CODES, key=len, reverse=True)
+) + ")[0-9]{4}$"
 
 
 class FuturesBuild(DataBuild):
@@ -102,7 +113,7 @@ class FuturesBuild(DataBuild):
 
     def header_fields(self) -> dict:
         return {
-            "CFFEX archive dir": CFFEX_ARCHIVE_DIR,
+            "Source dirs": f"{CFFEX_ARCHIVE_DIR} + {CFFEX_TREND_DIR}",
             "Date range":       f"{self.args.start_date or '(all)'} → {self.args.end_date or '(all)'}",
             "Code filter":      self.code_filter or "(none — all contracts)",
             "Today":            TODAY_STR,
@@ -122,8 +133,12 @@ class FuturesBuild(DataBuild):
         # 1. Discover source files and available dates
         # ------------------------------------------------------------------
         logger.info("\n[1/3] Discovering source CSV files …")
-        all_files = glob_futures_files(CFFEX_ARCHIVE_DIR)
-        logger.info(f"    → {len(all_files)} *_futures.csv files available")
+        all_files = sorted(
+            glob_futures_files(CFFEX_ARCHIVE_DIR)
+            + glob_futures_files(CFFEX_TREND_DIR)
+        )
+        logger.info(f"    → {len(all_files)} *_futures.csv files available "
+              f"(archive + daily trend)")
 
         if not all_files:
             logger.error("    [FATAL] No futures CSV files found")
@@ -173,9 +188,20 @@ class FuturesBuild(DataBuild):
                         "DELETE FROM stats.futures_identity WHERE code = $1", code_filter
                     )
                 else:
-                    logger.info("    [DB] Force mode: truncating existing tables")
-                    await truncate_table_async(conn, "stats.futures_basic_stats")
-                    await truncate_table_async(conn, "stats.futures_identity")
+                    logger.info(
+                        "    [DB] Force mode: purging CFFEX rows only "
+                        "(tables shared with SGX CN / HKEX MCA families)",
+                    )
+                    # FK order: child (basic_stats) first, identity last;
+                    # chunked by the partition key per the bulk-write rule.
+                    for table in ("stats.futures_basic_stats",
+                                  "stats.futures_identity"):
+                        deleted = await chunked_purge_async(
+                            conn, table,
+                            where_sql="code ~ $1",
+                            params=(_CFFEX_CODE_SCOPE,),
+                        )
+                        logger.info(f"    [DB] purged {deleted} rows from {table}")
                 missing_dates = available_dates
             elif code_filter:
                 # Single-code mode: only check this contract's dates so dates

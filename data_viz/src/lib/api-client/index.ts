@@ -46,8 +46,12 @@ export {
   fetchAiAskItems,
   fetchAiAskDetail,
   aiAskImageUrl,
+  fetchAiResearchCalendar,
+  fetchAiResearchItems,
+  fetchAiResearchDetail,
   type AiScopeParams,
   type AiAskHistoryParams,
+  type AiResearchParams,
 } from "./ai";
 
 export {

@@ -9,7 +9,10 @@ Same metric semantics as the daily pipeline (analysis.options, skew_type =
 
 Contract weights: oi(t) = oi_base + cum_volume(t) floored at 1 lot — a
 zero-OI contract must not bias the mean (the daily pipeline floors for
-the same reason). A contract votes only while its expiry is active
+the same reason). cum_volume(t) is the contract's day-cumulative traded
+volume AS OF t: option-bar windows the streamer skipped carry the last
+known cumulative forward (grouped ffill on the contract × spot-bar grid),
+never a reset to 0. A contract votes only while its expiry is active
 (expiry_date >= the target date); OTM shares use the active rows with
 raw OI > 0. No IV gate — oi_moneyness is IV-free (analysis.options'
 canonical oi_moneyness implementation filters nothing else), so venues
@@ -104,6 +107,12 @@ def compute_skewness_frame(
         grid = grid.merge(cum_vols, on=["contract_code", "time"], how="left")
     else:
         grid["cum_vol"] = 0.0
+    # The option streamer can skip a spot-bar window (partial sweep): a
+    # missing sample means "not sampled", not "no volume" — an upper-bound
+    # OI estimate may never decrease, so carry each contract's last known
+    # day-cumulative forward on the (contract, time)-sorted grid.
+    grid = grid.sort_values(["contract_code", "time"], kind="stable")
+    grid["cum_vol"] = grid.groupby("contract_code", sort=False)["cum_vol"].ffill()
     grid["cum_vol"] = grid["cum_vol"].fillna(0.0)
     grid["oi_t"] = grid["oi_base"] + grid["cum_vol"]
     grid["w"] = grid["oi_t"].clip(lower=1.0)

@@ -91,6 +91,12 @@ export interface TradingSignal {
    *  the latest performance snapshot, shown in the rules panel) — the
    *  column reads FALSE on every row. */
   is_ohlcv_boosted: boolean;
+  /** The event's PE-CONDITIONING variant (a history_signals PK member
+   *  since 2026-10-26): false = the plain population, true = the
+   *  PE-gated variant of the same sub type (the rebound family emits
+   *  both; the gate rides the cell's bar_def.pe_gate). Live rows carry
+   *  no variants (always false). */
+  is_pe_boosted: boolean;
   /** The trigger day's episode-PASS attribution: TRUE = the typical
    *  pass (buy: the isolated first touch; sell: the re-test), FALSE =
    *  the re-entry pass (flicker re-crossings / continuations /
@@ -247,22 +253,27 @@ export function fetchTradingSignalHistory(
 //  Portfolio HISTORY SIGNALS — the portfolio tier's EVENT history
 //  (analysis_signals.portfolio_history_signals, 2026-10-21): one row
 //  per coordinated PORTFOLIO event with THE EVENT DATE and the member
-//  association — the member CELL-LEVEL signal events that triggered it
-//  (each with its OWN date: different sub signals on different nearby
-//  days; the components' own history is dropped from history_signals,
-//  the member records ride the payload). Drives the Hedge Pairs page's
-//  expandable history rows.
+//  association — the event's coordinated MEMBER ACTIONS under the
+//  member-action invariant (at least TWO actions on at least TWO codes
+//  per event, different dates allowed): the sourced component cell
+//  events (each with its OWN date — different sub signals on different
+//  nearby days; the components' own history is dropped from
+//  history_signals, the member records ride the payload), the legs'
+//  own witness records, and the pair response legs on the event day.
+//  hp_harvest is the measured one-leg exception. Drives the Hedge
+//  Pairs page's expandable history rows.
 // ---------------------------------------------------------------------------
 
-/** One member CELL-LEVEL signal event (a portfolio event's trigger
- *  witness — the sourced component cell's own episode-first record). */
+/** One coordinated member action of a portfolio event: a sourced
+ *  component cell's episode-first record, a leg's own witness record
+ *  (its own day), or the leg's response action on the event day. */
 export interface PortfolioEventMemberSignal {
   code: string;
   signal_type: string;
   signal_sub_type: string;
   action: string;
-  /** 'YYYY-MM-DD' — the member's OWN trigger day (up to the witness
-   *  window before the portfolio event's date). */
+  /** 'YYYY-MM-DD' — the member's OWN day (a witness up to the window
+   *  before the portfolio event's date; a response leg ON it). */
   date: string;
   signal: number;
   signal_reference: number;
@@ -271,11 +282,14 @@ export interface PortfolioEventMemberSignal {
 }
 
 /** One PORTFOLIO signal event: the coordinated event's own record +
- *  the triggering cell-level signals (empty for the pair-native subs,
- *  whose trigger is the pair's own gauge). */
+ *  its member actions (>= 2 actions on >= 2 codes per the invariant;
+ *  hp_harvest the measured one-leg exception). */
 export interface PortfolioHistorySignal {
   code: string;
   portfolio_type: string;
+  /** The event's PORTFOLIO RULE, decoded (trio_wash / spread — the
+   *  2026-10-25 split). */
+  portfolio_sub_type: string;
   signal_type: string;
   signal_sub_type: string;
   /** 'YYYY-MM-DD' — the EVENT date (the day the coordination
@@ -369,31 +383,30 @@ export interface SignalRuleParams {
    *  defensively): gap_pct/cross_excess/rolling_quantile/fixed_sigma/
    *  wall_dist_pct/corr-slope interactions carry their own keys. */
   bar_def?: Record<string, unknown>;
+  /** The VARIANT-AXIS stamp (2026-10-27, user-directed "update rule
+   *  params if ohlcv and pe is used to boost"): true on a boosted
+   *  variant's params beside the row's is_pe_boosted / is_ohlcv_boosted
+   *  PK columns — the self-describing JSON convention; the gate
+   *  CONDITIONS ride bar_def.pe_gate / bar_def.ohlcv_gate and the
+   *  plain population carries no key. */
+  pe_boosted?: boolean;
+  ohlcv_boosted?: boolean;
   /** Family extras (window, kind, side policy, VRP gate def...). */
   [key: string]: unknown;
 }
 
-/** The family knowledge document (static.analysis_signal_docs —
- *  seeded from database/sql/static/analysis_signal_docs/, joined per
- *  family). Only the fields the rules panel reads are typed; the rest
- *  rides as unknown. */
+/** The family knowledge document (static.signal_rules_docs —
+ *  seeded from database/sql/static/signal_rules/, joined per
+ *  family). The seed files carry ONLY what the rules panel renders —
+ *  the per-sub-signal meaning + trigger (pruned 2026-10-27). */
 export interface SignalRuleDocument {
-  name?: string;
-  description?: string;
-  condition?: string;
-  /** The per-sub-signal knowledge the expanded rule row shows. */
   sub_signals?: Record<
     string,
     {
       meaning?: string;
       trigger?: string;
-      action?: Record<string, string>;
-      params?: Record<string, unknown>;
-      [key: string]: unknown;
     }
   >;
-  principles?: Record<string, string>;
-  [key: string]: unknown;
 }
 
 /** One RULE CELL (analysis_signals.signal_rules) — the self-adaptive
@@ -422,15 +435,30 @@ export interface SignalRule {
    *  returns are discouraged: never valid, never trades, never fires
    *  live. */
   is_valid: boolean;
-  /** Whether the cell is a MEMBER of a portfolio group (2026-10-20,
-   *  the cell-level-signals-in-portfolio redesign): its
-   *  signal_rule_id rides some portfolio_signal_rules.signal_rule_ids
-   *  array (the hedge sourced components + the pair-native
-   *  self-members; the orchestrating composites carry false — the
-   *  group IS the composite). Membership only — the cell's own test
+  /** Whether the cell belongs to the PORTFOLIO tier (a signal_rules PK
+   *  member since 2026-10-23): an existing signal rule SOURCED by a
+   *  portfolio is a SEPARATE row from the standalone one. true = the
+   *  row was stamped by a portfolio family's source layer (the hedge
+   *  mov_rsi / rf_break component rows at the market + leg codes —
+   *  claimed by an orchestration or not) or is a pair-native member;
+   *  false = the standalone families' rows and the orchestrating
+   *  composites (the group IS the composite). The cell's own test
    *  stays the unified dir_ave gate; the portfolio tier's combined
    *  audit lives in history_portfolio_signal_performance. */
   is_in_portfolio: boolean;
+  /** Whether the cell is the PE-CONDITIONED variant of its rule (a
+   *  signal_rules PK member since 2026-10-26): the rebound family
+   *  emits both variants — true = the candidate masks are AND-gated by
+   *  the code's own trailing PE-percentile condition (the gate rides
+   *  rule_params.bar_def.pe_gate); false = the plain PE-free
+   *  population. Every non-PE family reads false. */
+  is_pe_boosted: boolean;
+  /** The cell's OHLCV-boost VARIANT axis (a signal_rules PK member
+   *  since 2026-10-26, mirrored from history_signals): true = the
+   *  OHLCV-boosted variant of the rule — a SEPARATE row from the
+   *  unconstrained one. Retired as a live variant 2026-10-16: reads
+   *  false on every row today, kept for the key's shape. */
+  is_ohlcv_boosted: boolean;
   /** The engine entry class that runs the rule. */
   rule_entry: string;
   rule_params: SignalRuleParams;
@@ -471,23 +499,29 @@ export function fetchSignalRules(
 //  portfolio-signal component's one round trip.
 // ---------------------------------------------------------------------------
 
-/** One managed PORTFOLIO code's census (the roster row). */
+/** One managed PORTFOLIO code's census (the roster row) — one row per
+ *  PORTFOLIO RULE (code x portfolio_sub_type since the 2026-10-25
+ *  split: trio wash and spread are separate portfolio signals). */
 export interface SignalPortfolio {
   code: string;
   /** The portfolio tier's own vocabulary, decoded (today always
    *  neg_corr_hedge_pair — the two-leg 'A~B' hedge pair). */
   portfolio_type: string;
-  /** The portfolio's rule cells (the ids across its sub-type groups). */
+  /** The PORTFOLIO RULE within the type, decoded (trio_wash /
+   *  spread — the 2026-10-25 split's identity axis). */
+  portfolio_sub_type: string;
+  /** The portfolio rule's rule cells (its whole ids array: the sub's
+   *  orchestrating cells + the mapped registered rsi cells). */
   n_rules: number;
-  /** The portfolio's gate-passed (is_valid) rule cells. */
+  /** The portfolio rule's gate-passed (is_valid) rule cells. */
   n_valid: number;
-  /** The portfolio's sub-type groups. */
+  /** The rule's coordinated sub types (rule_params.subs keys). */
   n_sub_types: number;
-  /** 'YYYY-MM-DD' — the portfolio's latest replayed event date; null
-   *  when its rules have never triggered. */
+  /** 'YYYY-MM-DD' — the portfolio code's latest replayed event date;
+   *  null when its rules have never triggered. */
   latest_event: string | null;
   /** 'YYYY-MM-DD HH24:MI' — the pipeline run that emitted the
-   *  portfolio's current groups. */
+   *  portfolio's current rows. */
   latest_built: string;
 }
 
@@ -520,7 +554,7 @@ export function fetchSignalPortfolios(
  *  reduction_vs_mean_pct (percentage points shallower than the legs'
  *  drawdown; >= 0 = the hedge paid)} — the gate VERDICT digest
  *  {metric, min_pp, passed, conf_scale} (conf_scale = the member
- *  confidence cascade the passing portfolio's cells take) — the
+ *  benefit-boost scale the passing portfolio's cells take) — the
  *  members' combined stats (pooled: {n_cells, n_episodes,
  *  dir_ave_pct, t_stat, hit_rate} — the member cells' own measures
  *  meta-combined) — and the portfolio's dd lens {min20_pct, p10_pct,
@@ -533,23 +567,27 @@ export interface PortfolioBenefitSnapshot {
   dd: Record<string, unknown> | null;
 }
 
-/** One matched portfolio: its identity, census and its PORTFOLIO row
- *  (2026-10-20's cell-level redesign — the sub-type groups merged
- *  into the one row per portfolio: ALL member ids in the single
- *  signal_rule_ids array, the shared construction + per-sub
- *  coordination specs in rule_params, the portfolio-level gate
- *  verdict + writing entries). */
+/** One matched portfolio rule: its identity, census and its PORTFOLIO
+ *  row (2026-10-20's cell-level redesign; the 2026-10-25 SUB SPLIT —
+ *  one row per (code, portfolio_type, portfolio_sub_type): trio wash
+ *  and spread are SEPARATE portfolio signals, each with its OWN ids
+ *  array — the sub's orchestrating cells PLUS the MAPPED REGISTERED
+ *  rsi cells (real signal_rules rows riding the is_in_portfolio TRUE
+ *  tier, never portfolio rows themselves) — the per-sub coordination
+ *  spec, verdict + audit). */
 export interface PortfolioSignalGroup {
   code: string;
   portfolio_type: string;
+  /** The PORTFOLIO RULE within the type, decoded (trio_wash / spread). */
+  portfolio_sub_type: string;
   n_rules: number;
   n_valid: number;
   n_sub_types: number;
   latest_event: string | null;
   latest_built: string;
-  /** The portfolio's member rule ids (the whole ids array — the
-   *  members' is_in_portfolio cells; pair with the rules response on
-   *  (signal_rule_id)). */
+  /** The portfolio rule's member rule ids (the whole ids array — the
+   *  sub's orchestrating cells + the mapped registered rsi cells;
+   *  pair with the rules response on (signal_rule_id)). */
   signal_rule_ids: number[];
   /** The portfolio's GATE VERDICT: the audited benefit cleared the
    *  portfolio gate AND at least one orchestrating composite cell's
@@ -561,11 +599,6 @@ export interface PortfolioSignalGroup {
   rule_entry: string;
   rule_params: Record<string, unknown>;
   performance: PortfolioBenefitSnapshot | null;
-  /** The portfolio type's knowledge document
-   *  (static.portfolio_signal_docs — {name, description, condition,
-   *  sources, principles, benefit}; the analysis_signal_docs
-   *  convention at the portfolio tier, 2026-10-20). */
-  document: Record<string, unknown>;
 }
 
 export interface PortfolioSignalsResponse {

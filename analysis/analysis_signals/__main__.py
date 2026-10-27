@@ -10,7 +10,7 @@ action) cells on each code's own history and write
   analysis_signals.signal_rules     the rule cells (the engine entry +
                                     the CONSTANT rule_params; the family
                                     knowledge lives in
-                                    static.analysis_signal_docs)
+                                    static.signal_rules_docs)
   analysis_signals.history_signals  the history populated by REPLAYING
                                     those rules (episode first days)
   analysis_signals.history_signal_performance
@@ -50,12 +50,10 @@ from _common.log_setup import setup_logging
 from analysis.analysis_signals import config as cfg
 from analysis.analysis_signals.engines.signal_families import (
     OPTIONS_FAMILIES,
-    SELF_UNIVERSE_FAMILIES,
     SIGNAL_FAMILY_ENTRIES,
     family_label,
 )
 from analysis.analysis_signals.fetch import (
-    resolve_hedge_pair_universe,
     resolve_options_universe,
 )
 from analysis.analysis_signals.run import (
@@ -86,8 +84,7 @@ def _parse_args() -> argparse.Namespace:
                    help="comma-separated codes (default: the 10 study "
                         "indices; ignored for the options families — "
                         "their universe resolves per sec_type from "
-                        "stats.options_terms — and for hedge_pairs — "
-                        "the offsets table's top opposite pairs)")
+                        "stats.options_terms)")
     p.add_argument("--analyze", action="store_true",
                    help="run ANALYZE on the two tables after the writes")
     p.add_argument("--no-boost", action="store_true",
@@ -118,11 +115,16 @@ async def amain() -> None:
                 fam_codes = await resolve_options_universe(
                     conn, label, args.sec_type,
                 )
-            elif label in SELF_UNIVERSE_FAMILIES:
-                # hedge_pairs: the offsets table's top offset-opposite
-                # industry pairs + the showcase pair (composite
-                # 'A~B' codes)
-                fam_codes = await resolve_hedge_pair_universe(conn)
+            elif label == "hedge_pairs":
+                # the pair universe is DATA-DRIVEN (the offsets table's
+                # disjoint offset-opposite industry pairs) — the codes
+                # are the 'A~B' pair ids; --codes is ignored
+                from analysis.analysis_signals.fetch.inputs import (
+                    resolve_hedge_pair_universe,
+                )
+                fam_codes = [p["code"]
+                             for p in await resolve_hedge_pair_universe(
+                                 conn)]
             else:
                 fam_codes = codes
             if not fam_codes:

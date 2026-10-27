@@ -127,6 +127,8 @@ async def digest_article(
     sentiment_level, llm_model). Raises DigestionError / OnlineSearchError
     after ONE parse retry; transport/API retries are the provider's.
     """
+    from llm_agents._core.request_log import bind_ref_ids
+
     messages = build_digest_messages(
         article, content=truncate_content(article.get("content"),
                                           max_content_chars),
@@ -134,7 +136,11 @@ async def digest_article(
     last_err: Optional[Exception] = None
     for attempt in (1, 2):
         try:
-            reply, _usage = await provider._chat_complete(messages, model=model)
+            # The digested article IS the request's sole source — bound so
+            # the text.llm_requests row links it by ref id.
+            with bind_ref_ids([article["news_id"]]):
+                reply, _usage = await provider._chat_complete(
+                    messages, model=model)
             summary, sentiment = parse_digest_json(reply)
             return {
                 "news_id": article["news_id"],

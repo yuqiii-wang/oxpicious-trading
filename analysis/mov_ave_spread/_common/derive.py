@@ -21,6 +21,7 @@ from _common.df_utils import (
 )
 from analysis.mov_ave_spread.config import (
     EMA_DERIV_WINDOWS,
+    EMA_STD_EXTRA_WINDOWS,
     MA_DERIV_WINDOWS,
     MA_WINDOWS,
     TRADING_AMT_MA_COLUMNS,
@@ -92,7 +93,8 @@ def compute_ema_slopes_curvatures(df: pd.DataFrame) -> pd.DataFrame:
     curvature[t]  = slope[t] - slope[t-1]       (NULL on first two dates)
 
     Adds columns ema{W}_slope / ema{W}_curvature for W in
-    EMA_DERIV_WINDOWS (6/20 — each a DIRECT diff of the EMA line,
+    EMA_DERIV_WINDOWS (6/12 — the typical EMA pair set's two shortest
+    legs; each a DIRECT diff of the EMA line,
     not an average of the close-price diff), sourced from
     stats.{etf,index,stock}_tech_stats.
 
@@ -147,7 +149,10 @@ def compute_rolling_stds(df: pd.DataFrame) -> pd.DataFrame:
     overflow for any realistic ETF / index / stock price (σ << price
     because σ ≤ max(|price - mean|) ≤ price range).
 
-    Adds columns: std_5days, std_20days, std_60days, std_120days, std_255days.
+    Adds columns: std_5days, std_20days, std_60days, std_120days, std_255days
+    (the SMA detail table's set) PLUS the typical EMA longs' own windows
+    std_12days / std_26days (EMA_STD_EXTRA_WINDOWS — consumed only by the
+    EMA detail step; the SMA write selects its own five).
 
     Implementation: uses the shared ``grouped_rolling_agg`` helper
     (Cython-compiled ``groupby().rolling().std()``) instead of
@@ -159,7 +164,7 @@ def compute_rolling_stds(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
     grp_keys = ["sec_type", "code"]
-    for w in MA_WINDOWS:
+    for w in sorted(set(MA_WINDOWS) | set(EMA_STD_EXTRA_WINDOWS)):
         col = f"std_{w}days"
         # min_periods=W ensures NULL until the window is fully populated —
         # matches the SQL COMMENT and avoids misleading early-window σ

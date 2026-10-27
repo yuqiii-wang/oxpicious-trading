@@ -3,6 +3,7 @@
  */
 import app from './app.js';
 import { closePool } from './lib/db.js';
+import { ensureStreamsAtBoot } from './routes/monitor.js';
 
 /**
  * start server with port
@@ -11,6 +12,9 @@ const PORT = process.env.PORT || 3001;
 
 const server = app.listen(PORT, () => {
   console.log(`Server ready on port ${PORT}`);
+  // UI start = this process start: check the always-on stream, revive it
+  // if the previous server's exit took it down (the keeper dies with us).
+  ensureStreamsAtBoot();
 });
 
 /**

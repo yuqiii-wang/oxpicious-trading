@@ -1,21 +1,25 @@
 """MACD signal algorithm (pure signal math + DB fetch + reason).
 
-MACD (10/60/6) crossover mean-reversion algo. Migrated from the former
+MACD (12/26/9) crossover mean-reversion algo — the CLASSIC Appel
+settings. Migrated from the former
 multi-file layout (config.py / algo.py / reason.py / fetch.py / adapter.py)
 into a single module with a class inheriting from :class:`AlgoBase`.
 
 Signal summary
 --------------
-MACD line    = EMA_short(close) - EMA_long(close)        (default 10 / 60)
-Signal line  = EMA_signal(MACD line)                     (default 6)
+MACD line    = EMA_short(close) - EMA_long(close)        (default 12 / 26)
+Signal line  = EMA_signal(MACD line)                     (default 9)
 Histogram    = MACD line - Signal line
 
 The short/long EMAs are READ FROM ``stats.<sec_type>_tech_stats`` (precomputed
-ema10 / ema60 / ema120 / ema255 columns) instead of being recomputed inline.
-The signal line EMA is still computed inline because it is an EMA of the
-MACD line (not of close), so no precomputed column exists for it. Defaults
-(10/60/6) are chosen so all three spans have a precomputed counterpart in
-tech_stats — only the signal-line EMA runs inline.
+ema6 / ema12 / ema20 / ema26 / ema60 / ema120 / ema255 columns) instead of being
+recomputed inline. The signal line EMA is still computed inline because it is an
+EMA of the MACD line (not of close), so no precomputed column exists for it.
+Defaults (12/26/9) are the classic MACD parameters (Gerald Appel's original;
+the industry default on every charting platform) and all three have a
+precomputed short/long counterpart in tech_stats (ema12/ema26 since
+2026-10-26, when they replaced the nearby non-standard span 10) — only the
+signal-line EMA runs inline.
 
 Trigger is the classic **crossover** (edge), so one BUY per bullish cross
 and one SELL per bearish cross (naturally spaced; the engine's
@@ -45,7 +49,7 @@ from strategy.factors_and_algos._algo import (
 
 
 class MacdAlgo(AlgoBase):
-    """MACD (10/60/6) crossover mean-reversion algo.
+    """MACD (12/26/9) crossover mean-reversion algo.
 
     Short/long EMAs are read precomputed from ``stats.<sec_type>_tech_stats``;
     the signal-line EMA is computed inline from the MACD line.
@@ -55,9 +59,9 @@ class MacdAlgo(AlgoBase):
     POSITION_AWARE = False
 
     DEFAULT_PARAMS: dict = {
-        "ema_short": 10,
-        "ema_long": 60,
-        "ema_signal": 6,
+        "ema_short": 12,           # the classic MACD fast EMA
+        "ema_long": 26,            # the classic MACD slow EMA
+        "ema_signal": 9,           # the classic signal-line EMA
         "hist_threshold": 0.005,   # |histogram|/close → full hist_strength (50bps)
         "zero_threshold": 0.02,    # |MACD|/close      → full zero_strength (2%)
         "weight_hist": 0.6,
@@ -68,13 +72,13 @@ class MacdAlgo(AlgoBase):
     # (strategy.factors_and_algos._optm_engine). ema_short/ema_long are
     # CATEGORICAL (DISCRETE options only) because they map to precomputed
     # ema{N} columns in stats.<sec_type>_tech_stats — every span in
-    # ``_PRECOMPUTED_EMA_SPANS`` is a legal choice; anything else (e.g. the
-    # classic MACD 12/26) has NO column and would KeyError. The
-    # signal-line EMA is computed inline so its span is a free int.
-    # The optimizer repairs invalid combos (ema_short >= ema_long).
+    # ``_PRECOMPUTED_EMA_SPANS`` is a legal choice; anything else (e.g. a
+    # retired span like the pre-2026-10-26 ema10) has NO column and would
+    # KeyError. The signal-line EMA is computed inline so its span is a
+    # free int. The optimizer repairs invalid combos (ema_short >= ema_long).
     TUNABLE_SPACE: dict = {
-        "ema_short": {"type": "categorical", "choices": [6, 10, 20, 60]},
-        "ema_long": {"type": "categorical", "choices": [20, 60, 120, 255]},
+        "ema_short": {"type": "categorical", "choices": [6, 12, 20]},
+        "ema_long": {"type": "categorical", "choices": [20, 26, 60, 120, 255]},
         "ema_signal": {"type": "int", "low": 3, "high": 15},
         "hist_threshold": {"type": "float", "low": 0.001, "high": 0.02, "log": True},
         "zero_threshold": {"type": "float", "low": 0.005, "high": 0.05, "log": True},
@@ -86,9 +90,9 @@ class MacdAlgo(AlgoBase):
     # (verified for index/etf/stock). The fetch pulls ALL of them once so
     # per-trial (ema_short, ema_long) combos need no re-fetch during
     # optimization. ALSO the snapping domain for non-discrete param values
-    # arriving from stale DB configs / CLI JSON (e.g. classic 12/26 →
-    # nearest valid 10/20).
-    _PRECOMPUTED_EMA_SPANS: tuple = (6, 10, 20, 60, 120, 255)
+    # arriving from stale DB configs / CLI JSON (e.g. the retired span 10
+    # from a pre-2026-10-26 config → nearest valid 12).
+    _PRECOMPUTED_EMA_SPANS: tuple = (6, 12, 20, 26, 60, 120, 255)
 
     @classmethod
     def _snap_span(cls, value, allow: tuple | None = None) -> int:
@@ -96,10 +100,10 @@ class MacdAlgo(AlgoBase):
 
         Params can arrive from sources that don't respect the discrete
         option set (stale ``strategy.algo_configs`` rows, hand-written
-        ``--params-json``, older optimizer studies) — e.g. the classic
-        MACD 12/26, for which no ``ema12``/``ema26`` column exists.
-        Snapping to the nearest valid span keeps those runs working
-        instead of KeyError-ing. Ties round DOWN (more responsive EMA).
+        ``--params-json``, older optimizer studies) — e.g. the pre-
+        2026-10-26 ema10, for which no column exists any more. Snapping
+        to the nearest valid span keeps those runs working instead of
+        KeyError-ing. Ties round DOWN (more responsive EMA).
         """
         spans = tuple(allow) if allow else cls._PRECOMPUTED_EMA_SPANS
         v = int(value)
@@ -128,7 +132,7 @@ class MacdAlgo(AlgoBase):
 
         Joins:
           - stats.<sec_type>_tech_stats (t) — precomputed EMAs
-            (ema6, ema10, ema20, ema60, ema120, ema255 — every span in
+            (ema6, ema12, ema20, ema26, ema60, ema120, ema255 — every span in
             ``_PRECOMPUTED_EMA_SPANS``)
           - stats.<sec_type>_basic_stats (b) — OHLC for fill prices
 
@@ -264,9 +268,9 @@ class MacdAlgo(AlgoBase):
     # ------------------------------------------------------------------
     def build_signal_reason(self, row, side: str, params: dict, confidence: float) -> str:
         """Report the MACD crossover that fired this decision."""
-        ema_short = params.get("ema_short", 10)
-        ema_long = params.get("ema_long", 60)
-        ema_signal = params.get("ema_signal", 6)
+        ema_short = params.get("ema_short", 12)
+        ema_long = params.get("ema_long", 26)
+        ema_signal = params.get("ema_signal", 9)
 
         macd = row.get("macd_line")
         sig = row.get("signal_line")

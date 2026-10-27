@@ -11,6 +11,8 @@ import type {
   AiCalendarResponse,
   AiQaDetail,
   AiQaItemsResponse,
+  AiQaResearchDetail,
+  AiQaResearchItemsResponse,
 } from "@shared/types";
 
 /** Params shared by the calendar + items endpoints. Industry scope, most
@@ -116,4 +118,46 @@ export function fetchAiAskDetail(askId: number): Promise<AiAskHistoryDetail | nu
  *  fetches and caches it; not a fetchJson call). */
 export function aiAskImageUrl(imageId: number): string {
   return `/api/ai/ask-image?image_id=${encodeURIComponent(String(imageId))}`;
+}
+
+// ---------------------------------------------------------------------------
+// Research Q&A (text.llm_qa_by_research — the "Research" feed). Scope as
+// the knowledge base, plus a logic_label NAME pick (growth/…) encoded to
+// its research_logic code server-side.
+// ---------------------------------------------------------------------------
+
+export interface AiResearchParams extends AiScopeParams {
+  /** Dominant investing logic pick (label name; null = all labels). */
+  logic_label?: string | null;
+}
+
+/** Per-day research Q&A counts (the Research strip's dots). */
+export function fetchAiResearchCalendar(
+  params: AiResearchParams,
+): Promise<AiCalendarResponse> {
+  return fetchJson<AiCalendarResponse>(`/api/ai/research-calendar${qs(params)}`);
+}
+
+/** One page of research Q&A rows for the scope (same date params as the
+ *  knowledge-base items; the summary is the snippet). */
+export function fetchAiResearchItems(
+  params: AiResearchParams & {
+    date?: string | null;
+    date_from?: string | null;
+    date_to?: string | null;
+    limit?: number;
+    offset?: number;
+  },
+): Promise<AiQaResearchItemsResponse> {
+  return fetchJson<AiQaResearchItemsResponse>(`/api/ai/research-items${qs(params)}`);
+}
+
+/** Full research row — summary + four dimensions + sources — the research
+ *  card's expand fetch. Null when the qa_id is unknown. */
+export function fetchAiResearchDetail(
+  qaId: number,
+): Promise<AiQaResearchDetail | null> {
+  return fetchJson<AiQaResearchDetail | null>(
+    `/api/ai/research-qa?qa_id=${encodeURIComponent(String(qaId))}`,
+  );
 }

@@ -1,6 +1,10 @@
 export { buildFuturesChartOption } from "./priceChart";
 export { computeFuturesContractStyles } from "./contractStyles";
-export { buildExpiryDotsSeriesData } from "./expiryDots";
+export {
+  translateContractCode,
+  buildContractDisplayNames,
+} from "./contractDisplay";
+export { buildExpiryDotsSeriesData, expiryDateFromDte } from "./expiryDots";
 export { buildBasisConvergenceChartOption } from "./convergenceChart";
 export { greyColorFor, lerpColor } from "./colorUtils";
 export {

@@ -42,16 +42,31 @@
  *   GET /api/ai/ask-items?...&date=&date_from=&date_to=&limit=&offset=
  *   GET /api/ai/ask-qa?ask_id=           — full row + keywords + image list
  *   GET /api/ai/ask-image?image_id=      — the screenshot bytes themselves
+ *
+ * Research Q&A (the AiPage "Research" toggle — the research-logic knowledge
+ * base text.llm_qa_by_research, written by the five-request generation
+ * flow; same filter params as the knowledge-base routes, plus a
+ * logic_label pick encoded to its research_logic code):
+ *
+ *   GET /api/ai/research-calendar?sector_id=&industry_id=&search=&logic_label=
+ *   GET /api/ai/research-items?...&date=&date_from=&date_to=&limit=&offset=
+ *   GET /api/ai/research-qa?qa_id=        — summary + four dimensions + sources
  */
 import { Router, type Request, type Response } from "express";
 import { askLlm } from "../services/ai-ask.service.js";
 import { getAiQa, listAiCalendar, listAiItems } from "../services/ai.service.js";
+import {
+  getAiResearchQa,
+  listAiResearchCalendar,
+  listAiResearchItems,
+} from "../services/ai-research.service.js";
 import {
   getAskHistoryDetail,
   getAskHistoryImage,
   listAskHistoryCalendar,
   listAskHistoryItems,
 } from "../services/ai-ask-history.service.js";
+import { encodeLabelParam } from "../services/label-codes.js";
 
 const router = Router();
 
@@ -220,6 +235,93 @@ router.get("/ask-image", async (req: Request, res: Response) => {
     res.send(image.data);
   } catch (err) {
     console.error("[ai/ask-image] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Research Q&A — the research-logic knowledge base (AiPage "Research"
+// toggle). Same filter params as the knowledge-base routes; logic_label is
+// a label NAME (growth/…) encoded to its research_logic code here — an
+// unknown name is a 400 (the monitor.ts encode precedent).
+// ---------------------------------------------------------------------------
+
+/** logic_label query param -> research_logic code, or null (absent). */
+function researchLogicCode(
+  res: Response,
+  raw: unknown,
+): number | null | undefined {
+  const name = str(raw);
+  if (name === undefined) return null; // absent — all labels
+  const code = encodeLabelParam("research_logic", name);
+  if (code === null) {
+    res.status(400).json({ error: `Unknown 'logic_label': ${name}` });
+    return undefined; // signals the handler to stop
+  }
+  return code;
+}
+
+router.get("/research-calendar", async (req: Request, res: Response) => {
+  try {
+    const logicLabel = researchLogicCode(res, req.query.logic_label);
+    if (logicLabel === undefined) return;
+    res.json(
+      await listAiResearchCalendar({
+        sectorId: str(req.query.sector_id) ?? null,
+        industryId: str(req.query.industry_id) ?? null,
+        industryIds: industryIds(req.query.industry_ids),
+        search: str(req.query.search) ?? null,
+        logicLabel,
+      }),
+    );
+  } catch (err) {
+    console.error("[ai/research-calendar] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/research-items", async (req: Request, res: Response) => {
+  try {
+    const limit = Number(req.query.limit);
+    const offset = Number(req.query.offset);
+    const logicLabel = researchLogicCode(res, req.query.logic_label);
+    if (logicLabel === undefined) return;
+    res.json(
+      await listAiResearchItems({
+        sectorId: str(req.query.sector_id) ?? null,
+        industryId: str(req.query.industry_id) ?? null,
+        industryIds: industryIds(req.query.industry_ids),
+        search: str(req.query.search) ?? null,
+        logicLabel,
+        date: str(req.query.date) ?? null,
+        dateFrom: str(req.query.date_from) ?? null,
+        dateTo: str(req.query.date_to) ?? null,
+        limit: Number.isFinite(limit) ? limit : null,
+        offset: Number.isFinite(offset) ? offset : null,
+      }),
+    );
+  } catch (err) {
+    console.error("[ai/research-items] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// GET /api/ai/research-qa?qa_id= — summary + four dimensions + sources.
+router.get("/research-qa", async (req: Request, res: Response) => {
+  try {
+    const qaId = Number(req.query.qa_id);
+    if (!Number.isFinite(qaId) || qaId <= 0) {
+      res.status(400).json({ error: "Missing 'qa_id'" });
+      return;
+    }
+    const row = await getAiResearchQa(qaId);
+    if (row === null) {
+      res.status(404).json({ error: `qa_id ${qaId} not found` });
+      return;
+    }
+    res.json(row);
+  } catch (err) {
+    console.error("[ai/research-qa] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

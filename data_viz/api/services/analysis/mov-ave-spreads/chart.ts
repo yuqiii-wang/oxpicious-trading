@@ -109,16 +109,15 @@ function buildChartEmaSql(secType: MaSpreadSecType): string {
       ${src.highExpr} AS high,
       ${src.lowExpr} AS low,
       ${src.tradingAmtExpr} AS trading_amount,
-      t.ema6,
+      t.ema6, t.ema12, t.ema26,
       d.price_slope, d.price_curvature,
-      ema.ema6_slope, ema.ema20_slope,
-      ema.ema6_curvature, ema.ema20_curvature,
-      ema.price_vs_ema6, ema.price_vs_ema20, ema.price_vs_ema60,
-      ema.price_vs_ema120, ema.price_vs_ema255,
-      ema.ema6_vs_ema20, ema.ema6_vs_ema60, ema.ema6_vs_ema120, ema.ema6_vs_ema255,
-      ema.std_5days AS ema_std_5days, ema.std_20days AS ema_std_20days,
-      ema.std_60days AS ema_std_60days, ema.std_120days AS ema_std_120days,
-      ema.std_255days AS ema_std_255days
+      ema.ema6_slope, ema.ema12_slope,
+      ema.ema6_curvature, ema.ema12_curvature,
+      ema.price_vs_ema6, ema.price_vs_ema12, ema.price_vs_ema26,
+      ema.ema6_vs_ema12, ema.ema6_vs_ema26, ema.ema12_vs_ema26,
+      ema.std_5days AS ema_std_5days,
+      ema.std_12days AS ema_std_12days,
+      ema.std_26days AS ema_std_26days
     FROM d
     ${chartJoinSql(tables)}
     ORDER BY d.date ASC
@@ -218,16 +217,16 @@ function mapPricePairRows(chartRows: DbChartRow[]): MovAveSpreadPairSeries[] {
   return PAIR_ORDER.map(([ms, ml]) => byPair.get(`price-${ms}/${ml}`)!);
 }
 
-/** Ema-block mapper: fan each date out into the 9 EMA pair rows.
- *  short = price (ma_short=0) or ema6 (ma_short=6); long = emaW.
- *  gap_value / slope / curvature come from the EMA detail table (alias
- *  `ema`); long_std is the rolling price σ for the long EMA's window. */
+/** Ema-block mapper: fan each date out into the 6 TYPICAL EMA pair rows.
+ *  short = price (ma_short=0), ema6 or ema12; long ∈ {6,12,26} — the
+ *  classic 12/26 spread IS the MACD line's components. gap_value / slope /
+ *  curvature come from the EMA detail table (alias `ema`); long_std is the
+ *  rolling price σ for the long EMA's window. */
 function mapEmaPairRows(chartRows: DbChartRow[]): MovAveSpreadPairSeries[] {
   const byPair = initPairSeries(EMA_PAIR_ORDER, "ema", "ema-");
   for (const r of chartRows) {
     const dateStr = formatDate(r.date);
     const price = toNum(r.price);
-    const ema6 = toNum(r.ema6);
     const open = toNum(r.open);
     const high = toNum(r.high);
     const low = toNum(r.low);
@@ -237,12 +236,12 @@ function mapEmaPairRows(chartRows: DbChartRow[]): MovAveSpreadPairSeries[] {
       if (!series) continue;
       const row: MovAveSpreadPairRow = {
         date: dateStr,
-        short_value: maShort === 0 ? price : ema6,
+        short_value: maShort === 0 ? price : pickEmaLong(r, maShort),
         long_value: pickEmaLong(r, maLong),
         gap_value: toNum(r[gapCol as keyof DbChartRow]),
         // Derivatives: price legs carry the SMA table's price_slope /
-        // price_curvature; EMA legs the EMA table's stored ema{6,20}_*
-        // direct diffs (windows beyond 20 null).
+        // price_curvature; EMA legs the EMA table's stored ema{6,12}_*
+        // direct diffs (the 26 leg carries none).
         short_slope: maShort === 0 ? toNum(r.price_slope) : pickEmaSlope(r, maShort),
         short_curvature: maShort === 0 ? toNum(r.price_curvature) : pickEmaCurvature(r, maShort),
         long_slope: pickEmaSlope(r, maLong),
@@ -312,10 +311,10 @@ function mapSharedRows(chartRows: DbChartRow[]): MovAveSpreadSharedMetricsRow[] 
 //  JOINs analysis.mov_ave_spreads_detail with the asset-appropriate source
 //  tables (per-code prefetched CTEs, see chartCtesSql) to recover:
 //    • price (COALESCE(adj_close, close) for ETFs; close for indices/stocks)
-//    • ma5 / ma20 / ma60 / ma120 / ma255 + ema6 / ema20 / ema60 / ema120 / ema255
+//    • ma5 / ma20 / ma60 / ma120 / ma255 + the typical ema6 / ema12 / ema26
 //  …alongside the precomputed gap_value columns. Client-side, each row is
-//  fanned out into 18 pair series entries (short_value, long_value,
-//  gap_value) plus one shared metrics row.
+//  fanned out into the 9 Simple-MA + 6 typical EMA pair series entries
+//  (short_value, long_value, gap_value) plus one shared metrics row.
 // ----------------------------------------------------------------------------
 
 /** REQUIRED chart block — the 9 Simple-MA pair series + the display name.
@@ -340,9 +339,9 @@ export async function getMovAveSpreadChartPairs(
   };
 }
 
-/** Best-effort chart block — the 9 EMA pair series (EMA detail table). The
- *  EMA chip grid populates when this lands; a failure just leaves those
- *  chips absent (the frontend guards on pair presence). */
+/** Best-effort chart block — the 6 TYPICAL EMA pair series (EMA detail
+ *  table). The EMA chip grid populates when this lands; a failure just
+ *  leaves those chips absent (the frontend guards on pair presence). */
 export async function getMovAveSpreadChartEma(
   rawCode: string,
   rawSecType: string | undefined | null,
@@ -359,7 +358,7 @@ export async function getMovAveSpreadChartEma(
   // the previous value forward). Rows are single-code, date-ascending.
   if (secType === "industry") {
     const prices = chartRows.map((r) => toNum(r.price));
-    for (const span of [6, 20, 60, 120, 255] as const) {
+    for (const span of [6, 12, 26] as const) {
       const col = `ema${span}` as keyof DbChartRow;
       const alpha = 2 / (span + 1);
       let prev: number | null = null;

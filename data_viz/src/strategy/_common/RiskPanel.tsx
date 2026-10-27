@@ -42,6 +42,7 @@ import {
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type {
   StrategyRiskResponse,
@@ -352,35 +353,20 @@ export default function RiskPanel({
   // AI Ask — semantics for the per-period P&L chart; state carries the
   // CURRENT period-type tab + selected period so the modal / LLM always
   // describe the view on screen.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        "Per-period strategy P&L (risk analytics): per period, translucent back bars = worst " +
-        "intra-period unrealized MTM dip (red) and peak gain (green); opaque front bar = " +
-        "realized P&L (Σ SELLs, opacity = concentration); plus the Accumulated Total P&L " +
-        "equity curve = Σ realized + unrealized. Where the stress test exists, a dashed teal " +
-        "FT Amplified line parallels it. Indication: wide red back bars = fragile periods; " +
-        "a widening FT gap = the strategy thinning under stress. Clicking a bar selects the " +
-        "period and shades its range on the main OHLC chart.",
+      intro: docs.text("ui.strategy.risk"),
       instruments: risks.code ? [{ code: risks.code, assetClass: risks.sec_type }] : [],
-      series: [
-        { name: "Max Unrealized Loss", unit: "元", description: "worst (most negative) intra-period MTM dip" },
-        { name: "Max Unrealized Gain", unit: "元", description: "peak (most positive) intra-period MTM gain" },
-        { name: "Realized P&L", unit: "元", description: "sum of SELL realized P&L per period" },
-        { name: "Accumulated Total P&L", unit: "元", description: "cumulative realized + unrealized P&L (equity curve)" },
-        { name: "FT Amplified P&L", unit: "元", description: "stress-test cumulative line — gap vs the equity curve = amplification cost" },
-      ],
+      series: docs.series("ui.strategy.risk"),
       state: {
         period_type: periodType,
         selected_period: selectedPeriod
           ? `${selectedPeriod.periodType} ${selectedPeriod.periodValue}`
           : "none",
       },
-      notes: [
-        "Clicking a bar selects that period (outlined) and shades its date range on the main OHLC chart.",
-      ],
     }),
-    [risks.code, risks.sec_type, periodType, selectedPeriod],
+    [docs, risks.code, risks.sec_type, periodType, selectedPeriod],
   );
   const aiAskAddon = useAiAskAddon({
     title: "Risk Analytics",

@@ -266,11 +266,12 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
     ).reset_index()
     agg_df["has_margin"] = agg_df["n_margin_days"] > 0
 
-    # --- Classify each code (using map for efficiency) ---
-    def _classify_row(row: pd.Series) -> pd.Series:
-        tid, tlabel, tslug = classify_etf(row["code"], row["name"])
+    # --- Classify each code (one row dict per code — the former
+    # ``apply(_classify_row, axis=1)`` built a pd.Series PER ROW) ---
+    def _classify_one(code, name) -> dict:
+        tid, tlabel, tslug = classify_etf(code, name)
         tgid, tglab, iid, ilab = get_theme_taxonomy(tid)
-        return pd.Series({
+        return {
             "theme_id": tid,
             "theme_label": tlabel,
             "slug": tslug,
@@ -278,9 +279,13 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
             "theme_group_label": tglab,
             "industry_id": iid,
             "industry_label": ilab,
-        })
+        }
 
-    _classify_cols = agg_df.apply(_classify_row, axis=1)
+    _classify_cols = pd.DataFrame(
+        [_classify_one(code, name)
+         for code, name in zip(agg_df["code"], agg_df["name"])],
+        index=agg_df.index,
+    )
     study_df = pd.concat([agg_df, _classify_cols], axis=1)
 
     # Ensure proper types
@@ -651,10 +656,10 @@ def main():
     logger.info(f"\n  Theme summary (ordered by quantity DESC):")
     logger.info(f"  {'Theme ID':<20s} {'Grp':<6s} {'Ind':<6s} {'#ETFs':>6s} {'#Margin':>8s} {'#Qual':>6s}  Label")
     logger.info(f"  {'-'*20} {'-'*6} {'-'*6} {'-'*6} {'-'*8} {'-'*6}  {'-'*40}")
-    for _, r in summary_df.iterrows():
-        logger.info(f"  {r['theme_id']:<20s} {str(r.get('theme_group_id','')):<6s} "
-              f"{str(r.get('industry_id','')):<6s} {r['n_etfs']:>6d} {r['n_with_margin']:>8d} "
-              f"{r['n_ohlcv_qualified']:>6d}  {r['theme_label']}")
+    for r in summary_df.itertuples(index=False):
+        logger.info(f"  {r.theme_id:<20s} {str(getattr(r, 'theme_group_id', '')):<6s} "
+              f"{str(getattr(r, 'industry_id', '')):<6s} {r.n_etfs:>6d} {r.n_with_margin:>8d} "
+              f"{r.n_ohlcv_qualified:>6d}  {r.theme_label}")
     logger.info(f"\n  Total: {study_df['code'].nunique()} unique ETFs across "
           f"{summary_df['theme_id'].nunique()} industries / "
           f"{summary_df['theme_group_id'].nunique()} theme groups")
@@ -669,10 +674,10 @@ def main():
         logger.info(f"\n  Theme GROUP summary (ordered by #ETFs DESC, {len(grp)} groups):")
         logger.info(f"  {'GrpID':<12s} {'Group Label':<12s} {'#Ind':>5s} {'#ETFs':>6s} {'#Margin':>8s} {'#Qual':>6s}")
         logger.info(f"  {'-'*12} {'-'*12} {'-'*5} {'-'*6} {'-'*8} {'-'*6}")
-        for _, r in grp.iterrows():
-            logger.info(f"  {str(r['theme_group_id']):<12s} {str(r['theme_group_label']):<12s} "
-                  f"{int(r['n_industries']):>5d} {int(r['n_etfs']):>6d} "
-                  f"{int(r['n_with_margin']):>8d} {int(r['n_ohlcv_qualified']):>6d}")
+        for r in grp.itertuples(index=False):
+            logger.info(f"  {str(r.theme_group_id):<12s} {str(r.theme_group_label):<12s} "
+                  f"{int(r.n_industries):>5d} {int(r.n_etfs):>6d} "
+                  f"{int(r.n_with_margin):>8d} {int(r.n_ohlcv_qualified):>6d}")
 
     # --- (3) Selection plan ---
     logger.info("\n[3/3] Building selection plan for plotting …")

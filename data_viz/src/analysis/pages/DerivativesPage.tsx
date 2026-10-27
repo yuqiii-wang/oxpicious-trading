@@ -5,7 +5,7 @@
  * detail page under /analysis/derivatives/<slug>. Add new derivatives
  * analyses to the DERIVATIVES_ANALYSES array below.
  */
-import { Box, Card, CardActionArea, CardContent, Chip, Typography } from "@mui/material";
+import { Box, Card, CardActionArea, CardContent, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import { TrendingUp } from "@mui/icons-material";
 
@@ -16,8 +16,6 @@ interface DerivativesAnalysis {
   title: string;
   /** Short description of what the analysis computes. */
   description: string;
-  /** Tag chips shown on the card. */
-  tags: string[];
 }
 
 const DERIVATIVES_ANALYSES: DerivativesAnalysis[] = [
@@ -25,22 +23,22 @@ const DERIVATIVES_ANALYSES: DerivativesAnalysis[] = [
     slug: "margin-trends",
     title: "Margin Trends",
     description:
-      "Per-security RONGZI (融资 / cash-borrow) margin flows: price chart with daily margin balance + buy, ma5/ma20/ma60, and slope. ETF + Stock only (indices have no margin data).",
-    tags: ["rongzi", "margin", "etf", "stock", "ma", "slope"],
+      "Per-security RONGZI (融资) margin flows: price with daily margin " +
+      "balance + buy, ma5/ma20/ma60, and slope. ETF + Stock only.",
   },
   {
     slug: "futures",
     title: "Futures Basis Analysis",
     description:
-      "CFFEX futures vs underlying analysis: 1st plot replicates the Data Viz price curves with gap_price_vs_underlying added to tooltip; 2nd plot shows 20-day rolling correlation between futures and underlying.",
-    tags: ["futures", "basis", "gap", "correlation", "cffex"],
+      "CFFEX futures vs underlying: the price curves with the gap vs " +
+      "underlying in the tooltip, plus the 20-day rolling correlation.",
   },
   {
     slug: "options",
     title: "Options Analysis",
     description:
-      "Options analytics: Open Interests wall, Volatility Smile, and The Greeks (Delta/Theta/Gamma/Vega/Rho) for SZSE ETF and CFFEX index options.",
-    tags: ["options", "oi", "vol-smile", "greeks", "etf", "index"],
+      "Open-interest wall, volatility smile, and Greeks (Delta/Theta/Gamma/" +
+      "Vega/Rho) for SZSE ETF and CFFEX index options.",
   },
 ];
 
@@ -97,17 +95,6 @@ export default function DerivativesPage() {
                   <Typography variant="body2" color="text.secondary" sx={{ flexGrow: 1 }}>
                     {a.description}
                   </Typography>
-                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                    {a.tags.map((t) => (
-                      <Chip
-                        key={t}
-                        label={t}
-                        size="small"
-                        variant="outlined"
-                        sx={{ fontSize: "0.7rem" }}
-                      />
-                    ))}
-                  </Box>
                 </CardContent>
               </CardActionArea>
             </Card>

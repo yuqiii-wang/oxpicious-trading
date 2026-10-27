@@ -4,7 +4,8 @@
  * Layout (vertical stack, each its own ChartCard):
  *   0. PBoC OMA — narrow date-based news-marker strip (公开市场业务公告)
  *   1. Outright Repo / MLF — cumulative balance (line) + injection/withdrawal (bars, twin axis)
- *   2. OMO — 7-day reverse-repo rate (%) line + repo lifecycle volume (bars, twin axis)
+ *   2. OMO — repo rate line (toggle: 7d = OMO policy rate / 1d = overnight
+ *      reverse-repo policy rate 隔夜逆回购) + repo lifecycle volume (bars, twin axis)
  *   3. SHIBOR — multi-line (O/N, 1W, 1M, 3M, 6M, 1Y)
  *   4. ChinaBond — multi-line (1Y, 5Y, 10Y, 30Y)
  *   5. LPR — step-line (1Y, 5Y+) — PBoC monthly Loan Prime Rate announcement
@@ -16,13 +17,14 @@
  * instead of dense vertical markLines.
  */
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Accordion, AccordionDetails, AccordionSummary, Box, Chip, CircularProgress, Link, Stack, Typography } from "@mui/material";
+import { Alert, Accordion, AccordionDetails, AccordionSummary, Box, Chip, CircularProgress, Link, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ChartCard from "@/shared/components/ChartCard";
 import RefreshButton from "@/components/RefreshButton";
 import { fetchDebtDaily, fetchPbocOmaAnnouncements, invalidateCacheForUrl } from "@/lib/api-client";
 import { BaseChart, useChartData, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs } from "@/shared/docs";
 import type {
   DebtDailyResponse,
   DebtDailyRow,
@@ -277,6 +279,12 @@ function buildMarkerMap(rows: DebtDailyRow[]): Map<string, string[]> {
       arr.push(info);
       map.set(r.date, arr);
     }
+    if (r.omo_quantity_1d != null && r.omo_quantity_1d > 0) {
+      const info = `Overnight rev-repo: ${r.omo_quantity_1d}亿 (1D)`;
+      const arr = map.get(r.date) ?? [];
+      arr.push(info);
+      map.set(r.date, arr);
+    }
   }
   return map;
 }
@@ -384,26 +392,13 @@ function OutrightRepoPanel({ data, markerMap }: { data: DebtDailyResponse; marke
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        "PBoC medium-term liquidity ops: cumulative net balance (outright repo + MLF, left " +
-        "line) vs daily injections/withdrawals (stacked bars, right — green/red = outright " +
-        "repo start/end, orange = MLF). Tooltips carry PBoC operation dates. Indication: " +
-        "a steepening balance = liquidity tailwind for risk assets; an ebbing one = the " +
-        "tide receding.",
-      series: [
-        { name: "Cumulative balance", unit: "亿元", description: "cumulative net outright repo + MLF balance" },
-        { name: "Outright injection", unit: "亿元", description: "daily outright repo auction buys (start quantity)" },
-        { name: "MLF injection", unit: "亿元", description: "daily MLF lending (start quantity)" },
-        { name: "Outright withdrawal", unit: "亿元", description: "daily outright repo maturities/settlements (end quantity)" },
-        { name: "MLF withdrawal", unit: "亿元", description: "daily MLF maturities (end quantity)" },
-      ],
-      notes: [
-        "Crosshair/tooltip is synchronized with the other debt panels (same trading-date x-axis).",
-      ],
+      intro: docs.text("ui.debt.oml"),
+      series: docs.series("ui.debt.oml"),
     }),
-    [],
+    [docs],
   );
 
   return (
@@ -418,22 +413,48 @@ function OutrightRepoPanel({ data, markerMap }: { data: DebtDailyResponse; marke
   );
 }
 
+/**
+ * Repo-rate mode of the OMO panel — both are PBoC POLICY rates from the
+ * same daily bulletins (公开市场业务交易公告):
+ *   "7d" — the OMO 7-day reverse-repo auction rate (default)
+ *   "1d" — the overnight reverse-repo variety (隔夜逆回购, tool since
+ *          2026-06-29; fixed rate = 7d rate + 25bp, quantity-only bulletins)
+ * The bars + cumulative balance (repo lifecycle) are mode-independent.
+ */
+type OmoRateMode = "1d" | "7d";
+
 function OmoPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map<string, string[]> }) {
   const themeMode = useChartThemeMode();
+  const [rateMode, setRateMode] = useState<OmoRateMode>("7d");
   const option = useMemo(() => {
     const rows = data.rows;
     const dates = rows.map((r) => r.date);
-    const rate = rows.map((r) => r.omo_rate);
+    const isOvernight = rateMode === "1d";
+    const rate = rows.map((r) => (isOvernight ? r.omo_rate_1d : r.omo_rate));
     const repoStart = rows.map((r) => r.repo_start_quantity);
     const repoEnd = rows.map((r) => Math.abs(r.repo_end_quantity));
     const repoCum = rows.map((r) => r.repo_cumulative);
+
+    // Freeze the rate axis across the 1d/7d toggle: one scale computed from
+    // the UNION of both rate series, pinned as explicit min/max in either
+    // mode (the sparse flat 1.65 overnight line would otherwise rescale the
+    // axis on every switch).
+    const rateVals = rows
+      .flatMap((r) => [r.omo_rate, r.omo_rate_1d])
+      .filter((v): v is number => v != null && !Number.isNaN(v));
+    const rateMin = rateVals.length ? Math.min(...rateVals) : null;
+    const rateMax = rateVals.length ? Math.max(...rateVals) : null;
+    const ratePad = rateVals.length ? Math.max((rateMax - rateMin) * 0.05, 0.05) : 0;
 
     return buildBaseOption(dates, themeMode, {
       yAxis: [
         {
           type: "value",
           scale: true,
-          name: "OMO rate (%)",
+          ...(rateMin != null && rateMax != null
+            ? { min: rateMin - ratePad, max: rateMax + ratePad }
+            : {}),
+          name: isOvernight ? "Overnight OMO rate (%)" : "OMO rate (%)",
           nameLocation: "middle",
           nameGap: 50,
           nameTextStyle: { color: OMO_RATE_COLOR, fontSize: 10 },
@@ -464,16 +485,36 @@ function OmoPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map
         },
       ],
       series: [
-        {
-          type: "line",
-          name: "OMO 7D rev-repo rate (%)",
-          yAxisIndex: 0,
-          data: rate,
-          smooth: false,
-          symbol: "none",
-          lineStyle: { color: OMO_RATE_COLOR, width: 1.4 },
-          z: 3,
-        },
+        isOvernight
+          ? {
+              // Overnight ops are sparse (tool since 2026-06-29) and the rate
+              // is fixed between ops — LPR-panel treatment: step line that
+              // bridges non-op days, symbols only on op days.
+              type: "line",
+              name: "Overnight OMO rev-repo rate (%)",
+              yAxisIndex: 0,
+              data: rate,
+              step: "end" as const,
+              connectNulls: true,
+              showSymbol: false,
+              symbol: "circle",
+              symbolSize: (val: number | Array<number | string>) => {
+                const v = Array.isArray(val) ? val[val.length - 1] : val;
+                return v == null || Number.isNaN(v as number) ? 0 : 6;
+              },
+              lineStyle: { color: OMO_RATE_COLOR, width: 1.4 },
+              z: 3,
+            }
+          : {
+              type: "line",
+              name: "OMO 7D rev-repo rate (%)",
+              yAxisIndex: 0,
+              data: rate,
+              smooth: false,
+              symbol: "none",
+              lineStyle: { color: OMO_RATE_COLOR, width: 1.4 },
+              z: 3,
+            },
         {
           type: "bar",
           name: "Repo start (injection)",
@@ -504,33 +545,38 @@ function OmoPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map
         },
       ],
     }, markerMap);
-  }, [data, themeMode, markerMap]);
+  }, [data, themeMode, markerMap, rateMode]);
 
-  const aiAskSpec = useMemo<AiAskSpec>(
-    () => ({
-      intro:
-        "PBoC daily OMO: the 7-day reverse-repo policy rate (left line) vs the repo " +
-        "lifecycle on the right — injections (repo start, green), withdrawals (repo end, " +
-        "red), cumulative net balance (line). Indication: rate cuts lower the funding " +
-        "anchor — risk assets ordinarily cheer; the bars telegraph how heavily the PBoC " +
-        "smooths intraweek liquidity.",
-      series: [
-        { name: "OMO 7D rev-repo rate (%)", unit: "%", description: "the 7-day reverse-repo auction rate (policy rate)" },
-        { name: "Repo start (injection)", unit: "亿元", description: "daily 7-day reverse-repo lending volume" },
-        { name: "Repo end (withdrawal)", unit: "亿元", description: "daily reverse-repo maturities (absolute value)" },
-        { name: "Cumulative balance", unit: "亿元", description: "cumulative net reverse-repo balance" },
-      ],
-      notes: [
-        "Crosshair/tooltip is synchronized with the other debt panels (same trading-date x-axis).",
-      ],
-    }),
-    [],
-  );
+  const docs = useDocs();
+  const aiAskSpec = useMemo<AiAskSpec>(() => {
+    const docId = rateMode === "1d" ? "ui.debt.omo-1d" : "ui.debt.omo-7d";
+    return {
+      intro: docs.text(docId),
+      series: docs.series(docId),
+      notes: docs.notes(docId),
+    };
+  }, [docs, rateMode]);
 
   return (
     <BaseChart
-      title="PBoC Open Market Operations — 7-day Reverse Repo"
-      subtitle="OMO rate (line, left axis) · Repo lifecycle volume + cumulative (bars/line, right axis)"
+      title={rateMode === "1d"
+        ? "PBoC Open Market Operations — Overnight Reverse Repo"
+        : "PBoC Open Market Operations — 7-day Reverse Repo"}
+      subtitle={rateMode === "1d"
+        ? "Overnight OMO policy rate (step line, left axis; markers on op days) · 7d repo lifecycle volume + cumulative (bars/line, right axis)"
+        : "OMO rate (line, left axis) · Repo lifecycle volume + cumulative (bars/line, right axis)"}
+      headerAction={
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={rateMode}
+          onChange={(_, v: OmoRateMode | null) => v && setRateMode(v)}
+          title="Switch the rate line: 1d = overnight reverse-repo policy rate (PBoC, since 2026-06-29), 7d = OMO 7-day reverse repo"
+        >
+          <ToggleButton value="1d" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>1d</ToggleButton>
+          <ToggleButton value="7d" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>7d</ToggleButton>
+        </ToggleButtonGroup>
+      }
       height={320}
       option={option}
       group={CHART_GROUP}
@@ -583,29 +629,15 @@ function ShiborPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: 
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        "SHIBOR (Shanghai Interbank Offered Rate) fixings across tenors: " +
-        "overnight, 1-week, 1-month, 3-month, 6-month and 1-year. Short tenors " +
-        "(O/N, 1W) spike when interbank funding tightens; the 3M–1Y curve " +
-        "reflects the market's expected path of policy rates. Compare with the " +
-        "OMO panel above — persistent O/N spikes above the OMO rate signal " +
-        "liquidity stress.",
+      intro: docs.text("ui.debt.shibor"),
       instruments: [{ code: "SHIBOR" }],
-      series: [
-        { name: "O/N", unit: "%", description: "overnight SHIBOR fixing" },
-        { name: "1W", unit: "%", description: "1-week SHIBOR fixing" },
-        { name: "1M", unit: "%", description: "1-month SHIBOR fixing" },
-        { name: "3M", unit: "%", description: "3-month SHIBOR fixing" },
-        { name: "6M", unit: "%", description: "6-month SHIBOR fixing" },
-        { name: "1Y", unit: "%", description: "1-year SHIBOR fixing" },
-      ],
-      notes: [
-        "Crosshair/tooltip is synchronized with the other debt panels (same trading-date x-axis).",
-      ],
+      series: docs.series("ui.debt.shibor"),
+      notes: docs.notes("ui.debt.shibor"),
     }),
-    [],
+    [docs],
   );
 
   return (
@@ -664,27 +696,15 @@ function ChinaBondPanel({ data, markerMap }: { data: DebtDailyResponse; markerMa
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        "China Treasury (ChinaBond) government bond yields for the 1Y, 5Y, 10Y " +
-        "and 30Y tenors. The 1Y end follows funding/policy expectations (moves " +
-        "with OMO/SHIBOR); the 10Y is the benchmark long rate priced off growth " +
-        "and inflation expectations; 30Y duration sentiment. A flattening " +
-        "1Y→10Y spread anticipates easing; steepening anticipates tightening or " +
-        "reflation.",
+      intro: docs.text("ui.debt.cgb"),
       instruments: [{ code: "CGB", name: "China Treasury Bond yields" }],
-      series: [
-        { name: "1Y", unit: "%", description: "1-year CGB yield" },
-        { name: "5Y", unit: "%", description: "5-year CGB yield" },
-        { name: "10Y", unit: "%", description: "10-year CGB yield (the benchmark long rate)" },
-        { name: "30Y", unit: "%", description: "30-year CGB yield (duration sentiment)" },
-      ],
-      notes: [
-        "Crosshair/tooltip is synchronized with the other debt panels (same trading-date x-axis).",
-      ],
+      series: docs.series("ui.debt.cgb"),
+      notes: docs.notes("ui.debt.cgb"),
     }),
-    [],
+    [docs],
   );
 
   return (
@@ -766,26 +786,15 @@ function LprPanel({ data, markerMap }: { data: DebtDailyResponse; markerMap: Map
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        "PBoC Loan Prime Rate (LPR) — the monthly lending benchmark announced " +
-        "on the 20th of each month (next business day if it falls on a " +
-        "holiday). Rendered as a STEP line so the hold/cut pattern is visible: " +
-        "the rate stays flat between announcements and circle markers sit on " +
-        "each announcement date. The 1Y LPR anchors corporate short-term " +
-        "lending; the 5Y+ LPR anchors mortgages.",
+      intro: docs.text("ui.debt.lpr"),
       instruments: [{ code: "LPR", name: "Loan Prime Rate" }],
-      series: [
-        { name: "1Y LPR", unit: "%", description: "1-year LPR (monthly step; markers on announcement dates)" },
-        { name: "5Y+ LPR", unit: "%", description: "5-year-plus LPR (mortgage benchmark)" },
-      ],
-      notes: [
-        "Step lines: the rate holds flat between monthly announcements — markers flag the announcement dates.",
-        "Crosshair/tooltip is synchronized with the other debt panels (same trading-date x-axis).",
-      ],
+      series: docs.series("ui.debt.lpr"),
+      notes: docs.notes("ui.debt.lpr"),
     }),
-    [],
+    [docs],
   );
 
   return (

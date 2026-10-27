@@ -19,6 +19,7 @@
  */
 import { Alert } from "@mui/material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
+import { useDocs } from "@/shared/docs";
 import {
   fetchThemes,
   fetchEtfStrategyThemes,
@@ -52,16 +53,14 @@ export default function EtfHoldingsPage() {
   // undefined — the bars card then shows the bare code only.
   const selectedEtfName = nav.searchCode ? nav.findItemName(nav.searchCode) : undefined;
 
+  const docs = useDocs();
   return (
     <SecNavShell
       nav={nav}
       title="ETF Holdings"
       backPath="/analysis/commons"
       backLabel="back to commons"
-      subtitle={`${nav.headerLabel} — per-ETF quarterly holdings by industry. Click an ETF
-            chip (or search) to load its 100%-stacked quarterly composition
-            bars; tick ONE bar for that season's industry pie, or tick TWO
-            OR MORE bars to compare industry changes across those seasons.`}
+      subtitle={docs.text("ui.etf-holdings.page", { label: nav.headerLabel })}
       refreshTooltip="Refresh ETF classification tree (bypass cache)"
       errorPrefix="ETF classification"
       // The composition bars fetch their own data per code — keep them

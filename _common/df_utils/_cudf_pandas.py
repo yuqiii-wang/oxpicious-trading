@@ -22,6 +22,7 @@ No hard dependency: no GPU / cuDF missing → CPU pandas, transparently.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -76,8 +77,10 @@ def _short(exception: Exception) -> str:
     return msg
 
 
-def _patch_fallback_logger() -> None:
-    """Replace cudf.pandas' log_fallback with a safe stdout printer.
+def _patch_cudf_logger() -> None:
+    """Replace cudf.pandas' log_fallback with a safe stdout printer, and
+    strip cudf's own root-logger debug FileHandler.
+
     cudf 26.08's own ``log_fallback`` crashes with IndexError on property
     fallbacks (``df.columns`` etc.) where ``slow_args`` carries no args
     tuple — a crash INSIDE the fallback handler that kills the whole
@@ -86,7 +89,14 @@ def _patch_fallback_logger() -> None:
 
     The proxy imports ``log_fallback`` lazily at each fallback
     (``from ._logger import log_fallback``), so patching the module
-    attribute is effective for all subsequent fallbacks.
+    attribute is effective for all subsequent fallbacks — and the import
+    below is what FIRST loads ``_logger``, whose module level runs
+    ``logging.basicConfig(filename="cudf_pandas_unit_tests_debug.log")``:
+    cudf's unit-test harness leftover bolting an undated, cwd-relative
+    root FileHandler onto EVERY process, capturing all INFO+ records
+    beside ``_common.log_setup``'s dated service files (the repo-root
+    log accumulation). That one handler is removed here so logging
+    stays solely with log_setup.
     """
     try:
         import cudf.pandas._logger as _cudf_logger
@@ -126,6 +136,14 @@ def _patch_fallback_logger() -> None:
         )
 
     _cudf_logger.log_fallback = _safe_log_fallback
+
+    root = logging.getLogger()
+    root.handlers = [
+        h for h in root.handlers
+        if not (isinstance(h, logging.FileHandler)
+                and os.path.basename(h.baseFilename)
+                == "cudf_pandas_unit_tests_debug.log")
+    ]
 
 
 def maybe_enable_cudf_pandas(mode: str = "auto") -> tuple[bool, str]:
@@ -184,7 +202,7 @@ def maybe_enable_cudf_pandas(mode: str = "auto") -> tuple[bool, str]:
     except Exception as exc:
         return False, f"CPU pandas (cudf.pandas install failed: {exc})"
 
-    _patch_fallback_logger()
+    _patch_cudf_logger()
 
     vram_gb = info.vram_total_bytes / 1024**3
     desc = (

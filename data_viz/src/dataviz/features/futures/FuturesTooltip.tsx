@@ -21,6 +21,8 @@ export interface TooltipItem {
   color: string;
   isSpot?: boolean;
   gap?: number | null;
+  /** Contract expiry date (meta last_date); spot rows carry none. */
+  expiryDate?: string;
 }
 
 interface FuturesTooltipProps {
@@ -61,6 +63,18 @@ export const FuturesTooltip: React.FC<FuturesTooltipProps> = ({ date, items }) =
           />
           <span style={{ flex: 1, whiteSpace: "nowrap" }}>
             {item.isSpot ? `${item.seriesName} (spot)` : item.seriesName}
+            {!item.isSpot && item.expiryDate && (
+              <span
+                style={{
+                  marginLeft: 6,
+                  fontSize: 10,
+                  fontVariantNumeric: "tabular-nums",
+                  color: TOOLTIP_CARD_TEXT_MUTED,
+                }}
+              >
+                exp {item.expiryDate}
+              </span>
+            )}
           </span>
           {item.gap !== undefined && item.gap !== null && typeof item.gap === "number" && !Number.isNaN(item.gap) && (
             <span

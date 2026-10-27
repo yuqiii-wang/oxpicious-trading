@@ -168,6 +168,17 @@ def chart_context_block(plot_info: Mapping[str, Any], theme_mode: Optional[str],
             delta = m.get("delta")
             if isinstance(delta, (int, float)):
                 seg += f"，较前值变动 {delta:+g}{unit}"
+            pct_rank = m.get("pct_rank")
+            if isinstance(pct_rank, (int, float)):
+                p = round(pct_rank * 100)
+                seg += f"，历史分位 p{p}"
+                if p >= 95:
+                    seg += "（顶部5%尾部——罕见读数，高关注）"
+                elif p <= 5:
+                    seg += "（底部5%尾部——罕见读数，高关注）"
+                n = m.get("pct_rank_n")
+                if isinstance(n, int) and n < 250:
+                    seg += f"（样本仅{n}期，分位仅供参考）"
             if m.get("computed"):
                 seg += "（按需计算）"
             desc = m.get("description")

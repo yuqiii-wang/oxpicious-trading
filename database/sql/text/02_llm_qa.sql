@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS text.llm_qa (
     sector_id      TEXT,                       -- denormalized parent sector of industry_id
     news_group_id  INTEGER,                    -- reference set (see news_group_items)
     llm_model      TEXT,
+    request_ids    BIGINT[]    NOT NULL DEFAULT '{}',  -- the producing flow's text.llm_requests ids (source-log backlink)
     language       TEXT        DEFAULT 'zh',
     is_active      BOOLEAN     NOT NULL DEFAULT true,
     has_refs       BOOLEAN     NOT NULL DEFAULT false,
@@ -70,6 +71,24 @@ CREATE INDEX IF NOT EXISTS ix_llm_qa_sector ON text.llm_qa (sector_id);
 -- and the agents' dedupe checks (industry_id + qa_date).
 CREATE INDEX IF NOT EXISTS ix_llm_qa_industry_qa_date
     ON text.llm_qa (industry_id, qa_date);
+
+-- Retro-fit: request_ids (the source-log backlink) added 2026-10-27 —
+-- same-day as text.llm_requests (07_llm_requests.sql); existing rows keep
+-- the empty default (their requests predate the log or came from flows
+-- that don't collect).
+ALTER TABLE text.llm_qa
+    ADD COLUMN IF NOT EXISTS request_ids BIGINT[] NOT NULL DEFAULT '{}';
+
+COMMENT ON COLUMN text.llm_qa.request_ids IS
+  'The producing flow''s OWN LLM requests as text.llm_requests ids, in '
+  'flow order — the backlink into the source log (join text.llm_requests '
+  'to recover each request''s full payload, response, and '
+  'context_ref_ids). Collected by the request-making flows at store time '
+  '(service + flow-window match on the chat-completions endpoint — '
+  'request_log.fetch_recent_request_ids); empty for rows stored before '
+  'the log existed, manual `add` rows (no LLM request), and backfills of '
+  'pre-log artifacts (builds.text.ai_daily_qa). Collection failure is '
+  'non-fatal — the Q&A stores with the empty default.';
 
 -- Full-corpus calendar mapping and qa_date-ordered feeds.
 CREATE INDEX IF NOT EXISTS ix_llm_qa_qa_date ON text.llm_qa (qa_date);

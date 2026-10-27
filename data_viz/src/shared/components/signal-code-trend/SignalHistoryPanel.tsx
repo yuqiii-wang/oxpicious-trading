@@ -19,7 +19,12 @@
  * the regime column carries a ticks menu with its accent dot), the old
  * header tooltips became the shared InfoMark `info` descriptions, and
  * the per-date records expansion (the shared SignalRecordsTable) rides
- * the shared table's caller-owned expansion slot.
+ * the shared table's caller-owned expansion slot. `showVariantFlags`
+ * appends the PE / OHLCV population-variant columns (after Signal, in
+ * the main table AND the per-date expansion — the Short-Term Tech
+ * surfaces; the PE-gated variant is a history_signals PK member, so a
+ * plain and a PE-gated record of the same sub type distinguish only
+ * through these flags).
  */
 import { useCallback, useMemo, type ReactNode } from "react";
 import {
@@ -30,6 +35,7 @@ import {
   Typography,
   useTheme,
 } from "@mui/material";
+import { useDocs } from "@/shared/docs";
 import ExpandedTable, {
   type ExpandedTableColumn,
 } from "@/shared/components/ExpandedTable";
@@ -52,6 +58,10 @@ export interface SignalHistoryPanelProps {
    *  the caption — family-specific context that belongs WITH the
    *  history. */
   headerExtra?: ReactNode;
+  /** Append the PE / OHLCV population-variant columns after Signal —
+   *  in the main table (the day's representative record's flags) AND
+   *  the per-date expansion (every record's). Default false. */
+  showVariantFlags?: boolean;
 }
 
 /** One rendered row = one signal DATE: the representative (the day's
@@ -67,14 +77,32 @@ interface DateGroupRow {
  *  shared per-config records table. Module scope (pure over the group):
  *  the expandedContent prop stays identity-stable for the memoized
  *  shared table. */
-function dateRecords(g: DateGroupRow): ReactNode {
+function dateRecords(g: DateGroupRow, showVariantFlags: boolean): ReactNode {
   return (
     <Box sx={{ p: 1 }}>
       <SignalRecordsTable
         caption={`All signals on ${g.date} · ${g.group.length} record${g.group.length === 1 ? "" : "s"}`}
         rows={g.group}
         showTime
+        showVariantFlags={showVariantFlags}
       />
+    </Box>
+  );
+}
+
+/** One population-variant flag cell — a green ✓ when the day's
+ *  representative record carries the variant, a muted dash on the plain
+ *  population. */
+function VariantFlag({ on }: { on: boolean }) {
+  return (
+    <Box
+      component="span"
+      sx={{
+        color: on ? "success.main" : "text.disabled",
+        fontWeight: on ? 600 : 400,
+      }}
+    >
+      {on ? "✓" : "–"}
     </Box>
   );
 }
@@ -84,6 +112,7 @@ export default function SignalHistoryPanel({
   expandedDate,
   onExpandedDateChange,
   headerExtra,
+  showVariantFlags = false,
 }: SignalHistoryPanelProps) {
   const theme = useTheme();
 
@@ -114,6 +143,7 @@ export default function SignalHistoryPanel({
     [expandedDate, onExpandedDateChange],
   );
 
+  const docs = useDocs();
   const columns = useMemo<ExpandedTableColumn<DateGroupRow>[]>(() => {
     const regimeDot = tickDotItem((v) => regimeAccentColor(v));
     return [
@@ -157,6 +187,28 @@ export default function SignalHistoryPanel({
           </Box>
         ),
       },
+      ...(showVariantFlags
+        ? [
+            {
+              key: "pe_boosted",
+              label: "PE boosted",
+              align: "center" as const,
+              info: docs.text("ui.signal-history.col.pe-boosted"),
+              render: (g: DateGroupRow) => (
+                <VariantFlag on={g.rep.is_pe_boosted} />
+              ),
+            },
+            {
+              key: "ohlcv_boosted",
+              label: "OHLCV boosted",
+              align: "center" as const,
+              info: docs.text("ui.signal-history.col.ohlcv-boosted"),
+              render: (g: DateGroupRow) => (
+                <VariantFlag on={g.rep.is_ohlcv_boosted} />
+              ),
+            },
+          ]
+        : []),
       {
         key: "action",
         label: "Action",
@@ -178,19 +230,14 @@ export default function SignalHistoryPanel({
         key: "reference",
         label: "Reference",
         align: "right",
-        info:
-          "The crossed cell bar — the firing rule's prepared " +
-          "rule_params bar, denormalized per event " +
-          "(history_signals.signal_reference)",
+        info: docs.text("ui.signal-history.col.reference"),
         render: (g) => g.rep.signal_threshold.toFixed(4),
       },
       {
         key: "excess",
         label: "Excess",
         align: "right",
-        info:
-          "value − reference: the signed breach depth past the " +
-          "cell's own bar (buy breaches below → negative)",
+        info: docs.text("ui.signal-history.col.excess"),
         render: (g) => (
           <Box
             component="span"
@@ -225,20 +272,14 @@ export default function SignalHistoryPanel({
         key: "confidence",
         label: "Confidence",
         align: "right",
-        info:
-          "The cell's measured base (the sign-aligned blended dir_ave " +
-          "its rule shipped) amplified over the breach depth — basis " +
-          "points / 100, shown as a %",
+        info: docs.text("ui.signal-history.col.confidence"),
         render: (g) => `${g.rep.confidence_pct.toFixed(2)}%`,
       },
       {
         key: "regime",
         label: "regime",
         align: "center",
-        info:
-          "The breach day's market regime (stats.market_regimes: " +
-          "calm / hot / panic / quiet; pool = the regime-free " +
-          "families' stamp) — recorded context, never a gate",
+        info: docs.text("ui.signal-history.col.regime"),
         filter: {
           type: "ticks",
           value: (g) => g.rep.regime_state,
@@ -259,7 +300,14 @@ export default function SignalHistoryPanel({
         ),
       },
     ];
-  }, [theme]);
+  }, [docs, theme, showVariantFlags]);
+
+  // The expansion slot closes over the variant-flag pick — memoized so
+  // the shared table's expandedContent prop stays identity-stable.
+  const expandedContent = useCallback(
+    (g: DateGroupRow) => dateRecords(g, showVariantFlags),
+    [showVariantFlags],
+  );
 
   return (
     <Paper variant="outlined" sx={{ p: 1.25 }}>
@@ -284,7 +332,7 @@ export default function SignalHistoryPanel({
         onRowClick={handleRowClick}
         selectedRowKey={expandedDate}
         expandedRowKey={expandedDate}
-        expandedContent={dateRecords}
+        expandedContent={expandedContent}
         emptyState={
           <Typography variant="body2" color="text.secondary" sx={{ px: 0.5, pb: 1 }}>
             No recorded signals for this code.

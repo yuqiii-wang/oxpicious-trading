@@ -35,6 +35,7 @@ import {
 } from "@/shared/charts/base-chart";
 import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import {
   fetchIndustrySentimentsChart,
@@ -313,30 +314,35 @@ export default function IndustryDrilldown({
   // return below.) ----
   const dualRef = useRef<ECharts | null>(null);
   const curvesRef = useRef<ECharts | null>(null);
+  const docs = useDocs();
   const dualAiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `Industry drill-down for ${industryLabel}: left = industry composite mean close ` +
-        "(rebased to 100, all pools — stats.industry_basic_stats); right = the industry's " +
-        `% of ${etfCode}'s total composition (weight_pct / total_weight_pct × 100 per ` +
-        "snapshot). Indication: rising close + swelling % = the ETF accumulating into " +
-        "strength — the bullish pairing; divergent pair = price without sponsorship.",
+      intro: docs.text("ui.etf-holdings.drilldown-dual", {
+        industry: industryLabel,
+        etf: etfCode,
+      }),
       instruments: [
         { code: etfCode, assetClass: "etf" },
         { code: industryId, name: industryLabel, assetClass: "industry" },
       ],
-      series: [
-        { name: `${industryLabel} mean_close (all pools)`, description: "industry composite mean close (rebased), all pools" },
-        { name: `${industryLabel} in ${etfCode} (pct of total)`, unit: "%", description: "industry weight as % of the ETF's total composition (step line — carry-forward between snapshots)" },
-      ],
+      series: compactDefined([
+        docs.seriesEntry("ui.etf-holdings.drilldown-dual", "meanClose", { industry: industryLabel }),
+        docs.seriesEntry("ui.etf-holdings.drilldown-dual", "inEtf", {
+          industry: industryLabel,
+          etf: etfCode,
+        }),
+      ]),
       notes: [
-        "The ETF pct series is SPARSE (snapshot dates only) — the step line holds the last value until the next snapshot; tooltips carry the last available value with its as-of date.",
-        weights?.source === "index" && weights.index_source
-          ? `Weights come from the ETF's tracking index ${weights.index_source.code} (${weights.index_source.name || "—"}).`
-          : "Weights come from the ETF's own composition snapshots.",
+        ...docs.notes("ui.etf-holdings.drilldown-dual", ["sparse"]),
+        ...(weights?.source === "index" && weights.index_source
+          ? docs.notes("ui.etf-holdings.drilldown-dual", ["weightsIndex"], {
+              indexCode: weights.index_source.code,
+              indexName: weights.index_source.name || "—",
+            })
+          : docs.notes("ui.etf-holdings.drilldown-dual", ["weightsOwn"])),
       ],
     }),
-    [industryLabel, industryId, etfCode, weights],
+    [docs, industryLabel, industryId, etfCode, weights],
   );
   const dualPlotInfo = useMemo(
     () =>
@@ -351,21 +357,14 @@ export default function IndustryDrilldown({
   );
   const curvesAiAskSpec = useMemo<AiAskSpec>(
     () => ({
-      intro:
-        `Member curves of ${industryLabel}: each member index rebased to ` +
-        "100 × P_t/P_own-first-close (same convention as stats.industry_basic_stats), so " +
-        "relative performance compares despite price-level disparities. Legend click " +
-        "toggles members. Indication: fanning curves = dispersion widening (a " +
-        "stock-picker's tape); convergence = beta catch-up.",
+      intro: docs.text("ui.etf-holdings.drilldown-curves", { industry: industryLabel }),
       instruments: [{ code: industryId, name: industryLabel, assetClass: "industry" }],
       state: {
         member_indices: memberSeries.length,
       },
-      notes: [
-        "Series names are the member index names (dynamic); each curve is rebased to its OWN first close.",
-      ],
+      notes: docs.notes("ui.etf-holdings.drilldown-curves"),
     }),
-    [industryLabel, industryId, memberSeries.length],
+    [docs, industryLabel, industryId, memberSeries.length],
   );
   const curvesPlotInfo = useMemo(
     () =>

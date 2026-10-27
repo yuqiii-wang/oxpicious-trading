@@ -32,6 +32,7 @@ import OhlcModeToggle from "@/shared/components/OhlcModeToggle";
 import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
 import { useAiAskAddon, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
+import { useDocs, compactDefined } from "@/shared/docs";
 import type { ThemeMode } from "@/store/filters";
 import type { EtfBundle } from "@shared/types";
 import {
@@ -715,63 +716,41 @@ export default function EtfMarginPanel({ etf, showDivEst = false, defaultStartDa
 
   // AI Ask — reading guide lifted from the panel header doc; state carries
   // the CURRENT OHLC mode so the modal / LLM describe the view on screen.
+  const docs = useDocs();
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       insight: insightPage,
-      intro:
-        `Single-ETF daily chart of ${etf.code} ${etf.name} ` +
-        `(${etf.is_bond ? "bond ETF — rebased close % line, neutral fill" : "equity ETF — adjusted OHLC bars, so dividends/splits draw no fake gaps"}): ` +
-        "MA20/60/120 on the same left axis" +
-        (showDivEst
-          ? "; the dashed Div Est line is the dividend price estimation curve " +
-            "(cum-dividend fair value anchored on each ex-date's post-drop close, " +
-            "regrowing exponentially to the next cum level by the next ex-date — the " +
-            "PE curve's replacement on this page)"
-          : "") +
-        "; RZ (融资, green up-fill) and RQ (融券, red " +
-        "down-fill) margin balances as shifted/clipped scores on a hidden axis (tooltip = " +
-        "raw balance); turnover bars (亿元) on the right, close-vs-open colored. % mode: " +
-        "prices rebased to % change from the first valid close. Gold/teal diamonds = " +
-        "dividend / split markers; the dataZoom owns the visible window. Indication: RZ " +
-        "swelling = leveraged longs crowding; RQ swelling = shorts building — watch the " +
-        "balance inflection against price." +
-        (showDivEst
-          ? " Div Est hugging the candles = price move is dividend-accrual-like; a widening gap = pure market drift."
-          : ""),
+      intro: docs.text("ui.etf-margin.panel", {
+        code: etf.code,
+        name: etf.name,
+        isBond: etf.is_bond,
+        divEst: showDivEst,
+      }),
       instruments: [{ code: etf.code, name: etf.name, assetClass: "etf" }],
-      series: [
-        ...(etf.is_bond
-          ? [{
-              name: ohlcMode === "percentage" ? "Rebased %" : "Close",
-              unit: ohlcMode === "percentage" ? "%" : "元",
-              description: "adjusted close rebased to % change from the first valid close",
-            }]
-          : [{
-              name: ohlcMode === "percentage" ? "OHLC %" : "OHLC",
-              unit: ohlcMode === "percentage" ? "%" : "元",
-              description: "adjusted OHLC candles, uniformly rebased in percentage mode",
-            }]),
-        { name: "MA20", unit: ohlcMode === "percentage" ? "%" : "元", description: "20-day mean of the rebased close" },
-        { name: "MA60", unit: ohlcMode === "percentage" ? "%" : "元", description: "60-day mean of the rebased close" },
-        { name: "MA120", unit: ohlcMode === "percentage" ? "%" : "元", description: "120-day mean of the rebased close" },
+      series: compactDefined([
+        docs.seriesEntry("ui.etf-margin.panel", etf.is_bond ? "bondClose" : "ohlc", {
+          priceName: ohlcMode === "percentage"
+            ? (etf.is_bond ? "Rebased %" : "OHLC %")
+            : (etf.is_bond ? "Close" : "OHLC"),
+          unit: ohlcMode === "percentage" ? "%" : "元",
+        }),
+        docs.seriesEntry("ui.etf-margin.panel", "ma20", { unit: ohlcMode === "percentage" ? "%" : "元" }),
+        docs.seriesEntry("ui.etf-margin.panel", "ma60", { unit: ohlcMode === "percentage" ? "%" : "元" }),
+        docs.seriesEntry("ui.etf-margin.panel", "ma120", { unit: ohlcMode === "percentage" ? "%" : "元" }),
         ...(showDivEst
-          ? [{ name: "Div Est", unit: ohlcMode === "percentage" ? "%" : "元", description: "dividend price estimation curve (analysis.dividend_est): cum-dividend fair-value line anchored on each ex-date's post-drop close, growing exponentially to the next cum-dividend level (close(next ex) + next D) on the record date; open tail accrues at the last dividend yield / frequency" }]
+          ? [docs.seriesEntry("ui.etf-margin.panel", "divEst", { unit: ohlcMode === "percentage" ? "%" : "元" })]
           : []),
-        { name: "cash borrow balance", description: "RZ 融资 balance — plotted as a shifted/clipped score on the hidden axis; the tooltip shows the raw balance" },
-        { name: "sec borrow balance", description: "RQ 融券 balance — plotted as a shifted/clipped score on the hidden axis; the tooltip shows the raw balance" },
-        { name: "Amount", unit: "亿元", description: "daily trading turnover (成交金额), bar color = close vs open" },
-      ],
+        docs.seriesEntry("ui.etf-margin.panel", "rz"),
+        docs.seriesEntry("ui.etf-margin.panel", "rq"),
+        docs.seriesEntry("ui.etf-margin.panel", "amount"),
+      ]),
       state: { ohlcMode },
       notes: [
-        "Percentage mode rebases price series to % change from the first valid close; Amount and margin scores are not rebased.",
-        "Margin fills are scores on a hidden axis, not raw yuan — read balances from the tooltip.",
-        "Diamond markers: gold = dividend, teal = split/conversion.",
-        ...(showDivEst
-          ? ["Div Est is drawn in adjusted price space (raw curve × adj factor) so it overlays the adjusted candles; its tooltip row shows the RAW CNY value and the segment's next ex-date / next dividend."]
-          : []),
+        ...docs.notes("ui.etf-margin.panel", ["rebase", "scores"]),
+        ...(showDivEst ? docs.notes("ui.etf-margin.panel", ["divEstAdjusted"]) : []),
       ],
     }),
-    [etf.code, etf.name, etf.is_bond, ohlcMode, showDivEst, insightPage],
+    [docs, etf.code, etf.name, etf.is_bond, ohlcMode, showDivEst, insightPage],
   );
   const aiAskAddon = useAiAskAddon({
     title: `${etf.code} · ${etf.name}`,
