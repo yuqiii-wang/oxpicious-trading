@@ -47,8 +47,9 @@ import {
 
 /** Nav trees endpoints per sec_type (baseline classification registries).
  *  Industry is excluded — the registry endpoints are classification-tree
- *  sources and industry entities sit above that taxonomy. */
-const THEMES_SOURCES: Record<Exclude<SecNavSecType, "industry">, SecNavThemesSource> = {
+ *  sources and industry entities sit above that taxonomy; "all" has no
+ *  tree either (locked exchange-only nav). */
+const THEMES_SOURCES: Record<Exclude<SecNavSecType, "industry" | "all">, SecNavThemesSource> = {
   etf: {
     themes: (exchange) => fetchEtfThemes(exchange),
     strategyThemes: (exchange) => fetchEtfStrategyThemes(exchange),
@@ -63,7 +64,7 @@ const THEMES_SOURCES: Record<Exclude<SecNavSecType, "industry">, SecNavThemesSou
   },
 };
 
-const CACHE_PREFIXES: Record<Exclude<SecNavSecType, "industry">, string[]> = {
+const CACHE_PREFIXES: Record<Exclude<SecNavSecType, "industry" | "all">, string[]> = {
   etf: ["/api/etf-margin/themes", "/api/etf-margin/strategy-themes"],
   index: ["/api/index/themes", "/api/index/strategy-themes"],
   stock: ["/api/stock/themes", "/api/stock/strategy-themes"],

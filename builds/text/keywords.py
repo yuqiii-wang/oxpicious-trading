@@ -3,33 +3,45 @@
 Integrates two sources into one keyword taxonomy (the "SEC classification
 study"):
 
-  1. ``database/sec_statics/sec_classification/`` (shard tree, read via
-     ``classification_store.load_catalog``) — the project's
-     CANONICAL sector/industry catalog (sector_id, industry_id, label, slug).
-     Canonical industry ids are UPPERCASE slugs (BANKS, SEMI, …) — the same
-     values stored in stats.sec_classification / stats.industry_basic_stats,
-     so ``text.news.industry_id`` / ``text.news_keywords.industry_id`` join
-     against the rest of the project without mapping. The matched industry's
-     parent sector is carried alongside as ``text.news.sector_id``.
+  1. ``static.keyword_maps`` (DB seed, database/sql/static/keyword_maps/ —
+     read via :func:`_common.keyword_maps.load_keyword_maps`) — the seeded
+     keyword → category map, source of record for the vocabulary. Four
+     category types: industry rows map a keyword to the canonical
+     sec_classification industry_id (UPPERCASE: POWER_GRID, BANKS, … — the
+     same values stored in stats.sec_classification /
+     stats.industry_basic_stats, so ``text.news.industry_id`` /
+     ``text.news_keywords.industry_id`` join against the rest of the
+     project without mapping; every catalog industry's own label is seeded
+     as its industry's keyword too); market-description rows (下跌 → px_dn,
+     放量 → vol_up, …) and broadmarket macro-theme rows (monetary, fiscal,
+     …) are extracted as keywords but never set ``text.news.industry_id``;
+     skip rows (其实/也/就是说-class low-semantic function words) are the
+     search-index tokenization's stop vocabulary and the component rows
+     (adj / adv / adv_noun / adv_verb — 大幅/高位/持续, the modifier layer
+     the keyword n-gram matcher composes with the market verbs) are
+     grammar — this taxonomy EXCLUDES both (they are never
+     matchable/extractable audit keywords); the tokenization filter lives
+     in _common.tokenization.search_indexing.
 
-  2. ``downloads/macro/gov/keywords.json`` — the curated NEWS keyword
-     taxonomy. Its industry category names are the catalog industry SLUGS
-     (lowercase: "banks", "semi", …), so each keyword list attaches to its
-     canonical industry_id via the catalog slug. The 'broadmarket' type holds
-     macro-theme categories (economy, monetary, …) that have NO catalog
-     industry — their keywords are extracted as keywords but never set
-     ``text.news.industry_id``.
-
-  Integration rule: for every catalog industry the keyword set is
-  {catalog label} ∪ {keywords.json keywords for that slug}. The catalog label
-  (e.g. 银行 for BANKS) is a natural news keyword and keeps articles that use
-  only the label taggable.
+  2. ``database/sec_statics/sec_classification/`` (shard tree, read via
+     ``classification_store.load_catalog``) — the project's CANONICAL
+     sector/industry catalog, used for industry METADATA only now: the
+     matched industry's parent sector (``text.news.sector_id``) and the
+     catalog rule order that breaks multi-industry-match ties. The matched
+     industry's label no longer joins the keyword set here — it is seeded
+     in the table (02_seed_industry.sql); a label missing from the seed
+     surfaces once at build time as a drift warning.
 
 Extraction: substring counting of every taxonomy keyword over title+content.
-Pure-ASCII keywords (AI, 5G, VR, EDA, PC, …) match whole-word only and
-case-insensitively, so "AI" does not hit inside English words; Chinese
-keywords match as plain substrings. ``word_count`` = CJK chars + ASCII word
-tokens (the denominator of ``text.news_keywords.count_pct``).
+English keywords (language=en — pure-ASCII tokens and multi-word phrases)
+match whole-word and case-insensitively, so "AI" does not hit inside
+English words and "limit up" also hits "limit-up"; Chinese keywords match
+as plain substrings. Negated occurrences of negation-
+sensitive keywords (seeded ``is_negation`` — a preceding 没有/并未/尚未/
+不再/没/不/未/无/非 or English no/not/never/without flips the reading:
+并未下跌 is NOT down-talk) don't
+count. ``word_count`` = CJK chars + ASCII word tokens (the denominator of
+``text.news_keywords.count_pct``).
 
 Industry assignment: when an article matches several industries, the winner
 is the one appearing FIRST in the catalog (sector rule order — same
@@ -42,13 +54,13 @@ A股收评/午评/开盘 pieces, the ai_daily 整体行情 question) is ALWAYS t
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from _common.keyword_maps import load_keyword_maps
+from _common.labels import KW_CATEGORY_TYPE_CODE
 from database.sec_statics import classification_store
-from builds.text import paths
 
 logger = logging.getLogger(__name__)
 
@@ -60,21 +72,16 @@ def _load_catalog() -> Dict[str, Any]:
     return classification_store.load_catalog()
 
 
-def _load_news_keywords_json() -> Dict[str, Any]:
-    with open(paths.GOV_KEYWORDS_JSON, encoding="utf-8") as f:
-        return json.load(f)
-
-
 class KeywordTaxonomy:
     """Integrated keyword → industry map + compiled matchers."""
 
     def __init__(self) -> None:
         catalog = _load_catalog()
-        news_kw = _load_news_keywords_json()
+        keyword_rows = load_keyword_maps()
 
-        # slug (lowercase) -> industry_id (UPPER), and industry_id -> label,
-        # both in catalog rule order (dict order = rule order).
-        self.slug_to_industry: Dict[str, str] = {}
+        # Catalog metadata in rule order (dict order = rule order): label /
+        # parent sector / tie-break order per industry_id. The rows carry
+        # industry_id directly, so the catalog no longer resolves slugs.
         self.industry_label: Dict[str, str] = {}
         self.industry_sector: Dict[str, str] = {}
         self.industry_order: Dict[str, int] = {}
@@ -83,63 +90,94 @@ class KeywordTaxonomy:
             for industry_id, info in sector.get("industries", {}).items():
                 if industry_id == "OTHER":  # fallback bucket — not taggable
                     continue
-                slug = info.get("slug") or industry_id.lower()
-                self.slug_to_industry[slug] = industry_id
                 self.industry_label[industry_id] = info.get("label", "")
                 self.industry_sector[industry_id] = _sector_id
                 self.industry_order[industry_id] = order
                 order += 1
 
-        # keyword -> set of industry_ids; broadmarket keywords -> no industry.
+        # keyword -> set of industry_ids; market / broadmarket keywords ->
+        # no industry. setdefault for non-industry rows so an industry row
+        # the same keyword also has survives (the former JSON union rule).
+        # Extraction is an ALLOWLIST on the three audit families: skip
+        # rows (the tokenization's stop vocabulary) and the grammatical
+        # component rows (adj / adv / adv_noun / adv_verb — 大幅/高位/持续,
+        # the modifier layer the keyword n-gram matcher composes with the
+        # market verbs) are never matchable/extractable — a bare 大幅 or
+        # 持续 mention evidences no market state, no theme, no industry —
+        # and any future non-audit type lands excluded automatically.
+        extraction_types = (
+            KW_CATEGORY_TYPE_CODE["industry"],
+            KW_CATEGORY_TYPE_CODE["market"],
+            KW_CATEGORY_TYPE_CODE["broadmarket"],
+        )
+        type_industry = KW_CATEGORY_TYPE_CODE["industry"]
         kw_to_industries: Dict[str, set] = {}
-        unmatched_slugs: set = set()
-        for type_name, categories in news_kw.items():
-            if type_name == "_comment":
+        unknown_industries: set = set()
+        negation_sensitive: set = set()
+        for row in keyword_rows:
+            kw = row.keyword.strip()
+            if not kw:
                 continue
-            for category, keywords in categories.items():
-                industry_id = self.slug_to_industry.get(category)
-                if type_name != "broadmarket" and industry_id is None:
-                    # Industry-typed category with no catalog match would
-                    # silently drop its tag — surface it once at build time.
-                    unmatched_slugs.add(f"{type_name}.{category}")
+            if row.category_type not in extraction_types:
+                continue
+            if row.is_negation:
+                negation_sensitive.add(kw)
+            if row.category_type == type_industry:
+                if row.industry_id not in self.industry_order:
+                    # A seed row naming an industry the catalog dropped
+                    # would silently stop tagging — surface it once.
+                    unknown_industries.add(row.industry_id)
                     continue
-                for kw in keywords:
-                    kw = kw.strip()
-                    if not kw:
-                        continue
-                    if industry_id is None:
-                        # broadmarket (macro-theme) keyword — extracted as a
-                        # keyword only, never sets text.news.industry_id.
-                        kw_to_industries.setdefault(kw, set())
-                    else:
-                        kw_to_industries.setdefault(kw, set()).add(industry_id)
-
-        # Catalog labels join their industry's keyword set (see module
-        # docstring); labels never map to an industry they don't belong to.
-        for industry_id, label in self.industry_label.items():
-            if label:
-                kw_to_industries.setdefault(label, set()).add(industry_id)
-
-        if unmatched_slugs:
+                kw_to_industries.setdefault(kw, set()).add(row.industry_id)
+            else:
+                kw_to_industries.setdefault(kw, set())
+        if unknown_industries:
             logger.warning(
-                "    [keywords] news-keyword categories without a "
-                "sec_classification match (not taggable as industry): %s",
-                sorted(unmatched_slugs))
+                "    [keywords] keyword_maps industry rows with no "
+                "sec_classification match (re-seed 02_seed_industry.sql): %s",
+                sorted(unknown_industries))
+
+        # Drift guard: a catalog label missing from the seeded table would
+        # silently stop tagging articles that use only the label.
+        unseeded_labels = sorted(
+            label for industry_id, label in self.industry_label.items()
+            if label and label not in kw_to_industries)
+        if unseeded_labels:
+            logger.warning(
+                "    [keywords] catalog labels not seeded in "
+                "static.keyword_maps (articles naming only them stop "
+                "tagging): %s", unseeded_labels)
 
         self.kw_to_industries: Dict[str, Optional[set]] = {
             kw: industries or None for kw, industries in kw_to_industries.items()}
+        # Keywords whose meaning a preceding negator flips (seeded
+        # is_negation): their negated occurrences don't count (see match).
+        self.kw_negation_sensitive: set = negation_sensitive
         # Match order: longer keywords first so specific terms are counted
         # before (and independently of) their substrings; ties alphabetical.
+        # The bool rides in the tuple as "english-like" — those match
+        # case-insensitively and must not use the cheap case-sensitive
+        # prefilter below.
         self._matchers: List[Tuple[str, re.Pattern, bool]] = [
-            (kw, self._compile(kw), bool(re.fullmatch(r"[A-Za-z0-9]+", kw)))
+            (kw, self._compile(kw),
+             bool(self._ENGLISH_LIKE_RE.fullmatch(kw)))
             for kw in sorted(self.kw_to_industries, key=lambda k: (-len(k), k))
         ]
 
-    @staticmethod
-    def _compile(keyword: str) -> re.Pattern:
-        if re.fullmatch(r"[A-Za-z0-9]+", keyword):
+    # English-like keywords (ASCII tokens/words, optional spaces and
+    # hyphens): matched whole-word and case-insensitive; multi-word forms
+    # bridge whitespace/hyphen so "limit up" also hits "limit-up". These
+    # skip the cheap case-sensitive `in` prefilter (case differs).
+    _ENGLISH_LIKE_RE = re.compile(
+        r"[A-Za-z0-9][A-Za-z0-9 '\-]*[A-Za-z0-9]|[A-Za-z0-9]")
+
+    @classmethod
+    def _compile(cls, keyword: str) -> re.Pattern:
+        if cls._ENGLISH_LIKE_RE.fullmatch(keyword):
+            parts = keyword.split()
+            body = r"[\s\-]+".join(re.escape(p) for p in parts)
             return re.compile(
-                r"(?<![A-Za-z0-9])" + re.escape(keyword) + r"(?![A-Za-z0-9])",
+                r"(?<![A-Za-z0-9])" + body + r"(?![A-Za-z0-9])",
                 re.IGNORECASE)
         return re.compile(re.escape(keyword))
 
@@ -149,22 +187,53 @@ class KeywordTaxonomy:
         cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
         return cjk + len(re.findall(r"[A-Za-z0-9]+", text))
 
+    # Negation tokens that flip a negation-sensitive keyword when they
+    # IMMEDIATELY precede the match (the user's spec: the previous word).
+    # Multi-char forms first, then the single-char family; the immediate-
+    # suffix check is naturally safe against lookalikes because the token
+    # must END right at the keyword (非常利好 → "常" intervenes; 未来上涨 →
+    # "来" intervenes; 不断下跌 → "断" intervenes — none match). English
+    # negators are checked as the trailing word before the match.
+    _NEGATION_WORDS = (
+        "没有", "并非", "并未", "并不", "未曾", "尚未", "未能", "不再",
+        "毫无", "而非", "没", "不", "未", "无", "非",
+    )
+    _EN_NEGATION_WORDS = frozenset(
+        {"no", "not", "never", "without", "hardly", "barely"})
+
+    @classmethod
+    def _negated_before(cls, text: str, start: int) -> bool:
+        """True when a negation token immediately precedes *start*."""
+        if (text[max(0, start - 2):start] in cls._NEGATION_WORDS
+                or text[max(0, start - 1):start] in cls._NEGATION_WORDS):
+            return True
+        m = re.search(r"[A-Za-z]+\s*$", text[:start])
+        return bool(m and m.group(0).strip().lower()
+                    in cls._EN_NEGATION_WORDS)
+
     def match(self, text: str) -> Tuple[Dict[str, int], Optional[str]]:
         """Extract keyword counts from *text*.
 
         Returns (keyword -> count, primary_industry_id | None). The primary
         industry is the first catalog-ordered industry among matched industry
         keywords (None when only broadmarket keywords matched, or no match).
+        Negated occurrences of negation-sensitive keywords (seeded
+        is_negation — 并未下跌, 没有放量, 并非利好) don't count: the audit
+        reads them as the OPPOSITE state, not as the keyword's category.
         """
         counts: Dict[str, int] = {}
         matched_industries: set = set()
-        for kw, pattern, is_ascii in self._matchers:
-            if not is_ascii and kw not in text:
-                # Cheap prefilter for Chinese keywords. ASCII keywords are
-                # matched case-insensitively by the regex, so they can't use
-                # this case-sensitive `in` check.
+        for kw, pattern, is_english in self._matchers:
+            if not is_english and kw not in text:
+                # Cheap prefilter for non-English keywords. English-like
+                # keywords are matched case-insensitively by the regex, so
+                # they can't use this case-sensitive `in` check.
                 continue
-            n = len(pattern.findall(text))
+            if kw in self.kw_negation_sensitive:
+                n = sum(1 for m in pattern.finditer(text)
+                        if not self._negated_before(text, m.start()))
+            else:
+                n = len(pattern.findall(text))
             if n:
                 counts[kw] = n
                 industries = self.kw_to_industries[kw]
@@ -184,8 +253,8 @@ class KeywordTaxonomy:
 
 
 # Process-wide singleton: the taxonomy is read-only after construction,
-# but construction re-reads two JSON catalogs and rebuilds the compiled
-# matchers — callers that run per-article/per-QA (builds.text loaders,
+# but construction re-reads the catalog JSON and the static.keyword_maps
+# seed table — callers that run per-article/per-QA (builds.text loaders,
 # llm_agents stores) share one instance instead of paying that per call.
 _TAXONOMY: Optional["KeywordTaxonomy"] = None
 
@@ -249,5 +318,24 @@ def extract_for_articles(
         row["industry_id"] = row.get("industry_id") or industry_id
         row["sector_id"] = taxonomy.sector_of(row["industry_id"])
         row["word_count"] = taxonomy.word_count(text)
+        row["keywords"] = counts
+    return rows
+
+
+def extract_for_qa(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Attach keyword occurrences to text.llm_qa rows (the QA-side audit).
+
+    Same taxonomy, counting, and negation rules as the news audit
+    (:meth:`KeywordTaxonomy.match` — 并未下跌 does not count): one pass
+    over each post's question + answer (the corpus the feed shows; the
+    never-rendered ``context`` is NOT audited). Adds ``keywords``:
+    dict keyword -> count, in place. No industry inference — QA rows carry
+    their own ``industry_id`` (the QA flow's tagging), unlike
+    :func:`extract_for_articles`.
+    """
+    taxonomy = get_taxonomy()
+    for row in rows:
+        text = row["question"] + "\n" + (row.get("answer") or "")
+        counts, _ = taxonomy.match(text)
         row["keywords"] = counts
     return rows

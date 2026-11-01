@@ -54,6 +54,7 @@ import {
   type SecStaticsFile,
 } from "../services/sec-statics.service.js";
 import { readOrchestrationTiers } from "../services/orchestration.service.js";
+import { listKeywordMaps } from "../services/keyword-maps.service.js";
 
 const router = Router();
 
@@ -76,6 +77,7 @@ const FREQ_VALUES = [
 export interface ServiceConfigPayload {
   service: string;
   maxParallel: number;
+  maxParallelRuns: number | null;
   includedParallelServices: string[];
   excludedParallelServices: string[];
   freq: string;
@@ -89,6 +91,7 @@ function toServicePayload(e: ServiceConfigEntry): ServiceConfigPayload {
   return {
     service: e.service,
     maxParallel: e.max_parallel,
+    maxParallelRuns: e.max_parallel_runs,
     includedParallelServices: e.included_parallel_services,
     excludedParallelServices: e.excluded_parallel_services,
     freq: e.freq,
@@ -129,6 +132,17 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
   const maxParallel = Number(b.maxParallel);
   if (!Number.isInteger(maxParallel) || maxParallel < 1) {
     throw new Error("maxParallel must be an integer >= 1");
+  }
+  // The in-service RUN cap (the deep-agents summary generation today):
+  // null = unset (the code default of one at a time) or an integer >= 1.
+  // Independent of maxParallel — that one caps the SERVICE PROCESSES,
+  // this one caps the parallel RUNS inside the one daemon.
+  let maxParallelRuns: number | null = null;
+  if (b.maxParallelRuns != null) {
+    maxParallelRuns = Number(b.maxParallelRuns);
+    if (!Number.isInteger(maxParallelRuns) || maxParallelRuns < 1) {
+      throw new Error("maxParallelRuns must be an integer >= 1 or null");
+    }
   }
   const freq = typeof b.freq === "string" ? b.freq : "";
   if (!(FREQ_VALUES as readonly string[]).includes(freq)) {
@@ -192,6 +206,7 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
   return {
     service,
     max_parallel: maxParallel,
+    max_parallel_runs: maxParallelRuns,
     included_parallel_services: included,
     excluded_parallel_services: excluded,
     freq,
@@ -492,6 +507,30 @@ router.get("/orchestration", (_req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("[config/orchestration GET] error:", err);
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+//  Keywords tab — static.keyword_maps (the seeded keyword → category map)
+// ---------------------------------------------------------------------------
+
+/** GET /api/config/keyword-maps — every seeded keyword row, labels decoded
+ *  at the boundary (category_type / category / parts_of_speech / language).
+ *  READ-ONLY: the map is a static seed table (rows land only via the SQL
+ *  seed files under database/sql/static/keyword_maps/) — editing means
+ *  editing the seed file and re-applying, like every other static config. */
+router.get("/keyword-maps", async (_req: Request, res: Response) => {
+  try {
+    const entries = await listKeywordMaps();
+    res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      count: entries.length,
+      entries,
+    });
+  } catch (err) {
+    console.error("[config/keyword-maps GET] error:", err);
     res.status(500).json({ success: false, error: String(err) });
   }
 });

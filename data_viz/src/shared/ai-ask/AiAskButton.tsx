@@ -18,17 +18,25 @@ interface Props {
   getInstance: () => ECharts | null;
   /** Additional stacked charts in the same card (multi-chart cards). */
   getExtraInstances?: () => (ECharts | null)[];
+  /** Accessible label / tooltip — non-chart hosts (analysis items, tables)
+   *  rename it; chart hosts keep the default. */
+  label?: string;
 }
 
-export default function AiAskButton({ plotInfo, getInstance, getExtraInstances }: Props) {
+export default function AiAskButton({
+  plotInfo,
+  getInstance,
+  getExtraInstances,
+  label = "Ask AI about this chart",
+}: Props) {
   const [open, setOpen] = useState(false);
   if (!plotInfo) return null;
   return (
     <>
       <IconButton
         size="small"
-        aria-label="Ask AI about this chart"
-        title="Ask AI about this chart"
+        aria-label={label}
+        title={label}
         onClick={(e) => {
           e.stopPropagation();
           setOpen(true);

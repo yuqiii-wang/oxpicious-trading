@@ -11,7 +11,7 @@
  * series per class per leg).
  *
  * Curves are the industries' mean_close composites
- * (stats.industry_basic_stats via /api/analysis/industry-sentiments/chart,
+ * (stats.industry_basic_stats via /api/analysis/market-beta/chart,
  * pool_size="all" slice, rebased by the component) and the benchmark
  * close (stats.index_basic_stats via /api/analysis/industry-attribution/
  * benchmark-price, rebased to 100 at its own first close — the

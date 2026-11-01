@@ -18,7 +18,7 @@ interface CompositeAnalysis {
   description: string;
 }
 
-const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
+export const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
   {
     slug: "opposite-industry-correlations",
     title: "Opposite Industry Correlations",
@@ -28,11 +28,26 @@ const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
       "20/60/255-day windows.",
   },
   {
-    slug: "ai-market-sentiments",
-    title: "Market Sentiments by AI and News",
+    slug: "ai-market-qa",
+    title: "AI Market Sentiments QA (AI 市场情绪问答)",
     description:
-      "AI Q&A and news feeds scoped by the classification pick, shown over " +
-      "the benchmark price chart for the picked date.",
+      "The LLM Q&A knowledge base feed (text.llm_qa): one ask-and-answer " +
+      "per industry per day, scoped by the classification pick or the " +
+      "top-ranked HYPE/DRAIN industries, over the benchmark price chart. " +
+      "The ask is the keyword audit over the Q&A corpus — per-day " +
+      "occurrences of the market-description keyword families (下跌/上涨, " +
+      "放量/缩量, 利空/利好) with 10y rarity ranks, read against the news " +
+      "audit for tone divergence.",
+  },
+  {
+    slug: "market-sentiment-news",
+    title: "Market Sentiments News (市场情绪新闻)",
+    description:
+      "The raw news corpus feed (text.news: zhihu recaps, gov policy, " +
+      "PBoC ops) under the same scope, day pick, and keyword search. The " +
+      "ask is the keyword audit — per-day occurrence counts of the " +
+      "market-description keyword families (下跌/上涨, 放量/缩量, 利空/利好) " +
+      "with 10y rarity ranks.",
   },
 ];
 

@@ -34,12 +34,6 @@ CREATE TABLE IF NOT EXISTS stats.options_intraday_5min (
     CONSTRAINT pk_options_intraday_5min PRIMARY KEY (contract_code, date, time)
 ) PARTITION BY HASH (contract_code);
 
--- Idempotent migration: no FK to options_identity on the streamer-owned
--- bar table — see 02_etf_margin.sql (TRUNCATE CASCADE collateral hazard;
--- builds.options --force truncates options_identity).
-ALTER TABLE stats.options_intraday_5min
-    DROP CONSTRAINT IF EXISTS fk_options_intraday_5min_date_code;
-
 -- Native hash partitions (8) keyed by contract_code — created via the shared
 -- util (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'options_intraday_5min', 8);

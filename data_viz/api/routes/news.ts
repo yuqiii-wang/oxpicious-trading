@@ -44,8 +44,13 @@ import {
   listNewsStrategyThemes,
   listNewsThemes,
 } from "../services/news.service.js";
+import { segmentSearchTerms } from "../services/search-query.service.js";
 import { runPythonModule } from "../services/py-runner.service.js";
 import type { NewsSearchItem } from "../../shared/types.js";
+
+/** Word cap for the /search-tokens fallback list — enough OR terms for
+ *  recall, small enough for the UI's Local chip to stay readable. */
+const SEARCH_TOKENS_MAX_WORDS = 12;
 
 const router = Router();
 
@@ -241,6 +246,45 @@ router.get("/tokenize", async (req: Request, res: Response) => {
     res.json({ tokens });
   } catch (err) {
     console.error("[news/tokenize] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+//  Segmented search tokens for the question bar's full-text FALLBACK.
+//
+//  When the taxonomy tokenizer matches nothing, the page searches the
+//  question's StructBERT-segmented WORDS instead (search_mode=any ORs
+//  them): a whole raw sentence as ONE term would AND all its words in the
+//  GIN search_tsv and match nothing. Spawns the shared query segmenter
+//  (python -m _common.tokenization via search-query.service — cached per
+//  search string) and flattens the per-term token strings into an ordered
+//  word list.
+// ---------------------------------------------------------------------------
+router.get("/search-tokens", async (req: Request, res: Response) => {
+  try {
+    const textB64 = str(req.query.text_b64);
+    if (!textB64) {
+      res.status(400).json({ error: "Missing 'text_b64'" });
+      return;
+    }
+    const raw = Buffer.from(textB64, "base64").toString("utf8");
+    const segmented = await segmentSearchTerms(raw);
+    if (segmented === null) {
+      res.status(500).json({ error: "segmentation failed" });
+      return;
+    }
+    const words: string[] = [];
+    for (const tokens of segmented) {
+      for (const w of (tokens ?? "").split(/\s+/)) {
+        // Single-character words are segmentation noise in an OR search
+        // (六代机 -> 六/代/机 floods the results with 机) — keep >= 2 chars.
+        if (w.length >= 2 && !words.includes(w)) words.push(w);
+      }
+    }
+    res.json({ tokens: words.slice(0, SEARCH_TOKENS_MAX_WORDS) });
+  } catch (err) {
+    console.error("[news/search-tokens] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

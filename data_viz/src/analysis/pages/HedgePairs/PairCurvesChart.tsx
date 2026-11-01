@@ -10,7 +10,7 @@
  * legs at the event date (the vol-index in-signal precedent).
  *
  * Fetches each side's aggregation through the shared
- * /api/analysis/industry-sentiments/chart endpoint (parallel multi-fetch,
+ * /api/analysis/market-beta/chart endpoint (parallel multi-fetch,
  * so a custom effect rather than useChartData) and plots the pool "all"
  * mean_close series per industry.
  *
@@ -29,7 +29,7 @@ import type { BaseChartProps } from "@/shared/charts/base-chart";
 import {
   fetchBenchmarkPriceChart,
   fetchIndustryAttributionBenchmarks,
-  fetchIndustrySentimentsChart,
+  fetchMarketBetaChart,
 } from "@/lib/api-client";
 import type { IndustryAttributionBenchmarkEntry } from "@shared/types";
 import { INSIGHT_PAGES, useAiAskAddon, type AiAskSpec } from "@/shared/ai-ask";
@@ -68,7 +68,7 @@ interface Props extends BaseChartProps {
  *  average of member rebased closes, so it only STARTS NEAR 100 — the
  *  explicit rebase makes every curve comparable at 100). */
 const toSeriesRows = (
-  resp: Awaited<ReturnType<typeof fetchIndustrySentimentsChart>>,
+  resp: Awaited<ReturnType<typeof fetchMarketBetaChart>>,
 ): Array<{ date: string; close: number | null }> => {
   const rows = resp.aggregation
     .filter((r) => r.pool_size === "all")
@@ -183,8 +183,8 @@ export default function PairCurvesChart({
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchIndustrySentimentsChart(codeA),
-      fetchIndustrySentimentsChart(codeB),
+      fetchMarketBetaChart(codeA),
+      fetchMarketBetaChart(codeB),
     ])
       .then(([ra, rb]) => {
         if (cancelled) return;

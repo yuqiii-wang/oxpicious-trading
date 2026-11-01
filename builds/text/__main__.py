@@ -6,11 +6,13 @@ Pipeline (all steps reuse one DB connection):
      requested --sources.
   2. Restrict to the --start-date / --end-date window (default: all dates).
   3. Tag industries + extract keywords (builds.text.keywords — integrated
-     sec_classification catalog + news keyword taxonomy).
+     static.keyword_maps seed + sec_classification catalog metadata).
   4. Upsert text.news, refresh text.news_keywords for new/changed articles,
      recompute doc_freq/idf corpus-wide, fill today_industry_change from
-     stats.industry_basic_stats, and recompute the is_big_fluctuation flag
-     on text.news + text.llm_qa (builds.text.big_market_mv).
+     stats.industry_basic_stats, recompute the is_big_fluctuation flag
+     on text.news + text.llm_qa (builds.text.big_market_mv), and rewrite
+     text.llm_qa_keywords — the QA corpus's keyword audit (same vocabulary
+     and negation rules), full-recompute over the ACTIVE llm_qa rows.
   5. ai_daily source: store the downloaded Q&A envelopes into
      text.llm_qa (+ text.llm_qa_refs / news-group provenance) via
      builds.text.ai_daily_qa — idempotent per (question, qa_date), the
@@ -164,9 +166,14 @@ class TextBuild(DataBuild):
                         "(%d new/changed) …", len(rows), len(needing))
             # KEEP UPSERT (not COPY): rows include EXISTING articles whose
             # word_count / industry_id changed — real PK conflicts by design.
-            await bulk_upsert_async(conn, upsert.NEWS_TABLE,
-                                    upsert.build_news_rows(rows),
+            news_rows = upsert.build_news_rows(rows)
+            await bulk_upsert_async(conn, upsert.NEWS_TABLE, news_rows,
                                     ["title", "source", "date"])
+            # search_tsv (TSV_SPECS): index rows now; the
+            # IS NULL guard keeps re-upserts of unchanged articles cheap.
+            from _common.tokenization import SearchIndexer
+            await SearchIndexer.get().set_search_tsv_async(
+                conn, upsert.NEWS_TABLE, news_rows, only_missing=True)
             post_existing = await upsert.fetch_existing_news(conn)
             articles = upsert.map_news_ids(needing, post_existing)
 
@@ -204,6 +211,18 @@ class TextBuild(DataBuild):
             logger.info("    [DB] is_big_fluctuation: %d news / %d llm_qa "
                         "rows touched", mv["news_touched"], mv["qa_touched"])
 
+            # --- search lexicon DF stats (text.search_lexicon_df) ---------
+            # All of this build's tsv writes are done — recompute the
+            # high-DF lexeme rows the MCP text_search ranking strategy
+            # reads (news / news_comments / llm_qa here; the llm_agents
+            # storages refresh their own tables at write time).
+            for tbl in (upsert.NEWS_TABLE, "text.news_comments",
+                        "text.llm_qa"):
+                n_lex = await SearchIndexer.get().refresh_lexicon_df_async(
+                    conn, tbl)
+                logger.info("    [DB] lexicon DF stats: %s — %d lexemes",
+                            tbl, n_lex)
+
             # --- 4. text.news_keywords --------------------------------------
             if self.args.no_keywords:
                 logger.info("\n[4/4] text.news_keywords skipped (--no-keywords)")
@@ -211,6 +230,32 @@ class TextBuild(DataBuild):
             logger.info("\n[4/4] Writing text.news_keywords …")
             await upsert.refresh_keyword_rows(conn, articles)
             await upsert.recompute_keyword_stats(conn)
+            # The keyword-audit rollup (text.news_keyword_audit — the
+            # Market Sentiments page's Ask AI insight metrics read it)
+            # only changes when keyword rows change: refresh it in step.
+            # information_schema misses matviews, so the fresh-install
+            # case (13_news_keyword_audit.sql not applied yet) warns
+            # instead of failing the build.
+            try:
+                await conn.execute(
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY "
+                    "text.news_keyword_audit")
+            except Exception as exc:
+                logger.warning(
+                    "    [DB] news_keyword_audit refresh skipped "
+                    "(run database/sql/text/13_news_keyword_audit.sql): %s",
+                    exc)
+            # --- 4b. text.llm_qa_keywords — the QA corpus's keyword audit
+            #     (the ai-market-qa insight metrics read its rollup view;
+            #     missing-table fresh installs warn like the matview above).
+            try:
+                n_qa_kw = await upsert.rewrite_qa_keyword_rows(conn)
+                logger.info("    [DB] llm_qa_keywords: %d rows", n_qa_kw)
+            except Exception as exc:
+                logger.warning(
+                    "    [DB] llm_qa_keywords rewrite skipped "
+                    "(run database/sql/text/16_llm_qa_keywords.sql): %s",
+                    exc)
             if not self.args.no_industry_change:
                 n = await upsert.apply_today_industry_change(conn, articles)
                 logger.info("    [DB] today_industry_change set for %d "

@@ -18,7 +18,7 @@ interface DerivativesAnalysis {
   description: string;
 }
 
-const DERIVATIVES_ANALYSES: DerivativesAnalysis[] = [
+export const DERIVATIVES_ANALYSES: DerivativesAnalysis[] = [
   {
     slug: "margin-trends",
     title: "Margin Trends",

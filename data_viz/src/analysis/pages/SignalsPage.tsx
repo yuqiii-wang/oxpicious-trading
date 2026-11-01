@@ -17,7 +17,7 @@ interface SignalItem {
   description: string;
 }
 
-const SIGNALS_ANALYSES: SignalItem[] = [
+export const SIGNALS_ANALYSES: SignalItem[] = [
   {
     slug: "recent-movements",
     title: "Short-Term Tech",

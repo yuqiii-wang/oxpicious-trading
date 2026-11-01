@@ -17,3 +17,5 @@ _tmp
 nohup.out
 
 startup_on_login.bat
+
+llm_agents/local_models/*

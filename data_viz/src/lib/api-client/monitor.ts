@@ -610,3 +610,53 @@ export function fetchSrcDataAudit(
     `/api/monitor/src-data-audit?${params.toString()}`,
   );
 }
+
+// ---------------------------------------------------------------------------
+//  AI usage (the AI tab) — text.llm_requests aggregates
+// ---------------------------------------------------------------------------
+
+/** One (service, model, GMT date) aggregate of the source LLM request
+ *  log — the AI tab's usage audit row. */
+export interface AiUsageEntry {
+  service: string;
+  /** The chat model when the request recorded one (null = none / a
+   *  web-search POST without a model). */
+  model: string | null;
+  /** GMT operational day (Beijing 08:00 boundary). */
+  date: string;
+  requestCount: number;
+  failedCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  avgDurationMs: number | null;
+  maxDurationMs: number | null;
+}
+
+export interface AiUsageResponse {
+  success: true;
+  generatedAt: string;
+  /** Distinct sorted dates present in the window (trend x axis). */
+  dates: string[];
+  /** Distinct sorted services present in the window (trend series). */
+  services: string[];
+  rows: AiUsageEntry[];
+}
+
+/** The trailing window of LLM-request aggregates, one row per
+ *  (service, model, date) — small by construction, pivoted client-side
+ *  into the trend chart + the per-date breakdown. Plain no-store fetch
+ *  (NOT fetchJson): this is LIVE audit state over the request log — the
+ *  point of the tab is "what did we ask just now", so a 10-min-TTL cache
+ *  entry would serve a stale window. (The deep-agent runs half of the AI
+ *  tab reads the run-lifecycle endpoints under /api/ai directly —
+ *  fetchSummaryRuns / fetchActiveSummaryRuns in api-client/aiSummary.) */
+export async function fetchAiUsage(days = 30): Promise<AiUsageResponse> {
+  const res = await fetch(`/api/monitor/ai/usage?days=${days}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`ai usage fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as AiUsageResponse;
+}

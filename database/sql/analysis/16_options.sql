@@ -99,23 +99,6 @@ COMMENT ON COLUMN analysis.options_skewness_stats.cross_count_20d          IS 'P
 COMMENT ON COLUMN analysis.options_skewness_stats.days_since_last_cross    IS 'Pre-expiry contrarian metric: trading days since the gap (skewness − neutral) last crossed the neutral anchor, 0 = crossed today. Freshness of the last flip: a small value marks a just-flipped regime; a large value (or the group''s age in days while never crossed) marks an established, unchallenged positioning into expiry.';
 COMMENT ON COLUMN analysis.options_skewness_stats.gap_side_share_20d       IS 'Pre-expiry contrarian metric: fraction of the trailing 20 sessions with the gap (skewness − neutral) at/above neutral, in [0,1]; NaN-gap days are excluded from both numerator and denominator. Measures one-sided crowding: values near 0 or 1 = persistent positioning on one side of neutral into expiry (crowded trade, contrarian fade); values near 0.5 = contested, choppy positioning.';
 
--- Legacy-install data fixes (no-ops on fresh installs): backfill rows
--- whose skew_type predates the column default, and purge the legacy
--- greek_* rows (old per-side ATM-normalized centroid semantics, incl. the
--- removed greek_theta/greek_rho) so the incremental pipeline recomputes
--- them with the new PAIR-level metrics.
-UPDATE analysis.options_skewness_stats
-    SET skew_type = 'oi_moneyness' WHERE skew_type IS NULL;
-DELETE FROM analysis.options_skewness_stats
-    WHERE skew_type LIKE 'greek_%';
-
--- Retired skewness-vs-spot whole-period correlation columns (the
--- Skewness–Spot Whole-Period Correlation chart was removed; the
--- rr25-vs-spot correlations of options_iv_skew_stats are unaffected).
-ALTER TABLE analysis.options_skewness_stats DROP COLUMN IF EXISTS corr_skewness_ma5_vs_spot_ma5;
-ALTER TABLE analysis.options_skewness_stats DROP COLUMN IF EXISTS corr_skewness_ma20_vs_spot_ma20;
-ALTER TABLE analysis.options_skewness_stats DROP COLUMN IF EXISTS corr_skewness_ma60_vs_spot_ma60;
-
 -- Pre-expiry contrarian metrics on the gap (skewness − neutral): the
 -- recency-aware trio, comparable across expiry groups (the legacy
 -- cumulative counter was not carried over). Columns are 0/NULL until
@@ -161,25 +144,6 @@ SELECT public.create_hash_partitions('analysis', 'options_oi_stats', 8);
 
 CREATE INDEX IF NOT EXISTS idx_options_oi_stats_expiry
     ON analysis.options_oi_stats (underlying_code, expiry_date, date);
-
--- Repurpose migration (no-op on fresh installs, where the CREATE TABLE
--- above already has the target shape): the legacy whole-period
--- put/call-ratio corr columns were removed as unused, and the table now
--- stores per-REAL-expiry OI levels/changes — so the collapsed-key FK is
--- dropped and legacy rows (collapsed keys + corr values only, detected
--- as oi_total IS NULL after the ADD COLUMN) are purged for the
--- incremental pipeline to rebuild with real-expiry semantics (missing-PK
--- detection then finds every group missing). ADD COLUMN propagates to
--- the hash partitions automatically.
-ALTER TABLE analysis.options_oi_stats DROP CONSTRAINT IF EXISTS fk_options_oi_stats_expiry;
-ALTER TABLE analysis.options_oi_stats DROP COLUMN IF EXISTS corr_put_call_ratio_vs_spot_ma5;
-ALTER TABLE analysis.options_oi_stats DROP COLUMN IF EXISTS corr_put_call_ratio_vs_spot_ma20;
-ALTER TABLE analysis.options_oi_stats DROP COLUMN IF EXISTS corr_put_call_ratio_vs_spot_ma60;
-ALTER TABLE analysis.options_oi_stats ADD COLUMN IF NOT EXISTS oi_total     NUMERIC(14,2);
-ALTER TABLE analysis.options_oi_stats ADD COLUMN IF NOT EXISTS oi_delta_5d  NUMERIC(14,2);
-ALTER TABLE analysis.options_oi_stats ADD COLUMN IF NOT EXISTS oi_delta_20d NUMERIC(14,2);
-ALTER TABLE analysis.options_oi_stats ADD COLUMN IF NOT EXISTS oi_max_20d   NUMERIC(14,2);
-DELETE FROM analysis.options_oi_stats WHERE oi_total IS NULL;
 
 COMMENT ON TABLE  analysis.options_oi_stats                       IS 'Dedicated per-expiry options OI statistics (per-real-expiry-date — NOT the collapsed open-group convention; see the header note). Per (underlying_code, date, option_type, expiry_date) row: oi_total (calls+puts OI of the expiry group on the date, contracts), oi_delta_5d / oi_delta_20d (change vs 5/20 trading SESSIONS earlier — session offsets index the underlying''s option calendar; NULL when the group had no row at the offset session, e.g. not yet listed), oi_max_20d (max oi_total over the trailing 20 sessions incl. the date; oi_total = oi_max_20d marks a 20-session OI high). CALL and PUT rows hold the SAME value (stats pool calls + puts). No FK to options_expiry_identity (open groups'' real expiry keys are not in the collapsed identity). Built by analysis.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_oi_stats.date                    IS 'Trading date.';
@@ -243,14 +207,6 @@ SELECT public.create_hash_partitions('analysis', 'options_iv_skew_stats', 8);
 
 CREATE INDEX IF NOT EXISTS idx_options_iv_skew_stats_expiry
     ON analysis.options_iv_skew_stats (underlying_code, expiry_date, date);
-
--- Migrate: 10-delta risk reversal added 2026-09-19 (the CREATE TABLE above
--- includes the columns for fresh installs; ADD COLUMN IF NOT EXISTS
--- retro-fits an already-existing table without dropping data). ADD COLUMN
--- propagates to the hash partitions automatically.
-ALTER TABLE analysis.options_iv_skew_stats ADD COLUMN IF NOT EXISTS iv_call10         NUMERIC(10,2);
-ALTER TABLE analysis.options_iv_skew_stats ADD COLUMN IF NOT EXISTS iv_put10          NUMERIC(10,2);
-ALTER TABLE analysis.options_iv_skew_stats ADD COLUMN IF NOT EXISTS risk_reversal_10d NUMERIC(10,2);
 
 COMMENT ON TABLE  analysis.options_iv_skew_stats              IS 'Per-(underlying_code, date, option_type, expiry_date) store of implied-volatility skew statistics for option expiry groups, derived from implied_vol in stats.options_greeks (calibrated from option premiums via Black-76). All IV/skew values are in vol points (percent). Unlike options_skewness_stats (OI-weighted mean moneyness — a positioning metric), this is a pricing metric. FK -> analysis.options_expiry_identity. Built by analysis.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.atm_iv       IS 'IV (vol points, %) of the contract with moneyness (strike/spot) closest to 1.0 in the expiry group.';
@@ -473,11 +429,6 @@ CREATE TABLE IF NOT EXISTS analysis.options_vol_index_vs_spot_price_corr (
 -- Native hash partitions (8) keyed on underlying_code — the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07.
 SELECT public.create_hash_partitions('analysis', 'options_vol_index_vs_spot_price_corr', 8);
-
--- corr_5d added after the table's first release (stride 20d -> 5d at the
--- same time) — idempotent widen for existing deployments.
-ALTER TABLE analysis.options_vol_index_vs_spot_price_corr
-    ADD COLUMN IF NOT EXISTS corr_5d NUMERIC(6,4);
 
 COMMENT ON TABLE  analysis.options_vol_index_vs_spot_price_corr IS 'Rolling correlation between the 30d model-free vol index (analysis.options_vol_index) and the underlying spot close (analysis.options_spot_daily): per session x = ln(spot_t/spot_{t-1}), y = ln(vol_t/vol_{t-1}); corr_5d/20d/60d/255d = Pearson corr of x,y over the trailing 5/20/60/255 sessions (joint-valid pairs only, NULL until the window is full). Append-only sampling: fresh underlyings seed the 5-session stride grid + latest session; each incremental run adds every session strictly after the underlying''s latest stored corr date (one row per new trading day, windows reaching back up to 255 sessions) — stored rows are never rewritten or deleted. Level-vs-level correlation is deliberately NOT stored (spurious on trending series). PK (underlying_code, date); no FK (date-granular). Built by analysis.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_5d  IS 'Pearson corr of daily spot log-return vs daily vol-index log-change over the trailing 5 trading sessions (joint-valid pairs only; NULL until 5 such pairs).';

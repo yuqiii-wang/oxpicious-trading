@@ -47,7 +47,7 @@ ANALYSIS_DESCRIPTION_OFFSETS = (
 # ---------------------------------------------------------------------------
 
 # Same-pool slices materialized (cross-pool comparisons intentionally not
-# materialized — see analysis/industry_sentiments/correlations.py). Pool
+# materialized — see analysis/market_beta/correlations.py). Pool
 # values are static.label_dim SMALLINT codes: industry_basic_stats.pool_size
 # stores codes (0 small / 1 mid / 2 large / 3 all), so the frame filter
 # must compare against codes, never label strings.

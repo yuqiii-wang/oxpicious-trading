@@ -50,7 +50,7 @@ pointing one way (providers/cli -> core, never back):
 CLI::
 
     python -m llm_agents.llm_ask ask --question "…" [--provider zhipu] \
-        [--model glm-5.2] [--lang zh] [--system "…"] [--temperature 0.3] \
+        [--model glm-5.3-flash] [--lang zh] [--system "…"] [--temperature 0.3] \
         [--json]
     python -m llm_agents.llm_ask ask --payload-file … [--json]
 

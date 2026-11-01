@@ -114,6 +114,30 @@ MONITORED_SERVICES: dict[str, tuple[str, str | None]] = {
     # under the stream sub-scope (the always-on services) rather than a
     # monitoring one.
     "database.db_health": ("database", "stream"),
+    # MCP server (llm_agents/mcp, python -m llm_agents.mcp) — always-on
+    # read-only DB query server for MCP clients; the watchdog
+    # starts/restarts it like the pollers. Grouped under the stream
+    # sub-scope (the always-on services); the service name IS the module
+    # name (spawn contract).
+    "llm_agents.mcp": ("database", "stream"),
+    # Docker py-sandbox MCP middleware (llm_agents/sandbox, python -m
+    # llm_agents.sandbox) — always-on daemon delegating LLM-generated
+    # files into the oxpicious-py-sandbox docker container (the
+    # cutepandas py3.12 sandbox). The watchdog supervises the
+    # MIDDLEWARE like the pollers; the CONTAINER half is kept live by
+    # the compose restart policy + HEALTHCHECK plus the middleware's
+    # own `docker start` self-heal (llm_agents/sandbox/docker_api.py).
+    # Grouped under the stream sub-scope; the service name IS the
+    # module name (spawn contract).
+    "llm_agents.sandbox": ("database", "stream"),
+    # Deep-agents HTTP server (llm_agents/deep_agents/server.py, python
+    # -m llm_agents.deep_agents.server) — always-on FastAPI JSON API over
+    # the DeepAgent tool loop; the data_viz API bridge's transport for
+    # the analysis-summary generation. The watchdog starts/restarts it
+    # like the pollers; grouped under the stream sub-scope (the
+    # always-on services); the service name IS the module name (spawn
+    # contract).
+    "llm_agents.deep_agents.server": ("database", "stream"),
     WATCHDOG_SERVICE: ("database", "monitoring"),
 }
 

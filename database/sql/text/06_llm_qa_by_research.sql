@@ -3,18 +3,19 @@
 --  Table: text.llm_qa_by_research — the industry/security LOGIC analog of
 --  text.llm_qa (02_llm_qa.sql): same question/answer + provenance shape,
 --  but each row explains the UNDERLYING industry/security logic (business
---  profile, return sources, risk factors, current market-capital
+--  profile, scenario forecasts, risk factors, current market-capital
 --  interests) instead of a recent price move. Consequently it has NO
 --  is_big_fluctuation.
 --
---  GENERATION CONTRACT (llm_agents.llm_qa_by_research.generation — five
---  separate LLM requests per row): requests 1-4 each produce one
+--  GENERATION CONTRACT (llm_agents.llm_qa_by_research.generation — six
+--  separate LLM requests per row): requests 1-5 each produce one
 --  evaluation dimension — intro (general investors' logic: what it is
---  and does), return (where returns come from), risks (what breaks the
+--  and does), optimistic_forecast (bull-case 6-12m outlook),
+--  pessimistic_forecast (bear-case 6-12m outlook), risks (what breaks the
 --  logic), capitalization (current market-capital interests: cap
 --  structure / where attention sits) — each stored in its own column;
---  the 5th request SUMMARIZES the four dimensions into answer (the
---  row's display content) and assigns logic_label. The four dimension
+--  the 6th request SUMMARIZES the five dimensions into answer (the
+--  row's display content) and assigns logic_label. The five dimension
 --  requests are web-searched; all their reference hits are fast-resolved
 --  into text.news rows and merged into ONE news group (the row's refs
 --  mapping — text.llm_qa_refs FKs text.llm_qa only, so the group IS the
@@ -32,19 +33,20 @@
 CREATE TABLE IF NOT EXISTS text.llm_qa_by_research (
     qa_id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     question       TEXT        NOT NULL,
-    answer         TEXT        NOT NULL,      -- the 5th request's SUMMARY of the four dimensions (the row's display content)
-    context        TEXT,                       -- optional supporting passage
+    answer         TEXT        NOT NULL,      -- the 6th request's SUMMARY of the five dimensions (the row's display content); capped 2000 (10_llm_summary_caps.sql)
+    context        TEXT,                       -- merged per-dimension reference blocks — never rendered; capped 8000 (10_llm_summary_caps.sql)
     intro          TEXT,                       -- dimension 1: general investors' logic — what it is and does
-    return         TEXT,                       -- dimension 2: where returns come from
-    risks          TEXT,                       -- dimension 3: what breaks the logic
-    capitalization TEXT,                       -- dimension 4: current market-capital interests (cap structure / where attention sits)
+    optimistic_forecast TEXT,                  -- dimension 2: the 6-12 month OPTIMISTIC-scenario outlook (bull path, catalysts)
+    pessimistic_forecast TEXT,                 -- dimension 3: the 6-12 month PESSIMISTIC-scenario outlook (bear path, warning signals)
+    risks          TEXT,                       -- dimension 4: what breaks the logic
+    capitalization TEXT,                       -- dimension 5: current market-capital interests (cap structure / where attention sits)
     logic_label    SMALLINT    NOT NULL,       -- dominant investing logic (static.label_dim domain research_logic)
     category       TEXT,                       -- null for now
     industry_id    TEXT,
     sector_id      TEXT,                       -- denormalized parent sector of industry_id
     news_group_id  INTEGER,                    -- reference set (see news_group_items)
     llm_model      TEXT,
-    request_ids    BIGINT[]    NOT NULL DEFAULT '{}',  -- the generation flow's 5 text.llm_requests ids (4 dimensions + summary)
+    request_ids    BIGINT[]    NOT NULL DEFAULT '{}',  -- the generation flow's 6 text.llm_requests ids (5 dimensions + summary)
     dim_refs       JSONB,                      -- per-dimension ref resolution: {"intro": [{"ref","news_id","is_used","ref_time"}…], …}
     language       TEXT        DEFAULT 'zh',
     is_active      BOOLEAN     NOT NULL DEFAULT true,
@@ -52,40 +54,12 @@ CREATE TABLE IF NOT EXISTS text.llm_qa_by_research (
     is_failed_explanation BOOLEAN NOT NULL DEFAULT true,
     qa_date        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    search_tsv     TSVECTOR,                  -- weighted full-text search vector: question A, answer B, five dimensions C, context D
 
     CONSTRAINT uq_llm_qa_by_research UNIQUE (question, news_group_id),
     CONSTRAINT fk_llm_qa_by_research_news_groups FOREIGN KEY (news_group_id)
         REFERENCES text.news_groups (news_group_id)
 );
-
--- Migration: logic_label shipped earlier on 2026-10-27 as TEXT + CHECK
--- (ck_llm_qa_by_research_logic_label) and converted to the label-code
--- contract the same day, while the table was still empty. The CASE maps
--- any row stored in the window; fresh installs (SMALLINT already) skip
--- both statements via the data_type guard.
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema = 'text'
-                 AND table_name = 'llm_qa_by_research'
-                 AND column_name = 'logic_label'
-                 AND data_type = 'text') THEN
-        ALTER TABLE text.llm_qa_by_research
-            DROP CONSTRAINT IF EXISTS ck_llm_qa_by_research_logic_label;
-        ALTER TABLE text.llm_qa_by_research
-            ALTER COLUMN logic_label TYPE smallint
-            USING (CASE logic_label
-                   WHEN 'growth' THEN 0
-                   WHEN 'value' THEN 1
-                   WHEN 'dividend' THEN 2
-                   WHEN 'commodity' THEN 3
-                   WHEN 'cyclical' THEN 4
-                   WHEN 'defensive' THEN 5
-                   WHEN 'quality' THEN 6
-                   WHEN 'theme' THEN 7
-                   ELSE 99 END);
-    END IF;
-END $$;
 
 -- Sector-scope filter for the AI page's L1-only picks.
 CREATE INDEX IF NOT EXISTS ix_llm_qa_by_research_sector
@@ -104,29 +78,17 @@ CREATE INDEX IF NOT EXISTS ix_llm_qa_by_research_logic_qa_date
 CREATE INDEX IF NOT EXISTS ix_llm_qa_by_research_qa_date
     ON text.llm_qa_by_research (qa_date);
 
--- Retro-fit: capitalization (the 4th evaluation dimension) added
--- 2026-10-27 after the table's first ship; the CREATE above already
--- includes it for fresh installs.
-ALTER TABLE text.llm_qa_by_research
-    ADD COLUMN IF NOT EXISTS capitalization TEXT;
-
--- Retro-fit: request_ids (the source-log linkage) added 2026-10-27 —
--- same-day as text.llm_requests (07_llm_requests.sql); existing rows
--- keep the empty default (their requests predate the log).
-ALTER TABLE text.llm_qa_by_research
-    ADD COLUMN IF NOT EXISTS request_ids BIGINT[] NOT NULL DEFAULT '{}';
-
--- Retro-fit: dim_refs (the per-dimension ref resolution behind the AI
--- page's expandable [来源：ref_N] tags) added 2026-10-27; NULL on rows
--- stored before it existed (the UI falls back to the plain-text render).
-ALTER TABLE text.llm_qa_by_research
-    ADD COLUMN IF NOT EXISTS dim_refs JSONB;
+-- Weighted full-text search — same contract as
+-- text.news.search_tsv (the query must be segmented the same way).
+CREATE INDEX IF NOT EXISTS ix_llm_qa_by_research_search_tsv_gin
+    ON text.llm_qa_by_research USING gin (search_tsv);
 
 COMMENT ON COLUMN text.llm_qa_by_research.dim_refs IS
   'Per-dimension REFERENCE RESOLUTION, persisted at store time by '
   'llm_agents.llm_qa_by_research.generation from the request-time '
   'resolve: {"intro": [{"ref": "ref_1", "news_id": 123, "is_used": true, '
-  '"ref_time": "…"} …], "return": …, "risks": …, "capitalization": …} — '
+  '"ref_time": "…"} …], "optimistic_forecast": …, "pessimistic_forecast": '
+  '…, "risks": …, "capitalization": …} — '
   'one entry per search hit of that dimension''s compose request, in hit '
   '(= citation tag) order. is_used is whether the dimension''s stored '
   'answer cites the tag (extract_cited_refs); ref_time the hit''s actual '
@@ -139,9 +101,10 @@ COMMENT ON COLUMN text.llm_qa_by_research.dim_refs IS
 
 COMMENT ON COLUMN text.llm_qa_by_research.request_ids IS
   'The generation flow''s OWN LLM requests as text.llm_requests ids, in '
-  'flow order: the four dimension requests (intro / return / risks / '
-  'capitalization — each a separate single-purpose ask over its own '
-  'searched references) then the 5th summary request. Backlink into the '
+  'flow order: the five dimension requests (intro / optimistic_forecast / '
+  'pessimistic_forecast / risks / capitalization — each a separate '
+  'single-purpose ask over its own searched references) then the 6th '
+  'summary request. Backlink into the '
   'source log: join text.llm_requests to recover each request''s full '
   'payload, response, and context_ref_ids. Collected by '
   'llm_agents.llm_qa_by_research.generation after the requests settle '
@@ -150,7 +113,7 @@ COMMENT ON COLUMN text.llm_qa_by_research.request_ids IS
   'failed (non-fatal).';
 
 COMMENT ON COLUMN text.llm_qa_by_research.answer IS
-  'The 5th request''s SUMMARY of the four dimension answers — the row''s '
+  'The 6th request''s SUMMARY of the five dimension answers — the row''s '
   'display content (the UI shows this as the card body; the dimensions are '
   'the expandable detail). Replaces any earlier whole-answer semantics.';
 
@@ -160,18 +123,28 @@ COMMENT ON COLUMN text.llm_qa_by_research.intro IS
   'the logic a general investor should first understand. NULL when its '
   'request failed.';
 
-COMMENT ON COLUMN text.llm_qa_by_research.return IS
-  'Dimension 2 (returns): where the RETURNS come from under this logic — '
-  'earnings growth, multiple re-rating, dividends/carry, spread, volume '
-  'cycle, …. NULL when its request failed.';
+COMMENT ON COLUMN text.llm_qa_by_research.optimistic_forecast IS
+  'Dimension 2 (optimistic forecast): the 6-12 month OPTIMISTIC-scenario '
+  'outlook — the bull path when favorable conditions (policy support, '
+  'demand upside, technology breakthrough, loose liquidity) play out, its '
+  'return elasticity, main catalysts, and the conditions / watch signals '
+  'that confirm the scenario. NULL when its request failed.';
+
+COMMENT ON COLUMN text.llm_qa_by_research.pessimistic_forecast IS
+  'Dimension 3 (pessimistic forecast): the 6-12 month PESSIMISTIC-scenario '
+  'outlook — the bear path when adverse conditions (demand rollover, '
+  'policy tightening, competitive deterioration, tight liquidity) play '
+  'out, the main risk exposure / drawdown sources, and the conditions / '
+  'warning signals that confirm the scenario. NULL when its request '
+  'failed.';
 
 COMMENT ON COLUMN text.llm_qa_by_research.risks IS
-  'Dimension 3 (risks): what BREAKS the logic — policy/regulatory, demand '
+  'Dimension 4 (risks): what BREAKS the logic — policy/regulatory, demand '
   'rollover, competition/commoditization, technology substitution, '
   'leverage, …. NULL when its request failed.';
 
 COMMENT ON COLUMN text.llm_qa_by_research.capitalization IS
-  'Dimension 4 (current market-capital interests): the underlying''s '
+  'Dimension 5 (current market-capital interests): the underlying''s '
   'current capitalization structure and where market interest sits — cap '
   'size/mix, index weighting, institutional vs retail attention, recent '
   'fund-flow/positioning commentary. NULL when its request failed.';
@@ -206,10 +179,16 @@ COMMENT ON COLUMN text.llm_qa_by_research.is_failed_explanation IS
   '(llm_agents.llm_qa.FAILED_EXPLANATION_KEYWORDS at store time; defaults '
   'true for unassessed rows).';
 
+COMMENT ON COLUMN text.llm_qa_by_research.search_tsv IS
+  'Weighted search tsvector (simple config over segmented text): question A, '
+  'answer B, the five dimension texts C (intro / optimistic_forecast / '
+  'pessimistic_forecast / risks / capitalization), context D. Same contract '
+  'as text.news.search_tsv.';
+
 COMMENT ON TABLE text.llm_qa_by_research IS
   'Research-logic Q&A knowledge base: one row per curated question/answer '
-  'explaining UNDERLYING industry/security logic (intro / return / risks '
-  'sections + logic_label), with the same news-group provenance and '
+  'explaining UNDERLYING industry/security logic (intro / scenario '
+  'forecasts / risks sections + logic_label), with the same news-group provenance and '
   'idempotent (question, news_group_id) write API as text.llm_qa — but, '
   'unlike llm_qa, no is_big_fluctuation (no price-move anchoring). Written '
   'by llm_agents.llm_qa_by_research.';

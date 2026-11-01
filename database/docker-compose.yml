@@ -60,6 +60,39 @@ services:
     networks:
       - supabase_network
 
+  # The dockerized Python sandbox for LLM-generated code (llm_agents/sandbox/).
+  # Runs the sagacient/cutepandas py3.12 data-science image with the
+  # stdlib-only runner API (llm_agents/sandbox/runner.py) — the execution
+  # target the llm_agents.sandbox MCP middleware delegates files to.
+  # restart + HEALTHCHECK keep it live as always; the port is published on
+  # host loopback ONLY (no auth — same trust model as the repo's other
+  # localhost daemons). Session files live in the repo-root
+  # oxpicious-py-sandbox/ dir (gitignored) so they survive container
+  # rebuilds.
+  py-sandbox:
+    build:
+      context: ../llm_agents/sandbox
+    container_name: oxpicious-py-sandbox
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8788:8788"
+    volumes:
+      - ../oxpicious-py-sandbox:/home/pandas/sandbox
+    environment:
+      PY_SANDBOX_ROOT: /home/pandas/sandbox
+      # Read-only DB access for sandbox scripts: libpq env presets every
+      # plain psycopg.connect() to the readonly_analytics role (SELECT-only
+      # at the DATABASE level, database/sql/00_readonly_role.sql) over the
+      # compose network — same contract the old local sandbox had, now
+      # pointing at the db service instead of the host port.
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${SUPABASE_DB:-oxpicious-stats}
+      PGUSER: readonly_analytics
+      PGPASSWORD: ${READONLY_ANALYTICS_PASSWORD:-read0n!y}
+    networks:
+      - supabase_network
+
 # Kept as a cold fallback snapshot of the primary data as of 2026-09-23
 # (pre-migration). Safe to remove once the E: bind-mount primary has proven
 # itself stable for a while.

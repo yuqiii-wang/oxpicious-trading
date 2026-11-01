@@ -54,7 +54,7 @@ import IndustryTrendChart from "./IndustryTrendChart";
 import { stripCodeSuffix } from "./codeTrendSources";
 import type { ECharts } from "echarts";
 import {
-  fetchIndustrySentimentsChart,
+  fetchMarketBetaChart,
   fetchMarketRegimeSpans,
   fetchSecBoardMap,
   fetchTrendSpans,
@@ -157,7 +157,7 @@ export default class CodeTrendChart extends React.Component<
   /** Fetch + map an industry's member-index close series (industryId
    *  mode). Rows stay empty — the industry lines replace the OHLC chart. */
   protected fetchIndustrySource(industryId: string): Promise<CodeTrendData> {
-    return fetchIndustrySentimentsChart(industryId).then((r) => ({
+    return fetchMarketBetaChart(industryId).then((r) => ({
       rows: [],
       name: r.industry_label || r.industry_id,
       dividends: [],

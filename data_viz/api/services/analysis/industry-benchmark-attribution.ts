@@ -21,12 +21,12 @@ import type {
 //  stats.index_basic_stats (same pattern as getPerfAttrAttribution).
 //
 //  Drives the per-industry attribution bar charts (2nd plot onward) on the
-//  Industry Sentiments page in "Benchmark Attribution" mode. The 1st plot is
+//  Market Beta page in "Benchmark Attribution" mode. The 1st plot is
 //  the benchmark price chart (clickable to pick a date); each subsequent plot
 //  shows the attribution bars for ONE selected industry at the clicked date.
 //
 //  Source: analysis.industry_attributions (built by
-//  analysis.industry_sentiments.attributions — truncate-then-recompute).
+//  analysis.market_beta.attributions — truncate-then-recompute).
 // ----------------------------------------------------------------------------
 interface DbIndustryBenchmarkAttributionRow extends QueryResultRow {
   benchmark_code: string;
@@ -152,7 +152,7 @@ export async function getIndustryBenchmarkAttribution(
 //  dropdown — they appear automatically as bars in the per-industry
 //  attribution chart (via getIndustryBenchmarkAttribution).
 //
-//  Drives the benchmark dropdown on the Industry Sentiments page in
+//  Drives the benchmark dropdown on the Market Beta page in
 //  "Benchmark Attribution" mode — the selected benchmark's close price series
 //  is shown as the 1st plot (clickable to pick a date for the attribution
 //  plots below).

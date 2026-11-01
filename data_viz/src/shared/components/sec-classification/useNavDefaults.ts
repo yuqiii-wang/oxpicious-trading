@@ -2,7 +2,9 @@
  * useNavDefaults — the nav's ONCE-per-itemKind default selection: on
  * initial mount, when the classification tree has loaded, auto-select the
  * default (sector/strategy + industry/theme + code) for the current
- * itemKind (see DEFAULTS_BY_KIND). Applied once via a ref guard so
+ * itemKind (see DEFAULTS_BY_KIND); when the canonical code has drifted out
+ * of the industry, the industry's FIRST item is picked instead so every
+ * mode still seeds a default. Applied once via a ref guard so
  * subsequent tree reloads (e.g. exchange filter changes) do not override
  * the user's selection; the guard resets when itemKind changes so the
  * default re-applies on every sec_type switch. Skipped in multi-select
@@ -97,7 +99,11 @@ export function useNavDefaults(args: NavDefaultsArgs): void {
 
     const industry = node.industries.find((i) => i.industry_slug === def.industrySlug);
     if (!industry) return;
-    if (!industry.items.some((it) => it.code === def.itemCode)) return;
+    // Canonical code first; when classification drift moved it elsewhere
+    // (e.g. Stock 000001.SZ → OTHER), fall back to the industry's first
+    // item so EVERY mode still seeds a default selection.
+    const item = industry.items.find((it) => it.code === def.itemCode) ?? industry.items[0];
+    if (!item) return;
 
     // All validation passed — mark as applied NOW (not earlier) so that a
     // stale tree from a different sec_type (e.g. old Index tree while
@@ -112,20 +118,20 @@ export function useNavDefaults(args: NavDefaultsArgs): void {
       if (!sectorId && !strategyId) {
         onStrategyChange?.(def.sectorId);
         onThemeChange?.(def.industrySlug);
-        onItemSelected?.(def.itemCode);
+        onItemSelected?.(item.code);
       } else if (strategyId === def.sectorId && !themeSlug && !selectedItemCode) {
         onThemeChange?.(def.industrySlug);
-        onItemSelected?.(def.itemCode);
+        onItemSelected?.(item.code);
       }
     } else {
       // Default lives in the LEFT column (sector → industry)
       if (!sectorId && !strategyId) {
         onSectorChange(def.sectorId);
         onIndustryChange(def.industrySlug);
-        onItemSelected?.(def.itemCode);
+        onItemSelected?.(item.code);
       } else if (sectorId === def.sectorId && !industrySlug && !selectedItemCode) {
         onIndustryChange(def.industrySlug);
-        onItemSelected?.(def.itemCode);
+        onItemSelected?.(item.code);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

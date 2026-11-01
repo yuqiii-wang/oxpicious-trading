@@ -134,15 +134,6 @@ COMMENT ON COLUMN monitor.db_health.mem_used_bytes IS
     'The instance container''s used memory in bytes from `docker stats '
     '--no-stream` MemUsage. NULL when Docker is unavailable.';
 
--- 2026-10 WAL disk: the sampler already recorded the SLOT-retained WAL via
--- the replication legs; this is the pg_wal DIRECTORY size of each instance
--- (recyclable segments included). Steady state it idles under max_wal_size
--- (recycled-for-reuse); growth beyond ~1.5× max_wal_size means something is
--- PINNING segments — the down/inactive slot case database/monitoring.py
--- alerts on, or checkpoint/replay trouble. database/monitoring.py
--- check_health alerts on the primary's copy of this number per pass.
-ALTER TABLE monitor.db_health ADD COLUMN IF NOT EXISTS wal_dir_bytes bigint;
-
 COMMENT ON COLUMN monitor.db_health.wal_dir_bytes IS
     'Total size of THIS instance''s pg_wal directory (sum of pg_ls_waldir): '
     'recyclable segments included, so it legitimately idles under '

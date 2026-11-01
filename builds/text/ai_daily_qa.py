@@ -273,6 +273,10 @@ async def _store_misses(
         return []
     await bulk_upsert_async(conn, "text.news", news_rows,
                             ["title", "source", "date"])
+    # search_tsv (TSV_SPECS): index the just-written refs.
+    from _common.tokenization import SearchIndexer
+    await SearchIndexer.get().set_search_tsv_async(
+        conn, "text.news", news_rows, only_missing=True)
     rows = await conn.fetch(
         'SELECT news_id, title, source, date FROM text.news '
         'WHERE (title, source, date) IN ('

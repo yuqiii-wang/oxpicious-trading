@@ -6,7 +6,7 @@ import type {
 
 // ---------------------------------------------------------------------------
 //  Industry ETF Contribution — drives the "ETF Contribution" view on the
-//  Industry Sentiments page. Mirrors "Benchmark Attribution" but with ETFs
+//  Market Beta page. Mirrors "Benchmark Attribution" but with ETFs
 //  as the unit of analysis.
 // ---------------------------------------------------------------------------
 

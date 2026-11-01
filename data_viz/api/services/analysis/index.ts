@@ -4,7 +4,7 @@
  */
 export { listMovAveSpreadCodes, getMovAveSpreadChart, getMovAveSpreadChartPairs, getMovAveSpreadChartEma, getMovAveSpreadChartShared, getMovAveSpreadChartExtras, getMarketRegimeSpans, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads/index.js";
 export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution/index.js";
-export { listIndustrySentimentsThemes, listIndustrySentimentsStrategyThemes, getIndustrySentimentsChart, getIndustrySentimentsChartByCode } from "./industry-sentiments/index.js";
+export { listMarketBetaThemes, listMarketBetaStrategyThemes, getMarketBetaChart, getMarketBetaChartByCode } from "./market-beta/index.js";
 export { getIndustryCorrelations } from "./industry-correlations.js";
 export { getIndustryCorrOffsets, listIndustryCorrOffsetBenchmarks, listIndustryCorrOffsetIndustries, invalidateIndustryCorrOffsetCoverage } from "./industry-corr-offsets.js";
 export { listPairPctRatioUniverse, getPairPctRatios } from "./pair-pct-ratios.js";
@@ -23,6 +23,18 @@ export {
   listPeStreaks,
 } from "./pe/index.js";
 export { listDividendDeliveries } from "./dividends.js";
+export {
+  listMarketCrowdednessCodes,
+  getMarketCrowdednessChart,
+  listMarketCrowdednessThemes,
+  listMarketCrowdednessStrategyThemes,
+} from "./market-crowdedness/index.js";
+export {
+  listHotStockMomentumCodes,
+  getHotStockMomentumChart,
+  listHotStockMomentumThemes,
+  listHotStockMomentumStrategyThemes,
+} from "./hot-stock-momentum/index.js";
 export {
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,

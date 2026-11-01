@@ -539,14 +539,13 @@ router.get("/trading-signals/configs", async (req: Request, res: Response) => {
  *  → { sec_type, code, date (echoed window anchor; null = newest close),
  *      recent_window_start, signals: [...] } — EVERY signal event of the
  *  code (newest first): analysis_signals.history_signals (the multi-year
- *  record, BOTH population variants — is_ohlcv_boosted plain/boost twin,
- *  is_typical the day's episode pass) UNION live.live_signals (this
- *  year's recorded breaches), one record per config-day-variant — plus
+ *  record, one population per event since the 2026-11-01 variant-axes
+ *  unlink — is_typical the day's episode pass) UNION live.live_signals
+ *  (this year's recorded breaches), one record per config-day — plus
  *  the last-20-trading-days boundary anchored on `date`: the UI scopes
  *  its history TABLE to rows after it while the code-trend chart draws
- *  every row as a buy/sell marker (the panel's OHLCV + pass toggles
- *  filter client-side). signal_type / signal_sub_type optionally narrow
- *  the history to one signal family. */
+ *  every row as a buy/sell marker. signal_type / signal_sub_type
+ *  optionally narrow the history to one signal family. */
 router.get("/trading-signals/history", async (req: Request, res: Response) => {
   try {
     const secType = typeof req.query.sec_type === "string"

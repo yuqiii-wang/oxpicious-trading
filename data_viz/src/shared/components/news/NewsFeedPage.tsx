@@ -15,8 +15,11 @@ import type { NewsItem } from "@shared/types";
 import PostFeed from "@/shared/components/post-feed/PostFeed";
 import NewsPostCard from "./NewsPostCard";
 
-/** Server-side page size — also imported by NewsPage for the offset math. */
-export const PAGE_SIZE = 50;
+/** Server-side page size — also imported by NewsPage for the offset math.
+ *  10 per page: turning to the next page fetches the next 10 matches
+ *  (offset paging over the same search, ordering is fully determined by
+ *  the server's date/votes/source/news_id ORDER BY). */
+export const PAGE_SIZE = 10;
 
 interface Props {
   items: NewsItem[];

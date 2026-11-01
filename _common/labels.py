@@ -73,6 +73,47 @@ DB — nullable exceptions noted):
                  investing logic a research-logic Q&A row classifies;
                  99 other = the fallback; first text.* LLM-layer enum
                  converted, 2026-10-27)
+  prompt_type   system=0 skills=1 plan=2 internal=3
+                 (text.ai_prompts.prompt_type — the prompt row's role in
+                 a deep-agent run: the standing system prompt / an
+                 approach instruction the UI picker lists / a
+                 generation-plan prompt / the agent's own machinery
+                 prompt seeded from the Python constants; second text.*
+                 LLM-layer enum converted, 2026-10-29)
+  kw_category_type  industry=0 market=1 broadmarket=2 skip=3 adj=4
+                 adv=5 adv_noun=6 adv_verb=7
+                 (static.keyword_maps.category_type — the seeded keyword →
+                 category map's family: canonical-industry rows /
+                 market-description rows / macro-theme rows / low-semantic
+                 function words the search-index tokenization drops / the
+                 grammatical modifier components (大幅/强势/高位/持续) that
+                 compose with the market verbs — kept in token streams,
+                 never extracted; 2026-11-01)
+  kw_market    px_up=0 px_dn=1 sharp_up=2 sharp_dn=3 gap_up=4 gap_dn=5
+               limit_up=6 limit_dn=7 rebound=8 pullback=9 vol_up=10
+               vol_dn=11 divergence=12 bullish=13 bearish=14 volatile=15
+               mood=16 position=17 break_up=18 break_dn=19
+               (static.keyword_maps.category_code when category_type=
+               market — the market-state description a keyword evidences;
+               family-grouped code order: price direction, extremes, gaps,
+               limits, recovery/retracement, participation, divergence,
+               sentiment, crowd mood + positioning, level breaks.
+               放量/缩量 carry the house participation-vs-own-MA
+               semantics, never absolute yuan thresholds)
+  kw_theme     economy=0 monetary=1 fiscal=2 trade=3 reform=4
+               employment=5 environment=6 demographic=7 investment=8
+               consumption_macro=9 prices=10 industrial_policy=11
+               financial_stability=12 (static.keyword_maps.category_code
+               when category_type=broadmarket — the macro-policy theme,
+               which has no catalog industry; former JSON order preserved)
+  kw_pos       noun=0 verb=1 noun_verb=2 function=3 (static.keyword_maps.
+               parts_of_speech — the keyword's dominant lexical class;
+               verb = predicates incl. adjectives, noun_verb = dual-class
+               words like 回调/反弹 used as both, function = 虚词 — the
+               skip rows' adverbs/conjunctions/particles/discourse markers)
+  kw_language  zh=0 en=1 (static.keyword_maps.language — the keyword's
+               language; the seed files default to zh, the English rows
+               in statics/08_seed_english.sql carry en explicitly)
 
 PENDING domains (vocabulary registered in label_dim and the mirrors, but
 the target columns are STILL TEXT and the writers still emit strings —
@@ -88,7 +129,8 @@ sector_id / exchange (API-facing identity and filter columns; exchange
 additionally blocked by a partition-key table), signal_type /
 signal_sub_type (open family identifiers), scale_method
 (reserved vocabulary), and the REMAINING text.* LLM-layer enums
-(research_logic converted 2026-10-27 — the module mirror below).
+(research_logic 2026-10-27, prompt_type 2026-10-29 — the module mirror
+below).
 
 industry_id STAYS TEXT in the DB (API-facing identity and filter
 column). For frame-only traffic use the INTERNAL codes below: attach
@@ -145,8 +187,8 @@ SIGNAL_TYPE_CODE: dict[str, int] = {
     # rebound (2026-10-26, user-directed): the drop→rebound→resolution
     # family — the ma-spread rebound study's graduates as rule cells
     # (capitulation trough-break BUY, failed-reclaim exit-timing SELL,
-    # full-reclaim continuation BUY), each in a PLAIN and a
-    # PE-conditioned variant (the is_pe_boosted PK axis)
+    # full-reclaim continuation BUY; the PE-conditioned variant half
+    # unlinked 2026-11-01 — the plain population only)
     "rebound": 9,
     # macd (2026-10-26): the classic MACD crossover family — the
     # typical EMA study's product (the classic 12/26/9 spans, ema12/
@@ -615,10 +657,9 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # the REBOUND family (2026-10-26, user-directed — the ma-spread
     # rebound study's graduates, temp_scripts/ma_spread_rebound_study.py
     # + docs/ma_spread_rebound_study_2026-10-26.md): the causal
-    # drop→rebound→resolution episodes per the anchor window W. Each
-    # sub type emits PLAIN and PE-conditioned cells (the is_pe_boosted
-    # PK axis; the gate = the code's own trailing PE-percentile
-    # condition riding rule_params.bar_def.pe_gate).
+    # drop→rebound→resolution episodes per the anchor window W (the
+    # PE-conditioned variant half unlinked 2026-11-01 — the plain
+    # population only).
     #   capit  BUY  the CAPITULATION trough-break (the further-drop
     #          resolution; the study's strongest fwd20 population after
     #          big drops — PE barbell: cheap strongest +6.6% fwd20,
@@ -754,6 +795,93 @@ RESEARCH_LOGIC_CODE: dict[str, int] = {
     "cyclical": 4, "defensive": 5, "quality": 6, "theme": 7,
     "other": 99,
 }
+# text.ai_prompts.prompt_type — the prompt row's role in a deep-agent
+# run: 0 system = the run's standing prompt, 1 skills = an approach
+# instruction (the UI Skills picker's rows), 2 plan = a generation-plan
+# prompt, 3 internal = the agent's own machinery prompt (planner system,
+# step addendum, fork addenda — seeded from the Python constants, hidden
+# from the Skills picker). Second text.* LLM-layer enum converted
+# (2026-10-29), internal added 2026-11-01
+PROMPT_TYPE_CODE: dict[str, int] = {"system": 0, "skills": 1, "plan": 2,
+                                    "internal": 3}
+# text.deep_agent_contexts.kind — which payload a context row carries.
+# Code order = the run's data flow: the plan node's plan JSON, each
+# step's input notes and tick result note, a spawned subagent's final
+# answer, and the runner's HARDCODED result node's fixed output (the
+# run's final answer document — the UI Result view's display source).
+# Third text.* LLM-layer enum converted (2026-10-31)
+AGENT_CONTEXT_KIND_CODE: dict[str, int] = {
+    "plan": 0, "step-input": 1, "step-result": 2,
+    "subagent-result": 3, "final-result": 4,
+}
+# text.search_lexicon_df.search_table — which searchable table a high-DF
+# lexeme row's document frequency counts. Code order = TSV_SPECS order
+# (_common/tokenization/search_indexing.py): the news corpus first, then
+# the Q&A tables; fourth text.* vocabulary (2026-11-01)
+SEARCH_TABLE_CODE: dict[str, int] = {
+    "news": 0, "news_comments": 1, "news_digestions": 2,
+    "llm_qa": 3, "llm_qa_by_ask": 4, "llm_qa_by_research": 5,
+}
+
+# static.keyword_maps (database/sql/static/keyword_maps/) — the seeded
+# keyword → category map for news-text auditing (2026-11-01). Industry rows
+# carry industry_id TEXT (the standing exception); the other two columns
+# below decode its categorical columns.
+# kw_category_type — keyword_maps.category_type: which family the row's
+# category belongs to. Market / broadmarket keywords are extracted as
+# keywords but never set text.news.industry_id. Skip rows are the
+# low-semantic function-word vocabulary (其实/也/就是说; the/a/of — en rows
+# carry language=1, seeded in 05_seed_skip.sql) the search-index
+# tokenization post-process drops from every token stream — never
+# extracted as keywords, both target columns NULL. The component families
+# 4..7 (adj / adv / adv_noun / adv_verb — 大幅/强势/高位/持续, seeded in
+# 06_seed_components.sql) are the grammatical modifier layer that composes
+# with the market direction verbs in the keyword n-gram matcher — kept in
+# the token streams (unlike skip), never extracted (like skip), both
+# target columns NULL (2026-11-01).
+KW_CATEGORY_TYPE_CODE: dict[str, int] = {
+    "industry": 0, "market": 1, "broadmarket": 2, "skip": 3,
+    "adj": 4, "adv": 5, "adv_noun": 6, "adv_verb": 7,
+}
+# kw_market — keyword_maps.category_code when category_type=market: the
+# market-state description the keyword evidences (下跌 → px_dn, 放量 →
+# vol_up, …). Family-grouped code order: price direction, extremes, gaps,
+# limits, recovery/retracement, participation, divergence, sentiment,
+# crowd mood + positioning, technical level breaks (up/dn pairs).
+KW_MARKET_CODE: dict[str, int] = {
+    "px_up": 0, "px_dn": 1, "sharp_up": 2, "sharp_dn": 3,
+    "gap_up": 4, "gap_dn": 5, "limit_up": 6, "limit_dn": 7,
+    "rebound": 8, "pullback": 9, "vol_up": 10, "vol_dn": 11,
+    "divergence": 12, "bullish": 13, "bearish": 14, "volatile": 15,
+    "mood": 16, "position": 17, "break_up": 18, "break_dn": 19,
+}
+# kw_pos — keyword_maps.parts_of_speech: the keyword's dominant lexical
+# class. verb = predicates (verbs AND adjectives — both negate the same
+# way: 并不强势); noun_verb = dual-class words used as both (回调 as "a
+# pullback" / "to pull back"); noun = things (银行, 涨幅, 情绪); function =
+# 虚词 (adverbs / conjunctions / particles / discourse markers — the skip
+# rows' class, no lexical content). Industry keywords are topic nouns; the
+# audit's negation handling keys on keyword_maps.is_negation (curated,
+# seeded true for verb/noun_verb + the evaluative nouns
+# 利好/利空/牛市/熊市/恐慌/通胀/通缩).
+KW_POS_CODE: dict[str, int] = {
+    "noun": 0, "verb": 1, "noun_verb": 2, "function": 3,
+}
+# kw_language — keyword_maps.language: the keyword's language. The seed
+# files default to zh (0); the English rows in statics/08_seed_english.sql
+# carry en (1) explicitly.
+KW_LANGUAGE_CODE: dict[str, int] = {
+    "zh": 0, "en": 1,
+}
+# kw_theme — keyword_maps.category_code when category_type=broadmarket:
+# the macro-policy theme (no catalog industry). Order = the former
+# downloads/macro/gov/keywords.json broadmarket key order.
+KW_THEME_CODE: dict[str, int] = {
+    "economy": 0, "monetary": 1, "fiscal": 2, "trade": 3, "reform": 4,
+    "employment": 5, "environment": 6, "demographic": 7, "investment": 8,
+    "consumption_macro": 9, "prices": 10, "industrial_policy": 11,
+    "financial_stability": 12,
+}
 
 LABEL_MAPS: dict[str, dict[str, int]] = {
     "regime": REGIME_CODE,
@@ -787,6 +915,14 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "roof_floor_method": ROOF_FLOOR_METHOD_CODE,
     "rf_rebound_outcome": RF_REBOUND_OUTCOME_CODE,
     "research_logic": RESEARCH_LOGIC_CODE,
+    "prompt_type": PROMPT_TYPE_CODE,
+    "agent_context_kind": AGENT_CONTEXT_KIND_CODE,
+    "search_table": SEARCH_TABLE_CODE,
+    "kw_category_type": KW_CATEGORY_TYPE_CODE,
+    "kw_market": KW_MARKET_CODE,
+    "kw_pos": KW_POS_CODE,
+    "kw_language": KW_LANGUAGE_CODE,
+    "kw_theme": KW_THEME_CODE,
 }
 
 # code -> label per domain (int keys)
@@ -825,6 +961,9 @@ PORTFOLIO_SUB_TYPE_LABEL: dict[int, str] = CODE_MAPS["portfolio_sub_type"]
 ROOF_FLOOR_METHOD_LABEL: dict[int, str] = CODE_MAPS["roof_floor_method"]
 RF_REBOUND_OUTCOME_LABEL: dict[int, str] = CODE_MAPS["rf_rebound_outcome"]
 RESEARCH_LOGIC_LABEL: dict[int, str] = CODE_MAPS["research_logic"]
+PROMPT_TYPE_LABEL: dict[int, str] = CODE_MAPS["prompt_type"]
+AGENT_CONTEXT_KIND_LABEL: dict[int, str] = CODE_MAPS["agent_context_kind"]
+SEARCH_TABLE_LABEL: dict[int, str] = CODE_MAPS["search_table"]
 
 # Display order for responses that list a domain's vocabulary —
 # pool_size deliberately NOT in code order here: API/UI lists keep the
@@ -863,6 +1002,14 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "roof_floor_method": tuple(ROOF_FLOOR_METHOD_CODE),
     "rf_rebound_outcome": tuple(RF_REBOUND_OUTCOME_CODE),
     "research_logic": tuple(RESEARCH_LOGIC_CODE),
+    "prompt_type": tuple(PROMPT_TYPE_CODE),
+    "agent_context_kind": tuple(AGENT_CONTEXT_KIND_CODE),
+    "search_table": tuple(SEARCH_TABLE_CODE),
+    "kw_category_type": tuple(KW_CATEGORY_TYPE_CODE),
+    "kw_market": tuple(KW_MARKET_CODE),
+    "kw_pos": tuple(KW_POS_CODE),
+    "kw_language": tuple(KW_LANGUAGE_CODE),
+    "kw_theme": tuple(KW_THEME_CODE),
 }
 
 

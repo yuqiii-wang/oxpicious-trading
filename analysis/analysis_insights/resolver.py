@@ -21,7 +21,7 @@ These semantics are the CONTRACT mirrored by
 ``data_viz/api/services/analysis-insights.service.ts`` (the Express
 fast path for table metrics — the spec jsonb drives both, keep them in
 sync) and documented in the registry DDL header
-(``database/sql/analysis/static/analysis_insights/01_insight_templates.sql``).
+(``database/sql/analysis/static/analysis_insight_metrics/01_insight_templates.sql``).
 
 Lean by design: psycopg + stdlib only (spawned per Ask AI modal open);
 no pandas anywhere in the module graph.
@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from _common.db_commons import get_read_db_connection
 from _common.labels import SEC_TYPE_CODE, SEC_TYPE_LABEL
 
-TABLE = "analysis_insights.insight_templates"
+TABLE = "analysis_insight_metrics.insight_templates"
 
 # per-sec_type daily baseline views (close + ma{5,20,60,120,255} cols)
 DAILY_VIEWS = {
@@ -120,12 +120,30 @@ def load_page_templates(conn, tab: str, page: str) -> List[Dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT template_id, tab, page, metric, label, unit, "
-            f"description, spec FROM {TABLE} "
+            f"description, spec, db_keywords FROM {TABLE} "
             f"WHERE tab = %s AND page = %s ORDER BY ordinal",
             (tab, page),
         )
         cols = [c.name for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def load_page_doc(conn, tab: str, page: str) -> Dict[str, Any]:
+    """The page's doc row (title / doc / biz keywords), {} when unknown."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT tab, page, title, doc, keywords "
+            "FROM analysis_insight_metrics.insight_page_docs "
+            "WHERE tab = %s AND page = %s",
+            (tab, page),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return {}
+    return {
+        "tab": row[0], "page": row[1], "title": row[2],
+        "doc": row[3], "keywords": list(row[4]) if row[4] else [],
+    }
 
 
 def _shift_years(d: dt.date, years: int) -> dt.date:
@@ -480,6 +498,8 @@ def resolve_page(
             "pct_rank": None,
             "pct_rank_n": None,
             "source_kind": spec.get("source", {}).get("kind", "table"),
+            # generated db-search recipe (table / index / conditions jsonb)
+            "db_keywords": tpl.get("db_keywords") or {},
             "computed": False,
             "unresolved": None,
         }
@@ -537,11 +557,13 @@ def resolve(
     conn = get_read_db_connection()
     try:
         metrics = resolve_page(conn, tab, page, ctx, only=only)
+        page_doc = load_page_doc(conn, tab, page)
     finally:
         conn.close()
     return {
         "tab": tab,
         "page": page,
+        "page_doc": page_doc,
         "code": ctx.code,
         "sec_type": ctx.sec_type,
         "industry": ctx.industry,

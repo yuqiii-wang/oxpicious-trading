@@ -29,25 +29,18 @@ types per anchor window W ∈ REBOUND_WINDOWS:
                              The next rebound measures the strongest
                              (de-overlapped fwd20 +4.32% / fwd60
                              +7.91%, new-low rate 19% vs 77% base) —
-                             the study's H2 graduate. A mid/rich-PE
-                             phenomenon (zero cheap-PE reclaims in the
-                             study) → the PE-boosted gate.
+                             the study's H2 graduate.
 
-Each sub type runs TWICE per (code, trend) cell — the PLAIN
-population (is_pe_boosted FALSE, no valuation condition) and the
-PE-CONDITIONED variant (is_pe_boosted TRUE, the candidate masks
-AND-gated by the code's own PE-percentile condition
-bar_def.pe_gate): the is_pe_boosted PK axis
-(2026-10-26 user-directed, the is_ohlcv_boosted/is_in_portfolio
-PK-member precedent) keeps the two variants SEPARATE rows whose
-populations are judged independently by the same gate.
-
-PE conditioning gates (the study's TP1/TP2 cross tables):
-  capit    the PE EXTREMES only — pe_pct <= 0.4 or >= 0.6 (the
-           middle-PE capitulation is the dead zone: ±1% fwd60);
-  fail     pe_pct >= 0.2 — the further-drop claim only holds outside
-           cheap PE (stalled rebounds recover there, +2.04% fwd20);
-  reclaim  pe_pct >= 0.2 — reclaims are a mid/rich phenomenon.
+Each sub type ran TWICE per (code, trend) cell until the 2026-11-01
+VARIANT-AXIS UNLINK (user-directed "keep the pe and ohlcv boosted
+logic in py, however, offload to unlink from the computation ...
+delete is pe and ohlcv boosted col as from pk"): the PE-CONDITIONED
+variant (is_pe_boosted TRUE — the candidate masks AND-gated by the
+code's own PE-percentile condition; capit the PE EXTREMES barbell,
+fail/reclaim outside-cheap ≥ 0.2) left the DB PKs and this engine
+ships the PLAIN population only. The gate logic (the PE rank + the
+gating vocabulary) stays dormant in engines/_pe_boost for a future
+re-link.
 
 The recorded signal value reads the claim strength in the trade's
 direction (the rf_break directional-breach convention): capit = the
@@ -60,20 +53,17 @@ drop-depth bars are the candidates the cell gate self-picks from
 
 COMPUTE LAYOUT: the anchor highs are whole-frame grouped ops
 (grouped_rolling_agg + grouped_shift — GPU). The per-code causal
-episode state machine and the PE trailing-percentile rank are the
-SANCTIONED HOST BOUNDARY (a multi-state machine / trailing rank has
-no vectorized form): the PE rank lives in the SHARED _pe_boost
-package (engines._pe_boost.PeBoostGate.attach — the same
-host_array-unwrapped per-code boundary, now the other variant
-families' too); the episode machine stays here. The boolean masks
-re-enter the frame as 0/1 event columns and compare GPU-side, so no
-pd.Series(host_ndarray, index=...) hybrid is ever built. The PE rank
-is today's PE among the code's own PRIOR PE readings (strictly
-before t, min REBOUND_PE_MIN_PERIODS — no look-ahead; NaN before the
-warmup or where the valuation store has no row). The PE gate
-vocabulary (extremes / not_cheap) and its bar_def fragment live in
-the gate class too (the REBOUND_PE_* config names are aliases of the
-shared constants).
+episode state machine is the SANCTIONED HOST BOUNDARY (a multi-state
+machine has no vectorized form); the episode machine stays here. The
+boolean masks re-enter the frame as 0/1 event columns and compare
+GPU-side, so no pd.Series(host_ndarray, index=...) hybrid is ever
+built. The PE trailing-percentile rank (today's PE among the code's
+own PRIOR PE readings — the unlinked variant's gate input, joined by
+the fetch) lives dormant in the SHARED _pe_boost package
+(engines._pe_boost.PeBoostGate.attach) with the gate vocabulary
+(extremes / not_cheap) and its bar_def fragment (the REBOUND_PE_*
+config names are aliases of the shared constants) — nothing calls it
+since the 2026-11-01 axis unlink.
 """
 from __future__ import annotations
 
@@ -83,19 +73,12 @@ import pandas as pd
 from _common.df_utils import grouped_rolling_agg, grouped_shift, host_array
 
 from analysis.analysis_signals import config as cfg
-from analysis.analysis_signals.engines._pe_boost import PeBoostGate
 from analysis.analysis_signals.engines.rule_base import Candidate, RuleEntry
 from analysis.trends import REENTRY_EXIT_DAYS
 from analysis.analysis_signals.fetch.inputs import fetch_rebound_inputs
 
 # the resolution kinds: (label fragment, action)
 _RB_KINDS = (("capit", "buy"), ("fail", "sell"), ("reclaim", "buy"))
-
-# the PE gate per resolution kind (the study's TP1/TP2 cross tables —
-# the shared _pe_boost vocabulary): the capitulation is the PE EXTREMES
-# barbell, the fail/reclaim claims only exist outside cheap PE
-_PE_RULE = {"capit": "extremes", "fail": "not_cheap",
-            "reclaim": "not_cheap"}
 
 
 def episode_events(close: np.ndarray, hi: np.ndarray, depth: float,
@@ -207,15 +190,6 @@ class ReboundEntry(RuleEntry):
         close = host_array(frame["price"])
         bnd = np.flatnonzero(np.r_[True, codes[1:] != codes[:-1]])
         bnd = np.r_[bnd, len(codes)]
-        # the SHARED PE-boost gates (engines._pe_boost): one per
-        # resolution kind (the capitulation barbell is the "extremes"
-        # gate, the fail/reclaim claims the "not_cheap" gate) —
-        # prepare attaches the per-code trailing PE rank ONCE (the
-        # sanctioned host boundary, shared across the gates)
-        pe_gates = {kind: PeBoostGate(_PE_RULE[kind])
-                    for kind, _ in _RB_KINDS}
-        for gate in pe_gates.values():
-            gate.prepare(frame)
 
         for w in cfg.REBOUND_WINDOWS:
             hi = host_array(frame[f"_rb_hi{w}"])
@@ -247,14 +221,9 @@ class ReboundEntry(RuleEntry):
                         dps[pos] = np.abs([v for _, v in evs]) / unit
                     frame[f"_rb{w}_{kind}_d{dkey}_dp"] = dps
 
-            # one run_cells call per (kind, pe variant) — the two depth
-            # bars are the CANDIDATES the cell gate self-picks from
-            # (deepest first, the tie → first convention); separate
-            # calls per variant keep the plain and PE-conditioned
-            # populations and pooled verdicts independent. The PLAIN
-            # candidates are built once and reused verbatim by the
-            # gate's pass (the AND-gated masks + the pe_gate fragment
-            # are the variant's only differences)
+            # one run_cells call per kind — the two depth bars are the
+            # CANDIDATES the cell gate self-picks from (deepest first,
+            # the tie → first convention)
             for kind, action in _RB_KINDS:
                 base_ref = 90.0 if kind == "fail" else 0.0
                 unit_note = ("recovery-ratio R pct (the sell convention "
@@ -296,19 +265,12 @@ class ReboundEntry(RuleEntry):
                                 "window": w,
                                 "min_drop_pct": depth * 100.0,
                                 "shift": 1,
-                                "pe_gate": None,
                             },
                         },
                     ))
                 r, h = self.run_cells(
                     frame, f"rebound_{kind}_{w}", action, candidates,
-                    **{**call, "pe_boosted": False},
-                )
-                rules.extend(r)
-                history.extend(h)
-                r, h = pe_gates[kind].run_pass(
-                    self, frame, f"rebound_{kind}_{w}", action,
-                    candidates, call,
+                    **call,
                 )
                 rules.extend(r)
                 history.extend(h)

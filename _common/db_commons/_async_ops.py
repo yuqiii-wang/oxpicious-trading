@@ -46,22 +46,22 @@ DEFAULT_MAX_REPLICA_LAG_MB = 4096.0
 # the standby is 4 GB behind — back-to-back 100K-row chunks otherwise
 # run the primary's disk fsync-bound at max duty cycle for the whole
 # load, and frequent small bulk writes (daily incrementals, streaming
-# upserts) never trip the cap at all. A short 0.1s gap before each chunk
+# upserts) never trip the cap at all. A short 0.5s gap before each chunk
 # breaks up sustained write bursts (a light duty-cycle relief; the
 # reactive lag cap above remains the hard bound that halts writers when
 # replay actually falls behind). Cheap by design: a 70-chunk force
-# rebuild pays ~7s extra; a single-chunk daily write pays 0.1s. None
+# rebuild pays ~35s extra; a single-chunk daily write pays 0.5s. None
 # disables (hot paths opt out explicitly).
-DEFAULT_CHUNK_PAUSE_S = 0.1
+DEFAULT_CHUNK_PAUSE_S = 0.5
 
 # Escalation for LARGE bulk writes: a force rebuild / backfill / schema
 # migration whose write reaches LARGE_BULK_CHUNKS commit chunks holds the
-# disk fsync-bound for many minutes, where the 0.1s default gap is too
+# disk fsync-bound for many minutes, where the 0.5s default gap is too
 # thin to keep the write disk (and the replica replay) cool. Such writes
 # pause LARGE_BULK_PAUSE_S per chunk instead — unless the caller passed
 # an explicit chunk_pause_s (their explicit value wins, incl. None).
 LARGE_BULK_CHUNKS = 20
-LARGE_BULK_PAUSE_S = 3.0
+LARGE_BULK_PAUSE_S = 10.0
 
 
 def resolve_chunk_pause_s(
@@ -70,7 +70,7 @@ def resolve_chunk_pause_s(
     """The between-chunk cool-down for one write of ``n_chunks`` chunks.
 
     The caller's explicit ``chunk_pause_s`` wins; the DEFAULT escalates
-    to ``LARGE_BULK_PAUSE_S`` (3s) once the write is LARGE (>=
+    to ``LARGE_BULK_PAUSE_S`` (10s) once the write is LARGE (>=
     ``LARGE_BULK_CHUNKS`` commit chunks) — the disk-duty-cycle relief
     for large bulk writes (force rebuilds, backfills, migrations).
     """

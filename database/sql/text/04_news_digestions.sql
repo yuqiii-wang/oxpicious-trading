@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS text.news_digestions (
     sentiment_level DOUBLE PRECISION,             -- LLM sentiment score, [-5, 5]
     llm_model       TEXT,                         -- model that produced the digestion
     created_at      TIMESTAMPTZ       NOT NULL DEFAULT now(),
+    search_tsv      TSVECTOR,                     -- weighted full-text search vector: summary B
 
     CONSTRAINT pk_news_digestions PRIMARY KEY (news_id),
     CONSTRAINT fk_news_digestions_news FOREIGN KEY (news_id)
@@ -29,6 +30,11 @@ CREATE TABLE IF NOT EXISTS text.news_digestions (
 -- Industry/day sentiment rolls and UI nav (mirrors ix_news_industry_date).
 CREATE INDEX IF NOT EXISTS ix_news_digestions_industry_date
     ON text.news_digestions (industry_id, date DESC);
+
+-- Weighted full-text search — same contract as
+-- text.news.search_tsv (the query must be segmented the same way).
+CREATE INDEX IF NOT EXISTS ix_news_digestions_search_tsv_gin
+    ON text.news_digestions USING gin (search_tsv);
 
 COMMENT ON COLUMN text.news_digestions.news_id IS
   'Parent article in text.news. Primary key: one digestion per article; '
@@ -45,6 +51,10 @@ COMMENT ON COLUMN text.news_digestions.sentiment_level IS
   'LLM-assigned sentiment score in [-5, 5] (-5 = most negative, +5 = most '
   'positive, 0 = neutral). NULL when the digestion produced no score. '
   'Guarded by ck_news_digestions_sentiment.';
+
+COMMENT ON COLUMN text.news_digestions.search_tsv IS
+  'Weighted search tsvector (simple config over segmented text): summary B. '
+  'Same contract as text.news.search_tsv.';
 
 COMMENT ON TABLE text.news_digestions IS
   'Per-article LLM digestion: summary + sentiment_level in [-5, 5], linked '

@@ -15,8 +15,8 @@
      INCREMENTAL for target dates + catch-up dates where pair rows
      exist but industry rows do not).
   4. Register written dates in the map + post-create the secondary index,
-     then refresh the API-facing code-summary rollup
-     (stats.cross_stats_code_summary).
+     then refresh the API-facing rollups (stats.cross_stats_code_summary
+     + stats.cross_stats_benchmark_weight_summary).
 
 ``run_corr_update(conn)`` (the ``--corr`` sub-command) recomputes
 corr_20d/60d/255d for grid dates and upserts them onto existing rows
@@ -52,6 +52,7 @@ from builds.cross_stats.config import (
     SET_WORK_MEM_SQL,
     SUMMARY_TABLE,
     TABLE,
+    WEIGHT_SUMMARY_TABLE,
 )
 from builds.cross_stats.fetch import (
     fetch_codes_with_composition,
@@ -71,6 +72,8 @@ from builds.cross_stats._pair_offsets import (
     PAIR_WEIGHTED_UPDATE_SQL_INCREMENTAL,
 )
 from builds.cross_stats._summary import (
+    benchmark_weight_summary_is_stale,
+    refresh_benchmark_weight_summary,
     refresh_code_summary,
     summary_is_stale,
 )
@@ -289,14 +292,19 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
                 )
             target_dates = actionable
         if not target_dates:
-            # No-op run: the summary rollup still needs a refresh when the
-            # last data-writing run predates it (or the summary table is
-            # new/empty). The staleness probe touches only the tiny dates
-            # map + summary PK, so steady-state no-op runs stay cheap.
+            # No-op run: the summary rollups still need a refresh when the
+            # last data-writing run predates them (or a rollup table is
+            # new/empty). The staleness probes touch only the tiny dates
+            # map + rollup PKs, so steady-state no-op runs stay cheap.
             if await summary_is_stale(conn):
                 logger.info("    -> code summary stale; refreshing it now "
                       "(one-time after the last data write)...")
                 await refresh_code_summary(conn)
+            if await benchmark_weight_summary_is_stale(conn):
+                logger.info("    -> benchmark weight summary stale; "
+                      "refreshing it now (one-time after the last data "
+                      "write)...")
+                await refresh_benchmark_weight_summary(conn)
             logger.info("    -> cross_stats up to date; nothing to do.")
             logger.info(f"\n  cross_stats wall time: {time.time() - t0:.1f}s")
             return
@@ -507,20 +515,28 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
                     f"{sorted(masked)}")
     logger.info(msg)
 
-    # ---- Step 5b: refresh the API-facing code summary -----------------
+    # ---- Step 5b: refresh the API-facing rollups -----------------------
     # Data was written → membership/dates changed → always refresh. The
-    # API (perf-attr codes/themes, intraday benchmark dropdown) reads
-    # stats.cross_stats_code_summary instead of re-aggregating the 100M+
-    # row main table per request. A run can also reach here having
-    # written nothing (actionable dates existed but every subject
-    # skipped) — then the refresh only runs when the cheap staleness
-    # probe says the rollup lags; re-aggregating an unchanged 100M-row
-    # table costs minutes for nothing.
-    logger.info(f"\n[5/5b] Refreshing {SUMMARY_TABLE}...")
+    # API reads stats.cross_stats_code_summary (perf-attr codes/themes,
+    # intraday benchmark dropdown) and
+    # stats.cross_stats_benchmark_weight_summary (sec-alloc-live
+    # attribution cs_weight) instead of re-aggregating the 100M+ row main
+    # table per request. A run can also reach here having written nothing
+    # (actionable dates existed but every subject skipped) — then the
+    # refresh only runs when the cheap staleness probe says the rollup
+    # lags; re-aggregating an unchanged 100M-row table costs minutes for
+    # nothing.
+    logger.info(f"\n[5/5b] Refreshing {SUMMARY_TABLE} + "
+                f"{WEIGHT_SUMMARY_TABLE}...")
     if written or await summary_is_stale(conn):
         await refresh_code_summary(conn)
     else:
-        logger.info("    -> no rows written and summary fresh; skipped")
+        logger.info("    -> no rows written and code summary fresh; skipped")
+    if written or await benchmark_weight_summary_is_stale(conn):
+        await refresh_benchmark_weight_summary(conn)
+    else:
+        logger.info("    -> no rows written and benchmark weight summary "
+                    "fresh; skipped")
 
     logger.info(f"\n  cross_stats wall time: {time.time() - t0:.1f}s")
 

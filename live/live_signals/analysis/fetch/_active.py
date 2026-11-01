@@ -119,12 +119,10 @@ async def fetch_active_signals(
     bar; the is_in_portfolio tier rows are excluded too (the schema's
     tier flag — the hedge family's mov_rsi SOURCE layer rides it since
     the 2026-10-24 fresh trio; those cells fire only inside their
-    portfolio coordination, never standalone), and so are the SHARED
+    portfolio coordination, never standalone). The shared
     VARIANT-AXIS cells (2026-10-26: is_pe_boosted / is_ohlcv_boosted
-    TRUE — the analysis tier's conditioned populations; the live
-    breach check has no PE / turnover condition machinery, so a
-    variant cell would fire its bar without the confirmation — their
-    events live in the history tier only)."""
+    TRUE) left the schema 2026-11-01 (the axes unlinked from the PKs
+    and the emitters) — no exclusion needed any more."""
     live_type_codes = [
         SIGNAL_TYPE_CODE[t] for t in sorted(SIGNAL_VALUE_SOURCE)
     ]
@@ -164,7 +162,6 @@ async def fetch_active_signals(
         f"  AND s.signal_type = ANY($3) "
         f"  AND s.action <> {ACTION_CODE['wait']} "
         f"  AND NOT s.is_in_portfolio "
-        f"  AND NOT s.is_pe_boosted AND NOT s.is_ohlcv_boosted "
         f"ORDER BY s.signal_type, s.signal_sub_type, s.trend, "
         f"         s.regime_state, s.action",
         # the stored sec_type / signal_type columns are SMALLINT label
@@ -221,10 +218,9 @@ async def fetch_active_signals(
 async def fetch_active_codes(conn: Connection, sec_type: str) -> list[str]:
     """Codes with rule cells of the LIVE-WIRED families for the
     sec_type (the batch mode's universe) — wait rows excluded, the
-    observational records never define the live universe, the
+    observational records never define the live universe, and the
     is_in_portfolio tier rows never define it either (the schema's
-    tier flag), and neither do the shared VARIANT-AXIS cells (the
-    analysis tier's conditioned populations — history-only)."""
+    tier flag)."""
     live_type_codes = [
         SIGNAL_TYPE_CODE[t] for t in sorted(SIGNAL_VALUE_SOURCE)
     ]
@@ -233,7 +229,6 @@ async def fetch_active_codes(conn: Connection, sec_type: str) -> list[str]:
         f"WHERE sec_type = $1 AND signal_type = ANY($2) "
         f"  AND action <> {ACTION_CODE['wait']} "
         f"  AND NOT is_in_portfolio "
-        f"  AND NOT is_pe_boosted AND NOT is_ohlcv_boosted "
         f"ORDER BY code",
         SEC_TYPE_CODE[sec_type], live_type_codes,
     )

@@ -71,7 +71,7 @@ __all__ = [
     # Fixed between-chunk cool-down (disk duty-cycle relief + replica
     # replay headroom) — the always-on half of the bulk-write throttle.
     # Large writes (>= LARGE_BULK_CHUNKS chunks) auto-escalate the
-    # default pause to LARGE_BULK_PAUSE_S (3s) via resolve_chunk_pause_s.
+    # default pause to LARGE_BULK_PAUSE_S (10s) via resolve_chunk_pause_s.
     "DEFAULT_CHUNK_PAUSE_S",
     "_throttle_between_chunks_async",
     "LARGE_BULK_CHUNKS",

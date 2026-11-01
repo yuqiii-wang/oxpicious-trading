@@ -204,7 +204,7 @@ class DataAnalysis(DataPipeline):
     async def resolve_codes_to_industries(self, codes: list[str]) -> set:
         """Map member index codes -> their industry_ids (sec_classification).
 
-        Shared by analysis_composites and industry_sentiments.corr
+        Shared by analysis_composites and market_beta.corr
         filtered mode (--code CODE[,CODE...]).
         """
         rows = await self.conn.fetch(

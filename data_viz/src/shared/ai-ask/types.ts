@@ -67,10 +67,10 @@ export interface AiAskSpec {
   notes?: string[];
   /**
    * The analysis page this chart is on (the insight-registry identity —
-   * the tabs/pages of analysis_insights.insight_templates, e.g.
+   * the tabs/pages of analysis_insight_metrics.insight_templates, e.g.
    * { tab: "commons", page: "ma-spread" }). When set, the Ask AI modal
    * replaces the series-tags strip with the page's METRICS TABLE
-   * (analysis_insights.insight_templates — the metrics of particular
+   * (analysis_insight_metrics.insight_templates — the metrics of particular
    * interest, values resolved from the analysis tables / on-demand
    * computed) reacting to the ask's instrument (the classification-nav
    * chosen security) and as-of date. Use the INSIGHT_PAGES constants
@@ -199,6 +199,9 @@ export interface AiAskInsightMetric {
   pct_rank: number | null;
   pct_rank_n: number | null;
   source_kind: string;
+  /** Generated db-search recipe (table / index / conditions) from the
+   *  registry — rides along for the Ask AI db search. */
+  db_keywords: Record<string, unknown>;
   computed: boolean;
   unresolved: string | null;
 }

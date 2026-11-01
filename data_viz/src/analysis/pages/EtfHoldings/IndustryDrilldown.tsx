@@ -3,7 +3,7 @@
  * the ETF Holdings page's Industry changes table (QuarterlyChangesTable).
  *
  * Mounted lazily when a row is expanded; fetches two feeds in parallel:
- *   1. /api/analysis/industry-sentiments/chart?industry_id=<id>
+ *   1. /api/analysis/market-beta/chart?industry_id=<id>
  *      → member indices' raw daily closes + the precomputed mean/var
  *        aggregation rows from stats.industry_basic_stats.
  *   2. /api/sec-composition/industry-weight-series?code=<etf>&industry_id=<id>
@@ -19,7 +19,7 @@
  *                   same normalization the quarterly table uses).
  *   • BOTTOM — the member INDEX curves that belong to this industry, each
  *     rebased to 100 at its own first non-null close (same convention as
- *     stats.industry_basic_stats and the Industry Sentiments page).
+ *     stats.industry_basic_stats and the Market Beta page).
  *
  * The industry taxonomy is SHARED between stock and index classifications in
  * stats.sec_classification (same industry_id space), so the industry_id the
@@ -38,14 +38,14 @@ import type { AiAskSpec } from "@/shared/ai-ask";
 import { useDocs, compactDefined } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import {
-  fetchIndustrySentimentsChart,
+  fetchMarketBetaChart,
   fetchIndustryWeightSeries,
 } from "@/lib/api-client";
 import { PALETTE_HI, MA20_COLOR, MUTED_PALETTE, axisColors, commonGrid } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
-import { rebaseTo100 } from "@/analysis/pages/IndustrySentiments/helpers";
+import { rebaseTo100 } from "@/analysis/pages/MarketBeta/helpers";
 import type {
-  IndustrySentimentsChartResponse,
+  MarketBetaChartResponse,
   IndustryWeightSeriesResponse,
 } from "@shared/types";
 import type { EChartsOption, LineSeriesOption } from "echarts";
@@ -69,7 +69,7 @@ export default function IndustryDrilldown({
   color,
 }: Props) {
   const themeMode = useChartThemeMode();
-  const [chart, setChart] = useState<IndustrySentimentsChartResponse | null>(null);
+  const [chart, setChart] = useState<MarketBetaChartResponse | null>(null);
   const [weights, setWeights] = useState<IndustryWeightSeriesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +80,7 @@ export default function IndustryDrilldown({
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchIndustrySentimentsChart(industryId),
+      fetchMarketBetaChart(industryId),
       fetchIndustryWeightSeries(etfCode, industryId),
     ])
       .then(([c, w]) => {

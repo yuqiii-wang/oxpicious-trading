@@ -6,7 +6,7 @@ Consolidates 4 patterns repeated 3+ times across the analysis scripts:
     asyncpg bulk upsert. Replaces per-row ``iterrows`` dict construction
     and scattered ``replace([inf,-inf], nan)`` + ``astype(object).where``
     blocks in mov_ave_spread, sec_alloc_perf_attribution, and
-    industry_sentiments.
+    market_beta.
 
   - upsert_analysis_identity: the INSERT...ON CONFLICT DO UPDATE for
     analysis.analysis_identity. Identical SQL was duplicated in 6 places.
@@ -14,7 +14,7 @@ Consolidates 4 patterns repeated 3+ times across the analysis scripts:
   - grouped_rolling_agg: the ``groupby(keys)[col].rolling(W,
     min_periods=P).agg(...).reset_index(level=..., drop=True)`` pattern.
     Used in mov_ave_spread (std), sec_alloc_perf_attribution (MA5 mean),
-    and industry_sentiments/etf_contribution (MA5 + MA20 mean).
+    and market_beta/etf_contribution (MA5 + MA20 mean).
 
   - batched_upsert_by_date: date-bounded chunked upsert to bound memory
     for multi-million-row inserts. Originally in mov_ave_spread/__main__.

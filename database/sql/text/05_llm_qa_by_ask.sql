@@ -30,6 +30,9 @@
 --      (llm_qa_keywords_by_ask PK (keyword, ask_id) serves exact/prefix
 --      keyword lookups without a join); keyword rows denormalize code /
 --      product / ask_day so "keywords for code X" is single-table.
+--    * weighted full text — search_tsv: 'simple' tsvector over the
+--      SEGMENTED question/answer, GIN-indexed, ranked by ts_rank
+--      (question A, answer B) — additive to the ILIKE/keyword search above.
 --    * industry / sector scope — llm_qa_ask_context.industry_id / sector_id
 --      (indexed), joined on ask_id.
 --    * images — reached only on detail fetches (junction -> src_images);
@@ -42,9 +45,9 @@
 CREATE TABLE IF NOT EXISTS text.llm_qa_by_ask (
     ask_id        BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     question      TEXT        NOT NULL,
-    answer        TEXT,                       -- NULL when status = 'failed'
+    answer        TEXT,                       -- NULL when status = 'failed'; capped 2000 chars at store time (10_llm_summary_caps.sql)
     status        TEXT        NOT NULL DEFAULT 'answered',
-    error_tail    TEXT,                       -- failure stderr/exception tail when status = 'failed'
+    error_tail    TEXT,                       -- failure stderr/exception tail when status = 'failed'; capped 2000 (10_llm_summary_caps.sql)
     online_search BOOLEAN     NOT NULL DEFAULT false,
     search_query  TEXT,                       -- the modal's search line (NULL when the question was searched)
     provider      TEXT,
@@ -56,15 +59,10 @@ CREATE TABLE IF NOT EXISTS text.llm_qa_by_ask (
     is_active     BOOLEAN     NOT NULL DEFAULT true,
     ask_date      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    search_tsv    TSVECTOR,                   -- weighted full-text search vector: question A, answer B
 
     CONSTRAINT ck_llm_qa_by_ask_status CHECK (status IN ('answered', 'failed'))
 );
-
--- Retro-fit: request_ids (the source-log backlink) added 2026-10-27 —
--- same-day as text.llm_requests (07_llm_requests.sql); existing rows keep
--- the empty default (their asks predate the log).
-ALTER TABLE text.llm_qa_by_ask
-    ADD COLUMN IF NOT EXISTS request_ids BIGINT[] NOT NULL DEFAULT '{}';
 
 COMMENT ON COLUMN text.llm_qa_by_ask.request_ids IS
   'The ask''s OWN LLM requests as text.llm_requests ids, in flow order — '
@@ -87,6 +85,11 @@ CREATE INDEX IF NOT EXISTS ix_llm_qa_by_ask_product_date
 -- Full-history calendar mapping and ask_date-ordered feeds.
 CREATE INDEX IF NOT EXISTS ix_llm_qa_by_ask_ask_date
     ON text.llm_qa_by_ask (ask_date DESC);
+
+-- Weighted full-text search — same contract as
+-- text.news.search_tsv (the query must be segmented the same way).
+CREATE INDEX IF NOT EXISTS ix_llm_qa_by_ask_search_tsv_gin
+    ON text.llm_qa_by_ask USING gin (search_tsv);
 
 COMMENT ON COLUMN text.llm_qa_by_ask.answer IS
   'The adviser answer text. NULL when status = ''failed'' (the ask errored '
@@ -115,6 +118,11 @@ COMMENT ON COLUMN text.llm_qa_by_ask.ask_date IS
   'When the ask was made (now() at persist time) — the AI page maps it to '
   'the latest trading day on or before it for the calendar strip, same as '
   'text.llm_qa.qa_date.';
+
+COMMENT ON COLUMN text.llm_qa_by_ask.search_tsv IS
+  'Weighted search tsvector (simple config over segmented text): question A, '
+  'answer B (failed asks have no answer — question only). Same contract as '
+  'text.news.search_tsv.';
 
 COMMENT ON TABLE text.llm_qa_by_ask IS
   'Interactive AI-ask history: one row per data_viz "AI Ask" modal submit '

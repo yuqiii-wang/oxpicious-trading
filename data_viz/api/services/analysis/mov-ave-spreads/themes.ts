@@ -6,7 +6,12 @@
  */
 import { queryRows } from "@api/lib/db";
 import { stripExchangeSuffix, matchesExchange } from "@api/lib/classify-etf";
-import { buildIndustryFlatThemes, buildStrategyThemesFromRows } from "@api/services/_shared";
+import {
+  buildIndustryClassifiedThemes,
+  buildIndustryStrategyThemes,
+  buildStrategyThemesFromRows,
+} from "@api/services/_shared";
+import { listIndustryEntityClassRows } from "@api/services/classification-cache.js";
 import type {
   SectorNode,
   IndustryNode,
@@ -20,7 +25,9 @@ import { MA_SPREAD_META_SQL, MA_SPREAD_META_TYPE, type DbMaSpreadMetaRow } from 
 //  listMovAveSpreadThemes — two-level L1 sector → L2 industry → items tree for
 //  the MA-Spread page's ThemeSelector. Mirrors listPerfAttrThemes() in
 //  perf-attribution but draws codes from analysis.mov_ave_spreads_detail
-//  (filtered by sec_type) and supports etf / index / stock.
+//  (filtered by sec_type) and supports etf / index / stock / industry —
+//  industry renders the industry ENTITIES (code = industry_id) under their
+//  stats.sec_classification classification (grouped by industry_id).
 //
 //  Labels come precomputed from stats.sec_classification (denormalized onto
 //  the table by build_classification.py — no catalog JOIN needed). Codes that
@@ -32,12 +39,16 @@ export async function listMovAveSpreadThemes(
   rawExchange?: string | null,
 ): Promise<SectorNode[]> {
   const secType = normalizeSecType(rawSecType);
-  // Industry: one flat 'INDUSTRY' -> '全部行业' group built from the
-  // per-code summary (no sec_classification above the industry entity).
+  // Industry: the entities under their EXISTING classification — L1 sector
+  // → L2 industry tree derived from stats.sec_classification grouped by
+  // industry_id (one entity item per node), restricted to the per-code
+  // summary universe. Exchange is not applicable to an industry entity and
+  // is ignored (as before).
   if (secType === "industry") {
     const rows = await queryRows<DbCodeRow>(buildCodesSql(),
       [secTypeParam(secType)]);
-    return buildIndustryFlatThemes(rows);
+    const classRows = await listIndustryEntityClassRows(rows.map((r) => r.code));
+    return buildIndustryClassifiedThemes(rows, classRows);
   }
   const exFilter = (rawExchange ?? "").trim() || null;
   const metaType = MA_SPREAD_META_TYPE[secType];
@@ -116,8 +127,15 @@ export async function listMovAveSpreadStrategyThemes(
   rawExchange?: string | null,
 ): Promise<StrategyNode[]> {
   const secType = normalizeSecType(rawSecType);
-  // Industry has no strategy/theme classification — an empty RIGHT column.
-  if (secType === "industry") return [];
+  // Industry: the strategy-primary entity ids (BROAD_*, DIV_*, …) under
+  // their strategy → theme classification — the same grouped-by-industry_id
+  // read as the LEFT column, just the other is_industry_not_strategy side.
+  if (secType === "industry") {
+    const rows = await queryRows<DbCodeRow>(buildCodesSql(),
+      [secTypeParam(secType)]);
+    const classRows = await listIndustryEntityClassRows(rows.map((r) => r.code));
+    return buildIndustryStrategyThemes(rows, classRows);
+  }
   const exFilter = (rawExchange ?? "").trim() || null;
   const metaType = MA_SPREAD_META_TYPE[secType];
   const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,

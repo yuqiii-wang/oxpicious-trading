@@ -58,9 +58,13 @@ export interface SecCodesListResponse {
   codes: { code: string; name: string }[];
 }
 
-/** Codes fetcher backing the page (e.g. fetchValuationPageCodes). */
+/** Codes fetcher backing the page (e.g. fetchValuationPageCodes). The
+ *  "all" sec_type is EXCLUDED — this shell's toggle lists never offer it
+ *  (it is the market-wide locked-nav mode of the AI summary page), so the
+ *  page-level fetchers/panels keep their narrow per-page sec_type unions
+ *  (PeSecType, MaSpreadSecType, …). */
 export type FetchSecCodes = (
-  secType: SecNavSecType,
+  secType: Exclude<SecNavSecType, "all">,
   exchange: string | null,
 ) => Promise<SecCodesListResponse>;
 
@@ -100,8 +104,8 @@ export interface SecCodesPageShellProps {
   defaultSecType?: SecNavSecType;
   /** Codes per page. Default 1 (full-height baseline charts per code). */
   pageSize?: number;
-  /** One panel card per visible code. */
-  renderCode: (c: { code: string; name: string; secType: SecNavSecType }) => ReactNode;
+  /** One panel card per visible code (sec_type narrowed — see FetchSecCodes). */
+  renderCode: (c: { code: string; name: string; secType: Exclude<SecNavSecType, "all"> }) => ReactNode;
 }
 
 export default function SecCodesPageShell({
@@ -134,10 +138,12 @@ export default function SecCodesPageShell({
   const [page, setPage] = useState(1);
 
   // Fetch the codes list on sec_type/exchange change or refresh (the trees
-  // themselves are loaded inside useSecNav).
+  // themselves are loaded inside useSecNav). The narrow cast is safe — the
+  // toggle lists of this shell's pages never contain "all" (FetchSecCodes).
+  const pageSecType = nav.secType as Exclude<SecNavSecType, "all">;
   useEffect(() => {
     let cancelled = false;
-    fetchCodes(nav.secType, nav.exchange)
+    fetchCodes(pageSecType, nav.exchange)
       .then((c) => {
         if (!cancelled) setCodesData(c);
       })
@@ -147,7 +153,7 @@ export default function SecCodesPageShell({
     return () => {
       cancelled = true;
     };
-  }, [nav.secType, nav.exchange, nav.refreshKey, fetchCodes]);
+  }, [nav.secType, nav.exchange, nav.refreshKey, fetchCodes, pageSecType]);
 
   // Back to page 1 whenever sec_type, selection, or search changes.
   useEffect(() => {
@@ -201,7 +207,7 @@ export default function SecCodesPageShell({
           <Stack spacing={1.5} sx={{ mt: 0.5 }}>
             {visibleCodes.map((c) => (
               <Fragment key={c.code}>
-                {renderCode({ code: c.code, name: c.name, secType: nav.secType })}
+                {renderCode({ code: c.code, name: c.name, secType: pageSecType })}
               </Fragment>
             ))}
           </Stack>

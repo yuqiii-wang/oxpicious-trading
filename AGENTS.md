@@ -20,6 +20,17 @@ the first step of the work:
 - ANY chart component, ECharts option builder, or chart tooltip/colors
   under `data_viz/src` → `ui-charts`
 - ANY verification of `data_viz/` work → `ui-test`
+- ANY code that runs in the LLM py sandbox (sandbox_* tools,
+  deep-agent compute) or any change to the sandbox env/limits/monitoring
+  (`llm_agents/sandbox/`, `py-sandbox` compose service) →
+  `py-sandbox-env`
+- ANY change or improvement plan for the deep agent harness
+  (`llm_agents/deep_agents` — core loop, planning, graph, delegation,
+  prompts, server, memory / verification / eval design) →
+  `deep-agent-blueprint`
+- ANY daily OHLCV / K-line study (fetching index/etf/stock bars,
+  MA/RSI/MACD/momentum studies) or interpretation of the Chinese volume
+  vocabulary (放量, 缩量, 量价背离, 缩量弱反弹 …) → `ohlcv`
 - analysis_signals semantics (rule cells, history vs live, the nine
   families) → `signals-live-vs-history`
 - financial/biz semantics of the mov_rsi / bollinger / ma_cross /

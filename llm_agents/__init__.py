@@ -36,7 +36,8 @@ Modules:
     BaseLlmAskProvider to add more), NO online search — the request
     never carries tools. Optional images (PNG data URLs) attach as
     image_url parts only on vision-capable models (the core/vision.py
-    config: glm-4*v yes, glm-5.2 / glm-4.5 no); text-only models drop
+    config: glm-4*v and glm-5.3-flash yes, glm-5.2 / glm-4.5 no);
+    text-only models drop
     them and proceed. Nothing is persisted; the CLI prints the answer
     (optionally as a ``@@LLM_ASK_JSON@@`` marker line). This package
     also backs the data_viz "AI Ask" chart adviser (the "?" beside
@@ -46,7 +47,7 @@ Modules:
     context are built from it, and screenshots switch the model to the
     provider's default vision model. CLI::
 
-        python -m llm_agents.llm_ask ask --question "…" [--model glm-5.2]
+        python -m llm_agents.llm_ask ask --question "…" [--model glm-5.3-flash]
         python -m llm_agents.llm_ask ask --payload-file …
 
     (``python -m llm_agents ask …`` dispatches there too.)
@@ -60,6 +61,30 @@ Modules:
         python -m llm_agents.news_digestions list
 
     (``python -m llm_agents digest|digestions …`` dispatches there too.)
+
+  * ``deep_agents`` — the minimalist tool-calling agent: an LLM loop
+    whose tools come from an MCP server (default the repo's own
+    read-only DB server). A per-run CODE SANDBOX
+    (``llm_agents.deep_agents.core.sandbox``) adds the four ``sandbox_*``
+    built-in tools: the model writes .py scripts into a session
+    directory of the DOCKERIZED py sandbox (via the ``llm_agents.sandbox``
+    MCP middleware) and runs them inside the cutepandas py3.12 container
+    — DB env preset READ-ONLY (readonly_analytics role), timeout kill,
+    capped output.
+    CLI::
+
+        python -m llm_agents.deep_agents "…"
+        python -m llm_agents.deep_agents --list-tools
+
+    (``python -m llm_agents deep "…"`` dispatches there too.)
+
+  * ``mcp`` — the MCP server those agents talk to (moved here from
+    repo-root ``mcp/`` 2026-10-29, which also un-shadowed the
+    installed ``mcp`` SDK): read-only DB queries (readonly_analytics
+    role) plus web_search / web_summarize — the online_search_summary
+    providers exposed as live web tools, persisting nothing. CLI::
+
+        python -m llm_agents.mcp [--stdio]
 
 The historical industry hypes & drains Q&A backfill (category
 'industry' / 'market' rows in text.llm_qa) was removed with its

@@ -1,7 +1,13 @@
 """The OHLCV-boost variant gate (analysis.analysis_signals.engines.
 _ohlcv_boost._gate, 2026-10-27 — the class OOP restructure of the
 flat engines/variants.py): the shared is_ohlcv_boosted axis the
-family engines import.
+family engines import. DORMANT since the 2026-11-01 variant-axes
+UNLINK (user-directed "keep the pe and ohlcv boosted logic in py,
+however, offload to unlink from the computation ... delete is pe and
+ohlcv boosted col as from pk"): the is_ohlcv_boosted column left the
+DB PKs and no engine imports this package — the logic is kept for a
+future re-link (the trust-weighted measurement beside it,
+measurement.py, stays ACTIVE through the OHLCV_BOOST class flag).
 
 The gate AND-gates a family's plain candidate masks by the day's
 TURNOVER-CLIMAX confirmation — the amount / 255d-MA ratio bucketed

@@ -70,10 +70,10 @@ class ZhipuSearchProvider(BaseOnlineSearchProvider):
 
     SEARCH_URL = "https://open.bigmodel.cn/api/paas/v4/web_search"
     CHAT_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-    # The docs' examples use glm-4-air for search-in-chat; glm-5.2 is the
-    # project default (accepts the same tools config). Override per
-    # call/CLI when needed.
-    DEFAULT_MODEL = "glm-5.2"
+    # The docs' examples use glm-4-air for search-in-chat; glm-5.3-flash
+    # is the project default (accepts the same tools config). Override
+    # per call/CLI when needed.
+    DEFAULT_MODEL = "glm-5.3-flash"
 
     # ------------------------------------------------------------------
     # Parsing helpers (shared by search + summarize response shapes)

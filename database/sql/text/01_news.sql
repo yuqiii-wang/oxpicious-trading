@@ -4,7 +4,9 @@
 --          text.news_keywords, text.news_embeddings
 --    text.news             — one raw article per (title, source, date), with
 --                            a surrogate news_id (identity) other tables map
---                            to. Search is implemented in Python, not SQL.
+--                            to. Search is implemented in Python, not SQL:
+--                            the keyword rows and the weighted search_tsv
+--                            tsvector are both written by the pipeline.
 --    text.news_groups      — reference-set entity: a group of news articles
 --                            cited together (e.g. the sources behind one AI
 --                            QA answer). Membership lives in the junction.
@@ -34,31 +36,11 @@ CREATE TABLE IF NOT EXISTS text.news (
     votes         INTEGER,                    -- upvotes when the source provides them (zhihu VoteUpCount); NULL otherwise
     is_big_fluctuation BOOLEAN NOT NULL DEFAULT false,  -- mapped industry's day qualified as a big move (builds.text.big_market_mv)
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    search_tsv    TSVECTOR,                   -- weighted full-text search vector: title A, content C
 
     CONSTRAINT pk_news PRIMARY KEY (title, source, date),
     CONSTRAINT uq_news_news_id UNIQUE (news_id)
 );
-
--- Upgrade: is_big_market_mv renamed to is_big_fluctuation (same semantics).
--- Runs BEFORE the ADD COLUMN retro-fit below: on a deployment that has the
--- old column this renames it in place (data preserved); everywhere else the
--- DO block is a no-op.
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema = 'text' AND table_name = 'news'
-                 AND column_name = 'is_big_market_mv')
-       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_schema = 'text' AND table_name = 'news'
-                         AND column_name = 'is_big_fluctuation') THEN
-        ALTER TABLE text.news RENAME COLUMN is_big_market_mv TO is_big_fluctuation;
-    END IF;
-END $$;
-
--- Retro-fit for deployments whose text.news predates the column (the
--- CREATE above already includes it for fresh installs).
-ALTER TABLE text.news
-    ADD COLUMN IF NOT EXISTS is_big_fluctuation BOOLEAN NOT NULL DEFAULT false;
 
 -- Uniqueness as a standalone index (not just the table constraint) so it is
 -- also created on deployments where the table already existed without
@@ -73,6 +55,13 @@ CREATE INDEX IF NOT EXISTS ix_news_industry_date ON text.news (industry_id, date
 CREATE INDEX IF NOT EXISTS ix_news_sector_date ON text.news (sector_id, date DESC);
 CREATE INDEX IF NOT EXISTS ix_news_author_date ON text.news (author, date DESC);
 CREATE INDEX IF NOT EXISTS ix_news_date ON text.news (date DESC);
+
+-- Weighted full-text search: 'simple' config over StructBERT-segmented
+-- text, written by the pipeline at store time (set_search_tsv_async).
+-- Query SEGMENTED the same way: search_tsv @@
+-- websearch_to_tsquery('simple', tokenize_for_search(<query>)).
+CREATE INDEX IF NOT EXISTS ix_news_search_tsv_gin
+    ON text.news USING gin (search_tsv);
 -- today_industry_change refresh joins (industry_id, date) per touched article.
 CREATE INDEX IF NOT EXISTS ix_news_keywords_industry_date
     ON text.news_keywords (industry_id, date);
@@ -102,6 +91,15 @@ COMMENT ON COLUMN text.news.is_big_fluctuation IS
   'builds.text.big_market_mv full-recompute pass (re-runs are idempotent '
   'and re-derive the whole flag). Renamed from is_big_market_mv.';
 
+COMMENT ON COLUMN text.news.search_tsv IS
+  'Weighted search tsvector (simple config over StructBERT-segmented text): '
+  'title A, content C, POSITIONS STRIPPED (strip() — GIN indexes lexemes '
+  'only and ts_rank detoasting dominated the position payload; ranking '
+  'keeps the A-D weights and matched-term count, loses within-document '
+  'term frequency). Written by the pipeline (set_search_tsv_async) at '
+  'store time; NULL rows are unindexed rows awaiting backfill. Weight map '
+  '+ write contract: TSV_SPECS (_common/tokenization/search_indexing.py).';
+
 COMMENT ON TABLE text.news IS
   'Raw news articles. One row per (title, source, date). content holds the '
   'article body; industry_id / sector_id link to the industry taxonomy when '
@@ -126,6 +124,7 @@ CREATE TABLE IF NOT EXISTS text.news_comments (
     votes        INTEGER,                    -- comment like count; NULL when not provided
     is_reply     BOOLEAN       NOT NULL DEFAULT false,  -- true for nested replies
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    search_tsv   TSVECTOR,                    -- weighted full-text search vector: content C
 
     CONSTRAINT pk_news_comments PRIMARY KEY (source, comment_id),
     CONSTRAINT fk_news_comments_news FOREIGN KEY (news_id)
@@ -135,10 +134,19 @@ CREATE TABLE IF NOT EXISTS text.news_comments (
 CREATE INDEX IF NOT EXISTS ix_news_comments_news_id
     ON text.news_comments (news_id);
 
+-- Weighted full-text search — same contract as
+-- text.news.search_tsv (the query must be segmented the same way).
+CREATE INDEX IF NOT EXISTS ix_news_comments_search_tsv_gin
+    ON text.news_comments USING gin (search_tsv);
+
 COMMENT ON TABLE text.news_comments IS
   'Reader comments per article. Loaded by builds.text (zhihu only for now): '
   'root comments + embedded replies fetched by downloads.macro.zhihu.news '
   '--with-comments. news_id joins the parent article in text.news.';
+
+COMMENT ON COLUMN text.news_comments.search_tsv IS
+  'Weighted search tsvector (simple config over segmented text): content C. '
+  'Same contract as text.news.search_tsv.';
 
 -- Reference set: the group of news articles an AI QA answer was based on.
 -- Plain entity table — deliberately NOT INHERITS (text.news): table

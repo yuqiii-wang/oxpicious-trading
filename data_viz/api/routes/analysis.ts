@@ -30,10 +30,10 @@ import {
   getPerfAttrAttribution,
   listPerfAttrThemes,
   listPerfAttrStrategyThemes,
-  getIndustrySentimentsChart,
-  getIndustrySentimentsChartByCode,
-  listIndustrySentimentsThemes,
-  listIndustrySentimentsStrategyThemes,
+  getMarketBetaChart,
+  getMarketBetaChartByCode,
+  listMarketBetaThemes,
+  listMarketBetaStrategyThemes,
   getIndustryCorrelations,
   getIndustryCorrOffsets,
   listIndustryCorrOffsetBenchmarks,
@@ -55,6 +55,14 @@ import {
   listValuationStrategyThemes,
   listPeStreaks,
   listDividendDeliveries,
+  listMarketCrowdednessCodes,
+  getMarketCrowdednessChart,
+  listMarketCrowdednessThemes,
+  listMarketCrowdednessStrategyThemes,
+  listHotStockMomentumCodes,
+  getHotStockMomentumChart,
+  listHotStockMomentumThemes,
+  listHotStockMomentumStrategyThemes,
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,
   listMarginTrendUnderlyings,
@@ -386,7 +394,7 @@ router.get("/perf-attr/chart", async (req: Request, res: Response) => {
   }
 });
 
-// ---- Industry Sentiments (member index values, rebased to 100 client-side)
+// ---- Market Beta (member index values, rebased to 100 client-side)
 //   NO per-code aggregation table — the per-index data is queried directly
 //   from stats.index_basic_stats JOIN stats.sec_classification at request
 //   time; the precomputed mean/var overlay comes from stats.industry_basic_stats
@@ -395,37 +403,37 @@ router.get("/perf-attr/chart", async (req: Request, res: Response) => {
 //   start of the displayed (zoom) window (scale-invariant comparison across
 //   indices with different absolute price levels).
 //
-//   GET /api/analysis/industry-sentiments/themes
+//   GET /api/analysis/market-beta/themes
 //     Returns the L1 sector → L2 industry tree (SectorNode[]) built directly
 //     from stats.sec_classification (type='index'). Each industry's chip
 //     count = number of member indices in that industry.
 //
-//   GET /api/analysis/industry-sentiments/chart?industry_id=BANKS
+//   GET /api/analysis/market-beta/chart?industry_id=BANKS
 //     Returns per-index close time series for ONE industry. One entry per
 //     member index, each with its raw daily close series. The frontend
 //     rebases each to 100 at the start of the visible (zoom) window.
-router.get("/industry-sentiments/themes", async (req: Request, res: Response) => {
+router.get("/market-beta/themes", async (req: Request, res: Response) => {
   try {
     const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
-    res.json(await listIndustrySentimentsThemes(exchange));
+    res.json(await listMarketBetaThemes(exchange));
   } catch (err) {
-    console.error("[analysis/industry-sentiments/themes] error:", err);
+    console.error("[analysis/market-beta/themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-/** GET /api/analysis/industry-sentiments/strategy-themes */
-router.get("/industry-sentiments/strategy-themes", async (req: Request, res: Response) => {
+/** GET /api/analysis/market-beta/strategy-themes */
+router.get("/market-beta/strategy-themes", async (req: Request, res: Response) => {
   try {
     const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
-    res.json(await listIndustrySentimentsStrategyThemes(exchange));
+    res.json(await listMarketBetaStrategyThemes(exchange));
   } catch (err) {
-    console.error("[analysis/industry-sentiments/strategy-themes] error:", err);
+    console.error("[analysis/market-beta/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.get("/industry-sentiments/chart", async (req: Request, res: Response) => {
+router.get("/market-beta/chart", async (req: Request, res: Response) => {
   try {
     const industryId = typeof req.query.industry_id === "string"
       ? req.query.industry_id.trim()
@@ -434,34 +442,34 @@ router.get("/industry-sentiments/chart", async (req: Request, res: Response) => 
       res.status(400).json({ error: "Missing 'industry_id' parameter" });
       return;
     }
-    res.json(await getIndustrySentimentsChart(industryId));
+    res.json(await getMarketBetaChart(industryId));
   } catch (err) {
-    console.error("[analysis/industry-sentiments/chart] error:", err);
+    console.error("[analysis/market-beta/chart] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-/** GET /api/analysis/industry-sentiments/chart-by-code?code=931696
+/** GET /api/analysis/market-beta/chart-by-code?code=931696
  *  Returns chart data (close series + stock_num) for a single index code.
  *  Used when an L3 index chip is clicked under a strategy/theme —
  *  strategy-primary indices may lack an industry_id classification. */
-router.get("/industry-sentiments/chart-by-code", async (req: Request, res: Response) => {
+router.get("/market-beta/chart-by-code", async (req: Request, res: Response) => {
   try {
     const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
     if (!code) {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    res.json(await getIndustrySentimentsChartByCode(code));
+    res.json(await getMarketBetaChartByCode(code));
   } catch (err) {
-    console.error("[analysis/industry-sentiments/chart-by-code] error:", err);
+    console.error("[analysis/market-beta/chart-by-code] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
 // ---- Industry Correlations (windowed pairwise correlation between
 //      industries' MA curves of mean_close — drives the Correlation chart
-//      on the IndustrySentiments page when 2+ industries are selected).
+//      on the MarketBeta page when 2+ industries are selected).
 //   GET /api/analysis/industry-correlations?industry_ids=BANKS,AI&pool_size=all
 //     Returns IndustryCorrelationsResponse: one row per (start_date, pair)
 //     for every lexicographic (a<b) pair from the user-selected industry_ids
@@ -472,7 +480,7 @@ router.get("/industry-sentiments/chart-by-code", async (req: Request, res: Respo
 //     (20d/60d/255d).
 //   POST /api/analysis/industry-correlations/run   body:
 //     { industry_ids?: string[], codes?: string[] }
-//     Spawns `python -m analysis.industry_sentiments.corr --industry ...
+//     Spawns `python -m analysis.market_beta.corr --industry ...
 //     --code ...` (filtered mode: recompute + upsert ALL windows for the
 //     pairs among the given industries; codes are resolved to industry_ids
 //     Python-side) via the shared WSL py-runner and WAITS for it to exit.
@@ -537,10 +545,10 @@ router.post("/industry-correlations/run", async (req: Request, res: Response) =>
     if (industryIds.length > 0) args.push("--industry", industryIds.join(","));
     if (codes.length > 0) args.push("--code", codes.join(","));
     console.log(
-      `[analysis/industry-correlations/run] python -m analysis.industry_sentiments.corr ${args.join(" ")}`,
+      `[analysis/industry-correlations/run] python -m analysis.market_beta.corr ${args.join(" ")}`,
     );
     const result = await runPythonModule(
-      "analysis.industry_sentiments.corr",
+      "analysis.market_beta.corr",
       args,
       { processIdTag: INDUSTRY_CORR_RUN_TAG },
     );
@@ -735,7 +743,7 @@ router.get("/pair-pct-ratios", async (req: Request, res: Response) => {
 
 // ---- Industry-level Benchmark Attribution (aggregated
 //      stats.cross_stats pair rows per industry_id). Drives the "Benchmark
-//      Attribution" view on the IndustrySentiments page — the toggle that
+//      Attribution" view on the MarketBeta page — the toggle that
 //      swaps the price/correlation plot for a fluctuation-attribution bar
 //      chart per industry. Aggregates per-index rows to one row per
 //      (industry_id, benchmark_code, date).
@@ -765,7 +773,7 @@ router.get("/industry-benchmark-attribution", async (req: Request, res: Response
 // ---- Industry Attribution Benchmark list + price chart. Drives the
 //      benchmark dropdown and the 1st plot (benchmark price chart,
 //      clickable to pick a date) in "Benchmark Attribution" mode on the
-//      Industry Sentiments page.
+//      Market Beta page.
 //   GET /api/analysis/industry-attribution/benchmarks
 //     Returns IndustryAttributionBenchmarksResponse: list of all benchmark
 //     codes that appear in analysis.industry_attributions, enriched with
@@ -901,7 +909,7 @@ router.get("/industry-attribution/member-indices", async (req: Request, res: Res
 
 // ---- Industry ETF Contribution — mirrors "Benchmark Attribution" but with
 //      ETFs as the unit of analysis instead of benchmark indices. Drives the
-//      "ETF Contribution" view on the Industry Sentiments page.
+//      "ETF Contribution" view on the Market Beta page.
 //   GET /api/analysis/industry-etf-contribution/etf-price?industry_ids=BANKS,AI
 //     Returns IndustryEtfPriceSeriesResponse: daily close series for ALL ETFs
 //     tracking member indices of the selected industries. The frontend
@@ -1061,6 +1069,147 @@ router.get("/dividends/deliveries", async (req: Request, res: Response) => {
     res.json(await listDividendDeliveries(code, parseSecType(req)));
   } catch (err) {
     console.error("[analysis/dividends/deliveries] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Market Crowdedness (analysis.market_crowdedness)
+//   Per-(code, sec_type, date) crowdedness curve for indices and
+//   composite industries, built by analysis.market_crowdedness.
+//   crowdedness_score = 0.5*concentration + 0.5*flow_change from the
+//   pool's dynamic top-10-by-trading-amount hot set. The nav/codes
+//   universe is the FULL classification (stats.sec_classification
+//   type='index' + stats.industry_identity entities) — deliberately NOT
+//   restricted to codes with rows (index side = the 10 study indices;
+//   other codes plot close + amount only).
+//
+//   GET /api/analysis/market-crowdedness/codes?sec_type=index&exchange=SS
+//     Returns MarketCrowdednessCodesResponse: the flat (code, name)
+//     universe for the page's codes shell (index | industry).
+//   GET /api/analysis/market-crowdedness/themes?sec_type=index
+//     L1 sector → L2 industry → items tree for SecClassificationNav.
+//   GET /api/analysis/market-crowdedness/strategy-themes?sec_type=index
+//     Parallel L1 strategy → L2 theme tree (RIGHT column).
+//   GET /api/analysis/market-crowdedness/chart?sec_type=index&code=000001
+//     Returns MarketCrowdednessChartResponse: daily (date, close,
+//     trading_amount, crowdedness_score, concentration, flow_change,
+//     top_stocks) rows for one security — metric fields NULL on dates
+//     with no defined crowdedness row.
+router.get("/market-crowdedness/codes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listMarketCrowdednessCodes(
+      parseSecType(req),
+      parseExchange(req),
+    ));
+  } catch (err) {
+    console.error("[analysis/market-crowdedness/codes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/market-crowdedness/themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listMarketCrowdednessThemes(
+      parseSecType(req),
+      parseExchange(req),
+    ));
+  } catch (err) {
+    console.error("[analysis/market-crowdedness/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/market-crowdedness/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listMarketCrowdednessStrategyThemes(
+      parseSecType(req),
+      parseExchange(req),
+    ));
+  } catch (err) {
+    console.error("[analysis/market-crowdedness/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/market-crowdedness/chart", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getMarketCrowdednessChart(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/market-crowdedness/chart] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Hot Stock Momentum (analysis.hot_stock_momentum)
+//   Per-(code, sec_type, date) hot-stock momentum curve for indices and
+//   composite industries, built by analysis.hot_stock_momentum.
+//   IMPLEMENTATION PLACEHOLDER (2026-10-31): the pipeline run() is empty,
+//   so /chart returns empty rows until it lands. The nav/codes universe
+//   is the FULL classification (stats.sec_classification type='index' +
+//   stats.industry_identity entities) — deliberately NOT restricted to
+//   codes with rows, so the Commons page is browsable meanwhile.
+//
+//   GET /api/analysis/hot-stock-momentum/codes?sec_type=index&exchange=SS
+//     Returns HotStockMomentumCodesResponse: the flat (code, name)
+//     universe for the page's codes shell (index | industry).
+//   GET /api/analysis/hot-stock-momentum/themes?sec_type=index
+//     L1 sector → L2 industry → items tree for SecClassificationNav.
+//   GET /api/analysis/hot-stock-momentum/strategy-themes?sec_type=index
+//     Parallel L1 strategy → L2 theme tree (RIGHT column).
+//   GET /api/analysis/hot-stock-momentum/chart?sec_type=index&code=000001
+//     Returns HotStockMomentumChartResponse: daily (date, momentum) rows
+//     for one security — empty until the pipeline is implemented.
+router.get("/hot-stock-momentum/codes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listHotStockMomentumCodes(
+      parseSecType(req),
+      parseExchange(req),
+    ));
+  } catch (err) {
+    console.error("[analysis/hot-stock-momentum/codes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/hot-stock-momentum/themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listHotStockMomentumThemes(
+      parseSecType(req),
+      parseExchange(req),
+    ));
+  } catch (err) {
+    console.error("[analysis/hot-stock-momentum/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/hot-stock-momentum/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listHotStockMomentumStrategyThemes(
+      parseSecType(req),
+      parseExchange(req),
+    ));
+  } catch (err) {
+    console.error("[analysis/hot-stock-momentum/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/hot-stock-momentum/chart", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getHotStockMomentumChart(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/hot-stock-momentum/chart] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

@@ -5,8 +5,9 @@
  *
  * Same PostCard chrome as AiQaCard (expand-on-click, lazy detail fetch),
  * different content contract: the card body is the row's SUMMARY (the 5th
- * request's answer); the four evaluation dimensions — 投资逻辑总览 (intro) /
- * 回报来源 (return) / 风险因素 (risks) / 市值与市场关注 (capitalization) —
+ * request's answer); the five evaluation dimensions — 投资逻辑总览 (intro) /
+ * 乐观前景预测 (optimistic_forecast) / 悲观前景预测 (pessimistic_forecast) /
+ * 风险因素 (risks) / 市值与市场关注 (capitalization) —
  * are collapsed sections inside the expanded detail (a failed dimension
  * renders as a disabled 未生成 note). Each dimension's inline
  * [来源：ref_N] citations render through AiQaRefBox — the same expandable
@@ -213,11 +214,12 @@ export default function AiResearchQaCard({ item }: { item: AiQaResearchItem }) {
           <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.65 }}>
             {detail.answer}
           </Typography>
-          {/* The four evaluation dimensions — collapsed by default; each
+          {/* The five evaluation dimensions — collapsed by default; each
               renders its [来源：ref_N] citations as expandable ref tags
               (the AiQaCard pattern) when dim_refs resolution exists. */}
           <DimensionSection title="投资逻辑总览" text={detail.intro} refs={detail.dimension_refs?.intro} />
-          <DimensionSection title="回报来源" text={detail.return} refs={detail.dimension_refs?.return} />
+          <DimensionSection title="乐观前景预测" text={detail.optimistic_forecast} refs={detail.dimension_refs?.optimistic_forecast} />
+          <DimensionSection title="悲观前景预测" text={detail.pessimistic_forecast} refs={detail.dimension_refs?.pessimistic_forecast} />
           <DimensionSection title="风险因素" text={detail.risks} refs={detail.dimension_refs?.risks} />
           <DimensionSection title="市值与市场关注" text={detail.capitalization} refs={detail.dimension_refs?.capitalization} />
           {/* The merged news group (the refs mapping) as the source list. */}

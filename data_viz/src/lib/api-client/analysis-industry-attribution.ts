@@ -15,7 +15,7 @@ import type {
  * analysis.industry_attributions (industry_shared_weight +
  * benchmark_shared_weight per benchmark_code). benchmark_return is computed
  * on-the-fly. Drives the per-industry attribution bar charts (2nd plot
- * onward) in "Benchmark Attribution" mode on the IndustrySentiments page.
+ * onward) in "Benchmark Attribution" mode on the MarketBeta page.
  *
  * `date` is optional (defaults to latest available). Returns one row per
  * benchmark with the shared weights and benchmark_return for that

@@ -16,11 +16,11 @@ import type {
 //  Industry Correlations — windowed pairwise Pearson correlation between
 //  two industries' MA curves of mean_close, one row per (start_date,
 //  industry_id, benchmark_industry_id, pool_size, interval). Drives the
-//  "Correlation" expandable chart on the IndustrySentiments page
+//  "Correlation" expandable chart on the MarketBeta page
 //  (multi-industry mode only).
 //
 //  Source: analysis.industry_correlations (built by the correlations step
-//  of analysis.industry_sentiments from stats.industry_basic_stats.mean_close).
+//  of analysis.market_beta from stats.industry_basic_stats.mean_close).
 //  corr_ma{W}_{W}d = Pearson correlation between the two industries' MA-W
 //  curves over the W trading days starting on start_date; window starts sit
 //  on the calendar grid every `interval` (default 20) trading days.

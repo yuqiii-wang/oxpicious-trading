@@ -75,12 +75,6 @@ SELECT public.create_hash_partitions('live', 'live_signals', 8);
 CREATE INDEX IF NOT EXISTS idx_live_signals_date
     ON live.live_signals (sec_type, date, time);
 
--- Existing installs gain the regime column here — BEFORE the label-code
--- migration below maps it (fresh installs get the SMALLINT column from
--- the CREATE body).
-ALTER TABLE live.live_signals
-    ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
-
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
@@ -105,46 +99,6 @@ COMMENT ON COLUMN live.live_signals.confidence_boost IS 'The SAME bucket''s ohlc
 COMMENT ON COLUMN live.live_signals.confidence_selection IS 'The SAME bucket''s ohlcv_selection cohort confidence (integer basis points) = ROUND(10000 × signal_strategies.confidence) of the @selection child row sharing the breached strategy''s identity — the favorable-anatomy subset''s own chosen-rung dir_ave (analysis.analysis_forecasts.ohlcv_selection; the streaks whose day-0 ohlcv score cleared the side''s bar — bottom side only, the top side carries no selection child). ADD-ON context only, same never-a-gate rule as confidence_boost. NULL = no @selection child registered (incl. every top-side breach) or a family without ohlcv children.';
 
 -- ----------------------------------------------------------------------------
---  label-code migration (2026-10-05): existing TEXT action/regime_state
---  columns convert IN PLACE to their static.label_dim SMALLINT codes —
---  live breach rows are append-only records that cannot be regenerated,
---  so no truncate. Fresh installs already have the SMALLINT columns
---  from the CREATE body (this block no-ops). MUST run BEFORE the
---  data-quality gates below (the excess-sign gate compares the column
---  to integers). The retired 2026-09 is_market_hyped fold + TEXT
---  realignment blocks it replaces already ran everywhere their input
---  existed. Dropping the TEXT columns auto-drops their IN-list CHECKs;
---  the gates below re-create the BETWEEN forms.
--- ----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema = 'live'
-                 AND table_name = 'live_signals'
-                 AND column_name = 'action'
-                 AND data_type = 'text') THEN
-        ALTER TABLE live.live_signals
-            ADD COLUMN action_code SMALLINT NOT NULL DEFAULT 0,
-            ADD COLUMN regime_state_code SMALLINT NOT NULL DEFAULT 0;
-        UPDATE live.live_signals
-           SET action_code = CASE action WHEN 'sell' THEN 1 ELSE 0 END;
-        UPDATE live.live_signals
-           SET regime_state_code = CASE regime_state
-                                       WHEN 'hot'   THEN 1
-                                       WHEN 'panic' THEN 2
-                                       WHEN 'quiet' THEN 3
-                                       ELSE 0 END;
-        ALTER TABLE live.live_signals
-            DROP COLUMN action,
-            DROP COLUMN regime_state;
-        ALTER TABLE live.live_signals
-            RENAME COLUMN action_code TO action;
-        ALTER TABLE live.live_signals
-            RENAME COLUMN regime_state_code TO regime_state;
-    END IF;
-END $$;
-
--- ----------------------------------------------------------------------------
 --  Data-quality gates (shared helpers, see 00_partition_utils.sql): the
 --  0-10000 basis-point confidence scale (mirroring
 --  analysis_signals.history_signals, the structural twin this table
@@ -156,12 +110,6 @@ END $$;
 --  0.00005 — the engine only records rows triggered on the RAW value).
 --  NOT VALID first, validated once by the schema sweep below.
 -- ----------------------------------------------------------------------------
--- 2026-09-25 confidence re-sourcing: drop the retired 0-100 form first
--- (ensure_check_constraint skips a same-named constraint regardless of
--- its definition; legacy 0-100 rows stay valid inside the widened
--- range).
-ALTER TABLE live.live_signals
-    DROP CONSTRAINT IF EXISTS chk_live_signals_confidence;
 SELECT public.ensure_check_constraint(
     'live.live_signals',
     'chk_live_signals_confidence',
@@ -179,8 +127,7 @@ SELECT public.ensure_check_constraint(
     'chk_live_signals_conf_selection',
     $chk$confidence_selection IS NULL
        OR confidence_selection BETWEEN 0 AND 10000$chk$);
--- label-code vocab gates (fresh installs carry these from the CREATE
--- body; migrated installs lost them with the dropped TEXT columns).
+-- label-code vocab gates (these re-assert the CREATE body's CHECK forms).
 SELECT public.ensure_check_constraint(
     'live.live_signals',
     'chk_live_signals_action',

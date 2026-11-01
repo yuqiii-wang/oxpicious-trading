@@ -35,24 +35,6 @@ CREATE TABLE IF NOT EXISTS stats.stock_identity (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
 SELECT public.create_hash_partitions('stats', 'stock_identity', 16);
 
--- Idempotent migration: replace the legacy code_suffix column with the
--- canonical exchange + board columns (mirroring the canonical source-CSV
--- schema). Existing rows are backfilled from the code suffix / prefix;
--- board backfills emit the static.label_dim code (0 MAIN / 1 STAR /
--- 2 GEM / 3 BSE — the label-code contract).
-UPDATE stats.stock_identity
-   SET exchange = split_part(code, '.', 2)
- WHERE exchange IS NULL OR exchange = '';
-UPDATE stats.stock_identity
-   SET board = CASE
-        WHEN exchange = 'SS' AND code LIKE '688%' THEN 1
-        WHEN exchange = 'SS' AND code LIKE '689%' THEN 1
-        WHEN exchange = 'SZ' AND code LIKE '30%'  THEN 2
-        WHEN exchange = 'BJ'                      THEN 3
-        ELSE 0
-       END
- WHERE board IS NULL;
-
 COMMENT ON TABLE  stats.stock_identity            IS 'Stock identity: one row per (date, code). PK (code, date) shared by all stock sub-tables. Native HASH partitioned by code. Mirrors etf_identity.';
 COMMENT ON COLUMN stats.stock_identity.code       IS 'Stock ticker with exchange suffix, e.g. "000001.SZ" (Ping An Bank) or "600000.SS" (Pudong Development Bank).';
 COMMENT ON COLUMN stats.stock_identity.exchange   IS 'Exchange of the code suffix: "SZ", "SS", or "BJ". Carried from the canonical source-CSV exchange column; replaces the legacy code_suffix column.';
@@ -99,13 +81,6 @@ COMMENT ON COLUMN stats.stock_basic_stats.is_ohl_estimated  IS 'TRUE when open/h
 COMMENT ON COLUMN stats.stock_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future stock intraday support).';
 
 COMMENT ON COLUMN stats.stock_basic_stats.eps IS 'Earnings per share (EPS), in yuan per single share, derived from the identity PE = price / EPS as eps = close / pe. NULL when pe is NULL or <= 0 (loss-making / no PE recorded) or close is NULL. For SSE stocks where pe is estimated under the constant-EPS assumption (is_pe_estimated=TRUE), eps recovers that constant EPS = last_close / last_pe. Populated by builds/stock/__main__.py at insert time.';
-
--- NOTE: trading_shares / trading_amount previously lived on stock_basic_stats.
--- They have been moved to stats.stock_liquidity_margin (below) to mirror the
--- ETF family pattern (etf_liquidity_margin). The migration is performed by
--- the DO block at the BOTTOM of this file: it (1) creates the new table,
--- (2) copies existing values from stock_basic_stats, then (3) drops the
--- legacy columns. The migration is idempotent (safe to re-run).
 
 -- ----------------------------------------------------------------------------
 -- Indexes for stock_identity
@@ -219,15 +194,6 @@ CREATE TABLE IF NOT EXISTS stats.stock_intraday_5min (
     CONSTRAINT pk_stock_intraday_5min PRIMARY KEY (code, date, time)
 ) PARTITION BY HASH (code);
 
--- Idempotent migration: no FK to stock_identity on the streamer-owned bar
--- table — see 02_etf_margin.sql (TRUNCATE CASCADE collateral hazard).
-ALTER TABLE stats.stock_intraday_5min
-    DROP CONSTRAINT IF EXISTS fk_stock_intraday_5min_date_code;
-
--- Idempotent migration: replace the legacy code_suffix column with exchange.
-UPDATE stats.stock_intraday_5min
-   SET exchange = split_part(code, '.', 2)
- WHERE exchange IS NULL OR exchange = '';
 COMMENT ON COLUMN stats.stock_intraday_5min.exchange IS 'Exchange of the code suffix: "SZ", "SS", or "BJ". Set by the streaming loaders; replaces the legacy code_suffix column.';
 
 -- Native hash partitions (32) keyed by code — created via the shared util

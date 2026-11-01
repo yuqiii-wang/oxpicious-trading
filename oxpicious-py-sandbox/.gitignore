@@ -1,0 +1,5 @@
+# Host-side session root of the py-sandbox compose service
+# (database/docker-compose.yml: ../oxpicious-py-sandbox:/home/pandas/sandbox).
+# LLM-generated sandbox session files are runtime artifacts — track nothing here.
+*
+!.gitignore

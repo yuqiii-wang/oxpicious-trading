@@ -74,7 +74,9 @@ function searchPlaceholderFor(secType: SecNavSecType): string {
       ? "Index code (e.g. 000300)"
       : secType === "industry"
         ? "Industry code (e.g. BANKS)"
-        : "Stock code (e.g. 600000)";
+        : secType === "all"
+          ? "No search in All mode"
+          : "Stock code (e.g. 600000)";
 }
 
 export default function SecNavShell({
@@ -134,7 +136,7 @@ export default function SecNavShell({
             />
           )}
           {headerAfterSecType}
-          {showSearch && (
+          {showSearch && nav.secType !== "all" && (
             <CodeSearchBar
               activeCode={nav.searchCode}
               onSearch={nav.handleSearch}
@@ -155,9 +157,11 @@ export default function SecNavShell({
         </Box>
       </Box>
 
-      {/* ---- Classification Nav (or a page-provided custom navigator) ---- */}
+      {/* ---- Classification Nav (or a page-provided custom navigator).
+           "All" sec_type: the locked exchange-only nav (no tree/L3). ---- */}
       {navSlot ?? (
         <SecClassificationNav
+          allMode={nav.secType === "all"}
           sectors={nav.sectors}
           sectorId={nav.sectorId}
           industrySlug={nav.industrySlug}
@@ -170,7 +174,7 @@ export default function SecNavShell({
           themeSlug={nav.themeSlug}
           onStrategyChange={nav.handleStrategyChange}
           onThemeChange={nav.handleThemeChange}
-          itemKind={nav.secType === "etf" ? "ETF" : nav.secType === "index" ? "Index" : nav.secType === "industry" ? "Industry" : "Stock"}
+          itemKind={nav.secType === "etf" ? "ETF" : nav.secType === "index" ? "Index" : nav.secType === "industry" ? "Industry" : nav.secType === "stock" ? "Stock" : undefined}
           selectedItemCode={nav.searchCode}
           onItemSelected={nav.onItemSelected}
           onClearItemSelection={nav.onClearItemSelection}

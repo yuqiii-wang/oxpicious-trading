@@ -55,9 +55,14 @@ CREATE TABLE IF NOT EXISTS text.llm_requests (
     is_failed        BOOLEAN     NOT NULL DEFAULT false,
     failure_reason   TEXT,                  -- NULL on success; short reason on failure
     duration_ms      INTEGER,               -- wall time of the WHOLE logical call (retries + backoff)
+    input_tokens     INTEGER,               -- usage.prompt_tokens of the final response; NULL when the response carries no usage block
+    output_tokens    INTEGER,               -- usage.completion_tokens; NULL likewise
+    total_tokens     INTEGER,               -- usage.total_tokens — the whole context the call consumed (input + output)
     context_ref_ids  BIGINT[]    NOT NULL DEFAULT '{}',  -- text.news ids of the request's context/reference articles
     news_group_id    INTEGER,               -- text.news_groups set of the sources, when one exists
     qa_id            BIGINT,                -- text.llm_qa row the request produced, when stored
+    chain_id         TEXT,                  -- multi-request flow chain (request_log.bind_request_chain); NULL for one-offs
+    prev_request_id  BIGINT REFERENCES text.llm_requests (request_id),  -- the chain's previous request (backfilled by the writer after insert)
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- GMT (UTC) day of created_at (boundary Beijing 08:00) — the same
     -- operational-day semantics as monitor.external_resource_audit.date.
@@ -85,6 +90,11 @@ CREATE INDEX IF NOT EXISTS ix_llm_requests_context_refs
 -- Per-answer rollup after the storing agents backfill qa_id.
 CREATE INDEX IF NOT EXISTS ix_llm_requests_qa_id
     ON text.llm_requests (qa_id) WHERE qa_id IS NOT NULL;
+
+-- Chain traversal (walk a flow's requests via prev_request_id) and
+-- per-chain grouping.
+CREATE INDEX IF NOT EXISTS ix_llm_requests_chain_id
+    ON text.llm_requests (chain_id) WHERE chain_id IS NOT NULL;
 
 COMMENT ON TABLE text.llm_requests IS
     'Source LLM request/response log: one row per logical llm_agents API '
@@ -134,7 +144,114 @@ COMMENT ON COLUMN text.llm_requests.qa_id IS
     'stored (backfilled by the storing agents); NULL for ask-style '
     'one-offs whose answers never land in the Q&A knowledge base.';
 
+COMMENT ON COLUMN text.llm_requests.chain_id IS
+  'Chain id of a multi-request FLOW (uuid hex, set by '
+  'request_log.bind_request_chain around the flow''s generate call): all '
+  'of the flow''s sequential requests share it — e.g. the six-request '
+  'llm_qa_by_research flow (five dimension requests + the summary '
+  'request). NULL for one-off requests. Within a chain the requests '
+  'share prompts/context, so each chained row''s request_payload is '
+  'stored INCREMENTALLY (shared messages removed — see '
+  'prev_request_id); walk the chain and merge to reconstruct what was '
+  'sent (request_log.reconstruct_request_payload).';
+
+COMMENT ON COLUMN text.llm_requests.prev_request_id IS
+  'The chain predecessor''s request_id — backfilled by the writer thread '
+  'right after each insert batch (previous request of the same chain_id '
+  'by request_id order); NULL for the chain''s first request or one-offs '
+  '(chain_id IS NULL). The first row of a chain carries the FULL '
+  'request_payload; every later chained row stores only the incremental '
+  'payload (shared top-level keys and identical messages removed), so '
+  'the full request as sent = merge of the chain up to that row.';
+
 COMMENT ON COLUMN text.llm_requests.date IS
     'GENERATED: created_at bucketed to a GMT (UTC) day — a new date '
     'starts at Beijing 08:00, the same operational-day boundary as '
     'monitor.external_resource_audit.date.';
+
+-- ============================================================================
+--  Migration: usage token counts (added after the table's first release).
+--  Extracted from the final response's usage block at write time so
+--  per-call / per-day cost aggregates are plain SQL, no JSONB parsing.
+--  Runs BEFORE the token columns' COMMENT statements below — a fresh
+--  apply of this file must not comment on columns that do not exist yet.
+-- ============================================================================
+ALTER TABLE text.llm_requests
+    ADD COLUMN IF NOT EXISTS input_tokens  INTEGER,
+    ADD COLUMN IF NOT EXISTS output_tokens INTEGER,
+    ADD COLUMN IF NOT EXISTS total_tokens  INTEGER;
+
+COMMENT ON COLUMN text.llm_requests.input_tokens IS
+    'usage.prompt_tokens of the final attempt''s response — the request''s '
+    'input token count, extracted at write time from the response''s '
+    'OpenAI-style usage block (request_log._extract_usage). NULL when the '
+    'response carries no usage block (web-search POSTs, failures).';
+
+COMMENT ON COLUMN text.llm_requests.output_tokens IS
+    'usage.completion_tokens of the final attempt''s response — the '
+    'reply''s output token count, extracted the same way as input_tokens.';
+
+COMMENT ON COLUMN text.llm_requests.total_tokens IS
+    'usage.total_tokens — the whole context token length the call consumed '
+    '(input + output), the per-call cost basis. Extracted at write time '
+    'like input/output_tokens so aggregate cost queries need no JSONB '
+    'parsing of response_payload.';
+
+-- ============================================================================
+--  Migration: full-text search over the requests' INCREMENTAL input and
+--  output (added after the table's first release). One new column,
+--  search_tsv, + its GIN index — the same contract the text schema's
+--  large-text tables carry (news / Q&A; see 01_news.sql's search_tsv and
+--  _common/tokenization/search_indexing.py): Postgres' 'simple' config
+--  does not segment Chinese, so the vector is NOT generated — the
+--  request-log writer (llm_agents/_core/request_log.py) pre-segments the
+--  texts with the local StructBERT segmenter and builds the weighted
+--  vector in the INSERT:
+--
+--    strip(setweight(to_tsvector('simple', <incremental input tokens>),'A')
+--       || setweight(to_tsvector('simple', <output tokens>), 'B'))
+--
+--  SOURCES (the request's conversation delta — what searching a run's
+--  traffic must recall):
+--    A  the request's INCREMENTAL input: request_payload.messages as
+--       stored — for a chained row the messages the chain had NOT sent
+--       before (the ask, tool results, directives); for a chain's first
+--       row / a one-off the full message list. Content parts only
+--       (image_url placeholders are already short strings); per-message
+--       and total extraction caps apply (request_log extracts bounded
+--       text — the vector indexes the IMPORTANT data, not the blob).
+--    B  the final response's output: choices[0].message.content plus its
+--       tool_calls' function names and (capped) arguments — the model's
+--       answer and the calls it made. NO reasoning traces: thinking /
+--       reasoning_content is internal and never indexed.
+--
+--  Query side (segmented the same way): search_tsv @@
+--  websearch_to_tsquery('simple', tokenize_for_search(<query>)).
+--  PRIMARY CONSUMER: the deep agents' thread-internal search tool
+--  (llm_agents/deep_agents/planning/thread_search.py) — scoped to ONE
+--  langgraph thread by chain membership (chain_id IN the thread's
+--  llm_context_id set), so any-level agent searches only ITS OWN run's
+--  recorded traffic. Not a text.search_lexicon_df table: thread scopes
+--  are tens of rows — ts_rank needs no DF-aware reordering there.
+--
+--  Runs BEFORE the column COMMENT below — a fresh apply must not
+--  comment on a column that does not exist yet.
+-- ============================================================================
+ALTER TABLE text.llm_requests
+    ADD COLUMN IF NOT EXISTS search_tsv TSVECTOR;
+
+CREATE INDEX IF NOT EXISTS ix_llm_requests_search_tsv_gin
+    ON text.llm_requests USING gin (search_tsv);
+
+COMMENT ON COLUMN text.llm_requests.search_tsv IS
+    'Weighted full-text vector over the request''s conversation delta: '
+    'A = the incremental input (request_payload.messages as stored — a '
+    'chained row''s new messages, a chain-first/one-off row''s full '
+    'list), B = the output (the response''s assistant text + tool-call '
+    'names/arguments). Chinese pre-segmented by the StructBERT '
+    'segmenter (never a GENERATED column — ''simple'' does not segment '
+    'CJK); positions stripped (GIN indexes lexemes only). NULL = not '
+    'yet tokenized (healed by request_log.backfill_search_tsv_async / '
+    'the thread-search tool''s scoped heal). Query: search_tsv @@ '
+    'websearch_to_tsquery(''simple'', tokenize_for_search(<q>)); the '
+    'deep agents'' thread-internal search scopes it by chain_id.';

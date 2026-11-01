@@ -1,12 +1,14 @@
 """Crawl gov.cn 政策解读 article detail pages for titles matching keyword taxonomy.
 
 Reads the title list produced by :mod:`downloads.macro.gov.news`
-(``temps/gov_news/gov_news_titles.csv``), loads the static keyword taxonomy
-from ``downloads/macro/gov/keywords.json``, builds a reverse map
-(keyword -> [(type, category), ...]) at runtime, scans each title for keyword
-mentions, and — for matched titles — visits the article detail link to fetch
-its body text. Detail pages are cached as ``.md`` files (one per article,
-keyed by the URL content slug) so subsequent runs only fetch new articles.
+(``temps/gov_news/gov_news_titles.csv``), loads the seeded keyword map
+(``static.keyword_maps`` via ``_common.keyword_maps`` — industry + broadmarket
+rows only: market descriptions are text-audit vocabulary, not crawl topics),
+builds a reverse map (keyword -> [(type, category), ...]) at runtime, scans
+each title for keyword mentions, and — for matched titles — visits the
+article detail link to fetch its body text. Detail pages are cached as
+``.md`` files (one per article, keyed by the URL content slug) so subsequent
+runs only fetch new articles.
 
 Only matched articles are crawled — detail links for titles with no keyword
 hit are NOT visited. Anti-bot behaviour (browser-fingerprint rotation,
@@ -34,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import re
 import sys
 from dataclasses import replace
@@ -61,6 +62,8 @@ from downloads._common import (  # noqa: E402
     setup_logger,
     sleep_sec_for,
 )
+from _common.keyword_maps import load_keyword_maps  # noqa: E402
+from _common.labels import KW_CATEGORY_TYPE_CODE, KW_THEME_CODE  # noqa: E402
 from downloads.macro.gov.main_gov import latest_csv_date, read_csv_rows  # noqa: E402
 
 # ----------------------------------------------------------------------------
@@ -73,7 +76,6 @@ SERVICE = "downloads.macro.gov.articles"
 URLS = service_urls(SERVICE)
 GOV_HOST = URLS["gov_host"]
 GOV_LIST_URL = URLS["gov_list_url"]
-KEYWORDS_PATH = Path(__file__).resolve().parent.parent / "keywords.json"
 OUTPUT_DIRNAME = "gov_news"
 ARTICLES_SUBDIR = "articles"
 INDEX_FILENAME = "articles_index.csv"
@@ -103,26 +105,41 @@ logger = setup_logger("gov_articles")
 # ----------------------------------------------------------------------------
 # Keywords: load + reverse map
 # ----------------------------------------------------------------------------
-def load_keywords(path: Path = KEYWORDS_PATH) -> Dict[str, Dict[str, List[str]]]:
-    """Load the static keyword taxonomy JSON."""
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    # Strip the _comment key if present.
-    return {k: v for k, v in data.items() if not k.startswith("_")}
+# Crawl selection uses industry + broadmarket keyword rows only: the
+# market-description rows (下跌, 放量, …) are text-audit vocabulary, not
+# crawl topics — matching them would broaden the crawl beyond policy
+# coverage on a sleep_sec=90 anti-bot budget.
+_CRAWL_TYPE_NAMES = {
+    KW_CATEGORY_TYPE_CODE["industry"]: "industry",
+    KW_CATEGORY_TYPE_CODE["broadmarket"]: "broadmarket",
+}
+_THEME_LABEL = {code: label for label, code in KW_THEME_CODE.items()}
 
 
-def build_reverse_map(
-    keywords: Dict[str, Dict[str, List[str]]],
+def build_reverse_map_from_rows(
+    rows: List[Tuple[str, int, Optional[str], Optional[int]]],
 ) -> Dict[str, List[Tuple[str, str]]]:
-    """Build keyword -> [(type, category), ...] from the taxonomy.
+    """Build keyword -> [(type, category), ...] from static.keyword_maps rows.
 
-    A keyword listed under multiple categories maps to a list of all of them.
+    Industry rows carry the canonical industry_id (UPPERCASE — the former
+    JSON's lowercase slug categories are gone); broadmarket rows decode
+    their kw_theme code to the theme label. Market rows (type 1) are
+    excluded (see _CRAWL_TYPE_NAMES). A keyword listed under several
+    categories maps to a list of all of them.
     """
     rev: Dict[str, List[Tuple[str, str]]] = {}
-    for type_name, categories in keywords.items():
-        for cat, kws in categories.items():
-            for kw in kws:
-                rev.setdefault(kw, []).append((type_name, cat))
+    for row in rows:
+        type_name = _CRAWL_TYPE_NAMES.get(row.category_type)
+        if type_name is None:
+            continue
+        if type_name == "industry":
+            # ck_keyword_maps_target guarantees industry_id NOT NULL here.
+            assert row.industry_id is not None, \
+                "industry keyword row without industry_id"
+            category: str = row.industry_id
+        else:
+            category = _THEME_LABEL[row.category_code]
+        rev.setdefault(row.keyword, []).append((type_name, category))
     return rev
 
 
@@ -359,15 +376,17 @@ def download_articles(
         if index_floor is not None:
             logger.info("Incremental: index has data up to %s — only newer titles scanned", index_floor)
 
-    # 1. Load keywords + build reverse map
-    keywords = load_keywords()
-    rev_map = build_reverse_map(keywords)
+    # 1. Load keyword rows + build reverse map
+    rows = load_keyword_maps()
+    rev_map = build_reverse_map_from_rows(rows)
+    type_industry = KW_CATEGORY_TYPE_CODE["industry"]
+    type_broadmarket = KW_CATEGORY_TYPE_CODE["broadmarket"]
     logger.info(
-        "Loaded %d keywords (%d industry cats, %d broadmarket cats) from %s",
+        "Loaded %d keywords (%d industry rows, %d broadmarket rows) "
+        "from static.keyword_maps",
         len(rev_map),
-        len(keywords.get("industry", {})),
-        len(keywords.get("broadmarket", {})),
-        KEYWORDS_PATH.name,
+        sum(1 for r in rows if r.category_type == type_industry),
+        sum(1 for r in rows if r.category_type == type_broadmarket),
     )
 
     # 2. Read titles CSV

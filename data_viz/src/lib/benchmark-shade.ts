@@ -4,7 +4,7 @@
  *
  *   • Market Movements (Live Data, top plot) — per-5-min-tick %
  *     change vs benchmark, ALL industries shaded ALL the time.
- *   • Industry Sentiments → Market Trend → Hypes & Drains — daily
+ *   • Market Beta → Market Trend → Hypes & Drains — daily
  *     rebased-to-100 curves, only ACTIVE industries shaded (FADING /
  *     HIDDEN get null via the visible mask).
  *

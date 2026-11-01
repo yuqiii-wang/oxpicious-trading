@@ -1857,4 +1857,103 @@ router.get("/stream", async (_req: Request, res: Response) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+//  AI usage — GET /ai/usage?days=30
+//  The AI tab's LLM-request audit: text.llm_requests aggregated per
+//  (service, model, GMT date) over a trailing window — request / failed
+//  counts, the usage-block token sums (input / output / total, extracted
+//  at write time by llm_agents/_core/request_log so no JSONB parsing
+//  here) and whole-call durations. Live SQL (no computed table): the
+//  window is days × services × models rows, small by construction, and
+//  the ix_llm_requests_date index bounds the scan. The deep-agent runs
+//  half of the tab reads the EXISTING /api/ai endpoints (summary-runs +
+//  summary/active) — the run history is run-lifecycle data, not an
+//  aggregate, and re-serving it under /monitor would duplicate it.
+// ---------------------------------------------------------------------------
+
+interface AiUsageRow {
+  service: string;
+  model: string | null;
+  date: string;
+  request_count: number;
+  failed_count: number;
+  input_tokens: string | number;
+  output_tokens: string | number;
+  total_tokens: string | number;
+  avg_duration_ms: number | null;
+  max_duration_ms: number | null;
+}
+
+export interface AiUsageEntry {
+  service: string;
+  /** The chat model when the request recorded one (null = none / a
+   *  web-search POST without a model). */
+  model: string | null;
+  /** GMT operational day (Beijing 08:00 boundary — the table's own
+   *  generated date column). */
+  date: string;
+  requestCount: number;
+  failedCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  avgDurationMs: number | null;
+  maxDurationMs: number | null;
+}
+
+export interface AiUsageResponse {
+  success: true;
+  generatedAt: string;
+  /** Distinct sorted dates present in the window (trend x axis). */
+  dates: string[];
+  /** Distinct sorted services present in the window (trend series). */
+  services: string[];
+  rows: AiUsageEntry[];
+}
+
+router.get("/ai/usage", async (req: Request, res: Response) => {
+  const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+  try {
+    const pool = getReadPool();
+    const agg = await pool.query<AiUsageRow>(
+      `SELECT service, model, date::text AS date,
+              COUNT(*)::int AS request_count,
+              COUNT(*) FILTER (WHERE is_failed)::int AS failed_count,
+              COALESCE(SUM(input_tokens), 0)::bigint  AS input_tokens,
+              COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+              COALESCE(SUM(total_tokens), 0)::bigint  AS total_tokens,
+              AVG(duration_ms)::float8 AS avg_duration_ms,
+              MAX(duration_ms)::int    AS max_duration_ms
+       FROM text.llm_requests
+       WHERE date >= (CURRENT_DATE - ($1::int - 1))
+       GROUP BY service, model, date
+       ORDER BY date, service, model NULLS FIRST`,
+      [days],
+    );
+    const rows: AiUsageEntry[] = agg.rows.map((r) => ({
+      service: r.service,
+      model: r.model,
+      date: r.date,
+      requestCount: r.request_count,
+      failedCount: r.failed_count,
+      inputTokens: Number(r.input_tokens),
+      outputTokens: Number(r.output_tokens),
+      totalTokens: Number(r.total_tokens),
+      avgDurationMs: r.avg_duration_ms == null ? null : Number(r.avg_duration_ms),
+      maxDurationMs: r.max_duration_ms,
+    }));
+    const body: AiUsageResponse = {
+      success: true,
+      generatedAt: new Date().toISOString(),
+      dates: [...new Set(rows.map((r) => r.date))].sort(),
+      services: [...new Set(rows.map((r) => r.service))].sort(),
+      rows,
+    };
+    res.json(body);
+  } catch (err) {
+    console.error("[monitor/ai/usage] error:", err);
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 export default router;

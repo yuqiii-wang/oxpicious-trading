@@ -1,14 +1,14 @@
 /**
  * analysis-insights.service — Ask AI insight metrics.
  *
- * Serves the insight registry (analysis_insights.insight_templates,
- * INSERT-seeded by database/sql/analysis/static/analysis_insights/02..05
+ * Serves the insight registry (analysis_insight_metrics.insight_templates,
+ * INSERT-seeded by database/sql/analysis/static/analysis_insight_metrics/02..05
  * — the per-tab data files, the single source of truth) and resolves one
  * analysis page's metric VALUES for an
  * ask context (the classification-nav security + the as-of date chosen in
  * the code trend / modal).
  *
- * Resolution is the CONTRACT mirrored by analysis/analysis_insights/resolver.py
+ * Resolution is the CONTRACT mirrored by analysis/analysis_insight_metrics/resolver.py
  * (see the 01_ DDL header there): table-kind metrics resolve HERE
  * via spec-driven SQL (fast path — the modal fills instantly); compute-kind
  * metrics (and table metrics' on-demand compute fallbacks) spawn
@@ -57,6 +57,9 @@ export interface InsightTemplateRow extends QueryResultRow {
   unit: string | null;
   description: string | null;
   spec: InsightSpec;
+  /** Generated db-search recipe (see the 01_ DDL header): the Ask AI
+   *  db search reads it to populate a SELECT over the metric's table. */
+  db_keywords: Record<string, unknown> | null;
   ordinal: number;
 }
 
@@ -80,6 +83,8 @@ export interface InsightMetricValue {
   pct_rank: number | null;
   pct_rank_n: number | null;
   source_kind: string;
+  /** Generated db-search recipe — mirrors the py resolver's metric rows. */
+  db_keywords: Record<string, unknown>;
   computed: boolean;
   unresolved: string | null;
 }
@@ -104,14 +109,36 @@ export interface InsightResolveResult {
   industry: string | null;
   as_of: string | null;
   metrics: InsightMetricValue[];
+  /** The page's doc row (title / doc / biz keywords) from
+   *  insight_page_docs; null when the page has no doc row yet. */
+  page_doc: InsightPageDoc | null;
+}
+
+export interface InsightPageDoc extends QueryResultRow {
+  tab: string;
+  page: string;
+  title: string;
+  doc: string | null;
+  keywords: string[];
+}
+
+/** All page docs (10-min TTL — they change only on a seed run). */
+export function listInsightPageDocs(): Promise<InsightPageDoc[]> {
+  return cachedRows("analysis-insights:page-docs", async () =>
+    queryRows<InsightPageDoc>(
+      `SELECT tab, page, title, doc, keywords
+         FROM analysis_insight_metrics.insight_page_docs
+        ORDER BY tab, page`,
+    ),
+  );
 }
 
 /** All registry rows (10-min TTL — they change only on a seed run). */
 export function listInsightTemplates(): Promise<InsightTemplateRow[]> {
   return cachedRows("analysis-insights:templates", async () =>
     queryRows<InsightTemplateRow>(
-      `SELECT template_id, tab, page, metric, label, unit, description, spec, ordinal
-         FROM analysis_insights.insight_templates
+      `SELECT template_id, tab, page, metric, label, unit, description, spec, db_keywords, ordinal
+         FROM analysis_insight_metrics.insight_templates
         ORDER BY tab, page, ordinal`,
     ),
   );
@@ -324,6 +351,7 @@ export async function resolveInsightMetrics(params: {
     pct_rank: null,
     pct_rank_n: null,
     source_kind: tpl.spec?.source?.kind ?? "table",
+    db_keywords: tpl.db_keywords ?? {},
     computed: false,
     unresolved: null,
   }));
@@ -386,6 +414,10 @@ export async function resolveInsightMetrics(params: {
   return {
     tab: params.tab,
     page: params.page,
+    page_doc:
+      (await listInsightPageDocs()).find(
+        (d) => d.tab === params.tab && d.page === params.page,
+      ) ?? null,
     code: ctx.code,
     sec_type: ctx.secType,
     industry: ctx.industry,

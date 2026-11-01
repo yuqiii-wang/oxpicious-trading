@@ -1,0 +1,11 @@
+{
+  "service": "analysis.market_crowdedness",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "daily",
+  "schedule": "every A-share trading date from 19:00, after builds_daily.sh (analysis_daily.sh loop order, last step)",
+  "notes": "Crowdedness curves from the pools' STABLE hot sets (top 10% of the day's active pool by 60-active-day MEAN amount, floored at 5 names, >= 20 active days to rank — replaced the noisy day-amount ranking 2026-11-01, which churned 17-29% of names daily vs 1-2%). v2 percentile-normalized multi-pillar score: crowdedness_score = renormalized blend 0.30*concentration_pct + 0.30*flow_pct + 0.25*comovement_pct + 0.15*valuation_pct, where each *_pct reads its RAW pillar against the pool's own trailing-250-pool-date-row history (>= 60 non-null obs). RAW pillars: concentration (hot-set share of the pool's 5-active-day MEAN amount), flow_change (hot-set share of the gross Δ of the 5-day mean — sustained multi-day inflow; ma5 basis cuts score noise 43%, smoothing study 2026-11-01), comovement (mean corr120 of hot-stock returns vs the leave-one-out pool return), valuation (mean hot pe cross-sectional percentile). Turnover-concentration evidence columns: top1/top5/top10_share (day-amount cuts) + effective_n ((Sum amt)^2 / Sum amt^2). Full universe on both sides: index side = all active classified indexes (sec_classification type='index', is_active, composition-backed); industry side = the full composite-industry universe. Incremental (missing dates only, clamped to the stats.stock_liquidity_margin range, 440-day lookback for percentile/corr warm-up); --force deletes the scoped sec_types and COPY-rebuilds.",
+  "source_ref": "scripts/analysis_daily.sh",
+  "updated_at": "2026-10-31T00:00:00.000000+00:00"
+}

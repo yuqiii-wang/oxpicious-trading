@@ -556,9 +556,9 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- docs/ma_spread_rebound_study_2026-10-26.md): a big drop from the
     -- trailing-Wd high (>= the depth bar), the running trough, the
     -- rebound peak, and the causal RESOLUTION (trough-break /
-    -- rollover / high-reclaim). Each sub type emits PLAIN and
-    -- PE-conditioned cells (is_pe_boosted, the PK axis: the gate is
-    -- the code's own trailing PE-percentile condition).
+    -- rollover / high-reclaim). The PE-conditioned variant half (the
+    -- is_pe_boosted PK axis) was unlinked 2026-11-01 — the plain
+    -- population only.
     ('signal_type', 9, 'rebound', 9),
     -- the rebound family's sub types (block 5900+): {kind}_{window} —
     -- capit = the CAPITULATION trough-break (further-drop resolution;

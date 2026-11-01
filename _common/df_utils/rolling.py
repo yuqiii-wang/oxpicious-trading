@@ -11,7 +11,7 @@ Consolidates two patterns that share the same ``groupby(keys)[col]
   - ``grouped_rolling_agg``: compute ONE window x ONE column with a
     configurable agg (mean / std / var / sum / count / min / max).
     Used by analyzes (mov_ave_spread std, sec_alloc_perf MA5,
-    industry_sentiments/etf_contribution MA5+MA20).
+    market_beta/etf_contribution MA5+MA20).
 
 Also provides ``compute_emas`` for exponential moving averages
 (ema6 / ema12 / ema20 / ema26 / ema60), computed via a shift-doubling
@@ -344,7 +344,7 @@ def grouped_rolling_agg(
 
       - analysis.mov_ave_spread.helpers.compute_rolling_stds (std, ddof=0)
       - analysis.sec_alloc_perf_attribution.compute (MA5 mean)
-      - analysis.industry_sentiments.etf_contribution (MA5 + MA20 mean)
+      - analysis.market_beta.etf_contribution (MA5 + MA20 mean)
 
     The ``reset_index(level=..., drop=True)`` step strips the group-key
     levels from the resulting MultiIndex Series so it aligns back to the

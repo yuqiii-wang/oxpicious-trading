@@ -1,6 +1,6 @@
 """llm_agents.llm_qa_by_research.cli — the storage + generation driver.
 
-Subcommands: ``generate`` (the five-request flow — searches, dimension
+Subcommands: ``generate`` (the six-request flow — searches, dimension
 requests, the summary/label request, then one idempotent store),
 ``add`` / ``list`` / ``deactivate`` (direct row maintenance, the
 llm_qa CLI shape).
@@ -62,11 +62,11 @@ def _derive_sector(industry: Optional[str], sector: Optional[str]) -> Optional[s
 async def main() -> None:
     ap = argparse.ArgumentParser(
         description="Generate + store research-logic Q&A rows in "
-                    "text.llm_qa_by_research (five LLM requests per row).")
+                    "text.llm_qa_by_research (six LLM requests per row).")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_gen = sub.add_parser(
-        "generate", help="run the five-request flow and store one row")
+        "generate", help="run the six-request flow and store one row")
     p_gen.add_argument("--question", required=True,
                        help="The research question / subject (行业或标的的"
                             "底层研究问题).")
@@ -100,8 +100,8 @@ async def main() -> None:
     p_add.add_argument("--logic-label", required=True, choices=LOGIC_LABELS,
                        help="Dominant investing logic of the row.")
     p_add.add_argument("--intro", type=str, default=None)
-    p_add.add_argument("--return-text", type=str, default=None,
-                       help="The return column (named for the keyword).")
+    p_add.add_argument("--optimistic-forecast", type=str, default=None)
+    p_add.add_argument("--pessimistic-forecast", type=str, default=None)
     p_add.add_argument("--risks", type=str, default=None)
     p_add.add_argument("--capitalization", type=str, default=None)
     p_add.add_argument("--news-ids", type=str, default=None,
@@ -162,7 +162,9 @@ async def main() -> None:
             qa_id = await upsert_qa_by_research(
                 conn, args.question, args.answer,
                 RESEARCH_LOGIC_CODE[args.logic_label],
-                intro=args.intro, return_=args.return_text,
+                intro=args.intro,
+                optimistic_forecast=args.optimistic_forecast,
+                pessimistic_forecast=args.pessimistic_forecast,
                 risks=args.risks, capitalization=args.capitalization,
                 context=context, category=args.category,
                 industry_id=args.industry,

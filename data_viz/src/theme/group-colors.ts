@@ -16,7 +16,7 @@
  * order, so the same set of groups always maps to the same colors regardless
  * of insertion order. This keeps colors consistent across charts that build
  * independent schemes from the same group set (e.g. the price chart and the
- * aggregate chart on the Industry Sentiments page).
+ * aggregate chart on the Market Beta page).
  *
  * Within a group, variants diverge symmetrically around the major color's
  * lightness: item 0 = the exact major color (the "anchor"), item 1 lighter,

@@ -18,6 +18,9 @@ packages used to duplicate between ``online_search_summary`` and
     request's payload + response logged fire-and-forget from the
     transport, context/reference source articles linkable by ref ids
     (bind_ref_ids / load_request_sources).
+  * ``text_caps``  — store-time length caps for generated text
+    (truncate_summary / truncate_context; mirrors
+    database/sql/text/10_llm_summary_caps.sql).
 
 NOT a CLI / agent: nothing here parses args or defines a domain
 contract — those stay in the per-agent packages. (``request_log``'s DB
@@ -36,6 +39,9 @@ from llm_agents._core.base import BaseLlmProvider
 from llm_agents._core.request_log import (
     bind_ref_ids, current_refs, load_request_sources, record_request,
 )
+from llm_agents._core.text_caps import (
+    MAX_CONTEXT_CHARS, MAX_SUMMARY_CHARS, truncate_context, truncate_summary,
+)
 
 __all__ = [
     "LlmProviderError", "SHANGHAI_TZ",
@@ -44,4 +50,6 @@ __all__ = [
     "BaseLlmProvider",
     "bind_ref_ids", "current_refs", "load_request_sources",
     "record_request",
+    "MAX_CONTEXT_CHARS", "MAX_SUMMARY_CHARS",
+    "truncate_context", "truncate_summary",
 ]

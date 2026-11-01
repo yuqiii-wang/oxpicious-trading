@@ -19,7 +19,7 @@ The original docstring (kept for historical reference):
 
       - analysis.mov_ave_spread._common.derive.compute_rolling_stds (std, ddof=0)
       - analysis.sec_alloc_perf_attribution.compute (MA5 mean)
-      - analysis.industry_sentiments.etf_contribution (MA5 + MA20 mean)
+      - analysis.market_beta.etf_contribution (MA5 + MA20 mean)
 
     GPU acceleration: when the cuDF router (``_common.df_utils``)
     determines the GPU is worthwhile for this op_type + row count, the

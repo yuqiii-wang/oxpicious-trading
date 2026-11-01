@@ -13,7 +13,8 @@ Per provider:
   * ``VISION_MODEL_SUFFIXES``   — family naming conventions: ZhiPu's
     multimodal line carries a trailing "v" (glm-4v / glm-4.5v / glm-4.6v
     / a future glm-5v …), so any such name qualifies without editing
-    this file. Text models (glm-4.5, glm-5.2, …) never match.
+    this file. Text models (glm-4.5, glm-5.2, …) never match; models
+    multimodal WITHOUT the "v" (glm-5.3-flash) need the explicit set.
   * ``DEFAULT_VISION_MODELS``   — the vision model ``--payload-file``
     asks (the data_viz AI Ask chart adviser) switch to when the payload
     carries screenshots and no explicit ``--model`` was given.
@@ -26,9 +27,13 @@ from typing import Dict, FrozenSet, Optional, Tuple
 
 # ZhiPu BigModel multimodal chat models (open.bigmodel.cn), fed through
 # the same chat/completions endpoint as image_url content parts.
+# glm-5.3-flash is listed explicitly: natively multimodal (text + image
+# input) but named without the trailing "v", so the suffix rule below
+# would wrongly classify it text-only and drop screenshots.
 _ZHIPU_VISION_MODELS: FrozenSet[str] = frozenset({
     "glm-4v", "glm-4v-plus", "glm-4v-flash",
     "glm-4.1v-thinking", "glm-4.5v", "glm-4.6v",
+    "glm-5.3-flash",
 })
 
 VISION_MODELS: Dict[str, FrozenSet[str]] = {

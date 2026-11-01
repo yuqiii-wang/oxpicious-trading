@@ -27,7 +27,7 @@
  "6": {
   "script": "builds.cross_stats",
   "can_be_parallel": false,
-  "note": "reads builds.index exts' stats.index_exts.total_etf_trading_amount; feeds analysis.industry_sentiments' etf_contribution"
+  "note": "reads builds.index exts' stats.index_exts.total_etf_trading_amount; feeds analysis.market_beta' etf_contribution"
  },
  "7": {
   "script": "builds.market_regimes",

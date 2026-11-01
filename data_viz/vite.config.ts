@@ -20,6 +20,9 @@ export default defineConfig({
         target: 'http://localhost:3001',
         changeOrigin: true,
         secure: false,
+        // WebSocket too: the AI deep-agent event channel
+        // (/api/ai/events) rides the same /api prefix as an upgrade.
+        ws: true,
         configure: (proxy, _options) => {
           proxy.on('error', (err, _req, _res) => {
             console.log('proxy error', err);

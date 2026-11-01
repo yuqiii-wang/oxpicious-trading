@@ -1,7 +1,7 @@
 /**
  * Industry ETF Contribution — multi-ETF price series (1st plot) + per-ETF
  * contribution bars (2nd+ plots) for the "ETF Contribution" view on the
- * Industry Sentiments page.
+ * Market Beta page.
  *
  * Mirrors the benchmark-price-chart + industry-benchmark-attribution pattern,
  * but replaces benchmark-indices with ETFs as the unit of analysis:

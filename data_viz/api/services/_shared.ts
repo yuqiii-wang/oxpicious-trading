@@ -26,13 +26,33 @@ export interface StrategyThemeInputRow {
 export function buildStrategyThemesFromRows(
   rows: StrategyThemeInputRow[],
 ): StrategyNode[] {
+  return buildTreeFromRows(rows, false);
+}
+
+/** Build the L1 sector → L2 industry → items tree from a flat list of meta
+ *  rows, restricted to industry-PRIMARY rows (is_industry_not_strategy=TRUE).
+ *  The industry-side twin of buildStrategyThemesFromRows. */
+export function buildSectorThemesFromRows(
+  rows: StrategyThemeInputRow[],
+): SectorNode[] {
+  return buildTreeFromRows(rows, true);
+}
+
+/** The shared tree body behind both column builders: group `rows` into L1
+ *  sectors of L2 nodes holding their member items, keeping the rows whose
+ *  is_industry_not_strategy matches `industrySide`. Sectors/nodes sort by
+ *  member count DESC with OTHER pinned last. */
+function buildTreeFromRows(
+  rows: StrategyThemeInputRow[],
+  industrySide: boolean,
+): SectorNode[] {
   const sectorMap = new Map<string, {
     sector_label: string;
     industries: Map<string, ThemeNode>;
   }>();
 
   for (const r of rows) {
-    if (r.is_industry_not_strategy) continue;
+    if (r.is_industry_not_strategy !== industrySide) continue;
     const item = { code: r.code, name: r.name ?? "" };
     if (!sectorMap.has(r.sector_id)) {
       sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
@@ -116,34 +136,69 @@ export function matchesClassification(
 }
 
 // ----------------------------------------------------------------------------
-//  buildIndustryFlatThemes — the sec_type='industry' LEFT-column tree.
+//  Industry-entity classification trees — the sec_type='industry' columns.
 //
-//  Industry entities (code = stats.sec_classification.industry_id) have
-//  NO classification ABOVE them — the industry IS the top of its own
-//  taxonomy — so instead of the L1 sector -> L2 industry cascade they
-//  render ONE flat group: a single 'INDUSTRY' L1 with a single '全部'
-//  L2 holding every industry as an L3 item chip. Both the codes and
-//  their names come precomputed from the per-code summary tables
-//  (analysis.mov_ave_spreads_codes / analysis.pe_codes — the codes'
-//  name column is the stats.industry_identity label).
+//  Industry entities (code = stats.sec_classification.industry_id) have no
+//  classification rows OF THEIR OWN — their sector/theme comes from the
+//  securities classified under that id (is_industry_not_strategy splits the
+//  column exactly as it does for securities). listIndustryEntityClassRows()
+//  (classification-cache.ts) supplies one IndustryEntityClassRow per entity
+//  id; these builders join it with the service's per-code summary rows and
+//  route each entity into its classification column:
+//    • buildIndustryClassifiedThemes — LEFT column: L1 sector → L2 industry
+//      nodes, one entity item per node (FIN → BANKS → 'BANKS 银行').
+//    • buildIndustryStrategyThemes   — RIGHT column: strategy → theme nodes
+//      for the strategy-primary ids (BROAD → BROAD_CSI300, DIV → DIV_SOE, …).
+//  Entities missing a classification row fall back to OTHER/未分类 on the
+//  industry side so they still render.
 // ----------------------------------------------------------------------------
-export function buildIndustryFlatThemes(
+export interface IndustryEntityClassRow {
+  industry_id: string;
+  sector_id: string;
+  sector_label: string;
+  industry_label: string;
+  industry_slug: string;
+  is_industry_not_strategy: boolean;
+}
+
+/** Join entity summary rows with their classification rows into the
+ *  StrategyThemeInputRow shape both column builders consume. */
+function joinIndustryEntities(
   codes: Array<{ code: string; name: string | null }>,
+  classRows: IndustryEntityClassRow[],
+): StrategyThemeInputRow[] {
+  const classById = new Map(classRows.map((c) => [c.industry_id, c]));
+  return [...codes]
+    .sort((a, b) => a.code.localeCompare(b.code))
+    .map((c) => {
+      const cls = classById.get(c.code);
+      return {
+        code: c.code,
+        name: c.name ?? "",
+        sector_id: cls?.sector_id ?? "OTHER",
+        sector_label: cls?.sector_label ?? "其他",
+        industry_id: c.code,
+        industry_label: cls?.industry_label ?? (c.name ?? c.code),
+        industry_slug: cls?.industry_slug ?? c.code.toLowerCase(),
+        is_industry_not_strategy: cls?.is_industry_not_strategy ?? true,
+      };
+    });
+}
+
+/** LEFT column for sec_type='industry' — the entities under their
+ *  industry classification (L1 sector → L2 industry, one item per node). */
+export function buildIndustryClassifiedThemes(
+  codes: Array<{ code: string; name: string | null }>,
+  classRows: IndustryEntityClassRow[],
 ): SectorNode[] {
-  const items = codes
-    .map((c) => ({ code: c.code, name: c.name ?? "" }))
-    .sort((a, b) => a.code.localeCompare(b.code));
-  if (items.length === 0) return [];
-  return [{
-    sector_id: "INDUSTRY",
-    sector_label: "行业",
-    count: items.length,
-    industries: [{
-      industry_id: "ALL",
-      industry_label: "全部行业",
-      industry_slug: "all",
-      count: items.length,
-      items,
-    }],
-  }];
+  return buildTreeFromRows(joinIndustryEntities(codes, classRows), true);
+}
+
+/** RIGHT column for sec_type='industry' — the strategy-primary entities
+ *  under their strategy → theme classification. */
+export function buildIndustryStrategyThemes(
+  codes: Array<{ code: string; name: string | null }>,
+  classRows: IndustryEntityClassRow[],
+): StrategyNode[] {
+  return buildTreeFromRows(joinIndustryEntities(codes, classRows), false);
 }

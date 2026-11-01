@@ -210,7 +210,7 @@ async def filter_rows_to_missing_dates_async(
     ``SELECT DISTINCT date`` query per call.
 
     Used by analysis.mov_ave_spread (detail) and
-    analysis.industry_sentiments (main table) to skip
+    analysis.market_beta (main table) to skip
     already-populated dates before bulk upsert (formerly also
     analysis.sec_alloc_perf_attribution, migrated to builds.cross_stats).
 

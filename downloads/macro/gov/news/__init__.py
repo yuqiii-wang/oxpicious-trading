@@ -4,15 +4,15 @@ This is the single entry point for the gov.cn macro-news pipeline. Running
 ``python -m downloads.macro.gov.news`` executes three internal steps in order,
 reusing the same ``--start-date`` / ``--sleep-sec`` / ``--force`` / ``--out-root``
 flags for all of them (mirroring the convention used by ``pboc.repo_news`` and
-``analysis.industry_sentiments``, where internal steps share one CLI surface):
+``analysis.market_beta``, where internal steps share one CLI surface):
 
   1. **gov.news** — fetch the 政策解读 title list from gov.cn (single
      ``ZCJD_QZ.json`` fetch; full backfill to 2020-01-01 in one shot) and
      write ``temps/gov_news/gov_news_titles.csv``.
   2. **gov.ndrc** — paginate the ndrc.gov.cn 新闻发布 list (HTML pagination,
      stops at the start-date floor) and write ``temps/ndrc_news/ndrc_news_titles.csv``.
-  3. **gov.articles** — scan the gov.news titles CSV against
-     ``downloads/macro/gov/keywords.json`` (reverse-map keyword matching),
+  3. **gov.articles** — scan the gov.news titles CSV against the seeded
+     keyword map (``static.keyword_maps``, reverse-map keyword matching),
      crawl matched article detail pages (anti-bot + sleep, .md caching), and
      write ``temps/gov_news/articles_index.csv`` + per-article ``.md`` files.
 

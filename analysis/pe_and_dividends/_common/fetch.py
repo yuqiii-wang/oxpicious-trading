@@ -117,7 +117,7 @@ async def fetch_latest_index_composition(
     from stats.sec_composition (source_type='index').
 
     Temporal extrapolation: uses the latest snapshot for ALL dates (same
-    pattern as industry_sentiments).
+    pattern as market_beta).
 
     Returns DataFrame with columns: index_code, stock_code, weight_pct
     """

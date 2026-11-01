@@ -13,21 +13,14 @@ The z axis is computed IN-ENGINE from the fetched price (the former
 analysis.mov_ave_boll table is gone). Regime splits stay; trend splits
 added by the redesign.
 
-THE OHLCV-BOOSTED VARIANT (2026-10-26, user-directed "create shared pe
-and ohlcv logic ... use them where possible or relevant"): each side
-also runs its TURNOVER-CLIMAX-confirmed population on the
-is_ohlcv_boosted PK axis — the band breach ON a heavy/climax turnover
-day (amt_climax >= HEAVY, the shared OhlcvBoostGate in
-engines/_ohlcv_boost), the volume-confirmation literature on the
-family the 2026-10-16 boost study measured its only shipping side on.
-A SEPARATE run_cells call per (side, k) — the variant population is
-judged independently by the same gate and emits nothing where it
-cannot clear the bar (the negative-optimization self-prune); the
-plain rows stay the population of record (the boost never gates
-them). The variant is history/analysis-only: the live active set
-excludes the variant-axis cells (the live breach check has no OHLCV
-condition machinery — it would fire the bar without the turnover
-confirmation).
+THE OHLCV-BOOSTED VARIANT ran here 2026-10-26..2026-10-31 (the
+turnover-climax-confirmed breach population on the is_ohlcv_boosted PK
+axis — the 2026-10-16 boost study's graduate family) and was UNLINKED
+2026-11-01 (user-directed "keep the pe and ohlcv boosted logic in py,
+however, offload to unlink from the computation ... delete is pe and
+ohlcv boosted col as from pk"): the variant axis left the DB PKs and
+this engine ships the PLAIN population only. The gate logic stays
+dormant in engines/_ohlcv_boost for a future re-link.
 """
 from __future__ import annotations
 
@@ -36,7 +29,6 @@ import pandas as pd
 from _common.df_utils import grouped_rolling_agg
 
 from analysis.analysis_signals import config as cfg
-from analysis.analysis_signals.engines._ohlcv_boost import OhlcvBoostGate
 from analysis.analysis_signals.engines.rule_base import Candidate, RuleEntry
 from analysis.analysis_signals.fetch.inputs import fetch_boll_inputs
 from analysis.trends import REENTRY_EXIT_DAYS
@@ -79,13 +71,6 @@ class BollBandEntry(RuleEntry):
         )
         frame["boll_z"] = (frame["price"] - sma) / sigma
         z = frame["boll_z"].astype("float64")
-
-        # the SHARED OHLCV-boost gate (engines._ohlcv_boost — a per-run
-        # instance caching the frame's condition): the day's
-        # turnover-climax grade at least HEAVY; inactive when the
-        # fetch carries no amt axis (the variants would only starve)
-        amt_gate = OhlcvBoostGate()
-        amt_gate.prepare(frame)
 
         # nested widest-first carving, deepest claim first: 3σ ⊃ 2.5σ ⊃ 2σ
         deeper_buy = pd.Series(False, index=frame.index, dtype="bool")
@@ -131,40 +116,6 @@ class BollBandEntry(RuleEntry):
             rules.extend(r_sell)
             history.extend(h_buy)
             history.extend(h_sell)
-            # the OHLCV-boosted variant pass (the shared gate — the
-            # turnover-confirmed breach population, judged
-            # independently; history/analysis-only — the live active
-            # set excludes variant cells). The gate fragment rides the
-            # call's extra_params.bar_def (extra_params merge AFTER the
-            # candidate's params — the caller-side merge is the
-            # contract here); the gate's own candidate-level bar_def
-            # is overwritten by it, harmlessly.
-            if amt_gate.active:
-                v_common = {
-                    "k": REENTRY_EXIT_DAYS,
-                    "value_col": "boll_z",
-                    "depth_factor": 0.25,
-                    "extra_params": {
-                        "window": _WINDOW,
-                        "bar_def": {"kind": "fixed_sigma", "k": k,
-                                    "sigma": "population (ddof=0)",
-                                    "ohlcv_gate": amt_gate.bar_def()},
-                    },
-                }
-                for action, carved, ref, dep, side_key in (
-                    ("buy", buy_carved, -k, (-k - z), f"minus{k:g}sigma"),
-                    ("sell", sell_carved, k, (z - k), f"plus{k:g}sigma"),
-                ):
-                    r_v, h_v = amt_gate.run_pass(
-                        self, frame, sub, action,
-                        [Candidate(
-                            key=side_key, mask=carved, reference=ref,
-                            depth=dep,
-                        )],
-                        v_common,
-                    )
-                    rules.extend(r_v)
-                    history.extend(h_v)
             deeper_buy = deeper_buy | buy_deep
             deeper_sell = deeper_sell | sell_deep
         return rules, history

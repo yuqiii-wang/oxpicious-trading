@@ -52,31 +52,6 @@
 --  Applied after 04_service_audit.sql.
 -- ============================================================================
 
--- Migration (2026-10-10): the generated date moved from an Asia/Shanghai
--- day to a GMT day (boundary Beijing 08:00). PG 17 SET EXPRESSION on the
--- stored generated column (one table rewrite); rows keep their created_at,
--- only the bucketing changes. Guarded on the current expression so it is
--- idempotent and a no-op on fresh installs (the CREATE below already
--- makes the GMT column).
-DO $$
-DECLARE
-    gen_expr text;
-BEGIN
-    IF to_regclass('monitor.external_resource_audit') IS NULL THEN
-        RETURN;
-    END IF;
-    SELECT pg_get_expr(adbin, adrelid) INTO gen_expr
-    FROM pg_attrdef d
-    JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
-    WHERE d.adrelid = 'monitor.external_resource_audit'::regclass
-      AND a.attname = 'date';
-    IF gen_expr LIKE '%Asia/Shanghai%' THEN
-        ALTER TABLE monitor.external_resource_audit
-            ALTER COLUMN date SET EXPRESSION AS
-                ((created_at AT TIME ZONE 'GMT')::date);
-    END IF;
-END $$;
-
 CREATE TABLE IF NOT EXISTS monitor.external_resource_audit (
     id             bigserial    NOT NULL,
     -- DEFAULT 'unknown' is rolling-deploy insurance: a still-running

@@ -1,9 +1,13 @@
 -- rebound — the family knowledge document (see 00_schema.sql).
 -- 2026-10-26 first seed: the drop→rebound→resolution family from the
 -- ma-spread rebound study (temp_scripts/ma_spread_rebound_study.py,
--- docs/ma_spread_rebound_study_2026-10-26.md), user-directed
--- implementation with the is_pe_boosted PK axis — each sub type emits
--- a PLAIN and a PE-conditioned variant.
+-- docs/ma_spread_rebound_study_2026-10-26.md). The PE-conditioned
+-- variant half (the is_pe_boosted PK axis) was UNLINKED 2026-11-01
+-- (user-directed "keep the pe and ohlcv boosted logic in py, however,
+-- offload to unlink from the computation ... delete is pe and ohlcv
+-- boosted col as from pk") — the family emits the PLAIN population
+-- only; the PE-variant logic stays dormant in
+-- analysis/analysis_signals/engines/_pe_boost.
 INSERT INTO static.signal_rules_docs (signal_type, document, updated_at)
 SELECT ld.code,
        $json${

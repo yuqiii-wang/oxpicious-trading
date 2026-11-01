@@ -3,7 +3,7 @@
  *
  * INDUSTRY-ONLY page on the SAME shared multi-select nav kit as the
  * Composites Opposite Industry Correlations page (useSecNav over the
- * industry-sentiments trees + SecClassificationNavMulti; the per-industry
+ * market-beta trees + SecClassificationNavMulti; the per-industry
  * L3 index row is omitted — the pair is per-industry, not per-code).
  *
  * PAIR MODE (this page only — the nav feature is prop-gated): the "Mode ›
@@ -64,8 +64,8 @@ import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
 import type { PairNavEntry } from "@/shared/components/sec-classification/SecClassificationNavMulti";
 import {
-  fetchIndustrySentimentsStrategyThemes,
-  fetchIndustrySentimentsThemes,
+  fetchMarketBetaStrategyThemes,
+  fetchMarketBetaThemes,
   fetchPortfolioSignalHistory,
   invalidateCacheForPrefix,
   type PortfolioHistorySignal,
@@ -82,16 +82,16 @@ import HedgeRatioPanel from "./HedgeRatioPanel";
 /** Nav trees endpoints (index classification — same as Composites). */
 const THEMES_SOURCES = {
   index: {
-    themes: (exchange: string | null) => fetchIndustrySentimentsThemes(exchange),
+    themes: (exchange: string | null) => fetchMarketBetaThemes(exchange),
     strategyThemes: (exchange: string | null) =>
-      fetchIndustrySentimentsStrategyThemes(exchange),
+      fetchMarketBetaStrategyThemes(exchange),
   },
 };
 
 /** Cache prefixes invalidated on Refresh. */
 const CACHE_PREFIXES = [
-  "/api/analysis/industry-sentiments/themes",
-  "/api/analysis/industry-sentiments/strategy-themes",
+  "/api/analysis/market-beta/themes",
+  "/api/analysis/market-beta/strategy-themes",
 ];
 
 /** The default pair — 红利 (strategy theme) vs 科技 (sector industry),

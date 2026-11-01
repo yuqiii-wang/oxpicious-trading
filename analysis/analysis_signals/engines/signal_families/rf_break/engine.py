@@ -85,25 +85,16 @@ and sign-flippy, and the studies' starving corners were regime-corner
 artifacts). The ohlcv boost opts in (the turnover-climax axis widens
 the trust-weighted population).
 
-THE SHARED VARIANT PASSES (2026-10-26, user-directed "create shared pe
-and ohlcv logic ... use them where possible or relevant"): the deep
-floor legs (the capitulation V-bottom) run BOTH boosted variants on
-the shared PK axes — the PE-EXTREMES conditioned population (the
-rebound study's capitulation barbell: the washout bounces at cheap /
-rich PE extremes, the middle dead) and the OHLCV-boosted one (the
-washout's turnover climax amt_climax >= HEAVY — capitulation volume
-at lows); the roof deep leg runs the OHLCV-boosted population only
-(the classic volume-confirmed breakout: >2% past the roof on heavy
-turnover is the regime-change claim's confirmation); the floor bounce
-(the controlled dip) runs the PE-conditioned variant. Each variant is
-its own run_cells call — a SEPARATE row set on the is_pe_boosted /
-is_ohlcv_boosted PK axes, judged independently by the same measured
-gate (a variant that cannot clear the bar emits nothing — the
-negative-optimization self-prune). The gates are the SHARED class
-stack (engines._variant_base.VariantGate + engines._pe_boost /
-engines._ohlcv_boost, the 2026-10-27 OOP restructure); the PE gate
-skips entirely when the valuation store has no rows for the scope
-(every non-index sec_type today).
+THE SHARED VARIANT PASSES ran here 2026-10-26..2026-10-31 (the deep
+floor legs in BOTH the PE-EXTREMES and the turnover-climax variants,
+the roof deep leg in the OHLCV variant, the floor bounce in the PE
+variant — separate row sets on the is_pe_boosted / is_ohlcv_boosted PK
+axes) and were UNLINKED 2026-11-01 (user-directed "keep the pe and
+ohlcv boosted logic in py, however, offload to unlink from the
+computation ... delete is pe and ohlcv boosted col as from pk"): the
+variant axes left the DB PKs and this engine ships the PLAIN
+population only. The gate logic stays dormant in engines/_pe_boost /
+engines/_ohlcv_boost for a future re-link.
 """
 from __future__ import annotations
 
@@ -112,9 +103,6 @@ import pandas as pd
 from _common.df_utils import grouped_shift
 
 from analysis.analysis_signals import config as cfg
-from analysis.analysis_signals.engines._ohlcv_boost import OhlcvBoostGate
-from analysis.analysis_signals.engines._pe_boost import PeBoostGate
-from analysis.analysis_signals.engines._variant_base import VariantGate
 from analysis.analysis_signals.engines.rule_base import Candidate, RuleEntry
 from analysis.trends import REENTRY_EXIT_DAYS
 from analysis.analysis_signals.fetch.inputs import fetch_rf_inputs
@@ -160,19 +148,6 @@ class RoofFloorEntry(RuleEntry):
         if frame.empty:
             return rules, history
         keys = ["code"]
-        # the SHARED variant gates (engines._pe_boost / engines.
-        # _ohlcv_boost — instances are per-run, they cache the frame's
-        # condition): the PE-EXTREMES capitulation barbell + the
-        # turnover-climax confirmation; the PE gate goes inactive when
-        # the valuation store has no rows for the scope
-        pe_gate = PeBoostGate("extremes")
-        amt_gate = OhlcvBoostGate()
-        for gate in (pe_gate, amt_gate):
-            gate.prepare(frame)
-        deep_gates: dict[str, tuple[VariantGate, ...]] = {
-            "roof": (amt_gate,),
-            "floor": (pe_gate, amt_gate),
-        }
         # the DIRECTIONAL breach per (method, side, window), computed
         # ONCE for both methods: positive = beyond the level in the
         # trade's direction (roof buys price ABOVE it, floor legs price
@@ -260,20 +235,6 @@ class RoofFloorEntry(RuleEntry):
                     )
                     rules.extend(r)
                     history.extend(h)
-                    # the SHARED VARIANT PASSES (2026-10-26): separate
-                    # run_cells calls per boosted gate — the population
-                    # is the plain candidates' masks AND-gated by the
-                    # gate's condition, the fragment rides bar_def
-                    # under the gate's own key, the rows stamp the
-                    # axis on the PK; an inactive gate (no axis data
-                    # this scope) passes silently
-                    for gate in deep_gates[side]:
-                        r, h = gate.run_pass(
-                            self, frame, f"rf{w}{infix}_{side}_deep",
-                            "buy", cands, call,
-                        )
-                        rules.extend(r)
-                        history.extend(h)
         # the FLOOR BOUNCE (2026-10-26 gap study, temp_scripts/
         # rf_gap_study.py): the close breaks the prior day's MEDIAN
         # consensus floor while the DONCHIAN wick floor still holds
@@ -329,14 +290,6 @@ class RoofFloorEntry(RuleEntry):
             )
             r, h = self.run_cells(
                 frame, f"rf{w}_floor_bounce", "buy", cands, **call,
-            )
-            rules.extend(r)
-            history.extend(h)
-            # the PE-conditioned controlled dip (the shared variant
-            # pass — the barbell's cheap/rich extremes; the wick-held
-            # dip at a middle PE is the dead zone by the same study)
-            r, h = pe_gate.run_pass(
-                self, frame, f"rf{w}_floor_bounce", "buy", cands, call,
             )
             rules.extend(r)
             history.extend(h)

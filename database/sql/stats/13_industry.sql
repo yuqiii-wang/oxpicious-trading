@@ -165,7 +165,7 @@ SELECT public.create_hash_partitions('stats', 'industry_basic_stats', 8);
 
 -- Indexes for the common access patterns:
 --   1. Per-industry + pool_size time series (drives the chart on the
---      IndustrySentiments page).
+--      MarketBeta page).
 --   2. Per-date snapshot (drives the latest-date industries list).
 CREATE INDEX IF NOT EXISTS idx_industry_basic_stats_industry_pool_date
     ON stats.industry_basic_stats (industry_id, pool_size, date);

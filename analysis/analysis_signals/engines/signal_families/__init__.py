@@ -22,9 +22,8 @@ subclasses (engines/rule_base.py).
                 episode, the trough-break (capitulation BUY), the
                 stall just below the last high (failed-reclaim SELL,
                 exit timing) and the full reclaim (continuation BUY)
-                are the causal resolutions; each sub type emits a
-                PLAIN and a PE-conditioned variant (the is_pe_boosted
-                PK axis)
+                are the causal resolutions (the PE-conditioned variant
+                half unlinked 2026-11-01 — the plain population only)
   macd          the classic MACD crossover family (2026-10-26): the
                 typical-EMA study's product — the classic 12/26/9
                 spans (the tech_stats ema12/ema26 replaced the nearby

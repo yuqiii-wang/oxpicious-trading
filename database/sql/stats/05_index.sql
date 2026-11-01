@@ -147,11 +147,6 @@ CREATE TABLE IF NOT EXISTS stats.index_intraday_5min (
     CONSTRAINT pk_index_intraday_5min PRIMARY KEY (code, date, time)
 ) PARTITION BY HASH (code);
 
--- Idempotent migration: no FK to index_identity on the streamer-owned bar
--- table — see 02_etf_margin.sql (TRUNCATE CASCADE collateral hazard).
-ALTER TABLE stats.index_intraday_5min
-    DROP CONSTRAINT IF EXISTS fk_index_intraday_5min_date_code;
-
 -- Native hash partitions (8) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'index_intraday_5min', 8);

@@ -2,9 +2,9 @@
  * analysis-insights client — the Ask AI insight metrics.
  *
  * GET /api/analysis-insights/metrics resolves one analysis page's
- * registered metrics of particular interest (analysis_insights.
+ * registered metrics of particular interest (analysis_insight_metrics.
  * insight_templates, INSERT-seeded by database/sql/analysis/static/
- * analysis_insights/02..05 — the per-tab data files) for an ask context:
+ * analysis_insight_metrics/02..05 — the per-tab data files) for an ask context:
  * the classification-nav chosen security (code + secType), an optional
  * industry id, and the as-of date chosen in the code trend / modal
  * (exact "YYYY-MM-DD" or year-month "YYYY-MM").
@@ -20,6 +20,13 @@ import type { AiAskInsightMetric } from "@/shared/ai-ask";
 export interface InsightMetricsResponse {
   tab: string;
   page: string;
+  page_doc: {
+    tab: string;
+    page: string;
+    title: string;
+    doc: string | null;
+    keywords: string[];
+  } | null;
   code: string | null;
   sec_type: string | null;
   industry: string | null;

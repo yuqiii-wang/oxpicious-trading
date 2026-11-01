@@ -28,9 +28,9 @@ class ZhipuLlmAskProvider(BaseLlmAskProvider):
                         "BIGMODEL_API_KEY")
 
     CHAT_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-    # glm-5.2 is the project default (same model the online-search agent
-    # summarizes with). Override per call/CLI when needed.
-    DEFAULT_MODEL = "glm-5.2"
+    # glm-5.3-flash is the project default (same model the online-search
+    # agent summarizes with). Override per call/CLI when needed.
+    DEFAULT_MODEL = "glm-5.3-flash"
 
     async def _chat_complete(
         self, messages: Sequence[Dict[str, Any]], *, model: str,

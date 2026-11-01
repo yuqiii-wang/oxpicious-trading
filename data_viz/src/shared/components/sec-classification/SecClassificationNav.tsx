@@ -15,6 +15,8 @@
  *   - `chipSize`  — "small" | "medium" (default "small")
  *   - `density`   — "compact" | "comfortable" (controls row spacing)
  *   - `showExchange` — show/hide the exchange filter row (default true)
+ *   - `allMode`   — ALL scope: only the locked (all-selected, unclickable)
+ *                   Exchange row renders; no tree columns, no L3 row
  *
  * Optional L3 security-level row: when `itemKind` is set, renders one chip
  * per individual Index/ETF/Stock under the active industry/theme, paginated.
@@ -27,7 +29,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Box, Chip, CircularProgress, Pagination, Stack, Typography, type SxProps } from "@mui/material";
 import type { SectorNode, StrategyNode } from "@shared/types";
-import { PRIMARY_EXCHANGE_OPTIONS, SECONDARY_EXCHANGE_OPTIONS } from "@/shared/utils/classify";
+import { PRIMARY_EXCHANGE_OPTIONS, SECONDARY_EXCHANGE_OPTIONS, EXCHANGE_OPTIONS } from "@/shared/utils/classify";
 import SimilarIndicesList from "./SimilarIndicesList";
 import { ChipRow } from "./ChipRow";
 import { ITEMS_PAGE_SIZE } from "./constants";
@@ -95,7 +97,7 @@ interface Props {
    *  the start of the L3 row. Each chip mirrors the L2 industry selection —
    *  it is always filled (selected) because the industry is active. Clicking
    *  it REMOVES the industry from the L2 multi-select (unselects the
-   *  industry). Used by Industry Sentiments so users can drop a whole
+   *  industry). Used by Market Beta so users can drop a whole
    *  industry directly from the L3 row without scrolling back to L2. */
   showAllIndustryChips?: boolean;
 
@@ -109,6 +111,14 @@ interface Props {
   /** Show/hide the exchange filter row (default true). */
   showExchange?: boolean;
 
+  /** ALL mode: the classification tree is replaced by ONE locked Exchange
+   *  row — every exchange chip rendered selected (filled) WITHOUT a click
+   *  handler, so the scope reads "all exchanges in scope, nothing can be
+   *  unticked". No sector/industry/strategy/theme columns and no L3 row.
+   *  Used by pages whose "All" sec_type means market-wide (e.g. the AI
+   *  summary scope picker) — those pages pass no tree data in this mode. */
+  allMode?: boolean;
+
   /** When TRUE, shows a small inline spinner at the right end of the Exchange
    *  row to indicate the classification tree (sectors/strategies) is being
    *  (re)fetched — e.g. on initial mount or when the exchange filter changes.
@@ -119,7 +129,7 @@ interface Props {
    *  are mutually exclusive — selecting in one clears the other. When FALSE,
    *  both columns can be selected simultaneously; L3 items show the union of
    *  both columns' selections. Used by pages that merge industry + strategy
-   *  selections into one view (e.g. Industry Sentiments). */
+   *  selections into one view (e.g. Market Beta). */
   mutuallyExclusive?: boolean;
 
   // ---- PAIR mode (opt-in; currently only the signals Hedge Pairs page) ----
@@ -169,6 +179,7 @@ export default function SecClassificationNav({
   chipSize = "small",
   density = "compact",
   showExchange = true,
+  allMode = false,
   mutuallyExclusive = true,
   loading = false,
   pairModeAvailable = false,
@@ -316,6 +327,53 @@ export default function SecClassificationNav({
       onIndustryChange(null);
     }
   };
+
+  // --- ALL mode render: ONLY the locked Exchange row. Placed after every
+  //     hook so the hook order stays identical when the mode flips. Chips
+  //     are filled+primary (the row's selected look) with NO onClick — an
+  //     MUI Chip without a handler renders non-interactive (no ripple, no
+  //     pointer), which IS the "cannot unclick" contract. The full
+  //     EXCHANGE_OPTIONS list (incl. cross-border) shows in one row — the
+  //     ▼ toggle is meaningless when nothing can be unticked. ---
+  if (allMode) {
+    return (
+      <Stack
+        spacing={rowSpacing}
+        sx={{
+          p: 1.5,
+          mb: 2,
+          bgcolor: "background.paper",
+          border: "1px solid",
+          borderColor: "divider",
+          borderRadius: 1.5,
+          ...sx,
+        }}
+      >
+        {showExchange && (
+          <ChipRow label="Exchange" chipSize={chipSize}>
+            {EXCHANGE_OPTIONS.map((opt) => (
+              <Chip
+                key={opt.label}
+                label={opt.label}
+                size={chipSize}
+                color="primary"
+                variant="filled"
+                sx={{ fontSize: chipFontSize, cursor: "default" }}
+              />
+            ))}
+            {loading && (
+              <Box sx={{ display: "inline-flex", alignItems: "center", ml: "auto", pl: 1 }}>
+                <CircularProgress size={14} sx={{ color: "text.secondary" }} />
+              </Box>
+            )}
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: chipFontSize }}>
+              all exchanges in scope — locked
+            </Typography>
+          </ChipRow>
+        )}
+      </Stack>
+    );
+  }
 
   // --- Render: sector chips (LEFT column L1) ---
   const renderSectorChips = () => sectors.map((s) => {
@@ -508,7 +566,7 @@ export default function SecClassificationNav({
             {multiSelectItems ? " · multi" : ""}
           </Typography>
           {/* "All (N)" chip: clears the L3 individual-index filter. HIDDEN when
-              showAllIndustryChips is on (Industry Sentiments) — there the L3
+              showAllIndustryChips is on (Market Beta) — there the L3
               row uses per-industry "All <industry> (N)" chips instead, and the
               generic All is redundant. */}
           {!showAllIndustryChips && (

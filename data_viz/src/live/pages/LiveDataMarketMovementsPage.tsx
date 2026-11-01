@@ -99,6 +99,33 @@ interface BenchmarkOption {
 const DEFAULT_BENCHMARK = "000300";
 const AUTO_REFRESH_MS = 5 * 60_000; // 5 minutes
 
+// Cheap change signature for the movements payload — JSON.stringify of the
+// multi-MB member series on every refresh cycle is pure serialization
+// waste. Structural identity (date, latest tick, series lengths) plus the
+// LAST benchmark pct and the LAST member tick pct: the yday-ref rebuild
+// rewrites tick values in place WITHOUT changing dates/lengths, and those
+// two tail probes move with any prev-close-basis change.
+function movementsSig(r: IntradayMovementsResponse): string {
+  const b = r.benchmark_series;
+  const m = r.member_series;
+  return [
+    r.date,
+    r.latest_time,
+    b.length,
+    m.length,
+    b.length ? b[b.length - 1].benchmark_price_pct : "",
+    m.length ? m[m.length - 1].code_price_pct : "",
+  ].join("|");
+}
+
+// The yday-ref chain's process-id tags — the remote spinner recovery poll
+// watches all three (module-scope constant: static across renders).
+const REF_CHAIN_TAGS = [
+  SEC_ALLOC_LIVE_REF_TAG,
+  SEC_ALLOC_LIVE_REF_DL_TAG,
+  SEC_ALLOC_LIVE_REF_BASE_TAG,
+] as const;
+
 export default function LiveDataMarketMovementsPage() {
   const themeMode = useChartThemeMode();
   const [benchmarks, setBenchmarks] = useState<BenchmarkOption[]>([]);
@@ -210,7 +237,7 @@ export default function LiveDataMarketMovementsPage() {
         if (cancelled) return;
         // Drop identical payloads (e.g. refresh fired but the pipeline has
         // not appended any new tick yet) — no state update, no rerender.
-        const sig = JSON.stringify(resp);
+        const sig = movementsSig(resp);
         if (sig !== lastDataSigRef.current) {
           lastDataSigRef.current = sig;
           dataRef.current = resp;
@@ -396,18 +423,19 @@ export default function LiveDataMarketMovementsPage() {
   }, [refRunning]);
 
   // Remote-ref spinner recovery: poll ALL chain tags (CSV downloads,
-  // baseline rebuild, ref process) on mount and every 5s while any is
-  // (or may be) running, so a page refresh during ANY phase of the
-  // chain puts the button straight back into spinning + notified state,
-  // and refreshes the plots when the whole chain finishes.
-  const REF_CHAIN_TAGS = [
-    SEC_ALLOC_LIVE_REF_TAG,
-    SEC_ALLOC_LIVE_REF_DL_TAG,
-    SEC_ALLOC_LIVE_REF_BASE_TAG,
-  ] as const;
+  // baseline rebuild, ref process) on mount, then adaptively — every 5s
+  // while a chain process is (or was just) running so the spinner state
+  // tracks it closely, every 30s when idle (an idle poll only guards a
+  // chain started in ANOTHER tab/window, which does not need second-level
+  // pickup — 5s forever was 12 status requests/minute for nothing). A page
+  // refresh during ANY phase of the chain puts the button straight back
+  // into spinning + notified state, and the plots refresh when the whole
+  // chain finishes.
   useEffect(() => {
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let wasRunning = false;
+    let delayMs = 5_000;
     const poll = async () => {
       try {
         const status = await fetchSecAllocLiveRunStatus([...REF_CHAIN_TAGS]);
@@ -415,24 +443,28 @@ export default function LiveDataMarketMovementsPage() {
         const running = REF_CHAIN_TAGS.some((t) => status[t] === true);
         if (running) {
           wasRunning = true;
+          delayMs = 5_000;
           setRefRunning(true);
           setRefMessage("Yday ref chain already running — waiting for it to finish…");
         } else if (wasRunning) {
           // Remote process just finished → clear spinner + refetch.
           wasRunning = false;
+          delayMs = 5_000;
           setRefRunning(false);
           setRefMessage("Yday ref finished — refreshed.");
           invalidateCacheForPrefix("/api/live-data/intraday-movements");
           invalidateCacheForPrefix("/api/live-data/sec-alloc-live/attribution");
           setRefreshKey((k) => k + 1);
+        } else {
+          delayMs = 30_000;
         }
       } catch {
         /* status poll is best-effort */
       }
+      if (!cancelled) timer = setTimeout(poll, delayMs);
     };
     void poll();
-    const timer = setInterval(poll, 5_000);
-    return () => { cancelled = true; clearInterval(timer); };
+    return () => { cancelled = true; clearTimeout(timer); };
   }, []);
 
   // ---- Prev-day OHLC bar resolution ----------------------------------------

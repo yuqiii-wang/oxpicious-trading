@@ -102,14 +102,11 @@ PORTFOLIO_PERF_TABLE = \
 PORTFOLIO_HISTORY_TABLE = "analysis_signals.portfolio_history_signals"
 RULE_ID_SEQ = "analysis_signals.signal_rule_id_seq"
 RULES_PK = ["code", "sec_type", "signal_type", "signal_sub_type",
-            "trend", "regime_state", "action", "is_in_portfolio",
-            "is_ohlcv_boosted", "is_pe_boosted"]
+            "trend", "regime_state", "action", "is_in_portfolio"]
 HISTORY_PK = ["code", "sec_type", "signal_type", "signal_sub_type",
-              "is_ohlcv_boosted", "date", "time", "is_in_portfolio",
-              "is_pe_boosted"]
+              "date", "time", "is_in_portfolio"]
 PERF_PK = ["code", "sec_type", "signal_type", "signal_sub_type",
-           "trend", "regime_state", "action", "date", "is_pe_boosted",
-           "is_ohlcv_boosted"]
+           "trend", "regime_state", "action", "date"]
 PORTFOLIO_PERF_PK = ["code", "portfolio_type", "portfolio_sub_type", "date"]
 PORTFOLIO_HISTORY_PK = ["code", "sec_type", "portfolio_type",
                         "portfolio_sub_type", "signal_type",
@@ -439,9 +436,7 @@ async def run_family(conn, label: str, sec_type: str, codes: list[str],
          "dir_std_pct": perf["dir_std_pct"],
          "t_stat": perf["t_stat"],
          "hit_rate": perf["hit_rate"],
-         "is_in_portfolio": row["is_in_portfolio"],
-         "is_pe_boosted": row["is_pe_boosted"],
-         "is_ohlcv_boosted": row["is_ohlcv_boosted"]}
+         "is_in_portfolio": row["is_in_portfolio"]}
         for row in rules_rows
         if (perf := perf_by_id.get(row["signal_rule_id"])) is not None
     ]

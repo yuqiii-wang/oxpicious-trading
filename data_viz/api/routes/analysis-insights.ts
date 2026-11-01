@@ -2,8 +2,8 @@
  * analysis-insights routes — the Ask AI insight registry.
  *
  *   GET /api/analysis-insights/templates
- *       The full registry (analysis_insights.insight_templates, INSERT-seeded
- *       by database/sql/analysis/static/analysis_insights/02..05 — the
+ *       The full registry (analysis_insight_metrics.insight_templates, INSERT-seeded
+ *       by database/sql/analysis/static/analysis_insight_metrics/02..05 — the
  *       per-tab data files) — tab → page →
  *       metric identity, labels and source specs.
  *
@@ -15,6 +15,7 @@
 import { Router } from "express";
 import {
   listInsightTemplates,
+  listInsightPageDocs,
   resolveInsightMetrics,
 } from "../services/analysis-insights.service.js";
 
@@ -25,6 +26,15 @@ router.get("/templates", async (_req, res) => {
     res.json(await listInsightTemplates());
   } catch (err) {
     console.error("[analysis-insights/templates] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/page-docs", async (_req, res) => {
+  try {
+    res.json(await listInsightPageDocs());
+  } catch (err) {
+    console.error("[analysis-insights/page-docs] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

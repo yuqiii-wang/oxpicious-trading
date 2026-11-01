@@ -32,6 +32,7 @@ import type {
   AiCalendarResponse,
 } from "@shared/types";
 import { cachedRows } from "./classification-cache.js";
+import { segmentSearchTerms, splitSearchTerms } from "./search-query.service.js";
 
 // ---------------------------------------------------------------------------
 // Shared filter SQL fragments (ai.service.ts idioms, against the ask tables)
@@ -91,19 +92,30 @@ async function buildAskFilterSql(
   }
   // Inactive rows never surface (soft-delete parity with text.llm_qa).
   clauses.push(`q.is_active`);
-  // Keyword search: every term must hit question OR answer OR a derived
-  // keyword row (AND across terms, OR within one term).
-  const terms = (filters.search ?? "").trim().split(/\s+/).filter(Boolean);
-  const termClauses = terms.map((term) => {
-    params.push(`%${term}%`);
-    const p = `$${params.length}`;
-    return (
-      `(q.question ILIKE ${p} OR q.answer ILIKE ${p} OR ` +
-      `EXISTS (SELECT 1 FROM text.llm_qa_keywords_by_ask k ` +
-      `WHERE k.ask_id = q.ask_id AND k.keyword ILIKE ${p}))`
-    );
-  });
-  if (termClauses.length > 0) {
+  // Keyword search: every term must hit the GIN-indexed search_tsv (the
+  // StructBERT-segmented full-text vector — the recall path for Chinese)
+  // OR question/answer OR a derived keyword row (AND across terms, OR
+  // within one term). Same search-query.service segmentation as ai.service.
+  const terms = splitSearchTerms(filters.search);
+  if (terms.length > 0) {
+    const segmented = await segmentSearchTerms(terms.join(" "));
+    const termClauses = terms.map((term, i) => {
+      params.push(`%${term}%`);
+      const p = `$${params.length}`;
+      const parts = [
+        `q.question ILIKE ${p}`,
+        `q.answer ILIKE ${p}`,
+        `EXISTS (SELECT 1 FROM text.llm_qa_keywords_by_ask k ` +
+          `WHERE k.ask_id = q.ask_id AND k.keyword ILIKE ${p})`,
+      ];
+      const tokens = segmented?.[i];
+      if (tokens) {
+        params.push(tokens);
+        const q = `$${params.length}`;
+        parts.unshift(`q.search_tsv @@ websearch_to_tsquery('simple', ${q})`);
+      }
+      return `(${parts.join(" OR ")})`;
+    });
     clauses.push(termClauses.join(" AND "));
   }
   // Bare conditions — callers add the WHERE keyword themselves.

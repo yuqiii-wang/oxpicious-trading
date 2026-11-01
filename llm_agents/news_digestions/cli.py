@@ -5,7 +5,7 @@ Usage::
     python -m llm_agents.news_digestions run [--limit 100] \
         [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] \
         [--industry BANKS] [--source gov] [--force] [--include-empty] \
-        [--provider zhipu] [--model glm-5.2] [--concurrency 4] \
+        [--provider zhipu] [--model glm-5.3-flash] [--concurrency 4] \
         [--max-content-chars 8000] [--lang zh] [--dry-run]
     python -m llm_agents.news_digestions list [--limit 20] [--industry BANKS]
 

@@ -471,8 +471,6 @@ class RuleEntry(ABC):
         pooled_dir_ave_min: float | None = None,
         signal_type_code: int | None = None,
         portfolio_tier: bool | None = None,
-        pe_boosted: bool = False,
-        ohlcv_boosted: bool = False,
     ) -> tuple[list[dict], list[dict]]:
         """Measure every candidate per cell, pick each cell's WINNING
         candidate (the gate-passing one with the best dir_ave; or,
@@ -530,29 +528,6 @@ class RuleEntry(ABC):
         mov_rsi cells — signal_type mov_rsi) and the PORTFOLIO tier
         (is_in_portfolio TRUE — the sourced layer's own axis); the
         default is the entry's own identity.
-
-        ``pe_boosted`` (optional) stamps the row identity's PE-
-        CONDITIONING axis (signal_rules / history_signals /
-        history_signal_performance PK member is_pe_boosted, 2026-10-26
-        user-directed, the is_ohlcv_boosted/is_in_portfolio
-        PK-member precedent): TRUE = this call's cells are the
-        PE-gated variant of the sub type (the candidate masks are
-        AND-gated by the code's own PE-percentile condition) — a
-        SEPARATE row set from the unconstrained variant's, whose call
-        runs with the default False. The gate definition rides the
-        candidates' rule_params (bar_def.pe_gate).
-
-        ``ohlcv_boosted`` (optional) stamps the row identity's
-        OHLCV-boost VARIANT axis (signal_rules PK member
-        is_ohlcv_boosted since 2026-10-26, user-directed — mirrored
-        from history_signals, where it has keyed since the boost-twin
-        era; history_signal_performance carries it in its PK too):
-        TRUE = this call's cells are the OHLCV-boosted variant of the
-        sub type — a SEPARATE row set from the unconstrained one.
-        RETIRED as a live variant 2026-10-16 (the twins became the
-        per-cell trust-weighted measurement): no emitter passes True
-        today, the flag rides FALSE on every row and exists for the
-        key's shape — the kwarg keeps the two variant axes symmetric.
 
         THE POOLED EVIDENCE TIER (2026-10-16; starvation-trading since
         2026-10-19): the per-cell floors cannot reach statistical
@@ -850,17 +825,6 @@ class RuleEntry(ABC):
             params.update(cand.params)
             if extra_params:
                 params.update(extra_params)
-            # the VARIANT-AXIS stamp (2026-10-27, user-directed "update
-            # rule params if ohlcv and pe is used to boost"): a boosted
-            # variant's params name the axes beside the DB's
-            # is_pe_boosted / is_ohlcv_boosted columns — the
-            # self-describing JSON convention (the portfolio sub_type
-            # precedent); the plain population carries no key (the
-            # gate CONDITIONS ride bar_def.pe_gate / bar_def.ohlcv_gate)
-            if pe_boosted:
-                params["pe_boosted"] = True
-            if ohlcv_boosted:
-                params["ohlcv_boosted"] = True
             rules_rows.append({
                 "code": code,
                 "sec_type": self.sec_type_code,
@@ -883,17 +847,6 @@ class RuleEntry(ABC):
                 # standalone families' rows and the orchestrating
                 # composites (the group IS the composite)
                 "is_in_portfolio": tier,
-                # the schema's PE-conditioning flag (a signal_rules PK
-                # member): TRUE on this call's PE-gated variant cells
-                # (the pe_boosted kwarg), FALSE on the unconstrained
-                # population
-                "is_pe_boosted": pe_boosted,
-                # the schema's OHLCV-boost VARIANT flag (a signal_rules
-                # PK member since 2026-10-26 — mirrored from
-                # history_signals): TRUE only on a future boosted-
-                # variant call (the ohlcv_boosted kwarg); the twins era
-                # is retired and every emitter ships FALSE today
-                "is_ohlcv_boosted": ohlcv_boosted,
                 "rule_entry": self.entry_name,
                 "rule_params": params,
                 # the MEASURED half of the former rule_params (the
@@ -1007,10 +960,6 @@ class RuleEntry(ABC):
                     "sec_type": self.sec_type_code,
                     "signal_type": st_code,
                     "signal_sub_type": sub_code,
-                    # the boost-variant flag (a history_signals PK
-                    # member): this call's ohlcv_boosted identity —
-                    # FALSE on every emitter since the twins' retirement
-                    "is_ohlcv_boosted": ohlcv_boosted,
                     "date": py_dates[i],
                     "time": _DAY_CLOSE,
                     # the schema's tier flag (a history_signals PK
@@ -1019,10 +968,6 @@ class RuleEntry(ABC):
                     # FALSE on the standalone families' events and the
                     # orchestrating composite events
                     "is_in_portfolio": tier,
-                    # the schema's PE-conditioning flag (a
-                    # history_signals PK member): mirrors the rules
-                    # row's is_pe_boosted for this call's cells
-                    "is_pe_boosted": pe_boosted,
                     # starved cells record their REAL action at the
                     # reduced confidence (the 2026-10-19 starvation
                     # retreat — no wait replay any more)

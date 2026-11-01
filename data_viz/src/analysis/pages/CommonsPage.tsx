@@ -17,7 +17,7 @@ interface CommonsAnalysis {
   description: string;
 }
 
-const COMMONS_ANALYSES: CommonsAnalysis[] = [
+export const COMMONS_ANALYSES: CommonsAnalysis[] = [
   {
     slug: "ma-spread",
     title: "MA-Spread",
@@ -26,8 +26,8 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
       "curves with growth/decline fill and monthly/quarterly/yearly stats.",
   },
   {
-    slug: "industry-sentiments",
-    title: "Industry Sentiments",
+    slug: "market-beta",
+    title: "Market Beta",
     description:
       "Each industry's member indices rebased to 100 over the visible " +
       "window, with the mean line and ±1σ band per pool size.",
@@ -53,6 +53,23 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
       "Browse the ETF classification nav and drill into each ETF's stock " +
       "weights and composition, falling back to the tracking index's " +
       "constituents.",
+  },
+  {
+    slug: "market-crowdedness",
+    title: "Market Crowdedness",
+    description:
+      "Per-security market crowdedness curve over the classification nav " +
+      "(index / industry toggle): how concentrated trading is in the " +
+      "pool's hottest stocks (top 10% by trading amount, min 5; score = " +
+      "level + flow change), with the day's hot names in the tooltip.",
+  },
+  {
+    slug: "hot-stock-momentum",
+    title: "Hot Stock Momentum",
+    description:
+      "Per-security hot stock momentum curve over the classification nav " +
+      "(index / industry toggle). Pipeline placeholder — charts light up " +
+      "once analysis.hot_stock_momentum is populated.",
   },
 ];
 

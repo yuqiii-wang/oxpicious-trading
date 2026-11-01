@@ -39,7 +39,7 @@
  * materialized rows) runs `python -m analysis.analysis_composites
  * --industry ... --benchmark ...` in filtered mode (recompute + upsert).
  *
- * Industry selection uses the SAME shared multi-label nav kit as Industry
+ * Industry selection uses the SAME shared multi-label nav kit as Market
  * Sentiments: useSecNav (index-only sector/industry + strategy/theme trees
  * with the exchange filter) + SecClassificationNavMulti — multi-select L2
  * industry chips across sectors, merged (non-exclusive) with the RIGHT
@@ -64,7 +64,7 @@ import EChart from "@/shared/charts/EChart";
 import { useChartThemeMode } from "@/shared/charts/base-chart";
 import { AiAskButton, derivePlotInfo, INSIGHT_PAGES } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
-import { useDocs, compactDefined } from "@/shared/docs";
+import { useDocs } from "@/shared/docs";
 import type { ECharts } from "echarts";
 import { useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
@@ -97,7 +97,7 @@ export default function OppositeIndustryCorrelationsPage() {
   const themeMode = useChartThemeMode();
 
   // ---- Selection state ---------------------------------------------------
-  // Shared nav kit (same as Industry Sentiments): loads the sector→industry
+  // Shared nav kit (same as Market Beta): loads the sector→industry
   // (LEFT) and strategy→theme (RIGHT) trees for the index sec_type, with the
   // exchange filter. Non-exclusive mode — both columns contribute to the
   // same merged pair set.
@@ -412,7 +412,7 @@ export default function OppositeIndustryCorrelationsPage() {
       </Typography>
 
       {/* ---- Classification nav (multi-select) — the same shared kit as
-           Industry Sentiments: tick multiple industry chips across sectors
+           Market Beta: tick multiple industry chips across sectors
            (switching the active sector only changes the browsing context;
            picked industries persist), merged non-exclusively with the
            RIGHT strategy→theme column. The per-industry L3 index row is

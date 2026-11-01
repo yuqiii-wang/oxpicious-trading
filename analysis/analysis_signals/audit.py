@@ -121,14 +121,11 @@ def audit_family_rows(label: str, rules_rows: list[dict],
             bad.append(f"{where}: no performance snapshot emitted")
         rule_cells.add((r.get("code"), r.get("signal_type"),
                         r.get("signal_sub_type"), r.get("action"),
-                        r.get("is_in_portfolio"),
-                        r.get("is_pe_boosted"),
-                        r.get("is_ohlcv_boosted")))
+                        r.get("is_in_portfolio")))
     for h in history_rows:
         key = (h.get("code"), h.get("signal_type"),
                h.get("signal_sub_type"), h.get("action"),
-               h.get("is_in_portfolio"), h.get("is_pe_boosted"),
-               h.get("is_ohlcv_boosted"))
+               h.get("is_in_portfolio"))
         if key not in rule_cells:
             bad.append(f"history {h.get('code')}@{h.get('date')}/"
                        f"{h.get('signal_sub_type')}: its rule cell did "

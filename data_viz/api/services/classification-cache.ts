@@ -25,6 +25,7 @@
  */
 import { queryRows } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
+import type { IndustryEntityClassRow } from "./_shared.js";
 
 // ---------------------------------------------------------------------------
 //  Generic TTL cache with in-flight de-duplication
@@ -37,6 +38,14 @@ const CACHE_TTL_MS = 10 * 60_000;
 
 const cache = new Map<string, { at: number; value: unknown }>();
 const inflight = new Map<string, Promise<unknown>>();
+
+/** Drop the named cache keys — a write path's freshness escape hatch (the
+ *  next read reloads through its loader instead of waiting out the TTL). */
+export function invalidateCachedRows(...keys: string[]): void {
+  for (const key of keys) {
+    cache.delete(key);
+  }
+}
 
 /** Run `loader()` at most once per TTL window per key. Concurrent callers
  *  share the same in-flight promise (no stampede). */
@@ -138,4 +147,45 @@ export async function listClassificationMetaRows(
   // Stable liquidity ordering (DISTINCT ON requires ORDER BY code first, so
   // the n_days DESC ordering is applied in JS — a few thousand rows, ~free).
   return [...rows].sort((a, b) => b.n_days - a.n_days || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+}
+
+// ---------------------------------------------------------------------------
+//  Industry-entity classification rows — one row per industry_id
+// ---------------------------------------------------------------------------
+
+/**
+ * Classification for the sec_type='industry' ENTITY ids (code =
+ * industry_id, e.g. BANKS / BROAD_CSI300). Industry entities have no
+ * sec_classification rows of their own — their classification is read from
+ * the securities classified under the id, grouped by industry_id:
+ * sector/label columns MIN-aggregated (an id carries exactly one sector and
+ * label across its carriers — asserted 2026-10-29) and
+ * BOOL_AND(is_industry_not_strategy) picks the column (no id straddles the
+ * two today; a hypothetical straddler lands on the strategy side).
+ *
+ * Cached per id-set via the shared TTL — the classification only moves on
+ * the nightly build.
+ */
+export async function listIndustryEntityClassRows(
+  ids: Array<string | null | undefined>,
+): Promise<IndustryEntityClassRow[]> {
+  const clean = [...new Set(ids.filter((id): id is string => !!id))];
+  if (clean.length === 0) return [];
+  const key = `sec_classification:industry-entities:${clean.join(",")}`;
+  return cachedRows(key, () =>
+    queryRows<IndustryEntityClassRow>(
+      `
+      SELECT industry_id,
+             MIN(sector_id)      AS sector_id,
+             MIN(sector_label)   AS sector_label,
+             MIN(industry_label) AS industry_label,
+             MIN(industry_slug)  AS industry_slug,
+             BOOL_AND(is_industry_not_strategy) AS is_industry_not_strategy
+        FROM stats.sec_classification
+       WHERE industry_id = ANY($1::text[])
+       GROUP BY industry_id
+      `,
+      [clean],
+    ),
+  );
 }

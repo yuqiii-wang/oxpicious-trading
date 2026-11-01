@@ -32,8 +32,8 @@ export interface AiAskRequest {
 export interface AiAskResponse {
   success: boolean;
   answer: string;
-  /** Model that produced the answer (e.g. "glm-5.2"; a vision model such
-   *  as "glm-4.5v" when screenshots were attached). */
+  /** Model that produced the answer (e.g. "glm-5.3-flash"; a vision
+   *  model such as "glm-4.5v" when screenshots were attached). */
   model?: string;
   error?: string;
 }

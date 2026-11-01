@@ -5,7 +5,7 @@
  * analysis item — its metrics table REPLACES the series-tags strip: the
  * rule-cell inputs (trend state, the RSI 14/10/6 grid, the momentum
  * axes) resolved for the host's security, from
- * analysis_insights.insight_templates.
+ * analysis_insight_metrics.insight_templates.
  *
  * Rendered by the hosts that own the ask context (the Recent Movements
  * panel's picked security; the Options page's option underlying) beside

@@ -71,24 +71,15 @@ export interface TradingSignalRow {
   confidence_pct: number;
   /** (The confidence_boost cohort add-on fields were RETIRED with
    *  the forecast layer 2026-10-05 — the plain rsi-pct population
-   *  is the only cohort.) */
+   *  is the only cohort. The is_ohlcv_boosted / is_pe_boosted variant
+   *  columns shared the same fate 2026-11-01: the variant axes were
+   *  unlinked from the PKs and the emitters — every event IS the
+   *  plain record.) */
   is_day_close_trigger: boolean;
   /** The breach bar's DATE market regime — the stats.market_regimes
    *  day label (calm/hot/panic/quiet). Context, not a gate: the breach
    *  still fires; the label matches the strategy's own regime split. */
   regime_state: string;
-  /** The event's population VARIANT: FALSE = the plain record, TRUE =
-   *  the OHLCV-boost twin (the SAME trigger, confidence trust-weighted
-   *  by the day-0 ohlcv score). The history panel's OHLCV toggle picks
-   *  which variant renders. Live-tier rows carry no twins (always
-   *  FALSE). */
-  is_ohlcv_boosted: boolean;
-  /** The event's PE-CONDITIONING variant (a history_signals PK member
-   *  since 2026-10-26): FALSE = the plain population, TRUE = the
-   *  PE-gated variant of the same sub type (the rebound family emits
-   *  both; the gate rides the cell's rule_params.bar_def.pe_gate).
-   *  Live-tier rows carry no variants (always FALSE). */
-  is_pe_boosted: boolean;
   /** The event's episode-PASS attribution (the rsi analysis layer's
    *  side-mirrored is_typical flag at the day's own window): TRUE = the
    *  typical pass (buy: the isolated first touch; sell: the re-test),
@@ -179,9 +170,9 @@ const BASIC_STATS_TABLE: Record<string, string> = {
 };
 
 /** One day's triggered signals for a sec_type, confidence DESC then time
- *  DESC — one row per event (is_ohlcv_boosted is the retired boost-twin
- *  marker: FALSE everywhere since the 2026-10-16 retirement — the
- *  boost's tuned confidence lives on the performance snapshots)
+ *  DESC — one row per event (the retired is_ohlcv_boosted / is_pe_boosted
+ *  variant axes left the schema 2026-11-01 — every event IS the plain
+ *  record)
  *  + the event's episode-pass attribute (is_typical; no toggle filters
  *  on it any more; a live tick winning a day inherits its history
  *  anchor's stamp, null when no stamped anchor exists). Two source
@@ -232,7 +223,6 @@ export async function fetchTriggeredSignals(
                (s.confidence::float8 / 100.0) AS confidence_pct,
                s.is_day_close_trigger,
                s.regime_state,
-               FALSE         AS is_ohlcv_boosted,
                NULL::boolean AS is_typical,
                FALSE         AS is_rejection
         FROM live.live_signals s
@@ -267,8 +257,6 @@ export async function fetchTriggeredSignals(
                (s.confidence::float8 / 100.0) AS confidence_pct,
                s.is_day_close_trigger,
                s.regime_state,
-               s.is_ohlcv_boosted,
-               s.is_pe_boosted,
                s.is_typical,
                -- the is_rejection column was dropped 2026-10-14 — the
                -- grey-diamond wait event IS the action code now
@@ -285,26 +273,22 @@ export async function fetchTriggeredSignals(
         SELECT r.* FROM recent r
      ),
      deduped AS (
-        -- One record per (config, day, VARIANT): the boost twin is the
-        -- same event with w-scaled confidence — it survives beside its
-        -- plain record (the OHLCV toggle picks). Within a variant, a
-        -- live tick wins over the history anchor (earliest first —
-        -- state families re-flag on every qualifying tick while the
-        -- breach persists); a stronger confidence breaks remaining
-        -- ties. The EVENT's pass stamp rides the partition (bool_or —
-        -- one event carries exactly one stamp): a live tick winning a
-        -- day inherits its history anchor's pass. is_rejection rides
-        -- the partition too — a rejected NO-ACTION record never
-        -- collapses into (or masks) its actionable twin.
+        -- One record per (config, day): a live tick wins over the
+        -- history anchor (earliest first — state families re-flag on
+        -- every qualifying tick while the breach persists); a stronger
+        -- confidence breaks remaining ties. The EVENT's pass stamp
+        -- rides the partition (bool_or — one event carries exactly one
+        -- stamp): a live tick winning a day inherits its history
+        -- anchor's pass. is_rejection rides the partition too — a
+        -- rejected NO-ACTION record never collapses into (or masks)
+        -- its actionable twin.
         SELECT d.*,
                bool_or(d.is_typical) OVER (
                    PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_ohlcv_boosted, d.is_pe_boosted,
                                 d.is_rejection
                ) AS event_is_typical,
                row_number() OVER (
                    PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_ohlcv_boosted, d.is_pe_boosted,
                                 d.is_rejection
                    ORDER BY d.is_day_close_trigger, d.time,
                             d.confidence DESC
@@ -327,8 +311,6 @@ export async function fetchTriggeredSignals(
             r.confidence_pct,
             r.is_day_close_trigger,
             ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
-            r.is_ohlcv_boosted,
-            r.is_pe_boosted,
             r.event_is_typical AS is_typical,
             r.is_rejection,
             (SELECT count(DISTINCT ls.date)::int
@@ -417,9 +399,8 @@ export interface TradingSignalHistoryResult {
  *    • analysis_signals.history_signals — the PLOT BULK: the multi-year
  *      event record (a year-end snapshot owns its calendar year, the
  *      rolling latest owns [Jan 1, its key]; 15:00 day-close anchors),
- *      one population per event since the boost twins' retirement
- *      (is_ohlcv_boosted FALSE everywhere; the boost's tuned confidence
- *      lives on the performance snapshots) + the day's episode-pass
+ *      one population per event (the is_ohlcv_boosted / is_pe_boosted
+ *      variant axes left the schema 2026-11-01) + the day's episode-pass
  *      attribute (is_typical TRUE typical / FALSE re-entry / NULL
  *      unclassified — no toggle filters on it any more),
  *    • live.live_signals — the RECENT 20-TRADING-DAY SLICE ONLY: the
@@ -532,8 +513,6 @@ export async function fetchTradingSignalHistory(
                (s.confidence::float8 / 100.0) AS confidence_pct,
                s.is_day_close_trigger,
                s.regime_state,
-               FALSE        AS is_ohlcv_boosted,
-               FALSE        AS is_pe_boosted,
                NULL::boolean AS is_typical,
                FALSE        AS is_rejection
         FROM live.live_signals s
@@ -543,10 +522,9 @@ export async function fetchTradingSignalHistory(
      ),
      history AS (
         -- THE PLOT BULK — the multi-year record replayed from the rules
-        -- tier (15:00 day-close anchors), one population per event since
-        -- the boost twins' retirement (is_ohlcv_boosted FALSE everywhere
-        -- — the boost's tuned confidence lives on signal_rules.
-        -- the performance snapshots); is_typical TRUE = the typical pass, FALSE =
+        -- tier (15:00 day-close anchors), one population per event (the
+        -- is_ohlcv_boosted / is_pe_boosted variant axes left the schema
+        -- 2026-11-01); is_typical TRUE = the typical pass, FALSE =
         -- the re-entry pass, NULL = the family does not classify passes
         -- (no toggle filters on it any more). The rules-era table stores
         -- the crossed cell bar as signal_reference — the legacy response
@@ -569,8 +547,6 @@ export async function fetchTradingSignalHistory(
                (s.confidence::float8 / 100.0) AS confidence_pct,
                s.is_day_close_trigger,
                s.regime_state,
-               s.is_ohlcv_boosted,
-               s.is_pe_boosted,
                s.is_typical,
                -- the is_rejection column was dropped 2026-10-14 — the
                -- grey-diamond wait event IS the action code now
@@ -584,28 +560,23 @@ export async function fetchTradingSignalHistory(
         SELECT r.* FROM recent r
      ),
      deduped AS (
-        -- One record per (config, day, VARIANT): the boost twin is the
-        -- same event with w-scaled confidence — it must survive beside
-        -- its plain record (the OHLCV toggle picks). Within a variant,
-        -- a live tick wins over the history anchor (earliest first —
-        -- state families re-flag on every qualifying tick while the
-        -- breach persists; live has no twins, so the TRUE partition is
-        -- history-only); a stronger confidence breaks remaining ties
-        -- (the retired day-close mirror rows). The EVENT's pass stamp
-        -- rides the partition (max — one event carries exactly one
-        -- stamp): a live tick winning a day inherits its history
-        -- anchor's pass, so the pass toggle still sees the day.
-        -- is_rejection rides the partition too — a rejected NO-ACTION
-        -- record never collapses into its actionable twin.
+        -- One record per (config, day): a live tick wins over the
+        -- history anchor (earliest first — state families re-flag on
+        -- every qualifying tick while the breach persists); a stronger
+        -- confidence breaks remaining ties (the retired day-close
+        -- mirror rows). The EVENT's pass stamp rides the partition
+        -- (max — one event carries exactly one stamp): a live tick
+        -- winning a day inherits its history anchor's pass, so the
+        -- pass toggle still sees the day. is_rejection rides the
+        -- partition too — a rejected NO-ACTION record never collapses
+        -- into its actionable twin.
         SELECT d.*,
                bool_or(d.is_typical) OVER (
                    PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_ohlcv_boosted, d.is_pe_boosted,
                                 d.is_rejection
                ) AS event_is_typical,
                row_number() OVER (
                    PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_ohlcv_boosted, d.is_pe_boosted,
                                 d.is_rejection
                    ORDER BY d.is_day_close_trigger, d.time,
                             d.confidence DESC
@@ -633,8 +604,6 @@ export async function fetchTradingSignalHistory(
             r.confidence_pct,
             r.is_day_close_trigger,
             ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
-            r.is_ohlcv_boosted,
-            r.is_pe_boosted,
             r.event_is_typical AS is_typical,
             r.is_rejection,
             (SELECT to_char(win_start, 'YYYY-MM-DD') FROM win)
@@ -715,22 +684,6 @@ export interface SignalRuleRow {
    *  dir_ave gate; the portfolio tier's combined audit lives in
    *  history_portfolio_signal_performance. */
   is_in_portfolio: boolean;
-  /** Whether the cell is the PE-CONDITIONED variant of its rule (a
-   *  signal_rules PK member since 2026-10-26, the
-   *  is_ohlcv_boosted/is_in_portfolio PK-member precedent): the
-   *  rebound family emits both variants — true = the candidate masks
-   *  are AND-gated by the code's own trailing PE-percentile condition
-   *  (rule_params.bar_def.pe_gate carries it); false = the plain,
-   *  PE-free population. Every non-PE family reads false. */
-  is_pe_boosted: boolean;
-  /** The cell's OHLCV-boost VARIANT axis (a signal_rules PK member
-   *  since 2026-10-26, mirrored from history_signals where it has
-   *  keyed since the boost-twin era): true = the OHLCV-boosted
-   *  variant of the rule — a SEPARATE row from the unconstrained one.
-   *  Retired as a live variant 2026-10-16 (the twins became the
-   *  per-cell trust-weighted measurement): reads false on every row
-   *  today, kept for the key's shape. */
-  is_ohlcv_boosted: boolean;
   /** The engine entry that runs the rule (the RuleEntry subclass name
    *  under analysis/analysis_signals/engines/signal_families/). */
   rule_entry: string;
@@ -786,8 +739,6 @@ const LATEST_PERFORMANCE_JOIN = `
           AND p.trend = r.trend
           AND p.regime_state = r.regime_state
           AND p.action = r.action
-          AND p.is_pe_boosted = r.is_pe_boosted
-          AND p.is_ohlcv_boosted = r.is_ohlcv_boosted
         ORDER BY p.date DESC LIMIT 1
      ) perf ON TRUE`;
 
@@ -861,8 +812,6 @@ export async function fetchSignalRules(
             r.signal_rule_id::float8 AS signal_rule_id,
             r.is_valid,
             r.is_in_portfolio,
-            r.is_pe_boosted,
-            r.is_ohlcv_boosted,
             r.rule_entry,
             r.rule_params,
             perf.perf_date,
@@ -1152,8 +1101,6 @@ export async function fetchPortfolioSignals(
             r.signal_rule_id::float8 AS signal_rule_id,
             r.is_valid,
             r.is_in_portfolio,
-            r.is_pe_boosted,
-            r.is_ohlcv_boosted,
             r.rule_entry,
             r.rule_params,
             perf.perf_date,
@@ -1396,14 +1343,17 @@ export async function fetchPortfolioSignalHistory(
               h.confidence,
               h.is_in_portfolio
        FROM analysis_signals.history_signals h
+       -- the stored cell_signals keys may carry the retired
+       -- is_ohlcv_boosted payload field (rows predating the
+       -- 2026-11-01 axis unlink) — the resolver ignores it; every
+       -- surviving event IS the plain population
        JOIN jsonb_to_recordset($1::jsonb) AS k(code text,
               signal_type smallint, signal_sub_type smallint,
-              is_ohlcv_boosted boolean, is_in_portfolio boolean,
+              is_in_portfolio boolean,
               date date, time text)
          ON h.code = k.code
         AND h.signal_type = k.signal_type
         AND h.signal_sub_type = k.signal_sub_type
-        AND h.is_ohlcv_boosted = k.is_ohlcv_boosted
         AND h.is_in_portfolio = COALESCE(k.is_in_portfolio, false)
         AND h.date = k.date
         AND h.time = k.time::time
@@ -1416,7 +1366,6 @@ export async function fetchPortfolioSignalHistory(
           code: cr.code,
           signal_type: cr.signal_type,
           signal_sub_type: cr.signal_sub_type,
-          is_ohlcv_boosted: false,
           is_in_portfolio: cr.is_in_portfolio === true,
           date: cr.date,
           time: cr.time,
@@ -1439,7 +1388,6 @@ export async function fetchPortfolioSignalHistory(
   const decodedKey = (k: Record<string, unknown>) => JSON.stringify({
     code: k.code, signal_type: k.signal_type,
     signal_sub_type: k.signal_sub_type,
-    is_ohlcv_boosted: k.is_ohlcv_boosted ?? false,
     // the sourced cell events ride the is_in_portfolio TRUE tier (a
     // history_signals PK member since 2026-10-23); pre-flag legacy
     // keys read false and only ever matched FALSE-tier rows anyway
@@ -1468,7 +1416,6 @@ export async function fetchPortfolioSignalHistory(
       const identity = JSON.stringify({
         code: m.code, signal_type: m.signal_type,
         signal_sub_type: m.signal_sub_type,
-        is_ohlcv_boosted: false,
         is_in_portfolio: true,
         date: m.date, time: m.time ?? "15:00",
       });

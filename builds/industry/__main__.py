@@ -2,10 +2,11 @@
 
 Run via ``python -m builds.industry``.
 
-Migrated from analysis/industry_sentiments (2026-08-24): the per-industry
+Migrated from the former analysis/industry_sentiments (2026-08-24;
+renamed analysis/market_beta): the per-industry
 BASELINE aggregation is a stats-level table (mirroring builds.index /
 builds.stock); the downstream analysis steps remain in
-analysis.industry_sentiments and read from stats.industry_basic_stats.
+analysis.market_beta and read from stats.industry_basic_stats.
 
 Pipeline
   1. Load (date, code, industry_id, open, high, low, close, pe, stock_num)

@@ -11,7 +11,7 @@
  * name + (stock only) dividend events, already carrying margin overlays.
  * One cached URL per (sec_type, code) shared with every other baseline
  * consumer (useSecBaselineBundle on the PE / Dividends panels, the live
- * market-movements member history, IndustrySentiments' market trend, …).
+ * market-movements member history, MarketBeta's market trend, …).
  *
  * Rows are mapped onto the StockDailyRow shape the shared chart consumes
  * (see mapEtfRows / mapIndexRows); fields a source doesn't carry (EPS,

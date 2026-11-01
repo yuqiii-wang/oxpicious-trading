@@ -3,7 +3,7 @@
  * SecClassificationNav.
  *
  * An inherited variant of the shared classification navigator for pages that
- * merge MULTIPLE labels into one view (e.g. Industry Sentiments):
+ * merge MULTIPLE labels into one view (e.g. Market Beta):
  *   • L2 industries — multi-select: tick chips across sectors (switching the
  *     active sector only changes the browsing context; picked industries
  *     persist across sector switches).

@@ -2,7 +2,7 @@
  * OhlcModeToggle — shared Absolute / % Change toggle for every OHLC panel.
  *
  * Mirrors the ToggleButtonGroup used by the Index Allocation panel
- * (Industry Sentiments). Default mode is "percentage" — callers should initialize
+ * (Market Beta). Default mode is "percentage" — callers should initialize
  * their state with `useState<OhlcMode>("percentage")`.
  */
 import { ToggleButton, ToggleButtonGroup } from "@mui/material";

@@ -97,7 +97,7 @@ export default function EChart({ option, height = 320, minHeight = 200, group, o
   // Update option when it changes.
   // notMerge: true — REPLACE the entire option instead of merging. This is
   // critical for toggles that ADD/REMOVE series (e.g. benchmark / mean-only
-  // on IndustrySentiments): with notMerge:false, ECharts keeps stale series
+  // on MarketBeta): with notMerge:false, ECharts keeps stale series
   // data from the previous option, so removed lines never disappear.
   useEffect(() => {
     if (!chartRef.current) return;

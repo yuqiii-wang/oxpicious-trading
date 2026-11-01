@@ -16,8 +16,9 @@ import {
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
 
-/** Nav trees endpoints per sec_type — the shared valuation universe. */
-export const VALUATION_THEMES_SOURCES: Record<SecNavSecType, SecNavThemesSource> = {
+/** Nav trees endpoints per sec_type — the shared valuation universe.
+ *  ("all" has no tree — the nav renders the locked exchange row only.) */
+export const VALUATION_THEMES_SOURCES: Record<Exclude<SecNavSecType, "all">, SecNavThemesSource> = {
   etf: {
     themes: (exchange) => fetchValuationThemes("etf", exchange),
     strategyThemes: (exchange) => fetchValuationStrategyThemes("etf", exchange),
@@ -38,9 +39,10 @@ export const VALUATION_THEMES_SOURCES: Record<SecNavSecType, SecNavThemesSource>
   },
 };
 
-/** Codes fetcher for SecCodesPageShell — /api/analysis/valuation/codes. */
+/** Codes fetcher for SecCodesPageShell — /api/analysis/valuation/codes.
+ *  ("all" excluded — the shell's pages never offer that toggle.) */
 export function fetchValuationPageCodes(
-  secType: SecNavSecType,
+  secType: Exclude<SecNavSecType, "all">,
   exchange: string | null,
 ) {
   return fetchValuationCodes(secType, exchange);

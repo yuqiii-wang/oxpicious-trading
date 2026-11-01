@@ -1,0 +1,196 @@
+/**
+ * SentimentFeedSection — the feed half of a Market Sentiments page (the
+ * page's FIXED source — each split item is its own page): heading, the
+ * date-event strip, the keyword search row, and the paginated feed of
+ * AiQaCard (AI) / NewsPostCard (News) posts. All state lives in
+ * useSentimentFeed (passed in whole); the page only contributes the scope
+ * label, the market rankings' loading flag, and the industry-mode
+ * benchmark-chart focus jump on strip picks.
+ */
+import {
+  Box,
+  IconButton,
+  InputAdornment,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import {
+  Close as CloseIcon,
+  Search as SearchIcon,
+} from "@mui/icons-material";
+import DateEventStrip from "@/shared/components/date-events/DateEventStrip";
+import PostFeed from "@/shared/components/post-feed/PostFeed";
+import AiQaCard from "@/dataviz/features/ai/AiQaCard";
+import NewsPostCard from "@/shared/components/news/NewsPostCard";
+import SentimentFeedAskButton from "./SentimentFeedAskButton";
+import type { useSentimentFeed } from "./useSentimentFeed";
+import { PAGE_SIZE } from "./constants";
+
+export default function SentimentFeedSection({
+  mode,
+  hdLoading,
+  scopeLabel,
+  feedState,
+  onStripFocusJump,
+}: {
+  mode: "market" | "industry";
+  /** Market-mode rankings loading — shows in the strip's empty text. */
+  hdLoading: boolean;
+  /** Resolved feed scope label (mode-dependent — built in the page). */
+  scopeLabel: string;
+  feedState: ReturnType<typeof useSentimentFeed>;
+  /** A strip-dot pick became ACTIVE — industry mode jumps the benchmark
+   *  chart's slider to the picked date (the chart↔strip sync). */
+  onStripFocusJump: (date: string) => void;
+}) {
+  const {
+    feed,
+    searchInput,
+    setSearchInput,
+    search,
+    submitSearch,
+    clearSearch,
+    selectedDate,
+    setSelectedDate,
+    dateWindow,
+    page,
+    setPage,
+    activeCalendarLoading,
+    activeCalendarError,
+    stripEvents,
+    stripMin,
+    stripMax,
+    activeItems,
+    activeItemsLoading,
+    activeItemsError,
+    aiItems,
+    newsItems,
+  } = feedState;
+
+  return (
+    <>
+      {/* ---- Feed heading — the page's FIXED source (no toggle: the AI QA
+              and News feeds are two separate pages). The heading carries
+              the Ask AI "?" (SentimentFeedAskButton): a no-chart ask whose
+              metrics table + descriptions follow the page's source-split
+              item identity (both keyword audits) and whose scope/state
+              ride the CURRENT scope + keyword + day pick. ---- */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mt: 2.5, mb: 1 }}>
+        <Typography variant="h6" sx={{ fontWeight: 700 }}>
+          {feed === "ai" ? "AI 市场情绪问答" : "市场情绪新闻"}
+        </Typography>
+        <SentimentFeedAskButton
+          feed={feed}
+          mode={mode}
+          scopeLabel={scopeLabel}
+          search={search}
+          selectedDate={selectedDate}
+          dateWindow={dateWindow}
+        />
+      </Box>
+
+      {/* Date event bar — one dot per day with rows for the ACTIVE source
+          (AI Q&A or news), scoped by the mode's feed scope + keyword; click
+          windows the feed below to ±120 days around that day AND (industry
+          mode) jumps the benchmark chart's slider to that date. Dates are
+          TRADING days (holidays/weekends rolled back by the backend). In
+          industry mode the strip has NO slider of its own — its VISIBLE
+          window is the benchmark chart's visible window (same
+          start/end/length; drag the chart's slider and the dots re-window
+          in lockstep), the same trend-driven strip as the DataViz AI page.
+          In market mode there is no benchmark chart, so the strip falls
+          back to its own calendar range + time slider. ---- */}
+      <DateEventStrip
+        events={stripEvents}
+        typeMeta={{
+          qa: { label: "AI 问答", color: "#9a60b4" },
+          news: { label: "新闻", color: "#5470c6" },
+        }}
+        minDate={stripMin}
+        maxDate={stripMax}
+        selectedId={selectedDate}
+        onEventClick={(e) => {
+          const d = String(e.id);
+          setSelectedDate((cur) => (d === cur ? null : d));
+          if (mode === "industry") onStripFocusJump(d);
+        }}
+        height={72}
+        showLegend={false}
+        emptyText={
+          hdLoading || activeCalendarLoading
+            ? "加载中…"
+            : feed === "ai"
+              ? "无 AI 问答记录"
+              : "无新闻记录"
+        }
+        enableZoom={mode === "market"}
+      />
+      {activeCalendarError && (
+        <Box component="pre" sx={{ color: "error.main", fontSize: "0.75rem", whiteSpace: "pre-wrap" }}>
+          Failed to load calendar: {activeCalendarError}
+        </Box>
+      )}
+
+      {/* ---- Keyword row — narrows the date strip and the active feed. ---- */}
+      <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5, my: 1, alignItems: "center" }}>
+        <TextField
+          size="small"
+          placeholder={feed === "ai" ? "搜索问答（Enter）" : "搜索新闻（Enter）"}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submitSearch();
+          }}
+          InputProps={{
+            sx: { fontSize: "0.75rem", height: 26 },
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon sx={{ fontSize: 15, color: "text.secondary" }} />
+              </InputAdornment>
+            ),
+            endAdornment: search ? (
+              <InputAdornment position="end">
+                <IconButton
+                  size="small"
+                  aria-label="清除搜索"
+                  onClick={clearSearch}
+                  sx={{ p: 0.25 }}
+                >
+                  <CloseIcon sx={{ fontSize: 13 }} />
+                </IconButton>
+              </InputAdornment>
+            ) : undefined,
+          }}
+          sx={{ ml: "auto", width: 220, "& .MuiOutlinedInput-root": { borderRadius: 5 } }}
+        />
+      </Stack>
+
+      {/* ---- Feed (shared PostFeed chrome): scope label · day window ·
+              keyword · total + pager, error alert, and the post cards for
+              the ACTIVE source (AiQaCard / NewsPostCard). ---- */}
+      <PostFeed
+        total={activeItems?.total ?? 0}
+        page={page}
+        pageSize={PAGE_SIZE}
+        onPageChange={setPage}
+        loading={activeItemsLoading || hdLoading}
+        error={activeItemsError}
+        errorLabel={feed === "ai" ? "Failed to load Q&A" : "Failed to load news"}
+        scopeLabel={`${scopeLabel}${dateWindow ? ` · ${dateWindow.from} ~ ${dateWindow.to}` : ""}${search ? ` · “${search}”` : ""}`}
+        countNoun={feed === "ai" ? "条问答" : "条新闻"}
+        empty={!activeItemsLoading && (activeItems?.items ?? []).length === 0}
+        emptyText={
+          (feed === "ai" ? "没有匹配的 AI 问答 — " : "没有匹配的新闻 — ") +
+          (mode === "market"
+            ? "调整 Top N / 日期 / 关键词后再试。"
+            : "调整行业 / 日期 / 关键词后再试。")
+        }
+      >
+        {feed === "ai"
+          ? (aiItems ?? []).map((it) => <AiQaCard key={it.qa_id} item={it} />)
+          : (newsItems ?? []).map((it) => <NewsPostCard key={it.news_id} item={it} />)}
+      </PostFeed>
+    </>
+  );
+}

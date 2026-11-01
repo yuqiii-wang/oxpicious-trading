@@ -69,6 +69,19 @@ export const INT_GTE1: FieldRule = {
   },
 };
 
+/** Optional concurrency cap — whole count ≥ 1 or blank (= null, the
+ *  code default). The service_config max_parallel_runs field. */
+export const INT_GTE1_OR_NULL: FieldRule = {
+  hint: "integer ≥ 1 · blank = null (code default)",
+  error: (t) => {
+    if (isBlank(t)) return null;
+    const n = Number(t);
+    return Number.isInteger(n) && n >= 1
+      ? null
+      : "must be an integer ≥ 1 or blank (= null)";
+  },
+};
+
 /** Dotted service name — the name IS the tree path. "default" (the
  *  fallback file's name) is a plain single segment, so it passes too. */
 export const DOTTED_NAME: FieldRule = {

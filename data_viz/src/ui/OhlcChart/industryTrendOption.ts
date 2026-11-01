@@ -5,7 +5,7 @@
  *
  * Deliberately plain per the mode's contract ("just plot by close price"):
  * no rebasing, no pool-size dimming, no mean/σ overlay — those live on the
- * Industry Sentiments page's buildIndustryChartOption. Colors follow the
+ * Market Beta page's buildIndustryChartOption. Colors follow the
  * shared group-color convention: every member index is a variant shade of
  * its industry's single major color, assigned in the API's member order.
  */
@@ -32,7 +32,7 @@ export function buildIndustryTrendOption(
   const allDates = Array.from(dateSet).sort();
 
   // Per-index variant shades of the industry's major color (same convention
-  // as the Industry Sentiments multi-line chart).
+  // as the Market Beta multi-line chart).
   const scheme = buildGroupColorScheme([data.industry_id]);
   const major = scheme.majorColor(data.industry_id);
 

@@ -1,24 +1,26 @@
 -- ============================================================================
 --  static.docs seed — analysis-page chart specs: PE, ETF holdings,
---  industry sentiments, composites, perf-attr, composition pies.
+--  market beta, composites, perf-attr, composition pies.
 --  (Prefix re-sync per file: each DELETE below scopes its rows.)
 -- ============================================================================
 
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.pe.%';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.etf-holdings.%';
-DELETE FROM static.docs WHERE doc_id LIKE 'ui.industry-sentiments.%';
+DELETE FROM static.docs WHERE doc_id LIKE 'ui.market-beta.%';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.composites.%';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.perf-attr.%';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.composition-pie.%';
-DELETE FROM static.docs WHERE doc_id LIKE 'ui.industry-sentiments.page';
+DELETE FROM static.docs WHERE doc_id LIKE 'ui.market-beta.page';
+-- legacy prefix cleanup (page renamed industry-sentiments → market-beta 2026-10-29)
+DELETE FROM static.docs WHERE doc_id LIKE 'ui.industry-sentiments.%';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.etf-holdings.page';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.dividends.%';
 
 INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
 (
-  'ui.industry-sentiments.page',
+  'ui.market-beta.page',
   NULL,
-  'Industry sentiments for {{label}}: each member index''s daily close rebased to 100 at the visible window''s start, merged across the picked industries, with the server-precomputed mean ±1σ band (anchored at history start — aligned with the lines only at full range). Sub-plots: the cross-sectional mean PE and mean trading amount (亿元). Only indices with composition data appear; broad-market indices sit under the FIN sector.',
+  'Market beta for {{label}}: each member index''s daily close rebased to 100 at the visible window''s start, merged across the picked industries, with the server-precomputed mean ±1σ band (anchored at history start — aligned with the lines only at full range). Sub-plots: the cross-sectional mean PE and mean trading amount (亿元). Only indices with composition data appear; broad-market indices sit under the FIN sector.',
   NULL, NULL, 0
 ),
 (
@@ -86,7 +88,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   0
 ),
 (
-  'ui.industry-sentiments.benchmark-price',
+  'ui.market-beta.benchmark-price',
   NULL,
   'Benchmark {{benchmark}} daily price.{{#rolling}}Rebased mode: 100 × P_t/P_window-start so slopes compare cumulative performance; each selected industry overlays its contribution-excluded curve (benchmark − industry); the shaded gap = that industry''s added/removed return over the trailing rolling window. A swelling shade = the industry propels the benchmark; an ebbing shade = its pull decays.{{/rolling}}{{^rolling}}Absolute mode: raw daily closes on a shared price axis (benchmark + each selected industry''s ex-this-industry series).{{/rolling}}{{#showAmt}} Bars (right axis): benchmark turnover, 亿 CNY — the participation level behind the price move.{{/showAmt}}',
   '[
@@ -98,7 +100,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   0
 ),
 (
-  'ui.industry-sentiments.attribution',
+  'ui.market-beta.attribution',
   NULL,
   'Benchmark attribution for {{industry}}: per benchmark index, Contribution (left) = the industry''s share of that benchmark''s return; right axis pits the industry''s weight inside the benchmark (Benchmark Wt) against its broad-market weight (Industry Wt). Contribution ≫ weight ⇒ the industry over-drives that benchmark (its return is idiosyncratic, not membership beta); ≪ ⇒ it merely rides the membership.',
   '[
@@ -112,9 +114,9 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   0
 ),
 (
-  'ui.industry-sentiments.plot',
+  'ui.market-beta.plot',
   NULL,
-  'Industry sentiment for {{title}}: member closes rebased to 100 × P_t/P_0 on a shared date axis (pool scoped to small/mid/large members), broad-market benchmarks overlaid, with mean ±1σ dispersion bands and sub-plots for the industry''s mean PE and total trading amount (亿元). A tight band = a consensus tape (the industry factor dominates); wide σ = member dispersion (stock selection over beta); a benchmark outrunning the members = the industry lagging its own beta — relative weakness despite market direction.',
+  'Market beta for {{title}}: member closes rebased to 100 × P_t/P_0 on a shared date axis (pool scoped to small/mid/large members), broad-market benchmarks overlaid, with mean ±1σ dispersion bands and sub-plots for the industry''s mean PE and total trading amount (亿元). A tight band = a consensus tape (the industry factor dominates); wide σ = member dispersion (stock selection over beta); a benchmark outrunning the members = the industry lagging its own beta — relative weakness despite market direction.',
   '[
     {"key": "mean", "name": "mean ({{pool}})", "description": "precomputed cross-member mean close (rebased) — the industry factor line"},
     {"key": "plus1sd", "name": "+1σ", "description": "upper +1σ edge of the member dispersion"},
@@ -127,7 +129,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   0
 ),
 (
-  'ui.industry-sentiments.market-trend',
+  'ui.market-beta.market-trend',
   NULL,
   'Broad-market overview: the four A-share indices'' closes rebased to 100 × P_t/P_0 for direct relative comparison, each index''s turnover embedded as stacked bars. The ascendant rebased line flags leadership; rotation between lines = cross-market money migration; the turnover bars expose where participation pools — leadership on shrinking turnover is the weaker claim.',
   '[
@@ -167,6 +169,28 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   0
 ),
 (
+  'ui.composites.ai-market-qa.feed',
+  NULL,
+  'The AI 市场情绪问答 feed (AI Market Sentiments QA), scoped to {{scope}} ({{mode}} mode{{#keyword}} · keyword “{{keyword}}”{{/keyword}}{{#date}} · day {{date}} ±120d{{/date}}). The cards are the LLM Q&A knowledge base (text.llm_qa, written daily by llm_agents): one ask-and-answer per post — the question, the answer, and its per-ref citations; click a card to expand. The metrics table audits the corpus through the SAME keyword vocabulary as the news side: per day, how many TIMES each market-description keyword family occurs across the questions+answers (下跌, 大跌… vs 上涨, 大涨…; 放量… vs 缩量…; 利空… vs 利好… — every hit counts, negated 并未下跌 never does), each with its 10y rarity rank. What the AI layer is SAYING — read it against the news audit (the Market Sentiments News page) for tone divergence: AI echoing news = the corpus explaining the tape; AI spiking while news is flat = amplification beyond the sources, discount that framing.',
+  NULL,
+  '[
+    {"key": "scope", "text": "The ask rides the CURRENT scope — the classification pick (Industry mode) or the latest month''s top-N HYPE + DRAIN industries plus the broad-market daily QA (Market mode); the keyword-audit metrics resolve at market level."},
+    {"key": "dayWindow", "text": "A picked day windows the feed ±120 calendar days around itself (not a single-day filter) and seeds the as-of date — the metrics table re-resolves at that day."}
+  ]'::jsonb,
+  0
+),
+(
+  'ui.composites.market-sentiment-news.feed',
+  NULL,
+  'The 市场情绪新闻 feed (Market Sentiments News), scoped to {{scope}} ({{mode}} mode{{#keyword}} · keyword “{{keyword}}”{{/keyword}}{{#date}} · day {{date}} ±120d{{/date}}). The cards are the raw news corpus (text.news): zhihu market recaps, gov.cn policy releases, PBoC operations — title, snippet, and the full article with comments on click. The metrics table is the corpus AUDIT behind the chatter: per day, how many TIMES each market-description keyword family''s keywords OCCUR (下跌, 大跌… vs 上涨, 大涨…; 放量… vs 缩量…; 利空… vs 利好… — every hit counts, 大涨 twice in one article = 2; negated 并未下跌 never does), each with its 10y rarity rank (p95+ = a chatter burst). Read the PAIRS, not single gauges: 放量+上涨 = conviction, 缩量+下跌 = grind-lower risk; tone prints AFTER price — the audit is a confirmation/positioning layer, and this feed shows the actual posts behind any spike.',
+  NULL,
+  '[
+    {"key": "scope", "text": "The ask rides the CURRENT scope — the classification pick (Industry mode) or the latest month''s top-N HYPE + DRAIN industries plus the broad-market daily QA (Market mode); the keyword audit itself resolves at market level."},
+    {"key": "dayWindow", "text": "A picked day windows the feed ±120 calendar days around itself (not a single-day filter) and seeds the as-of date — the metrics table re-resolves at that day."}
+  ]'::jsonb,
+  0
+),
+(
   'ui.perf-attr.panel',
   NULL,
   'Performance attribution for {{code}} vs its benchmark family. Per-benchmark contribution = fractional benchmark return × composition overlap (shared weight) — how much of the subject''s move each benchmark''s return explains through membership. Read the pair together: contribution earned on thin overlap = concentrated idiosyncratic edge; fat overlap with thin contribution = dead-weight membership. The expanded charts pair ETF turnover (relative liquidity / crowding) and the close trends (relative strength), optionally rebased to a common base date.',
@@ -198,4 +222,59 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   NULL,
   'Individual stocks within industry "{{industry}}" of {{code}}''s holdings (stats.sec_composition): slice size = the stock''s weight %. A heavy single name = idiosyncratic risk to the whole position (one earnings event moves the fund); a long flat tail = the exposure is industry-beta, not stock-picking.',
   NULL, NULL, 0
+),
+(
+  'ui.market-beta.corr',
+  NULL,
+  'Windowed pairwise correlation of the selected industries'' mean curves: for every industry pair, the Pearson r of the two industries'' MA-W mean_close curves over the W-trading-day window starting on each grid date. +1 = the pair''s trends lock-step (one factor, one money); near 0 = independent (pair-diversification material); deep negative = structurally opposite — the natural hedge candidate (long one, hedge with the other). Negative collapsing toward 0 = the hedge decaying; a fresh slide into negative = a new pair-hedge forming.',
+  NULL,
+  '[
+    {"key": "dynamicNames", "text": "Series names are industry pairs (A ↔ B); the tooltip shows all three windows (20/60/255d) at the hovered window start — the selected one highlighted."},
+    {"key": "strideGrid", "text": "Values appear only on the stride grid (a window starts every 20 trading days); dates between are absent, never zero-filled."}
+  ]'::jsonb,
+  0
+),
+(
+  'ui.market-beta.etf-price',
+  NULL,
+  'Daily close of every ETF tracking a member index of the selected industries, CASCADINGLY rebased: each ETF indexes 100 × P_t/P_own-first-close, and a later-listed ETF starts at the already-active mean on its first date so it blends in instead of jumping to 100. Fanning curves = dispersion among the industry''s tracking products (liquidity/style splits); one curve breaking above the pack = the flows'' chosen vehicle. Trading Amt mode overlays each ETF''s turnover bars plus the industry-total {{ma}} line — turnover confirming price is conviction, price crawling up on dying turnover is drift.',
+  NULL,
+  '[
+    {"key": "dynamicNames", "text": "Series names are the tracking ETF names; turnover bars are \"<ETF> (amt)\" on the right axis, the industry-total trading-amount MA line is \"<industry> {{ma}}\"."},
+    {"key": "cascadingRebase", "text": "Rebase is CASCADING — curves do NOT share a common start; compare slopes and relative levels after each curve''s own first date, never absolute heights across listing dates."}
+  ]'::jsonb,
+  0
+),
+(
+  'ui.market-beta.etf-contribution',
+  NULL,
+  'Per-ETF contribution inside {{industry}} as of {{date}}: each bar pair = one tracking ETF — left axis its trading amount (亿 CNY, colored by the day''s return direction), right axis its % share of the industry''s total ETF turnover. Dominant amount + swelling share = the money''s chosen vehicle for the industry (the liquidity anchor); a thin ETF''s share spiking = hot money squeezing through a product that cannot absorb it (slippage risk). Read against the industry total and its MA5 in the tooltip: participation expanding = the industry move is funded, share flattening into one name = crowding.',
+  '[
+    {"key": "tradingAmt", "name": "Trading Amt", "unit": "亿 CNY", "description": "the ETF''s daily trading amount — its capital-flow weight inside the industry"},
+    {"key": "sharePct", "name": "Share %", "unit": "%", "description": "the ETF''s share of the industry''s total ETF trading amount"}
+  ]'::jsonb,
+  NULL,
+  0
+),
+(
+  'ui.market-beta.index-allocation',
+  NULL,
+  'Close curves of every selected member index, rebased to 100 × P_t/P_window-start for direct relative comparison (actual closes in the tooltip). The ascendant line flags the pick''s leading index; a tight cluster = the group trades as one factor; a fanning pack = internal rotation — the relative-strength leader is where the industry''s beta concentrates. The panels below attribute each index''s fluctuation to its benchmark family.',
+  NULL,
+  '[
+    {"key": "dynamicNames", "text": "Series names are the member index names (prefixed \"[industry]\" when several industries are selected); each is rebased to 100 at the visible window''s start."},
+    {"key": "fullSet", "text": "The plot shows the FULL selection (matching the nav chips) — not narrowed to indices that have allocation data; the attribution panels below are."}
+  ]'::jsonb,
+  0
+),
+(
+  'ui.market-beta.hypes-drains',
+  NULL,
+  'Seasonal HYPE/DRAIN ranking against {{benchmark}}: each month the industries are ranked by trailing {{period}}-day attribution contribution — HYPE lifted the benchmark, DRAIN dragged it. The curves are daily (rebased to 100 over the trailing window) but the CAST freezes per month: ● active (this month''s top/bottom {{maxRank}}), ○ fading (a past month''s rank, still on the same side of the benchmark), ✕ hidden (crossed the benchmark or never ranked). A HYPE name''s curve rolling over = the hype exhausting (crowd exit watch); a DRAIN name basing = the drain drying (capitulation-buy watch).{{#amt}} Ranked by contribution × shared turnover — absolute yuan impact.{{/amt}}{{^amt}} Ranked by raw contribution — every industry weighted equally.{{/amt}}',
+  NULL,
+  '[
+    {"key": "seasonalCast", "text": "Which industries appear is frozen per MONTH (seasonal rankings); the ranking table below the chart follows the clicked date''s season."},
+    {"key": "rebased", "text": "Curves are REBASED to 100 over the trailing {{period}}d — absolute levels are not comparable; slopes and benchmark crossovers are the read."}
+  ]'::jsonb,
+  0
 );

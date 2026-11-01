@@ -22,7 +22,6 @@ CREATE TABLE analysis_signals.history_signals (
     sec_type        SMALLINT      NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock
     signal_type     SMALLINT      NOT NULL,  -- label code (static.label_dim 'signal_type'): 0=mov_rsi 1=bollinger 2=ma_cross 3=options_wall 4=options_vix 5=momentum — the strategy's detection family
     signal_sub_type SMALLINT      NOT NULL,  -- the strategy this event belongs to, as its static.label_dim ('signal_sub_type') THRESHOLD code (e.g. 'rsi14_2pct' / 'boll20_2p5std' / 'ma120_g5pct' / 'ow_put_025pct' / 'ovix_spike')
-    is_ohlcv_boosted BOOLEAN      NOT NULL DEFAULT FALSE,  -- PK member: the OHLCV-boost VARIANT axis — SHARED variant emitters re-activated it 2026-10-26 (user-directed; the twin era's key kept): TRUE = the event replays the TURNOVER-CLIMAX-confirmed variant of its rule cell (the shared variants gate, amt_climax >= HEAVY — bollinger's band breaches, rf_break's deep legs), a SEPARATE row from the unconstrained variant's event at the same (code, sub, date, time); FALSE = the plain population of record (the trust-weighted measurement never gates)
     date            DATE          NOT NULL,  -- the trigger day — each qualifying episode's FIRST day (the moment the signal becomes observable)
     time            TIME          NOT NULL,  -- the bar time of the recorded breach (history rows: 15:00:00 day close)
 
@@ -34,11 +33,10 @@ CREATE TABLE analysis_signals.history_signals (
     regime_state    SMALLINT      NOT NULL DEFAULT 0,  -- label code (static.label_dim 'regime'): the trigger day's market regime (0 calm / 1 hot / 2 panic / 3 quiet; 4 = the regime-free families' POOLED stamp)
     is_typical      BOOLEAN,  -- the trigger day's episode-PASS attribution where the family defines one (the uninterrupted-run / isolated-touch split); NULL = the family does not classify passes
     is_in_portfolio BOOLEAN  NOT NULL DEFAULT FALSE,  -- PK member (2026-10-23, user-directed): the event's rule cell belongs to the PORTFOLIO tier — sourced by a portfolio family's source layer (the hedge components' mov_rsi / rf_break rows riding the SAME family vocabularies at the market + leg codes) — mirroring signal_rules.is_in_portfolio so a sourced cell's events are SEPARATE rows from the standalone families' events at the same (code, sub, date, time); the portfolio_history_signals.cell_signals linkage keys carry it
-    is_pe_boosted   BOOLEAN  NOT NULL DEFAULT FALSE,  -- PK member (2026-10-26, user-directed, the is_ohlcv_boosted/is_in_portfolio PK-member precedent): mirrors signal_rules.is_pe_boosted — the event replays the PE-CONDITIONED variant of its rule cell (a SEPARATE row from the unconstrained variant's event at the same (code, sub, date, time)); FALSE = the plain PE-free population (every non-PE family)
 
     created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT pk_history_signals PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, is_ohlcv_boosted, date, time, is_in_portfolio, is_pe_boosted),
+    CONSTRAINT pk_history_signals PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, date, time, is_in_portfolio),
     CONSTRAINT chk_history_signals_action CHECK (action BETWEEN 0 AND 2),
     CONSTRAINT chk_history_signals_regime CHECK (regime_state BETWEEN 0 AND 4),
     CONSTRAINT chk_history_signals_sec_type CHECK (sec_type BETWEEN 0 AND 2)

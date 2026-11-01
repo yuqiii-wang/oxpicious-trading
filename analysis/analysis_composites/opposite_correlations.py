@@ -46,7 +46,7 @@ COMPUTATION ARRANGEMENT (window component sums — no per-pair loops)
 WINDOW GRID + TRAILING WINDOW
   Frozen stride windows: starts every INTERVAL_DAYS (20) trading days
   anchored at calendar index 0 — identical to
-  analysis.industry_sentiments.correlations; once complete they are
+  analysis.market_beta.correlations; once complete they are
   never recomputed. Trailing window: per W, the ONE window ENDING at the
   pool calendar's latest date (start index t_len − W); it is NOT on the
   stride grid and carries ONLY its own W's metrics (the stride row
@@ -102,7 +102,7 @@ from _common.db_commons import batched_copy_by_key_async
 from _common.df_utils import epoch_col_to_dt64, host_array
 from _common.labels import POOL_SIZE_LABEL
 from analysis._common import upsert_analysis_identity
-from analysis.industry_sentiments.correlations import (
+from analysis.market_beta.correlations import (
     _grid_start_indices,
     _round_none,
     _window_col_ok,

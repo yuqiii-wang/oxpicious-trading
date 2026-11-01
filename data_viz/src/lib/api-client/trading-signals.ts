@@ -86,17 +86,6 @@ export interface TradingSignal {
    *  label (calm / hot / panic / quiet); recorded context, never a gate,
    *  and the same split the strategy itself registered under. */
   regime_state: string;
-  /** The event's RETIRED population-variant marker: the ohlcv-boost
-   *  twins were retired 2026-10-16 (the boost's tuned confidence lives
-   *  the latest performance snapshot, shown in the rules panel) — the
-   *  column reads FALSE on every row. */
-  is_ohlcv_boosted: boolean;
-  /** The event's PE-CONDITIONING variant (a history_signals PK member
-   *  since 2026-10-26): false = the plain population, true = the
-   *  PE-gated variant of the same sub type (the rebound family emits
-   *  both; the gate rides the cell's bar_def.pe_gate). Live rows carry
-   *  no variants (always false). */
-  is_pe_boosted: boolean;
   /** The trigger day's episode-PASS attribution: TRUE = the typical
    *  pass (buy: the isolated first touch; sell: the re-test), FALSE =
    *  the re-entry pass (flicker re-crossings / continuations /
@@ -381,16 +370,11 @@ export interface SignalRuleParams {
   };
   /** The breach bar DEFINITION (family-specific shape — read
    *  defensively): gap_pct/cross_excess/rolling_quantile/fixed_sigma/
-   *  wall_dist_pct/corr-slope interactions carry their own keys. */
+   *  wall_dist_pct/corr-slope interactions carry their own keys.
+   *  (The variant-axes stamps pe_boosted / ohlcv_boosted and the
+   *  bar_def.pe_gate / bar_def.ohlcv_gate fragments left the rows
+   *  with the 2026-11-01 variant-axes unlink.) */
   bar_def?: Record<string, unknown>;
-  /** The VARIANT-AXIS stamp (2026-10-27, user-directed "update rule
-   *  params if ohlcv and pe is used to boost"): true on a boosted
-   *  variant's params beside the row's is_pe_boosted / is_ohlcv_boosted
-   *  PK columns — the self-describing JSON convention; the gate
-   *  CONDITIONS ride bar_def.pe_gate / bar_def.ohlcv_gate and the
-   *  plain population carries no key. */
-  pe_boosted?: boolean;
-  ohlcv_boosted?: boolean;
   /** Family extras (window, kind, side policy, VRP gate def...). */
   [key: string]: unknown;
 }
@@ -446,19 +430,6 @@ export interface SignalRule {
    *  stays the unified dir_ave gate; the portfolio tier's combined
    *  audit lives in history_portfolio_signal_performance. */
   is_in_portfolio: boolean;
-  /** Whether the cell is the PE-CONDITIONED variant of its rule (a
-   *  signal_rules PK member since 2026-10-26): the rebound family
-   *  emits both variants — true = the candidate masks are AND-gated by
-   *  the code's own trailing PE-percentile condition (the gate rides
-   *  rule_params.bar_def.pe_gate); false = the plain PE-free
-   *  population. Every non-PE family reads false. */
-  is_pe_boosted: boolean;
-  /** The cell's OHLCV-boost VARIANT axis (a signal_rules PK member
-   *  since 2026-10-26, mirrored from history_signals): true = the
-   *  OHLCV-boosted variant of the rule — a SEPARATE row from the
-   *  unconstrained one. Retired as a live variant 2026-10-16: reads
-   *  false on every row today, kept for the key's shape. */
-  is_ohlcv_boosted: boolean;
   /** The engine entry class that runs the rule. */
   rule_entry: string;
   rule_params: SignalRuleParams;

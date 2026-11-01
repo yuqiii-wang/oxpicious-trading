@@ -1,9 +1,16 @@
 /**
  * local server entry file, for local development
  */
+import type { Duplex } from 'node:stream';
 import app from './app.js';
 import { closePool } from './lib/db.js';
 import { ensureStreamsAtBoot } from './routes/monitor.js';
+import {
+  attachAiEventsClient,
+  startAiEventsBridge,
+  stopAiEventsBridge,
+} from './services/ai-events.service.js';
+import { WebSocketServer } from 'ws';
 
 /**
  * start server with port
@@ -15,6 +22,24 @@ const server = app.listen(PORT, () => {
   // UI start = this process start: check the always-on stream, revive it
   // if the previous server's exit took it down (the keeper dies with us).
   ensureStreamsAtBoot();
+  // The AI deep-agent event channel's upstream (daemon WS /ws → the
+  // browser sockets below). Reconnect-on-close is internal to the bridge.
+  startAiEventsBridge();
+});
+
+// The browser side of the AI event channel: /api/ai/events is a plain
+// WebSocket upgrade (Express routes never see it), so the HTTP server
+// hands matching upgrades to a noServer WebSocketServer that forwards
+// the daemon's frames to every connected client.
+const aiEventsWss = new WebSocketServer({ noServer: true });
+server.on('upgrade', (req, socket: Duplex, head: Buffer) => {
+  const { pathname } = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+  if (pathname === '/api/ai/events') {
+    aiEventsWss.handleUpgrade(req, socket, head, (client) => attachAiEventsClient(client));
+  } else {
+    // Not our endpoint — leave the socket closed rather than hanging.
+    socket.destroy();
+  }
 });
 
 /**
@@ -68,6 +93,8 @@ process.on('unhandledRejection', (reason) => {
  */
 async function shutdown(signal: string) {
   console.log(`${signal} signal received`);
+  aiEventsWss.close();
+  stopAiEventsBridge();
   server.close(async () => {
     console.log('Server closed');
     await closePool();

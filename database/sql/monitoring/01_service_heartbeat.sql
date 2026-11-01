@@ -34,23 +34,8 @@
 --  exception, a watchdog kill, or death WITHOUT any record (SIGKILL / OOM /
 --  power loss — detected by the watchdog) records is_normal_exit = false.
 --
---  Applied after 00_monitor_schema.sql. Idempotent, including the rename
---  from the pre-2026-10-09 table name stream_heartbeat.
+--  Applied after 00_monitor_schema.sql. Idempotent.
 -- ============================================================================
-
--- Migration: rename monitor.stream_heartbeat → monitor.service_heartbeat
--- (the table long outgrew streams — it carries every batch pipeline too).
--- Must run BEFORE the CREATE below so an existing install's rows land in
--- the renamed table instead of a fresh empty one.
-DO $$
-BEGIN
-    IF to_regclass('monitor.stream_heartbeat') IS NOT NULL
-       AND to_regclass('monitor.service_heartbeat') IS NULL THEN
-        ALTER TABLE monitor.stream_heartbeat RENAME TO service_heartbeat;
-        ALTER TABLE monitor.service_heartbeat
-            RENAME CONSTRAINT stream_heartbeat_pkey TO service_heartbeat_pkey;
-    END IF;
-END $$;
 
 CREATE TABLE IF NOT EXISTS monitor.service_heartbeat (
     service        text        NOT NULL PRIMARY KEY,

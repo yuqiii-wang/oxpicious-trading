@@ -25,16 +25,6 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   NULL, NULL, 0
 ),
 (
-  'ui.signal-history.col.pe-boosted', 'PE boosted',
-  'The PE-conditioning variant: TRUE = the PE-gated population (the candidate masks AND-gated by the code''s own PE-percentile condition — the rebound family emits both variants); FALSE = the plain population',
-  NULL, NULL, 0
-),
-(
-  'ui.signal-history.col.ohlcv-boosted', 'OHLCV boosted',
-  'The retired OHLCV-boost variant marker (the boost twins were retired 2026-10-16 — their tuned confidence lives in the rules panel''s performance snapshot): FALSE on every row; kept for the record''s identity',
-  NULL, NULL, 0
-),
-(
   'ui.signal-history.col.reference', 'Reference',
   'The crossed cell bar — the firing rule''s prepared rule_params bar, denormalized per event (history_signals.signal_reference)',
   NULL, NULL, 0

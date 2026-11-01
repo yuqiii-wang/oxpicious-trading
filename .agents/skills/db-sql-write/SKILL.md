@@ -54,7 +54,7 @@ chunked machinery. That machinery exists to keep the replication slot's
 WAL bounded on multi-100K-row loads; a study script writing 100 rows
 gains nothing from it and pays in complexity and failure modes. Rule of
 thumb: under ~100K rows (one commit chunk) any correct helper is fine —
-pick the simplest (its single commit chunk pays only one 0.1s
+pick the simplest (its single commit chunk pays only one 0.5s
 `DEFAULT_CHUNK_PAUSE_S` cool-down — leave it on). Bulk COPY earns its
 keep at millions of rows or daily-repeated loads.
 
@@ -81,16 +81,17 @@ bulk_upsert(conn, "stats.my_table", rows, key_columns=["date", "code"])
 - Do not reimplement or opt out of the bulk-write rule (chunk by partition
   key → one COMMIT per chunk → between-chunk throttle). The throttle is
   the helpers' `_throttle_between_chunks(_async)`: a fixed cool-down
-  `DEFAULT_CHUNK_PAUSE_S = 0.1s` before every chunk (breaks up sustained
+  `DEFAULT_CHUNK_PAUSE_S = 0.5s` before every chunk (breaks up sustained
   fsync-bound write bursts — the reactive lag cap alone only engages once
   the standby is 4 GB behind; large writes of 20+ chunks auto-escalate it
-  to `LARGE_BULK_PAUSE_S = 3s` via `resolve_chunk_pause_s`; an explicit
+  to `LARGE_BULK_PAUSE_S = 10s` via `resolve_chunk_pause_s`; an explicit
   `chunk_pause_s` argument always wins), then the replica-lag wait. Defaults
-  (`partition_key="auto"`, `chunk_pause_s=0.1`, `max_replica_lag_mb=4096`)
+  (`partition_key="auto"`, `chunk_pause_s=0.5`, `max_replica_lag_mb=4096`)
   are the right call; passing `None` re-creates the max-duty-cycle disk
   saturation and the ~29 GB retained-WAL freeze the rule exists to
   prevent. The pause is cheap by design: a 70-chunk force rebuild pays
-  ~7s extra, a single-chunk daily write pays 0.1s — never "optimize" it
+  ~35s extra (7 minutes at the large-write 10s escalation), a
+  single-chunk daily write pays 0.5s — never "optimize" it
   away.
 - After a multi-100K-row write, run `analyze_tables_async(conn, [table])` —
   stale planner statistics turn value-blind prepared-statement readers

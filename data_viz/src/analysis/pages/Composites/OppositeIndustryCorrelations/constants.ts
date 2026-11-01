@@ -3,8 +3,8 @@
  * Correlations (by benchmark offset) composites page.
  */
 import {
-  fetchIndustrySentimentsStrategyThemes,
-  fetchIndustrySentimentsThemes,
+  fetchMarketBetaStrategyThemes,
+  fetchMarketBetaThemes,
 } from "@/lib/api-client";
 import type { IndustryCorrOffsetRow } from "@shared/types";
 
@@ -25,13 +25,13 @@ export const DEFAULT_SEED_INDUSTRY_IDS: readonly string[] = [
   "TECH_GENERAL",
 ];
 
-/** Nav trees endpoints (index-only — the same classification trees Industry
- *  Sentiments browses; industries/themes map 1:1 onto the offset table's
+/** Nav trees endpoints (index-only — the same classification trees Market
+ *  Beta browses; industries/themes map 1:1 onto the offset table's
  *  industry_ids from stats.sec_classification). */
 export const THEMES_SOURCES = {
   index: {
-    themes: (exchange: string | null) => fetchIndustrySentimentsThemes(exchange),
-    strategyThemes: (exchange: string | null) => fetchIndustrySentimentsStrategyThemes(exchange),
+    themes: (exchange: string | null) => fetchMarketBetaThemes(exchange),
+    strategyThemes: (exchange: string | null) => fetchMarketBetaStrategyThemes(exchange),
   },
 };
 

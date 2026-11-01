@@ -2056,6 +2056,172 @@ export interface ValuationCodesResponse {
 }
 
 // ----------------------------------------------------------------------------
+//  Analysis Commons — Market Crowdedness (analysis.market_crowdedness)
+//    Per-(code, sec_type, date) crowdedness curve for indices and
+//    composite industries, built by analysis.market_crowdedness
+//    (database/sql/analysis/29_market_crowdedness.sql). crowdedness_score
+//    = 0.5*concentration + 0.5*flow_change computed from the pool's
+//    dynamic hot set = top 10% of the day's active pool by trading
+//    amount, floored at 5 names. The nav/codes universe is
+//    the FULL classification (stats.sec_classification type='index' +
+//    stats.industry_identity entities), deliberately NOT restricted to
+//    codes with rows; codes outside the pipeline scope (index side =
+//    the 10 study indices) plot close + amount only. Chart rows are
+//    driven by the stats close source (one row per close day) so the
+//    chart always plots the code's close + trading amount; the metric is
+//    LEFT JOINed live.
+// ----------------------------------------------------------------------------
+/** The sec_types the Market Crowdedness page exposes and the pipeline
+ *  is scoped to (no etf/stock — the page toggle lists only these two). */
+export type MarketCrowdednessSecType = "index" | "industry";
+
+/** One daily chart row: stats close + trading amount with the metric
+ *  LEFT JOINed (NULL on dates with no defined crowdedness row). */
+export interface MarketCrowdednessChartRow {
+  /** Trading date (YYYY-MM-DD). */
+  date: string;
+  /** Close price read live from stats (index_basic_stats.close /
+   *  industry_basic_stats.mean_close, pool-'all' slice). */
+  close: number | null;
+  /** Trading amount in yuan, read live from stats
+   *  (index_basic_stats.trading_amount /
+   *  industry_basic_stats.total_trading_amount). NULL when the source
+   *  has no amount on the date. */
+  trading_amount: number | null;
+  /** Market crowdedness (0..1, higher = more crowded) = renormalized
+   *  blend 0.30*concentration_pct + 0.30*flow_pct +
+   *  0.25*comovement_pct + 0.15*valuation_pct over the pillars defined
+   *  on the date; each *_pct reads its pillar against the pool's own
+   *  trailing-250-day history (percentile). NULL on dates with no
+   *  defined row (percentile warm-up, out-of-scope codes). */
+  crowdedness_score: number | null;
+  /** RAW level pillar (0..1): the STABLE hot set's (top 10% by
+   *  60-active-day MEAN amount, min 5 names) share of the pool's
+   *  5-active-day MEAN trading amount. NULL where crowdedness_score is
+   *  NULL. */
+  concentration: number | null;
+  /** RAW flow pillar (0..1): the hot set's share of the pool's gross
+   *  increase of the 5-active-day MEAN amount (sustained multi-day
+   *  inflow). NULL where crowdedness_score is NULL. */
+  flow_change: number | null;
+  /** RAW co-movement pillar (−1..1): mean over the hot set of the
+   *  trailing-120-active-day correlation between the stock's return
+   *  (pct_change, or close/prev_close where unpublished) and the
+   *  pool's leave-one-out equal-weight return. NULL when no hot member
+   *  has a defined correlation. */
+  comovement: number | null;
+  /** RAW valuation pillar (0..1, 0.5 = hot names at the pool median):
+   *  mean over the hot set of each stock's pe cross-sectional
+   *  percentile within the day's active pool. NULL when no hot member
+   *  has a valid pe. */
+  valuation: number | null;
+  /** Turnover-concentration evidence (not a score input): the top 1% of
+   *  the active pool by DAY amount (min 1 name) and their share of the
+   *  day's pool amount. */
+  top1_share: number | null;
+  /** Turnover-concentration evidence: top 5% by DAY amount, share of
+   *  the day's pool amount. */
+  top5_share: number | null;
+  /** Turnover-concentration evidence: top 10% by DAY amount, share of
+   *  the day's pool amount (the pre-2026-11-01 concentration
+   *  definition, kept as evidence). */
+  top10_share: number | null;
+  /** Turnover-concentration evidence: effective traded-name count
+   *  (Σ amt)² / Σ amt² (inverse Herfindahl, 1..active_n) — how many
+   *  names the pool's trading is effectively spread over. */
+  effective_n: number | null;
+  /** concentration vs the pool's own trailing-250-day history
+   *  (percentile, 0..1) — a score input. */
+  concentration_pct: number | null;
+  /** flow_change vs the pool's own trailing-250-day history
+   *  (percentile, 0..1) — a score input. */
+  flow_pct: number | null;
+  /** comovement vs the pool's own trailing-250-day history
+   *  (percentile, 0..1) — a score input; NULL where comovement is
+   *  NULL (the pillar drops out of the blend with its weight). */
+  comovement_pct: number | null;
+  /** valuation vs the pool's own trailing-250-day history (percentile,
+   *  0..1) — a score input; NULL where valuation is NULL. */
+  valuation_pct: number | null;
+  /** Comma-joined display names of the date's hot set (top 10% of the
+   *  active pool by 60-active-day MEAN amount, min 5 names) — tooltip
+   *  evidence. */
+  top_stocks: string | null;
+}
+
+/** Response for GET /api/analysis/market-crowdedness/chart. */
+export interface MarketCrowdednessChartResponse {
+  code: string;
+  name: string;
+  rows: MarketCrowdednessChartRow[];
+}
+
+/** One row of the Market Crowdedness codes list (full universe). */
+export interface MarketCrowdednessCodeRow {
+  code: string;
+  name: string;
+}
+
+/** Response for GET /api/analysis/market-crowdedness/codes. */
+export interface MarketCrowdednessCodesResponse {
+  codes: MarketCrowdednessCodeRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Analysis Commons — Hot Stock Momentum (analysis.hot_stock_momentum)
+//    Per-(code, sec_type, date) hot-stock momentum curve for indices and
+//    composite industries, built by analysis.hot_stock_momentum
+//    (database/sql/analysis/30_hot_stock_momentum.sql). IMPLEMENTATION
+//    PLACEHOLDER (2026-10-31): the pipeline run() is empty — the
+//    momentum column is NULL in every chart row until it lands. The
+//    nav/codes universe is the FULL classification
+//    (stats.sec_classification type='index' + stats.industry_identity
+//    entities), deliberately NOT restricted to codes with rows, so the
+//    page is browsable meanwhile. Chart rows are driven by the stats
+//    close source (one row per close day) so the chart always plots the
+//    code's close + trading amount; momentum is LEFT JOINed live.
+// ----------------------------------------------------------------------------
+/** The sec_types the Hot Stock Momentum page exposes and the pipeline is
+ *  scoped to (no etf/stock — the page toggle lists only these two). */
+export type HotStockMomentumSecType = "index" | "industry";
+
+/** One daily chart row: stats close + trading amount with the metric
+ *  LEFT JOINed (NULL until the pipeline lands). */
+export interface HotStockMomentumChartRow {
+  /** Trading date (YYYY-MM-DD). */
+  date: string;
+  /** Close price read live from stats (index_basic_stats.close /
+   *  industry_basic_stats.mean_close, pool-'all' slice). */
+  close: number | null;
+  /** Trading amount in yuan, read live from stats
+   *  (index_basic_stats.trading_amount /
+   *  industry_basic_stats.total_trading_amount). NULL when the source
+   *  has no amount on the date. */
+  trading_amount: number | null;
+  /** Hot-stock momentum level — NULL on every row until
+   *  analysis.hot_stock_momentum is populated. */
+  momentum: number | null;
+}
+
+/** Response for GET /api/analysis/hot-stock-momentum/chart. */
+export interface HotStockMomentumChartResponse {
+  code: string;
+  name: string;
+  rows: HotStockMomentumChartRow[];
+}
+
+/** One row of the Hot Stock Momentum codes list (full universe). */
+export interface HotStockMomentumCodeRow {
+  code: string;
+  name: string;
+}
+
+/** Response for GET /api/analysis/hot-stock-momentum/codes. */
+export interface HotStockMomentumCodesResponse {
+  codes: HotStockMomentumCodeRow[];
+}
+
+// ----------------------------------------------------------------------------
 //  Security baseline bundle — GET /api/sec-baseline?sec_type=&code=
 //  The ONE shared endpoint behind the shared baseline-plot component
 //  (useSecBaselineBundle → IndexPanel / EtfMarginPanel / StockPanel). The
@@ -2336,7 +2502,7 @@ export interface LinkedEtfName {
 }
 
 // ----------------------------------------------------------------------------
-//  Analysis Commons — Industry Sentiments
+//  Analysis Commons — Market Beta
 //  (member index values rebased-to-100 client-side + server-side mean/var
 //   per pool_size slice, anchored at history start)
 //
@@ -2348,7 +2514,7 @@ export interface LinkedEtfName {
 //    member indices comparable regardless of absolute price level — e.g. CSI
 //    500 (~5500pts) and SSE 50 (~2600pts) plot on a common scale, so a +10%
 //    move on either looks equally large. The LINE rebasing is computed in
-//    the BROWSER (IndustrySentimentsPage.tsx) from raw daily closes.
+//    the BROWSER (MarketBetaPage.tsx) from raw daily closes.
 //
 //    ADDITIONALLY, the server precomputes MEAN and VARIANCE of rebased-to-100
 //    values across member indices, per (date, industry_id, pool_size) slice.
@@ -2368,7 +2534,7 @@ export interface LinkedEtfName {
 //      stats.sec_composition           (stock_num → pool_size classification)
 // ----------------------------------------------------------------------------
 /** One daily close for a member index in an industry. */
-export interface IndustrySentimentsIndexRow {
+export interface MarketBetaIndexRow {
   date: string;
   /** Raw daily close from stats.index_basic_stats.close. NULL when the index
    *  has no row on this date (e.g. not yet listed). The frontend rebases to
@@ -2382,21 +2548,21 @@ export interface IndustrySentimentsIndexRow {
 }
 
 /** One member index's full close time series within an industry. */
-export interface IndustrySentimentsIndex {
+export interface MarketBetaIndex {
   code: string;
   name: string;
   /** Exchange code from stats.sec_classification.exchange. 'HK' for Hong
    *  Kong-linked indices, NULL/empty for mainland. Used by the frontend's
    *  show/hide HK toggle. */
   exchange: string | null;
-  rows: IndustrySentimentsIndexRow[];
+  rows: MarketBetaIndexRow[];
 }
 
 /** One per-date aggregation row for a pool_size slice. mean_close and
  *  var_price are computed across rebased-to-100 close values of member
  *  indices in this pool_size slice on this date (anchored at history start).
  *  mean_pe and total_trading_amount are computed on RAW values (no rebasing). */
-export interface IndustrySentimentsAggRow {
+export interface MarketBetaAggRow {
   date: string;
   pool_size: "small" | "mid" | "large" | "all";
   /** Number of member indices with close data contributing to this slice on
@@ -2419,41 +2585,41 @@ export interface IndustrySentimentsAggRow {
   total_trading_amount: number | null;
 }
 
-/** Response for GET /api/analysis/industry-sentiments/chart?industry_id=...
+/** Response for GET /api/analysis/market-beta/chart?industry_id=...
  *  Returns one entry per member index in the industry (raw close series for
  *  the multi-line plot) PLUS the precomputed mean/var aggregation rows per
  *  pool_size slice (for the overlay) PLUS a set of broad-market benchmark
  *  close series (CSI 300, SSE 50, CSI 1000) for the optional benchmark
  *  dropdown overlay. */
-export interface IndustrySentimentsChartResponse {
+export interface MarketBetaChartResponse {
   industry_id: string;
   industry_label: string;
   /** All indices classified into this industry (stats.sec_classification
    *  type='index' AND industry_id = $1). Indices with no index_basic_stats
    *  rows are omitted (nothing to plot). */
-  indices: IndustrySentimentsIndex[];
+  indices: MarketBetaIndex[];
   /** Precomputed mean/var aggregation rows for this industry, one per
    *  (date, pool_size) — across all 4 pool_size slices. The frontend filters
    *  to the user-selected pool_size for the overlay. Empty when the analysis
    *  hasn't been run yet. */
-  aggregation: IndustrySentimentsAggRow[];
+  aggregation: MarketBetaAggRow[];
   /** Broad-market benchmark close series — CSI 300 (000300), SSE 50
    *  (000016), CSI 1000 (000852). The frontend renders a multi-select
    *  dropdown so the user can tick any subset to overlay (each rebased to
    *  100 at the visible window start, same as member indices). Benchmarks
    *  with no close data are omitted. Empty when no benchmarks have data. */
-  benchmarks: IndustrySentimentsIndex[];
+  benchmarks: MarketBetaIndex[];
 }
 
 // ----------------------------------------------------------------------------
 //  Industry Correlations — windowed pairwise Pearson correlation between
 //  two industries' MA curves of mean_close (stats.industry_basic_stats.
 //  mean_close). Drives the expandable Correlation chart on the
-//  IndustrySentiments page (multi-industry mode only — Correlation button
+//  MarketBeta page (multi-industry mode only — Correlation button
 //  is disabled when fewer than 2 industries are selected).
 //
 //  Source: analysis.industry_correlations (built by the correlations step
-//  of analysis.industry_sentiments). One row per (start_date, pair,
+//  of analysis.market_beta). One row per (start_date, pair,
 //  pool_size, interval) with corr_ma20_20d / corr_ma60_60d /
 //  corr_ma255_255d: corr_ma{W}_{W}d is the Pearson correlation between
 //  the two industries' MA-W curves over the W trading days starting on
@@ -2734,12 +2900,12 @@ export interface PairPctRatiosResponse {
 //  stats.index_basic_stats.
 //
 //  Drives the per-industry attribution bar charts (2nd plot onward) on the
-//  Industry Sentiments page in "Benchmark Attribution" mode. The 1st plot is
+//  Market Beta page in "Benchmark Attribution" mode. The 1st plot is
 //  the benchmark price chart (clickable to pick a date); each subsequent plot
 //  shows the attribution bars for ONE selected industry at the clicked date.
 //
 //  Source: analysis.industry_attributions (built by
-//  analysis.industry_sentiments.attributions — truncate-then-recompute).
+//  analysis.market_beta.attributions — truncate-then-recompute).
 // ----------------------------------------------------------------------------
 /** One row per (industry_id, benchmark_code, date) — pre-materialized in
  *  analysis.industry_attributions. */
@@ -2783,7 +2949,7 @@ export interface IndustryBenchmarkAttributionResponse {
 // ----------------------------------------------------------------------------
 //  Industry Attribution Benchmark list + price chart — drives the benchmark
 //  dropdown and the 1st plot (benchmark price chart, clickable to pick a
-//  date) in "Benchmark Attribution" mode on the Industry Sentiments page.
+//  date) in "Benchmark Attribution" mode on the Market Beta page.
 // ----------------------------------------------------------------------------
 
 /** One entry in the benchmark dropdown — a benchmark index code that appears
@@ -2887,7 +3053,7 @@ export interface IndustryAttributionPriceSeriesResponse {
 //  Industry Hypes & Drains — pre-computed top-5 (HYPE) + bottom-5 (DRAIN)
 //  industries ranked by attribution contribution to a COMPOSITE broad-market
 //  benchmark. Drives the "Hypes & Drains" sub-toggle in "Market Trend" mode
-//  on the Industry Sentiments page.
+//  on the Market Beta page.
 //
 //  GET /api/analysis/industry-hypes-and-drains
 //    ?benchmark_code=000300&period_days=120&date=YYYY-MM-DD
@@ -3235,7 +3401,7 @@ export interface MemberIndexAttributionResponse {
 
 // ----------------------------------------------------------------------------
 //  Industry ETF Contribution — drives the "ETF Contribution" view on the
-//  Industry Sentiments page. Mirrors "Benchmark Attribution" but replaces
+//  Market Beta page. Mirrors "Benchmark Attribution" but replaces
 //  benchmark-indices with ETFs as the unit of analysis.
 //
 //  1st plot: multi-ETF price line chart — each ETF's daily close rebased to
@@ -4053,10 +4219,11 @@ export interface AiAskHistoryItemsResponse {
 
 // ----------------------------------------------------------------------------
 // AI research Q&A (text.llm_qa_by_research, written by
-// llm_agents.llm_qa_by_research's FIVE-request generation flow: four
-// evaluation-dimension requests — intro / return / risks / capitalization —
-// then a 5th summary+label request). The AiPage "Research" feed renders it;
-// answer is the 5th request's SUMMARY (the display content), the four
+// llm_agents.llm_qa_by_research's SIX-request generation flow: five
+// evaluation-dimension requests — intro / optimistic_forecast /
+// pessimistic_forecast / risks / capitalization — then a 6th
+// summary+label request). The AiPage "Research" feed renders it;
+// answer is the 6th request's SUMMARY (the display content), the five
 // dimensions are the expandable detail, and the row's news group is the
 // refs mapping (no per-ref table — text.llm_qa_refs FKs text.llm_qa only).
 // ----------------------------------------------------------------------------
@@ -4104,7 +4271,8 @@ export interface AiQaResearchSource {
  *  are the search echoes of the dimension's own request. */
 export interface AiQaResearchDimensionRefs {
   intro: AiQaRefItem[];
-  return: AiQaRefItem[];
+  optimistic_forecast: AiQaRefItem[];
+  pessimistic_forecast: AiQaRefItem[];
   risks: AiQaRefItem[];
   capitalization: AiQaRefItem[];
 }
@@ -4118,11 +4286,13 @@ export interface AiQaResearchDetail extends Omit<AiQaResearchItem, "answer_snipp
   context: string | null;
   /** Dimension 1 — general investors' logic (null when its request failed). */
   intro: string | null;
-  /** Dimension 2 — returns. */
-  return: string | null;
-  /** Dimension 3 — risks. */
+  /** Dimension 2 — the optimistic-scenario 6-12m forecast. */
+  optimistic_forecast: string | null;
+  /** Dimension 3 — the pessimistic-scenario 6-12m forecast. */
+  pessimistic_forecast: string | null;
+  /** Dimension 4 — risks. */
   risks: string | null;
-  /** Dimension 4 — current market-capital interests. */
+  /** Dimension 5 — current market-capital interests. */
   capitalization: string | null;
   /** Average text.news_digestions sentiment across the row's source
    *  articles that have one (null when none digested yet). */

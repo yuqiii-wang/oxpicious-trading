@@ -8,8 +8,9 @@
  *   • Local  — naive-tokenizes the question into news-taxonomy keywords
  *     (GET /api/news/tokenize → WSL python builds.text.tokenize) and drives
  *     the SAME /api/news/items keyword search the old header keyword bar
- *     drove, with the page's scope/source/author filters applied; the
- *     corpus list + date strip + author chips co-filter.
+ *     drove, with the page's scope/source/author filters applied; when no
+ *     taxonomy keyword matched, the raw question drives the search instead
+ *     (the items API's GIN search_tsv full-text search covers free text).
  *   • Online — live zhihu content search (POST /api/news/search), rendered
  *     by NewsSearchResults in place of the list.
  *
@@ -93,7 +94,7 @@ export default function QuestionSearchBar({
         placeholder="Ask a question — Local searches the corpus / Online searches Zhihu"
         sx={{ flex: 1, minWidth: 260, "& .MuiInputBase-input": { fontSize: "0.8rem" } }}
       />
-      <Tooltip title="Local search — tokenize the question, query the stored corpus with the active Source / Author / classification filters">
+      <Tooltip title="Local search — tokenize the question (taxonomy keywords, full-text fallback) and query the stored corpus with the active Source / Author / classification filters">
         <span>
           <Button
             size="small"

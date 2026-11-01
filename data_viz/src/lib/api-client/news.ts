@@ -110,6 +110,38 @@ export function fetchNewsComments(newsId: number): Promise<NewsCommentsResponse>
   );
 }
 
+/** Response of GET /api/news/search-tokens. */
+export interface NewsSearchTokensResponse {
+  tokens: string[];
+}
+
+/** StructBERT-segment the question into individual search WORDS (WSL python
+ *  _common.tokenization) — the question bar's full-text FALLBACK when the
+ *  taxonomy tokenizer matched nothing: the words drive the same items
+ *  search as separate OR-ed terms (a raw sentence as one term would AND all
+ *  its words in the GIN search_tsv and match nothing). Plain fetch — every
+ *  call may be a fresh segmentation (cached server-side per search string).
+ *  Never throws; failures surface as `{ tokens: [], error }`. */
+export async function fetchNewsSearchTokens(
+  question: string,
+): Promise<NewsSearchTokensResponse & { error?: string }> {
+  const textB64 = btoa(
+    String.fromCharCode(...new TextEncoder().encode(question)),
+  );
+  try {
+    const res = await fetch(
+      `/api/news/search-tokens?text_b64=${encodeURIComponent(textB64)}`,
+    );
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      return { tokens: [], error: body?.error ?? `HTTP ${res.status}` };
+    }
+    return (await res.json()) as NewsSearchTokensResponse;
+  } catch (e) {
+    return { tokens: [], error: String(e) };
+  }
+}
+
 /** Request of POST /api/news/search — live question search (zhihu only). */
 export interface NewsSearchRequest {
   question: string;

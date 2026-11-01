@@ -1,16 +1,17 @@
-"""llm_agents.llm_qa_by_research.prompts — the five-request prompt contract.
+"""llm_agents.llm_qa_by_research.prompts — the six-request prompt contract.
 
-The generation flow (``generation.py``) issues FIVE separate LLM requests
+The generation flow (``generation.py``) issues SIX separate LLM requests
 per research Q&A row:
 
-  * requests 1-4 — one per evaluation dimension (:class:`DimensionSpec`
+  * requests 1-5 — one per evaluation dimension (:class:`DimensionSpec`
     registry ``DIMENSIONS``): each is a dedicated web-searched question
     (``dimension_search_query`` for retrieval, ``dimension_question`` for
     the answer) whose reply lands in its own text.llm_qa_by_research
-    column — intro (general investors' logic), return (returns), risks,
-    capitalization (current market-capital interests);
-  * request 5 — ``summary_system_prompt``: a strict-JSON request that
-    SUMMARIZES the four dimension answers into the row's ``answer`` and
+    column — intro (general investors' logic), optimistic_forecast,
+    pessimistic_forecast, risks, capitalization (current market-capital
+    interests);
+  * request 6 — ``summary_system_prompt``: a strict-JSON request that
+    SUMMARIZES the five dimension answers into the row's ``answer`` and
     assigns the ``logic_label`` (parsed by :func:`parse_summary_json`,
     the news_digestions strict-JSON pattern).
 
@@ -44,7 +45,7 @@ class DimensionSpec:
     search_suffix: str       # retrieval terms appended to the search query
 
 
-# The four evaluation dimensions, in UI/storage order. {subject} in *ask*
+# The five evaluation dimensions, in UI/storage order. {subject} in *ask*
 # is the research question verbatim.
 DIMENSIONS: Tuple[DimensionSpec, ...] = (
     DimensionSpec(
@@ -53,11 +54,21 @@ DIMENSIONS: Tuple[DimensionSpec, ...] = (
              "做什么、处于产业链的什么位置，理解它的一般框架是什么。"),
         search_suffix="基本面 介绍 投资逻辑 产业链"),
     DimensionSpec(
-        key="return", column="return", title="回报来源",
-        ask=("从底层逻辑出发，{subject}的投资回报（收益）来源是什么？"
-             "包括盈利增长、估值重估、分红/股息、息差、量价周期等，"
-             "并说明各来源的驱动因素与成立条件。"),
-        search_suffix="收益来源 回报驱动 盈利 估值 分红"),
+        key="optimistic_forecast", column="optimistic_forecast",
+        title="乐观前景预测",
+        ask=("展望未来6-12个月，{subject}在乐观情景下的前景如何？"
+             "利好条件（政策支持、需求超预期、技术突破、流动性宽松等）"
+             "兑现时的发展路径、回报弹性与主要催化剂，"
+             "并说明乐观情景成立的条件与观察信号。"),
+        search_suffix="前景预测 乐观 展望 催化剂 目标价"),
+    DimensionSpec(
+        key="pessimistic_forecast", column="pessimistic_forecast",
+        title="悲观前景预测",
+        ask=("展望未来6-12个月，{subject}在悲观情景下的前景如何？"
+             "利空条件（需求回落、政策收紧、竞争恶化、流动性收紧等）"
+             "兑现时的下行路径、主要风险暴露与可能的回撤来源，"
+             "并说明悲观情景成立的条件与预警信号。"),
+        search_suffix="前景预测 悲观 下行 风险 看空"),
     DimensionSpec(
         key="risks", column="risks", title="风险因素",
         ask=("{subject}当前最主要的投资风险有哪些？覆盖政策监管、需求回落、"
@@ -145,10 +156,11 @@ def summary_system_prompt(lang: str = "zh") -> str:
         "cyclical=周期（经济与量价周期驱动）、defensive=防御（低波动/避险需求）、"
         "quality=质量（高ROE/护城河/确定性溢价）、theme=主题（题材/政策催化）、"
         "other=其他（以上均不符合）")
-    return ("你是一位严谨的证券研究分析师。给定四个研究维度的要点整理"
-            "（投资逻辑总览/回报来源/风险因素/市值与市场关注），请：\n"
+    return ("你是一位严谨的证券研究分析师。给定五个研究维度的要点整理"
+            "（投资逻辑总览/乐观前景预测/悲观前景预测/风险因素/市值与市场关注），"
+            "请：\n"
             "1. 写一段 3-5 句的总结，概括该行业/标的最主要的投资逻辑、"
-            "回报来源与核心风险，只依据给定材料，不要编造；\n"
+            "多空情景下的前景与核心风险，只依据给定材料，不要编造；\n"
             "2. 从下列逻辑标签中选出最主导的一个，作为 logic_label：\n"
             f"{glosses}。\n"
             "3. 严格只输出一个 JSON 对象，格式："

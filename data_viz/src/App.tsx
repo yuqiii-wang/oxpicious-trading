@@ -19,26 +19,32 @@ import CommonsPage from "@/analysis/pages/CommonsPage";
 import DerivativesPage from "@/analysis/pages/DerivativesPage";
 import CompositesPage from "@/analysis/pages/CompositesPage";
 import OppositeIndustryCorrelationsPage from "@/analysis/pages/Composites/OppositeIndustryCorrelations/OppositeIndustryCorrelationsPage";
-import AiMarketSentimentsPage from "@/analysis/pages/Composites/AiMarketSentiments/AiMarketSentimentsPage";
+import AiMarketQaPage from "@/analysis/pages/Composites/AiMarketQa/AiMarketQaPage";
+import MarketSentimentNewsPage from "@/analysis/pages/Composites/MarketSentimentNews/MarketSentimentNewsPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
-import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
+import MarketBetaPage from "@/analysis/pages/MarketBetaPage";
 import PePage from "@/analysis/pages/PePage";
 import DividendsPage from "@/analysis/pages/DividendsPage";
 import EtfHoldingsPage from "@/analysis/pages/EtfHoldingsPage";
+import MarketCrowdednessPage from "@/analysis/pages/MarketCrowdednessPage";
+import HotStockMomentumPage from "@/analysis/pages/HotStockMomentumPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
 import SignalsPage from "@/analysis/pages/SignalsPage";
+import AiAnalysisPage from "@/analysis/pages/AiPage";
 import RecentMovementsPage from "@/analysis/pages/RecentMovements";
 import HedgePairsPage from "@/analysis/pages/HedgePairs";
 import OptionsSignalsPage from "@/analysis/pages/OptionsSignals";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
 import ServiceMonitorPage from "@/monitor/pages/ServiceMonitor";
 import ExternalResourcesPage from "@/monitor/pages/ExternalResources";
+import AiMonitorPage from "@/monitor/pages/AiMonitor";
 import SrcDataAuditPage from "@/monitor/pages/SrcDataAuditPage";
 import ServiceConfigPage from "@/config/pages/ServiceConfigPage";
 import ExtRequestConfigPage from "@/config/pages/ExtRequestConfigPage";
 import SecStaticsPage from "@/config/pages/SecStaticsPage";
+import KeywordMapsPage from "@/config/pages/KeywordMapsPage";
 import OrchestrationPage from "@/config/pages/OrchestrationPage";
 import { useSecAllocLivePipeline } from "@/live/hooks/useSecAllocLivePipeline";
 import { useTradingSignalsSchedule } from "@/live/hooks/useTradingSignalsSchedule";
@@ -77,10 +83,12 @@ export default function App() {
           <Route path="/analysis" element={<Navigate to="/analysis/commons" replace />} />
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
-          <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
+          <Route path="/analysis/commons/market-beta" element={<MarketBetaPage />} />
           <Route path="/analysis/commons/pe" element={<PePage />} />
           <Route path="/analysis/commons/dividends" element={<DividendsPage />} />
           <Route path="/analysis/commons/etf-holdings" element={<EtfHoldingsPage />} />
+          <Route path="/analysis/commons/market-crowdedness" element={<MarketCrowdednessPage />} />
+          <Route path="/analysis/commons/hot-stock-momentum" element={<HotStockMomentumPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />
           <Route path="/analysis/derivatives/futures" element={<FuturesAnalysisPage />} />
@@ -90,14 +98,24 @@ export default function App() {
             path="/analysis/composites/opposite-industry-correlations"
             element={<OppositeIndustryCorrelationsPage />}
           />
+          {/* The two split sentiments items — separate pages (dirs
+              AiMarketQa / MarketSentimentNews) sharing the composition in
+              Composites/MarketSentiments. The legacy combined slug keeps
+              deep links working via redirect to the AI Q&A page. */}
           <Route
             path="/analysis/composites/ai-market-sentiments"
-            element={<AiMarketSentimentsPage />}
+            element={<Navigate to="/analysis/composites/ai-market-qa" replace />}
+          />
+          <Route path="/analysis/composites/ai-market-qa" element={<AiMarketQaPage />} />
+          <Route
+            path="/analysis/composites/market-sentiment-news"
+            element={<MarketSentimentNewsPage />}
           />
           <Route path="/analysis/signals" element={<SignalsPage />} />
           <Route path="/analysis/signals/recent-movements" element={<RecentMovementsPage />} />
           <Route path="/analysis/signals/hedge-pairs" element={<HedgePairsPage />} />
           <Route path="/analysis/signals/options" element={<OptionsSignalsPage />} />
+          <Route path="/analysis/ai" element={<AiAnalysisPage />} />
           <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
           <Route
             path="/strategy/commons"
@@ -106,11 +124,13 @@ export default function App() {
           <Route path="/strategy/singleton" element={<SingletonStrategyPage />} />
           <Route path="/monitor" element={<ServiceMonitorPage />} />
           <Route path="/monitor/ext-resources" element={<ExternalResourcesPage />} />
+          <Route path="/monitor/ai" element={<AiMonitorPage />} />
           <Route path="/monitor/src-data" element={<SrcDataAuditPage />} />
           <Route path="/config" element={<Navigate to="/config/service" replace />} />
           <Route path="/config/service" element={<ServiceConfigPage />} />
           <Route path="/config/external" element={<ExtRequestConfigPage />} />
           <Route path="/config/security" element={<SecStaticsPage />} />
+          <Route path="/config/keywords" element={<KeywordMapsPage />} />
           <Route path="/config/orchestration" element={<OrchestrationPage />} />
         </Routes>
       </Box>

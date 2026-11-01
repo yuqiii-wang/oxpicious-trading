@@ -8,7 +8,12 @@
  */
 import { queryRows } from "@api/lib/db";
 import { stripExchangeSuffix, matchesExchange } from "@api/lib/classify-etf";
-import { buildIndustryFlatThemes, buildStrategyThemesFromRows } from "@api/services/_shared";
+import {
+  buildIndustryClassifiedThemes,
+  buildIndustryStrategyThemes,
+  buildStrategyThemesFromRows,
+} from "@api/services/_shared";
+import { listIndustryEntityClassRows } from "@api/services/classification-cache.js";
 import { LABEL_CODE } from "@api/services/label-codes";
 import type {
   SectorNode,
@@ -28,12 +33,16 @@ export async function listValuationThemes(
   rawExchange?: string | null,
 ): Promise<SectorNode[]> {
   const secType = normalizeSecType(rawSecType);
-  // Industry: one flat 'INDUSTRY' -> '全部行业' group from the per-code
-  // summary (no sec_classification above the industry entity).
+  // Industry: the entities under their EXISTING classification — L1 sector
+  // → L2 industry tree derived from stats.sec_classification grouped by
+  // industry_id (one entity item per node), restricted to the per-code
+  // summary universe. Exchange is not applicable to an industry entity and
+  // is ignored (as before).
   if (secType === "industry") {
     const rows = await queryRows<DbCodeRow>(buildCodesSql(),
       [LABEL_CODE.sec_type[secType]]);
-    return buildIndustryFlatThemes(rows);
+    const classRows = await listIndustryEntityClassRows(rows.map((r) => r.code));
+    return buildIndustryClassifiedThemes(rows, classRows);
   }
   const exFilter = (rawExchange ?? "").trim() || null;
   const rows = await listPeMetaRows(secType);
@@ -99,8 +108,15 @@ export async function listValuationStrategyThemes(
   rawExchange?: string | null,
 ): Promise<StrategyNode[]> {
   const secType = normalizeSecType(rawSecType);
-  // Industry has no strategy/theme classification — an empty RIGHT column.
-  if (secType === "industry") return [];
+  // Industry: the strategy-primary entity ids (BROAD_*, DIV_*, …) under
+  // their strategy → theme classification — the same grouped-by-industry_id
+  // read as the LEFT column, just the other is_industry_not_strategy side.
+  if (secType === "industry") {
+    const rows = await queryRows<DbCodeRow>(buildCodesSql(),
+      [LABEL_CODE.sec_type[secType]]);
+    const classRows = await listIndustryEntityClassRows(rows.map((r) => r.code));
+    return buildIndustryStrategyThemes(rows, classRows);
+  }
   const exFilter = (rawExchange ?? "").trim() || null;
   const rows = await listPeMetaRows(secType);
 

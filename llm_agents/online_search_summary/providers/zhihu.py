@@ -56,7 +56,7 @@ class ZhihuSearchProvider(BaseOnlineSearchProvider):
 
     SEARCH_URL = ZHIHU_SEARCH_URL
     # The delegated chat provider's model answers the summary prompt.
-    DEFAULT_MODEL = "glm-5.2"
+    DEFAULT_MODEL = "glm-5.3-flash"
 
     def __init__(self, *, chat_provider: Optional[BaseOnlineSearchProvider] = None,
                  base_sleep_sec: float = 2.0, **kwargs: Any) -> None:

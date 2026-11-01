@@ -41,6 +41,9 @@ setup_utf8_stdout()
 
 from _common.build_commons import bulk_upsert_async  # noqa: E402
 from _common.log_setup import setup_logging  # noqa: E402
+from llm_agents._core.text_caps import (  # noqa: E402
+    truncate_context, truncate_summary,
+)
 
 logger = setup_logging("llm_qa")
 
@@ -137,6 +140,12 @@ async def upsert_qa(
     failed_explanation = any(k in answer
                              for k in FAILED_EXPLANATION_KEYWORDS)
 
+    # Store-time caps (llm_agents._core.text_caps): bound the rendered
+    # answer and the never-rendered context passage — after the refusal
+    # derivation, which reads the full text.
+    answer = truncate_summary(answer)
+    context = truncate_context(context)
+
     news_group_id: Optional[int] = None
     if news_ids:
         news_group_id = await ensure_news_group(
@@ -159,6 +168,8 @@ async def upsert_qa(
                 qa_id, answer, context, category, industry_id, sector_id,
                 llm_model, language, is_active, qa_date,
                 failed_explanation, list(request_ids or []))
+            await _refresh_qa_search_tsv(conn, qa_id, question, answer,
+                                         context)
             return qa_id
 
     row = {
@@ -182,7 +193,25 @@ async def upsert_qa(
         f'SELECT qa_id FROM {QA_TABLE} '
         f'WHERE question = $1 AND news_group_id IS NOT DISTINCT FROM $2',
         question, news_group_id)
+    await _refresh_qa_search_tsv(conn, qa_id, question, answer, context)
     return qa_id
+
+
+async def _refresh_qa_search_tsv(conn, qa_id: Optional[int],
+                                 question: str, answer: str,
+                                 context: Optional[str]) -> None:
+    """search_tsv tail (TSV_SPECS): question A, answer B,
+    context D. Unconditional — the update path rewrites the texts, so the
+    tsvector must follow them. Also refreshes the table's high-DF lexeme
+    stats (text.search_lexicon_df — full replace, tiny for this table)."""
+    if qa_id is None:
+        return
+    from _common.tokenization import SearchIndexer
+    await SearchIndexer.get().set_search_tsv_async(conn, QA_TABLE, [{
+        "qa_id": qa_id, "question": question, "answer": answer,
+        "context": context,
+    }])
+    await SearchIndexer.get().refresh_lexicon_df_async(conn, QA_TABLE)
 
 
 async def deactivate_qa(conn, qa_id: int) -> bool:

@@ -40,7 +40,8 @@ import { PAGE_SIZE } from "./constants";
 import { MaSpreadPanel } from "./MaSpreadPanel";
 
 /** Nav trees endpoints per sec_type (all MA-Spread scoped). Industry
- *  renders the flat one-group tree (no classification above the entity). */
+ *  renders the industry entities under their classification (sector →
+ *  industry LEFT, strategy → theme RIGHT). */
 const THEMES_SOURCES: Record<MaSpreadSecType, SecNavThemesSource> = {
   etf: {
     themes: (exchange) => fetchMovAveSpreadThemes("etf", exchange),

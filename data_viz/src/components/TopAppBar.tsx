@@ -74,6 +74,7 @@ const APPS: Record<AppKey, AppConfig> = {
       { label: "Derivatives", path: "/analysis/derivatives" },
       { label: "Composites", path: "/analysis/composites" },
       { label: "Signals", path: "/analysis/signals" },
+      { label: "AI", path: "/analysis/ai" },
     ],
   },
   strategy: {
@@ -90,6 +91,7 @@ const APPS: Record<AppKey, AppConfig> = {
     tabs: [
       { label: "Services", path: "/monitor" },
       { label: "External Resources", path: "/monitor/ext-resources" },
+      { label: "AI", path: "/monitor/ai" },
       { label: "Source Data", path: "/monitor/src-data" },
     ],
   },
@@ -100,6 +102,7 @@ const APPS: Record<AppKey, AppConfig> = {
       { label: "Service", path: "/config/service" },
       { label: "External Resources", path: "/config/external" },
       { label: "Security Classification", path: "/config/security" },
+      { label: "Keywords", path: "/config/keywords" },
       { label: "Orchestration", path: "/config/orchestration" },
     ],
   },

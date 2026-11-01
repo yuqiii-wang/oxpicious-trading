@@ -22,6 +22,11 @@
 export interface ServiceConfigEntry {
   service: string;
   maxParallel: number;
+  /** Optional in-service RUN cap (the deep-agents summary generation
+   *  today): how many of the daemon's own runs may execute in parallel
+   *  inside the ONE process; null = the code default (one at a time).
+   *  Independent of maxParallel, the heartbeat's service-process cap. */
+  maxParallelRuns: number | null;
   includedParallelServices: string[];
   excludedParallelServices: string[];
   /** always | daily | monthly | semiannually | once | occasionally |
@@ -231,4 +236,33 @@ export function fetchOrchestrationConfig(): Promise<{
   tiers: OrchestrationTier[];
 }> {
   return fetch("/api/config/orchestration").then((r) => r.json());
+}
+
+/** One seeded row of static.keyword_maps — the keyword → category map
+ *  (database/sql/static/keyword_maps/ seed files; labels decoded at the
+ *  API boundary). */
+export interface KeywordMapEntry {
+  keyword: string;
+  /** industry | market | broadmarket | skip | adj | adv | adv_noun |
+   *  adv_verb. */
+  category_type: string;
+  /** industry_id, the decoded kw_market / kw_theme label, or null for
+   *  skip and component rows. */
+  category: string | null;
+  category_code: number | null;
+  /** noun | verb | noun_verb | function. */
+  parts_of_speech: string;
+  /** A preceding negator (没有/并未/no/not/…) flips the keyword. */
+  is_negation: boolean;
+  /** zh | en. */
+  language: string;
+}
+
+export function fetchKeywordMaps(): Promise<{
+  success: true;
+  generatedAt: string;
+  count: number;
+  entries: KeywordMapEntry[];
+}> {
+  return fetch("/api/config/keyword-maps").then((r) => r.json());
 }

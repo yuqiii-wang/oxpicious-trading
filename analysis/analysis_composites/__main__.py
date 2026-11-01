@@ -16,7 +16,7 @@ database/sql/analysis/analysis_composites/):
     (overall) correlation, plus the derived opposite score
     (1 - offset_sub_corr) / 2 in [0, 1].
 
-Modes (mirroring analysis.industry_sentiments.corr):
+Modes (mirroring analysis.market_beta.corr):
 
   incremental (default):
     Per benchmark, detects the windows that need (re)computation —

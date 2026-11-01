@@ -5,9 +5,8 @@
  * activates the episode, and the causal resolutions are the sub types:
  * capit = the capitulation trough-break BUY, fail = the failed-reclaim
  * stall SELL (exit timing), reclaim = the full-reclaim continuation
- * BUY. Each sub type renders its PE-conditioned twin beside the plain
- * row (the is_pe_boosted PK axis — the twin's bar word shows the PE
- * gate).
+ * BUY. (The PE-conditioned twin rows left with the 2026-11-01
+ * variant-axes unlink.)
  */
 import type { SignalFamily } from "./index";
 

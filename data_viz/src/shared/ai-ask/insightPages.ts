@@ -1,8 +1,8 @@
 /**
  * INSIGHT_PAGES — the UI mirror of the analysis insight registry's page
  * identities (tab/page slugs of the insight registry —
- * analysis_insights.insight_templates, INSERT-seeded by
- * database/sql/analysis/static/analysis_insights/02..05, the per-tab
+ * analysis_insight_metrics.insight_templates, INSERT-seeded by
+ * database/sql/analysis/static/analysis_insight_metrics/02..05, the per-tab
  * data files — and served by GET /api/analysis-insights/*).
  *
  * Chart authors attach `insight: INSIGHT_PAGES.x` to their AiAskSpec so
@@ -17,7 +17,7 @@ export const INSIGHT_PAGES = {
   peStreaks: { tab: "commons", page: "pe-streaks" },
   dividendsBaseline: { tab: "commons", page: "dividends-baseline" },
   etfHoldings: { tab: "commons", page: "etf-holdings" },
-  sentimentPlot: { tab: "commons", page: "sentiment-plot" },
+  marketBeta: { tab: "commons", page: "market-beta" },
   marketTrend: { tab: "commons", page: "market-trend" },
   // derivatives
   marginComposite: { tab: "derivatives", page: "margin-composite" },
@@ -35,6 +35,8 @@ export const INSIGHT_PAGES = {
   offsetCorrelations: { tab: "composites", page: "offset-correlations" },
   pairHedgeRatio: { tab: "composites", page: "pair-hedge-ratio" },
   benchmarkPrice: { tab: "composites", page: "benchmark-price" },
+  marketQa: { tab: "composites", page: "ai-market-qa" },
+  marketNews: { tab: "composites", page: "market-sentiment-news" },
   // signals
   signalCodeTrend: { tab: "signals", page: "code-trend" },
   signalRules: { tab: "signals", page: "signal-rules" },

@@ -5,10 +5,14 @@
 import type { SectorNode, StrategyNode } from "@shared/types";
 
 /** Security type across all analysis pages — the sec_type toggle value.
- *  "industry" = the composite industry entities (code = industry_id;
- *  no sector/strategy classification above them — their themes source
- *  renders one flat L1 group). */
-export type SecNavSecType = "etf" | "index" | "stock" | "industry";
+ *  "industry" = the composite industry entities (code = industry_id; their
+ *  classification is read THROUGH stats.sec_classification grouped by
+ *  industry_id — LEFT column = industry-primary ids under their sector,
+ *  RIGHT column = strategy-primary ids under their strategy/theme).
+ *  "all" = NO classification scope (market-wide): the nav collapses to the
+ *  Exchange row rendered locked all-selected (every exchange in scope,
+ *  nothing clickable); pages need no themes source for it. */
+export type SecNavSecType = "all" | "etf" | "index" | "stock" | "industry";
 
 /** Themes endpoints for ONE sec_type — a page plugs in its own backend routes. */
 export interface SecNavThemesSource {

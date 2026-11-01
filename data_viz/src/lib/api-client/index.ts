@@ -36,6 +36,7 @@ export {
   fetchNewsComments,
   runNewsSearch,
   fetchNewsTokenize,
+  fetchNewsSearchTokens,
 } from "./news";
 
 export {
@@ -142,6 +143,20 @@ export {
   fetchValuationStrategyThemes,
 } from "./analysis-valuation";
 
+export {
+  fetchMarketCrowdednessCodes,
+  fetchMarketCrowdednessThemes,
+  fetchMarketCrowdednessStrategyThemes,
+  fetchMarketCrowdednessChart,
+} from "./analysis-market-crowdedness";
+
+export {
+  fetchHotStockMomentumCodes,
+  fetchHotStockMomentumThemes,
+  fetchHotStockMomentumStrategyThemes,
+  fetchHotStockMomentumChart,
+} from "./analysis-hot-stock-momentum";
+
 export { fetchSecBaseline } from "./sec-baseline";
 
 export {
@@ -162,14 +177,14 @@ export {
 } from "./analysis-perf-attr";
 
 export {
-  fetchIndustrySentimentsThemes,
-  fetchIndustrySentimentsStrategyThemes,
-  fetchIndustrySentimentsChart,
-  fetchIndustrySentimentsChartByCode,
+  fetchMarketBetaThemes,
+  fetchMarketBetaStrategyThemes,
+  fetchMarketBetaChart,
+  fetchMarketBetaChartByCode,
   fetchIndustryCorrelations,
   runIndustryCorrelationsRefresh,
   INDUSTRY_CORR_RUN_TAG,
-} from "./analysis-industry-sentiments";
+} from "./analysis-market-beta";
 
 export {
   fetchIndustryCorrOffsets,

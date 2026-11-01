@@ -13,6 +13,12 @@ DATES_MAP_TABLE = "stats.cross_stats_dates"
 # main table per request (~30s live). Maintained by _summary.py — see
 # database/sql/stats/15_cross_stats_code_summary.sql.
 SUMMARY_TABLE = "stats.cross_stats_code_summary"
+# Per-(sec_type, benchmark_code, code) rollup of the LATEST
+# code_sec_shared_weight — the sec-alloc-live attribution cs_weight read
+# (was a ~28s DISTINCT ON scan of the main table per request). Maintained
+# by _summary.py — see
+# database/sql/stats/21_cross_stats_benchmark_weight_summary.sql.
+WEIGHT_SUMMARY_TABLE = "stats.cross_stats_benchmark_weight_summary"
 
 # Secondary (sec_type, date) index — NOT in the DDL; post-created by the
 # pipeline after the bulk COPY (a live-maintained index costs far more

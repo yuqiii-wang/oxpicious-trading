@@ -27,6 +27,7 @@ import logging
 from typing import Any, Dict, List, Optional, Sequence
 
 from _common.build_commons import bulk_upsert_async
+from _common.tokenization import SearchIndexer
 
 from builds.text.upsert import NEWS_TABLE
 
@@ -80,7 +81,15 @@ async def upsert_digestions(conn,
     if not rows:
         return 0
     rows = [{c: r.get(c) for c in DIGESTION_COLUMNS} for r in rows]
-    return await bulk_upsert_async(conn, DIGESTIONS_TABLE, rows, ["news_id"])
+    n = await bulk_upsert_async(conn, DIGESTIONS_TABLE, rows, ["news_id"])
+    # search_tsv (TSV_SPECS): summary B. Unconditional — a
+    # re-digestion rewrites the summary, so the tsvector must follow.
+    await SearchIndexer.get().set_search_tsv_async(conn, DIGESTIONS_TABLE, rows)
+    # High-DF lexeme stats follow the tsv write (text.search_lexicon_df —
+    # full replace, tiny for this table).
+    await SearchIndexer.get().refresh_lexicon_df_async(
+        conn, DIGESTIONS_TABLE)
+    return n
 
 
 async def fetch_digestions(

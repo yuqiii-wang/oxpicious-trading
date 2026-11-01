@@ -8,7 +8,7 @@ import type React from "react";
 import type { OhlcMode } from "@/lib/ohlc";
 import type { TrendSpan } from "@/lib/api-client";
 import type {
-  IndustrySentimentsIndex,
+  MarketBetaIndex,
   MarketRegimeSpans,
   SecBoardTag,
   StockDailyRow,
@@ -23,7 +23,7 @@ export type CodeTrendSecType = "etf" | "index" | "stock";
 export type CodeTrendRow = StockDailyRow;
 
 /** Industry-mode payload (`industryId` prop): the industry's member-index
- *  close series — mapped from GET /api/analysis/industry-sentiments/chart.
+ *  close series — mapped from GET /api/analysis/market-beta/chart.
  *  Closes stay RAW (no rebasing); the chart plots one close-price line per
  *  member index on the union date axis. */
 export interface CodeTrendIndustryData {
@@ -31,7 +31,7 @@ export interface CodeTrendIndustryData {
   industry_label: string;
   /** One entry per member index with index_basic_stats rows (the API omits
    *  indices with no close data). */
-  indices: IndustrySentimentsIndex[];
+  indices: MarketBetaIndex[];
 }
 
 /** Result of one code-trend fetch, already mapped to CodeTrendRow[]. */
@@ -70,7 +70,7 @@ export interface CodeTrendChartProps {
   code: string;
   /** INDUSTRY MODE — when set, plot the industry instead of one security:
    *  one RAW close-price line per member index of this industry (fetched
-   *  from /api/analysis/industry-sentiments/chart). The OHLC mode toggle,
+   *  from /api/analysis/market-beta/chart). The OHLC mode toggle,
    *  market-regime shading, board tags and the AI Ask button are
    *  suppressed; windowing is the in-chart dataZoom slider. */
   industryId?: string | null;

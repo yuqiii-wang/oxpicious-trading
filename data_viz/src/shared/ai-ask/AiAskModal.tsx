@@ -27,7 +27,7 @@
  * the control-state + series-tags strips are REPLACED by the page's
  * METRICS TABLE — the
  * metrics of particular interest translated from the insight registry
- * jsonb (analysis_insights.insight_templates), each value resolved
+ * jsonb (analysis_insight_metrics.insight_templates), each value resolved
  * server-side from the analysis tables (Δ vs the previous date) or
  * computed on demand when missing, reacting to the ask's instrument
  * (the classification-nav chosen security) and the as-of date (seeded
@@ -283,7 +283,7 @@ export default function AiAskModal({
   }, [open, dateSelectable, plotInfo]);
 
   // ---- insight metrics table (registered analysis pages) ----
-  // The page's metrics of particular interest (analysis_insights.
+  // The page's metrics of particular interest (analysis_insight_metrics.
   // insight_templates, translated from the registry jsonb) with values
   // resolved server-side — from the analysis tables, or on-demand
   // computed when missing — for the CURRENT instrument (the

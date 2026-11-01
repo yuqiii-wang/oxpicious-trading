@@ -3,6 +3,15 @@ engines._variant_base, 2026-10-27 — the class OOP restructure of the
 flat engines/variants.py): the abstract behind the engines/_pe_boost
 and engines/_ohlcv_boost packages.
 
+DORMANT since the 2026-11-01 variant-axes UNLINK (user-directed "keep
+the pe and ohlcv boosted logic in py, however, offload to unlink from
+the computation ... delete is pe and ohlcv boosted col as from pk"):
+the is_pe_boosted / is_ohlcv_boosted columns left the DB PKs, the
+engines stopped importing the gates, and nothing imports this module —
+the logic is kept for a future re-link. Re-linking means restoring
+run_cells' pe_boosted / ohlcv_boosted row-identity kwargs (removed
+with the axes) beside the engine wiring.
+
 A VariantGate owns ONE boosted-variant axis of the rule tier — the
 is_pe_boosted / is_ohlcv_boosted PK axes (a variant row is a SEPARATE
 row from the plain one; the two populations are measured independently

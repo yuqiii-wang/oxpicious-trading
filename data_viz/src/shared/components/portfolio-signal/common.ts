@@ -445,8 +445,6 @@ export function portfolioMemberToRecord(
     confidence_pct: x.confidence / 100,
     is_day_close_trigger: true,
     regime_state: "all",
-    is_ohlcv_boosted: false,
-    is_pe_boosted: false,
     is_typical: null,
     is_rejection: x.action === "wait",
     count_20d: 0,

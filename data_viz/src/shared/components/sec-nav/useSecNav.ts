@@ -36,7 +36,7 @@ export function useSecNav(options: UseSecNavOptions): SecNavState {
     mutuallyExclusive = true,
   } = options;
 
-  const [secType, setSecType] = useState<SecNavSecType>(defaultSecType);
+  const [secType, setSecTypeState] = useState<SecNavSecType>(defaultSecType);
   const [sectorId, setSectorId] = useState<string | null>(null);
   const [industrySlug, setIndustrySlug] = useState<string | null>(null);
   const [exchange, setExchange] = useState<string | null>("PRIMARY");
@@ -51,8 +51,17 @@ export function useSecNav(options: UseSecNavOptions): SecNavState {
 
   // ---- Reset selection when secType changes -------------------------------
   // Wipes the trees + selection so the user never sees stale data from the
-  // other sec_type while the new sec_type's trees are loading.
-  useEffect(() => {
+  // other sec_type while the new sec_type's trees are loading. Done
+  // SYNCHRONOUSLY inside setSecType (one batched render) — an effect keyed
+  // on secType would only run a render later, and child effects run before
+  // parent effects: useNavDefaults (inside SecClassificationNav) would then
+  // validate the OLD tree against the NEW itemKind in that transient render
+  // and consume its once-guard on a wrong match, blocking the real default
+  // when the new trees land. (The old code pick riding the switch also fired
+  // doomed scope fetches, e.g. `sec_type=all&code=BANKS`.) secType changes
+  // ONLY through this setter, so this is the complete reset.
+  const setSecType = (t: SecNavSecType) => {
+    setSecTypeState(t);
     setSectors([]);
     setStrategies([]);
     setError(null);
@@ -62,7 +71,7 @@ export function useSecNav(options: UseSecNavOptions): SecNavState {
     setStrategyId(null);
     setThemeSlug(null);
     setSearchCode(null);
-  }, [secType]);
+  };
 
   // ---- Load the two navigation trees whenever secType/exchange changes or
   //      refresh is bumped. Both are fetched in parallel; stale sector/

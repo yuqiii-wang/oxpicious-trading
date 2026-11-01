@@ -1,0 +1,11 @@
+{
+  "service": "llm_agents.mcp",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "always",
+  "schedule": "always-on daemon (streamable HTTP on 127.0.0.1:8765/mcp) started by the stream watchdog like the pollers; MCP clients that prefer stdio launch `python -m llm_agents.mcp --stdio` as a subprocess instead",
+  "notes": "MCP server (python -m llm_agents.mcp): read-only DB query tools for MCP clients (db_run_query / db_list_tables / db_describe_table) as the readonly_analytics role, plus the web tools web_search / web_summarize (2026-10-30) — the llm_agents.online_search_summary providers (ZhiPu web search + LLM summary) exposed live so the deep agent can search the open web next to the DB; the web tools persist nothing (text.* storage stays with that package's CLI --store path) and need GLM_ONLINE_SEARCH_KEY in the project .env. Daemon default for the watchdog (stdio exits at EOF with no client attached); --stdio serves one client over stdin/stdout. One instance only — the registration guard auto-exits a second run. Moved 2026-10-29 from repo-root mcp/ to llm_agents/ (module llm_agents.mcp), which also un-shadowed the installed mcp SDK.",
+  "source_ref": "llm_agents/mcp/__main__.py;llm_agents/mcp/readonly_server.py;llm_agents/online_search_summary/providers/registry.py;database/stream_watchdog.py",
+  "updated_at": "2026-10-30T00:00:00.000000+00:00"
+}

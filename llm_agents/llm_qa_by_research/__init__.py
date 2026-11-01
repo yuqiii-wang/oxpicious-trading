@@ -14,7 +14,7 @@ database/sql/text/06_llm_qa_by_research.sql):
 CLI (``python -m llm_agents.llm_qa_by_research``)::
 
     generate --question "…" [--industry BANKS] [--sector FIN]
-             [--model glm-5.2] [--provider zhipu] [--language zh]
+             [--model glm-5.3-flash] [--provider zhipu] [--language zh]
              [--count 8] [--recency noLimit] [--category research]
     add --question "…" --answer "…" --logic-label growth […]
     list [--limit 20] [--all] [--industry …] [--sector …] [--logic-label …]

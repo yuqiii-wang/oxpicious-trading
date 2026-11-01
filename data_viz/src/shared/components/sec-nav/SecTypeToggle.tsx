@@ -16,6 +16,7 @@ interface SecTypeToggleProps {
 }
 
 const LABELS: Record<SecNavSecType, string> = {
+  all: "All",
   etf: "ETF",
   index: "Index",
   stock: "Stock",

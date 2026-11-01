@@ -41,6 +41,7 @@ import {
   fetchNewsItems,
   fetchNewsStrategyThemes,
   fetchNewsThemes,
+  fetchNewsSearchTokens,
   fetchNewsTokenize,
   invalidateCacheForPrefix,
   runNewsSearch,
@@ -82,11 +83,14 @@ export default function NewsPage() {
   //   render disabled only while the Online button is hovered or an online
   //   search is running / its results are shown — TYPING does not touch them
   //   (an unsupported source resolves to the first enabled one at submit).
-  // • LOCAL — the ORIGINAL keyword search: the question is naive-tokenized
-  //   into taxonomy keywords (WSL python), and the token list drives the
-  //   same search param as the old header bar — composed with the active
-  //   scope/source/author filters on every fetch below (search_mode=any:
-  //   OR across tokens).
+  // • LOCAL — taxonomy keyword search with a full-text fallback: the
+  //   question is naive-tokenized into taxonomy keywords (WSL python) and
+  //   the token list drives the same search param as the old header bar
+  //   (search_mode=any: OR across tokens); when NO keyword matched (or the
+  //   tokenizer is down) the raw question drives the search instead — the
+  //   items API now also hits the GIN-indexed search_tsv full-text vector,
+  //   so free Chinese text finds articles by content. Composed with the
+  //   active scope/source/author filters on every fetch below.
   const [questionInput, setQuestionInput] = useState("");
   const [searchRunning, setSearchRunning] = useState(false);
   const [searchResult, setSearchResult] = useState<NewsSearchResponse | null>(null);
@@ -126,13 +130,25 @@ export default function NewsPage() {
     setLocalRunning(true);
     setLocalEmpty(false);
     const { tokens, error } = await fetchNewsTokenize(question);
-    setLocalRunning(false);
-    if (error || tokens.length === 0) {
-      setLocalEmpty(true);
+    if (!error && tokens.length > 0) {
+      setLocalRunning(false);
+      setSearchMode("any");
+      setSearchTerm(tokens.join(" "));
       return;
     }
+    // No taxonomy keyword matched (or the tokenizer is down): search the
+    // question's segmented WORDS instead — the items API's GIN search_tsv
+    // full-text search covers free text where the taxonomy could not. The
+    // words ride as separate OR-ed terms (a raw sentence as one term would
+    // AND all its words and match nothing); a segmentation failure degrades
+    // to the raw question (substring search only).
+    const segmented = await fetchNewsSearchTokens(question);
+    setLocalRunning(false);
+    if (!error) setLocalEmpty(true);
     setSearchMode("any");
-    setSearchTerm(tokens.join(" "));
+    setSearchTerm(
+      segmented.tokens.length > 0 ? segmented.tokens.join(" ") : question,
+    );
   }, [questionInput, localRunning]);
 
   const clearLocalSearch = useCallback(() => {
@@ -367,9 +383,10 @@ export default function NewsPage() {
           />
           {/* Question search bar — directly beneath the classification nav.
               本地 tokenizes the question and drives the keyword search API
-              (with the scope/source/author filters below); 在线 runs the
-              live source search (zhihu for now). The old header keyword bar
-              is merged into this bar's 本地 button. */}
+              (with the scope/source/author filters below), falling back to
+              the raw question's full-text search when no keyword matched;
+              在线 runs the live source search (zhihu for now). The old
+              header keyword bar is merged into this bar's 本地 button. */}
           <QuestionSearchBar
             value={questionInput}
             onChange={setQuestionInput}
@@ -471,7 +488,7 @@ export default function NewsPage() {
               above the date strip so the news dots read against the
               industry's price context. Sector-only / unscoped picks have no
               single industry, so no chart. Fetches the shared
-              industry-sentiments chart endpoint through CodeTrendChart's
+              market-beta chart endpoint through CodeTrendChart's
               industryId mode. */}
           {industryScopeId && (
             <Box sx={{ mb: 1 }}>

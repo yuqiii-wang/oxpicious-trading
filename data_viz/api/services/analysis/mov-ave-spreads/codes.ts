@@ -51,7 +51,8 @@ export interface DbCodeRow extends QueryResultRow {
 }
 
 /** The codes SQL behind listMovAveSpreadCodes — also the industry branch's
- *  flat-themes source in themes.ts (one row per industry code). */
+ *  entity-universe source in themes.ts (one row per industry code; the
+ *  classification trees join it with the grouped sec_classification read). */
 export function buildCodesSql(): string {
   return `
     SELECT

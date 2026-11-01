@@ -19,12 +19,9 @@
  * the regime column carries a ticks menu with its accent dot), the old
  * header tooltips became the shared InfoMark `info` descriptions, and
  * the per-date records expansion (the shared SignalRecordsTable) rides
- * the shared table's caller-owned expansion slot. `showVariantFlags`
- * appends the PE / OHLCV population-variant columns (after Signal, in
- * the main table AND the per-date expansion — the Short-Term Tech
- * surfaces; the PE-gated variant is a history_signals PK member, so a
- * plain and a PE-gated record of the same sub type distinguish only
- * through these flags).
+ * the shared table's caller-owned expansion slot. (The PE / OHLCV
+ * population-variant columns were removed 2026-11-01 with the
+ * variant-axes unlink — every event IS the plain record.)
  */
 import { useCallback, useMemo, type ReactNode } from "react";
 import {
@@ -58,10 +55,6 @@ export interface SignalHistoryPanelProps {
    *  the caption — family-specific context that belongs WITH the
    *  history. */
   headerExtra?: ReactNode;
-  /** Append the PE / OHLCV population-variant columns after Signal —
-   *  in the main table (the day's representative record's flags) AND
-   *  the per-date expansion (every record's). Default false. */
-  showVariantFlags?: boolean;
 }
 
 /** One rendered row = one signal DATE: the representative (the day's
@@ -77,32 +70,14 @@ interface DateGroupRow {
  *  shared per-config records table. Module scope (pure over the group):
  *  the expandedContent prop stays identity-stable for the memoized
  *  shared table. */
-function dateRecords(g: DateGroupRow, showVariantFlags: boolean): ReactNode {
+function dateRecords(g: DateGroupRow): ReactNode {
   return (
     <Box sx={{ p: 1 }}>
       <SignalRecordsTable
         caption={`All signals on ${g.date} · ${g.group.length} record${g.group.length === 1 ? "" : "s"}`}
         rows={g.group}
         showTime
-        showVariantFlags={showVariantFlags}
       />
-    </Box>
-  );
-}
-
-/** One population-variant flag cell — a green ✓ when the day's
- *  representative record carries the variant, a muted dash on the plain
- *  population. */
-function VariantFlag({ on }: { on: boolean }) {
-  return (
-    <Box
-      component="span"
-      sx={{
-        color: on ? "success.main" : "text.disabled",
-        fontWeight: on ? 600 : 400,
-      }}
-    >
-      {on ? "✓" : "–"}
     </Box>
   );
 }
@@ -112,7 +87,6 @@ export default function SignalHistoryPanel({
   expandedDate,
   onExpandedDateChange,
   headerExtra,
-  showVariantFlags = false,
 }: SignalHistoryPanelProps) {
   const theme = useTheme();
 
@@ -187,28 +161,6 @@ export default function SignalHistoryPanel({
           </Box>
         ),
       },
-      ...(showVariantFlags
-        ? [
-            {
-              key: "pe_boosted",
-              label: "PE boosted",
-              align: "center" as const,
-              info: docs.text("ui.signal-history.col.pe-boosted"),
-              render: (g: DateGroupRow) => (
-                <VariantFlag on={g.rep.is_pe_boosted} />
-              ),
-            },
-            {
-              key: "ohlcv_boosted",
-              label: "OHLCV boosted",
-              align: "center" as const,
-              info: docs.text("ui.signal-history.col.ohlcv-boosted"),
-              render: (g: DateGroupRow) => (
-                <VariantFlag on={g.rep.is_ohlcv_boosted} />
-              ),
-            },
-          ]
-        : []),
       {
         key: "action",
         label: "Action",
@@ -300,13 +252,13 @@ export default function SignalHistoryPanel({
         ),
       },
     ];
-  }, [docs, theme, showVariantFlags]);
+  }, [docs, theme]);
 
-  // The expansion slot closes over the variant-flag pick — memoized so
-  // the shared table's expandedContent prop stays identity-stable.
+  // The expansion slot — memoized so the shared table's expandedContent
+  // prop stays identity-stable.
   const expandedContent = useCallback(
-    (g: DateGroupRow) => dateRecords(g, showVariantFlags),
-    [showVariantFlags],
+    (g: DateGroupRow) => dateRecords(g),
+    [],
   );
 
   return (

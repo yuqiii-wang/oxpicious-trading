@@ -48,7 +48,15 @@ export type LabelDomain =
   | 'portfolio_sub_type'
   | 'roof_floor_method'
   | 'rf_rebound_outcome'
-  | 'research_logic';
+  | 'research_logic'
+  | 'prompt_type'
+  | 'agent_context_kind'
+  | 'search_table'
+  | 'kw_category_type'
+  | 'kw_market'
+  | 'kw_pos'
+  | 'kw_language'
+  | 'kw_theme';
 
 /** label -> code, per domain (mirror of static.label_dim). */
 export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
@@ -68,8 +76,8 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // hp_entry_legs_rsi / hp_exit_mkt_high / hp_catchup_rsi_hi
   signal_type: { mov_rsi: 0, bollinger: 1, ma_cross: 2, options_wall: 3, options_vix: 4, momentum: 5, rf_break: 6, hedge_pairs: 7, hp_rsi: 8,
     // rebound (9, 2026-10-26): the drop→rebound→resolution family —
-    // the ma-spread rebound study's graduates as rule cells, each in a
-    // plain and a PE-conditioned variant (the is_pe_boosted PK axis)
+    // the ma-spread rebound study's graduates as rule cells (the
+    // PE-conditioned variant half unlinked 2026-11-01)
     rebound: 9,
     // macd (10, 2026-10-26): the classic MACD crossover family — the
     // typical-EMA study's product (classic 12/26/9 spans; ema12/ema26
@@ -437,8 +445,7 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     // drop→rebound→resolution sub types per anchor window —
     // capit = the capitulation trough-break BUY, fail = the failed
     // reclaim SELL (the stall at 0.90–1.0 recovery), reclaim = the
-    // full-reclaim continuation BUY; each emits plain +
-    // PE-conditioned cells (is_pe_boosted)
+    // full-reclaim continuation BUY
     rebound_capit_60: 5900,
     rebound_capit_255: 5901,
     rebound_fail_60: 5902,
@@ -550,6 +557,104 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     quality: 6,
     theme: 7,
     other: 99,
+  },
+  // text.ai_prompts.prompt_type — the prompt row's role in a deep-agent
+  // run: 0 system = the run's standing prompt, 1 skills = an approach
+  // instruction (the UI Skills picker's rows), 2 plan = a
+  // generation-plan prompt, 3 internal = the agent's own machinery
+  // prompt (seeded from the Python constants, hidden from the picker).
+  // Second text.* LLM-layer enum converted (2026-10-29)
+  prompt_type: { system: 0, skills: 1, plan: 2, internal: 3 },
+  // text.deep_agent_contexts.kind — which payload a context row carries.
+  // Code order = the run's data flow: the plan node's plan JSON, each
+  // step's input notes and tick result note, a spawned subagent's final
+  // answer, and the runner's HARDCODED result node's fixed output (the
+  // run's final answer document — the UI Result view's display source).
+  // Third text.* LLM-layer enum converted (2026-10-31)
+  agent_context_kind: {
+    plan: 0,
+    'step-input': 1,
+    'step-result': 2,
+    'subagent-result': 3,
+    'final-result': 4,
+  },
+  // text.search_lexicon_df.search_table — which searchable table a
+  // high-DF lexeme row's document frequency counts (the >= 25%-DF set
+  // MCP text_search reads to pick its ranking strategy). Code order =
+  // TSV_SPECS order (_common/tokenization/search_indexing.py).
+  search_table: {
+    news: 0,
+    news_comments: 1,
+    news_digestions: 2,
+    llm_qa: 3,
+    llm_qa_by_ask: 4,
+    llm_qa_by_research: 5,
+  },
+  // static.keyword_maps — the seeded keyword → category map for news-text
+  // auditing (2026-11-01). category_type picks the family; category_code
+  // decodes via kw_market (market-state description: 下跌 → px_dn, 放量 →
+  // vol_up, …) or kw_theme (macro-policy theme) depending on the type.
+  // skip (3) = the low-semantic function-word vocabulary (其实/也/就是说;
+  // the/a/of — en rows carry language=1) the search-index tokenization
+  // drops — never extracted, both target columns NULL. 4..7 (adj / adv /
+  // adv_noun / adv_verb) = the grammatical modifier components (大幅/强势/
+  // 高位/持续) the keyword n-gram matcher composes with the market verbs —
+  // kept in token streams, never extracted, both target columns NULL.
+  kw_category_type: {
+    industry: 0,
+    market: 1,
+    broadmarket: 2,
+    skip: 3,
+    adj: 4,
+    adv: 5,
+    adv_noun: 6,
+    adv_verb: 7,
+  },
+  kw_market: {
+    px_up: 0,
+    px_dn: 1,
+    sharp_up: 2,
+    sharp_dn: 3,
+    gap_up: 4,
+    gap_dn: 5,
+    limit_up: 6,
+    limit_dn: 7,
+    rebound: 8,
+    pullback: 9,
+    vol_up: 10,
+    vol_dn: 11,
+    divergence: 12,
+    bullish: 13,
+    bearish: 14,
+    volatile: 15,
+    mood: 16,
+    position: 17,
+    break_up: 18,
+    break_dn: 19,
+  },
+  // static.keyword_maps.parts_of_speech — the keyword's dominant lexical
+  // class: verb = predicates (incl. adjectives), noun_verb = dual-class
+  // words (回调 as "a pullback" / "to pull back"), noun = things,
+  // function = 虚词 (the skip rows' adverbs/conjunctions/particles).
+  kw_pos: { noun: 0, verb: 1, noun_verb: 2, function: 3 },
+  // static.keyword_maps.language — the keyword's language: the seed files
+  // default to zh; the English rows in statics/08_seed_english.sql carry
+  // en explicitly.
+  kw_language: { zh: 0, en: 1 },
+  kw_theme: {
+    economy: 0,
+    monetary: 1,
+    fiscal: 2,
+    trade: 3,
+    reform: 4,
+    employment: 5,
+    environment: 6,
+    demographic: 7,
+    investment: 8,
+    consumption_macro: 9,
+    prices: 10,
+    industrial_policy: 11,
+    financial_stability: 12,
   },
 };
 

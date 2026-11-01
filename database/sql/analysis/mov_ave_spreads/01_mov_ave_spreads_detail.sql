@@ -39,13 +39,10 @@
 -- ============================================================================
 
 -- Drop any prior version so a re-run rebuilds the table from the CREATE
--- below (data is repopulated by the pipeline --force runs). Also remove
--- stale analysis_identity rows: 'etf_mov_ave_spread' (the retired
--- ETF-only predecessor) and 'mov_ave_rebounds' (a retired sibling
--- analysis whose registration row outlived its table).
+-- below (data is repopulated by the pipeline --force runs); also remove
+-- the stale analysis_identity row so the registration starts clean.
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'etf_mov_ave_spread';
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rebounds';
+DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spreads_detail';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_detail  (WIDE format)

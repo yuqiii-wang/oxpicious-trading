@@ -7,9 +7,7 @@
 import type { SignalRule } from "@/lib/api-client";
 
 export const ruleCellKey = (r: SignalRule): string =>
-  `${r.signal_sub_type}|${r.trend}|${r.regime_state}|${r.action}`
-  + `|${r.is_pe_boosted ? "pe" : "plain"}`
-  + `|${r.is_ohlcv_boosted ? "boost" : "plain"}`;
+  `${r.signal_sub_type}|${r.trend}|${r.regime_state}|${r.action}`;
 
 const fmtPct = (v: number): string => {
   const s = (v * 100).toFixed(v * 100 % 1 === 0 ? 0 : 2).replace("-", "−");
@@ -21,48 +19,20 @@ const fmtPct = (v: number): string => {
 const fmtNum = (v: number): string =>
   Number.isInteger(v) ? String(v) : String(v).replace("-", "−");
 
-/** The is_pe_boosted axis's gate suffix (the shared variants module's
- *  bar_def.pe_gate — the rebound study's capitulation barbell /
- *  outside-cheap vocabulary; any family's bar word carries it). */
-function peGateSuffix(pe: unknown): string {
-  if (!pe || typeof pe !== "object") return "";
-  const rec = pe as Record<string, unknown>;
-  const rule = String(rec.rule ?? "");
-  return rule === "extremes"
-    ? ` · PE ≤${fmtNum(Number(rec.cheap_below))} or ≥${
-      fmtNum(Number(rec.rich_above))}`
-    : rule === "not_cheap"
-      ? ` · PE ≥${fmtNum(Number(rec.min))}`
-      : " · PE gate";
-}
-
-/** The is_ohlcv_boosted axis's gate suffix (bar_def.ohlcv_gate — the
- *  turnover-climax confirmation: the day's amount ≥ the min grade ×
- *  its 255d MA). */
-function ohlcvGateSuffix(g: unknown): string {
-  if (!g || typeof g !== "object") return "";
-  const rec = g as Record<string, unknown>;
-  const min = typeof rec.min_code === "number" ? rec.min_code : null;
-  return min == null ? " · AMT boost"
-    : min >= 2 ? " · AMT ≥2.5× climax"
-      : " · AMT ≥1.5× heavy";
-}
-
 /** The breach-bar display word from the cell's rule_params.bar_def —
  *  each family's own bar vocabulary, read defensively (unknown kinds
- *  fall back to the raw def), plus the shared variant-axes' gate
- *  suffixes. Pure; exported for reuse/tests. */
+ *  fall back to the raw def). Pure; exported for reuse/tests. (The
+ *  shared variant-axes' gate suffixes — bar_def.pe_gate /
+ *  bar_def.ohlcv_gate — left the rows with the 2026-11-01
+ *  variant-axes unlink.) */
 export function ruleBarLabel(barDef: Record<string, unknown> | undefined):
   string {
   if (!barDef || typeof barDef !== "object") return "—";
-  return baseBarWord(barDef)
-    + peGateSuffix(barDef.pe_gate)
-    + ohlcvGateSuffix(barDef.ohlcv_gate);
+  return baseBarWord(barDef);
 }
 
-/** The family bar word without the shared variant suffixes (the
- *  ruleBarLabel wrapper appends those from bar_def.pe_gate /
- *  .ohlcv_gate on every kind). */
+/** The family bar word (the variant suffixes the wrapper once appended
+ *  left with the 2026-11-01 variant-axes unlink). */
 function baseBarWord(barDef: Record<string, unknown>): string {
   const kind = String(barDef.kind ?? "");
   const num = (k: string): number | null => {
@@ -299,9 +269,7 @@ function baseBarWord(barDef: Record<string, unknown>): string {
     }
     // the rebound family (2026-10-26): the drop→rebound→resolution
     // cells — the drop bar (min_drop_pct below the trailing-Wd high)
-    // resolved by capit / fail / reclaim; the PE-conditioned twin's
-    // gate word rides the shared pe_gate suffix (the is_pe_boosted
-    // axis)
+    // resolved by capit / fail / reclaim
     case "rebound_resolution": {
       const d = num("min_drop_pct");
       const win = num("window");

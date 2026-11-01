@@ -11,9 +11,12 @@ description: >
   sub signal, trend, regime, action) RULE CELLS written to
   analysis_signals.signal_rules (rule_params = the prepared bar +
   the gate/confidence constants; the measured evidence lives on the
-  dated snapshots; the is_pe_boosted PK member — 2026-10-26 — puts a
-  PE-conditioned variant of a rule in a SEPARATE row from the
-  unconstrained one), populates
+  dated snapshots; the is_pe_boosted / is_ohlcv_boosted PK members —
+  2026-10-26 — put a PE-conditioned / turnover-climax variant of a
+  rule in a SEPARATE row from the unconstrained one, UNLINKED
+  2026-11-01: the columns left the schema + emitters, the gate logic
+  stays dormant in engines/_variant_base + _pe_boost/_ohlcv_boost),
+  populates
   analysis_signals.history_signals by REPLAYING those cells (episode
   FIRST days, delay 0), and stamps the family-agnostic
   analysis.trend_days store (the consolidated analysis.trends
@@ -311,11 +314,9 @@ never a detection, no per-family logic (the rules-era rewire of
   only since 2026-10-19 — under-floor cells are trading rows now) —
   observational records are never a live bar; the is_in_portfolio
   tier rows are excluded too (the sourced tier fires only inside its
-  portfolio coordination), and so are the SHARED VARIANT-AXIS cells
-  (2026-10-26: is_pe_boosted / is_ohlcv_boosted TRUE — the live
-  breach check has no PE / turnover condition machinery, so a variant
-  cell would fire its bar without the confirmation; their events live
-  in the history tier only).
+  portfolio coordination). The SHARED VARIANT-AXIS exclusion
+  (2026-10-26: is_pe_boosted / is_ohlcv_boosted TRUE) ended with the
+  2026-11-01 axis unlink — no variant cells exist to exclude.
 - Each cell carries its own action, bar_def (resolved per check:
   bollinger's fixed ±kσ constant; mov_rsi's per-code ADAPTIVE
   trailing-2550d percentile tail recomputed at check time over the
@@ -402,17 +403,21 @@ never a detection, no per-family logic (the rules-era rewire of
 7. The boost is a TRUST-WEIGHTED MEASUREMENT, never a gate on the
    PLAIN rows: since 2026-10-20 the measurement leaves only the
    per-run DERIVATION AUDIT (the per-cell ohlcv_boost_conf stamp
-   retired with its column). SINCE 2026-10-26 (user-directed "create
-   shared pe and ohlcv logic ... use them where possible or
-   relevant") the OHLCV boost is ALSO a VARIANT axis again — the
-   turnover-climax-confirmed population on the is_ohlcv_boosted PK
-   (the engines/_pe_boost + engines/_ohlcv_boost packages over
-   engines/_variant_base.py, the shared PE + OHLCV variant gates;
-   rf_break deep legs + bollinger opted in, rebound carries the PE
-   variants) — a SEPARATE row set judged independently by the same
-   measured gate (a variant below the bar emits nothing), the plain
-   rows stay the population of record, and the variant cells never
-   fire live (excluded from the active set).
+   retired with its column; the OHLCV_BOOST class flag drives it —
+   it NEVER generates rows). The VARIANT-AXIS generation
+   (2026-10-26: the turnover-climax / PE-conditioned populations on
+   the is_ohlcv_boosted / is_pe_boosted PK members, the shared
+   engines/_variant_base + _pe_boost/_ohlcv_boost gates, bollinger +
+   rf_break + rebound emitting) was UNLINKED 2026-11-01
+   (user-directed "keep the pe and ohlcv boosted logic in py,
+   however, offload to unlink from the computation ... delete is pe
+   and ohlcv boosted col as from pk; remove import from py, and do
+   not show the is pe and ohlcv boosted cols from UI signal
+   tables"): the columns left all three tables' PKs (the variant
+   rows purged first — on the reduced PK they collide with their
+   plain twins), the engines stopped importing the gates (the
+   packages stay dormant for a re-link), and the UI/API dropped the
+   variant columns. Every row is the PLAIN population again.
 8. STARVED cells TRADE (2026-10-19, retiring the 2026-10-16 wait
    replay): the sample floor is the confidence reference, not a
    verdict — a cell under its floor emits its REAL action at the
@@ -1267,3 +1272,38 @@ never a detection, no per-family logic (the rules-era rewire of
   passed, zero new fallback signatures, incremental skip verified on
   the new horizon. Knowledge doc 10_macd.sql re-seeded under the new
   static/signal_rules/ tree (static.signal_rules_docs).
+- 2026-11-01: the VARIANT-AXES UNLINK (user-directed "keep the pe and
+  ohlcv boosted logic in py, however, offload to unlink from the
+  computation, i.e., from sql delete is pe and ohlcv boosted col as
+  from pk; remove import from py, and do not show the is pe and ohlcv
+  boosted cols from UI signal tables"). The is_pe_boosted /
+  is_ohlcv_boosted BOOLEANs left all THREE tables (signal_rules /
+  history_signals / history_signal_performance — temp_scripts/
+  apply_unlink_variant_axes.py purged the 266 rules / 1,359 events /
+  1,121 snapshots variant rows FIRST (on the reduced PK they would
+  collide with their plain twins), then dropped the columns and
+  reduced the PKs in the same statement; the docs seeds
+  50_ui_column_docs.sql + 09_rebound.sql re-applied). run.py's
+  RULES_PK / HISTORY_PK / PERF_PK + the perf_rows builder, the
+  run_cells pe_boosted / ohlcv_boosted kwargs + the row/params
+  stamps, and the audit's variant cell-key members all dropped; the
+  three emitter engines (boll_std / rf_break / rebound) lost the
+  gate imports + the variant run_pass wiring — the shared gate
+  packages (engines/_variant_base + _pe_boost/_ohlcv_boost) and the
+  config constants STAY on disk dormant for a re-link (their
+  docstrings record the state; re-linking restores run_cells' row
+  kwargs beside the engine wiring). The live active-set fetch
+  dropped its NOT is_pe_boosted / NOT is_ohlcv_boosted conditions;
+  the API service dropped the column projections, the dedup
+  partitions, the LATERAL performance equi-keys and the
+  cell_signals resolver's flag key; the UI dropped the PE / OHLCV
+  boosted columns (SignalHistoryPanel / SignalRecordsTable + the
+  showVariantFlags plumbing), the ruleCellKey flag suffixes, the
+  bar-word gate suffixes, the ruleDetails boost row, and the client
+  type fields. Force rebuilds (index): bollinger 88 cells / 397
+  events, rf_break 207 / 1,198, rebound 60 / 321, mov_rsi 216 / 674
+  — every run "[audit] all consistency checks passed", only the
+  pre-existing Rolling.quantile fallback lines. API verified on all
+  four trading-signals endpoints (rules / history / day view /
+  portfolio-history), the UI verified on the Short-Term Tech panel
+  (main + expansion tables without the variant columns).

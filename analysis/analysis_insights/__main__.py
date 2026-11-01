@@ -11,7 +11,7 @@
       the ai-ask payload marker pattern).
 
 The registry itself lives in the per-tab INSERT files beside the DDL
-(database/sql/analysis/static/analysis_insights/02..05 — apply them to
+(database/sql/analysis/static/analysis_insight_metrics/02..05 — apply them to
 re-sync insight_templates; the former json→python seed subcommand is
 retired with the SQL-first migration).
 

@@ -22,7 +22,7 @@
 \ir mov_ave_spreads/08_mov_ave_high_low_pct_streaks.sql
 \ir mov_ave_spreads/09_mov_ave_spreads_detail_ohlc_gaps.sql
 \ir mov_ave_spreads/10_mov_ave_spreads_codes.sql
-\ir 05_industry_sentiments.sql
+\ir 05_market_beta.sql
 \ir 06_industry_member_index_map.sql
 \ir 08_industry_hypes_and_drains.sql
 \ir 09_industry_hypes_seasonal.sql

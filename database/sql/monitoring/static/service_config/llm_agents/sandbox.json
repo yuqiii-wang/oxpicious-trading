@@ -1,0 +1,11 @@
+{
+  "service": "llm_agents.sandbox",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "always",
+  "schedule": "always-on daemon (streamable HTTP on 127.0.0.1:8789/mcp) started by the stream watchdog like the pollers; MCP clients that prefer stdio launch `python -m llm_agents.sandbox --stdio` as a subprocess instead",
+  "notes": "Docker py-sandbox MCP middleware (python -m llm_agents.sandbox): delegates LLM-generated files into the oxpicious-py-sandbox docker container (compose service py-sandbox, sagacient/cutepandas py3.12 stack) — tools sandbox_new_session / sandbox_write_file / sandbox_run / sandbox_read_file / sandbox_list_files / sandbox_health over the container's runner API (llm_agents/sandbox/runner.py, HTTP 127.0.0.1:8788). Replaces the former local subprocess sandbox of llm_agents.deep_agents.core.sandbox (2026-10-31), which is now a thin MCP client of this middleware. LIVENESS (sandbox must be live as always): (1) this daemon — watchdog-supervised via this heartbeat row; (2) the container — compose restart: unless-stopped + HEALTHCHECK, plus this middleware's last-mile `docker start oxpicious-py-sandbox` self-heal when the runner API is unreachable. One instance only — the registration guard auto-exits a second run.",
+  "source_ref": "llm_agents/sandbox/__main__.py;llm_agents/sandbox/server.py;llm_agents/sandbox/docker_api.py;llm_agents/sandbox/runner.py;llm_agents/sandbox/Dockerfile;database/docker-compose.yml;database/stream_watchdog.py",
+  "updated_at": "2026-10-31T00:00:00.000000+00:00"
+}

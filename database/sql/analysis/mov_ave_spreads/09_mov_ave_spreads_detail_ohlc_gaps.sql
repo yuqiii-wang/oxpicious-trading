@@ -106,13 +106,6 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ohlc_gaps (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
 SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail_ohlc_gaps', 16);
 
--- 2026-09-27 pattern block: idempotent ADDs for existing installations
--- (fresh installs create the columns above). Existing rows stay NULL
--- until the next incremental / --force run of analysis.mov_ave_spread.
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps ADD COLUMN IF NOT EXISTS uw_top10 BOOLEAN;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps ADD COLUMN IF NOT EXISTS lw_top10 BOOLEAN;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps ADD COLUMN IF NOT EXISTS pattern TEXT;
-
 -- The pattern vocabulary (NULL = unknown anatomy — passes the CHECK).
 SELECT public.ensure_check_constraint(
     'analysis.mov_ave_spreads_detail_ohlc_gaps',
@@ -121,19 +114,6 @@ SELECT public.ensure_check_constraint(
                      'gap_down_advance', 'gap_down_decline',
                      'spike_fade', 'flush_recover', 'neutral')$chk$);
 SELECT public.validate_pending_checks('analysis');
-
--- 2026-09-27 EMA5 removal: the 8 per-gap EMA5 smoothing columns were
--- never consumed downstream (no view / analysis / UI reads them) —
--- dropped here so existing installations lose the columns; fresh
--- installs never create them.
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps DROP COLUMN IF EXISTS ema5_gap_open;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps DROP COLUMN IF EXISTS ema5_intra;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps DROP COLUMN IF EXISTS ema5_uw;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps DROP COLUMN IF EXISTS ema5_lw;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps DROP COLUMN IF EXISTS ema5_rng;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps DROP COLUMN IF EXISTS ema5_up_gap;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps DROP COLUMN IF EXISTS ema5_dn_gap;
-ALTER TABLE analysis.mov_ave_spreads_detail_ohlc_gaps DROP COLUMN IF EXISTS ema5_close_pos;
 
 COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc_gaps IS 'OHLC intraday gap detail (WIDE format): one row per (code, sec_type, date) with 8 raw daily OHLC gap columns. ESTIMATED-DATA EXCLUSION: source rows with is_ohl_estimated TRUE are excluded entirely; close-less rows (close IS NULL) never reach the frame (parent fetch filter); prev_close references the last VALID close per (sec_type, code) (overnight legs never cross a synthetic row). prev_close = previous valid close ordered by date (ETFs: adjusted close — COALESCE(adj_close, close); total-return gaps). gap_open = open/prev_close - 1 (overnight leg, 高开/低开); intra = close/open - 1 (intraday leg, 高走/低走); uw = (high - GREATEST(open, close))/prev_close (upper wick, 冲高回落); lw = (LEAST(open, close) - low)/prev_close (lower wick, 探底回升); rng = (high - low)/prev_close (daily range); up_gap = (high - close)/close; dn_gap = (close - low)/close; close_pos = (close - low)/(high - low) (NULL when high = low). All gaps are signed fractions; NULL when any input is NaN or the denominator is zero/denormalized (|den| < 1e-12). Feature set from the 2026-09 OHLC studies (temp_scripts/study_ohlc_gap_vs_extreme.py, study_ohlc_patterns.py). Source: same DataFrame as the mov_ave_spread parent pipeline (no second DB round-trip) with the estimated-row filter applied by the step. 2026-09-27 pattern block: uw_top10 / lw_top10 (wick >= the code''s trailing-252d 90th percentile, >= 120 obs) + pattern (spike_fade / flush_recover / the gap_up-gap_down advance-decline quadrants / neutral; NULL = unknown anatomy) — computed on unrounded values, consumed by the analysis_signals ohlcv-boost weights (analysis/analysis_signals/engines/ohlcv_boost) and the MA-Spread Top-10% OHLC Days chart group.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc_gaps.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry).';

@@ -70,7 +70,7 @@
 --                                stocks from the LATEST stats.sec_composition
 --                                snapshot (source_type='index',
 --                                temporal-extrapolation — same snapshot used
---                                for all dates, mirroring industry_sentiments),
+--                                for all dates, mirroring market_beta),
 --                                w_s = weight_pct_s / 100 (0..1), dps_s_t =
 --                                trailing-12m DPS of stock s, and close_s_t =
 --                                stock s's close on the date (both per-share).
@@ -186,30 +186,6 @@ ON CONFLICT (name) DO UPDATE SET
     summary_name      = EXCLUDED.summary_name,
     last_run_datetime = NOW(),
     description       = EXCLUDED.description;
-
-DELETE FROM analysis.analysis_identity WHERE name = 'pe_and_dividends';
-
--- ============================================================================
---  PE & Dividend Stats — REMOVED (2026-09-28).
---
---  The former ANNUAL 10-year rolling stats snapshot tables
---  (analysis.pe_stats + analysis.dividends_stats — the 2026-09 split of
---  the combined analysis.pe_and_dividend_stats) are retired: their only
---  consumer was the UI's "Dividend Stats (10y rolling)" card on the
---  PE & Dividend page, which is gone. The daily tables above
---  (analysis.pe / analysis.dividends) and the monthly bands / streaks
---  tables below are unaffected.
--- ============================================================================
-
--- Drop the stats tables + their legacy combined predecessor (no-op on
--- fresh installs). Hash partitions and the is_active partial unique
--- indexes die with the tables.
-DROP TABLE IF EXISTS analysis.pe_stats;
-DROP TABLE IF EXISTS analysis.dividends_stats;
-DROP TABLE IF EXISTS analysis.pe_and_dividend_stats;
-
-DELETE FROM analysis.analysis_identity
-WHERE name IN ('pe_stats', 'dividends_stats', 'pe_and_dividend_stats');
 
 
 -- ============================================================================
@@ -447,7 +423,3 @@ ON CONFLICT (name) DO UPDATE SET
     summary_name      = EXCLUDED.summary_name,
     last_run_datetime = NOW(),
     description       = EXCLUDED.description;
-
-DELETE FROM analysis.analysis_identity WHERE name IN (
-    'pe_and_dividend_pct', 'pe_and_dividend_pct_streaks',
-    'dividends_pct', 'dividends_pct_streaks');

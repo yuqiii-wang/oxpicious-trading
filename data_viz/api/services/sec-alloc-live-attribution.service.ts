@@ -88,9 +88,21 @@ interface DbAggregateRow extends QueryResultRow {
 //                        (index/etf) need weights: stocks never carry tick
 //                        rows, so the per-tick renormalized aggregate is
 //                        identical to normalizing over the full universe.
-//    • cs_weight       — composition overlap from stats.cross_stats (latest
-//                        row per member; snapshot-constant per pair).
-//                        NaN → 0, NULL → 0 (zero-overlap).
+//    • cs_weight       — composition overlap from the
+//                        stats.cross_stats_benchmark_weight_summary rollup
+//                        (builds.cross_stats refreshes it at the same hooks
+//                        as the code summary): latest row per member pair,
+//                        snapshot-constant per pair — a PK-prefix lookup.
+//                        The former live DISTINCT ON over the 100M-row
+//                        hash-partitioned main table (no index leads with
+//                        benchmark_code; code is the HASH key) seq-scanned
+//                        all 8 partitions and cost ~28s PER REQUEST
+//                        (measured 2026-10-30) — this endpoint fires per
+//                        page load, tick click, and 5-min refresh. Fallback
+//                        (no rollup rows for the benchmark — a fresh DB
+//                        before the first builds.cross_stats run): the
+//                        former live aggregate. NaN → 0, NULL → 0
+//                        (zero-overlap).
 //
 //  $1 = benchmark_code, $2 = date, $3 = time
 // ----------------------------------------------------------------------------
@@ -132,13 +144,22 @@ weights AS (
     CROSS JOIN (SELECT SUM(amt) AS total FROM member_prev_amt) t
     WHERE t.total > 0
 ),
+cs_weight_rollup AS (
+    SELECT ws.code, ws.code_sec_shared_weight
+    FROM stats.cross_stats_benchmark_weight_summary ws
+    WHERE ws.sec_type = 'index'
+      AND ws.benchmark_code = $1::text
+),
 cs_weight AS (
-    SELECT DISTINCT ON (cs.code)
-        cs.code, cs.code_sec_shared_weight
+    SELECT r.code, r.code_sec_shared_weight
+    FROM cs_weight_rollup r
+    WHERE EXISTS (SELECT 1 FROM cs_weight_rollup)
+    UNION ALL
+    SELECT DISTINCT ON (cs.code) cs.code, cs.code_sec_shared_weight
     FROM stats.cross_stats cs
     WHERE cs.sec_type = 'index'
       AND cs.benchmark_code = $1::text
-    ORDER BY cs.code, cs.date DESC
+      AND NOT EXISTS (SELECT 1 FROM cs_weight_rollup)
 ),
 base AS (
     SELECT

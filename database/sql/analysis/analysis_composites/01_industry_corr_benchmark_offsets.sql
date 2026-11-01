@@ -59,7 +59,7 @@
 --    benchmark_industry_id (lexicographic, COLLATE "C") to deduplicate
 --    (A,B) vs (B,A). Both industries are compared in the SAME pool_size
 --    slice (cross-pool comparisons are not materialized — see
---    05_industry_sentiments.sql for the rationale).
+--    05_market_beta.sql for the rationale).
 --
 --  BENCHMARK
 --    benchmark_code is part of the PK, so several offset benchmarks can

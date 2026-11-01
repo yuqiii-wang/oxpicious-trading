@@ -16,9 +16,10 @@
  *     The service's dotted name IS the path:
  *     downloads/stream/szse/price.json ← "downloads.stream.szse.price".
  *     Each file holds that service's ONE config object:
- *     { service, max_parallel, included_parallel_services,
+ *     { service, max_parallel, max_parallel_runs,
+ *     included_parallel_services,
  *     excluded_parallel_services, freq, schedule, notes, source_ref (the
- *     config's code/script location(s) as RELATIVE FILE PATHS only —
+ *     config's code location(s) as RELATIVE FILE PATHS only —
  *     never line numbers; ';'-separated when several), updated_at }.
  *     max_parallel is the concurrency CAP (read at registration by
  *     _common/service_heartbeat.py — keep the shape compatible); freq is
@@ -31,6 +32,12 @@
  *     the full service name; more specific wins on conflict, name >
  *     sub-scope > scope, ties to excluded) — enforced at registration by
  *     _common/service_heartbeat.py and previewed by the UI run guard.
+ *     max_parallel_runs is the OPTIONAL in-service RUN cap for a
+ *     concurrent-safe always-on daemon (null = the code default): how
+ *     many of the service's own work items may run in parallel inside
+ *     the ONE process — today only the deep-agents server's
+ *     analysis-summary generation reads it (ai-summary.service.ts);
+ *     _common/service_heartbeat.py ignores it.
  *
  *     default.json (tree ROOT, not part of the inventory) is the
  *     FALLBACK for services without their own file: max_parallel cap 1
@@ -107,6 +114,10 @@ const EXT_REQUEST_DEFAULT_PATH = path.join(
 /** The repo-wide default when a service has no override (mirror of
  *  _common/service_heartbeat.py DEFAULT_MAX_PARALLEL). */
 export const DEFAULT_MAX_PARALLEL = 1;
+/** The in-service RUN cap default when a service's file carries no
+ *  max_parallel_runs (mirror of the bridge's own fallback — one run at a
+ *  time, the pre-2026-11-01 behavior). */
+export const DEFAULT_MAX_PARALLEL_RUNS = 1;
 /** The fallback freq when a service has no file of its own (the
  *  default.json entry's value). */
 export const DEFAULT_SERVICE_FREQ = "on_demand";
@@ -124,6 +135,12 @@ export const DEFAULT_SERVICE_FREQ = "on_demand";
 export interface ServiceConfigEntry {
   service: string;
   max_parallel: number;
+  /** Optional in-service RUN cap for a concurrent-safe daemon (how many
+   *  of the service's own work items may run in parallel inside the ONE
+   *  process — the deep-agents summary generation today); null = the
+   *  code default (one at a time). The heartbeat process cap is
+   *  max_parallel and stays independent. */
+  max_parallel_runs: number | null;
   included_parallel_services: string[];
   excluded_parallel_services: string[];
   /** always | daily | monthly | semiannually | once | occasionally
@@ -210,6 +227,7 @@ export function readJsonCached<T>(file: string, fallback: T): T {
 const SERVICE_ENTRY_FALLBACK: ServiceConfigEntry = {
   service: "",
   max_parallel: DEFAULT_MAX_PARALLEL,
+  max_parallel_runs: null,
   included_parallel_services: [],
   excluded_parallel_services: [],
   freq: DEFAULT_SERVICE_FREQ,
@@ -266,6 +284,12 @@ function normalizeServiceEntry(doc: unknown, service: string): ServiceConfigEntr
       d.max_parallel >= 1
         ? d.max_parallel
         : DEFAULT_MAX_PARALLEL,
+    max_parallel_runs:
+      typeof d.max_parallel_runs === "number" &&
+      Number.isInteger(d.max_parallel_runs) &&
+      d.max_parallel_runs >= 1
+        ? d.max_parallel_runs
+        : null,
     included_parallel_services: normalizeParallelServices(
       d.included_parallel_services,
     ),
@@ -321,6 +345,14 @@ export function serviceConfigFor(service: string): ServiceConfigEntry {
  *  (fallback entry included). */
 export function maxParallelFor(service: string): number {
   return serviceConfigFor(service).max_parallel;
+}
+
+/** One service's in-service RUN cap: its tree entry's max_parallel_runs,
+ *  or DEFAULT_MAX_PARALLEL_RUNS when the entry carries none. Only
+ *  concurrent-safe daemons define the field; every other service gets
+ *  the default and ignores it. */
+export function maxParallelRunsFor(service: string): number {
+  return serviceConfigFor(service).max_parallel_runs ?? DEFAULT_MAX_PARALLEL_RUNS;
 }
 
 // ---------------------------------------------------------------------------

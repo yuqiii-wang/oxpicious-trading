@@ -1,25 +1,26 @@
-"""llm_agents.llm_qa_by_research.generation — the five-request research flow.
+"""llm_agents.llm_qa_by_research.generation — the six-request research flow.
 
 ``generate_research_qa`` produces ONE text.llm_qa_by_research row from
-FIVE separate LLM requests (the generation contract in
+SIX separate LLM requests (the generation contract in
 database/sql/text/06_llm_qa_by_research.sql):
 
-  * requests 1-4 — one per evaluation dimension
+  * requests 1-5 — one per evaluation dimension
     (:data:`~llm_agents.llm_qa_by_research.prompts.DIMENSIONS`): a
     dedicated web search per dimension, then a composed answer over the
     hits (``summarize_hits_via_compose``; plain ``_chat_complete`` when
     the search surfaced nothing). Each reply lands in its own column —
-    intro / return / risks / capitalization. A failed dimension request
+    intro / optimistic_forecast / pessimistic_forecast / risks /
+    capitalization. A failed dimension request
     is ISOLATED (movers-style): the column stays NULL, the flow
     continues.
-  * request 5 — a strict-JSON summary over the four dimension texts:
+  * request 6 — a strict-JSON summary over the five dimension texts:
     the summary lands in ``answer`` (replacing any whole-answer
     semantics — the row's display content) and the logic_label is
     assigned from the parsed vocabulary name. One parse retry; a final
     failure raises (a row without its summary + label is not
     displayable, so nothing is stored).
 
-REFS MAPPING (re-arranged for the five-request shape): every dimension
+    REFS MAPPING (re-arranged for the six-request shape): every dimension
 request's hits are fast-resolved into text.news rows right after the
 search (the ``OnlineSearchSummaryStore`` no-network path — the rows ARE
 the search echoes) and the resolved ids are BOUND around the compose
@@ -41,7 +42,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from _common.labels import RESEARCH_LOGIC_CODE
-from llm_agents._core.request_log import bind_ref_ids
+from llm_agents._core.request_log import bind_ref_ids, bind_request_chain
 from llm_agents.online_search_summary.core.citations import (
     extract_cited_refs, format_references,
 )
@@ -149,7 +150,7 @@ async def _summarize_and_label(
     model: str,
     lang: str,
 ) -> Tuple[str, str]:
-    """Request 5: the strict-JSON summary + logic_label over the four
+    """Request 6: the strict-JSON summary + logic_label over the five
     dimension texts. ONE parse retry with a stricter instruction appended
     (the news_digestions pattern); transport retries stay in the provider."""
     messages: List[dict] = [
@@ -190,11 +191,11 @@ async def generate_research_qa(
     recency: str = "noLimit",
     qa_date: Optional[datetime.datetime] = None,
 ) -> int:
-    """Run the five-request research flow and store the row; return qa_id.
+    """Run the six-request research flow and store the row; return qa_id.
 
-    The four dimension requests run sequentially (each = one search + one
+    The five dimension requests run sequentially (each = one search + one
     chat call); a failed dimension is logged and skipped (its column
-    stays NULL). The 5th request's failure raises AFTER the provider's
+    stays NULL). The 6th request's failure raises AFTER the provider's
     own retries plus one parse retry — nothing is stored in that case
     (re-run ``generate``; the searches are re-issued).
     """
@@ -204,7 +205,36 @@ async def generate_research_qa(
 
     flow_start = datetime.datetime.now(datetime.timezone.utc)
 
-    # -- requests 1-4: the four evaluation dimensions -----------------------
+    # The six requests form ONE chain (text.llm_requests chain_id /
+    # prev_request_id): from the second request on, the logged payload is
+    # incremental to the previous request's (shared system prompts and
+    # context blocks stored once, in the first row).
+    with bind_request_chain():
+        return await _generate_research_qa_chained(
+            conn, provider, question,
+            industry_id=industry_id, sector_id=sector_id, model=model,
+            lang=lang, category=category, search_count=search_count,
+            recency=recency, qa_date=qa_date, flow_start=flow_start)
+
+
+async def _generate_research_qa_chained(
+    conn,
+    provider: BaseOnlineSearchProvider,
+    question: str,
+    *,
+    industry_id: Optional[str],
+    sector_id: Optional[str],
+    model: Optional[str],
+    lang: str,
+    category: Optional[str],
+    search_count: int,
+    recency: str,
+    qa_date: Optional[datetime.datetime],
+    flow_start: datetime.datetime,
+) -> int:
+    """The flow body (runs inside the request chain binding)."""
+
+    # -- requests 1-5: the five evaluation dimensions ------------------------
     results: List[DimensionResult] = []
     for spec in DIMENSIONS:
         try:
@@ -221,17 +251,17 @@ async def generate_research_qa(
         results.append(r)
     if all(r.text is None for r in results):
         raise RuntimeError(
-            f"all four dimension requests failed for {question!r} — "
+            f"all five dimension requests failed for {question!r} — "
             "nothing to summarize; not storing")
 
-    # -- request 5: summary + logic_label -----------------------------------
+    # -- request 6: summary + logic_label -----------------------------------
     summary_text, label_name = await _summarize_and_label(
         provider, question, results, model=model, lang=lang)
     logger.info("    [LLM] summary: %d chars, logic_label=%s",
                 len(summary_text), label_name)
 
     # -- request-id collection: the source-log backlink ----------------------
-    # All 5 requests are done; drain the recorder, then match THIS flow's
+    # All 6 requests are done; drain the recorder, then match THIS flow's
     # chat-completions rows (service + flow window — the web-search POSTs
     # are excluded by endpoint). Non-fatal: an empty list stores without
     # the linkage.
@@ -291,7 +321,7 @@ async def _store_research_row(
                 seen.add(r.news_id)
                 group_ids.append(r.news_id)
     else:
-        logger.warning("    [DB] no resolved search refs across the four "
+        logger.warning("    [DB] no resolved search refs across the five "
                        "dimension requests — storing without news-group "
                        "provenance")
 
@@ -322,7 +352,8 @@ async def _store_research_row(
     qa_id = await upsert_qa_by_research(
         conn, question, summary_text, RESEARCH_LOGIC_CODE[label_name],
         intro=by_key["intro"].text,
-        return_=by_key["return"].text,
+        optimistic_forecast=by_key["optimistic_forecast"].text,
+        pessimistic_forecast=by_key["pessimistic_forecast"].text,
         risks=by_key["risks"].text,
         capitalization=by_key["capitalization"].text,
         context="\n\n".join(context_blocks) or None,

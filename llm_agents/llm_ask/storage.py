@@ -41,6 +41,7 @@ from typing import Dict, List, Optional, Tuple
 from _common.db_commons import get_db_connection_async
 
 from llm_agents._core.models import SHANGHAI_TZ
+from llm_agents._core.text_caps import truncate_summary
 from llm_agents.llm_ask.core.models import AskResult
 from llm_agents.llm_ask.payload import AiAskPayload
 
@@ -273,6 +274,11 @@ async def _persist_ask(payload: AiAskPayload,
     product = _product_tag(plot_info)
     ask_day = datetime.datetime.now(SHANGHAI_TZ).date()
 
+    # Store-time caps (llm_agents._core.text_caps) — the rendered answer
+    # and a failure stderr tail can both arrive unbounded.
+    answer_text = truncate_summary(result.answer) if answered else None
+    error_tail = truncate_summary(error_tail)
+
     conn = await get_db_connection_async()
     try:
         if not await _check_tables(conn):
@@ -290,7 +296,7 @@ async def _persist_ask(payload: AiAskPayload,
                 f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
                 f"RETURNING ask_id",
                 payload.question,
-                result.answer if answered else None,
+                answer_text,
                 "answered" if answered else "failed",
                 error_tail,
                 payload.online_search,
@@ -301,6 +307,18 @@ async def _persist_ask(payload: AiAskPayload,
                 product,
                 request_ids,
             )
+            # search_tsv (TSV_SPECS): question A, answer B —
+            # inside the same transaction so the ask and its index row land
+            # (or roll back) together. Failed asks index the question only.
+            # The high-DF lexeme stats refresh follows (text.search_lexicon_df
+            # — full replace, tiny for this table).
+            from _common.tokenization import SearchIndexer
+            await SearchIndexer.get().set_search_tsv_async(conn, ASK_TABLE, [{
+                "ask_id": ask_id, "question": payload.question,
+                "answer": answer_text,
+            }])
+            await SearchIndexer.get().refresh_lexicon_df_async(
+                conn, ASK_TABLE)
 
             sql, params = _context_row(ask_id, payload,
                                        n_images=len(payload.screenshots))

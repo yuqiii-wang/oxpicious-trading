@@ -10,8 +10,9 @@
  *     (resolved through the stats.sec_classification catalog); an explicit
  *     industryIds set (strategy/theme pick) still filters by the set itself;
  *     else unscoped.
- *   • keyword search — whitespace-separated terms, ALL must appear (AND)
- *     in question OR answer (case-insensitive).
+ *   • keyword search — per term: the GIN-indexed search_tsv (Chinese,
+ *     StructBERT-segmented on both sides) OR a raw question/answer
+ *     substring; ALL terms must hit (AND).
  *   • status — inactive rows (is_active = false) never surface; every
  *     list/calendar query is hard-filtered to active rows.
  *
@@ -37,6 +38,7 @@ import type {
   AiQaRefItem,
 } from "@shared/types";
 import { cachedRows } from "./classification-cache.js";
+import { segmentSearchTerms, splitSearchTerms } from "./search-query.service.js";
 
 // ---------------------------------------------------------------------------
 // Canonical industry catalog — DISTINCT (sector, industry) pairs
@@ -119,14 +121,27 @@ async function buildFilterSql(
   if (filters.bigFluctuationOnly) {
     clauses.push(`q.is_big_fluctuation`);
   }
-  // Keyword search: every term must hit question OR answer (AND).
-  const terms = (filters.search ?? "").trim().split(/\s+/).filter(Boolean);
-  const termClauses = terms.map((term) => {
-    params.push(`%${term}%`);
-    const p = `$${params.length}`;
-    return `(q.question ILIKE ${p} OR q.answer ILIKE ${p})`;
-  });
-  if (termClauses.length > 0) {
+  // Keyword search: every term must hit the GIN-indexed search_tsv (the
+  // StructBERT-segmented full-text vector — the recall path for Chinese)
+  // OR question/answer as a raw substring (substrings inside segmented
+  // words + the segmentation-degraded fallback). AND across terms.
+  const terms = splitSearchTerms(filters.search);
+  if (terms.length > 0) {
+    const segmented = await segmentSearchTerms(terms.join(" "));
+    const termClauses = terms.map((term, i) => {
+      params.push(`%${term}%`);
+      const p = `$${params.length}`;
+      const tokens = segmented?.[i];
+      if (!tokens) {
+        return `(q.question ILIKE ${p} OR q.answer ILIKE ${p})`;
+      }
+      params.push(tokens);
+      const q = `$${params.length}`;
+      return (
+        `(q.search_tsv @@ websearch_to_tsquery('simple', ${q})` +
+        ` OR q.question ILIKE ${p} OR q.answer ILIKE ${p})`
+      );
+    });
     clauses.push(termClauses.join(" AND "));
   }
   // Bare conditions — callers add the WHERE keyword themselves.

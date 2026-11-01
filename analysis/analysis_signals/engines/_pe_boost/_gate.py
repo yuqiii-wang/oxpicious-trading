@@ -1,7 +1,13 @@
 """The PE-boost variant gate (analysis.analysis_signals.engines.
 _pe_boost._gate, 2026-10-27 — the class OOP restructure of the flat
 engines/variants.py): the shared is_pe_boosted axis the family
-engines import.
+engines import (dormant — see below).
+
+DORMANT since the 2026-11-01 variant-axes UNLINK (user-directed
+"keep the pe and ohlcv boosted logic in py, however, offload to
+unlink from the computation ... delete is pe and ohlcv boosted col
+as from pk"): the is_pe_boosted column left the DB PKs and no engine
+imports this package — the logic is kept for a future re-link.
 
 The gate AND-gates a family's plain candidate masks by the code's own
 trailing PE-percentile condition — today's PE among the code's own

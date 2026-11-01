@@ -8,9 +8,10 @@
  *   • the row's "date" is qa_date mapped to the latest trading day on or
  *     before it (the same td CTE contract);
  *   • differences from llm_qa: no is_big_fluctuation (research rows are not
- *     anchored to a price move); answer is the 5th request's SUMMARY (the
- *     display content) with the four evaluation dimensions — intro / return /
- *     risks / capitalization — as the expandable detail; logic_label is a
+ *     anchored to a price move); answer is the 6th request's SUMMARY (the
+ *     display content) with the five evaluation dimensions — intro /
+ *     optimistic_forecast / pessimistic_forecast / risks / capitalization —
+ *     as the expandable detail; logic_label is a
  *     static.label_dim SMALLINT code (domain research_logic) decoded here at
  *     the response boundary (labelDecodeSql); there is no per-ref table —
  *     the row's news group (news_group_id -> text.news_group_items) IS the
@@ -27,6 +28,7 @@ import type {
   AiQaResearchSource,
 } from "@shared/types";
 import { cachedRows } from "./classification-cache.js";
+import { segmentSearchTerms, splitSearchTerms } from "./search-query.service.js";
 import { labelDecodeSql } from "./label-codes.js";
 
 // ---------------------------------------------------------------------------
@@ -102,14 +104,26 @@ async function buildFilterSql(
     params.push(filters.logicLabel);
     clauses.push(`q.logic_label = $${params.length}::smallint`);
   }
-  // Keyword search: every term must hit question OR answer (the summary).
-  const terms = (filters.search ?? "").trim().split(/\s+/).filter(Boolean);
-  const termClauses = terms.map((term) => {
-    params.push(`%${term}%`);
-    const p = `$${params.length}`;
-    return `(q.question ILIKE ${p} OR q.answer ILIKE ${p})`;
-  });
-  if (termClauses.length > 0) {
+  // Keyword search: every term must hit the GIN-indexed search_tsv (the
+  // StructBERT-segmented full-text vector — the recall path for Chinese)
+  // OR question/answer (the summary) as a raw substring. AND across terms.
+  const terms = splitSearchTerms(filters.search);
+  if (terms.length > 0) {
+    const segmented = await segmentSearchTerms(terms.join(" "));
+    const termClauses = terms.map((term, i) => {
+      params.push(`%${term}%`);
+      const p = `$${params.length}`;
+      const tokens = segmented?.[i];
+      if (!tokens) {
+        return `(q.question ILIKE ${p} OR q.answer ILIKE ${p})`;
+      }
+      params.push(tokens);
+      const q = `$${params.length}`;
+      return (
+        `(q.search_tsv @@ websearch_to_tsquery('simple', ${q})` +
+        ` OR q.question ILIKE ${p} OR q.answer ILIKE ${p})`
+      );
+    });
     clauses.push(termClauses.join(" AND "));
   }
   return clauses.join(" AND ");
@@ -223,7 +237,7 @@ export async function listAiResearchItems(
 }
 
 // ---------------------------------------------------------------------------
-// Research QA detail — the full row (summary + the four evaluation
+// Research QA detail — the full row (summary + the five evaluation
 // dimensions + the per-dimension reference blocks). The dimension texts'
 // inline [来源：ref_N] citations expand per tag (the AiQaRefBox pattern):
 // the row's dim_refs column — persisted at store time by the generation
@@ -242,7 +256,13 @@ interface DimRefEntry {
   ref_time: string | null;
 }
 
-const DIMENSION_KEYS = ["intro", "return", "risks", "capitalization"] as const;
+const DIMENSION_KEYS = [
+  "intro",
+  "optimistic_forecast",
+  "pessimistic_forecast",
+  "risks",
+  "capitalization",
+] as const;
 
 export async function getAiResearchQa(
   qaId: number,
@@ -260,7 +280,8 @@ export async function getAiResearchQa(
                 q.qa_day) AS trade_day
          FROM q
      )
-    SELECT m.qa_id, m.question, m.answer, m.context, m.intro, m.return,
+    SELECT m.qa_id, m.question, m.answer, m.context, m.intro,
+           m.optimistic_forecast, m.pessimistic_forecast,
            m.risks, m.capitalization, m.dim_refs,
            m.industry_id, m.sector_id, m.category,
            ${labelDecodeSql("research_logic", "m.logic_label")} AS logic_label,
@@ -335,7 +356,8 @@ export async function getAiResearchQa(
       });
     dimension_refs = {
       intro: build(dimRefs.intro ?? []),
-      return: build(dimRefs.return ?? []),
+      optimistic_forecast: build(dimRefs.optimistic_forecast ?? []),
+      pessimistic_forecast: build(dimRefs.pessimistic_forecast ?? []),
       risks: build(dimRefs.risks ?? []),
       capitalization: build(dimRefs.capitalization ?? []),
     };

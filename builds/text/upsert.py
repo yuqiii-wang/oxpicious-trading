@@ -26,6 +26,12 @@ bulk helpers already wrap):
                           the NEXT trading date's move when the article date
                           is a non-trading day (weekend/holiday) — computed
                           data-driven from the stored close series.
+  6. text.llm_qa_keywords — the QA corpus's keyword audit (same vocabulary
+                          and negation rules as news): a full rewrite per
+                          run over the ACTIVE llm_qa rows (the corpus is
+                          small and answers can be rewritten/soft-deleted
+                          in place — same full-recompute rationale as
+                          step 4).
 """
 from __future__ import annotations
 
@@ -34,6 +40,7 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from _common.build_commons import copy_insert_async
+from _common.tokenization import SearchIndexer
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +49,8 @@ logger = logging.getLogger(__name__)
 NEWS_TABLE = "text.news"
 KEYWORDS_TABLE = "text.news_keywords"
 COMMENTS_TABLE = "text.news_comments"
+# Aligned with database/sql/text/16_llm_qa_keywords.sql.
+QA_KEYWORDS_TABLE = "text.llm_qa_keywords"
 
 
 # ----------------------------------------------------------------------------
@@ -192,6 +201,46 @@ async def recompute_keyword_stats(conn) -> None:
 
 
 # ----------------------------------------------------------------------------
+# 3b. text.llm_qa_keywords (the QA corpus's keyword audit)
+# ----------------------------------------------------------------------------
+async def rewrite_qa_keyword_rows(conn) -> int:
+    """Full rewrite of text.llm_qa_keywords over the ACTIVE llm_qa rows.
+
+    The QA corpus is small (10^2–10^3 posts) and answers are rewritten in
+    place (upsert_qa) or soft-deleted (is_active) — a whole-table rewrite
+    each builds.text run is cheaper than staleness tracking and drops
+    inactive rows naturally (the same full-recompute rationale as
+    :func:`recompute_keyword_stats`). ``date`` is the qa_date Shanghai day,
+    the AI page calendar's convention. Returns the row count written.
+    """
+    from builds.text.keywords import extract_for_qa  # same package, no cycle
+
+    rows = [dict(r) for r in await conn.fetch(
+        "SELECT qa_id, question, answer, industry_id, "
+        "(qa_date AT TIME ZONE 'Asia/Shanghai')::date AS date "
+        "FROM text.llm_qa WHERE is_active")]
+    extract_for_qa(rows)
+    await conn.execute(f"DELETE FROM {QA_KEYWORDS_TABLE}")
+    kw_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        for kw, count in sorted(row["keywords"].items()):
+            kw_rows.append({
+                "qa_id": row["qa_id"],
+                "keyword": kw,
+                "date": row["date"],
+                "industry_id": row["industry_id"],
+                "count": count,
+            })
+    if kw_rows:
+        # Conflict-free by construction: the DELETE above emptied the table
+        # and each (keyword, qa_id) pair is emitted once — COPY fast path.
+        await copy_insert_async(conn, QA_KEYWORDS_TABLE, kw_rows)
+    logger.info("    [DB] llm_qa_keywords rewritten for %d QA posts "
+                "(%d rows)", len(rows), len(kw_rows))
+    return len(kw_rows)
+
+
+# ----------------------------------------------------------------------------
 # 4. today_industry_change
 # ----------------------------------------------------------------------------
 def build_industry_change_map(
@@ -326,5 +375,9 @@ async def insert_comments(conn, comment_rows: List[Dict[str, Any]]) -> int:
     # Conflict-free by construction: filter_new_comments dropped stored PKs
     # AND in-batch duplicates (first occurrence wins) — COPY fast path.
     await copy_insert_async(conn, COMMENTS_TABLE, comment_rows)
+    # search_tsv (TSV_SPECS): comments are insert-only, so the
+    # IS NULL guard is always live on fresh rows.
+    await SearchIndexer.get().set_search_tsv_async(
+        conn, COMMENTS_TABLE, comment_rows, only_missing=True)
     logger.info("    [DB] %d comment rows written", len(comment_rows))
     return len(comment_rows)

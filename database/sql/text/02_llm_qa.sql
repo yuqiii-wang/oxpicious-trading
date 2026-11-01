@@ -9,8 +9,8 @@
 CREATE TABLE IF NOT EXISTS text.llm_qa (
     qa_id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     question       TEXT        NOT NULL,
-    answer         TEXT        NOT NULL,
-    context        TEXT,                       -- optional supporting passage
+    answer         TEXT        NOT NULL,       -- capped 2000 chars at store time (10_llm_summary_caps.sql)
+    context        TEXT,                       -- optional supporting passage — never rendered; capped 8000 (10_llm_summary_caps.sql)
     category       TEXT,                       -- null for now
     industry_id    TEXT,
     sector_id      TEXT,                       -- denormalized parent sector of industry_id
@@ -24,32 +24,12 @@ CREATE TABLE IF NOT EXISTS text.llm_qa (
     is_big_fluctuation BOOLEAN NOT NULL DEFAULT false,  -- mapped industry's day qualified as a big move (builds.text.big_market_mv)
     qa_date        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    search_tsv     TSVECTOR,                  -- weighted full-text search vector: question A, answer B, context D
 
     CONSTRAINT uq_llm_qa UNIQUE (question, news_group_id),
     CONSTRAINT fk_llm_qa_news_groups FOREIGN KEY (news_group_id)
         REFERENCES text.news_groups (news_group_id)
 );
-
--- Upgrade: is_big_market_mv renamed to is_big_fluctuation (same semantics).
--- Runs BEFORE the ADD COLUMN retro-fit below: on a deployment that has the
--- old column this renames it in place (data preserved); everywhere else the
--- DO block is a no-op.
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema = 'text' AND table_name = 'llm_qa'
-                 AND column_name = 'is_big_market_mv')
-       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_schema = 'text' AND table_name = 'llm_qa'
-                         AND column_name = 'is_big_fluctuation') THEN
-        ALTER TABLE text.llm_qa RENAME COLUMN is_big_market_mv TO is_big_fluctuation;
-    END IF;
-END $$;
-
--- Retro-fit for deployments whose text.llm_qa predates the column (the
--- CREATE above already includes it for fresh installs).
-ALTER TABLE text.llm_qa
-    ADD COLUMN IF NOT EXISTS is_big_fluctuation BOOLEAN NOT NULL DEFAULT false;
 
 -- Upgrade: has_refs — whether per-reference resolution wrote
 -- text.llm_qa_refs rows for this answer. Set by
@@ -64,6 +44,12 @@ ALTER TABLE text.llm_qa
 -- from FAILED_EXPLANATION_KEYWORDS: any keyword hit in the answer -> 
 -- true, none -> false. Defaults true (unassessed rows count as failed).
 
+-- Upgrade: search_tsv — weighted full-text search vector ('simple' config
+-- over StructBERT-segmented text, GIN-indexed), written at store time via
+-- set_search_tsv_async; NULL = pre-migration row awaiting backfill
+-- (refresh_missing_search_tsv_async). Additive: the text.news_keywords
+-- search is untouched.
+
 -- Sector-scope filter for the AI page's L1-only picks.
 CREATE INDEX IF NOT EXISTS ix_llm_qa_sector ON text.llm_qa (sector_id);
 
@@ -71,13 +57,6 @@ CREATE INDEX IF NOT EXISTS ix_llm_qa_sector ON text.llm_qa (sector_id);
 -- and the agents' dedupe checks (industry_id + qa_date).
 CREATE INDEX IF NOT EXISTS ix_llm_qa_industry_qa_date
     ON text.llm_qa (industry_id, qa_date);
-
--- Retro-fit: request_ids (the source-log backlink) added 2026-10-27 —
--- same-day as text.llm_requests (07_llm_requests.sql); existing rows keep
--- the empty default (their requests predate the log or came from flows
--- that don't collect).
-ALTER TABLE text.llm_qa
-    ADD COLUMN IF NOT EXISTS request_ids BIGINT[] NOT NULL DEFAULT '{}';
 
 COMMENT ON COLUMN text.llm_qa.request_ids IS
   'The producing flow''s OWN LLM requests as text.llm_requests ids, in '
@@ -92,6 +71,11 @@ COMMENT ON COLUMN text.llm_qa.request_ids IS
 
 -- Full-corpus calendar mapping and qa_date-ordered feeds.
 CREATE INDEX IF NOT EXISTS ix_llm_qa_qa_date ON text.llm_qa (qa_date);
+
+-- Weighted full-text search: query SEGMENTED the same way as the documents
+-- (tokenize_for_search) or it matches nothing.
+CREATE INDEX IF NOT EXISTS ix_llm_qa_search_tsv_gin
+    ON text.llm_qa USING gin (search_tsv);
 
 COMMENT ON COLUMN text.llm_qa.qa_date IS
   'The question''s own data date (Asia/Shanghai midnight): for '
@@ -127,6 +111,10 @@ COMMENT ON COLUMN text.llm_qa.is_big_fluctuation IS
   'trading days of a surviving one stay false (cooldown). Maintained by '
   'the builds.text.big_market_mv full-recompute pass (re-runs are '
   'idempotent and re-derive the whole flag). Renamed from is_big_market_mv.';
+
+COMMENT ON COLUMN text.llm_qa.search_tsv IS
+  'Weighted search tsvector (simple config over segmented text): question A, '
+  'answer B, context D. Same contract as text.news.search_tsv.';
 
 COMMENT ON TABLE text.llm_qa IS
   'Curated Q&A knowledge base for LLM retrieval. One row per question/answer '

@@ -22,8 +22,9 @@
  *   sector written by the tagging pipeline) OR — for rows stored before that
  *   column was backfilled — whose industry_id belongs to the sector; else
  *   unscoped.
- *   keyword search — whitespace-separated terms, ALL must appear (AND) in
- *   title OR content (case-insensitive).
+ *   keyword search — per term: the GIN-indexed search_tsv (Chinese,
+ *   StructBERT-segmented on both sides) OR a raw title/content substring;
+ *   ALL terms must hit (AND) unless searchAny ORs them.
  */
 import { queryRows } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
@@ -36,6 +37,7 @@ import type {
   SectorNode,
 } from "@shared/types";
 import { cachedRows } from "./classification-cache.js";
+import { segmentSearchTerms, splitSearchTerms } from "./search-query.service.js";
 
 // ---------------------------------------------------------------------------
 // Canonical industry catalog — DISTINCT (sector, industry) pairs
@@ -141,15 +143,31 @@ async function buildFilterSql(
   if (filters.bigFluctuationOnly) {
     clauses.push(`n.is_big_fluctuation`);
   }
-  // Keyword search: every term must hit title OR content (AND), or — with
-  // searchAny — a single clause matching ANY term (OR across terms).
-  const terms = (filters.search ?? "").trim().split(/\s+/).filter(Boolean);
-  const termClauses = terms.map((term) => {
-    params.push(`%${term}%`);
-    const p = `$${params.length}`;
-    return `(n.title ILIKE ${p} OR n.content ILIKE ${p})`;
-  });
-  if (termClauses.length > 0) {
+  // Keyword search: every term must hit the GIN-indexed search_tsv (the
+  // StructBERT-segmented full-text vector — the recall path for Chinese,
+  // which raw ILIKE tokens can't segment) OR title/content as a raw
+  // substring (the pre-GIN path, kept for substrings inside segmented
+  // words and for the segmentation-degraded fallback). AND across terms,
+  // or — with searchAny — a single clause matching ANY term (OR across
+  // terms). Query segmentation comes from the shared CLI via
+  // search-query.service (cached per search string).
+  const terms = splitSearchTerms(filters.search);
+  if (terms.length > 0) {
+    const segmented = await segmentSearchTerms(terms.join(" "));
+    const termClauses = terms.map((term, i) => {
+      params.push(`%${term}%`);
+      const p = `$${params.length}`;
+      const tokens = segmented?.[i];
+      if (!tokens) {
+        return `(n.title ILIKE ${p} OR n.content ILIKE ${p})`;
+      }
+      params.push(tokens);
+      const q = `$${params.length}`;
+      return (
+        `(n.search_tsv @@ websearch_to_tsquery('simple', ${q})` +
+        ` OR n.title ILIKE ${p} OR n.content ILIKE ${p})`
+      );
+    });
     clauses.push(
       filters.searchAny && termClauses.length > 1
         ? `(${termClauses.join(" OR ")})`
@@ -410,7 +428,7 @@ async function finishItems(
   params: unknown[],
   filters: { limit?: number | null; offset?: number | null },
 ): Promise<{ total: number; items: NewsItem[] }> {
-  const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
+  const limit = Math.min(Math.max(filters.limit ?? 10, 1), 200);
   const offset = Math.max(filters.offset ?? 0, 0);
 
   const totalRows = await queryRows<{ n: string } & QueryResultRow>(

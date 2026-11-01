@@ -68,7 +68,7 @@ CLI::
         [--provider zhipu] [--engine search_pro] [--count 10] \
         [--recency oneWeek] [--domain www.sohu.com] [--content-size high]
     python -m llm_agents.online_search_summary summarize --query "…" \
-        [--mode native|compose] [--model glm-5.2] [--store] \
+        [--mode native|compose] [--model glm-5.3-flash] [--store] \
         [--industry BANKS] [--category macro] [+ the search flags]
 
 ``python -m llm_agents search|summarize …`` dispatches here too (see

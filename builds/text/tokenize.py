@@ -4,10 +4,10 @@ The News page's question bar drives two searches; the LOCAL one searches the
 stored corpus (text.news) via the same /api/news/items API as the old keyword
 bar. A raw Chinese question can't be ILIKE-searched directly, so this module
 splits it NAIVELY into keywords of the curated news taxonomy
-(builds.text.keywords.KeywordTaxonomy — downloads/macro/gov/keywords.json ∪
-catalog labels): every taxonomy keyword that appears in the question becomes
-a search token. Matching is plain substring (whole-word for pure-ASCII), the
-same convention the build uses for extraction.
+(builds.text.keywords.KeywordTaxonomy — the static.keyword_maps seed ∪
+catalog metadata): every taxonomy keyword that appears in the question
+becomes a search token. Matching is plain substring (whole-word for
+pure-ASCII), the same convention the build uses for extraction.
 
 Post-processing: tokens that are substrings of another matched token are
 dropped (工商银行 keeps 银行 out) and the rest are ordered by first occurrence

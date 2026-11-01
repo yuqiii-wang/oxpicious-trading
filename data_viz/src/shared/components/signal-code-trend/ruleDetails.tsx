@@ -50,13 +50,8 @@ export function ruleDetails(r: SignalRule): ReactNode {
   const response = r.rule_params.response != null
     ? RESPONSE_WORDS[String(r.rule_params.response)] ?? null
     : null;
-  // the VARIANT-AXIS stamp (rule_params.pe_boosted / ohlcv_boosted —
-  // 2026-10-27): the boosted-variant populations name the axes in
-  // their params; the plain population carries no key
-  const boosted = [
-    r.rule_params.pe_boosted === true ? "PE-conditioned" : null,
-    r.rule_params.ohlcv_boosted === true ? "turnover-climax" : null,
-  ].filter(Boolean).join(" + ");
+  // (the variant-axes boost stamps — rule_params.pe_boosted /
+  // ohlcv_boosted — left the rows with the 2026-11-01 axes unlink)
   // composite pair codes carry the legs in the code itself ('A~B')
   const legs = r.code.includes("~")
     ? r.code.split("~").join(" + ")
@@ -77,9 +72,6 @@ export function ruleDetails(r: SignalRule): ReactNode {
         ? "observational (ungated)"
         : `dir_ave ≥ ${gate?.min_pct ?? "—"}% @ floor ${gate?.sample_floor ?? "—"}`,
     },
-    boosted != null
-      ? { label: "boost", value: `${boosted} variant population` }
-      : null,
     conf?.depth_factor != null
       ? {
           label: "scale",

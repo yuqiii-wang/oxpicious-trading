@@ -35,6 +35,7 @@ AI_DAILY_DIR = os.path.join(PROJECT_ROOT, "temps", "ai_daily")
 # Canonical SEC classification catalog — read via
 # database.sec_statics.classification_store.load_catalog() from the
 # database/sec_statics/sec_classification/ shard tree (no path constant
-# needed here any more).
-GOV_KEYWORDS_JSON = os.path.join(
-    PROJECT_ROOT, "downloads", "macro", "gov", "keywords.json")
+# needed here any more). The news keyword taxonomy lives in the DB now:
+# static.keyword_maps (database/sql/static/keyword_maps/ seed files, read
+# via _common.keyword_maps) — the former downloads/macro/gov/keywords.json
+# was its bootstrap source only.

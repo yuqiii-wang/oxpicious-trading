@@ -93,7 +93,7 @@ export default function StockPage() {
           setThemeSlug(null);
         }
         // No page-level default — SecClassificationNav handles auto-selecting
-        // the default (FIN / banks / 000001.SZ) via its DEFAULTS_BY_KIND map.
+        // the default (FIN / banks / 600000.SS) via its DEFAULTS_BY_KIND map.
         setNavLoading(false);
       })
       .catch((e: Error) => {

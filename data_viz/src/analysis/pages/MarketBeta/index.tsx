@@ -1,0 +1,733 @@
+/**
+ * Market Beta analysis page (default export).
+ *
+ * Plots each industry's member INDEX VALUES directly, rebased to 100 at the
+ * start of the displayed (zoom) window. Rebased-to-100 makes member indices
+ * comparable regardless of absolute price level — e.g. CSI 500 (~5500pts)
+ * and SSE 50 (~2600pts) plot on a common scale, so a +10% move on either
+ * looks equally large. The LINE rebasing is computed CLIENT-SIDE from raw
+ * daily closes.
+ *
+ * ADDITIONALLY overlays the server-precomputed MEAN and ±1σ VARIANCE band
+ * across member indices for the user-selected pool_size slice
+ * (small <51 stocks / mid <301 / large / all). The mean/var are anchored at
+ * the START OF ALL HISTORY (per-index first available close, fixed server-side).
+ * When the client-side slider narrows, the lines re-rebase to the slider's
+ * window-start but the mean/var overlay STAYS anchored at history start —
+ * they are aligned only at full slider range.
+ *
+ * BROAD-MARKET indices (BROAD_CSI, BROAD_SSE, BROAD_SZSE, BROAD_STAR) are
+ * classified as industries under the FIN sector and are aggregated IDENTICALLY.
+ *
+ * COMPOSITION-ONLY: the API only returns indices that have at least one
+ * stats.sec_composition snapshot. Indices WITHOUT composition data are never
+ * loaded — every member index plotted here has a known stock_num.
+ *
+ * Built on the shared analysis nav kit (@/shared/components/sec-nav):
+ *   • SecNavShell — header (sec_type toggle + CodeSearchBar rendered
+ *     DISABLED — this page is index-only with no code search — plus Refresh)
+ *     + loading/error + page content
+ *   • SecClassificationNavMulti (navSlot) — the shared MULTI-SELECT preset
+ *     over SecClassificationNav: multi-select L2 industries (across sectors),
+ *     multi-select L3 index codes, and non-exclusive LEFT/RIGHT columns so
+ *     industry + strategy selections merge into one view.
+ *
+ * Per industry (one plot):
+ *   • Lines  = one per member index (filtered by pool_size toggle), rebased
+ *              to 100 at the start of the visible (zoom) window.
+ *   • Overlay = mean line (dashed, thicker) + ±1σ variance band (shaded)
+ *              from the precomputed aggregation for the selected pool_size.
+ *   • Slider = bottom, controls the visible range [startIdx, endIdx] in the
+ *              shared date axis. Rebase point recomputes for the LINES only.
+ *   • Toggle = All / Small / Mid / Large pool-size filter (filters both
+ *              lines and overlay).
+ *   • Tooltip = per-index actual close (raw value) + rebased % + stock_num.
+ */
+import { useDocs } from "@/shared/docs";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Autocomplete,
+  Box,
+  CircularProgress,
+  Stack,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
+} from "@mui/material";
+import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
+import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
+import {
+  fetchMarketBetaThemes,
+  fetchMarketBetaChart,
+  fetchMarketBetaChartByCode,
+  fetchIndustryAttributionBenchmarks,
+  fetchMarketBetaStrategyThemes,
+  invalidateCacheForPrefix,
+} from "@/lib/api-client";
+import type {
+  MarketBetaChartResponse,
+  MarketBetaIndex,
+  IndustryAttributionBenchmarkEntry,
+} from "@shared/types";
+import { MarketBetaPlot } from "./MarketBetaPlot";
+import { BenchmarkPriceChart } from "./BenchmarkPriceChart";
+import { IndustryBenchmarkAttributionChart } from "./IndustryBenchmarkAttributionChart";
+import { IndustryEtfPriceChart } from "./IndustryEtfPriceChart";
+import { IndustryEtfContributionChart } from "./IndustryEtfContributionChart";
+import { MarketTrendChart } from "./MarketTrendChart";
+import { IndexAllocationView } from "./IndexAllocationView";
+
+/** Nav trees endpoints (index-only — market beta merges member indices). */
+const THEMES_SOURCES = {
+  index: {
+    themes: (exchange: string | null) => fetchMarketBetaThemes(exchange),
+    strategyThemes: (exchange: string | null) => fetchMarketBetaStrategyThemes(exchange),
+  },
+};
+
+export default function MarketBetaPage() {
+  // Shared nav: trees loading + exchange filter + sector/strategy selection.
+  // Non-exclusive mode: the LEFT (sector/industry) and RIGHT (strategy/theme)
+  // columns can be active simultaneously — both contribute to the merged plot.
+  // The sec_type toggle and code search are rendered DISABLED in the shell
+  // (index-only page, no code search in the multi-select model).
+  const nav = useSecNav({
+    themesSources: THEMES_SOURCES,
+    defaultSecType: "index",
+    dataLabel: "market-beta",
+    mutuallyExclusive: false,
+    onInvalidateCache: () => {
+      invalidateCacheForPrefix("/api/analysis/market-beta/");
+      invalidateCacheForPrefix("/api/analysis/industry-correlations");
+      invalidateCacheForPrefix("/api/analysis/industry-benchmark-attribution");
+      invalidateCacheForPrefix("/api/analysis/industry-attribution-bars");
+      invalidateCacheForPrefix("/api/analysis/industry-etf-contribution");
+      // Index Allocation view fetches per-code attribution + charts from the
+      // perf-attr endpoints — invalidate those too so Refresh covers all modes.
+      invalidateCacheForPrefix("/api/analysis/perf-attr/");
+    },
+  });
+
+  // Multi-select state (page-local — the shared nav's selection model is
+  // single-select): multi industries + multi L3 index codes.
+  // Multi-select industries: list of selected industry slugs. Persists across
+  // sector switches so the user can pick industries from multiple sectors.
+  const [selectedIndustrySlugs, setSelectedIndustrySlugs] = useState<string[]>([]);
+  // L3 security-level selection: a list of selected index codes. When non-
+  // empty, the chart narrows to show ONLY these individual index codes
+  // (filtering on top of the multi-industry view). Cleared by clicking the
+  // "All" chip in the L3 row or by switching industry. Multi-select: tick
+  // multiple L3 chips (across the picked industries) to merge specific
+  // member indices into one plot.
+  const [selectedItemCodes, setSelectedItemCodes] = useState<string[]>([]);
+
+  const [chartDataList, setChartDataList] = useState<MarketBetaChartResponse[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState<string | null>(null);
+
+  // Top-level view mode toggle: "correlation" shows the existing
+  // multi-line price + PE + amount + pairwise-correlation charts; "attribution"
+  // swaps them for a benchmark price chart (1st plot, clickable to pick a
+  // date) + one per-industry attribution bar chart per selected industry
+  // (2nd plot onward — sourced from analysis.industry_attributions).
+  const [viewMode, setViewMode] = useState<"correlation" | "attribution" | "etf_contribution" | "market_trend" | "index_allocation">("correlation");
+  // Benchmark dropdown list (fetched once when entering attribution mode).
+  const [attributionBenchmarks, setAttributionBenchmarks] = useState<IndustryAttributionBenchmarkEntry[]>([]);
+  // The selected benchmark code (drives the 1st plot). Defaults to 000300
+  // (沪深300 — the most common broad-market index).
+  const [selectedBenchmarkCode, setSelectedBenchmarkCode] = useState<string | null>("000300");
+  // The as-of date for the attribution plots — set by clicking a date on the
+  // benchmark price chart (1st plot). Null → latest available.
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+
+  const slugToIndustryId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of nav.sectors) {
+      for (const ind of s.industries) {
+        m.set(ind.industry_slug, ind.industry_id);
+      }
+    }
+    return m;
+  }, [nav.sectors]);
+
+  // Map selected slugs → industry IDs (dropping any slug that no longer maps,
+  // e.g. if the taxonomy was refreshed and the industry disappeared).
+  const selectedIndustryIds = useMemo(
+    () =>
+      selectedIndustrySlugs
+        .map((slug) => slugToIndustryId.get(slug))
+        .filter((id): id is string => Boolean(id)),
+    [selectedIndustrySlugs, slugToIndustryId],
+  );
+
+  // Snapshot of which industry_id each slug maps to (for the merged-chart
+  // industry-label lookup). Kept in sync with selectedIndustrySlugs so the
+  // chart can prefix each index with its source industry.
+  const slugToIndustryLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of nav.sectors) {
+      for (const ind of s.industries) {
+        m.set(ind.industry_slug, ind.industry_label);
+      }
+    }
+    return m;
+  }, [nav.sectors]);
+
+  // Map strategy theme industry_id → display label (for the merged-chart
+  // label lookup when strategy themes are fetched by industry_id). Built from
+  // the strategies tree (RIGHT column).
+  const strategyThemeIdToLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of nav.strategies) {
+      for (const th of s.industries) {
+        m.set(th.industry_id, th.industry_label);
+      }
+    }
+    return m;
+  }, [nav.strategies]);
+
+  // Compute strategy theme industry_ids from strategyId/themeSlug. When a
+  // strategy is selected, its themes' industry_ids are fetched the SAME way
+  // as industry IDs (getMarketBetaChart queries by industry_id, and
+  // strategy-primary indices carry their theme as industry_id). When no
+  // theme is selected, ALL themes under the strategy are included.
+  const selectedStrategyThemeIds = useMemo(() => {
+    if (!nav.strategyId) return [];
+    const strat = nav.strategies.find((s) => s.sector_id === nav.strategyId);
+    if (!strat) return [];
+    if (nav.themeSlug) {
+      const th = strat.industries.find((t) => t.industry_slug === nav.themeSlug);
+      return th ? [th.industry_id] : [];
+    }
+    return strat.industries.map((t) => t.industry_id);
+  }, [nav.strategyId, nav.themeSlug, nav.strategies]);
+
+  // Array of { id, label } for the BenchmarkPriceChart's selectedIndustries
+  // prop. Resolves each selected industry_id to its display label. Includes
+  // BOTH industry IDs (LEFT column) and strategy theme IDs (RIGHT column).
+  const selectedIndustries = useMemo(() => {
+    const result = selectedIndustryIds.map((id) => {
+      const slugEntry = Array.from(slugToIndustryId.entries()).find(
+        ([, i]) => i === id,
+      );
+      const label = slugEntry
+        ? (slugToIndustryLabel.get(slugEntry[0]) ?? id)
+        : id;
+      return { id, label };
+    });
+    for (const id of selectedStrategyThemeIds) {
+      result.push({
+        id,
+        label: strategyThemeIdToLabel.get(id) ?? id,
+      });
+    }
+    return result;
+  }, [selectedIndustryIds, slugToIndustryId, slugToIndustryLabel, selectedStrategyThemeIds, strategyThemeIdToLabel]);
+
+  // Prune multi-select slugs that no longer exist in the (re)loaded tree
+  // (e.g. switching to HK drops mainland-only industries), then seed the
+  // multi-select with the first industry of the first sector so the page
+  // shows data immediately on FIRST load only. On subsequent tree reloads
+  // (exchange changes / refresh) the pruned selection is kept — the user may
+  // have picked cross-border industries deliberately.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (nav.sectors.length === 0) return;
+    const validSlugs = new Set<string>();
+    for (const s of nav.sectors) {
+      for (const ind of s.industries) validSlugs.add(ind.industry_slug);
+    }
+    setSelectedIndustrySlugs((prev) => {
+      const next = prev.filter((slug) => validSlugs.has(slug));
+      return next.length === prev.length ? prev : next;
+    });
+    if (!seededRef.current && nav.sectorId == null && selectedIndustrySlugs.length === 0) {
+      seededRef.current = true;
+      nav.handleSectorChange(nav.sectors[0].sector_id);
+      const firstSlug = nav.sectors[0].industries[0]?.industry_slug ?? null;
+      if (firstSlug) setSelectedIndustrySlugs([firstSlug]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav.sectors, nav.sectorId, selectedIndustrySlugs]);
+
+  // Combined set of industry IDs to fetch: selected industries (LEFT column)
+  // PLUS selected strategy theme IDs (RIGHT column). Strategy themes are
+  // fetched the SAME way as industries — getMarketBetaChart queries
+  // by industry_id, and strategy-primary indices carry their theme as
+  // industry_id. When neither is selected, fall back to finding industries
+  // from L3-selected codes.
+  const effectiveIndustryIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const id of selectedIndustryIds) ids.add(id);
+    for (const id of selectedStrategyThemeIds) ids.add(id);
+    if (ids.size === 0 && selectedItemCodes.length > 0) {
+      const targetCodes = new Set(
+        selectedItemCodes.map((c) => c.toUpperCase()),
+      );
+      for (const sector of nav.sectors) {
+        for (const ind of sector.industries) {
+          if (ind.items.some((it) => targetCodes.has(it.code.toUpperCase()))) {
+            ids.add(ind.industry_id);
+          }
+        }
+      }
+    }
+    return Array.from(ids);
+  }, [selectedIndustryIds, selectedStrategyThemeIds, selectedItemCodes, nav.sectors]);
+
+  // Codes from `selectedItemCodes` that are NOT in any industry in the
+  // sectors tree (strategy-primary only). These must be fetched via the
+  // code-based endpoint. When strategy themes are already being fetched by
+  // ID (selectedStrategyThemeIds non-empty), strategy codes are in the
+  // response — no need to fetch them by code, so return [].
+  const strategyOnlyCodes = useMemo(() => {
+    if (selectedItemCodes.length === 0) return [];
+    if (selectedStrategyThemeIds.length > 0) return [];
+    const inSectors = new Set<string>();
+    for (const sector of nav.sectors) {
+      for (const ind of sector.industries) {
+        for (const it of ind.items) {
+          inSectors.add(it.code.toUpperCase());
+        }
+      }
+    }
+    return selectedItemCodes.filter(
+      (c) => !inSectors.has(c.toUpperCase()),
+    );
+  }, [selectedItemCodes, nav.sectors, selectedStrategyThemeIds]);
+
+  // Fetch chart data: by industry (normal/multi-select) PLUS by code (for
+  // strategy-primary indexes not in the sectors tree), or clear when nothing
+  // selected.
+  const effectiveIdsKey = effectiveIndustryIds.join(",");
+  const strategyCodesKey = strategyOnlyCodes.join(",");
+  useEffect(() => {
+    if (effectiveIndustryIds.length === 0 && strategyOnlyCodes.length === 0) {
+      setChartDataList([]);
+      return;
+    }
+    let cancelled = false;
+    setChartLoading(true);
+    setChartError(null);
+    const byIndustry = effectiveIndustryIds.map((id) =>
+      fetchMarketBetaChart(id),
+    );
+    const byCode = strategyOnlyCodes.map((code) =>
+      fetchMarketBetaChartByCode(code),
+    );
+    Promise.all([...byIndustry, ...byCode])
+      .then((results) => {
+        if (cancelled) return;
+        setChartDataList(results);
+        setChartLoading(false);
+      })
+      .catch((e: Error) => {
+        if (cancelled) return;
+        setChartError(e.message);
+        setChartLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveIdsKey, strategyCodesKey, nav.refreshKey]);
+
+  // Merge multiple industries' chart data into a single
+  // MarketBetaChartResponse. When only one industry is selected, the
+  // merge is a passthrough (preserves the mean/var overlay). When multiple
+  // are selected:
+  //   • indices are concatenated (de-duplicated by code — an index may carry
+  //     multiple industry tags and would otherwise appear once per tag).
+  //   • Each index's name is prefixed with "[industry_short] " so the legend
+  //     and tooltip identify which industry it came from.
+  //   • The merged `aggregation` is empty (per-industry means can't be combined
+  //     across industries), BUT the un-merged `chartDataList` is passed
+  //     through to the plot, which builds per-industry mean curves from it.
+  //   • benchmarks come from the first response (they're identical across
+  //     industries — same hardcoded broad-market list).
+  //   • industry_label lists all source industries joined by " + ".
+  // L3 individual-index selection narrows the DISPLAYED LINES only; the
+  // per-industry mean/±σ aggregation always aggregates ALL member indices.
+  const mergedChartData = useMemo<MarketBetaChartResponse | null>(() => {
+    if (chartDataList.length === 0) return null;
+    // Set of selected L3 codes (uppercased) for filtering. Empty = no filter.
+    // L3 individual-index selection NARROWS THE DISPLAYED LINES ONLY — the
+    // per-industry mean/±σ aggregation is ALWAYS preserved (it aggregates ALL
+    // member indices of the selected industries, not just the L3 subset), so
+    // the "Mean only" overlay and PE/Trading-Amount sub-plots stay anchored
+    // to the full industry pool.
+    const selectedCodeSet = new Set(
+      selectedItemCodes.map((c) => c.toUpperCase()),
+    );
+    const hasCodeFilter = selectedCodeSet.size > 0;
+    if (chartDataList.length === 1) {
+      const base = chartDataList[0];
+      // Narrow displayed lines to the L3-selected codes, but KEEP aggregation
+      // (mean/±σ still aggregates every member index of the industry).
+      if (hasCodeFilter) {
+        const filtered = base.indices.filter((idx) =>
+          selectedCodeSet.has(idx.code.toUpperCase()),
+        );
+        return { ...base, indices: filtered };
+      }
+      return base;
+    }
+
+    const multi = chartDataList.length > 1;
+    const seenCodes = new Set<string>();
+    const mergedIndices: MarketBetaIndex[] = [];
+    for (const d of chartDataList) {
+      // Resolve the short industry label for the prefix. Match by industry_id
+      // (the chart response carries industry_id, not slug). Check BOTH the
+      // industry tree (sectors) and the strategy tree (strategies).
+      const slugEntry = Array.from(slugToIndustryId.entries()).find(
+        ([, id]) => id === d.industry_id,
+      );
+      const fullLabel = slugEntry
+        ? (slugToIndustryLabel.get(slugEntry[0]) ?? d.industry_label)
+        : (strategyThemeIdToLabel.get(d.industry_id) ?? d.industry_label);
+      const shortLabel = (fullLabel || d.industry_id).split("  ")[0] || d.industry_id;
+      for (const idx of d.indices) {
+        if (seenCodes.has(idx.code)) continue;
+        seenCodes.add(idx.code);
+        mergedIndices.push(
+          multi
+            ? { ...idx, name: `[${shortLabel}] ${idx.name}` }
+            : idx,
+        );
+      }
+    }
+    // When L3 codes are selected, narrow to just them.
+    const finalIndices = hasCodeFilter
+      ? mergedIndices.filter((idx) =>
+          selectedCodeSet.has(idx.code.toUpperCase()),
+        )
+      : mergedIndices;
+    return {
+      industry_id: chartDataList.map((d) => d.industry_id).join(","),
+      industry_label: chartDataList
+        .map((d) => {
+          const slugEntry = Array.from(slugToIndustryId.entries()).find(
+            ([, id]) => id === d.industry_id,
+          );
+          return slugEntry
+            ? (slugToIndustryLabel.get(slugEntry[0]) ?? d.industry_label)
+            : (strategyThemeIdToLabel.get(d.industry_id) ?? d.industry_label);
+        })
+        .join(" + "),
+      indices: finalIndices,
+      aggregation: [], // dropped — see comment above
+      benchmarks: chartDataList[0]?.benchmarks ?? [],
+    };
+  }, [chartDataList, slugToIndustryId, slugToIndustryLabel, strategyThemeIdToLabel, selectedItemCodes]);
+
+  const multiIndustry = chartDataList.length > 1;
+
+  // Fetch the benchmark list for the attribution dropdown once when the user
+  // first enters attribution mode (or on refresh). The list is small (~145
+  // codes) and stable so we only fetch it once per refresh cycle.
+  useEffect(() => {
+    if (viewMode !== "attribution" || attributionBenchmarks.length > 0) return;
+    let cancelled = false;
+    fetchIndustryAttributionBenchmarks()
+      .then((resp) => {
+        if (cancelled) return;
+        setAttributionBenchmarks(resp.benchmarks);
+      })
+      .catch(() => {
+        // Non-fatal — the dropdown will be empty but the default
+        // selectedBenchmarkCode (000300) still works via the price endpoint.
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, nav.refreshKey]);
+
+  // Sector change only updates the row-2 browsing context — it does NOT clear
+  // the multi-select selection (industries picked from other sectors persist).
+  // Non-exclusive mode (nav handlers): engaging the LEFT column does NOT clear
+  // the RIGHT column — both can be active at once.
+  const handleSectorChange = (id: string | null) => {
+    nav.handleSectorChange(id);
+    setSelectedItemCodes([]);
+  };
+  const handleMultiIndustryChange = (slugs: string[]) => {
+    setSelectedIndustrySlugs(slugs);
+    // Prune any selected L3 codes that no longer belong to a selected
+    // industry — keeps the L3 filter consistent with the active selection.
+    if (slugs.length === 0) {
+      setSelectedItemCodes([]);
+    } else {
+      const slugSet = new Set(slugs);
+      const validCodes = new Set<string>();
+      for (const s of nav.sectors) {
+        for (const ind of s.industries) {
+          if (!slugSet.has(ind.industry_slug)) continue;
+          for (const it of ind.items) validCodes.add(it.code.toUpperCase());
+        }
+      }
+      setSelectedItemCodes((prev) =>
+        prev.filter((c) => validCodes.has(c.toUpperCase())),
+      );
+    }
+  };
+  // Clicking a strategy/theme chip engages the RIGHT column. Non-exclusive
+  // mode: selecting in the RIGHT column does NOT clear the LEFT column
+  // (sector + industry multi-select) — both contribute to the merged plot.
+  const handleStrategyChange = (id: string | null) => {
+    if (!id) nav.handleThemeChange(null);
+    nav.handleStrategyChange(id);
+    setSelectedItemCodes([]);
+  };
+  const handleThemeChange = (slug: string | null) => {
+    nav.handleThemeChange(slug);
+    setSelectedItemCodes([]);
+  };
+
+  // Header label: reflects BOTH industry (LEFT) and strategy (RIGHT) selections.
+  // When 0 selected → "Select industries"; when 1 → the full path; when >1 →
+  // "N selected". Strategy selection is appended when active.
+  const headerLabel = (() => {
+    const indPart =
+      selectedIndustrySlugs.length === 0
+        ? null
+        : selectedIndustrySlugs.length === 1
+          ? (() => {
+              const slug = selectedIndustrySlugs[0];
+              const sector = nav.sectors.find((s) =>
+                s.industries.some((i) => i.industry_slug === slug),
+              );
+              const ind = sector?.industries.find((i) => i.industry_slug === slug);
+              return ind
+                ? `${sector?.sector_label ?? ""} / ${ind.industry_label}`
+                : "1 industry";
+            })()
+          : `${selectedIndustrySlugs.length} industries`;
+    const strat = nav.strategyId
+      ? nav.strategies.find((s) => s.sector_id === nav.strategyId)
+      : null;
+    const stratPart = strat
+      ? nav.themeSlug
+        ? `${strat.sector_label} / ${strat.industries.find((t) => t.industry_slug === nav.themeSlug)?.industry_label ?? strat.sector_label}`
+        : strat.sector_label
+      : null;
+    if (indPart && stratPart) return `${indPart} + ${stratPart}`;
+    if (indPart) return indPart;
+    if (stratPart) return stratPart;
+    return "Select industries";
+  })();
+
+  const docs = useDocs();
+  return (
+    <SecNavShell
+      nav={nav}
+      title="Market Beta"
+      backPath="/analysis/commons"
+      backLabel="back to commons"
+      subtitle={docs.text("ui.market-beta.page", { label: headerLabel })}      // Index-only page with no code search — both render DISABLED.
+      secTypes={["index"]}
+      disableToggle
+      disableSearch
+      refreshTooltip="Refresh market-beta data (bypass cache)"
+      errorPrefix="market-beta data"
+      navSlot={
+        <SecClassificationNavMulti
+          sectors={nav.sectors}
+          sectorId={nav.sectorId}
+          onSectorChange={handleSectorChange}
+          selectedIndustrySlugs={selectedIndustrySlugs}
+          onMultiIndustryChange={handleMultiIndustryChange}
+          exchange={nav.exchange}
+          onExchangeChange={nav.handleExchangeChange}
+          strategies={nav.strategies}
+          strategyId={nav.strategyId}
+          themeSlug={nav.themeSlug}
+          onStrategyChange={handleStrategyChange}
+          onThemeChange={handleThemeChange}
+          itemKind="Index"
+          selectedItemCodes={selectedItemCodes}
+          onMultiItemSelected={setSelectedItemCodes}
+          loading={nav.loading}
+        />
+      }
+    >
+      {effectiveIndustryIds.length === 0 && selectedItemCodes.length === 0 && (
+        <Alert severity="warning">Select one or more industries to see the member indices.</Alert>
+      )}
+      {(effectiveIndustryIds.length > 0 || selectedItemCodes.length > 0) && (
+        <>
+          {/* Top-level view-mode toggle: "Industry Correlation" (existing
+              multi-line price + PE + amount + pairwise-correlation charts)
+              vs "Benchmark Attribution" (benchmark price chart as 1st plot
+              + per-industry attribution bar charts from
+              analysis.industry_attributions as 2nd+ plots). In attribution
+              mode a benchmark dropdown selects the benchmark for the 1st
+              plot; clicking a date on the 1st plot sets the as-of date for
+              the attribution bar charts below. */}
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 2,
+              flexWrap: "wrap",
+              mb: 1,
+              mt: 0.5,
+            }}
+          >
+            <ToggleButtonGroup
+              value={viewMode}
+              exclusive
+              size="small"
+              onChange={(_, v: "correlation" | "attribution" | "etf_contribution" | "market_trend" | "index_allocation" | null) => {
+                if (v) setViewMode(v);
+              }}
+            >
+              <ToggleButton value="correlation">Industry Correlation</ToggleButton>
+              <ToggleButton value="attribution">Benchmark Attribution</ToggleButton>
+              <ToggleButton value="etf_contribution">ETF Contribution</ToggleButton>
+              <ToggleButton value="market_trend">Market Trend</ToggleButton>
+              <ToggleButton value="index_allocation">Index Allocation</ToggleButton>
+            </ToggleButtonGroup>
+            {viewMode === "attribution" && (
+              <Autocomplete
+                size="small"
+                options={attributionBenchmarks}
+                getOptionLabel={(b) =>
+                  `${b.benchmark_name} (${b.benchmark_code})${b.is_broad_market === true ? " ★" : ""}`
+                }
+                isOptionEqualToValue={(a, b) => a.benchmark_code === b.benchmark_code}
+                value={
+                  attributionBenchmarks.find(
+                    (b) => b.benchmark_code === selectedBenchmarkCode,
+                  ) ?? null
+                }
+                onChange={(_, newValue) => {
+                  if (newValue) setSelectedBenchmarkCode(newValue.benchmark_code);
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    size="small"
+                    label="Benchmark (★ = broad-market)"
+                    sx={{ minWidth: 240, "& .MuiOutlinedInput-root": { py: 0.25 } }}
+                  />
+                )}
+                sx={{ minWidth: 240, maxWidth: 340 }}
+              />
+            )}
+          </Box>
+
+          {viewMode === "correlation" && (
+            <>
+              {chartLoading && (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+                  <CircularProgress size={28} />
+                </Box>
+              )}
+              {chartError && (
+                <Alert severity="error" sx={{ py: 0.5 }}>{chartError}</Alert>
+              )}
+              {!chartLoading && !chartError && mergedChartData && (
+                <MarketBetaPlot
+                  data={mergedChartData}
+                  multiIndustry={multiIndustry}
+                  numIndustries={chartDataList.length}
+                  chartDataList={chartDataList}
+                  selectedIndustryIds={effectiveIndustryIds}
+                  selectedItemCodes={selectedItemCodes}
+                />
+              )}
+            </>
+          )}
+
+          {viewMode === "attribution" && (
+            <Stack spacing={1.5}>
+              {/* 1st plot: Benchmark price chart with non-this-industry green/red shades.
+                  The shades show, for each selected industry, what the
+                  benchmark's price would be if the industry's shared stocks
+                  were removed. Green shade = non-industry above benchmark
+                  (industry was a drag); red shade = below (industry was a
+                  boost). Toggle switches between Percentage (rebased to 100)
+                  and Absolute (raw prices). The chart is clickable — clicking
+                  a date sets the as-of date for the bar charts below. */}
+              <BenchmarkPriceChart
+                benchmarkCode={selectedBenchmarkCode}
+                selectedDate={selectedDate}
+                onDateSelect={(d) => setSelectedDate(d)}
+                selectedIndustries={selectedIndustries}
+              />
+
+              {/* 2nd+ plots: Per-industry benchmark attribution bar charts.
+                  One plot per selected industry; each bar = one benchmark.
+                  Shows the benchmark's contribution (return × shared weight)
+                  and both shared weight metrics as grouped bars. Includes
+                  an All/Sector toggle (identical to PerfAttr's fluctuation
+                  chart) to show/hide broad-market benchmarks. The selected
+                  benchmark (from the dropdown) is highlighted. Same date as
+                  the BenchmarkPriceChart above. */}
+              {selectedIndustries.map((ind) => (
+                <IndustryBenchmarkAttributionChart
+                  key={ind.id}
+                  industryId={ind.id}
+                  industryLabel={ind.label}
+                  date={selectedDate}
+                  selectedBenchmarkCode={selectedBenchmarkCode}
+                />
+              ))}
+            </Stack>
+          )}
+
+          {viewMode === "etf_contribution" && (
+            <Stack spacing={1.5}>
+              {/* 1st plot: Multi-ETF price chart with cascading rebase.
+                  Each ETF tracking a member index of the selected industries
+                  is plotted as a separate line, rebased to 100 at its own
+                  first available date. Later-listed ETFs start at the MEAN
+                  of already-active ETFs on their first date (cascading
+                  rebase) so they blend in rather than jumping to 100. The
+                  chart is clickable — clicking a date sets the as-of date
+                  for the bar charts below.
+
+                  In-plot controls (top-right): a "Trading Amt" MA dropdown
+                  (MA5 / MA20) and a merged toggle that switches between the
+                  price-trend curve being prominent (trading-amt bars + MA
+                  lowkey) vs the trading-amt bars + MA being prominent (price
+                  curve lowkey). The plot is never hidden — only the relative
+                  emphasis flips. */}
+              <IndustryEtfPriceChart
+                industryIds={selectedIndustryIds}
+                selectedDate={selectedDate}
+                onDateSelect={(d) => setSelectedDate(d)}
+              />
+
+              {/* 2nd+ plots: Per-industry ETF contribution bar charts.
+                  One plot per selected industry; each bar = one ETF showing
+                  its trading amount (capital flow, colored by return
+                  direction) and its % share of the industry total ETF
+                  trading amount. Same date as the IndustryEtfPriceChart
+                  above. */}
+              {selectedIndustries.map((ind) => (
+                <IndustryEtfContributionChart
+                  key={ind.id}
+                  industryId={ind.id}
+                  industryLabel={ind.label}
+                  date={selectedDate}
+                />
+              ))}
+            </Stack>
+          )}
+
+          {viewMode === "market_trend" && (
+            <MarketTrendChart />
+          )}
+
+          {viewMode === "index_allocation" && (
+            <IndexAllocationView
+              chartDataList={chartDataList}
+              selectedItemCodes={selectedItemCodes}
+            />
+          )}
+        </>
+      )}
+    </SecNavShell>
+  );
+}

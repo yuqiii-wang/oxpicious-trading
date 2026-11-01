@@ -16,7 +16,11 @@
  * * The edit dialog keeps its fields narrow (the two short ones share a
  * wrap row), each wired to a shared expected-text rule (fieldRules)
  * that validates while typing and blocks Save; Max parallel is a plain
- * text field (no number spinner).
+ * text field (no number spinner). Max parallel runs is OPTIONAL
+ * (blank = null = the code default of one at a time) — the in-service
+ * run cap only concurrent-safe daemons define (the deep-agents summary
+ * generation today), independent of the heartbeat's Max parallel
+ * process cap.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -56,6 +60,7 @@ import {
   DOTTED_NAME,
   FREE_TEXT_OR_NULL,
   INT_GTE1,
+  INT_GTE1_OR_NULL,
   REL_PATH_LIST,
   firstRuleError,
 } from "@/config/components/fieldRules";
@@ -92,6 +97,7 @@ interface ParallelOption {
 interface ServiceForm {
   service: string;
   maxParallel: string;
+  maxParallelRuns: string;
   includedParallel: string[];
   excludedParallel: string[];
   freq: string;
@@ -103,6 +109,7 @@ interface ServiceForm {
 const EMPTY_FORM: ServiceForm = {
   service: "",
   maxParallel: "1",
+  maxParallelRuns: "",
   includedParallel: [],
   excludedParallel: [],
   freq: "on_demand",
@@ -115,6 +122,7 @@ function toForm(e: ServiceConfigEntry): ServiceForm {
   return {
     service: e.service,
     maxParallel: String(e.maxParallel),
+    maxParallelRuns: e.maxParallelRuns == null ? "" : String(e.maxParallelRuns),
     includedParallel: e.includedParallelServices,
     excludedParallel: e.excludedParallelServices,
     freq: e.freq,
@@ -232,6 +240,7 @@ export default function ServiceConfigPage() {
     const formErr = firstRuleError([
       ["Service", DOTTED_NAME, form.service],
       ["Max parallel", INT_GTE1, form.maxParallel],
+      ["Max parallel runs", INT_GTE1_OR_NULL, form.maxParallelRuns],
       ["Source ref", REL_PATH_LIST, form.sourceRef],
     ]);
     if (formErr != null) {
@@ -245,6 +254,8 @@ export default function ServiceConfigPage() {
     const body: ServiceConfigSave = {
       service: form.service.trim(),
       maxParallel: Number(form.maxParallel),
+      maxParallelRuns:
+        form.maxParallelRuns.trim() === "" ? null : Number(form.maxParallelRuns),
       includedParallelServices: form.includedParallel,
       excludedParallelServices: form.excludedParallel,
       freq: form.freq,
@@ -290,7 +301,7 @@ export default function ServiceConfigPage() {
         <Typography variant="h6">Service Config</Typography>
         <Typography variant="caption" color="text.secondary">
           {rows != null
-            ? `${rows.length} services · cap + parallel-run lists + supposed-run cadence · source: database/sql/monitoring/static/service_config/`
+            ? `${rows.length} services · process cap + parallel-runs cap + parallel-run lists + supposed-run cadence · source: database/sql/monitoring/static/service_config/`
             : "loading…"}
         </Typography>
         <Box sx={{ flexGrow: 1 }} />
@@ -331,6 +342,7 @@ export default function ServiceConfigPage() {
               <TableRow>
                 <TableCell>Service</TableCell>
                 <TableCell align="right">Max parallel</TableCell>
+                <TableCell align="right">Max parallel runs</TableCell>
                 <TableCell>Included parallel</TableCell>
                 <TableCell>Excluded parallel</TableCell>
                 <TableCell>Freq</TableCell>
@@ -356,6 +368,9 @@ export default function ServiceConfigPage() {
                     </Box>
                   </TableCell>
                   <TableCell align="right">{defaultEntry.maxParallel}</TableCell>
+                  <TableCell align="right" sx={{ color: defaultEntry.maxParallelRuns == null ? "text.disabled" : undefined }}>
+                    {defaultEntry.maxParallelRuns ?? "—"}
+                  </TableCell>
                   <TableCell sx={listCellSx(defaultEntry.includedParallelServices)}>
                     {listCellText(defaultEntry.includedParallelServices)}
                   </TableCell>
@@ -375,6 +390,9 @@ export default function ServiceConfigPage() {
                 <TableRow key={r.service} hover sx={{ cursor: "pointer" }} onClick={() => openEdit(r, false)}>
                   <TableCell sx={{ fontFamily: "monospace" }}>{r.service}</TableCell>
                   <TableCell align="right">{r.maxParallel}</TableCell>
+                  <TableCell align="right" sx={{ color: r.maxParallelRuns == null ? "text.disabled" : undefined }}>
+                    {r.maxParallelRuns ?? "—"}
+                  </TableCell>
                   <TableCell sx={listCellSx(r.includedParallelServices)}>
                     {listCellText(r.includedParallelServices)}
                   </TableCell>
@@ -392,7 +410,7 @@ export default function ServiceConfigPage() {
               ))}
               {rows != null && visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} align="center">
+                  <TableCell colSpan={10} align="center">
                     <Typography variant="caption" color="text.secondary" sx={{ my: 2, display: "inline-block" }}>
                       No service matches “{query}”
                     </Typography>
@@ -442,6 +460,15 @@ export default function ServiceConfigPage() {
               value={form?.maxParallel ?? ""}
               onChange={(v) => setForm((f) => (f == null ? f : { ...f, maxParallel: v }))}
               hint="integer ≥ 1 · registration auto-exits past this cap"
+              inputProps={{ inputMode: "numeric" }}
+              sx={{ width: 170 }}
+            />
+            <RuleTextField
+              rule={INT_GTE1_OR_NULL}
+              label="Max parallel runs"
+              value={form?.maxParallelRuns ?? ""}
+              onChange={(v) => setForm((f) => (f == null ? f : { ...f, maxParallelRuns: v }))}
+              hint="optional · in-service run cap for a concurrent-safe daemon (deep-agents summary generation) · blank = null (one at a time)"
               inputProps={{ inputMode: "numeric" }}
               sx={{ width: 170 }}
             />
