@@ -101,8 +101,10 @@ const APPS: Record<AppKey, AppConfig> = {
     tabs: [
       { label: "Service", path: "/config/service" },
       { label: "External Resources", path: "/config/external" },
+      { label: "Secrets", path: "/config/secrets" },
       { label: "Security Classification", path: "/config/security" },
       { label: "Keywords", path: "/config/keywords" },
+      { label: "Knowledge Graph", path: "/config/kg" },
       { label: "Orchestration", path: "/config/orchestration" },
     ],
   },

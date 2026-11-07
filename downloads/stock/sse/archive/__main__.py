@@ -76,11 +76,16 @@ PE APIs use a fallback/alternation strategy (per user request):
 
 Resumable: existing ``{code}_trend.csv`` and ``{code}_pe.csv`` are read
 to skip already-fetched data. ``--force`` re-fetches everything.
+
+The entry point is the :class:`SseStockArchiveDownload` DownloadJob — the
+former ``download_sse_archive`` / ``_run_pe_for_stock`` bodies are its
+methods (verbatim) and pure helpers/constants stay module-level.
 """
 
 from __future__ import annotations
 
 
+import argparse
 import csv
 from dataclasses import replace
 from datetime import date
@@ -95,6 +100,7 @@ from downloads._common import (
     AntiBotProxy,
     antibot_config_for,
     build_headers_with_referer,
+    DownloadJob,
     is_valid_file,
     last_business_day,
     next_business_day,
@@ -805,500 +811,515 @@ def _build_date_grouped_pe_file(
     return len(pe_rows)
 
 
-def _run_pe_for_stock(
-    code: str,
-    name: str,
-    ohlcv_rows: List[Dict[str, Any]],
-    archive_dir: Path,
-    sess: requests.Session,
-    stats_proxy: AntiBotProxy,
-    all_quarterly_dates: List[date],
-    today: date,
-    *,
-    force: bool = False,
-) -> Tuple[int, int]:
-    """Request PE (静态市盈率 + 总换手率) for a single stock.
+class SseStockArchiveDownload(DownloadJob):
+    """DownloadJob for the SSE HISTORICAL price+PE archive fetch cycle.
 
-    Computes PE request dates (quarterly snapshots + big-jump dates with
-    cooldown), fetches PE data from the SSE 成交概况 endpoint, and appends
-    each result immediately to ``{code}_pe.csv``.
-
-    PE request dates are the union of:
-      (a) Quarterly snapshots — first trading day of Feb, Apr, May, Aug,
-          Sep, Nov each year (filtered to the stock's trading history).
-      (b) Big-jump dates — days where close-to-close return exceeds ±7%
-          (both drops and rises); for each jump, PE is requested for both
-          the previous day and the jump day. A 7-day cooldown suppresses
-          subsequent jumps.
-
-    The latest trading day is NOT automatically included — PE for today is
-    only fetched when today happens to be a quarterly snapshot date or a
-    big-jump date (same criteria as any historical date). The daily price
-    (trend) is always downloaded regardless.
-
-    API fallback strategy (per user request): the primary endpoint
-    (queryNewAllQuatAbel.do) is tried first. When it fails for a date, the
-    alternative endpoint (commonQuery.do from the company page's 成交统计
-    section) is tried. Whichever API last succeeded becomes the "preferred"
-    API for subsequent dates — so once the alternative starts working it is
-    kept until it fails, at which point the primary is retried. Only when
-    both APIs fail for a date is it marked as "no data".
-
-    Returns ``(pe_fetched, pe_skipped)``.
+    The former module-level ``download_sse_archive`` orchestrator and its
+    per-stock ``_run_pe_for_stock`` workflow became methods; the pure
+    parsers/fetch helpers and constants above stay module-level.
     """
-    if stats_proxy.is_blocked(SSE_TRADE_STATS_URL):
-        logger.warning("  [host-blocked] query.sse.com.cn blocked, skipping PE for %s", code)
-        return (0, 0)
 
-    # Compute PE request dates:
-    # (a) quarterly snapshots — filtered to the stock's actual trading
-    #     history (from its first trading date to today)
-    first_date = date.fromisoformat(ohlcv_rows[0]["交易日期"])
-    quarterly_dates = [d for d in all_quarterly_dates if d >= first_date]
-    pe_date_set: set = set(quarterly_dates)
+    description = ("Download SSE HISTORICAL daily price + 成交统计 PE/turnover "
+                   "(default: only stocks held by ETFs). "
+                   "Per-stock workflow: trend (cached or API) -> PE -> next "
+                   "stock. Trend -> {code}_trend.csv, PE -> {code}_pe.csv "
+                   "for quarterly snapshots and >7%% big-jump dates. "
+                   "For TODAY's snapshot, use download_sse_trend.py instead.")
+    component = "sse_download"
 
-    # (b) big-jump dates (drops + rises, abs > 7%) with 7-day cooldown
-    jump_dates = _detect_jump_dates(ohlcv_rows)
-    pe_date_set.update(jump_dates)
-
-    # The latest trading day is NOT automatically added — PE for today is
-    # only fetched when today naturally qualifies as a quarterly snapshot
-    # date or a big-jump date (same criteria as any historical date).
-    # The daily price (trend) is always downloaded regardless.
-
-    # Filter out future dates (endpoint returns nothing for them).
-    pe_dates = sorted(d for d in pe_date_set if d <= today)
-
-    # Prepare {code}_pe.csv for incremental appends.
-    # Resumable: if the file already exists (interrupted run), read
-    # what's already been fetched. Otherwise, start fresh.
-    pe_file = archive_dir / f"{code}_pe.csv"
-    if force and pe_file.exists():
-        pe_file.unlink()
-    if pe_file.exists():
-        existing_pe = _read_existing_trade_stats(pe_file)
-    else:
-        existing_pe = {}
-        # Create empty file with header.
-        _write_stats_csv(pe_file, [], PE_COLUMNS)
-
-    dates_to_fetch = [
-        d for d in pe_dates if d.isoformat() not in existing_pe
-    ]
-
-    new_count = 0
-    pe_skipped = 0
-    # API fallback state: start with the primary (old) API. When the
-    # alternative API succeeds it becomes preferred; when it fails we
-    # switch back to primary. Both must fail for a date to be marked no-data.
-    prefer_alt = False
-    for tx_date in dates_to_fetch:
-        if stats_proxy.is_blocked(SSE_TRADE_STATS_URL):
-            logger.warning("  [host-blocked] stopping mid-stock %s", code)
-            break
-
-        # Try the preferred API first.
-        # Auto-sleep handled by proxy.get()/post()
-        if prefer_alt:
-            raw = _fetch_trade_stats_alt(sess, code, tx_date, stats_proxy)
-            used_alt = True
-        else:
-            raw = _fetch_trade_stats_primary(sess, code, tx_date, stats_proxy)
-            used_alt = False
-
-        # Preferred API failed -> try the other API.
-        if raw is None:
-            # Auto-sleep handled by proxy.get()/post()
-            if prefer_alt:
-                raw = _fetch_trade_stats_primary(sess, code, tx_date, stats_proxy)
-                used_alt = False
-            else:
-                raw = _fetch_trade_stats_alt(sess, code, tx_date, stats_proxy)
-                used_alt = True
-
-        if raw is None:
-            # Both APIs failed for this date.
-            logger.info(
-                "  -> %s pe %s: FAILED (no data, both APIs)",
-                code, tx_date.isoformat(),
-            )
-            pe_skipped += 1
-            continue
-
-        # Success: stick with the API that just worked for subsequent dates.
-        prefer_alt = used_alt
-
-        row = _parse_trade_stats_row(raw, code, name)
-        new_count += 1
-
-        # Append immediately to CSV (resumable — each fetch is saved).
-        with open(pe_file, "a", encoding=CSV_ENCODING, newline="") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=PE_COLUMNS, extrasaction="ignore"
-            )
-            writer.writerow(row)
-
-        api_tag = "alt" if used_alt else "primary"
-        logger.info(
-            "  -> %s pe %s [%s]: PE=%s, turnover=%s",
-            code, tx_date.isoformat(), api_tag,
-            row.get("静态市盈率(倍)", ""),
-            row.get("总换手率(%)", ""),
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--no-etf-filter", action="store_true",
+            help="Disable the ETF filter and fetch ALL SSE equities "
+                 "from the SSE list endpoint instead.",
         )
+        parser.add_argument("--force", action="store_true",
+                            help="Overwrite existing per-stock CSV files.")
 
-    total_pe = len(existing_pe) + new_count
-    if new_count:
-        logger.info(
-            "  -> %s pe: +%d rows (total %d, jumps=%d) -> %s",
-            code, new_count, total_pe,
-            len(jump_dates), pe_file.name,
-        )
-    elif dates_to_fetch:
-        logger.info("  -> %s pe: 0 new (all %d cached)", code, len(pe_dates))
+    def _run_pe_for_stock(
+        self,
+        code: str,
+        name: str,
+        ohlcv_rows: List[Dict[str, Any]],
+        archive_dir: Path,
+        sess: requests.Session,
+        stats_proxy: AntiBotProxy,
+        all_quarterly_dates: List[date],
+        today: date,
+        *,
+        force: bool = False,
+    ) -> Tuple[int, int]:
+        """Request PE (静态市盈率 + 总换手率) for a single stock.
 
-    return (new_count, pe_skipped)
-
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-def download_sse_archive(
-    out_root: Optional[str] = None,
-    *,
-    sleep_sec: Optional[float] = None,
-    force: bool = False,
-    session: Optional[requests.Session] = None,
-    etf_filter: bool = True,
-) -> dict:
-    """Download SSE HISTORICAL daily price + PE data (archive mode).
-
-    Studies ``https://www.sse.com.cn/market/price/trends/`` 行情走势 and
-    downloads the full date range available from the dayk slider — the entire
-    trading history of each stock, not a user-specified year range.
-
-    Per-stock workflow (trend → PE → next stock):
-      For each stock, the trend is fetched first (cached or API), then PE
-      is requested immediately for that stock before moving on to the next.
-
-      Trend: fetch the full OHLCV daily history from the dayk endpoint
-        (yunhq.sse.com.cn) and write ``{code}_trend.csv``.
-
-      PE: compute PE request dates and fetch 静态市盈率(倍) (PE_RATE) +
-        总换手率(%) (TO_RATE) from the SSE 成交概况 endpoint, writing
-        ``{code}_pe.csv``.
+        Computes PE request dates (quarterly snapshots + big-jump dates with
+        cooldown), fetches PE data from the SSE 成交概况 endpoint, and appends
+        each result immediately to ``{code}_pe.csv``.
 
         PE request dates are the union of:
-        (a) Quarterly snapshots — first trading day of Feb, Apr, May, Aug,
-            Sep, Nov each year, spanning the stock's full history.
-        (b) Big-jump dates — days where the close-to-close return exceeds
-            ±7% (both big drops AND big rises); for each jump, PE is
-            requested for both the previous day and the jump day. After each
-            jump-triggered request, a 7-day cooldown suppresses subsequent
-            jumps.
+          (a) Quarterly snapshots — first trading day of Feb, Apr, May, Aug,
+              Sep, Nov each year (filtered to the stock's trading history).
+          (b) Big-jump dates — days where close-to-close return exceeds ±7%
+              (both drops and rises); for each jump, PE is requested for both
+              the previous day and the jump day. A 7-day cooldown suppresses
+              subsequent jumps.
 
-        The latest trading day is NOT automatically fetched — PE for today
-        is only requested when today happens to be a quarterly snapshot
-        date or a big-jump date (same criteria as any historical date). The
-        daily price (trend) is always downloaded regardless.
+        The latest trading day is NOT automatically included — PE for today is
+        only fetched when today happens to be a quarterly snapshot date or a
+        big-jump date (same criteria as any historical date). The daily price
+        (trend) is always downloaded regardless.
 
-    Both files live under ``temps/sse_archive/``. Resumable: existing
-    ``{code}_pe.csv`` is read to skip already-fetched PE dates unless
-    ``force=True``.
+        API fallback strategy (per user request): the primary endpoint
+        (queryNewAllQuatAbel.do) is tried first. When it fails for a date, the
+        alternative endpoint (commonQuery.do from the company page's 成交统计
+        section) is tried. Whichever API last succeeded becomes the "preferred"
+        API for subsequent dates — so once the alternative starts working it is
+        kept until it fails, at which point the primary is retried. Only when
+        both APIs fail for a date is it marked as "no data".
 
-    Archive skip logic: the archive only needs to cover historical data from
-    DEFAULT_START_DATE (2020-01-01) up to the earliest date found in the
-    ``sse_trend`` directory (where daily snapshots are written by
-    ``download_sse_trend.py``). Stocks whose ``{code}_trend.csv`` already
-    contains data up to this threshold date are skipped to avoid unnecessary
-    API calls. If the ``sse_trend`` directory is empty or missing, falls back
-    to checking against the expected latest business day.
+        Returns ``(pe_fetched, pe_skipped)``.
 
-    For TODAY's snapshot (date-grouped ``sse_trend_stock_<date>.csv``), run
-    ``download_sse_trend.py`` — it fetches the SSE list endpoint (same data
-    source as ``stream_sse_price.py``).
-    """
-    archive_dir = resolve_out_dir(
-        str(Path(__file__).resolve()), TRADE_STATS_DIRNAME, out_root
-    )
-    sess = session or requests.Session()
+        Former module-level helper — moved verbatim into the job class.
+        """
+        if stats_proxy.is_blocked(SSE_TRADE_STATS_URL):
+            logger.warning("  [host-blocked] query.sse.com.cn blocked, skipping PE for %s", code)
+            return (0, 0)
 
-    today = date.today()
-    # Calculate the expected latest trading day: today if it's a trading day,
-    # otherwise the most recent previous trading day. Used for building the
-    # date-grouped PE file (sse_pe_stock_<date>.csv) at the end.
-    expected_latest_biz_date = last_business_day(today)
+        # Compute PE request dates:
+        # (a) quarterly snapshots — filtered to the stock's actual trading
+        #     history (from its first trading date to today)
+        first_date = date.fromisoformat(ohlcv_rows[0]["交易日期"])
+        quarterly_dates = [d for d in all_quarterly_dates if d >= first_date]
+        pe_date_set: set = set(quarterly_dates)
 
-    # Determine the latest biz date from existing sse_trend files (written by
-    # download_sse_trend). Used to build a date-grouped PE file for the latest
-    # date — PE for that date is only present when it happens to be a
-    # quarterly snapshot or big-jump date (today's PE is not forced).
-    trend_dir = resolve_out_dir(
-        str(Path(__file__).resolve()), "sse_trend", out_root
-    )
-    existing_latest_biz_date = _find_latest_biz_date_from_trend_dir(trend_dir)
+        # (b) big-jump dates (drops + rises, abs > 7%) with 7-day cooldown
+        jump_dates = _detect_jump_dates(ohlcv_rows)
+        pe_date_set.update(jump_dates)
 
-    # Find the earliest date from sse_trend directory to determine the start of
-    # daily snapshot tracking. The archive only needs to cover from DEFAULT_START_DATE
-    # (2020-01-01) up to this earliest date — stocks with archive data already
-    # covering this range can be skipped.
-    earliest_trend_date = _find_earliest_biz_date_from_trend_dir(trend_dir)
-    # Fall back to expected_latest_biz_date if sse_trend dir is empty/missing
-    skip_check_date = earliest_trend_date or expected_latest_biz_date
-    skip_check_str = skip_check_date.isoformat()
+        # The latest trading day is NOT automatically added — PE for today is
+        # only fetched when today naturally qualifies as a quarterly snapshot
+        # date or a big-jump date (same criteria as any historical date).
+        # The daily price (trend) is always downloaded regardless.
 
-    logger.info("Today: %s, expected latest trading day: %s", today, expected_latest_biz_date)
-    if existing_latest_biz_date:
-        logger.info("Latest biz date from sse_trend dir: %s", existing_latest_biz_date)
-    if earliest_trend_date:
-        logger.info("Earliest biz date from sse_trend dir: %s", earliest_trend_date)
-        logger.info("Archive skip threshold: %s (covers %s to %s)", skip_check_str, DEFAULT_START_DATE, skip_check_str)
+        # Filter out future dates (endpoint returns nothing for them).
+        pe_dates = sorted(d for d in pe_date_set if d <= today)
 
-    # Precompute quarterly snapshot dates from DEFAULT_START_DATE to today.
-    # Per-stock filtering by first trading date is applied inside the loop.
-    # Computed BEFORE the pre-scan so the latest quarterly date can be used
-    # to decide whether PE files are up-to-date.
-    all_quarterly_dates = _compute_quarterly_dates(int(DEFAULT_START_DATE[:4]), today.year)
-    if not all_quarterly_dates:
-        logger.error("No quarterly dates computed")
-        return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
-    logger.info(
-        "Quarterly snapshot dates (%d): %s .. %s (full SSE range %s-%d)",
-        len(all_quarterly_dates),
-        all_quarterly_dates[0].isoformat(),
-        all_quarterly_dates[-1].isoformat(),
-        DEFAULT_START_DATE[:4],
-        today.year,
-    )
+        # Prepare {code}_pe.csv for incremental appends.
+        # Resumable: if the file already exists (interrupted run), read
+        # what's already been fetched. Otherwise, start fresh.
+        pe_file = archive_dir / f"{code}_pe.csv"
+        if force and pe_file.exists():
+            pe_file.unlink()
+        if pe_file.exists():
+            existing_pe = _read_existing_trade_stats(pe_file)
+        else:
+            existing_pe = {}
+            # Create empty file with header.
+            _write_stats_csv(pe_file, [], PE_COLUMNS)
 
-    # Latest quarterly snapshot date that should be present in every PE file.
-    # Used by the pre-scan to decide whether PE data is current — a stock is
-    # only skipped when BOTH its trend file AND its PE file are up-to-date.
-    latest_quarterly_date = max(
-        (d for d in all_quarterly_dates if d <= today), default=None
-    )
-    latest_quarterly_str = (
-        latest_quarterly_date.isoformat() if latest_quarterly_date else None
-    )
+        dates_to_fetch = [
+            d for d in pe_dates if d.isoformat() not in existing_pe
+        ]
 
-    # --- Pre-scan existing archive files FIRST before DB/API ---
-    # This is critical for idempotency: only fetch for stocks that actually
-    # need updating. A stock is skipped only when BOTH:
-    #   (a) {code}_trend.csv covers up to skip_check_str (earliest sse_trend date)
-    #   (b) {code}_pe.csv contains the latest quarterly snapshot date
-    # Otherwise the stock is processed — the PE workflow skips any dates
-    # already cached and fetches only the missing ones.
-    up_to_date_stocks: set = set()
-    pe_missing_stocks: int = 0
-    if not force and archive_dir.exists():
-        for csv_file in archive_dir.glob("*_trend.csv"):
-            if not is_valid_file(csv_file, min_bytes=MIN_VALID_BYTES):
+        new_count = 0
+        pe_skipped = 0
+        # API fallback state: start with the primary (old) API. When the
+        # alternative API succeeds it becomes preferred; when it fails we
+        # switch back to primary. Both must fail for a date to be marked no-data.
+        prefer_alt = False
+        for tx_date in dates_to_fetch:
+            if stats_proxy.is_blocked(SSE_TRADE_STATS_URL):
+                logger.warning("  [host-blocked] stopping mid-stock %s", code)
+                break
+
+            # Try the preferred API first.
+            # Auto-sleep handled by proxy.get()/post()
+            if prefer_alt:
+                raw = _fetch_trade_stats_alt(sess, code, tx_date, stats_proxy)
+                used_alt = True
+            else:
+                raw = _fetch_trade_stats_primary(sess, code, tx_date, stats_proxy)
+                used_alt = False
+
+            # Preferred API failed -> try the other API.
+            if raw is None:
+                # Auto-sleep handled by proxy.get()/post()
+                if prefer_alt:
+                    raw = _fetch_trade_stats_primary(sess, code, tx_date, stats_proxy)
+                    used_alt = False
+                else:
+                    raw = _fetch_trade_stats_alt(sess, code, tx_date, stats_proxy)
+                    used_alt = True
+
+            if raw is None:
+                # Both APIs failed for this date.
+                logger.info(
+                    "  -> %s pe %s: FAILED (no data, both APIs)",
+                    code, tx_date.isoformat(),
+                )
+                pe_skipped += 1
                 continue
-            try:
-                code = csv_file.stem.replace("_trend", "")
-                with open(csv_file, encoding=CSV_ENCODING, newline="") as f:
-                    reader = csv.DictReader(f)
-                    ohlcv_rows = [dict(r) for r in reader]
-                if ohlcv_rows:
-                    latest_date_in_archive = max(
-                        r["交易日期"] for r in ohlcv_rows if r.get("交易日期")
-                    )
-                    # Skip if archive already covers up to the earliest sse_trend date
-                    # (or expected_latest_biz_date if sse_trend is empty)
-                    if latest_date_in_archive < skip_check_str:
-                        continue  # trend not up-to-date
-                    # Trend is up-to-date; also check PE file coverage.
-                    if latest_quarterly_str:
-                        pe_file = archive_dir / f"{code}_pe.csv"
-                        existing_pe = _read_existing_trade_stats(pe_file)
-                        if latest_quarterly_str not in existing_pe:
-                            pe_missing_stocks += 1
-                            continue  # PE missing latest quarterly — needs processing
-                    up_to_date_stocks.add(code)
-            except Exception:
-                continue
-        logger.info(
-            "Pre-scanned archive: %d stocks already up-to-date (skip them), "
-            "%d stocks need PE updates (latest quarterly=%s)",
-            len(up_to_date_stocks), pe_missing_stocks, latest_quarterly_str,
-        )
 
-    # dayk + list endpoints (yunhq.sse.com.cn) run on the service's "dayk"
-    # external_request_config row; the trade-stats endpoint (query.sse.com.cn)
-    # uses the lighter "trade_stats" row (stats_proxy below, used per-stock
-    # right after trend).
-    dayk_proxy = AntiBotProxy(service=SERVICE, request_type="dayk")
+            # Success: stick with the API that just worked for subsequent dates.
+            prefer_alt = used_alt
 
-    # Build the target stock list. When etf_filter=False, _fetch_all_stocks
-    # hits yunhq.sse.com.cn on the dayk proxy's pacing row.
-    if etf_filter:
-        db_conn = get_db_connection()
-        try:
-            stocks = load_target_stocks(db_conn)
-        finally:
-            db_conn.close()
-    else:
-        stocks = _fetch_all_stocks(sess, dayk_proxy)
-    if not stocks:
-        logger.error("No stocks found")
-        return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
+            row = _parse_trade_stats_row(raw, code, name)
+            new_count += 1
 
-    # Filter out already-up-to-date stocks to avoid unnecessary fetching
-    if up_to_date_stocks:
-        stocks = [(code, name) for code, name in stocks if code not in up_to_date_stocks]
-        logger.info(
-            "Filtered to %d stocks needing update (removed %d up-to-date)",
-            len(stocks), len(up_to_date_stocks),
-        )
+            # Append immediately to CSV (resumable — each fetch is saved).
+            with open(pe_file, "a", encoding=CSV_ENCODING, newline="") as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=PE_COLUMNS, extrasaction="ignore"
+                )
+                writer.writerow(row)
 
-    logger.info(
-        "Starting SSE archive download: %d stocks. Per-stock workflow: "
-        "trend (cached or API) -> PE -> next stock",
-        len(stocks),
-    )
-
-    stocks_done = 0
-    stocks_failed = 0
-    pe_rows_fetched = 0
-    pe_rows_skipped = 0
-    trend_rows_written = 0
-
-    # PE stats proxy (query.sse.com.cn) — created once, used per-stock
-    # right after each trend fetch. The trade-stats endpoint runs on the
-    # service's lighter "trade_stats" external_request_config row; an
-    # explicit *sleep_sec* argument overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = sleep_sec_for(SERVICE, "trade_stats")
-    stats_proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE, "trade_stats"), base_sleep_sec=sleep_sec,
-    ))
-
-    # ----- Per-stock workflow: trend (cached or API) -> PE -> next stock -----
-    for idx, (code, name) in enumerate(stocks):
-        if dayk_proxy.is_blocked(SSE_DAYK_URL.format(code=code)):
-            logger.warning("  [host-blocked] yunhq.sse.com.cn blocked, stopping")
-            stocks_failed += len(stocks) - idx
-            break
-
-        if (idx + 1) % 25 == 0 or idx == 0:
+            api_tag = "alt" if used_alt else "primary"
             logger.info(
-                "Stock %d/%d: %s %s", idx + 1, len(stocks), code, name,
+                "  -> %s pe %s [%s]: PE=%s, turnover=%s",
+                code, tx_date.isoformat(), api_tag,
+                row.get("静态市盈率(倍)", ""),
+                row.get("总换手率(%)", ""),
             )
 
-        trend_file = archive_dir / f"{code}_trend.csv"
+        total_pe = len(existing_pe) + new_count
+        if new_count:
+            logger.info(
+                "  -> %s pe: +%d rows (total %d, jumps=%d) -> %s",
+                code, new_count, total_pe,
+                len(jump_dates), pe_file.name,
+            )
+        elif dates_to_fetch:
+            logger.info("  -> %s pe: 0 new (all %d cached)", code, len(pe_dates))
 
-        # Skip if trend file already exists and is valid (resumable), but only
-        # if it contains data up to the earliest sse_trend date (or expected
-        # latest if sse_trend is empty). The archive only needs to cover the
-        # historical gap from DEFAULT_START_DATE (2020-01-01) up to this date.
-        ohlcv_rows: Optional[List[Dict[str, Any]]] = None
-        if not force and is_valid_file(trend_file, min_bytes=MIN_VALID_BYTES):
-            with open(trend_file, encoding=CSV_ENCODING, newline="") as f:
-                cached_rows = [dict(r) for r in csv.DictReader(f)]
-            if cached_rows:
-                latest_date_in_archive = max(
-                    r["交易日期"] for r in cached_rows if r.get("交易日期")
-                )
-                if latest_date_in_archive >= skip_check_str:
-                    ohlcv_rows = cached_rows
-                    logger.info(
-                        "  -> %s trend: %d rows (cached, up-to-date)",
-                        code, len(ohlcv_rows),
-                    )
+        return (new_count, pe_skipped)
 
-        if ohlcv_rows is None:
-            # Auto-sleep handled by proxy.get()/post()
-            dayk_data = _fetch_dayk(sess, code, dayk_proxy)
-            if dayk_data is None:
-                logger.error("  dayk fetch failed for %s, skipping", code)
-                stocks_failed += 1
-                continue
+    # ---------------------------------------------------------------------------
+    # Main entry point
+    # ---------------------------------------------------------------------------
+    def download_sse_archive(
+        self,
+        out_root: Optional[str] = None,
+        *,
+        sleep_sec: Optional[float] = None,
+        force: bool = False,
+        session: Optional[requests.Session] = None,
+        etf_filter: bool = True,
+    ) -> dict:
+        """Download SSE HISTORICAL daily price + PE data (archive mode).
 
-            kline = dayk_data.get("kline", []) or []
-            trend_start = DEFAULT_START_DATE
-            ohlcv_rows = []
-            for row in kline:
-                parsed = _parse_dayk_row(row, code, name)
-                if parsed and parsed["交易日期"] >= trend_start:
-                    ohlcv_rows.append(parsed)
+        Studies ``https://www.sse.com.cn/market/price/trends/`` 行情走势 and
+        downloads the full date range available from the dayk slider — the entire
+        trading history of each stock, not a user-specified year range.
 
-            if ohlcv_rows:
-                _write_rows(trend_file, ohlcv_rows, write_header=True)
-                # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type cols
-                from downloads._common import ensure_canonical_csv
-                ensure_canonical_csv(trend_file, "SS", sec_type="stock")
-                trend_rows_written += len(ohlcv_rows)
+        Per-stock workflow (trend → PE → next stock):
+          For each stock, the trend is fetched first (cached or API), then PE
+          is requested immediately for that stock before moving on to the next.
+
+          Trend: fetch the full OHLCV daily history from the dayk endpoint
+            (yunhq.sse.com.cn) and write ``{code}_trend.csv``.
+
+          PE: compute PE request dates and fetch 静态市盈率(倍) (PE_RATE) +
+            总换手率(%) (TO_RATE) from the SSE 成交概况 endpoint, writing
+            ``{code}_pe.csv``.
+
+            PE request dates are the union of:
+            (a) Quarterly snapshots — first trading day of Feb, Apr, May, Aug,
+                Sep, Nov each year, spanning the stock's full history.
+            (b) Big-jump dates — days where the close-to-close return exceeds
+                ±7% (both big drops AND big rises); for each jump, PE is
+                requested for both the previous day and the jump day. After each
+                jump-triggered request, a 7-day cooldown suppresses subsequent
+                jumps.
+
+            The latest trading day is NOT automatically fetched — PE for today
+            is only requested when today happens to be a quarterly snapshot
+            date or a big-jump date (same criteria as any historical date). The
+            daily price (trend) is always downloaded regardless.
+
+        Both files live under ``temps/sse_archive/``. Resumable: existing
+        ``{code}_pe.csv`` is read to skip already-fetched PE dates unless
+        ``force=True``.
+
+        Archive skip logic: the archive only needs to cover historical data from
+        DEFAULT_START_DATE (2020-01-01) up to the earliest date found in the
+        ``sse_trend`` directory (where daily snapshots are written by
+        ``download_sse_trend.py``). Stocks whose ``{code}_trend.csv`` already
+        contains data up to this threshold date are skipped to avoid unnecessary
+        API calls. If the ``sse_trend`` directory is empty or missing, falls back
+        to checking against the expected latest business day.
+
+        For TODAY's snapshot (date-grouped ``sse_trend_stock_<date>.csv``), run
+        ``download_sse_trend.py`` — it fetches the SSE list endpoint (same data
+        source as ``stream_sse_price.py``).
+
+        Former module-level orchestrator — moved verbatim into the job class;
+        ``run()`` calls it and logs the returned summary dict.
+        """
+        archive_dir = resolve_out_dir(
+            str(Path(__file__).resolve()), TRADE_STATS_DIRNAME, out_root
+        )
+        sess = session or requests.Session()
+
+        today = date.today()
+        # Calculate the expected latest trading day: today if it's a trading day,
+        # otherwise the most recent previous trading day. Used for building the
+        # date-grouped PE file (sse_pe_stock_<date>.csv) at the end.
+        expected_latest_biz_date = last_business_day(today)
+
+        # Determine the latest biz date from existing sse_trend files (written by
+        # download_sse_trend). Used to build a date-grouped PE file for the latest
+        # date — PE for that date is only present when it happens to be a
+        # quarterly snapshot or big-jump date (today's PE is not forced).
+        trend_dir = resolve_out_dir(
+            str(Path(__file__).resolve()), "sse_trend", out_root
+        )
+        existing_latest_biz_date = _find_latest_biz_date_from_trend_dir(trend_dir)
+
+        # Find the earliest date from sse_trend directory to determine the start of
+        # daily snapshot tracking. The archive only needs to cover from DEFAULT_START_DATE
+        # (2020-01-01) up to this earliest date — stocks with archive data already
+        # covering this range can be skipped.
+        earliest_trend_date = _find_earliest_biz_date_from_trend_dir(trend_dir)
+        # Fall back to expected_latest_biz_date if sse_trend dir is empty/missing
+        skip_check_date = earliest_trend_date or expected_latest_biz_date
+        skip_check_str = skip_check_date.isoformat()
+
+        logger.info("Today: %s, expected latest trading day: %s", today, expected_latest_biz_date)
+        if existing_latest_biz_date:
+            logger.info("Latest biz date from sse_trend dir: %s", existing_latest_biz_date)
+        if earliest_trend_date:
+            logger.info("Earliest biz date from sse_trend dir: %s", earliest_trend_date)
+            logger.info("Archive skip threshold: %s (covers %s to %s)", skip_check_str, DEFAULT_START_DATE, skip_check_str)
+
+        # Precompute quarterly snapshot dates from DEFAULT_START_DATE to today.
+        # Per-stock filtering by first trading date is applied inside the loop.
+        # Computed BEFORE the pre-scan so the latest quarterly date can be used
+        # to decide whether PE files are up-to-date.
+        all_quarterly_dates = _compute_quarterly_dates(int(DEFAULT_START_DATE[:4]), today.year)
+        if not all_quarterly_dates:
+            logger.error("No quarterly dates computed")
+            return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
+        logger.info(
+            "Quarterly snapshot dates (%d): %s .. %s (full SSE range %s-%d)",
+            len(all_quarterly_dates),
+            all_quarterly_dates[0].isoformat(),
+            all_quarterly_dates[-1].isoformat(),
+            DEFAULT_START_DATE[:4],
+            today.year,
+        )
+
+        # Latest quarterly snapshot date that should be present in every PE file.
+        # Used by the pre-scan to decide whether PE data is current — a stock is
+        # only skipped when BOTH its trend file AND its PE file are up-to-date.
+        latest_quarterly_date = max(
+            (d for d in all_quarterly_dates if d <= today), default=None
+        )
+        latest_quarterly_str = (
+            latest_quarterly_date.isoformat() if latest_quarterly_date else None
+        )
+
+        # --- Pre-scan existing archive files FIRST before DB/API ---
+        # This is critical for idempotency: only fetch for stocks that actually
+        # need updating. A stock is skipped only when BOTH:
+        #   (a) {code}_trend.csv covers up to skip_check_str (earliest sse_trend date)
+        #   (b) {code}_pe.csv contains the latest quarterly snapshot date
+        # Otherwise the stock is processed — the PE workflow skips any dates
+        # already cached and fetches only the missing ones.
+        up_to_date_stocks: set = set()
+        pe_missing_stocks: int = 0
+        if not force and archive_dir.exists():
+            for csv_file in archive_dir.glob("*_trend.csv"):
+                if not is_valid_file(csv_file, min_bytes=MIN_VALID_BYTES):
+                    continue
+                try:
+                    code = csv_file.stem.replace("_trend", "")
+                    with open(csv_file, encoding=CSV_ENCODING, newline="") as f:
+                        reader = csv.DictReader(f)
+                        ohlcv_rows = [dict(r) for r in reader]
+                    if ohlcv_rows:
+                        latest_date_in_archive = max(
+                            r["交易日期"] for r in ohlcv_rows if r.get("交易日期")
+                        )
+                        # Skip if archive already covers up to the earliest sse_trend date
+                        # (or expected_latest_biz_date if sse_trend is empty)
+                        if latest_date_in_archive < skip_check_str:
+                            continue  # trend not up-to-date
+                        # Trend is up-to-date; also check PE file coverage.
+                        if latest_quarterly_str:
+                            pe_file = archive_dir / f"{code}_pe.csv"
+                            existing_pe = _read_existing_trade_stats(pe_file)
+                            if latest_quarterly_str not in existing_pe:
+                                pe_missing_stocks += 1
+                                continue  # PE missing latest quarterly — needs processing
+                        up_to_date_stocks.add(code)
+                except Exception:
+                    continue
+            logger.info(
+                "Pre-scanned archive: %d stocks already up-to-date (skip them), "
+                "%d stocks need PE updates (latest quarterly=%s)",
+                len(up_to_date_stocks), pe_missing_stocks, latest_quarterly_str,
+            )
+
+        # dayk + list endpoints (yunhq.sse.com.cn) run on the service's "dayk"
+        # external_request_config row; the trade-stats endpoint (query.sse.com.cn)
+        # uses the lighter "trade_stats" row (stats_proxy below, used per-stock
+        # right after trend).
+        dayk_proxy = AntiBotProxy(service=SERVICE, request_type="dayk")
+
+        # Build the target stock list. When etf_filter=False, _fetch_all_stocks
+        # hits yunhq.sse.com.cn on the dayk proxy's pacing row.
+        if etf_filter:
+            db_conn = get_db_connection()
+            try:
+                stocks = load_target_stocks(db_conn)
+            finally:
+                db_conn.close()
+        else:
+            stocks = _fetch_all_stocks(sess, dayk_proxy)
+        if not stocks:
+            logger.error("No stocks found")
+            return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
+
+        # Filter out already-up-to-date stocks to avoid unnecessary fetching
+        if up_to_date_stocks:
+            stocks = [(code, name) for code, name in stocks if code not in up_to_date_stocks]
+            logger.info(
+                "Filtered to %d stocks needing update (removed %d up-to-date)",
+                len(stocks), len(up_to_date_stocks),
+            )
+
+        logger.info(
+            "Starting SSE archive download: %d stocks. Per-stock workflow: "
+            "trend (cached or API) -> PE -> next stock",
+            len(stocks),
+        )
+
+        stocks_done = 0
+        stocks_failed = 0
+        pe_rows_fetched = 0
+        pe_rows_skipped = 0
+        trend_rows_written = 0
+
+        # PE stats proxy (query.sse.com.cn) — created once, used per-stock
+        # right after each trend fetch. The trade-stats endpoint runs on the
+        # service's lighter "trade_stats" external_request_config row; an
+        # explicit *sleep_sec* argument overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = sleep_sec_for(SERVICE, "trade_stats")
+        stats_proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE, "trade_stats"), base_sleep_sec=sleep_sec,
+        ))
+
+        # ----- Per-stock workflow: trend (cached or API) -> PE -> next stock -----
+        for idx, (code, name) in enumerate(stocks):
+            if dayk_proxy.is_blocked(SSE_DAYK_URL.format(code=code)):
+                logger.warning("  [host-blocked] yunhq.sse.com.cn blocked, stopping")
+                stocks_failed += len(stocks) - idx
+                break
+
+            if (idx + 1) % 25 == 0 or idx == 0:
                 logger.info(
-                    "  -> %s trend: %d rows -> %s",
-                    code, len(ohlcv_rows), trend_file.name,
+                    "Stock %d/%d: %s %s", idx + 1, len(stocks), code, name,
+                )
+
+            trend_file = archive_dir / f"{code}_trend.csv"
+
+            # Skip if trend file already exists and is valid (resumable), but only
+            # if it contains data up to the earliest sse_trend date (or expected
+            # latest if sse_trend is empty). The archive only needs to cover the
+            # historical gap from DEFAULT_START_DATE (2020-01-01) up to this date.
+            ohlcv_rows: Optional[List[Dict[str, Any]]] = None
+            if not force and is_valid_file(trend_file, min_bytes=MIN_VALID_BYTES):
+                with open(trend_file, encoding=CSV_ENCODING, newline="") as f:
+                    cached_rows = [dict(r) for r in csv.DictReader(f)]
+                if cached_rows:
+                    latest_date_in_archive = max(
+                        r["交易日期"] for r in cached_rows if r.get("交易日期")
+                    )
+                    if latest_date_in_archive >= skip_check_str:
+                        ohlcv_rows = cached_rows
+                        logger.info(
+                            "  -> %s trend: %d rows (cached, up-to-date)",
+                            code, len(ohlcv_rows),
+                        )
+
+            if ohlcv_rows is None:
+                # Auto-sleep handled by proxy.get()/post()
+                dayk_data = _fetch_dayk(sess, code, dayk_proxy)
+                if dayk_data is None:
+                    logger.error("  dayk fetch failed for %s, skipping", code)
+                    stocks_failed += 1
+                    continue
+
+                kline = dayk_data.get("kline", []) or []
+                trend_start = DEFAULT_START_DATE
+                ohlcv_rows = []
+                for row in kline:
+                    parsed = _parse_dayk_row(row, code, name)
+                    if parsed and parsed["交易日期"] >= trend_start:
+                        ohlcv_rows.append(parsed)
+
+                if ohlcv_rows:
+                    _write_rows(trend_file, ohlcv_rows, write_header=True)
+                    # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type cols
+                    from downloads._common import ensure_canonical_csv
+                    ensure_canonical_csv(trend_file, "SS", sec_type="stock")
+                    trend_rows_written += len(ohlcv_rows)
+                    logger.info(
+                        "  -> %s trend: %d rows -> %s",
+                        code, len(ohlcv_rows), trend_file.name,
+                    )
+                else:
+                    logger.info("  -> %s trend: no dayk data", code)
+                    continue  # no OHLCV -> cannot compute PE dates
+
+            # --- PE requests for this stock (immediately after trend) ---
+            if stats_proxy.is_blocked(SSE_TRADE_STATS_URL):
+                logger.debug(
+                    "  [host-blocked] query.sse.com.cn blocked, skipping PE for %s",
+                    code,
                 )
             else:
-                logger.info("  -> %s trend: no dayk data", code)
-                continue  # no OHLCV -> cannot compute PE dates
+                f, s = self._run_pe_for_stock(
+                    code, name, ohlcv_rows, archive_dir, sess,
+                    stats_proxy, all_quarterly_dates, today, force=force,
+                )
+                pe_rows_fetched += f
+                pe_rows_skipped += s
+            stocks_done += 1
 
-        # --- PE requests for this stock (immediately after trend) ---
-        if stats_proxy.is_blocked(SSE_TRADE_STATS_URL):
-            logger.debug(
-                "  [host-blocked] query.sse.com.cn blocked, skipping PE for %s",
-                code,
-            )
-        else:
-            f, s = _run_pe_for_stock(
-                code, name, ohlcv_rows, archive_dir, sess,
-                stats_proxy, all_quarterly_dates, today, force=force,
-            )
-            pe_rows_fetched += f
-            pe_rows_skipped += s
-        stocks_done += 1
+        logger.info(
+            "Per-stock workflow done: %d/%d stocks done, %d failed, "
+            "%d trend rows written, %d PE rows fetched, %d PE rows skipped",
+            stocks_done, len(stocks), stocks_failed,
+            trend_rows_written, pe_rows_fetched, pe_rows_skipped,
+        )
 
-    logger.info(
-        "Per-stock workflow done: %d/%d stocks done, %d failed, "
-        "%d trend rows written, %d PE rows fetched, %d PE rows skipped",
-        stocks_done, len(stocks), stocks_failed,
-        trend_rows_written, pe_rows_fetched, pe_rows_skipped,
-    )
+        # Build date-grouped PE file for the expected latest biz date.
+        pe_group_rows = _build_date_grouped_pe_file(
+            trend_dir, archive_dir, stocks, expected_latest_biz_date
+        )
 
-    # Build date-grouped PE file for the expected latest biz date.
-    pe_group_rows = _build_date_grouped_pe_file(
-        trend_dir, archive_dir, stocks, expected_latest_biz_date
-    )
+        logger.info(
+            "Done SSE archive. stocks_done=%d stocks_failed=%d "
+            "pe_fetched=%d pe_skipped=%d trend_rows=%d pe_group_rows=%d "
+            "archive_dir=%s",
+            stocks_done, stocks_failed, pe_rows_fetched, pe_rows_skipped,
+            trend_rows_written, pe_group_rows, archive_dir,
+        )
+        return {
+            "downloaded": stocks_done,
+            "failed": stocks_failed,
+            "pe_rows_fetched": pe_rows_fetched,
+            "pe_rows_skipped": pe_rows_skipped,
+            "trend_rows_written": trend_rows_written,
+            "archive_dir": str(archive_dir),
+            "total_stocks": len(stocks),
+        }
 
-    logger.info(
-        "Done SSE archive. stocks_done=%d stocks_failed=%d "
-        "pe_fetched=%d pe_skipped=%d trend_rows=%d pe_group_rows=%d "
-        "archive_dir=%s",
-        stocks_done, stocks_failed, pe_rows_fetched, pe_rows_skipped,
-        trend_rows_written, pe_group_rows, archive_dir,
-    )
-    return {
-        "downloaded": stocks_done,
-        "failed": stocks_failed,
-        "pe_rows_fetched": pe_rows_fetched,
-        "pe_rows_skipped": pe_rows_skipped,
-        "trend_rows_written": trend_rows_written,
-        "archive_dir": str(archive_dir),
-        "total_stocks": len(stocks),
-    }
+    def run(self) -> None:
+        """One fetch cycle (the former __main__ body verbatim)."""
+        logger.info(self.download_sse_archive(force=self.args.force, etf_filter=not self.args.no_etf_filter))
 
 
 if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(
-        description="Download SSE HISTORICAL daily price + 成交统计 PE/turnover "
-                    "(default: only stocks held by ETFs). "
-                    "Per-stock workflow: trend (cached or API) -> PE -> next "
-                    "stock. Trend -> {code}_trend.csv, PE -> {code}_pe.csv "
-                    "for quarterly snapshots and >7%% big-jump dates. "
-                    "For TODAY's snapshot, use download_sse_trend.py instead."
-    )
-    ap.add_argument(
-        "--no-etf-filter", action="store_true",
-        help="Disable the ETF filter and fetch ALL SSE equities "
-             "from the SSE list endpoint instead.",
-    )
-    ap.add_argument("--force", action="store_true",
-                    help="Overwrite existing per-stock CSV files.")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    logger.info(download_sse_archive(force=args.force, etf_filter=not args.no_etf_filter))
+    SseStockArchiveDownload().execute()

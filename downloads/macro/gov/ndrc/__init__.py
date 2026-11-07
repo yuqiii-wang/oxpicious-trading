@@ -12,14 +12,15 @@ Only the list is scraped — detail links are NOT followed (no per-article
 crawling). Anti-bot, CSV writing, and caching are provided by the shared
 internal :mod:`downloads.macro.gov.main_gov` module.
 
-Usage::
-
-    python -m downloads.macro.gov.ndrc                       # backfill to 2020-01-01
-    python -m downloads.macro.gov.ndrc --start-date 2024-01-01
-    python -m downloads.macro.gov.ndrc --force                # re-fetch today's pages
+The entry point is the :class:`GovNdrcDownload` DownloadJob — the former
+``main()``/``run_cli`` CLI surface became its ``add_arguments``/``run``
+(byte-identical) and the pagination fetch moved onto the
+:class:`GovNdrcFetcher` class (body unchanged); the pure URL/HTML/row
+helpers stay module-level.
 """
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from datetime import date
@@ -37,14 +38,15 @@ from bs4 import BeautifulSoup  # noqa: E402
 from downloads._common import (  # noqa: E402
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
+    DownloadJob,
     service_urls,
 )
 from downloads.macro.gov.main_gov import (  # noqa: E402
     SourceConfig,
+    download_source,
     parse_date_str,
-    run_cli,
+    setup_logger,
 )
-from downloads.macro.gov.main_gov import setup_logger  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Constants
@@ -131,79 +133,6 @@ def parse_list_html(html: str) -> List[Dict[str, Any]]:
 
 
 # ----------------------------------------------------------------------------
-# Fetcher
-# ----------------------------------------------------------------------------
-def fetch_ndrc_pages(
-    session: Any,
-    proxy: Any,
-    config: SourceConfig,
-    floor: Optional[date] = None,
-) -> Optional[List[Dict[str, Any]]]:
-    """Paginate the NDRC list newest-to-oldest and accumulate raw items.
-
-    Stops when a page returns no items, the host is blocked, or the oldest
-    date on a page is on/before the stop date: *floor* (incremental mode —
-    the last pub_date already available in the titles CSV) when given, else
-    the 2020-01-01 backfill floor. The stop page may straddle the boundary;
-    the orchestrator re-filters and dedupes against the existing CSV.
-    """
-    headers = dict(COMMON_BASE_HEADERS)
-    headers["Referer"] = config.list_url
-
-    stop_floor = floor if floor is not None else parse_date_str(DEFAULT_START_DATE)
-
-    all_items: List[Dict[str, Any]] = []
-    for page in range(1, MAX_PAGES + 1):
-        if proxy.is_blocked(NDRC_HOST):
-            logger.warning("  host blocked — stopping pagination at page %d", page)
-            break
-
-        url = _page_url(page)
-        logger.info("[%s] page %d (%s)", config.name, page, url)
-        resp = proxy.get(
-            session, url,
-            headers=headers,
-            logger=logger, log_tag="  ",
-        )
-        if resp is None:
-            # 4xx / network failure — proxy already logged. Page 1 failure is
-            # a hard error; later pages just mean we've passed the end.
-            if page == 1:
-                logger.error("  first page fetch failed; aborting")
-                return None
-            logger.info("  page %d fetch failed -> end of pagination", page)
-            break
-
-        resp.encoding = resp.apparent_encoding or "utf-8"
-        items = parse_list_html(resp.text)
-        if not items:
-            logger.info("  page %d returned no items -> end of pagination", page)
-            break
-
-        all_items.extend(items)
-        dates = [parse_date_str(it["pub_date"]) for it in items]
-        dates = [d for d in dates if d is not None]
-        oldest = min(dates) if dates else None
-        newest = max(dates) if dates else None
-        logger.info(
-            "  page %d: %d items [%s .. %s]",
-            page, len(items),
-            oldest.strftime("%Y-%m-%d") if oldest else "-",
-            newest.strftime("%Y-%m-%d") if newest else "-",
-        )
-
-        # Stop once we've reached the already-downloaded range (incremental)
-        # or the backfill floor — pages are newest-first, so this bounds the
-        # sweep. The stop page's tail is deduped/filtered by the orchestrator.
-        if stop_floor is not None and oldest is not None and oldest <= stop_floor:
-            logger.info("  reached last-available date %s on page %d -> stopping", stop_floor, page)
-            break
-
-    logger.info("[%s] fetched %d items across pages", config.name, len(all_items))
-    return all_items
-
-
-# ----------------------------------------------------------------------------
 # Parser
 # ----------------------------------------------------------------------------
 def parse_ndrc_items(raw_items: List[Dict[str, Any]], start: date) -> List[Dict[str, str]]:
@@ -219,13 +148,125 @@ def parse_ndrc_items(raw_items: List[Dict[str, Any]], start: date) -> List[Dict[
 
 
 # ----------------------------------------------------------------------------
-# CLI
+# Fetcher
 # ----------------------------------------------------------------------------
-def main() -> None:
-    run_cli(CONFIG, fetch_ndrc_pages, parse_ndrc_items,
-            "Download ndrc.gov.cn 新闻发布 news title list to CSV",
-            service="downloads.macro.gov.ndrc")
+class GovNdrcFetcher:
+    """The ndrc.gov.cn 新闻发布 pagination fetcher — the former
+    ``fetch_ndrc_pages`` function as a method with unchanged body. Stateless:
+    session and proxy are built per run by the orchestrator."""
+
+    def fetch_ndrc_pages(
+        self,
+        session: Any,
+        proxy: Any,
+        config: SourceConfig,
+        floor: Optional[date] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Paginate the NDRC list newest-to-oldest and accumulate raw items.
+
+        Stops when a page returns no items, the host is blocked, or the oldest
+        date on a page is on/before the stop date: *floor* (incremental mode —
+        the last pub_date already available in the titles CSV) when given, else
+        the 2020-01-01 backfill floor. The stop page may straddle the boundary;
+        the orchestrator re-filters and dedupes against the existing CSV.
+        """
+        headers = dict(COMMON_BASE_HEADERS)
+        headers["Referer"] = config.list_url
+
+        stop_floor = floor if floor is not None else parse_date_str(DEFAULT_START_DATE)
+
+        all_items: List[Dict[str, Any]] = []
+        for page in range(1, MAX_PAGES + 1):
+            if proxy.is_blocked(NDRC_HOST):
+                logger.warning("  host blocked — stopping pagination at page %d", page)
+                break
+
+            url = _page_url(page)
+            logger.info("[%s] page %d (%s)", config.name, page, url)
+            resp = proxy.get(
+                session, url,
+                headers=headers,
+                logger=logger, log_tag="  ",
+            )
+            if resp is None:
+                # 4xx / network failure — proxy already logged. Page 1 failure is
+                # a hard error; later pages just mean we've passed the end.
+                if page == 1:
+                    logger.error("  first page fetch failed; aborting")
+                    return None
+                logger.info("  page %d fetch failed -> end of pagination", page)
+                break
+
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            items = parse_list_html(resp.text)
+            if not items:
+                logger.info("  page %d returned no items -> end of pagination", page)
+                break
+
+            all_items.extend(items)
+            dates = [parse_date_str(it["pub_date"]) for it in items]
+            dates = [d for d in dates if d is not None]
+            oldest = min(dates) if dates else None
+            newest = max(dates) if dates else None
+            logger.info(
+                "  page %d: %d items [%s .. %s]",
+                page, len(items),
+                oldest.strftime("%Y-%m-%d") if oldest else "-",
+                newest.strftime("%Y-%m-%d") if newest else "-",
+            )
+
+            # Stop once we've reached the already-downloaded range (incremental)
+            # or the backfill floor — pages are newest-first, so this bounds the
+            # sweep. The stop page's tail is deduped/filtered by the orchestrator.
+            if stop_floor is not None and oldest is not None and oldest <= stop_floor:
+                logger.info("  reached last-available date %s on page %d -> stopping", stop_floor, page)
+                break
+
+        logger.info("[%s] fetched %d items across pages", config.name, len(all_items))
+        return all_items
+
+
+# ----------------------------------------------------------------------------
+# CLI — DownloadJob entry (the former run_cli surface, byte-identical)
+# ----------------------------------------------------------------------------
+class GovNdrcDownload(DownloadJob):
+    """DownloadJob for the ndrc.gov.cn 新闻发布 title list — the former
+    ``main()``/``run_cli`` body is ``run()`` verbatim and the shared
+    ``build_cli`` argument surface is ``add_arguments``; the pagination
+    fetch is the GovNdrcFetcher held in ``__init__``."""
+
+    description = "Download ndrc.gov.cn 新闻发布 news title list to CSV"
+    component = "ndrc_news"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fetcher = GovNdrcFetcher()
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        # Byte-identical to main_gov.build_cli(service=SERVICE).
+        parser.add_argument("--start-date", type=str, default=None,
+                            help=f"Floor date YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                            help="Anti-bot sleep between requests (s). Default: "
+                                 f"external_request_config JSON for {SERVICE}")
+        parser.add_argument("--out-root", type=str, default=None,
+                            help="Output root dir. Default: <project>/temps/<source>")
+        parser.add_argument("--force", action="store_true",
+                            help="Force re-fetch of today's raw snapshot even if cached.")
+
+    def run(self) -> None:
+        """One download cycle — the former ``run_cli`` body (argparse parsing
+        is owned by the base template methods)."""
+        summary = download_source(
+            CONFIG, self.fetcher.fetch_ndrc_pages, parse_ndrc_items,
+            out_root=self.args.out_root,
+            start_date=self.args.start_date,
+            service=SERVICE,
+            sleep_sec=self.args.sleep_sec,
+            force=self.args.force,
+        )
+        logger.info(summary)
 
 
 if __name__ == "__main__":
-    main()
+    GovNdrcDownload().execute()

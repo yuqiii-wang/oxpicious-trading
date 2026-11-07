@@ -16,7 +16,7 @@
  * through the same spawn as any run — a WSL session's children die only
  * when its wsl.exe client exits, and this API server holds the client for
  * the keeper's whole life (runWslScript, e.g. the stream-always keeper in
- * api/routes/monitor.ts POST /stream-always). The flip side: the keeper's
+ * api/routes/monitor/stream-always.ts POST /stream-always). The flip side: the keeper's
  * lifetime is the API server's lifetime.
  */
 import { spawn } from "child_process";

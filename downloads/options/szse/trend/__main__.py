@@ -9,6 +9,12 @@ days, skipping dates already in the DB. Also skips dates with local 0-byte
 CSV markers (previously fetched but no data found). Note: options_identity
 has no exchange column (PK is date + contract_code), so db_exchange
 is intentionally omitted.
+
+The entry point is the :class:`SzseOptionsTrendDownload` DownloadJob — the
+former module body is its ``run()`` and the ``download_szse_trend_option``
+orchestration function became the method of the same name (same signature
+and body); the request-config constants and the tiny param/log-tag builders
+stay module-level.
 """
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ from typing import Dict, Optional
 
 import requests
 
-from downloads._common import service_urls
+from downloads._common import DownloadJob, service_urls
 from downloads._common.exchanges.szse import (
     build_headers,
     run_szse_download,
@@ -78,38 +84,48 @@ def _trend_log_tag(security_type: str, ymd: str) -> str:
     return f"[trend-{security_type} {ymd}]"
 
 
-def download_szse_trend_option(
-    out_root: Optional[str] = None,
-    end_date: Optional[str] = None,
-    start_date: str = "2025-07-01",
-    sleep_sec: Optional[float] = None,
-    session: Optional[requests.Session] = None,
-) -> dict:
-    """Download SZSE option (tab6) trend data; pacing resolves from the
-    ``downloads.options.szse.trend`` external_request_config JSON row
-    (an explicit *sleep_sec* overrides the row's base sleep only)."""
-    return run_szse_download(
-        caller_file=str(Path(__file__).resolve()),
-        out_dirname="szse_trend",
-        banner_label="trend-option",
-        security_cfgs=SECURITY_CFGS,
-        headers=TREND_HEADERS,
-        params_builder=_build_trend_params,
-        log_tag_fn=_trend_log_tag,
-        out_root=out_root,
-        end_date=end_date,
-        start_date=start_date,
-        security_types=["option"],
-        sleep_sec=sleep_sec,
-        session=session,
-        service=SERVICE,
-        exchange="SZ",
-        db_table_by_type=DB_TABLE_BY_TYPE,
-        skip_empty_markers=True,
-    )
+class SzseOptionsTrendDownload(DownloadJob):
+    """DownloadJob for the SZSE option trend fetch cycle — the former module
+    body is ``run()`` and the ``download_szse_trend_option`` function is the
+    method of the same name (same signature and body verbatim); pacing and
+    date range stay per-call arguments. The module had no argparse."""
+
+    description = "Download SZSE option (tab6) trend market data day by day."
+
+    def download_szse_trend_option(
+        self,
+        out_root: Optional[str] = None,
+        end_date: Optional[str] = None,
+        start_date: str = "2025-07-01",
+        sleep_sec: Optional[float] = None,
+        session: Optional[requests.Session] = None,
+    ) -> dict:
+        """Download SZSE option (tab6) trend data; pacing resolves from the
+        ``downloads.options.szse.trend`` external_request_config JSON row
+        (an explicit *sleep_sec* overrides the row's base sleep only)."""
+        return run_szse_download(
+            caller_file=str(Path(__file__).resolve()),
+            out_dirname="szse_trend",
+            banner_label="trend-option",
+            security_cfgs=SECURITY_CFGS,
+            headers=TREND_HEADERS,
+            params_builder=_build_trend_params,
+            log_tag_fn=_trend_log_tag,
+            out_root=out_root,
+            end_date=end_date,
+            start_date=start_date,
+            security_types=["option"],
+            sleep_sec=sleep_sec,
+            session=session,
+            service=SERVICE,
+            exchange="SZ",
+            db_table_by_type=DB_TABLE_BY_TYPE,
+            skip_empty_markers=True,
+        )
+
+    def run(self) -> None:
+        logger.info(self.download_szse_trend_option())
 
 
 if __name__ == "__main__":
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    logger.info(download_szse_trend_option())
+    SzseOptionsTrendDownload().execute()

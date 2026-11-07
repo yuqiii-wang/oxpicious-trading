@@ -51,6 +51,6 @@
  "11": {
   "script": "builds.text",
   "can_be_parallel": false,
-  "note": "loads the temps/ai_daily/*.json artifacts written by downloads.macro.ai_daily: answers + reference hits -> text.news, Q&A -> text.llm_qa (+ llm_qa_refs / news-group provenance)"
+  "note": "loads the temps/ai_daily/*.json artifacts written by downloads.macro.ai_daily: answers + reference hits -> text.news, Q&A -> llm.llm_qa (+ llm_qa_refs / news-group provenance)"
  }
 }

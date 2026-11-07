@@ -42,6 +42,14 @@ Usage:
   python download_szse_index_composition.py --skip-cached
   python download_szse_index_composition.py --force-month-start
   python download_szse_index_composition.py --out-root /tmp/szse_comp
+
+Code motion only (2026-11-07): the former ``__main__`` body is the
+:class:`SzseIndexCompositionDownload` DownloadJob ``run()`` and the fetch
+orchestration functions (``fetch_index_page`` /
+``fetch_all_pages_for_index`` / ``save_to_csv`` /
+``download_szse_index_composition``) are methods of the same names (same
+signatures and bodies verbatim); the pure name/date helpers and constants
+stay module-level.
 """
 from __future__ import annotations
 
@@ -61,6 +69,7 @@ import requests
 
 from downloads._common import (
     AntiBotProxy,
+    DownloadJob,
     antibot_config_for,
     setup_logger,
     resolve_out_dir,
@@ -220,458 +229,468 @@ def _parse_subname_date(subname: str) -> Optional[str]:
     return None
 
 
-def fetch_index_page(
-    session: requests.Session,
-    index_code: str,
-    page_no: int,
-    base_headers: Dict[str, str],
-    proxy: Optional[AntiBotProxy] = None,
-) -> Optional[Dict[str, Any]]:
-    """Fetch a single page of index composition data from SZSE API.
+class SzseIndexCompositionDownload(DownloadJob):
+    """DownloadJob for the SZSE index composition fetch cycle — the former
+    ``__main__`` body is ``run()`` and the fetch orchestration functions
+    (``fetch_index_page`` / ``fetch_all_pages_for_index`` / ``save_to_csv`` /
+    ``download_szse_index_composition``) are methods of the same names
+    (same signatures and bodies verbatim); the pure name/date helpers and
+    constants stay module-level."""
 
-    Returns the parsed JSON response dict, or None on failure.
-    """
-    if proxy is None:
-        # Pacing (sleep/jitter/timeouts/toggles) from the service's
-        # external_request_config JSON row.
-        proxy = AntiBotProxy(service=SERVICE)
+    description = ("Download SZSE index composition (constituent stocks) "
+                   "from szse.cn.")
 
-    params: Dict[str, Any] = {
-        "SHOWTYPE": "JSON",
-        "CATALOGID": "1747",
-        "TABKEY": "tab1",
-        "PAGENO": page_no,
-        "ZSDM": index_code,
-    }
-    if page_no == 1:
-        params["loading"] = "first"
-
-    for attempt in range(1, 5):
-        resp = proxy.get(
-            session,
-            SZSE_INDEX_API,
-            params=params,
-            headers=base_headers,
-            logger=logger,
-            log_tag=f"[szse-index {index_code} p{page_no}]",
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--index-codes", type=str, default=None,
+            help="Comma-separated list of index codes (default: 399001,399006,399812,399348,399346). "
+                 "Example: --index-codes 399001,399006,399004",
         )
-        if resp is None:
-            if attempt == 4:
-                logger.error(
-                    "[szse-index %s p%d] fetch error after 4 attempts",
-                    index_code, page_no,
-                )
-                return None
-            backoff = 2.0 * attempt
-            logger.warning(
-                "[szse-index %s p%d] attempt %d failed, retry in %.1fs",
-                index_code, page_no, attempt, backoff,
+        parser.add_argument(
+            "--out-root", type=str, default=None,
+            help="Alternative output root directory",
+        )
+        parser.add_argument(
+            "--no-skip-cached", action="store_true", default=False,
+            help="Re-download even if a cached CSV exists",
+        )
+        parser.add_argument(
+            "--force-month-start", action="store_true", default=False,
+            help="Force month-start behavior: bypass cache and stamp CSVs with "
+                 "today's date (overrides API snapshot_date). For testing the "
+                 "monthly refresh flow on any day.",
+        )
+        parser.add_argument(
+            "--sleep-sec", type=float, default=None,
+            help="Sleep seconds between downloads "
+                 f"(default: external_request_config JSON for {SERVICE})",
+        )
+
+    def fetch_index_page(
+        self,
+        session: requests.Session,
+        index_code: str,
+        page_no: int,
+        base_headers: Dict[str, str],
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch a single page of index composition data from SZSE API.
+
+        Returns the parsed JSON response dict, or None on failure.
+        """
+        if proxy is None:
+            # Pacing (sleep/jitter/timeouts/toggles) from the service's
+            # external_request_config JSON row.
+            proxy = AntiBotProxy(service=SERVICE)
+
+        params: Dict[str, Any] = {
+            "SHOWTYPE": "JSON",
+            "CATALOGID": "1747",
+            "TABKEY": "tab1",
+            "PAGENO": page_no,
+            "ZSDM": index_code,
+        }
+        if page_no == 1:
+            params["loading"] = "first"
+
+        for attempt in range(1, 5):
+            resp = proxy.get(
+                session,
+                SZSE_INDEX_API,
+                params=params,
+                headers=base_headers,
+                logger=logger,
+                log_tag=f"[szse-index {index_code} p{page_no}]",
             )
-            proxy.sleep(backoff)
-            continue
-
-        try:
-            payload = resp.json()
-        except ValueError as e:
-            if attempt == 4:
-                logger.error(
-                    "[szse-index %s p%d] json parse error: %s",
-                    index_code, page_no, e,
+            if resp is None:
+                if attempt == 4:
+                    logger.error(
+                        "[szse-index %s p%d] fetch error after 4 attempts",
+                        index_code, page_no,
+                    )
+                    return None
+                backoff = 2.0 * attempt
+                logger.warning(
+                    "[szse-index %s p%d] attempt %d failed, retry in %.1fs",
+                    index_code, page_no, attempt, backoff,
                 )
-                return None
-            backoff = 2.0 * attempt
-            proxy.sleep(backoff)
-            continue
+                proxy.sleep(backoff)
+                continue
 
-        return payload
-
-    return None
-
-
-def fetch_all_pages_for_index(
-    session: requests.Session,
-    index_code: str,
-    base_headers: Dict[str, str],
-    proxy: Optional[AntiBotProxy] = None,
-) -> Optional[Dict[str, Any]]:
-    """Fetch all pages of composition data for a single index.
-
-    Returns a dict with:
-      - snapshot_date: str
-      - index_code: str
-      - index_name: str
-      - constituents: list of dicts with keys:
-          stock_code, stock_name, zgb, ltgb, industry, calc_flag
-    Returns None on failure.
-    """
-    if proxy is None:
-        # Pacing (sleep/jitter/timeouts/toggles) from the service's
-        # external_request_config JSON row.
-        proxy = AntiBotProxy(service=SERVICE)
-
-    # Fetch first page to get metadata
-    first_page = fetch_index_page(session, index_code, 1, base_headers, proxy)
-    if first_page is None:
-        logger.error("[%s] Failed to fetch first page", index_code)
-        return None
-
-    if isinstance(first_page, list) and first_page:
-        item0 = first_page[0]
-    elif isinstance(first_page, dict):
-        item0 = first_page
-    else:
-        logger.error("[%s] Unexpected response type: %s", index_code, type(first_page))
-        return None
-
-    metadata = item0.get("metadata") or {}
-    pagecount = int(metadata.get("pagecount") or 0)
-    recordcount = int(metadata.get("recordcount") or 0)
-    subname = metadata.get("subname", "")
-
-    snapshot_date = _parse_subname_date(subname)
-    if not snapshot_date:
-        logger.error("[%s] Could not parse snapshot_date from subname: %s", index_code, subname)
-        return None
-
-    index_name = _get_szse_index_name(index_code)
-    # Try to extract a more specific name from subname
-    m = re.match(r"^\d+\s+(.+?)\s+\d{4}-\d{2}-\d{2}$", subname)
-    if m:
-        index_name = m.group(1).strip()
-
-    logger.info(
-        "[%s] %s: %d records, %d pages, snapshot=%s",
-        index_code, index_name, recordcount, pagecount, snapshot_date,
-    )
-
-    all_data: List[Dict[str, Any]] = list(item0.get("data") or [])
-
-    for pno in range(2, pagecount + 1):
-        if proxy.is_blocked(SZSE_INDEX_API):
-            logger.warning("[%s] szse.cn blocked, stopping pagination at page %d",
-                           index_code, pno)
-            break
-
-        page_data = fetch_index_page(session, index_code, pno, base_headers, proxy)
-        if page_data is None:
-            logger.warning("[%s] Failed to fetch page %d, continuing", index_code, pno)
-            continue
-
-        if isinstance(page_data, list) and page_data:
-            page_item = page_data[0]
-        elif isinstance(page_data, dict):
-            page_item = page_data
-        else:
-            continue
-
-        page_rows = page_item.get("data") or []
-        all_data.extend(page_rows)
-
-        logger.info("[%s] p%d/%d: %d rows (cumulative: %d)",
-                    index_code, pno, pagecount, len(page_rows), len(all_data))
-        # Base sleep from the proxy's external_request_config JSON row.
-        proxy.sleep()
-
-    if not all_data:
-        logger.warning("[%s] No constituent data found", index_code)
-        return None
-
-    constituents = []
-    for row in all_data:
-        if not isinstance(row, dict):
-            continue
-        zqdm = str(row.get("zqdm", "")).strip()
-        if not zqdm or not zqdm.isdigit() or len(zqdm) != 6:
-            continue
-
-        # Determine exchange from code:
-        # 000xxx / 300xxx / 301xxx -> SZ
-        # 600xxx / 601xxx / 603xxx / 605xxx / 688xxx -> SS
-        # 8xxxxx -> BJ
-        exchange = get_exchange_from_code(zqdm)
-        if exchange:
-            stock_code = f"{zqdm}.{exchange}"
-        else:
-            stock_code = zqdm  # keep bare code if exchange unknown
-
-        constituents.append({
-            "stock_code": stock_code,
-            "stock_name": str(row.get("zqjc", "")).strip(),
-            "zgb": str(row.get("zgb", "")).replace(",", "").strip(),
-            "ltgb": str(row.get("ltgb", "")).replace(",", "").strip(),
-            "industry": str(row.get("hylb", "")).strip(),
-            "calc_flag": str(row.get("nrzsjs", "")).strip(),
-        })
-
-    # Compute weights based on float shares (ltgb)
-    # Only include stocks with calc_flag=1 (included in index calculation)
-    ltgb_values = []
-    for c in constituents:
-        if c["calc_flag"] == "1" and c["ltgb"]:
             try:
-                ltgb_values.append(float(c["ltgb"]))
-            except ValueError:
-                pass
+                payload = resp.json()
+            except ValueError as e:
+                if attempt == 4:
+                    logger.error(
+                        "[szse-index %s p%d] json parse error: %s",
+                        index_code, page_no, e,
+                    )
+                    return None
+                backoff = 2.0 * attempt
+                proxy.sleep(backoff)
+                continue
 
-    total_ltgb = sum(ltgb_values) if ltgb_values else 1.0
+            return payload
 
-    for c in constituents:
-        if c["calc_flag"] == "1" and c["ltgb"]:
-            try:
-                ltgb_val = float(c["ltgb"])
-                c["weight_pct"] = round((ltgb_val / total_ltgb) * 100.0, 6)
-            except ValueError:
-                c["weight_pct"] = 0.0
+        return None
+
+    def fetch_all_pages_for_index(
+        self,
+        session: requests.Session,
+        index_code: str,
+        base_headers: Dict[str, str],
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch all pages of composition data for a single index.
+
+        Returns a dict with:
+          - snapshot_date: str
+          - index_code: str
+          - index_name: str
+          - constituents: list of dicts with keys:
+              stock_code, stock_name, zgb, ltgb, industry, calc_flag
+        Returns None on failure.
+        """
+        if proxy is None:
+            # Pacing (sleep/jitter/timeouts/toggles) from the service's
+            # external_request_config JSON row.
+            proxy = AntiBotProxy(service=SERVICE)
+
+        # Fetch first page to get metadata
+        first_page = self.fetch_index_page(session, index_code, 1, base_headers, proxy)
+        if first_page is None:
+            logger.error("[%s] Failed to fetch first page", index_code)
+            return None
+
+        if isinstance(first_page, list) and first_page:
+            item0 = first_page[0]
+        elif isinstance(first_page, dict):
+            item0 = first_page
         else:
-            c["weight_pct"] = 0.0
+            logger.error("[%s] Unexpected response type: %s", index_code, type(first_page))
+            return None
 
-    # Sort by weight descending
-    constituents.sort(key=lambda x: x["weight_pct"], reverse=True)
+        metadata = item0.get("metadata") or {}
+        pagecount = int(metadata.get("pagecount") or 0)
+        recordcount = int(metadata.get("recordcount") or 0)
+        subname = metadata.get("subname", "")
 
-    logger.info("[%s] %d constituents, sum(weights)=%.4f%%",
-                index_code, len(constituents),
-                sum(c["weight_pct"] for c in constituents))
+        snapshot_date = _parse_subname_date(subname)
+        if not snapshot_date:
+            logger.error("[%s] Could not parse snapshot_date from subname: %s", index_code, subname)
+            return None
 
-    return {
-        "snapshot_date": snapshot_date,
-        "index_code": index_code,
-        "index_name": index_name,
-        "constituents": constituents,
-    }
+        index_name = _get_szse_index_name(index_code)
+        # Try to extract a more specific name from subname
+        m = re.match(r"^\d+\s+(.+?)\s+\d{4}-\d{2}-\d{2}$", subname)
+        if m:
+            index_name = m.group(1).strip()
 
-
-def save_to_csv(
-    result: Dict[str, Any],
-    out_dir: Path,
-    override_date: Optional[str] = None,
-) -> Path:
-    """Save the downloaded composition data to a CSV file.
-
-    CSV schema: snapshot_date, index_code, index_name, stock_code, stock_name, weight_pct
-
-    When *override_date* is set (YYYY-MM-DD), it replaces the API's
-    snapshot_date in both the DataFrame and the filename — used by the
-    month-start refresh to stamp the CSV with today's date.
-    """
-    snapshot_date = override_date or result["snapshot_date"]
-    index_code = result["index_code"]
-    index_name = result["index_name"]
-    constituents = result["constituents"]
-
-    df = pd.DataFrame(constituents)
-    if df.empty:
-        raise ValueError(f"No constituent data for {index_code}")
-
-    df["snapshot_date"] = snapshot_date
-    df["index_code"] = index_code
-    df["index_name"] = index_name
-
-    # Select and order columns
-    out_cols = [
-        "snapshot_date", "index_code", "index_name",
-        "stock_code", "stock_name", "weight_pct",
-    ]
-    # Add extra columns for debugging
-    for col in ["zgb", "ltgb", "industry", "calc_flag"]:
-        if col in df.columns:
-            out_cols.append(col)
-
-    df = df[out_cols]
-
-    ymd = snapshot_date.replace("-", "")
-    csv_name = f"{index_code}_closeweight_{ymd}.csv"
-    csv_path = out_dir / csv_name
-    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    logger.info("  [saved] %s (%d constituents)%s", csv_name, len(df),
-                f" (month-start stamp={override_date})" if override_date else "")
-    return csv_path
-
-
-def download_szse_index_composition(
-    *,
-    index_codes: Optional[List[str]] = None,
-    out_root: Optional[str] = None,
-    skip_cached: bool = True,
-    sleep_sec: Optional[float] = None,
-    force_month_start: bool = False,
-) -> dict:
-    """Download SZSE index composition data for the given index codes.
-
-    Args:
-        index_codes: list of 6-digit SZSE index codes (default: DEFAULT_INDEX_CODES)
-        out_root: alternative output root directory
-        skip_cached: skip indices that already have a cached CSV
-        sleep_sec: sleep between downloads
-        force_month_start: force month-start behavior (bypass cache + stamp
-            CSVs with today's date) regardless of the actual calendar day.
-
-    Returns:
-        Summary dict with download stats and output directory.
-    """
-    out_dir = resolve_out_dir(
-        str(Path(__file__).resolve()), "szse_index_composition", out_root
-    )
-
-    if not index_codes:
-        index_codes = list(DEFAULT_INDEX_CODES)
-
-    if not index_codes:
-        logger.warning("No index codes to download")
-        return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
-
-    # Month-start trigger: on the 1st of each month (or when forced), bypass
-    # the cache and stamp CSVs with today's date so a fresh monthly snapshot
-    # flows to prod even if the API still reports the previous biz day.
-    today = date.today()
-    month_start = force_month_start or is_month_start(today)
-    if month_start:
-        skip_cached = False
         logger.info(
-            "Month-start refresh (today=%s, forced=%s): bypassing cache and "
-            "stamping CSVs with today's date (overrides API snapshot_date).",
-            today.isoformat(), force_month_start,
+            "[%s] %s: %d records, %d pages, snapshot=%s",
+            index_code, index_name, recordcount, pagecount, snapshot_date,
         )
 
-    logger.info(
-        "Starting SZSE index composition download: %d indices, out=%s",
-        len(index_codes), out_dir,
-    )
+        all_data: List[Dict[str, Any]] = list(item0.get("data") or [])
 
-    session = build_default_session()
-    stats = RunStats()
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
-    # overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
-
-    results: List[Dict[str, Any]] = []
-
-    try:
-        for code in index_codes:
-            code = str(code).strip()
-            if not code:
-                continue
-
-            name = _get_szse_index_name(code)
-            logger.info("== Index %s (%s) ==", code, name)
-
-            # Check cache (skipped during month-start refresh — every index is
-            # re-downloaded so the new month's snapshot is created in prod).
-            if not month_start:
-                csv_files = sorted(out_dir.glob(f"{code}_closeweight_*.csv"))
-                if skip_cached and csv_files:
-                    latest_csv = csv_files[-1]
-                    if is_valid_file(latest_csv, min_bytes=100):
-                        logger.info("  [cache] %s already cached: %s", code, latest_csv.name)
-                        stats.skipped_cached += 1
-                        results.append({
-                            "code": code, "name": name,
-                            "status": "cached", "file": str(latest_csv),
-                        })
-                        continue
-
+        for pno in range(2, pagecount + 1):
             if proxy.is_blocked(SZSE_INDEX_API):
-                logger.warning("  [host-blocked] szse.cn blocked, skipping %s", code)
-                stats.failed += 1
-                results.append({"code": code, "name": name, "status": "blocked"})
+                logger.warning("[%s] szse.cn blocked, stopping pagination at page %d",
+                               index_code, pno)
+                break
+
+            page_data = self.fetch_index_page(session, index_code, pno, base_headers, proxy)
+            if page_data is None:
+                logger.warning("[%s] Failed to fetch page %d, continuing", index_code, pno)
                 continue
 
-            browser_profile = random_browser_profile()
-
-            # Fetch all pages
-            result = fetch_all_pages_for_index(
-                session, code, browser_profile, proxy
-            )
-            if result is None:
-                stats.failed += 1
-                results.append({
-                    "code": code, "name": name,
-                    "status": "download_failed",
-                })
+            if isinstance(page_data, list) and page_data:
+                page_item = page_data[0]
+            elif isinstance(page_data, dict):
+                page_item = page_data
+            else:
                 continue
 
-            # Save to CSV. On month-start refresh, stamp the CSV with today's
-            # date (overriding the API's snapshot_date, which is usually the
-            # previous business day) so a fresh monthly snapshot flows to
-            # prod (stats.sec_composition) under the new month's date.
-            out_dir.mkdir(parents=True, exist_ok=True)
-            override_date = today.isoformat() if month_start else None
-            csv_path = save_to_csv(result, out_dir, override_date=override_date)
+            page_rows = page_item.get("data") or []
+            all_data.extend(page_rows)
 
-            stats.downloaded += 1
-            stats.files.append(str(csv_path))
-            results.append({
-                "code": code,
-                "name": name,
-                "status": "downloaded",
-                "file": str(csv_path),
-                "n_constituents": len(result["constituents"]),
-                "snapshot_date": override_date or result["snapshot_date"],
-                "month_start": month_start,
+            logger.info("[%s] p%d/%d: %d rows (cumulative: %d)",
+                        index_code, pno, pagecount, len(page_rows), len(all_data))
+            # Base sleep from the proxy's external_request_config JSON row.
+            proxy.sleep()
+
+        if not all_data:
+            logger.warning("[%s] No constituent data found", index_code)
+            return None
+
+        constituents = []
+        for row in all_data:
+            if not isinstance(row, dict):
+                continue
+            zqdm = str(row.get("zqdm", "")).strip()
+            if not zqdm or not zqdm.isdigit() or len(zqdm) != 6:
+                continue
+
+            # Determine exchange from code:
+            # 000xxx / 300xxx / 301xxx -> SZ
+            # 600xxx / 601xxx / 603xxx / 605xxx / 688xxx -> SS
+            # 8xxxxx -> BJ
+            exchange = get_exchange_from_code(zqdm)
+            if exchange:
+                stock_code = f"{zqdm}.{exchange}"
+            else:
+                stock_code = zqdm  # keep bare code if exchange unknown
+
+            constituents.append({
+                "stock_code": stock_code,
+                "stock_name": str(row.get("zqjc", "")).strip(),
+                "zgb": str(row.get("zgb", "")).replace(",", "").strip(),
+                "ltgb": str(row.get("ltgb", "")).replace(",", "").strip(),
+                "industry": str(row.get("hylb", "")).strip(),
+                "calc_flag": str(row.get("nrzsjs", "")).strip(),
             })
 
-            proxy.sleep(sleep_sec)
+        # Compute weights based on float shares (ltgb)
+        # Only include stocks with calc_flag=1 (included in index calculation)
+        ltgb_values = []
+        for c in constituents:
+            if c["calc_flag"] == "1" and c["ltgb"]:
+                try:
+                    ltgb_values.append(float(c["ltgb"]))
+                except ValueError:
+                    pass
 
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+        total_ltgb = sum(ltgb_values) if ltgb_values else 1.0
 
-    summary = stats.to_dict(
-        out_dir=str(out_dir),
-        n_indices=len(index_codes),
-        results=results,
-    )
-    logger.info(
-        "Done SZSE index composition. downloaded=%d skipped_cached=%d failed=%d",
-        stats.downloaded, stats.skipped_cached, stats.failed,
-    )
-    return summary
+        for c in constituents:
+            if c["calc_flag"] == "1" and c["ltgb"]:
+                try:
+                    ltgb_val = float(c["ltgb"])
+                    c["weight_pct"] = round((ltgb_val / total_ltgb) * 100.0, 6)
+                except ValueError:
+                    c["weight_pct"] = 0.0
+            else:
+                c["weight_pct"] = 0.0
+
+        # Sort by weight descending
+        constituents.sort(key=lambda x: x["weight_pct"], reverse=True)
+
+        logger.info("[%s] %d constituents, sum(weights)=%.4f%%",
+                    index_code, len(constituents),
+                    sum(c["weight_pct"] for c in constituents))
+
+        return {
+            "snapshot_date": snapshot_date,
+            "index_code": index_code,
+            "index_name": index_name,
+            "constituents": constituents,
+        }
+
+    def save_to_csv(
+        self,
+        result: Dict[str, Any],
+        out_dir: Path,
+        override_date: Optional[str] = None,
+    ) -> Path:
+        """Save the downloaded composition data to a CSV file.
+
+        CSV schema: snapshot_date, index_code, index_name, stock_code, stock_name, weight_pct
+
+        When *override_date* is set (YYYY-MM-DD), it replaces the API's
+        snapshot_date in both the DataFrame and the filename — used by the
+        month-start refresh to stamp the CSV with today's date.
+        """
+        snapshot_date = override_date or result["snapshot_date"]
+        index_code = result["index_code"]
+        index_name = result["index_name"]
+        constituents = result["constituents"]
+
+        df = pd.DataFrame(constituents)
+        if df.empty:
+            raise ValueError(f"No constituent data for {index_code}")
+
+        df["snapshot_date"] = snapshot_date
+        df["index_code"] = index_code
+        df["index_name"] = index_name
+
+        # Select and order columns
+        out_cols = [
+            "snapshot_date", "index_code", "index_name",
+            "stock_code", "stock_name", "weight_pct",
+        ]
+        # Add extra columns for debugging
+        for col in ["zgb", "ltgb", "industry", "calc_flag"]:
+            if col in df.columns:
+                out_cols.append(col)
+
+        df = df[out_cols]
+
+        ymd = snapshot_date.replace("-", "")
+        csv_name = f"{index_code}_closeweight_{ymd}.csv"
+        csv_path = out_dir / csv_name
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        logger.info("  [saved] %s (%d constituents)%s", csv_name, len(df),
+                    f" (month-start stamp={override_date})" if override_date else "")
+        return csv_path
+
+    def download_szse_index_composition(
+        self,
+        *,
+        index_codes: Optional[List[str]] = None,
+        out_root: Optional[str] = None,
+        skip_cached: bool = True,
+        sleep_sec: Optional[float] = None,
+        force_month_start: bool = False,
+    ) -> dict:
+        """Download SZSE index composition data for the given index codes.
+
+        Args:
+            index_codes: list of 6-digit SZSE index codes (default: DEFAULT_INDEX_CODES)
+            out_root: alternative output root directory
+            skip_cached: skip indices that already have a cached CSV
+            sleep_sec: sleep between downloads
+            force_month_start: force month-start behavior (bypass cache + stamp
+                CSVs with today's date) regardless of the actual calendar day.
+
+        Returns:
+            Summary dict with download stats and output directory.
+        """
+        out_dir = resolve_out_dir(
+            str(Path(__file__).resolve()), "szse_index_composition", out_root
+        )
+
+        if not index_codes:
+            index_codes = list(DEFAULT_INDEX_CODES)
+
+        if not index_codes:
+            logger.warning("No index codes to download")
+            return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
+
+        # Month-start trigger: on the 1st of each month (or when forced), bypass
+        # the cache and stamp CSVs with today's date so a fresh monthly snapshot
+        # flows to prod even if the API still reports the previous biz day.
+        today = date.today()
+        month_start = force_month_start or is_month_start(today)
+        if month_start:
+            skip_cached = False
+            logger.info(
+                "Month-start refresh (today=%s, forced=%s): bypassing cache and "
+                "stamping CSVs with today's date (overrides API snapshot_date).",
+                today.isoformat(), force_month_start,
+            )
+
+        logger.info(
+            "Starting SZSE index composition download: %d indices, out=%s",
+            len(index_codes), out_dir,
+        )
+
+        session = build_default_session()
+        stats = RunStats()
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+        # overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
+
+        results: List[Dict[str, Any]] = []
+
+        try:
+            for code in index_codes:
+                code = str(code).strip()
+                if not code:
+                    continue
+
+                name = _get_szse_index_name(code)
+                logger.info("== Index %s (%s) ==", code, name)
+
+                # Check cache (skipped during month-start refresh — every index is
+                # re-downloaded so the new month's snapshot is created in prod).
+                if not month_start:
+                    csv_files = sorted(out_dir.glob(f"{code}_closeweight_*.csv"))
+                    if skip_cached and csv_files:
+                        latest_csv = csv_files[-1]
+                        if is_valid_file(latest_csv, min_bytes=100):
+                            logger.info("  [cache] %s already cached: %s", code, latest_csv.name)
+                            stats.skipped_cached += 1
+                            results.append({
+                                "code": code, "name": name,
+                                "status": "cached", "file": str(latest_csv),
+                            })
+                            continue
+
+                if proxy.is_blocked(SZSE_INDEX_API):
+                    logger.warning("  [host-blocked] szse.cn blocked, skipping %s", code)
+                    stats.failed += 1
+                    results.append({"code": code, "name": name, "status": "blocked"})
+                    continue
+
+                browser_profile = random_browser_profile()
+
+                # Fetch all pages
+                result = self.fetch_all_pages_for_index(
+                    session, code, browser_profile, proxy
+                )
+                if result is None:
+                    stats.failed += 1
+                    results.append({
+                        "code": code, "name": name,
+                        "status": "download_failed",
+                    })
+                    continue
+
+                # Save to CSV. On month-start refresh, stamp the CSV with today's
+                # date (overriding the API's snapshot_date, which is usually the
+                # previous business day) so a fresh monthly snapshot flows to
+                # prod (stats.sec_composition) under the new month's date.
+                out_dir.mkdir(parents=True, exist_ok=True)
+                override_date = today.isoformat() if month_start else None
+                csv_path = self.save_to_csv(result, out_dir, override_date=override_date)
+
+                stats.downloaded += 1
+                stats.files.append(str(csv_path))
+                results.append({
+                    "code": code,
+                    "name": name,
+                    "status": "downloaded",
+                    "file": str(csv_path),
+                    "n_constituents": len(result["constituents"]),
+                    "snapshot_date": override_date or result["snapshot_date"],
+                    "month_start": month_start,
+                })
+
+                proxy.sleep(sleep_sec)
+
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
+
+        summary = stats.to_dict(
+            out_dir=str(out_dir),
+            n_indices=len(index_codes),
+            results=results,
+        )
+        logger.info(
+            "Done SZSE index composition. downloaded=%d skipped_cached=%d failed=%d",
+            stats.downloaded, stats.skipped_cached, stats.failed,
+        )
+        return summary
+
+    def run(self) -> None:
+        codes = None
+        if self.args.index_codes:
+            codes = [c.strip() for c in self.args.index_codes.split(",") if c.strip()]
+
+        result = self.download_szse_index_composition(
+            index_codes=codes,
+            out_root=self.args.out_root,
+            skip_cached=not self.args.no_skip_cached,
+            sleep_sec=self.args.sleep_sec,
+            force_month_start=self.args.force_month_start,
+        )
+        logger.info(result)
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download SZSE index composition (constituent stocks) from szse.cn."
-    )
-    ap.add_argument(
-        "--index-codes", type=str, default=None,
-        help="Comma-separated list of index codes (default: 399001,399006,399812,399348,399346). "
-             "Example: --index-codes 399001,399006,399004",
-    )
-    ap.add_argument(
-        "--out-root", type=str, default=None,
-        help="Alternative output root directory",
-    )
-    ap.add_argument(
-        "--no-skip-cached", action="store_true", default=False,
-        help="Re-download even if a cached CSV exists",
-    )
-    ap.add_argument(
-        "--force-month-start", action="store_true", default=False,
-        help="Force month-start behavior: bypass cache and stamp CSVs with "
-             "today's date (overrides API snapshot_date). For testing the "
-             "monthly refresh flow on any day.",
-    )
-    ap.add_argument(
-        "--sleep-sec", type=float, default=None,
-        help="Sleep seconds between downloads "
-             f"(default: external_request_config JSON for {SERVICE})",
-    )
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    codes = None
-    if args.index_codes:
-        codes = [c.strip() for c in args.index_codes.split(",") if c.strip()]
-
-    result = download_szse_index_composition(
-        index_codes=codes,
-        out_root=args.out_root,
-        skip_cached=not args.no_skip_cached,
-        sleep_sec=args.sleep_sec,
-        force_month_start=args.force_month_start,
-    )
-    logger.info(result)
+    SzseIndexCompositionDownload().execute()

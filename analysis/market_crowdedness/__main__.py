@@ -143,6 +143,7 @@ from _common.df_utils import (
     host_unique,
 )
 from _common.labels import SEC_TYPE_CODE
+from _common.sql_views import render_sql_view
 from analysis._common import sanitize_for_db_insert
 
 logger = setup_logging("market_crowdedness")
@@ -284,112 +285,11 @@ IDENTITY_TABLE = {
 
 
 # ---------------------------------------------------------------------------
-#  Raw-input SQL (fetch only — every computation lives in pandas below)
+#  Raw-input SQL (fetch only — every computation lives in pandas below;
+#  the SELECTs render from database/sql_views/analysis/
+#  market_crowdedness/__main__/ at call time)
 # ---------------------------------------------------------------------------
 
-# Full active classified index universe (the UI nav's index side:
-# stats.sec_classification type='index', is_active) — latest composition
-# snapshot per index. Explicitly authorized full-universe scope (2026-10-31;
-# was the 10 study indices during the initial implementation).
-INDEX_MEMBERSHIP_SQL = """
-    WITH latest AS (
-        SELECT code, MAX(snapshot_date) AS max_date
-        FROM stats.sec_composition
-        WHERE source_type = 'index'
-          AND stock_code IS NOT NULL
-        GROUP BY code
-    )
-    SELECT sc.code AS pool_code, sc.stock_code
-    FROM stats.sec_composition sc
-    JOIN latest ld
-        ON sc.code = ld.code AND sc.snapshot_date = ld.max_date
-    WHERE sc.source_type = 'index'
-      AND sc.stock_code IS NOT NULL
-      AND sc.weight_pct > 0
-      AND sc.code IN (
-          SELECT cls.code FROM stats.sec_classification cls
-          WHERE cls.type = 'index' AND cls.is_active = TRUE
-      )
-"""
-
-# Industry pools: the builds.cross_stats latest/holdings/industry_stocks
-# CTE chain (the single source of truth for industry-union membership).
-INDUSTRY_MEMBERSHIP_SQL = """
-    WITH latest AS (
-        SELECT code, MAX(snapshot_date) AS max_date
-        FROM stats.sec_composition
-        WHERE source_type = 'index'
-          AND stock_code IS NOT NULL
-        GROUP BY code
-    ),
-    holdings AS (
-        SELECT sc.code, sc.stock_code
-        FROM stats.sec_composition sc
-        JOIN latest ld
-            ON sc.code = ld.code AND sc.snapshot_date = ld.max_date
-        WHERE sc.source_type = 'index'
-          AND sc.stock_code IS NOT NULL
-    ),
-    industry_stocks AS (
-        SELECT DISTINCT cls.industry_id, h.stock_code
-        FROM holdings h
-        JOIN stats.sec_classification cls
-            ON cls.code = h.code AND cls.type = 'index'
-        WHERE cls.industry_id IS NOT NULL
-          AND cls.industry_id <> ''
-          AND cls.is_active = TRUE
-          AND cls.is_industry_not_strategy = TRUE
-    )
-    SELECT industry_id AS pool_code, stock_code FROM industry_stocks
-"""
-
-# Per-stock daily trading amount (yuan). trading_amount > 0 drops the
-# streaming placeholder rows and suspended stocks — they are outside the
-# day's active pool by definition.
-AMOUNT_SQL = """
-    SELECT code AS stock_code,
-           extract(epoch from date)::float8 AS date,
-           trading_amount::float8 AS amt
-    FROM stats.stock_liquidity_margin
-    WHERE code = ANY($1::text[])
-      AND trading_amount > 0
-      AND date >= $2::date
-      AND date <= $3::date
-    ORDER BY code, date ASC
-"""
-
-# Per-stock daily return + pe (the v2 co-movement / valuation pillars).
-# pct_change is NULL on the SSE archive (streaming-era rows only
-# partially populate it), while close is fully populated — the return is
-# derived as close/prev_close − 1 per stock where pct_change is missing
-# (the same change/prev_close identity the SSE source itself uses for
-# pct_change). pe is NULL for loss-making / no-data names.
-RETURN_SQL = """
-    SELECT code AS stock_code,
-           extract(epoch from date)::float8 AS date,
-           pct_change::float8 AS pct,
-           close::float8 AS close,
-           pe::float8 AS pe
-    FROM stats.stock_basic_stats
-    WHERE code = ANY($1::text[])
-      AND (pct_change IS NOT NULL OR close IS NOT NULL OR pe IS NOT NULL)
-      AND date >= $2::date
-      AND date <= $3::date
-    ORDER BY code, date ASC
-"""
-
-# Latest display name per member stock (top_stocks evidence).
-STOCK_NAME_SQL = """
-    SELECT DISTINCT ON (code) code AS stock_code, name
-    FROM stats.stock_identity
-    WHERE code = ANY($1::text[])
-    ORDER BY code, date DESC
-"""
-
-
-# ---------------------------------------------------------------------------
-#  Fetch
-# ---------------------------------------------------------------------------
 
 async def _fetch_membership(conn, sec_types: tuple[str, ...]) -> pd.DataFrame:
     """Fetch the per-(pool, stock) membership frames for the scoped
@@ -398,14 +298,22 @@ async def _fetch_membership(conn, sec_types: tuple[str, ...]) -> pd.DataFrame:
     rule)."""
     parts: list[pd.DataFrame] = []
     if "index" in sec_types:
-        rows = await conn.fetch(INDEX_MEMBERSHIP_SQL)
+        # analysis/market_crowdedness/__main__/index_membership
+        view = render_sql_view(
+            "analysis/market_crowdedness/__main__/index_membership",
+        )
+        rows = await conn.fetch(view.sql)
         if rows:
             df = pd.DataFrame(rec_cols(rows),
                               columns=["pool_code", "stock_code"])
             df = df.assign(sec_type=np.int16(SEC_TYPE_CODE["index"]))
             parts.append(df)
     if "industry" in sec_types:
-        rows = await conn.fetch(INDUSTRY_MEMBERSHIP_SQL)
+        # analysis/market_crowdedness/__main__/industry_membership
+        view = render_sql_view(
+            "analysis/market_crowdedness/__main__/industry_membership",
+        )
+        rows = await conn.fetch(view.sql)
         if rows:
             df = pd.DataFrame(rec_cols(rows),
                               columns=["pool_code", "stock_code"])
@@ -421,6 +329,10 @@ async def _fetch_membership(conn, sec_types: tuple[str, ...]) -> pd.DataFrame:
     return members
 
 
+# ---------------------------------------------------------------------------
+#  Fetch
+# ---------------------------------------------------------------------------
+
 async def _fetch_amounts(
     conn,
     stock_codes: list[str],
@@ -431,7 +343,12 @@ async def _fetch_amounts(
     [stock_code, date(datetime64[us]), amt(float64)]."""
     if not stock_codes:
         return pd.DataFrame(columns=["stock_code", "date", "amt"])
-    rows = await conn.fetch(AMOUNT_SQL, sorted(stock_codes), lo, hi)
+    # analysis/market_crowdedness/__main__/amounts
+    view = render_sql_view(
+        "analysis/market_crowdedness/__main__/amounts",
+        stock_codes=sorted(stock_codes), lo=lo, hi=hi,
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["stock_code", "date", "amt"])
     cols = rec_cols(rows)
@@ -455,7 +372,12 @@ async def _fetch_returns(
     empty_cols = ["stock_code", "date", "ret", "pe"]
     if not stock_codes:
         return pd.DataFrame(columns=empty_cols)
-    rows = await conn.fetch(RETURN_SQL, sorted(stock_codes), lo, hi)
+    # analysis/market_crowdedness/__main__/returns
+    view = render_sql_view(
+        "analysis/market_crowdedness/__main__/returns",
+        stock_codes=sorted(stock_codes), lo=lo, hi=hi,
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=empty_cols)
     cols = rec_cols(rows)
@@ -473,7 +395,12 @@ async def _fetch_stock_names(conn, stock_codes: list[str]) -> dict[str, str]:
     """Latest display name per stock code (name falls back to the code)."""
     if not stock_codes:
         return {}
-    rows = await conn.fetch(STOCK_NAME_SQL, sorted(stock_codes))
+    # analysis/market_crowdedness/__main__/stock_names
+    view = render_sql_view(
+        "analysis/market_crowdedness/__main__/stock_names",
+        stock_codes=sorted(stock_codes),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     return {
         r["stock_code"]: (r["name"] if r["name"] else r["stock_code"])
         for r in rows

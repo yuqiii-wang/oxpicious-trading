@@ -65,10 +65,3 @@ COMMENT ON COLUMN stats.sec_board_map.snapshot_date IS 'Composition snapshot_dat
 
 CREATE INDEX IF NOT EXISTS idx_sec_board_map_sec_type
     ON stats.sec_board_map (sec_type);
-
--- Idempotent migration (2026-09-30): strip the exchange suffix from ETF
--- codes — ETF codes are BARE 6-digit everywhere now (stock rows keep
--- their suffix; index codes were already bare).
-UPDATE stats.sec_board_map
-   SET code = split_part(code, '.', 1)
- WHERE sec_type = 'etf' AND code ~ '^\d{6}\.';

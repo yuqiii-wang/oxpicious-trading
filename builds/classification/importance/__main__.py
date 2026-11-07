@@ -57,8 +57,9 @@ Incremental contract: without --force the run is a NO-OP when the table
 already has an as_of within the current month (the nightly main_run tier
 invokes it daily; it rebuilds once per month). --force always rebuild.
 
-The :class:`ImportanceBuild` entry class (a :class:`DataBuild` subclass)
-owns the runtime lifecycle. SQL-only compute (no pandas) — the whole
+The :class:`ImportanceBuild` entry class (a :class:`ClassificationBuild`
+subclass — inheritance mirrors the directory layout) owns the runtime
+lifecycle. SQL-only compute (no pandas) — the whole
 ranking is ONE asyncpg query + the curated-rank overlay; the result
 (~15K rows, single chunk) is written with the plain upsert rung per the
 db-sql-write size ladder.
@@ -73,7 +74,7 @@ bootstrap_runtime()
 
 from typing import Dict, List  # noqa: E402
 
-from _common.data_build import DataBuild  # noqa: E402
+from builds.classification.__main__ import ClassificationBuild  # noqa: E402
 from _common.db_commons import (  # noqa: E402
     bulk_upsert_async,
     truncate_table_async,
@@ -272,7 +273,7 @@ SELECT code, sec_type, exchange, importance_rank,
 """
 
 
-class ImportanceBuild(DataBuild):
+class ImportanceBuild(ClassificationBuild):
     """``python -m builds.classification.importance`` — monthly rank rebuild."""
 
     title = "BUILD SEC IMPORTANCE RANKS  ·  curated 0-1 + computed 2-9  ·  monthly"

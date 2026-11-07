@@ -92,7 +92,9 @@ from _common.db_commons import chunked_purge_async
 from _common.db_commons import csv_copy_from_frame_async
 from _common.df_utils import host_array, host_unique
 from _common.labels import SEC_TYPE_CODE, SEC_TYPE_LABEL
+from _common.sql_views import frag, render_sql_view
 from analysis._common import upsert_analysis_identity
+from analysis.mov_ave_spread._common import StepRun, TableStep
 from analysis.mov_ave_spread._common.steps import sec_type_code
 from analysis.mov_ave_spread.config import (
     HIGH_LOW_PCT_GAP_TOLERANCE,
@@ -126,6 +128,18 @@ _STREAK_CHUNK_ROWS = 200_000
 #  Fetch (bands for the audited scope — computed earlier in the same run)
 # ---------------------------------------------------------------------------
 
+# Band-fetch views (database/sql_views/analysis/mov_ave_spread/steps/
+# high_low_pct_streaks/): the bands table name rides in as a fragment
+# (the config-driven HIGH_LOW_PCT_TABLE).
+_BANDS_BY_SEC_TYPE_VIEW = (
+    "analysis/mov_ave_spread/steps/high_low_pct_streaks/bands_by_sec_type"
+)
+_BANDS_BY_SEC_TYPE_CODE_VIEW = (
+    "analysis/mov_ave_spread/steps/high_low_pct_streaks/"
+    "bands_by_sec_type_code"
+)
+
+
 async def fetch_bands_async(
     conn, sec_type: str, code: str | None = None,
 ) -> pd.DataFrame:
@@ -136,16 +150,16 @@ async def fetch_bands_async(
     the table holds the current scope's bands (in --code mode the
     caller deleted + recomputed the code's bands first).
     """
-    where = "WHERE sec_type = $1"
-    args: list = [SEC_TYPE_CODE[sec_type]]
+    args: dict = {
+        "bands_table": frag(HIGH_LOW_PCT_TABLE),
+        "sec_type": SEC_TYPE_CODE[sec_type],
+    }
+    view_name = _BANDS_BY_SEC_TYPE_VIEW
     if code is not None:
-        where += " AND code = $2"
-        args.append(code)
-    rows = await conn.fetch(
-        f"SELECT sec_type, code, date_year_month, period, pct_type, "
-        f"high_val, low_val FROM {HIGH_LOW_PCT_TABLE} {where}",
-        *args,
-    )
+        view_name = _BANDS_BY_SEC_TYPE_CODE_VIEW
+        args["code"] = code
+    view = render_sql_view(view_name, **args)
+    rows = await conn.fetch(view.sql, *view.params)
     cols = rec_cols(rows)
     if not cols:
         return pd.DataFrame(
@@ -433,19 +447,11 @@ async def _copy_streaks_chunked(conn, streaks: pd.DataFrame) -> int:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__)
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
+#  wholesale flow overrides TableStep.execute itself)
 # ---------------------------------------------------------------------------
 
-async def run_high_low_pct_streaks(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
+class HighLowPctStreaksStep(TableStep):
     """Run the band-break streak pipeline against the source data already
     loaded by the parent mov_ave_spread.
 
@@ -455,91 +461,123 @@ async def run_high_low_pct_streaks(
     run, compute the excursion streaks from the parent source
     DataFrame, CSV-COPY insert, registry upsert.
 
-    Args:
-      conn: asyncpg connection (reused from parent).
+    Args (now run fields / the execute sec_type argument):
+      run.conn: asyncpg connection (reused from parent).
       df: source DataFrame with at least _STREAK_SRC_COLS — FULL
           per-code history of the sec_type(s).
-      force: accepted for API symmetry (the wholesale DELETE below
+      run.force: accepted for API symmetry (the wholesale DELETE below
               already covers the force semantics).
-      pool: accepted for API compatibility (unused — sequential COPY).
-      max_concurrent: accepted for API compatibility (unused).
+      run.pool: accepted for API compatibility (unused — sequential
+              COPY).
+      run.max_concurrent: accepted for API compatibility (unused).
       sec_type: when provided, process only this sec_type (parent loop
                 passes one sec_type at a time to bound memory). When
                 None, infers sec_types from the DataFrame.
-      code_filter: single-code mode (--code): the caller deleted this
-                   code's streak rows; only this code is processed.
+      run.code_filter: single-code mode (--code): the caller deleted
+                   this code's streak rows; only this code is processed.
     """
-    t0 = time.time()
-    logger.info("\n" + "=" * 78)
-    logger.info("  MOV_AVE_HIGH_LOW_PCT_STREAKS (internal step of "
-          "mov_ave_spread)")
-    logger.info("=" * 78)
-    if code_filter is not None:
-        logger.info(f"    mode: SINGLE-CODE (full streak rebuild for "
-              f"{code_filter})")
-    else:
-        logger.info("    mode: WHOLESALE per sec_type (episodes shift with "
-              "new data; margin_changes precedent)")
 
-    if df.empty:
-        logger.info("    -> no source data; skipping streaks step.")
-        return
+    title = ("MOV_AVE_HIGH_LOW_PCT_STREAKS (internal step of "
+             "mov_ave_spread)")
+    tag = "s"
+    table = HIGH_LOW_PCT_STREAKS_TABLE
+    analysis_name = HIGH_LOW_PCT_STREAKS_NAME
+    detail_name = "mov_ave_high_low_pct_streaks"
+    description = HIGH_LOW_PCT_STREAKS_DESCRIPTION
+    needed_cols = _STREAK_SRC_COLS
+    in_skip_gate = True
 
-    if sec_type is not None:
-        sec_types = (sec_type,)
-    else:
-        sec_types = tuple(
-            SEC_TYPE_LABEL[c] for c in host_unique(df["sec_type"])
+    async def has_pending_work(
+        self, conn, sec_type: str, src_identity_table: str,
+    ) -> bool:
+        """The parent phase-0 empty-scope check: the streaks table
+        stores EXCURSION EPISODES (they SHIFT with new data), so
+        per-date coverage diffing does not apply — it is rebuilt
+        wholesale whenever the sec_type is processed, and only a
+        COMPLETELY EMPTY scope (fresh schema / wiped table) counts as
+        pending work so the pipeline runs at least once. Read-only;
+        ``src_identity_table`` is unused."""
+        return not await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM " + self.table
+            + " WHERE sec_type = $1)",
+            sec_type_code(sec_type),
         )
 
-    n_total = 0
-    for st in sec_types:
-        st_df = (
-            df if sec_type is not None
-            else df[df["sec_type"] == SEC_TYPE_CODE[st]]
+    async def execute(
+        self, run: StepRun, df: pd.DataFrame,
+        *, sec_type: str | None = None,
+    ) -> None:
+        t0 = time.time()
+        logger.info("\n" + "=" * 78)
+        logger.info("  MOV_AVE_HIGH_LOW_PCT_STREAKS (internal step of "
+              "mov_ave_spread)")
+        logger.info("=" * 78)
+        if run.code_filter is not None:
+            logger.info(f"    mode: SINGLE-CODE (full streak rebuild for "
+                  f"{run.code_filter})")
+        else:
+            logger.info("    mode: WHOLESALE per sec_type (episodes shift "
+                  "with new data; margin_changes precedent)")
+
+        if df.empty:
+            logger.info("    -> no source data; skipping streaks step.")
+            return
+
+        if sec_type is not None:
+            sec_types = (sec_type,)
+        else:
+            sec_types = tuple(
+                SEC_TYPE_LABEL[c] for c in host_unique(df["sec_type"])
+            )
+
+        n_total = 0
+        for st in sec_types:
+            st_df = (
+                df if sec_type is not None
+                else df[df["sec_type"] == SEC_TYPE_CODE[st]]
+            )
+            if st_df.empty:
+                continue
+
+            # ---- Wholesale scope wipe (episodes shift; PK coverage
+            # diffing does not apply to this table).
+            await chunked_purge_async(
+                run.conn, HIGH_LOW_PCT_STREAKS_TABLE,
+                where_sql="sec_type = $1", params=(sec_type_code(st),),
+            )
+
+            # ---- Bands for the audited scope (bands step ran earlier)
+            bnd = await fetch_bands_async(run.conn, st, code=run.code_filter)
+            if bnd.empty:
+                logger.info(f"    -> {st}: no bands in {HIGH_LOW_PCT_TABLE}; "
+                      f"skipping streaks.")
+                continue
+
+            # ---- Compute + insert ------------------------------------------
+            streaks = compute_band_excursion_streaks(st_df, bnd)
+            n_codes = (
+                streaks[["sec_type", "code"]].drop_duplicates().shape[0]
+                if not streaks.empty else 0
+            )
+            logger.info(f"    -> {st}: {len(streaks):,} excursion streaks "
+                  f"across {n_codes:,} codes "
+                  f"(gap tolerance {HIGH_LOW_PCT_GAP_TOLERANCE} trading "
+                  f"days)")
+            if streaks.empty:
+                continue
+            # sec_type rides as its stored SMALLINT code end-to-end
+            # (the label-code contract) — the COPY frame takes the code.
+            n = await _copy_streaks_chunked(run.conn, streaks)
+            n_total += n
+            logger.info(f"    -> {st}: inserted {n:,} streak rows")
+
+        # ---- Register in analysis_identity ------------------------------
+        await upsert_analysis_identity(
+            run.conn,
+            name=HIGH_LOW_PCT_STREAKS_NAME,
+            detail_name="mov_ave_high_low_pct_streaks",
+            description=HIGH_LOW_PCT_STREAKS_DESCRIPTION,
         )
-        if st_df.empty:
-            continue
 
-        # ---- Wholesale scope wipe (episodes shift; PK coverage diffing
-        # does not apply to this table).
-        await chunked_purge_async(
-            conn, HIGH_LOW_PCT_STREAKS_TABLE,
-            where_sql="sec_type = $1", params=(sec_type_code(st),),
-        )
-
-        # ---- Bands for the audited scope (bands step ran earlier) ----
-        bnd = await fetch_bands_async(conn, st, code=code_filter)
-        if bnd.empty:
-            logger.info(f"    -> {st}: no bands in {HIGH_LOW_PCT_TABLE}; "
-                  f"skipping streaks.")
-            continue
-
-        # ---- Compute + insert ------------------------------------------
-        streaks = compute_band_excursion_streaks(st_df, bnd)
-        n_codes = (
-            streaks[["sec_type", "code"]].drop_duplicates().shape[0]
-            if not streaks.empty else 0
-        )
-        logger.info(f"    -> {st}: {len(streaks):,} excursion streaks across "
-              f"{n_codes:,} codes "
-              f"(gap tolerance {HIGH_LOW_PCT_GAP_TOLERANCE} trading "
-              f"days)")
-        if streaks.empty:
-            continue
-        # sec_type rides as its stored SMALLINT code end-to-end
-        # (the label-code contract) — the COPY frame takes the code.
-        n = await _copy_streaks_chunked(conn, streaks)
-        n_total += n
-        logger.info(f"    -> {st}: inserted {n:,} streak rows")
-
-    # ---- Register in analysis_identity ------------------------------
-    await upsert_analysis_identity(
-        conn,
-        name=HIGH_LOW_PCT_STREAKS_NAME,
-        detail_name="mov_ave_high_low_pct_streaks",
-        description=HIGH_LOW_PCT_STREAKS_DESCRIPTION,
-    )
-
-    logger.info(f"\n  mov_ave_high_low_pct_streaks wall time: "
-          f"{time.time() - t0:.1f}s")
+        logger.info(f"\n  mov_ave_high_low_pct_streaks wall time: "
+              f"{time.time() - t0:.1f}s")

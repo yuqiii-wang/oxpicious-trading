@@ -127,10 +127,6 @@ from analysis.market_beta.attributions.config import (
     _SECONDARY_INDEXES,
 )
 from analysis.market_beta.attributions.queries import (
-    COUNT_MEMBER_INDICES_SQL,
-    COUNT_SOURCE_SQL,
-    PREVIEW_DIMENSIONS_SQL,
-    PREVIEW_MEMBER_DIMENSIONS_SQL,
     fetch_incremental_lookback_date,
     find_missing_attribution_dates,
     needs_rolling_backfill,
@@ -171,10 +167,6 @@ __all__ = [
     "SET_MAINTENANCE_WORK_MEM_SQL",
     "ANALYZE_TABLE_SQL",
     # queries
-    "COUNT_SOURCE_SQL",
-    "COUNT_MEMBER_INDICES_SQL",
-    "PREVIEW_DIMENSIONS_SQL",
-    "PREVIEW_MEMBER_DIMENSIONS_SQL",
     "needs_rolling_backfill",
     "find_missing_attribution_dates",
     "fetch_incremental_lookback_date",

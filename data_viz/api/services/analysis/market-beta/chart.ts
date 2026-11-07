@@ -7,7 +7,8 @@
  * client-side.
  * Split out of the former monolithic industry-sentiments.ts.
  */
-import { queryRows, formatDate, toNum } from "@api/lib/db";
+import { formatDate, toNum } from "@api/lib/db";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix } from "@api/lib/classify-etf";
 import { matchesClassification } from "@api/services/_shared";
@@ -60,10 +61,9 @@ const MARKET_BETA_BENCHMARKS = [
  *  data are omitted. Rebased to 100 client-side, same as member indices. */
 async function fetchBenchmarks(): Promise<MarketBetaIndex[]> {
   const benchmarkCodes = MARKET_BETA_BENCHMARKS.map((b) => b.code);
-  const benchmarkRows = await queryRows<{ code: string; date: Date | string; close: number | null }>(
-    `SELECT code, date, close FROM stats.index_basic_stats
-     WHERE code = ANY($1::text[]) ORDER BY code, date ASC`,
-    [benchmarkCodes],
+  const benchmarkRows = await querySqlView<{ code: string; date: Date | string; close: number | null }>(
+    "data_viz/api/services/analysis/market-beta/chart/benchmark_closes",
+    { benchmark_codes: benchmarkCodes },
   );
   const benchRowsByCode = new Map<string, { date: Date | string; close: number | null }[]>();
   for (const r of benchmarkRows) {
@@ -154,45 +154,12 @@ export async function getMarketBetaChart(
   // snapshot (covers ALL compositioned indices, not just ETF-tracked ones —
   // index_exts only covers 147 of 222 compositioned indices).
   // sec_classification.name carries the index display name, so no separate
-  // identity JOIN is needed.
+  // identity JOIN is needed. The SELECT lives in the sql view
+  // data_viz/api/services/analysis/market-beta/chart/industry_series.
   //
   // COMPOSITION-ONLY FILTER: the EXISTS subquery restricts to indices that
   // have at least one sec_composition snapshot. Indices without ANY
   // composition data are dropped entirely.
-  const chartSql = `
-    WITH stock_counts AS (
-        SELECT code, snapshot_date,
-               COUNT(DISTINCT stock_code) AS stock_num
-        FROM stats.sec_composition
-        WHERE source_type = 'index'
-        GROUP BY code, snapshot_date
-    )
-    SELECT
-      sc.code,
-      COALESCE(sc.name, '') AS name,
-      sc.exchange,
-      ib.date,
-      ib.close,
-      latest.stock_num
-    FROM stats.sec_classification sc
-    JOIN stats.index_basic_stats ib
-      ON ib.code = sc.code
-    LEFT JOIN LATERAL (
-        SELECT stock_num
-        FROM stock_counts sc2
-        WHERE sc2.code = ib.code
-        ORDER BY snapshot_date DESC
-        LIMIT 1
-    ) latest ON true
-    WHERE sc.type = 'index'
-      AND sc.is_active = TRUE
-      AND sc.industry_id = $1::text
-      AND EXISTS (
-          SELECT 1 FROM stats.sec_composition sc3
-          WHERE sc3.code = sc.code AND sc3.source_type = 'index'
-      )
-    ORDER BY sc.code, ib.date ASC
-  `;
   // Precomputed mean/var aggregation rows from stats.industry_basic_stats
   // (built by builds.industry). Returns rows for ALL 4 pool_size slices —
   // the frontend filters to the user-selected slice for the overlay.
@@ -200,21 +167,22 @@ export async function getMarketBetaChart(
   // ORDER BY keeps the pre-refactor TEXT presentation order via
   // label_dim.sort_order (pool codes are semantic-ordered, not
   // alphabetical).
-  const aggSql = `
-    SELECT date,
-           ${labelDecodeSql("pool_size", "pool_size")} AS pool_size,
-           index_count, mean_close, var_price, mean_pe, total_trading_amount
-    FROM stats.industry_basic_stats
-    WHERE industry_id = $1::text
-    ORDER BY ${POOL_SIZE_SORT_SQL}, date ASC
-  `;
   const [chartRows, aggRows, labelRows, benchmarks] = await Promise.all([
-    queryRows<DbMarketBetaChartRow>(chartSql, [industryId]),
-    queryRows<DbMarketBetaAggRow>(aggSql, [industryId]),
-    queryRows<{ industry_label: string | null }>(
-      `SELECT industry_label FROM stats.sec_classification
-       WHERE industry_id = $1::text AND type = 'index' LIMIT 1`,
-      [industryId],
+    querySqlView<DbMarketBetaChartRow>(
+      "data_viz/api/services/analysis/market-beta/chart/industry_series",
+      { industry_id: industryId },
+    ),
+    querySqlView<DbMarketBetaAggRow>(
+      "data_viz/api/services/analysis/market-beta/chart/industry_agg",
+      {
+        industry_id: industryId,
+        pool_size_decode: sqlFrag(labelDecodeSql("pool_size", "pool_size")),
+        pool_size_sort: sqlFrag(POOL_SIZE_SORT_SQL),
+      },
+    ),
+    querySqlView<{ industry_label: string | null }>(
+      "data_viz/api/services/analysis/market-beta/chart/industry_label",
+      { industry_id: industryId },
     ),
     fetchBenchmarks(),
   ]);
@@ -275,37 +243,11 @@ export async function getMarketBetaChartByCode(
   const code = stripExchangeSuffix((rawCode ?? "").trim());
   if (!code) throw new Error("Missing 'code' parameter");
 
-  const chartSql = `
-    WITH stock_counts AS (
-        SELECT code, snapshot_date,
-               COUNT(DISTINCT stock_code) AS stock_num
-        FROM stats.sec_composition
-        WHERE source_type = 'index'
-        GROUP BY code, snapshot_date
-    )
-    SELECT
-      sc.code,
-      COALESCE(sc.name, '') AS name,
-      sc.exchange,
-      ib.date,
-      ib.close,
-      latest.stock_num
-    FROM stats.sec_classification sc
-    JOIN stats.index_basic_stats ib
-      ON ib.code = sc.code
-    LEFT JOIN LATERAL (
-        SELECT stock_num
-        FROM stock_counts sc2
-        WHERE sc2.code = ib.code
-        ORDER BY snapshot_date DESC
-        LIMIT 1
-    ) latest ON true
-    WHERE sc.type = 'index'
-      AND sc.code = $1::text
-    ORDER BY ib.date ASC
-  `;
   const [chartRows, benchmarks] = await Promise.all([
-    queryRows<DbMarketBetaChartRow>(chartSql, [code]),
+    querySqlView<DbMarketBetaChartRow>(
+      "data_viz/api/services/analysis/market-beta/chart/code_series",
+      { code },
+    ),
     fetchBenchmarks(),
   ]);
 

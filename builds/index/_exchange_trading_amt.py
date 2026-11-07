@@ -65,25 +65,37 @@ EXCHANGE_INDEX_MAP = [
 ]
 
 
-async def build_exchange_trading_amt(conn, force: bool = False,
-                                     forced_date: Optional[datetime.date] = None) -> None:
-    """Populate stats.exchange_trading_amt.
+class ExchangeTradingAmtBuilder:
+    """Conn-scoped builder for stats.exchange_trading_amt.
 
-    Incremental when force=False (missing (date, exchange) pairs only);
-    full recompute when force=True (truncate first). With forced_date
-    (--date mode), only that date is recomputed — the missing-pair skip is
-    bypassed (existing rows are refreshed via the upsert path) and no
-    truncation happens.
+    Code motion of the former module-level
+    ``build_exchange_trading_amt(conn, ...)``: the ``conn`` parameter became
+    ``self.conn`` and the entry point became :meth:`run`. SQL, sequencing,
+    and log lines are unchanged.
     """
-    # ---- Step 1: fetch the full desired row set -------------------
-    # Pull (date, exchange, index_code, total_trading_amount) for every
-    # date where the representative index has a NON-NULL trading_amount.
-    # Skipping NULL-amount rows keeps the table clean (no meaningless
-    # turnover rows for estimated-close gaps) and makes the missing-key
-    # set match exactly what gets inserted.
-    logger.info("\n[EXCH_AMT] Fetching representative-index trading_amounts "
-          "from stats.index_basic_stats...")
-    sql_rows = """
+
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    async def run(self, force: bool = False,
+                  forced_date: Optional[datetime.date] = None) -> None:
+        """Populate stats.exchange_trading_amt.
+
+        Incremental when force=False (missing (date, exchange) pairs only);
+        full recompute when force=True (truncate first). With forced_date
+        (--date mode), only that date is recomputed — the missing-pair skip is
+        bypassed (existing rows are refreshed via the upsert path) and no
+        truncation happens.
+        """
+        # ---- Step 1: fetch the full desired row set -------------------
+        # Pull (date, exchange, index_code, total_trading_amount) for every
+        # date where the representative index has a NON-NULL trading_amount.
+        # Skipping NULL-amount rows keeps the table clean (no meaningless
+        # turnover rows for estimated-close gaps) and makes the missing-key
+        # set match exactly what gets inserted.
+        logger.info("\n[EXCH_AMT] Fetching representative-index trading_amounts "
+              "from stats.index_basic_stats...")
+        sql_rows = """
         SELECT ec.exchange, ibs.date, ec.index_code,
                ibs.trading_amount AS total_trading_amount
         FROM (VALUES ('SZ', '399001'), ('SS', '000001'))
@@ -93,57 +105,57 @@ async def build_exchange_trading_amt(conn, force: bool = False,
         WHERE ibs.trading_amount IS NOT NULL
         ORDER BY ec.exchange, ibs.date
     """
-    rows = await conn.fetch(sql_rows)
-    # Whole-column frame — all downstream filtering/emission is vectorized
-    df_all = pd.DataFrame(rec_cols(rows))
-    logger.info(f"    -> {len(df_all):,} desired (date, exchange) rows across "
-          f"{df_all['exchange'].nunique()} exchanges")
+        rows = await self.conn.fetch(sql_rows)
+        # Whole-column frame — all downstream filtering/emission is vectorized
+        df_all = pd.DataFrame(rec_cols(rows))
+        logger.info(f"    -> {len(df_all):,} desired (date, exchange) rows across "
+              f"{df_all['exchange'].nunique()} exchanges")
 
-    # ---- Step 2: detect missing pairs or truncate -----------------
-    if force:
-        logger.info(f"\n[EXCH_AMT] Force mode: truncating {TABLE}...")
-        await truncate_table_async(conn, TABLE)
-        target_df = df_all
-    elif forced_date is not None:
-        # --date mode: bypass the missing-pair skip — the forced date is
-        # ALWAYS recomputed (existing rows refreshed via the upsert path);
-        # exits(1) when the date has no representative-index data.
-        target = forced_date_scope(
-            set(rec_col(rows, "date")), forced_date,
-            source_label="stats.index_basic_stats dates",
-        )
-        logger.info(f"\n[EXCH_AMT] [DATE MODE] forcing recompute of {forced_date} "
-              f"(missing-pair skip bypassed)")
-        target_df = df_all[df_all["date"].isin(target)].reset_index(drop=True)
-    else:
-        logger.info(f"\n[EXCH_AMT] Detecting missing (date, exchange) pairs...")
-        source_keys = set(zip(rec_col(rows, "date"), rec_col(rows, "exchange")))
-        missing_keys = await find_missing_keys(
-            conn, TABLE, ["date", "exchange"], source_keys
-        )
-        logger.info(f"    -> {len(missing_keys)} of {len(source_keys)} "
-              f"(date, exchange) pairs missing from {TABLE}")
-        if not missing_keys:
-            logger.info("    -> DB is up to date; nothing to do.")
-            return
-        # Vectorized membership filter via composite string keys (never a
-        # per-row tuple-in-set scan)
-        missing_set = {f"{d}|{e}" for d, e in missing_keys}
-        composite = df_all["date"].astype(str) + "|" + df_all["exchange"].astype(str)
-        target_df = df_all[composite.isin(missing_set)].reset_index(drop=True)
+        # ---- Step 2: detect missing pairs or truncate -----------------
+        if force:
+            logger.info(f"\n[EXCH_AMT] Force mode: truncating {TABLE}...")
+            await truncate_table_async(self.conn, TABLE)
+            target_df = df_all
+        elif forced_date is not None:
+            # --date mode: bypass the missing-pair skip — the forced date is
+            # ALWAYS recomputed (existing rows refreshed via the upsert path);
+            # exits(1) when the date has no representative-index data.
+            target = forced_date_scope(
+                set(rec_col(rows, "date")), forced_date,
+                source_label="stats.index_basic_stats dates",
+            )
+            logger.info(f"\n[EXCH_AMT] [DATE MODE] forcing recompute of {forced_date} "
+                  f"(missing-pair skip bypassed)")
+            target_df = df_all[df_all["date"].isin(target)].reset_index(drop=True)
+        else:
+            logger.info(f"\n[EXCH_AMT] Detecting missing (date, exchange) pairs...")
+            source_keys = set(zip(rec_col(rows, "date"), rec_col(rows, "exchange")))
+            missing_keys = await find_missing_keys(
+                self.conn, TABLE, ["date", "exchange"], source_keys
+            )
+            logger.info(f"    -> {len(missing_keys)} of {len(source_keys)} "
+                  f"(date, exchange) pairs missing from {TABLE}")
+            if not missing_keys:
+                logger.info("    -> DB is up to date; nothing to do.")
+                return
+            # Vectorized membership filter via composite string keys (never a
+            # per-row tuple-in-set scan)
+            missing_set = {f"{d}|{e}" for d, e in missing_keys}
+            composite = df_all["date"].astype(str) + "|" + df_all["exchange"].astype(str)
+            target_df = df_all[composite.isin(missing_set)].reset_index(drop=True)
 
-    # ---- Step 3: upsert ------------------------------------------
-    logger.info(f"\n[EXCH_AMT] Upserting into {TABLE}...")
-    EMIT_COLS = ["date", "exchange", "index_code", "total_trading_amount"]
-    if len(target_df) == 0:
-        logger.info("    -> no data to insert.")
-    else:
-        data = records_from_frame(target_df, EMIT_COLS)
-        n_copied, n_upserted = await copy_or_upsert_split_async(
-            conn, TABLE, data, key_columns=["date", "exchange"],
-        )
-        total = n_copied + n_upserted
-        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
-              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
-              "upsert"
-        logger.info(f"    -> upserted {total:,} rows via {via}")
+        # ---- Step 3: upsert ------------------------------------------
+        logger.info(f"\n[EXCH_AMT] Upserting into {TABLE}...")
+        EMIT_COLS = ["date", "exchange", "index_code", "total_trading_amount"]
+        if len(target_df) == 0:
+            logger.info("    -> no data to insert.")
+        else:
+            data = records_from_frame(target_df, EMIT_COLS)
+            n_copied, n_upserted = await copy_or_upsert_split_async(
+                self.conn, TABLE, data, key_columns=["date", "exchange"],
+            )
+            total = n_copied + n_upserted
+            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                  "upsert"
+            logger.info(f"    -> upserted {total:,} rows via {via}")

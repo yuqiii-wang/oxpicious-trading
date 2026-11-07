@@ -116,6 +116,9 @@ from analysis.analysis_signals.engines.evaluation import (
 from analysis.analysis_signals.fetch.regimes import fetch_market_regimes
 from analysis.trends import EpisodeDetector, attach_trend
 
+from analysis.analysis_signals.engines.data_definitions import (
+    Candidate,
+)
 logger = logging.getLogger(__name__)
 
 _DAY_CLOSE = time(15, 0)
@@ -167,27 +170,6 @@ def eligible_freq_years(df: pd.DataFrame) -> dict[str, list[int]]:
     return out
 
 
-@dataclass(frozen=True)
-class Candidate:
-    """One bar/event variant of a (sub_type, action) rule the engine
-    measures per cell — the self-adaptive loop picks the gate-passing
-    winner. ``mask`` marks the QUALIFYING trigger-condition days on the
-    prepared frame's index (the episode machinery takes the runs' first
-    days); ``reference`` is the bar crossed (scalar, or the per-day
-    adaptive bar Series on the same index); ``depth`` is the trigger
-    day's normalized breach depth (the 0..2 confidence scale);
-    ``params`` is the candidate's own rule_params fragment (the bar
-    def etc.)."""
-    key: str
-    mask: pd.Series
-    reference: float | pd.Series
-    depth: pd.Series
-    params: dict = field(default_factory=dict)
-    # the candidate's own recorded-value column override (the history
-    # rows' ``signal``): None = the run_cells call's ``value_col`` —
-    # the hedge trio's window grid records the winning window's own
-    # rsi_mean (rsi14 vs rsi10 means are different scales)
-    value_col: str | None = None
 
 
 class RuleEntry(ABC):

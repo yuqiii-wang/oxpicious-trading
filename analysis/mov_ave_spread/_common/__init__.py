@@ -4,7 +4,8 @@
   derive       — source-frame column derivations (slopes, σ, trading amt)
   ohlc_vector  — vectorised roof/floor anchor algorithm (sparse-table
                  argmax host core; used by the ohlc-lines step)
-  steps        — the internal-step pipeline skeleton (run_table_step)
+  steps        — the internal-step skeleton: the TableStep template-method
+                 base + StepRun execution context + scope helpers
 """
 from analysis.mov_ave_spread._common.guards import (
     gap_col,
@@ -22,11 +23,12 @@ from analysis.mov_ave_spread._common.derive import (
     compute_trading_amt_market_share_vs_mas,
 )
 from analysis.mov_ave_spread._common.steps import (
+    StepRun,
+    TableStep,
     filter_target_dates,
     infer_sec_types,
     purge_step_scope,
     resolve_target_dates,
-    run_table_step,
     sec_type_code,
 )
 
@@ -39,6 +41,6 @@ __all__ = [
     "compute_trading_amt_mas", "compute_trading_amt_market_share_mas",
     "compute_trading_amt_market_share_vs_mas",
     # steps plumbing
-    "filter_target_dates", "infer_sec_types", "purge_step_scope",
-    "resolve_target_dates", "run_table_step", "sec_type_code",
+    "StepRun", "TableStep", "filter_target_dates", "infer_sec_types",
+    "purge_step_scope", "resolve_target_dates", "sec_type_code",
 ]

@@ -4,7 +4,7 @@
  * items) for the MA-Spread page's ThemeSelector.
  * Split out of the former monolithic mov-ave-spreads.ts.
  */
-import { queryRows } from "@api/lib/db";
+import { querySqlView } from "@api/lib/sql-views";
 import { stripExchangeSuffix, matchesExchange } from "@api/lib/classify-etf";
 import {
   buildIndustryClassifiedThemes,
@@ -18,8 +18,12 @@ import type {
   StrategyNode,
 } from "@shared/types";
 import { normalizeSecType, secTypeParam } from "./sec-sources.js";
-import { buildCodesSql, type DbCodeRow } from "./codes.js";
-import { MA_SPREAD_META_SQL, MA_SPREAD_META_TYPE, type DbMaSpreadMetaRow } from "./meta.js";
+import type { DbCodeRow } from "./codes.js";
+import { MA_SPREAD_META_TYPE, type DbMaSpreadMetaRow } from "./meta.js";
+
+const CODES_LIST_VIEW = "data_viz/api/services/analysis/mov-ave-spreads/codes/codes_list";
+const META_CLASSIFIED_ROWS_VIEW =
+  "data_viz/api/services/analysis/mov-ave-spreads/meta/classified_rows";
 
 // ----------------------------------------------------------------------------
 //  listMovAveSpreadThemes — two-level L1 sector → L2 industry → items tree for
@@ -45,15 +49,15 @@ export async function listMovAveSpreadThemes(
   // summary universe. Exchange is not applicable to an industry entity and
   // is ignored (as before).
   if (secType === "industry") {
-    const rows = await queryRows<DbCodeRow>(buildCodesSql(),
-      [secTypeParam(secType)]);
+    const rows = await querySqlView<DbCodeRow>(CODES_LIST_VIEW,
+      { sec_type: secTypeParam(secType) });
     const classRows = await listIndustryEntityClassRows(rows.map((r) => r.code));
     return buildIndustryClassifiedThemes(rows, classRows);
   }
   const exFilter = (rawExchange ?? "").trim() || null;
   const metaType = MA_SPREAD_META_TYPE[secType];
-  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,
-    [secTypeParam(secType), metaType]);
+  const rows = await querySqlView<DbMaSpreadMetaRow>(META_CLASSIFIED_ROWS_VIEW,
+    { sec_type: secTypeParam(secType), m_type: metaType });
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -116,7 +120,8 @@ export async function listMovAveSpreadThemes(
 
 // ----------------------------------------------------------------------------
 //  listMovAveSpreadStrategyThemes — parallel L1 strategy → L2 theme → items
-//  tree built from the same MA_SPREAD_META_SQL but using the strategy-primary
+//  tree built from the same meta view (mov-ave-spreads/meta/classified_rows)
+//  but using the strategy-primary
 //  rows (is_industry_not_strategy=FALSE). sector_id/industry_id on those rows
 //  carry the strategy/theme classification. Tree-building is delegated to the
 //  shared buildStrategyThemesFromRows helper to avoid duplicating the
@@ -131,15 +136,15 @@ export async function listMovAveSpreadStrategyThemes(
   // their strategy → theme classification — the same grouped-by-industry_id
   // read as the LEFT column, just the other is_industry_not_strategy side.
   if (secType === "industry") {
-    const rows = await queryRows<DbCodeRow>(buildCodesSql(),
-      [secTypeParam(secType)]);
+    const rows = await querySqlView<DbCodeRow>(CODES_LIST_VIEW,
+      { sec_type: secTypeParam(secType) });
     const classRows = await listIndustryEntityClassRows(rows.map((r) => r.code));
     return buildIndustryStrategyThemes(rows, classRows);
   }
   const exFilter = (rawExchange ?? "").trim() || null;
   const metaType = MA_SPREAD_META_TYPE[secType];
-  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,
-    [secTypeParam(secType), metaType]);
+  const rows = await querySqlView<DbMaSpreadMetaRow>(META_CLASSIFIED_ROWS_VIEW,
+    { sec_type: secTypeParam(secType), m_type: metaType });
 
   // Filter by exchange BEFORE building the strategy tree so cross-border
   // securities are excluded when "All (primary)" is selected (same behavior

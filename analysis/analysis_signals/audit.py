@@ -63,6 +63,7 @@ from _common.labels import (
     SIGNAL_TYPE_LABEL,
     TREND_LABEL,
 )
+from _common.sql_views import frag, render_sql_view
 
 logger = logging.getLogger(__name__)
 
@@ -269,12 +270,16 @@ async def audit_orphan_rows(conn, sec_type: str, label: str,
         for table, tname in (("analysis_signals.signal_rules", "rules"),
                              ("analysis_signals.history_signals",
                               "history")):
-            rows = await conn.fetch(
-                f"SELECT code, count(*) AS n FROM {table} "
-                f"WHERE sec_type = $1 AND signal_type = $2{tier_sql} "
-                f"AND NOT (code = ANY($3)) GROUP BY code",
-                st_code, wipe_type, sorted(wipe_codes),
+            # analysis/analysis_signals/audit/orphan_rows
+            view = render_sql_view(
+                "analysis/analysis_signals/audit/orphan_rows",
+                table=frag(table),
+                sec_type=st_code,
+                signal_type=wipe_type,
+                tier_filter=frag(tier_sql),
+                codes=sorted(wipe_codes),
             )
+            rows = await conn.fetch(view.sql, *view.params)
             for r in rows:
                 bad.append(f"{tname} type {wipe_type} tier {tier}: "
                            f"{r['n']} orphan rows at {r['code']} — "

@@ -15,6 +15,12 @@ bursts with hard connection drops. Every request therefore goes through the
 shared :class:`AntiBotProxy` built on this service's config row (sleep with
 jitter between requests, host-block detection with a 1800s cooldown), over a
 persistent ``curl_cffi`` session.
+
+The fetch layer is the :class:`SgxA50Downloader` class — the former
+module-level proxy/session singletons are per-instance attributes
+(``self.proxy`` / ``self._session``) and the functions that used them are
+its methods, while the pure parsers and the identity-row shaper stay
+module-level functions.
 """
 
 from __future__ import annotations
@@ -53,65 +59,12 @@ _MAX_RETRIES_JSON, _RETRY_BACKOFF_JSON = retry_policy_for(SERVICE)
 MAX_RETRIES: int = _MAX_RETRIES_JSON if _MAX_RETRIES_JSON is not None else 2
 RETRY_BACKOFF_SEC: float = _RETRY_BACKOFF_JSON if _RETRY_BACKOFF_JSON is not None else 20.0
 
-# Built on the service row: base sleep + jitter, timeouts, host tracking
-# (1800s block cooldown — this host demonstrably IP-blocks bursts).
-proxy = AntiBotProxy(service=SERVICE)
-
-_session = None
-
-
-def _get_session():
-    """Lazy-create the persistent curl_cffi session (TLS session resumption
-    across requests lowers the chance of Eastmoney closing the connection).
-    """
-    global _session
-    if _session is None:
-        try:
-            from curl_cffi import requests as curl_requests
-        except ImportError as exc:
-            raise ImportError(
-                "curl_cffi is required for the Eastmoney push2his kline API "
-                "(stdlib ssl fails its TLS renegotiation). "
-                "Install with: pip install curl_cffi"
-            ) from exc
-        _session = curl_requests.Session(impersonate="chrome")
-    return _session
-
 
 class A50Instrument(NamedTuple):
     """One row of the enumerated A50 chain."""
     code: str
     name: str
     is_continuous: bool
-
-
-def _request_json(url: str, params: Dict[str, str],
-                  sleep_sec: Optional[float]) -> Optional[dict]:
-    """One proxied GET returning parsed JSON, with the service retry policy.
-
-    Returns None after the final failure (connection drop, non-JSON body,
-    or the proxy's suppressed-4xx None).
-    """
-    headers = build_headers_with_referer(REFERER_URL)
-    session = _get_session()
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = proxy.get(session, url, params=params, headers=headers,
-                             sleep_sec=sleep_sec,
-                             request_kwargs={"impersonate": "chrome"},
-                             logger=logger)
-            if resp is not None and resp.status_code == 200:
-                return resp.json()
-            logger.warning("  %s <- HTTP %s (attempt %d/%d)",
-                           url.split("?")[0],
-                           resp.status_code if resp is not None else "suppressed",
-                           attempt, MAX_RETRIES)
-        except Exception as exc:
-            logger.warning("  %s (attempt %d/%d): %s",
-                           url.split("?")[0], attempt, MAX_RETRIES, exc)
-        if attempt < MAX_RETRIES:
-            proxy.sleep()  # host-block-aware cooldown instead of a bare sleep
-    return None
 
 
 def _parse_float(raw: Optional[str]) -> Optional[float]:
@@ -128,87 +81,147 @@ def _parse_volume(raw: Optional[str]) -> Optional[int]:
     return int(value) if value is not None else None
 
 
-def fetch_daily_rows(code: str, beg: Optional[date] = None,
-                     sleep_sec: Optional[float] = None) -> List[Dict[str, object]]:
-    """Fetch daily bars for one code from Eastmoney.
+class SgxA50Downloader:
+    """Eastmoney kline fetch layer of the family (proxy/session-scoped
+    class).
 
-    Args:
-        code: A50 chain code — the continuous series or one contract
-            (``CN00Y``, ``CN26V``, ...).
-        beg: Optional left bound (YYYY-MM-DD). None = full history. The
-            continuous series MUST be re-fetched with beg=None on every run
-            (it re-splices without back-adjustment); contracts use
-            beg = last DB date + 1 day for incremental tails.
-        sleep_sec: Explicit pacing override for this request; None = the
-            service row's base sleep.
+    Every request goes through the shared :class:`AntiBotProxy` over a
+    persistent ``curl_cffi`` session — the former module-level singletons
+    are now instance attributes (``self.proxy`` / ``self._session``) built
+    in ``__init__``, and the functions that used them are methods with the
+    same names and sequencing; the pure parsers above and the identity-row
+    shaper below stay module-level functions."""
 
-    Returns:
-        Raw bar rows (date as ``datetime.date``, prices as float, missing
-        fields as None); empty list when the API has no bars in range
-        (unknown code, no data since beg). Callers map them onto
-        ``stats.futures_basic_stats`` and the identity twin.
-    """
-    params = dict(KLINE_COMMON_PARAMS)
-    params["secid"] = f"{MARKET_FUTURES}.{code}"
-    if beg is not None:
-        params["beg"] = beg.strftime("%Y%m%d")
+    def __init__(self) -> None:
+        # Built on the service row: base sleep + jitter, timeouts, host tracking
+        # (1800s block cooldown — this host demonstrably IP-blocks bursts).
+        self.proxy = AntiBotProxy(service=SERVICE)
+        self._session = None
 
-    payload = _request_json(KLINE_URL, params, sleep_sec)
-    data = (payload or {}).get("data") or {}
-    klines: List[str] = data.get("klines") or []
-    if not klines:
-        return []
+    def _get_session(self):
+        """Lazy-create the persistent curl_cffi session (TLS session resumption
+        across requests lowers the chance of Eastmoney closing the connection).
+        """
+        if self._session is None:
+            try:
+                from curl_cffi import requests as curl_requests
+            except ImportError as exc:
+                raise ImportError(
+                    "curl_cffi is required for the Eastmoney push2his kline API "
+                    "(stdlib ssl fails its TLS renegotiation). "
+                    "Install with: pip install curl_cffi"
+                ) from exc
+            self._session = curl_requests.Session(impersonate="chrome")
+        return self._session
 
-    rows: List[Dict[str, object]] = []
-    for line in klines:
-        f: List[Optional[str]] = line.split(",") + [None] * 10
-        rows.append({
-            "date": datetime.strptime(str(f[0]), "%Y-%m-%d").date(),
-            "code": code,
-            "open": _parse_float(f[1]),
-            "high": _parse_float(f[3]),
-            "low": _parse_float(f[4]),
-            "close": _parse_float(f[2]),   # Eastmoney order: open, CLOSE, high, low
-            "volume": _parse_volume(f[5]),
-            "amount": _parse_float(f[6]),  # EM reports 0 for global futures;
-            "amplitude": _parse_float(f[7]),  # kept for the CFFEX-format CSV,
-            "change_pct": _parse_float(f[8]),  # stripped before the DB write
-            "change": _parse_float(f[9]),
-        })
-    logger.info("  %s: %d bars (%s .. %s)", code, len(rows),
-                rows[0]["date"], rows[-1]["date"])
-    return rows
+    def _request_json(self, url: str, params: Dict[str, str],
+                      sleep_sec: Optional[float]) -> Optional[dict]:
+        """One proxied GET returning parsed JSON, with the service retry policy.
 
+        Returns None after the final failure (connection drop, non-JSON body,
+        or the proxy's suppressed-4xx None).
+        """
+        headers = build_headers_with_referer(REFERER_URL)
+        session = self._get_session()
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                resp = self.proxy.get(session, url, params=params, headers=headers,
+                                      sleep_sec=sleep_sec,
+                                      request_kwargs={"impersonate": "chrome"},
+                                      logger=logger)
+                if resp is not None and resp.status_code == 200:
+                    return resp.json()
+                logger.warning("  %s <- HTTP %s (attempt %d/%d)",
+                               url.split("?")[0],
+                               resp.status_code if resp is not None else "suppressed",
+                               attempt, MAX_RETRIES)
+            except Exception as exc:
+                logger.warning("  %s (attempt %d/%d): %s",
+                               url.split("?")[0], attempt, MAX_RETRIES, exc)
+            if attempt < MAX_RETRIES:
+                self.proxy.sleep()  # host-block-aware cooldown instead of a bare sleep
+        return None
 
-def enumerate_a50_codes(sleep_sec: Optional[float] = None) -> List[A50Instrument]:
-    """Enumerate the A50 chain on the SGX global-futures board (market 104).
+    def fetch_daily_rows(self, code: str, beg: Optional[date] = None,
+                         sleep_sec: Optional[float] = None) -> List[Dict[str, object]]:
+        """Fetch daily bars for one code from Eastmoney.
 
-    Returns continuous series + listed contracts, sorted continuous-first
-    then by code. Empty list when the enumeration request fails — callers
-    fall back to the continuous code plus codes already in the DB.
-    """
-    payload = _request_json(CLIST_URL, dict(CLIST_PARAMS), sleep_sec)
-    data = (payload or {}).get("data") or {}
-    diff = data.get("diff") or []
-    rows: List[Dict] = list(diff.values()) if isinstance(diff, dict) else diff
+        Args:
+            code: A50 chain code — the continuous series or one contract
+                (``CN00Y``, ``CN26V``, ...).
+            beg: Optional left bound (YYYY-MM-DD). None = full history. The
+                continuous series MUST be re-fetched with beg=None on every run
+                (it re-splices without back-adjustment); contracts use
+                beg = last DB date + 1 day for incremental tails.
+            sleep_sec: Explicit pacing override for this request; None = the
+                service row's base sleep.
 
-    instruments: List[A50Instrument] = []
-    for row in rows:
-        name = str(row.get("f14", ""))
-        if not name.startswith(A50_NAME_PREFIX):
-            continue
-        code = str(row.get("f12", ""))
-        if not code:
-            continue
-        instruments.append(A50Instrument(
-            code=code, name=name, is_continuous="连续" in name,
-        ))
+        Returns:
+            Raw bar rows (date as ``datetime.date``, prices as float, missing
+            fields as None); empty list when the API has no bars in range
+            (unknown code, no data since beg). Callers map them onto
+            ``stats.futures_basic_stats`` and the identity twin.
+        """
+        params = dict(KLINE_COMMON_PARAMS)
+        params["secid"] = f"{MARKET_FUTURES}.{code}"
+        if beg is not None:
+            params["beg"] = beg.strftime("%Y%m%d")
 
-    instruments.sort(key=lambda inst: (not inst.is_continuous, inst.code))
-    logger.info("Enumerated %d A50 instruments (%d continuous)",
-                len(instruments),
-                sum(1 for inst in instruments if inst.is_continuous))
-    return instruments
+        payload = self._request_json(KLINE_URL, params, sleep_sec)
+        data = (payload or {}).get("data") or {}
+        klines: List[str] = data.get("klines") or []
+        if not klines:
+            return []
+
+        rows: List[Dict[str, object]] = []
+        for line in klines:
+            f: List[Optional[str]] = line.split(",") + [None] * 10
+            rows.append({
+                "date": datetime.strptime(str(f[0]), "%Y-%m-%d").date(),
+                "code": code,
+                "open": _parse_float(f[1]),
+                "high": _parse_float(f[3]),
+                "low": _parse_float(f[4]),
+                "close": _parse_float(f[2]),   # Eastmoney order: open, CLOSE, high, low
+                "volume": _parse_volume(f[5]),
+                "amount": _parse_float(f[6]),  # EM reports 0 for global futures;
+                "amplitude": _parse_float(f[7]),  # kept for the CFFEX-format CSV,
+                "change_pct": _parse_float(f[8]),  # stripped before the DB write
+                "change": _parse_float(f[9]),
+            })
+        logger.info("  %s: %d bars (%s .. %s)", code, len(rows),
+                    rows[0]["date"], rows[-1]["date"])
+        return rows
+
+    def enumerate_a50_codes(self, sleep_sec: Optional[float] = None) -> List[A50Instrument]:
+        """Enumerate the A50 chain on the SGX global-futures board (market 104).
+
+        Returns continuous series + listed contracts, sorted continuous-first
+        then by code. Empty list when the enumeration request fails — callers
+        fall back to the continuous code plus codes already in the DB.
+        """
+        payload = self._request_json(CLIST_URL, dict(CLIST_PARAMS), sleep_sec)
+        data = (payload or {}).get("data") or {}
+        diff = data.get("diff") or []
+        rows: List[Dict] = list(diff.values()) if isinstance(diff, dict) else diff
+
+        instruments: List[A50Instrument] = []
+        for row in rows:
+            name = str(row.get("f14", ""))
+            if not name.startswith(A50_NAME_PREFIX):
+                continue
+            code = str(row.get("f12", ""))
+            if not code:
+                continue
+            instruments.append(A50Instrument(
+                code=code, name=name, is_continuous="连续" in name,
+            ))
+
+        instruments.sort(key=lambda inst: (not inst.is_continuous, inst.code))
+        logger.info("Enumerated %d A50 instruments (%d continuous)",
+                    len(instruments),
+                    sum(1 for inst in instruments if inst.is_continuous))
+        return instruments
 
 
 def next_day(d: date) -> date:

@@ -1,6 +1,6 @@
 """Pipeline runner — the roof/floor level estimates internal step.
 
-run_roof_floor_estimates rides the shared run_table_step skeleton
+RoofFloorEstimateStep rides the shared TableStep skeleton
 (target-date detection / force purge / incremental filter / chunked
 CSV-COPY insert / analysis_identity upsert) exactly like the ohlc
 anchor step. Incremental mode: only dates present in the source
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from analysis.mov_ave_spread._common import run_table_step
+from analysis.mov_ave_spread._common import TableStep
 from analysis.mov_ave_spread.config.roof_floor_estimate import (
     ESTIMATE_ANALYSIS_NAME,
     ESTIMATE_DESCRIPTION,
@@ -32,46 +32,50 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-async def run_roof_floor_estimates(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__ via the
+#  TableStep template in _common.steps)
+# ---------------------------------------------------------------------------
+
+class RoofFloorEstimateStep(TableStep):
     """Run the roof/floor level-estimate step on the parent's source data.
 
-    Args:
-      conn: asyncpg connection (reused from the parent pipeline).
+    Reuses the caller's DB connection; the source DataFrame must carry
+    [sec_type, code, date, price, high, low] — the FULL per-code
+    history (rolling methods need up to 1275 trading days of lookback).
+
+    Write flavor "frame": :meth:`build_frame` delegates to
+    ``build_estimate_long_frame`` (wide per-(method, window) layout →
+    LONG (sec_type, code, date, period, method) rows, chunked CSV
+    COPY). The old run_table_step call's ``label`` kwarg equalled
+    ``detail_name`` ("mov_ave_spreads_roof_floor_estimates") — dropped:
+    TableStep.execute labels the insert with ``detail_name``.
+
+    Args (now run fields / the execute sec_type argument):
+      run.conn: asyncpg connection (reused from the parent pipeline).
       df: source DataFrame with [sec_type, code, date, price, high,
-          low] — the FULL per-code history (rolling methods need up to
-          1275 trading days of lookback).
-      force: purge the scope and recompute all dates.
-      pool / max_concurrent: the chunked insert's pool + concurrency.
+          low] — the FULL per-code history.
+      run.force: purge the scope and recompute all dates.
+      run.pool / run.max_concurrent: the chunked insert's pool +
+          concurrency.
       sec_type: scope to one sec_type (the parent's per-sec_type loop).
-      code_filter: single-code mode (--code) — compute all dates for
-          this code (rows were pre-deleted by the caller).
+      run.code_filter: single-code mode (--code) — compute all dates
+          for this code (rows were pre-deleted by the caller).
     """
-    await run_table_step(
-        conn, df,
-        title="ROOF_FLOOR_ESTIMATES (internal step of mov_ave_spread)",
-        tag="e",
-        table=ESTIMATE_TABLE,
-        analysis_name=ESTIMATE_ANALYSIS_NAME,
-        detail_name="mov_ave_spreads_roof_floor_estimates",
-        description=ESTIMATE_DESCRIPTION,
-        needed_cols=[
-            "sec_type", "code", "date", "price", "high", "low",
-        ],
-        compute_fn=compute_estimate_columns,
-        build_df_fn=build_estimate_long_frame,
-        force=force,
-        pool=pool,
-        max_concurrent=max_concurrent,
-        sec_type=sec_type,
-        code_filter=code_filter,
-        label="mov_ave_spreads_roof_floor_estimates",
-    )
+
+    title = "ROOF_FLOOR_ESTIMATES (internal step of mov_ave_spread)"
+    tag = "e"
+    table = ESTIMATE_TABLE
+    analysis_name = ESTIMATE_ANALYSIS_NAME
+    detail_name = "mov_ave_spreads_roof_floor_estimates"
+    description = ESTIMATE_DESCRIPTION
+    needed_cols = ("sec_type", "code", "date", "price", "high", "low")
+    write_flavor = "frame"
+    in_skip_gate = True
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return compute_estimate_columns(df)
+
+    def build_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        return build_estimate_long_frame(df)

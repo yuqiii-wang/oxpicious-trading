@@ -1,5 +1,5 @@
 """_common.tokenization CLI — query-side search segmentation for the
-text schema's GIN ``search_tsv`` columns.
+text/llm schemas' GIN ``search_tsv`` columns.
 
 The document vectors are StructBERT-segmented (search_indexing), so a
 query must be segmented the SAME way or ``search_tsv @@ tsquery``
@@ -51,7 +51,7 @@ MAX_TERMS = 16
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Segment a search string into text-schema query tokens")
+        description="Segment a search string into text/llm-schema query tokens")
     parser.add_argument("--text", type=str, default=None,
                         help="Raw search string (whitespace = term split).")
     parser.add_argument("--text-b64", type=str, default=None,

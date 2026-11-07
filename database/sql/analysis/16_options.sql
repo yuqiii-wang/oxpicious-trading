@@ -397,8 +397,7 @@ ON CONFLICT (name) DO UPDATE SET
 --               window holds W such joint-valid pairs — honest gaps, a
 --               missing vol-index or spot day NaNs its session AND the
 --               one after, never a cross-gap return)
--- Windows 5/20/60/255 sessions (≈ 1w / 1m / 3m / 1y, the repo
--- ma-convention).
+-- Windows 20/60/255 sessions (≈ 1m / 3m / 1y, the repo ma-convention).
 -- A-share daily spot-logret vs vol-logchg typically sits near -0.6..-0.8
 -- (the leverage effect: declines bid up vol faster than rallies deflate
 -- it). Append-only sampling: fresh underlyings seed the 5-session
@@ -416,9 +415,8 @@ CREATE TABLE IF NOT EXISTS analysis.options_vol_index_vs_spot_price_corr (
     date                      DATE          NOT NULL,
     underlying_code           TEXT          NOT NULL,
 
-    -- stride by 5d, give corr for 5d, 20d, 60d, 255d period
-    corr_5d                   NUMERIC(6,4),     -- Pearson corr of daily spot log-return vs vol-index log-change, trailing 5 sessions (≈ 1 week)
-    corr_20d                  NUMERIC(6,4),     -- trailing 20 sessions (≈ 1 month)
+    -- stride by 5 sessions, corr for the 20d / 60d / 255d windows
+    corr_20d                  NUMERIC(6,4),     -- Pearson corr of daily spot log-return vs vol-index log-change, trailing 20 sessions (≈ 1 month)
     corr_60d                  NUMERIC(6,4),     -- trailing 60 sessions (≈ 3 months)
     corr_255d                 NUMERIC(6,4),     -- trailing 255 sessions (≈ 1 year)
 
@@ -430,15 +428,14 @@ CREATE TABLE IF NOT EXISTS analysis.options_vol_index_vs_spot_price_corr (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07.
 SELECT public.create_hash_partitions('analysis', 'options_vol_index_vs_spot_price_corr', 8);
 
-COMMENT ON TABLE  analysis.options_vol_index_vs_spot_price_corr IS 'Rolling correlation between the 30d model-free vol index (analysis.options_vol_index) and the underlying spot close (analysis.options_spot_daily): per session x = ln(spot_t/spot_{t-1}), y = ln(vol_t/vol_{t-1}); corr_5d/20d/60d/255d = Pearson corr of x,y over the trailing 5/20/60/255 sessions (joint-valid pairs only, NULL until the window is full). Append-only sampling: fresh underlyings seed the 5-session stride grid + latest session; each incremental run adds every session strictly after the underlying''s latest stored corr date (one row per new trading day, windows reaching back up to 255 sessions) — stored rows are never rewritten or deleted. Level-vs-level correlation is deliberately NOT stored (spurious on trending series). PK (underlying_code, date); no FK (date-granular). Built by analysis.options; all INSERTs in Python per project rule.';
-COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_5d  IS 'Pearson corr of daily spot log-return vs daily vol-index log-change over the trailing 5 trading sessions (joint-valid pairs only; NULL until 5 such pairs).';
+COMMENT ON TABLE  analysis.options_vol_index_vs_spot_price_corr IS 'Rolling correlation between the 30d model-free vol index (analysis.options_vol_index) and the underlying spot close (analysis.options_spot_daily): per session x = ln(spot_t/spot_{t-1}), y = ln(vol_t/vol_{t-1}); corr_20d/60d/255d = Pearson corr of x,y over the trailing 20/60/255 sessions (joint-valid pairs only, NULL until the window is full). Append-only sampling: fresh underlyings seed the 5-session stride grid + latest session; each incremental run adds every session strictly after the underlying''s latest stored corr date (one row per new trading day, windows reaching back up to 255 sessions) — stored rows are never rewritten or deleted. Level-vs-level correlation is deliberately NOT stored (spurious on trending series). PK (underlying_code, date); no FK (date-granular). Built by analysis.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_20d  IS 'Pearson corr of daily spot log-return vs daily vol-index log-change over the trailing 20 trading sessions (joint-valid pairs only; NULL until 20 such pairs).';
 COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_60d  IS 'Same over the trailing 60 trading sessions.';
 COMMENT ON COLUMN analysis.options_vol_index_vs_spot_price_corr.corr_255d IS 'Same over the trailing 255 trading sessions.';
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('options_vol_index_vs_spot_price_corr', 'options_vol_index_vs_spot_price_corr', NULL, NOW(),
-     'Rolling correlation between the 30d model-free vol index and the underlying spot close: per session x = ln(spot_t/spot_{t-1}) vs y = ln(vol_t/vol_{t-1}); corr_5d/20d/60d/255d = Pearson corr over the trailing 5/20/60/255 sessions (joint-valid pairs only). Append-only sampling: fresh underlyings seed the 5-session stride grid + latest session; each incremental run adds every session after the underlying''s latest stored corr date. PK (underlying_code, date), no FK (date-granular). Built by analysis.options; all INSERTs in Python per project rule.')
+     'Rolling correlation between the 30d model-free vol index and the underlying spot close: per session x = ln(spot_t/spot_{t-1}) vs y = ln(vol_t/vol_{t-1}); corr_20d/60d/255d = Pearson corr over the trailing 20/60/255 sessions (joint-valid pairs only). Append-only sampling: fresh underlyings seed the 5-session stride grid + latest session; each incremental run adds every session after the underlying''s latest stored corr date. PK (underlying_code, date), no FK (date-granular). Built by analysis.options; all INSERTs in Python per project rule.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

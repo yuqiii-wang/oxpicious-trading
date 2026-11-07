@@ -16,6 +16,11 @@ the per-index ``kline_<code>``/``realtime_<code>`` urls roles:
      16:00 the row is final and kept.
   4. Append the dates missing from ``{code}_history.csv`` (append-only;
      ``--force`` rewrites the CSV entirely from the API).
+
+Code motion only (2026-11-07): the former module-level
+``download_bse_index_archive`` orchestrator is now the method of the same
+name on :class:`BseArchiveRunner` (body verbatim); the shared cnindex
+history-CSV helpers and the bjs kline fetchers stay module-level imports.
 """
 from __future__ import annotations
 
@@ -69,112 +74,119 @@ SERVICE = "downloads.index.bse.archive"
 SLEEP_SEC = sleep_sec_for(SERVICE)
 
 
-def download_bse_index_archive(
-    *,
-    index_codes: Optional[List[str]] = None,
-    force: bool = False,
-    sleep_sec: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Refresh the BSE index daily archive CSVs (incremental by default)."""
-    if index_codes is None:
-        index_codes = list(BSE_INDEX_CODES)
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "bse_index_archive")
+class BseArchiveRunner:
+    """Runner for the BSE archive fetch cycle — the former
+    ``download_bse_index_archive`` function is the method of the same name
+    (same keyword-only signature and body verbatim); state (session /
+    proxy / stats) stays per-call locals exactly as before."""
 
-    expected_day = expected_publish_session()
-    expected_yyyymmdd = expected_day.strftime("%Y%m%d")
+    def download_bse_index_archive(
+        self,
+        *,
+        index_codes: Optional[List[str]] = None,
+        force: bool = False,
+        sleep_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Refresh the BSE index daily archive CSVs (incremental by default)."""
+        if index_codes is None:
+            index_codes = list(BSE_INDEX_CODES)
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "bse_index_archive")
 
-    logger.info(
-        "Starting BSE index archive download: codes=%s expected session=%s "
-        "(force=%s) out=%s",
-        index_codes, expected_yyyymmdd, force, out_dir,
-    )
+        expected_day = expected_publish_session()
+        expected_yyyymmdd = expected_day.strftime("%Y%m%d")
 
-    session = requests.Session()
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles — the row keeps the proxy
-    # rotation-off); an explicit --sleep-sec overrides the row's base sleep
-    # only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
-    stats = RunStats()
+        logger.info(
+            "Starting BSE index archive download: codes=%s expected session=%s "
+            "(force=%s) out=%s",
+            index_codes, expected_yyyymmdd, force, out_dir,
+        )
 
-    for code in index_codes:
-        name = BSE_INDEX_CODES.get(code, code)
-        logger.info("== Index %s (%s) ==", code, name)
-        csv_path = out_dir / f"{code}_history.csv"
-        raw_path = out_dir / f"{code}_kline.json"
+        session = requests.Session()
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles — the row keeps the proxy
+        # rotation-off); an explicit --sleep-sec overrides the row's base sleep
+        # only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
+        stats = RunStats()
 
-        if not force and csv_has_date(out_dir, code, expected_yyyymmdd):
-            logger.info("  [kline] %s: history CSV covers %s, skipping fetch",
-                        code, expected_yyyymmdd)
-            stats.skipped_cached += 1
-            continue
-        if not force and is_fresh_within(raw_path,
-                                         hours=REFETCH_MIN_INTERVAL_HOURS):
-            logger.info("  [kline] %s: missing %s but fetched <%.0fh ago, "
-                        "backing off", code, expected_yyyymmdd,
-                        REFETCH_MIN_INTERVAL_HOURS)
-            stats.skipped_cached += 1
-            continue
+        for code in index_codes:
+            name = BSE_INDEX_CODES.get(code, code)
+            logger.info("== Index %s (%s) ==", code, name)
+            csv_path = out_dir / f"{code}_history.csv"
+            raw_path = out_dir / f"{code}_kline.json"
 
-        records = fetch_bse_index_kline(session, code, proxy=proxy,
-                                        service=SERVICE)
-        if not records:
-            logger.warning("  [kline] %s: fetch failed or no records", code)
-            stats.failed += 1
-            continue
+            if not force and csv_has_date(out_dir, code, expected_yyyymmdd):
+                logger.info("  [kline] %s: history CSV covers %s, skipping fetch",
+                            code, expected_yyyymmdd)
+                stats.skipped_cached += 1
+                continue
+            if not force and is_fresh_within(raw_path,
+                                             hours=REFETCH_MIN_INTERVAL_HOURS):
+                logger.info("  [kline] %s: missing %s but fetched <%.0fh ago, "
+                            "backing off", code, expected_yyyymmdd,
+                            REFETCH_MIN_INTERVAL_HOURS)
+                stats.skipped_cached += 1
+                continue
 
-        try:
-            raw_path.write_text(
-                json.dumps({"indexCode": code, "indexName": name,
-                            "fetched_at": _dt.datetime.now().isoformat(),
-                            "records": records}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        except OSError as e:
-            logger.warning("  [kline] %s: could not save raw json: %s", code, e)
+            records = fetch_bse_index_kline(session, code, proxy=proxy,
+                                            service=SERVICE)
+            if not records:
+                logger.warning("  [kline] %s: fetch failed or no records", code)
+                stats.failed += 1
+                continue
 
-        rows = bse_index_kline_rows(records, code=code, name=name)
-        today_iso = _dt.date.today().isoformat()
-        if _dt.datetime.now().hour < SESSION_END_HOUR:
-            # Live intraday row — appending it would freeze today's partial
-            # close (the gate would then skip tonight's final re-append).
-            live_rows = [r for r in rows if r["date"] == today_iso]
-            rows = [r for r in rows if r["date"] != today_iso]
-            if live_rows:
-                logger.info("  [kline] %s: dropped %d live row(s) for %s "
-                            "(before %02d:00)", code, len(live_rows), today_iso,
-                            SESSION_END_HOUR)
-        if not rows:
-            logger.warning("  [kline] %s: no usable rows after live-row drop",
-                           code)
-            stats.failed += 1
-            continue
+            try:
+                raw_path.write_text(
+                    json.dumps({"indexCode": code, "indexName": name,
+                                "fetched_at": _dt.datetime.now().isoformat(),
+                                "records": records}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                logger.warning("  [kline] %s: could not save raw json: %s", code, e)
 
-        if force:
-            n = write_full_csv(rows, csv_path)
-            logger.info("  [kline] %s (%s): rewrote %s with %d rows "
-                        "(%s ~ %s)", code, name, csv_path.name, n,
-                        rows[0]["date"], rows[-1]["date"])
-        else:
-            n = append_missing_rows_to_csv(rows, csv_path)
-            logger.info("  [kline] %s (%s): appended %d new rows to %s "
-                        "(api range %s ~ %s)", code, name, n, csv_path.name,
-                        rows[0]["date"], rows[-1]["date"])
-        stats.downloaded += 1
-        stats.files.append(str(csv_path))
+            rows = bse_index_kline_rows(records, code=code, name=name)
+            today_iso = _dt.date.today().isoformat()
+            if _dt.datetime.now().hour < SESSION_END_HOUR:
+                # Live intraday row — appending it would freeze today's partial
+                # close (the gate would then skip tonight's final re-append).
+                live_rows = [r for r in rows if r["date"] == today_iso]
+                rows = [r for r in rows if r["date"] != today_iso]
+                if live_rows:
+                    logger.info("  [kline] %s: dropped %d live row(s) for %s "
+                                "(before %02d:00)", code, len(live_rows), today_iso,
+                                SESSION_END_HOUR)
+            if not rows:
+                logger.warning("  [kline] %s: no usable rows after live-row drop",
+                               code)
+                stats.failed += 1
+                continue
 
-    logger.info(
-        "Done BSE index archive download. downloaded=%d skipped(cached)=%d "
-        "failed=%d out=%s",
-        stats.downloaded, stats.skipped_cached, stats.failed, out_dir,
-    )
-    return stats.to_dict(
-        out_dir=str(out_dir),
-        index_codes=index_codes,
-        start_date="(full history)",
-        end_date=expected_yyyymmdd,
-    )
+            if force:
+                n = write_full_csv(rows, csv_path)
+                logger.info("  [kline] %s (%s): rewrote %s with %d rows "
+                            "(%s ~ %s)", code, name, csv_path.name, n,
+                            rows[0]["date"], rows[-1]["date"])
+            else:
+                n = append_missing_rows_to_csv(rows, csv_path)
+                logger.info("  [kline] %s (%s): appended %d new rows to %s "
+                            "(api range %s ~ %s)", code, name, n, csv_path.name,
+                            rows[0]["date"], rows[-1]["date"])
+            stats.downloaded += 1
+            stats.files.append(str(csv_path))
+
+        logger.info(
+            "Done BSE index archive download. downloaded=%d skipped(cached)=%d "
+            "failed=%d out=%s",
+            stats.downloaded, stats.skipped_cached, stats.failed, out_dir,
+        )
+        return stats.to_dict(
+            out_dir=str(out_dir),
+            index_codes=index_codes,
+            start_date="(full history)",
+            end_date=expected_yyyymmdd,
+        )

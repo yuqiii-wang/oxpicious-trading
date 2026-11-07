@@ -37,7 +37,8 @@
  *
  * RONGZI (融资 / cash-borrow) only — RONQIN (融券 / sec borrow) EXCLUDED.
  */
-import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { formatDate, toNum } from "../../lib/db.js";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { buildStrategyThemesFromRows } from "../_shared.js";
 import { labelDecodeSql } from "../label-codes.js";
@@ -109,75 +110,28 @@ function narrowAttribution(raw: string | undefined): MarginAttributionType {
 }
 
 // ----------------------------------------------------------------------------
-//  META_SQL — one row per industry that has rows in
+//  META — one row per industry that has rows in
 //  analysis.margin_industry_stats, JOINed with stats.sec_classification
 //  (type='index') to recover sector_id / sector_label / industry_slug /
-//  is_industry_not_strategy.
+//  is_industry_not_strategy. The SELECT lives in the sql view
+//  data_viz/api/services/analysis/margin-trends/meta.
 // ----------------------------------------------------------------------------
-const META_SQL = `
-  WITH margin_industries AS (
-    SELECT DISTINCT industry_id, industry_label
-    FROM analysis.margin_industry_stats
-  )
-  SELECT
-    mi.industry_id,
-    COALESCE(NULLIF(mi.industry_label, ''), mi.industry_id) AS industry_label,
-    COALESCE(sc.sector_id,              'OTHER')  AS sector_id,
-    COALESCE(sc.sector_label,           '其他')   AS sector_label,
-    COALESCE(sc.industry_slug,          LOWER(mi.industry_id)) AS industry_slug,
-    COALESCE(sc.is_industry_not_strategy, TRUE)  AS is_industry_not_strategy
-  FROM margin_industries mi
-  LEFT JOIN LATERAL (
-    SELECT sector_id, sector_label, industry_slug, is_industry_not_strategy
-    FROM stats.sec_classification
-    WHERE industry_id = mi.industry_id
-      AND type = 'index'
-      AND is_active = TRUE
-    LIMIT 1
-  ) sc ON TRUE
-`;
 
 // ----------------------------------------------------------------------------
-//  ITEMS_SQL — securities per industry, parametrized by attribution.
-//    attribution='index' → distinct index_code from margin_index_series TABLE
-//    attribution='etf'   → ETF codes from sec_classification
+//  ITEMS — securities per industry, parametrized by attribution.
+//    attribution='index' → distinct index_code from margin_index_series
+//      TABLE (sql view margin-trends/index_items)
+//    attribution='etf'   → ETF codes from sec_classification (sql view
+//      margin-trends/etf_items)
 //  Returns (industry_id, code, name) for populating the L3 items[] in each
 //  IndustryNode, so SecClassificationNav shows non-zero counts + clickable
 //  security chips when an industry is selected.
 //
-//  The DISTINCT runs BEFORE the sec_classification LATERAL name lookup:
-//  deduping first gives ~200 lateral probes instead of one per raw series
-//  row (~325k), which made the themes endpoint take 370-670ms (2026-09-29).
+//  In the index variant the DISTINCT runs BEFORE the sec_classification
+//  LATERAL name lookup: deduping first gives ~200 lateral probes instead
+//  of one per raw series row (~325k), which made the themes endpoint take
+//  370-670ms (2026-09-29).
 // ----------------------------------------------------------------------------
-const INDEX_ITEMS_SQL = `
-  WITH distinct_codes AS (
-    SELECT DISTINCT industry_id, index_code
-    FROM analysis.margin_index_series
-    WHERE industry_id IS NOT NULL AND industry_id <> ''
-  )
-  SELECT d.industry_id,
-         d.index_code AS code,
-         COALESCE(NULLIF(sc.name, ''), d.index_code) AS name
-  FROM distinct_codes d
-  LEFT JOIN LATERAL (
-    SELECT name FROM stats.sec_classification
-    WHERE code = d.index_code AND type = 'index' AND is_active = TRUE
-    LIMIT 1
-  ) sc ON TRUE
-  ORDER BY d.index_code
-`;
-
-const ETF_ITEMS_SQL = `
-  SELECT sc.industry_id,
-         sc.code,
-         COALESCE(NULLIF(sc.name, ''), sc.code) AS name
-  FROM stats.sec_classification sc
-  WHERE sc.type = 'etf'
-    AND sc.parent_index_is_primary = TRUE
-    AND sc.is_active = TRUE
-    AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
-  ORDER BY sc.code
-`;
 
 // ----------------------------------------------------------------------------
 //  listMarginTrendThemes — L1 sector → L2 industry tree, restricted to
@@ -191,10 +145,13 @@ export async function listMarginTrendThemes(
   const attribution = narrowAttribution(rawAttribution);
 
   const [rows, itemRows] = await Promise.all([
-    queryRows<DbMetaRow>(META_SQL, []),
-    queryRows<DbSecurityRow>(
-      attribution === "etf" ? ETF_ITEMS_SQL : INDEX_ITEMS_SQL,
-      [],
+    querySqlView<DbMetaRow>(
+      "data_viz/api/services/analysis/margin-trends/meta",
+    ),
+    querySqlView<DbSecurityRow>(
+      attribution === "etf"
+        ? "data_viz/api/services/analysis/margin-trends/etf_items"
+        : "data_viz/api/services/analysis/margin-trends/index_items",
     ),
   ]);
 
@@ -262,7 +219,9 @@ export async function listMarginTrendThemes(
 //  listMarginTrendStrategyThemes — parallel L1 strategy → L2 theme tree.
 // ----------------------------------------------------------------------------
 export async function listMarginTrendStrategyThemes(): Promise<StrategyNode[]> {
-  const rows = await queryRows<DbMetaRow>(META_SQL, []);
+  const rows = await querySqlView<DbMetaRow>(
+    "data_viz/api/services/analysis/margin-trends/meta",
+  );
 
   const filteredRows = rows
     .filter((r) => !r.is_industry_not_strategy)
@@ -297,75 +256,17 @@ export async function listMarginTrendStrategyThemes(): Promise<StrategyNode[]> {
 //  index_basic_stats/etf_basic_stats: a plain JOIN made the planner
 //  hash-join and seq-scan the whole basic-stats table (~830k index /
 //  all etf rows) per request — the ETF branch took 2.6-3.1s (2026-09-29).
+//
+//  The SELECTs live in sql views:
+//    index → data_viz/api/services/analysis/margin-trends/index_series
+//    etf   → data_viz/api/services/analysis/margin-trends/etf_series
 // ----------------------------------------------------------------------------
-const INDEX_SERIES_SQL = `
-  SELECT s.index_code, s.date, s.index_margin_balance, s.index_margin_buy,
-         ib.close, ib.trading_amount, mr.regime
-  FROM analysis.margin_index_series s
-  LEFT JOIN LATERAL (
-    SELECT close, trading_amount FROM stats.index_basic_stats b
-    WHERE b.code = s.index_code AND b.date = s.date
-    LIMIT 1
-  ) ib ON TRUE
-  LEFT JOIN LATERAL (
-    SELECT ${labelDecodeSql("regime", "r.regime")} AS regime
-    FROM stats.market_regimes r
-    -- sec_type stores its static.label_dim SMALLINT code (1 = index)
-    WHERE r.code = s.index_code AND r.date = s.date AND r.sec_type = 1
-    LIMIT 1
-  ) mr ON TRUE
-  WHERE s.industry_id = $1::text
-  ORDER BY s.index_code, s.date
-`;
 
-const INDEX_SECURITIES_SQL = `
-  SELECT DISTINCT s.index_code AS code,
-         COALESCE(NULLIF(sc.name, ''), s.index_code) AS name
-  FROM analysis.margin_index_series s
-  LEFT JOIN LATERAL (
-    SELECT name FROM stats.sec_classification
-    WHERE code = s.index_code AND type = 'index' AND is_active = TRUE
-    LIMIT 1
-  ) sc ON TRUE
-  WHERE s.industry_id = $1::text
-  ORDER BY code
-`;
-
-const ETF_SECURITIES_SQL = `
-  SELECT sc.code, COALESCE(NULLIF(sc.name, ''), sc.code) AS name
-  FROM stats.sec_classification sc
-  WHERE sc.type = 'etf'
-    AND sc.industry_id = $1::text
-    AND sc.parent_index_is_primary = TRUE
-    AND sc.is_active = TRUE
-  ORDER BY sc.code
-`;
-
-const ETF_SERIES_SQL = `
-  SELECT e.code, e.date, e.rz_balance, e.rz_buy, e.trading_amount, eb.close,
-         mr.regime
-  FROM stats.etf_liquidity_margin e
-  LEFT JOIN LATERAL (
-    SELECT close FROM stats.etf_basic_stats b
-    WHERE b.code = e.code AND b.date = e.date
-    LIMIT 1
-  ) eb ON TRUE
-  LEFT JOIN LATERAL (
-    SELECT ${labelDecodeSql("regime", "r.regime")} AS regime
-    FROM stats.market_regimes r
-    -- sec_type stores its static.label_dim SMALLINT code (0 = etf)
-    WHERE r.code = e.code AND r.date = e.date AND r.sec_type = 0
-    LIMIT 1
-  ) mr ON TRUE
-  WHERE e.code IN (
-    SELECT sc.code FROM stats.sec_classification sc
-    WHERE sc.type = 'etf'
-      AND sc.industry_id = $1::text
-      AND sc.parent_index_is_primary = TRUE
-      AND sc.is_active = TRUE
-  )
-  ORDER BY e.code, e.date
-`;
+// ----------------------------------------------------------------------------
+//  'index' securities — the industry's member index codes (sql view
+//  margin-trends/index_securities); 'etf' securities — the industry's ETF
+//  codes (sql view margin-trends/etf_securities).
+// ----------------------------------------------------------------------------
 
 // ----------------------------------------------------------------------------
 //  'industry' attribution — the industry's OWN margin curve. ONE series
@@ -382,8 +283,8 @@ const ETF_SERIES_SQL = `
 //      per-member-normalized curve — comparable across industries with
 //      different member counts. Note the two sides' averages are summed
 //      (stock side + ETF side), NOT averaged together. n_members rides
-//      along (members behind the average; see the SQL below) — the
-//      tooltip shows it in normalized mode.
+//      along (members behind the average; computed in the mapping below)
+//      — the tooltip shows it in normalized mode.
 //  close/trading_amount always come from the industry composite in
 //  stats.industry_basic_stats (pool_size = 3 'all' slice); the
 //  amplification analytics (daily returns, buy-share terciles) always
@@ -392,99 +293,71 @@ const ETF_SERIES_SQL = `
 //  regime joins stats.market_regimes sec_type=3 (the industry composite's
 //  own regime labels, built by builds.market_regimes --sec-type industry)
 //  so the companion chart's regime×tercile split renders here too.
+//
+//  ONE sql view serves BOTH variants —
+//    data_viz/api/services/analysis/margin-trends/industry_series
+//  is DIRECT RETRIEVAL ONLY (the stored margin_industry_stats columns);
+//  the derived values (margin_balance / margin_buy side-sums with the
+//  line-break NULLIF, the member-count n_members) are computed here in
+//  the row mapping below, from the raw pair the view returns.
 // ----------------------------------------------------------------------------
 interface DbIndustrySeriesRow extends QueryResultRow {
   industry_id: string;
   date: Date | string;
-  margin_balance: string | number | null;
-  margin_buy: string | number | null;
+  /** Raw SUM(stock+etf) per-side aggregates + the *_norm member-AVERAGE
+   *  aggregates (yuan / yuan per member) — the view returns ALL of them;
+   *  the ?normalize= flag picks which pair the curve sums (sumSides). */
+  stock_margin_balance: string | number | null;
+  etf_margin_balance: string | number | null;
+  stock_margin_buy: string | number | null;
+  etf_margin_buy: string | number | null;
+  stock_margin_balance_norm: string | number | null;
+  etf_margin_balance_norm: string | number | null;
+  stock_margin_buy_norm: string | number | null;
+  etf_margin_buy_norm: string | number | null;
   close: string | number | null;
   trading_amount: string | number | null;
   /** builds.market_regimes sec_type=3 label (decoded) — the industry
    *  composite's own regime; feeds the hyped-vs-drained regime split. */
   regime: string | null;
-  /** Normalized variant only — members behind the average (sum/avg per side). */
-  n_members?: number | string | null;
 }
 
-const INDUSTRY_SERIES_JOIN_SQL = `
-  FROM analysis.margin_industry_stats mi
-  LEFT JOIN LATERAL (
-    SELECT mean_close, total_trading_amount
-    FROM stats.industry_basic_stats b
-    -- pool_size = 3 is the 'all' slice (static.label_dim 'pool_size')
-    WHERE b.industry_id = mi.industry_id AND b.date = mi.date
-      AND b.pool_size = 3
-    LIMIT 1
-  ) ib ON TRUE
-  LEFT JOIN LATERAL (
-    SELECT ${labelDecodeSql("regime", "r.regime")} AS regime
-    FROM stats.market_regimes r
-    -- sec_type stores its static.label_dim SMALLINT code (3 = industry)
-    WHERE r.code = mi.industry_id AND r.date = mi.date AND r.sec_type = 3
-    LIMIT 1
-  ) mr ON TRUE
-  WHERE mi.industry_id = $1::text
-  ORDER BY mi.industry_id, mi.date
-`;
-
-function industrySeriesSql(
-  balanceExpr: string,
-  buyExpr: string,
-  extraSelect = "",
-): string {
-  return `
-  SELECT mi.industry_id, mi.date,
-         ${balanceExpr} AS margin_balance,
-         ${buyExpr}     AS margin_buy,
-         ib.mean_close AS close, ib.total_trading_amount AS trading_amount,
-         mr.regime
-         ${extraSelect}
-  ${INDUSTRY_SERIES_JOIN_SQL}
-`;
+/** One side's contribution to margin_balance / margin_buy — the stored
+ *  aggregates COALESCE-summed (0/NULL per side = no contribution on that
+ *  date, so it sums to the contributing side); an all-null/zero day
+ *  NULLIFs to null (the line BREAKS instead of dipping to 0). */
+function sumSides(
+  a: string | number | null,
+  b: string | number | null,
+): number | null {
+  const sum = (toNum(a) ?? 0) + (toNum(b) ?? 0);
+  return sum === 0 ? null : sum;
 }
 
 // n_members — the number of member securities behind that date's averages.
 // Not stored; derived EXACTLY from the stored pair as sum / avg per side
-// (both cover the same non-null non-zero members), so rounding can never
-// flip the integer (norm keeps 4 decimals on ~1e8+ yuan magnitudes).
-// Selected by BOTH variants — the member-count change dots render in raw
-// mode too (a membership change shifts the SUM curve as well).
-const INDUSTRY_N_MEMBERS_EXPR = `
-(CASE WHEN COALESCE(mi.stock_margin_balance_norm, 0) > 0
-           AND mi.stock_margin_balance IS NOT NULL
-      THEN ROUND(mi.stock_margin_balance / mi.stock_margin_balance_norm)::int
-      ELSE 0 END
-+ CASE WHEN COALESCE(mi.etf_margin_balance_norm, 0) > 0
-           AND mi.etf_margin_balance IS NOT NULL
-      THEN ROUND(mi.etf_margin_balance / mi.etf_margin_balance_norm)::int
-      ELSE 0 END) AS n_members`;
+// (both cover the same non-null non-zero members): per side
+// COALESCE(ROUND(balance / NULLIF(norm,0))::int, 0) — a NULL/0 norm or
+// NULL balance contributes 0 (norms are averages of non-negative
+// balances, so Math.round matches PG's half-away-from-zero ROUND), and
+// rounding can never flip the integer (norm keeps 4 decimals on ~1e8+
+// yuan magnitudes). Carried by BOTH variants — the member-count change
+// dots render in raw mode too (a membership change shifts the SUM curve
+// as well). Computed here from the raw pair the sql view returns.
+function sideMembers(
+  balance: string | number | null,
+  norm: string | number | null,
+): number {
+  const bal = toNum(balance);
+  const avg = toNum(norm);
+  if (bal == null || avg == null || avg === 0) return 0;
+  return Math.round(bal / avg);
+}
 
-const INDUSTRY_SERIES_SQL = industrySeriesSql(
-  "NULLIF(COALESCE(mi.stock_margin_balance, 0)\n" +
-  "       + COALESCE(mi.etf_margin_balance, 0), 0)",
-  "NULLIF(COALESCE(mi.stock_margin_buy, 0)\n" +
-  "       + COALESCE(mi.etf_margin_buy, 0), 0)",
-  `,
-         ${INDUSTRY_N_MEMBERS_EXPR}`,
-);
-
-const INDUSTRY_SERIES_NORM_SQL = industrySeriesSql(
-  "NULLIF(COALESCE(mi.stock_margin_balance_norm, 0)\n" +
-  "       + COALESCE(mi.etf_margin_balance_norm, 0), 0)",
-  "NULLIF(COALESCE(mi.stock_margin_buy_norm, 0)\n" +
-  "       + COALESCE(mi.etf_margin_buy_norm, 0), 0)",
-  `,
-         ${INDUSTRY_N_MEMBERS_EXPR}`,
-);
-
-const INDUSTRY_SECURITIES_SQL = `
-  SELECT industry_id AS code,
-         COALESCE(NULLIF(industry_label, ''), industry_id) AS name
-  FROM analysis.margin_industry_stats
-  WHERE industry_id = $1::text
-  LIMIT 1
-`;
+// 'industry' securities — the industry's own (code, label) row (sql view
+// margin-trends/industry_securities).
+const INDUSTRY_SECURITIES_VIEW =
+  "data_viz/api/services/analysis/margin-trends/industry_securities";
 
 // ----------------------------------------------------------------------------
 //  'exchange' attribution — the exchange's OWN market-wide margin totals
@@ -505,6 +378,8 @@ const INDUSTRY_SECURITIES_SQL = `
 //  code. The buyShare (exchange total rz_buy / underlying whole-index
 //  turnover) is scale-offset — fine for RANK-based tercile bucketing (same
 //  caveat as the index attribution, see MarginSeriesRow.trading_amount).
+//  The SELECT lives in the sql view
+//  data_viz/api/services/analysis/margin-trends/exchange_series.
 // ----------------------------------------------------------------------------
 interface DbExchangeSeriesRow extends QueryResultRow {
   exchange: string;
@@ -522,44 +397,6 @@ interface DbExchangeSeriesRow extends QueryResultRow {
  *  exchanges' daily-return / hyped-vs-drained views (spans SSE + SZSE),
  *  used when the request omits ?underlying= or passes a non-broad code. */
 const DEFAULT_EXCHANGE_UNDERLYING = "000300";
-
-const EXCHANGE_SERIES_SQL = `
-  WITH underlying AS (
-    SELECT u.code,
-           COALESCE(NULLIF(sc.name, ''), u.code) AS name
-    FROM (
-      SELECT CASE WHEN EXISTS (
-        SELECT 1 FROM stats.sec_index_tags t
-        WHERE t.code = $2::text AND t.is_broad_market = TRUE
-      ) THEN $2::text
-         ELSE '${DEFAULT_EXCHANGE_UNDERLYING}' END AS code
-    ) u
-    LEFT JOIN LATERAL (
-      SELECT name FROM stats.sec_classification
-      WHERE code = u.code AND type = 'index' AND is_active = TRUE
-      LIMIT 1
-    ) sc ON TRUE
-  )
-  SELECT em.exchange, em.date, em.rz_balance, em.rz_buy,
-         ib.close, ib.trading_amount, mr.regime,
-         (SELECT code FROM underlying) AS underlying_code,
-         (SELECT name FROM underlying) AS underlying_name
-  FROM analysis.exchange_margin_summary em
-  LEFT JOIN LATERAL (
-    SELECT close, trading_amount FROM stats.index_basic_stats b
-    WHERE b.code = (SELECT code FROM underlying) AND b.date = em.date
-    LIMIT 1
-  ) ib ON TRUE
-  LEFT JOIN LATERAL (
-    SELECT ${labelDecodeSql("regime", "r.regime")} AS regime
-    FROM stats.market_regimes r
-    -- sec_type stores its static.label_dim SMALLINT code (1 = index)
-    WHERE r.code = (SELECT code FROM underlying) AND r.date = em.date AND r.sec_type = 1
-    LIMIT 1
-  ) mr ON TRUE
-  WHERE em.exchange = $1::text
-  ORDER BY em.date
-`;
 
 /** Chart-title / legend label for the exchange attribution: the exchange
  *  names the series (its official margin totals are the plotted curve);
@@ -580,36 +417,19 @@ const EXCHANGE_LABELS: Record<string, string> = {
 //  empty daily-return view. Drives the exchange attribution's underlying
 //  dropdown (which index's close/turnover/regime the daily-return +
 //  hyped-vs-drained views map onto). Membership in this list is exactly
-//  what the series endpoint's SQL accepts as ?underlying=.
+//  what the series endpoint's SQL accepts as ?underlying=. The SELECT
+//  lives in the sql view
+//  data_viz/api/services/analysis/margin-trends/underlyings.
 // ----------------------------------------------------------------------------
 interface DbUnderlyingRow extends QueryResultRow {
   code: string;
   name: string;
 }
 
-const UNDERLYINGS_SQL = `
-  WITH broad AS (
-    SELECT code
-    FROM stats.sec_index_tags
-    GROUP BY code
-    HAVING BOOL_OR(is_broad_market) = TRUE
-  )
-  SELECT b.code,
-         COALESCE(NULLIF(sc.name, ''), b.code) AS name
-  FROM broad b
-  LEFT JOIN LATERAL (
-    SELECT name FROM stats.sec_classification
-    WHERE code = b.code AND type = 'index' AND is_active = TRUE
-    LIMIT 1
-  ) sc ON TRUE
-  WHERE EXISTS (
-    SELECT 1 FROM stats.index_basic_stats ibs WHERE ibs.code = b.code
-  )
-  ORDER BY b.code
-`;
-
 export async function listMarginTrendUnderlyings(): Promise<MarginUnderlyingEntry[]> {
-  const rows = await queryRows<DbUnderlyingRow>(UNDERLYINGS_SQL, []);
+  const rows = await querySqlView<DbUnderlyingRow>(
+    "data_viz/api/services/analysis/margin-trends/underlyings",
+  );
   return rows.map((r) => ({ code: r.code, name: r.name }));
 }
 
@@ -648,8 +468,17 @@ export async function getMarginIndustrySeries(
   if (attribution === "index") {
     // Securities + series in parallel (the label probe needs securities).
     const [secRows, rows] = await Promise.all([
-      queryRows<DbSecurityRow>(INDEX_SECURITIES_SQL, [industryId]),
-      queryRows<DbIndexSeriesRow>(INDEX_SERIES_SQL, [industryId]),
+      querySqlView<DbSecurityRow>(
+        "data_viz/api/services/analysis/margin-trends/index_securities",
+        { industry_id: industryId },
+      ),
+      querySqlView<DbIndexSeriesRow>(
+        "data_viz/api/services/analysis/margin-trends/index_series",
+        {
+          industry_id: industryId,
+          regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime")),
+        },
+      ),
     ]);
     securities = secRows.map((r) => ({ code: r.code, label: r.name }));
 
@@ -665,10 +494,9 @@ export async function getMarginIndustrySeries(
 
     // Recover industry_label from the first index's sec_classification row.
     if (securities.length > 0) {
-      const labelRow = await queryRows<{ industry_label: string }>(
-        `SELECT industry_label FROM stats.sec_classification
-         WHERE code = $1 AND type = 'index' AND is_active = TRUE LIMIT 1`,
-        [securities[0].code],
+      const labelRow = await querySqlView<{ industry_label: string }>(
+        "data_viz/api/services/analysis/margin-trends/industry_label_index",
+        { code: securities[0].code },
       );
       if (labelRow.length > 0 && labelRow[0].industry_label) {
         industryLabel = labelRow[0].industry_label;
@@ -676,8 +504,17 @@ export async function getMarginIndustrySeries(
     }
   } else if (attribution === "etf") {
     const [secRows, rows] = await Promise.all([
-      queryRows<DbSecurityRow>(ETF_SECURITIES_SQL, [industryId]),
-      queryRows<DbEtfSeriesRow>(ETF_SERIES_SQL, [industryId]),
+      querySqlView<DbSecurityRow>(
+        "data_viz/api/services/analysis/margin-trends/etf_securities",
+        { industry_id: industryId },
+      ),
+      querySqlView<DbEtfSeriesRow>(
+        "data_viz/api/services/analysis/margin-trends/etf_series",
+        {
+          industry_id: industryId,
+          regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime")),
+        },
+      ),
     ]);
     securities = secRows.map((r) => ({ code: r.code, label: r.name }));
 
@@ -692,10 +529,9 @@ export async function getMarginIndustrySeries(
     }));
 
     if (securities.length > 0) {
-      const labelRow = await queryRows<{ industry_label: string }>(
-        `SELECT industry_label FROM stats.sec_classification
-         WHERE code = $1 AND type = 'etf' AND is_active = TRUE LIMIT 1`,
-        [securities[0].code],
+      const labelRow = await querySqlView<{ industry_label: string }>(
+        "data_viz/api/services/analysis/margin-trends/industry_label_etf",
+        { code: securities[0].code },
       );
       if (labelRow.length > 0 && labelRow[0].industry_label) {
         industryLabel = labelRow[0].industry_label;
@@ -706,8 +542,14 @@ export async function getMarginIndustrySeries(
     // (code = 'SS'/'SZ'; the industry_id param IS the exchange code). The
     // mapped broad-market underlying (?underlying=) feeds the close /
     // turnover / regime joins and the response's underlying fields.
-    const rows = await queryRows<DbExchangeSeriesRow>(
-      EXCHANGE_SERIES_SQL, [industryId.toUpperCase(), underlyingCode],
+    const rows = await querySqlView<DbExchangeSeriesRow>(
+      "data_viz/api/services/analysis/margin-trends/exchange_series",
+      {
+        exchange: industryId.toUpperCase(),
+        underlying: underlyingCode,
+        default_underlying: sqlFrag(DEFAULT_EXCHANGE_UNDERLYING),
+        regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime")),
+      },
     );
     industryLabel = EXCHANGE_LABELS[industryId.toUpperCase()] ?? industryId;
     securities = [{ code: industryId.toUpperCase(), label: industryLabel }];
@@ -731,15 +573,21 @@ export async function getMarginIndustrySeries(
     }));
   } else {
     // 'industry' — ONE series: the industry's own curve (code =
-    // industry_id). ?normalize=true switches to the SUM of the per-side
-    // member averages (*_norm columns); raw (default) is the SUM(stock+
-    // etf) curve. The industry label rides the series query, so no extra
-    // classification probe is needed.
+    // industry_id). ?normalize=true switches the curve to the SUM of the
+    // per-side member averages (*_norm columns); raw (default) is the
+    // SUM(stock+etf) curve — the SAME sql view returns the raw columns
+    // for both, and the mapping below picks the pair. The industry label
+    // rides the series query, so no extra classification probe is needed.
     const [secRows, rows] = await Promise.all([
-      queryRows<DbSecurityRow>(INDUSTRY_SECURITIES_SQL, [industryId]),
-      queryRows<DbIndustrySeriesRow>(
-        normalize ? INDUSTRY_SERIES_NORM_SQL : INDUSTRY_SERIES_SQL,
-        [industryId],
+      querySqlView<DbSecurityRow>(INDUSTRY_SECURITIES_VIEW, {
+        industry_id: industryId,
+      }),
+      querySqlView<DbIndustrySeriesRow>(
+        "data_viz/api/services/analysis/margin-trends/industry_series",
+        {
+          industry_id: industryId,
+          regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime")),
+        },
       ),
     ]);
     securities = secRows.map((r) => ({ code: r.code, label: r.name }));
@@ -747,20 +595,31 @@ export async function getMarginIndustrySeries(
       industryLabel = securities[0].label;
     }
 
-    seriesRows = rows.map((r) => ({
-      code: r.industry_id,
-      date: formatDate(r.date),
-      balance: toNum(r.margin_balance),
-      buy: toNum(r.margin_buy),
-      close: toNum(r.close),
-      trading_amount: toNum(r.trading_amount),
-      // Members behind that date's averages (sum/avg per side) — both
-      // variants carry it; drives the member-count change dots.
-      n_members: toNum(r.n_members),
-      // The industry composite's own regime (builds.market_regimes
-      // sec_type=3) — feeds the hyped-vs-drained regime split.
-      regime: toRegime(r.regime),
-    }));
+    seriesRows = rows.map((r) => {
+      // Which stored pair the curve sums — the raw SUM(stock+etf)
+      // aggregates (default) or the *_norm member averages.
+      const [balA, balB] = normalize
+        ? [r.stock_margin_balance_norm, r.etf_margin_balance_norm]
+        : [r.stock_margin_balance, r.etf_margin_balance];
+      const [buyA, buyB] = normalize
+        ? [r.stock_margin_buy_norm, r.etf_margin_buy_norm]
+        : [r.stock_margin_buy, r.etf_margin_buy];
+      return {
+        code: r.industry_id,
+        date: formatDate(r.date),
+        balance: sumSides(balA, balB),
+        buy: sumSides(buyA, buyB),
+        close: toNum(r.close),
+        trading_amount: toNum(r.trading_amount),
+        // Members behind that date's averages (sum/avg per side) — both
+        // variants carry it; drives the member-count change dots.
+        n_members: sideMembers(r.stock_margin_balance, r.stock_margin_balance_norm)
+          + sideMembers(r.etf_margin_balance, r.etf_margin_balance_norm),
+        // The industry composite's own regime (builds.market_regimes
+        // sec_type=3) — feeds the hyped-vs-drained regime split.
+        regime: toRegime(r.regime),
+      };
+    });
   }
 
   return {
@@ -784,6 +643,11 @@ export async function getMarginIndustrySeries(
 //  attribution='index'    → sec_type='index', codes from margin_index_series
 //  attribution='etf'      → sec_type='etf', codes from sec_classification
 //  attribution='industry' → sec_type='industry', code = industry_id
+//
+//  The SELECTs live in sql views:
+//    index    → data_viz/api/services/analysis/margin-trends/index_trends
+//    etf      → data_viz/api/services/analysis/margin-trends/etf_trends
+//    industry → data_viz/api/services/analysis/margin-trends/industry_trends
 // ----------------------------------------------------------------------------
 interface DbTrendRow extends QueryResultRow {
   code: string;
@@ -792,46 +656,6 @@ interface DbTrendRow extends QueryResultRow {
   is_trend_up_not_down: boolean;
   rz_buy_vs_trading_amt_ratio: string | number | null;
 }
-
-const INDEX_TRENDS_SQL = `
-  WITH industry_codes AS (
-    SELECT DISTINCT index_code AS code
-    FROM analysis.margin_index_series
-    WHERE industry_id = $1::text
-  )
-  SELECT t.code, t.start_date, t.end_date, t.is_trend_up_not_down,
-         t.rz_buy_vs_trading_amt_ratio
-  FROM analysis.margin_changes t
-  JOIN industry_codes ic ON ic.code = t.code
-  WHERE t.sec_type = 1 -- static.label_dim 'sec_type': index
-  ORDER BY t.start_date
-`;
-
-const ETF_TRENDS_SQL = `
-  WITH industry_codes AS (
-    SELECT sc.code
-    FROM stats.sec_classification sc
-    WHERE sc.type = 'etf'
-      AND sc.industry_id = $1::text
-      AND sc.parent_index_is_primary = TRUE
-      AND sc.is_active = TRUE
-  )
-  SELECT t.code, t.start_date, t.end_date, t.is_trend_up_not_down,
-         t.rz_buy_vs_trading_amt_ratio
-  FROM analysis.margin_changes t
-  JOIN industry_codes ic ON ic.code = t.code
-  WHERE t.sec_type = 0 -- static.label_dim 'sec_type': etf
-  ORDER BY t.start_date
-`;
-
-const INDUSTRY_TRENDS_SQL = `
-  SELECT t.code, t.start_date, t.end_date, t.is_trend_up_not_down,
-         t.rz_buy_vs_trading_amt_ratio
-  FROM analysis.margin_changes t
-  WHERE t.code = $1::text
-    AND t.sec_type = 3 -- static.label_dim 'sec_type': industry
-  ORDER BY t.start_date
-`;
 
 export async function getMarginTrends(
   rawIndustryId: string,
@@ -849,11 +673,15 @@ export async function getMarginTrends(
     return { industry_id: industryId, attribution, episodes: [] };
   }
 
-  const sql =
-    attribution === "etf" ? ETF_TRENDS_SQL
-    : attribution === "industry" ? INDUSTRY_TRENDS_SQL
-    : INDEX_TRENDS_SQL;
-  const rows = await queryRows<DbTrendRow>(sql, [industryId]);
+  const view =
+    attribution === "etf"
+      ? "data_viz/api/services/analysis/margin-trends/etf_trends"
+      : attribution === "industry"
+        ? "data_viz/api/services/analysis/margin-trends/industry_trends"
+        : "data_viz/api/services/analysis/margin-trends/index_trends";
+  const rows = await querySqlView<DbTrendRow>(view, {
+    industry_id: industryId,
+  });
 
   const episodes = rows.map((r) => ({
     code: r.code,

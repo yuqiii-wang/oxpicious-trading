@@ -14,10 +14,10 @@
  * cachedRows() TTL (same pattern as classification-cache) and filtered
  * per code in JS.
  */
-import { queryRows } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { cachedRows } from "./classification-cache.js";
 import { labelDecodeSql } from "./label-codes.js";
+import { querySqlView, sqlFrag } from "../lib/sql-views.js";
 
 export type SecBoardSecType = "index" | "etf" | "stock";
 
@@ -32,19 +32,10 @@ export interface SecBoardRow extends QueryResultRow {
 /** All board rows for one sec_type, pct DESC (cached per type). */
 async function listBoardRows(secType: SecBoardSecType): Promise<SecBoardRow[]> {
   return cachedRows(`sec_board_map:${secType}`, () =>
-    queryRows<SecBoardRow>(
-      `
-      SELECT code,
-             ${labelDecodeSql("board", "board")} AS board,
-             pct,
-             n_stocks,
-             snapshot_date::text AS snapshot_date
-        FROM stats.sec_board_map
-       WHERE sec_type = $1
-       ORDER BY code, pct DESC
-      `,
-      [secType],
-    ),
+    querySqlView<SecBoardRow>("data_viz/api/services/sec-board/board_rows", {
+      sec_type: secType,
+      board_decode: sqlFrag(labelDecodeSql("board", "board")),
+    }),
   );
 }
 

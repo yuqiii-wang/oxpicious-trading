@@ -13,6 +13,7 @@ from typing import Iterable, Set
 
 import pandas as pd
 
+from _common.sql_views import frag, render_sql_view
 from analysis.margins.config import (
     SRC_TABLE_ETF,
     SRC_TABLE_STOCK,
@@ -55,18 +56,13 @@ async def fetch_active_rongzi_codes(
     # ETFs require a minimum daily rz_balance (1M yuan) — small-margin
     # ETFs produce noisy / meaningless slope + zscore signals.
     min_balance = MIN_ETF_DAILY_MARGIN_YUAN if sec_type == "etf" else 0
-    rows = await conn.fetch(
-        f"""
-        SELECT DISTINCT code
-        FROM {table}
-        WHERE date >= $1::date
-          AND date <= $2::date
-          AND rz_balance >= $3::numeric
-        """,
-        cutoff,
-        ref_date,
-        min_balance,
+    # active_rongzi_codes view (src_table = the sec_type's source table).
+    view = render_sql_view(
+        "analysis/margins/fetch/active_rongzi_codes",
+        src_table=frag(table),
+        cutoff=cutoff, ref_date=ref_date, min_balance=min_balance,
     )
+    rows = await conn.fetch(view.sql, *view.params)
     return {r["code"] for r in rows}
 
 
@@ -99,15 +95,12 @@ async def fetch_margin_history(
         )
 
     table = SRC_TABLE_ETF if sec_type == "etf" else SRC_TABLE_STOCK
-    rows = await conn.fetch(
-        f"""
-        SELECT code, date, rz_balance, rz_buy
-        FROM {table}
-        WHERE code = ANY($1::text[])
-        ORDER BY code, date
-        """,
-        code_list,
+    # margin_history view (src_table = the sec_type's source table).
+    view = render_sql_view(
+        "analysis/margins/fetch/margin_history",
+        src_table=frag(table), codes=code_list,
     )
+    rows = await conn.fetch(view.sql, *view.params)
     return pd.DataFrame(
         {
             "code": [r["code"] for r in rows],
@@ -152,18 +145,9 @@ async def fetch_index_margin_series(conn) -> pd.DataFrame:
     Args:
         conn: asyncpg connection.
     """
-    rows = await conn.fetch(
-        """
-        SELECT
-            index_code            AS code,
-            date,
-            index_margin_balance AS rz_balance,
-            index_margin_buy      AS rz_buy,
-            n_with_balance       AS n_members
-        FROM analysis.margin_index_series
-        ORDER BY index_code, date
-        """
-    )
+    # index_margin_series view — the vectorized build's output table.
+    view = render_sql_view("analysis/margins/fetch/index_margin_series")
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(
             columns=["code", "date", "rz_balance", "rz_buy", "n_members"]
@@ -222,22 +206,22 @@ async def fetch_index_series_raw(
         dates: when non-None, only fetch margin rows whose date is in this
             set (incremental mode). None = full history (force mode).
     """
-    date_clause = ""
-    params: list = []
-    if dates is not None:
-        date_clause = "WHERE date = ANY($1::date[])"
-        params.append(sorted(dates))
+    date_clause = dates is not None
 
     async def _fetch_margin(table: str) -> pd.DataFrame:
-        rows = await conn.fetch(
-            f"""
-            SELECT code, date, rz_balance, rz_buy
-            FROM {table}
-            {date_clause}
-            ORDER BY code, date
-            """,
-            *params,
-        )
+        # index_series_margin_{all,by_dates} views — the raw margin rows of
+        # one source table, optionally scoped to the target dates.
+        if date_clause:
+            view = render_sql_view(
+                "analysis/margins/fetch/index_series_margin_by_dates",
+                src_table=frag(table), dates=sorted(dates),
+            )
+        else:
+            view = render_sql_view(
+                "analysis/margins/fetch/index_series_margin_all",
+                src_table=frag(table),
+            )
+        rows = await conn.fetch(view.sql, *view.params)
         if not rows:
             return pd.DataFrame(columns=["code", "date", "rz_balance", "rz_buy"])
         return pd.DataFrame(
@@ -258,19 +242,9 @@ async def fetch_index_series_raw(
     stock_margin = await _fetch_margin(SRC_TABLE_STOCK)
     etf_margin = await _fetch_margin(SRC_TABLE_ETF)
 
-    cls_rows = await conn.fetch(
-        """
-        SELECT
-            code,
-            type,
-            parent_index_code,
-            parent_index_weight,
-            parent_index_is_primary,
-            industry_id
-        FROM stats.sec_classification
-        WHERE type IN ('stock', 'etf', 'index')
-        """
-    )
+    # classification view — sec_classification routing rows.
+    view = render_sql_view("analysis/margins/fetch/classification")
+    cls_rows = await conn.fetch(view.sql, *view.params)
     classification = pd.DataFrame(
         {
             "code": [r["code"] for r in cls_rows],
@@ -332,46 +306,20 @@ async def fetch_industry_mapping(
         # (build rule guarantees parent is an industry index, not BROAD).
         # is_industry_not_strategy=TRUE for all stock rows — redundant
         # but kept for documentation.
-        rows = await conn.fetch(
-            """
-            SELECT
-                code,
-                industry_id,
-                industry_label,
-                parent_index_weight
-            FROM stats.sec_classification
-            WHERE type = 'stock'
-              AND parent_index_is_primary = TRUE
-              AND industry_id IS NOT NULL
-              AND industry_id <> ''
-            """
+        # industry_mapping_stock view.
+        view = render_sql_view(
+            "analysis/margins/fetch/industry_mapping_stock",
         )
+        rows = await conn.fetch(view.sql, *view.params)
     else:
         # ETF: two-hop via parent_index_code → index.industry_id.
         # ALL index types are included (no is_industry_not_strategy
         # filter) so broad-market + strategy ETFs also contribute.
-        rows = await conn.fetch(
-            """
-            SELECT
-                e.code,
-                idx.industry_id,
-                idx.industry_label,
-                e.parent_index_weight
-            FROM stats.sec_classification e
-            JOIN LATERAL (
-                SELECT DISTINCT industry_id, industry_label
-                FROM stats.sec_classification
-                WHERE type = 'index'
-                  AND is_active = TRUE
-                  AND industry_id IS NOT NULL
-                  AND industry_id <> ''
-                  AND code = e.parent_index_code
-            ) idx ON TRUE
-            WHERE e.type = 'etf'
-              AND e.parent_index_is_primary = TRUE
-              AND e.parent_index_code <> ''
-            """
+        # industry_mapping_etf view.
+        view = render_sql_view(
+            "analysis/margins/fetch/industry_mapping_etf",
         )
+        rows = await conn.fetch(view.sql, *view.params)
 
     return pd.DataFrame(
         {

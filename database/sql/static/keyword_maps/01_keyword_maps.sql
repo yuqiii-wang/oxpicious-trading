@@ -90,22 +90,6 @@ CREATE TABLE IF NOT EXISTS static.keyword_maps (
         (category_type >= 3 AND industry_id IS NULL AND category_code IS NULL))
 );
 
--- Migration for tables created before the wave-3 lexical columns
--- (2026-11-01): no-op on fresh installs (CREATE above already has them).
-ALTER TABLE static.keyword_maps ADD COLUMN IF NOT EXISTS parts_of_speech SMALLINT NOT NULL DEFAULT 0;
-ALTER TABLE static.keyword_maps ADD COLUMN IF NOT EXISTS is_negation BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE static.keyword_maps ADD COLUMN IF NOT EXISTS language SMALLINT NOT NULL DEFAULT 0;
-
--- Migration for tables created before the skip category type (2026-11-01):
--- rebuild the target-selection CHECK with the no-target branch covering
--- skip AND the component types (no-op on fresh installs — CREATE above
--- already carries it).
-ALTER TABLE static.keyword_maps DROP CONSTRAINT IF EXISTS ck_keyword_maps_target;
-ALTER TABLE static.keyword_maps ADD CONSTRAINT ck_keyword_maps_target CHECK (
-    (category_type = 0 AND industry_id IS NOT NULL AND category_code IS NULL) OR
-    (category_type IN (1, 2) AND industry_id IS NULL AND category_code IS NOT NULL) OR
-    (category_type >= 3 AND industry_id IS NULL AND category_code IS NULL));
-
 -- Category identity: industry rows key on industry_id (TEXT — the standing
 -- industry_id exception), market/broadmarket rows on their SMALLINT code;
 -- the COALESCE flattens the two into one unique key per

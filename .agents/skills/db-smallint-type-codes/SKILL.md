@@ -20,6 +20,12 @@ mapping lives in ONE place with three identical mirrors:
 prints the TS mirror — a change that touches only one mirror is drift and
 will fail that check.
 
+New Python around a vocabulary (engines, services, writers) is
+class-first (`oxpicious-dev-conventions`): expose it through pydantic
+models rather than ad-hoc dicts — but the three mirrors keep their
+literal shape (`LABEL_MAPS` stays the Python source of truth; a pydantic
+model validates against it, never replaces it).
+
 ## Why codes (not TEXT, not PG ENUM)
 
 - Label strings riding cudf.pandas frames through sort/merge/concat fault
@@ -31,6 +37,19 @@ will fail that check.
   types: adding a vocabulary value is one INSERT in three mirrors, not an
   ALTER TYPE / table rebuild. ENUM types additionally break bulk COPY
   casts and are banned here.
+
+## Decode through the index — never CASE in a SELECT
+
+A SQL SELECT never maps or decodes values with `CASE` / `CASE WHEN`;
+decoding always comes from the index — the `static.label_dim` scalar
+subquery / join on `(domain, code)` (TS renders it with
+`labelDecodeSql(domain, col)` passed as a `sqlFrag` fragment arg into
+the sql_view slot; Python decodes host-side via
+`_common.labels.decode_codes`). When a value that needs a label is
+missing from the index, the fix is SQL: add the row to its domain's
+INSERT file under `database/sql/static/label_dim/` and mirror it in
+`_common/labels.py` + `label-codes.ts` ("Adding a domain" below) —
+never an inline CASE map in the query.
 
 ## Rules for a new type column
 

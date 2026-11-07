@@ -5,9 +5,12 @@
 API-key resolution, retry policy, and JSON-POST helpers live exactly
 once:
 
-  * API-key resolution from the project-root ``.env``
+  * API-key resolution — the explicit env chain first
     (``API_KEY_ENV_VARS`` declares the provider's env vars, first match
-    wins — see ``transport.load_project_env``);
+    wins — see ``transport.load_project_env``), then the DB secret
+    registry ``static.secret_config`` keyed by ``name`` +
+    ``SECRET_TYPE`` (the root .env's successor,
+    ``_core.secret_config``);
   * the retry policy handed to ``RetryingJsonClient`` (provider codes —
     ZhiPu 1701 = concurrency limit, 1234 = upstream "network error,
     retry later");
@@ -39,6 +42,12 @@ class BaseLlmProvider(abc.ABC):
 
     name: ClassVar[str] = "<base>"
     API_KEY_ENV_VARS: ClassVar[Sequence[str]] = ()
+    # WHICH CREDENTIAL the provider resolves from the DB secret
+    # registry (static.secret_config — the root .env's successor): the
+    # audit's selected-domain contract, llm -> ext_llm_provider,
+    # web_search -> ext_http_source. Search providers override to
+    # "web_search"; chat providers keep the default.
+    SECRET_TYPE: ClassVar[str] = "llm"
 
     # Retry policy handed to the transport (see RetryingJsonClient):
     # provider codes — ZhiPu 1701 = concurrency limit, 1234 = upstream
@@ -60,23 +69,39 @@ class BaseLlmProvider(abc.ABC):
     # -- key / transport -------------------------------------------------
     @classmethod
     def _resolve_api_key(cls) -> str:
+        # 1. explicit env (the externally-set chain, first match wins);
+        # 2. the DB secret registry (static.secret_config — the root
+        #    .env's keys migrated there 2026-11-06 and the file was
+        #    deleted; the newest active row for cls.name + cls.SECRET_TYPE
+        #    wins, TTL-cached fail-soft in _core.secret_config).
         load_project_env()
         for var in cls.API_KEY_ENV_VARS:
             key = os.environ.get(var, "").strip()
             if key:
                 return key
+        from llm_agents._core.secret_config import get_secret
+
+        key = get_secret(cls.name, cls.SECRET_TYPE)
+        if key:
+            return key
         raise LlmProviderError(
             f"{cls.name}: no API key — set one of {list(cls.API_KEY_ENV_VARS)} "
-            f"in the project-root .env or environment.")
+            f"in the environment, or store the credential on the "
+            f"{cls.SECRET_TYPE} / {cls.name} row of static.secret_config "
+            f"(Config → Secrets tab).")
 
     @property
     def session(self) -> requests.Session:
         return self._http.session
 
     def _post_json(self, url: str, payload: Dict[str, Any],
-                   *, timeout: float) -> Dict[str, Any]:
-        return self._http.post_json(url, payload, timeout=timeout)
+                   *, timeout: float,
+                   budget: Optional[float] = None) -> Dict[str, Any]:
+        return self._http.post_json(url, payload, timeout=timeout,
+                                    budget=budget)
 
     async def _post_json_async(self, url: str, payload: Dict[str, Any],
-                               *, timeout: float) -> Dict[str, Any]:
-        return await self._http.post_json_async(url, payload, timeout=timeout)
+                               *, timeout: float,
+                               budget: Optional[float] = None) -> Dict[str, Any]:
+        return await self._http.post_json_async(url, payload, timeout=timeout,
+                                                budget=budget)

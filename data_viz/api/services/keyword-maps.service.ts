@@ -11,7 +11,7 @@
  * DECODED to labels (the same convention as the external-request rows'
  * resource_type) so the UI table renders words, not codes.
  */
-import { queryRows } from "./db.service.js";
+import { querySqlView } from "../lib/sql-views.js";
 import { LABEL_DECODE, type LabelDomain } from "./label-codes.js";
 import type { QueryResultRow } from "pg";
 
@@ -37,14 +37,10 @@ function decodeCode(domain: LabelDomain, code: number): string {
 }
 
 export async function listKeywordMaps(): Promise<KeywordMapEntry[]> {
-  const rows = await queryRows<QueryResultRow>(
-    `SELECT keyword, category_type, industry_id, category_code,
-            parts_of_speech, is_negation, language
-     FROM static.keyword_maps
-     ORDER BY category_type,
-              category_code NULLS LAST,
-              industry_id NULLS LAST,
-              keyword`,
+  // The SELECT lives in the sql view
+  // data_viz/api/services/keyword-maps/all_maps.
+  const rows = await querySqlView<QueryResultRow>(
+    "data_viz/api/services/keyword-maps/all_maps",
   );
   return rows.map((r) => {
     const categoryType = decodeCode(

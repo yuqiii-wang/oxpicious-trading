@@ -38,8 +38,9 @@ import pandas as pd
 from _common.df_utils import grouped_diff
 from analysis._common import sanitize_for_db_insert
 from analysis.mov_ave_spread._common import (
+    StepRun,
+    TableStep,
     null_if_overflow_counted,
-    run_table_step,
 )
 
 import logging
@@ -347,39 +348,19 @@ def _grouped_ewm_pandas(s, df, grp, alpha, min_periods, ignore_na=False,
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
-#  skeleton lives in _common.steps.run_table_step)
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__ via the
+#  TableStep template in _common.steps)
 # ---------------------------------------------------------------------------
 
-def _log_note_null_price(step_df: pd.DataFrame) -> None:
-    """Rows with NULL price are KEPT (not dropped): their RSI columns
-    will be NULL, but keeping them ensures the API LEFT JOIN always
-    finds a mov_ave_rsi row for every detail date."""
-    n_null_price = int(step_df["price"].isna().sum())
-    if n_null_price > 0:
-        logger.info(f"    note: {n_null_price:,} rows with NULL price will get "
-              f"NULL RSI columns")
-
-
-async def run_rsi(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
-    """Run the Wilder RSI pipeline against the source price data
-    already loaded by the parent mov_ave_spread.
+class RsiStep(TableStep):
+    """Wilder RSI internal step (analysis.mov_ave_rsi).
 
     Reuses the caller's DB connection and source DataFrame (the ``price``
     column is reused — no second DB fetch). The DataFrame must contain the
     FULL per-code history (not filtered to target_dates) so Wilder
     smoothing is correct for the first target date of each code.
 
-    Pipeline (see _common.steps.run_table_step)
+    Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_rsi against source identity tables. In force
          mode, purge the table scope instead.
@@ -392,42 +373,55 @@ async def run_rsi(
          that computes RSI (see steps/rsi_ranks.py).
       2. Upsert into analysis.mov_ave_rsi (chunked by date).
       3. Upsert analysis.analysis_identity registry.
+      4. POST-WRITE hook: rebuild the tail-episode store AFTER the RSI
+         rows' own write — it reads the ranks table (rebuilt by the hook
+         above) and CSV-COPYs the trends component's own
+         analysis.trend_episode_days store (wholesale per sec_type — the
+         retired is_typical columns no longer ride this table; post-write
+         so the COPY never collides with the RSI rows' own write).
     """
-    # Deferred import — rsi_ranks imports RSI_WINDOWS back from this
-    # module, so a module-level import would be circular.
-    from analysis.mov_ave_spread.steps.rsi_ranks import make_ranks_rebuild_hook
-    from analysis.trends.rsi_episode_days import rebuild_trend_episode_days
 
-    await run_table_step(
-        conn, df,
-        title="MOV_AVE_RSI (internal step of mov_ave_spread)",
-        tag="r",
-        table=RSI_TABLE,
-        analysis_name=RSI_ANALYSIS_NAME,
-        detail_name="mov_ave_rsi",
-        description=RSI_DESCRIPTION,
-        needed_cols=["sec_type", "code", "date", "price"],
-        compute_fn=compute_rsi,
-        sanitize_fn=sanitize_rsi_rows,
-        force=force,
-        pool=pool,
-        max_concurrent=max_concurrent,
-        sec_type=sec_type,
-        code_filter=code_filter,
-        log_note=_log_note_null_price,
-        post_compute_fn=make_ranks_rebuild_hook(
-            conn,
-            sec_type=sec_type, code_filter=code_filter,
-            pool=pool, max_concurrent=max_concurrent,
-        ),
-    )
+    title = "MOV_AVE_RSI (internal step of mov_ave_spread)"
+    tag = "r"
+    table = RSI_TABLE
+    analysis_name = RSI_ANALYSIS_NAME
+    detail_name = "mov_ave_rsi"
+    description = RSI_DESCRIPTION
+    needed_cols = ("sec_type", "code", "date", "price")
 
-    # the tail-episode store AFTER the RSI rows' own write: it reads the
-    # ranks table (rebuilt by the hook above) and CSV-COPYs the trends
-    # component's own analysis.trend_episode_days store (wholesale per
-    # sec_type — the retired is_typical columns no longer ride this
-    # table; post-write so the COPY never collides with the RSI rows'
-    # own write)
-    await rebuild_trend_episode_days(
-        conn, sec_type=sec_type or "index", code_filter=code_filter,
-    )
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return compute_rsi(df)
+
+    def sanitize_rows(self, df: pd.DataFrame) -> list[dict]:
+        return sanitize_rsi_rows(df)
+
+    def log_note(self, df: pd.DataFrame) -> None:
+        # Rows with NULL price are KEPT (not dropped): their RSI columns
+        # will be NULL, but keeping them ensures the API LEFT JOIN always
+        # finds a mov_ave_rsi row for every detail date.
+        n_null_price = int(df["price"].isna().sum())
+        if n_null_price > 0:
+            logger.info(f"    note: {n_null_price:,} rows with NULL price will get "
+                  f"NULL RSI columns")
+
+    async def post_compute(
+        self, run: StepRun, df: pd.DataFrame, sec_type: str | None,
+    ) -> None:
+        # Deferred import — rsi_ranks imports RSI_WINDOWS back from this
+        # module, so a module-level import would be circular.
+        from analysis.mov_ave_spread.steps.rsi_ranks import (
+            make_ranks_rebuild_hook,
+        )
+
+        await make_ranks_rebuild_hook(
+            run.conn,
+            sec_type=sec_type, code_filter=run.code_filter,
+            pool=run.pool, max_concurrent=run.max_concurrent,
+        )(df)
+
+    async def post_write(self, run: StepRun, sec_type: str | None) -> None:
+        from analysis.trends.rsi_episode_days import rebuild_trend_episode_days
+
+        await rebuild_trend_episode_days(
+            run.conn, sec_type=sec_type or "index", code_filter=run.code_filter,
+        )

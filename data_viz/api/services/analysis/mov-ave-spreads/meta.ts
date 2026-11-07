@@ -36,30 +36,12 @@ export interface DbMaSpreadMetaRow extends QueryResultRow {
   exchange: string;
 }
 
-/** Meta SQL shared by listMovAveSpreadThemes() and
- *  listMovAveSpreadStrategyThemes(). Returns one row per code WITH analysis
- *  rows (from the precomputed per-code summary table — the former
+/** Meta query shared by listMovAveSpreadCodes(), listMovAveSpreadThemes()
+ *  and listMovAveSpreadStrategyThemes(). Returns one row per code WITH
+ *  analysis rows (from the precomputed per-code summary table — the former
  *  `SELECT DISTINCT code` over the detail table scanned all ~6.8M stock
  *  rows per request) with its precomputed L1/L2 classification from
  *  stats.sec_classification. is_industry_not_strategy distinguishes
- *  industry-primary (TRUE) from strategy-primary (FALSE) rows. */
-export const MA_SPREAD_META_SQL = `
-  WITH spread_codes AS (
-    SELECT code
-    FROM analysis.mov_ave_spreads_codes
-    WHERE sec_type = $1
-  )
-  SELECT
-    sc.code,
-    COALESCE(m.name, '')             AS name,
-    COALESCE(m.sector_id,       'OTHER')  AS sector_id,
-    COALESCE(m.sector_label,    '其他')   AS sector_label,
-    COALESCE(m.industry_id,     'OTHER')  AS industry_id,
-    COALESCE(m.industry_label,  '未分类') AS industry_label,
-    COALESCE(m.industry_slug,   'other')  AS industry_slug,
-    COALESCE(m.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
-    COALESCE(m.exchange, '')               AS exchange
-  FROM spread_codes sc
-  LEFT JOIN stats.sec_classification m ON m.code = sc.code AND m.type = $2::text
-  WHERE COALESCE(m.is_active, TRUE) = TRUE
-`;
+ *  industry-primary (TRUE) from strategy-primary (FALSE) rows.
+ *  The SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/meta/classified_rows. */

@@ -198,8 +198,8 @@ def build_ranks_copy_frame(ranks: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — hooked into run_rsi via run_table_step's
-#  post_compute_fn, invoked on the RSI step's FULL computed frame)
+#  Pipeline (internal step — hooked into RsiStep.post_compute, invoked on
+#  the RSI step's FULL computed frame)
 # ---------------------------------------------------------------------------
 
 async def rebuild_rsi_ranks(

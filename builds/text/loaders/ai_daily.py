@@ -2,8 +2,8 @@
 
 Parses the ``downloads.macro.ai_daily`` artifacts under
 ``temps/ai_daily/``: the general ``ai_daily_<date>.json`` envelopes (AI
-answer + search references + embedded ``movers``) and the standalone
-``*_movers.json`` envelopes.
+answer + search references + embedded ``movers`` and ``geo`` asks) and
+the standalone ``*_movers.json`` envelopes.
 """
 from __future__ import annotations
 
@@ -100,21 +100,25 @@ def iter_ai_daily_envelopes(
 
 
 def load_ai_daily() -> List[Dict[str, Any]]:
-    """AI daily market summaries — answers, movers + search references.
+    """AI daily market summaries — answers, geo asks, movers + references.
 
-    Three row kinds per envelope:
+    Four row kinds per envelope:
 
       * the general summary answer — one row titled by the asked question,
         dated by the artifact's target_date;
+      * the daily geopolitics/economy asks (embedded ``geo``) — one row
+        per ask (global-English / China-Chinese news + market
+        implications), dated by the artifact's target_date like the
+        general summary;
       * the industry-movers answers — one row per ``asked`` survivor,
         titled by its question, dated by the movers plan_date and pre-set
         with the mover's own industry_id (keywords.extract_for_articles
         keeps a pre-set industry_id over its text match);
-      * every search reference hit of the general summary AND of each
-        movers ask (:func:`hit_news_row`).
+      * every search reference hit of the general summary, of each geo
+        ask AND of each movers ask (:func:`hit_news_row`).
     """
     rows: List[Dict[str, Any]] = []
-    n_ans = n_movers = n_refs = 0
+    n_ans = n_geo = n_movers = n_refs = 0
     for json_path, data, is_movers_file, file_date in iter_ai_daily_envelopes():
         if not is_movers_file:
             question = (data.get("question") or "").strip()
@@ -136,6 +140,35 @@ def load_ai_daily() -> List[Dict[str, Any]]:
                 if row is not None:
                     rows.append(row)
                     n_refs += 1
+
+            # Daily geopolitics/economy asks (embedded by
+            # downloads.macro.ai_daily under ``geo`` since the geo phase —
+            # older artifacts carry none).
+            geo_env = data.get("geo")
+            if isinstance(geo_env, dict):
+                for asked in geo_env.get("asks") or []:
+                    if not isinstance(asked, dict):
+                        continue
+                    question = (asked.get("question") or "").strip()
+                    answer = (asked.get("answer") or "").strip()
+                    if not question or not answer:
+                        continue
+                    rows.append({
+                        "title": question,
+                        "content": answer,
+                        "date": file_date,
+                        "source": SOURCE,
+                        "url": None,
+                        "author": None,
+                    })
+                    n_geo += 1
+                    for hit in asked.get("references") or []:
+                        if not isinstance(hit, dict):
+                            continue
+                        row = hit_news_row(hit, file_date)
+                        if row is not None:
+                            rows.append(row)
+                            n_refs += 1
 
         # Movers answers: the standalone file IS the envelope; the general
         # artifact embeds the same envelope under ``movers``.
@@ -172,6 +205,6 @@ def load_ai_daily() -> List[Dict[str, Any]]:
                     rows.append(row)
                     n_refs += 1
 
-    logger.info("    [ai_daily] %d answers, %d movers, %d refs",
-                n_ans, n_movers, n_refs)
+    logger.info("    [ai_daily] %d answers, %d geo, %d movers, %d refs",
+                n_ans, n_geo, n_movers, n_refs)
     return rows

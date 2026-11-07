@@ -25,6 +25,7 @@
 //    marker.
 // ---------------------------------------------------------------------------
 import { queryRows, formatDate } from "./db.service.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import {
   labelDecodeSql,
   LABEL_CODE,
@@ -128,26 +129,20 @@ export async function fetchTradingSignalConfigs(
   const st = assertSecType(secType);
   // the stored sec_type / signal_type columns are SMALLINT label codes
   // (the label-code contract) — the filter carries the code, the response
-  // decodes back to the labels the UI speaks
-  const rows = await queryRows<TradingSignalConfigRow & QueryResultRow>(
-    `SELECT ${labelDecodeSql("signal_type", "t.signal_type")} AS signal_type,
-            ${labelDecodeSql("signal_sub_type", "t.signal_sub_type")} AS signal_sub_type,
-            count(*)::int AS n_configs
-     FROM analysis_signals.signal_rules t
-     WHERE t.sec_type = ${LABEL_CODE.sec_type[st]}
-       -- the options families live on their OWN page (/analysis/
-       -- signals/options) — the shared config menu stays the three
-       -- general families (mov_rsi / bollinger / ma_cross)
-       AND t.signal_type <> ${LABEL_CODE.signal_type.options_wall}
-       AND t.signal_type <> ${LABEL_CODE.signal_type.options_vix}
-       -- wait rows are observational only since 2026-10-19 (the
-       -- ungated VRP twin; the starvation wait era ended — under-floor
-       -- cells trade at a reduced confidence): the menu contract stays
-       -- "at least one GATE-PASSING cell"
-       AND t.action <> ${LABEL_CODE.action.wait}
-     GROUP BY t.signal_type, t.signal_sub_type
-     ORDER BY t.signal_type, t.signal_sub_type`,
-    [],
+  // decodes back to the labels the UI speaks. The SELECT lives in the sql
+  // view data_viz/api/services/trading-signals/signal_configs.
+  const rows = await querySqlView<TradingSignalConfigRow & QueryResultRow>(
+    "data_viz/api/services/trading-signals/signal_configs",
+    {
+      signal_type_decode: sqlFrag(
+        labelDecodeSql("signal_type", "t.signal_type")),
+      signal_sub_type_decode: sqlFrag(
+        labelDecodeSql("signal_sub_type", "t.signal_sub_type")),
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      options_wall_code: sqlFrag(String(LABEL_CODE.signal_type.options_wall)),
+      options_vix_code: sqlFrag(String(LABEL_CODE.signal_type.options_vix)),
+      wait_code: sqlFrag(String(LABEL_CODE.action.wait)),
+    },
   );
   return rows;
 }
@@ -193,144 +188,29 @@ export async function fetchTriggeredSignals(
 ): Promise<TradingSignalRow[]> {
   const st = assertSecType(secType);
   const idt = IDENTITY_TABLE[st]!;
-  const rows = await queryRows<TradingSignalRow & QueryResultRow>(
-    `WITH win AS (
-        -- 20th-most-recent DISTINCT close date <= the anchor:
-        -- (win_start, anchor] spans exactly the last 20 trading days.
-        -- DISTINCT: the baseline is per-(code, date) — one date has many
-        -- rows, and OFFSET over raw rows would land less than a day back.
-        SELECT DISTINCT date AS win_start
-        FROM ${BASIC_STATS_TABLE[st]!}
-        WHERE date <= $2::date AND close IS NOT NULL
-        ORDER BY win_start DESC
-        OFFSET 19 LIMIT 1
-     ),
-     recent AS (
-        -- THE MONITOR SLICE — live rows carry no population variants
-        -- (no boost twins, no pass stamp).
-        SELECT s.code,
-               s.sec_type,
-               s.signal_type,
-               s.signal_sub_type,
-               s.date,
-               s.time,
-               s.action,
-               s.signal_excess::float8        AS signal_excess,
-               s.signal_excess_pct::float8    AS signal_excess_pct,
-               s.signal::float8               AS signal,
-               s.signal_threshold::float8     AS signal_threshold,
-               s.confidence,
-               (s.confidence::float8 / 100.0) AS confidence_pct,
-               s.is_day_close_trigger,
-               s.regime_state,
-               NULL::boolean AS is_typical,
-               FALSE         AS is_rejection
-        FROM live.live_signals s
-        WHERE s.sec_type = $1 AND s.date = $2::date
-          -- the options families live on their own page (see
-          -- fetchTradingSignalConfigs) — the shared day view excludes
-          -- them
-          AND s.signal_type <> 'options_wall'
-          AND s.signal_type <> 'options_vix'
-     ),
-     history AS (
-        -- THE ANALYSIS ANCHORS — the day's close-trigger records (one
-        -- population since the boost twins' 2026-10-16 retirement) + the
-        -- day's episode-pass attribute (is_typical, NULL pre-stamp). The
-        -- rules-era table stores the crossed cell bar as signal_reference
-        -- — the legacy response contract (excess / threshold) is DERIVED
-        -- here so the live UNION and every consumer keep their shape.
-        SELECT s.code,
-               ${labelDecodeSql("sec_type", "s.sec_type")} AS sec_type,
-               ${labelDecodeSql("signal_type", "s.signal_type")} AS signal_type,
-               ${labelDecodeSql("signal_sub_type", "s.signal_sub_type")} AS signal_sub_type,
-               s.date,
-               s.time,
-               s.action,
-               (s.signal - s.signal_reference)::float8 AS signal_excess,
-               ((s.signal - s.signal_reference)
-                / NULLIF(abs(s.signal_reference), 0) * 100)::float8
-                                            AS signal_excess_pct,
-               s.signal::float8               AS signal,
-               s.signal_reference::float8     AS signal_threshold,
-               s.confidence,
-               (s.confidence::float8 / 100.0) AS confidence_pct,
-               s.is_day_close_trigger,
-               s.regime_state,
-               s.is_typical,
-               -- the is_rejection column was dropped 2026-10-14 — the
-               -- grey-diamond wait event IS the action code now
-               (s.action = ${LABEL_CODE.action.wait}) AS is_rejection
-        FROM analysis_signals.history_signals s
-        WHERE s.sec_type = ${LABEL_CODE.sec_type[st]}
-          AND s.date = $2::date
-          AND s.signal_type <> ${LABEL_CODE.signal_type.options_wall}
-          AND s.signal_type <> ${LABEL_CODE.signal_type.options_vix}
-     ),
-     combined AS (
-        SELECT h.* FROM history h
-        UNION ALL
-        SELECT r.* FROM recent r
-     ),
-     deduped AS (
-        -- One record per (config, day): a live tick wins over the
-        -- history anchor (earliest first — state families re-flag on
-        -- every qualifying tick while the breach persists); a stronger
-        -- confidence breaks remaining ties. The EVENT's pass stamp
-        -- rides the partition (bool_or — one event carries exactly one
-        -- stamp): a live tick winning a day inherits its history
-        -- anchor's pass. is_rejection rides the partition too — a
-        -- rejected NO-ACTION record never collapses into (or masks)
-        -- its actionable twin.
-        SELECT d.*,
-               bool_or(d.is_typical) OVER (
-                   PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_rejection
-               ) AS event_is_typical,
-               row_number() OVER (
-                   PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_rejection
-                   ORDER BY d.is_day_close_trigger, d.time,
-                            d.confidence DESC
-               ) AS rn
-        FROM combined d
-     )
-     SELECT r.code,
-            n.name                       AS code_name,
-            r.sec_type,
-            r.signal_type,
-            r.signal_sub_type,
-            to_char(r.date, 'YYYY-MM-DD') AS date,
-            to_char(r.time, 'HH24:MI')    AS time,
-            ${labelDecodeSql("action", "r.action")} AS action,
-            r.signal_excess,
-            r.signal_excess_pct,
-            r.signal,
-            r.signal_threshold,
-            r.confidence,
-            r.confidence_pct,
-            r.is_day_close_trigger,
-            ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
-            r.event_is_typical AS is_typical,
-            r.is_rejection,
-            (SELECT count(DISTINCT ls.date)::int
-             FROM live.live_signals ls
-             WHERE ls.sec_type = r.sec_type
-               AND ls.code = r.code
-               AND ls.date <= $2::date
-               AND ls.date > COALESCE(
-                     (SELECT win_start FROM win), '1900-01-01'::date)
-            ) AS count_20d
-     FROM deduped r
-     LEFT JOIN LATERAL (
-       SELECT i.name FROM ${idt} i
-       WHERE i.code = r.code
-       ORDER BY i.date DESC LIMIT 1
-     ) n ON TRUE
-     WHERE r.rn = 1
-     ORDER BY r.confidence DESC, r.time DESC, r.code, r.signal_type,
-              r.signal_sub_type`,
-    [st, date],
+  // The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/triggered_day.
+  const rows = await querySqlView<TradingSignalRow & QueryResultRow>(
+    "data_viz/api/services/trading-signals/triggered_day",
+    {
+      sec_type: st,
+      date,
+      basic_stats_table: sqlFrag(BASIC_STATS_TABLE[st]!),
+      hist_sec_type_decode: sqlFrag(labelDecodeSql("sec_type", "s.sec_type")),
+      hist_signal_type_decode: sqlFrag(
+        labelDecodeSql("signal_type", "s.signal_type")),
+      hist_signal_sub_type_decode: sqlFrag(
+        labelDecodeSql("signal_sub_type", "s.signal_sub_type")),
+      wait_code: sqlFrag(String(LABEL_CODE.action.wait)),
+      hist_sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      hist_options_wall_code: sqlFrag(
+        String(LABEL_CODE.signal_type.options_wall)),
+      hist_options_vix_code: sqlFrag(
+        String(LABEL_CODE.signal_type.options_vix)),
+      action_decode: sqlFrag(labelDecodeSql("action", "r.action")),
+      regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime_state")),
+      identity_table: sqlFrag(idt),
+    },
   );
   return rows;
 }
@@ -340,19 +220,14 @@ export async function fetchTradingSignalDates(
   secType: string | null | undefined,
 ): Promise<string[]> {
   const st = assertSecType(secType);
-  const rows = await queryRows<{ date: string } & QueryResultRow>(
-    `SELECT date FROM (
-        SELECT date FROM live.live_signals WHERE sec_type = $1
-        UNION
-        SELECT date FROM (
-            SELECT DISTINCT date FROM ${BASIC_STATS_TABLE[st]!}
-            WHERE close IS NOT NULL
-            ORDER BY date DESC LIMIT 120
-        ) roster
-     ) u
-     ORDER BY date DESC
-     LIMIT 120`,
-    [st],
+  // The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/available_dates.
+  const rows = await querySqlView<{ date: string } & QueryResultRow>(
+    "data_viz/api/services/trading-signals/available_dates",
+    {
+      sec_type: st,
+      basic_stats_table: sqlFrag(BASIC_STATS_TABLE[st]!),
+    },
   );
   return rows.map((r) => formatDate(r.date));
 }
@@ -367,14 +242,15 @@ export async function isTradingSignalComputeEligible(
   date: string,
 ): Promise<boolean> {
   const st = assertSecType(secType);
-  const rows = await queryRows<{ eligible: boolean } & QueryResultRow>(
-    `SELECT (
-        EXISTS (SELECT 1 FROM analysis_signals.signal_rules
-                WHERE sec_type = ${LABEL_CODE.sec_type[st]})
-        AND EXISTS (SELECT 1 FROM ${BASIC_STATS_TABLE[st]!}
-                    WHERE date = $1::date AND close IS NOT NULL)
-     ) AS eligible`,
-    [date],
+  // The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/compute_eligible.
+  const rows = await querySqlView<{ eligible: boolean } & QueryResultRow>(
+    "data_viz/api/services/trading-signals/compute_eligible",
+    {
+      date,
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      basic_stats_table: sqlFrag(BASIC_STATS_TABLE[st]!),
+    },
   );
   return rows[0]?.eligible === true;
 }
@@ -478,141 +354,27 @@ export async function fetchTradingSignalHistory(
   const anchorExpr = anchor
     ? `$${params.length}::date`
     : `'infinity'::date`;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/history — the per-tier
+  // predicates, the anchor, the table names and the label decodes ride
+  // fragments; all params stay caller-assembled (the live tier keeps its
+  // TEXT-label params $1.. while the history tier's label-code literals
+  // ride inside histWhere).
   const rows = await queryRows<TradingSignalRow & QueryResultRow>(
-    `WITH win AS (
-        -- 20th-most-recent DISTINCT close date before the anchor:
-        -- (win_start, anchor] spans exactly the last 20 trading days.
-        SELECT win_start
-        FROM (
-            SELECT DISTINCT date AS win_start
-            FROM ${BASIC_STATS_TABLE[st]!}
-            WHERE date <= ${anchorExpr} AND close IS NOT NULL
-            ORDER BY win_start DESC
-            OFFSET 19 LIMIT 1
-        ) w
-     ),
-     recent AS (
-        -- THE 20d SLICE — live tier ONLY: recorded breaches inside the
-        -- anchor's last 20 trading days (the count_20d window). The live
-        -- table contributes nothing outside this window — older days
-        -- belong to the history record below, so the union never
-        -- re-scans live's back catalog. Live rows carry no population
-        -- variants (no boost twins, no pass stamp).
-        SELECT s.code,
-               s.sec_type,
-               s.signal_type,
-               s.signal_sub_type,
-               s.date,
-               s.time,
-               s.action,
-               s.signal_excess::float8        AS signal_excess,
-               s.signal_excess_pct::float8    AS signal_excess_pct,
-               s.signal::float8               AS signal,
-               s.signal_threshold::float8     AS signal_threshold,
-               s.confidence,
-               (s.confidence::float8 / 100.0) AS confidence_pct,
-               s.is_day_close_trigger,
-               s.regime_state,
-               NULL::boolean AS is_typical,
-               FALSE        AS is_rejection
-        FROM live.live_signals s
-        WHERE ${where}
-          AND s.date > (SELECT win_start FROM win)
-          AND s.date <= ${anchorExpr}
-     ),
-     history AS (
-        -- THE PLOT BULK — the multi-year record replayed from the rules
-        -- tier (15:00 day-close anchors), one population per event (the
-        -- is_ohlcv_boosted / is_pe_boosted variant axes left the schema
-        -- 2026-11-01); is_typical TRUE = the typical pass, FALSE =
-        -- the re-entry pass, NULL = the family does not classify passes
-        -- (no toggle filters on it any more). The rules-era table stores
-        -- the crossed cell bar as signal_reference — the legacy response
-        -- contract (excess / threshold) is DERIVED here so the union
-        -- keeps its shape.
-        SELECT s.code,
-               ${labelDecodeSql("sec_type", "s.sec_type")} AS sec_type,
-               ${labelDecodeSql("signal_type", "s.signal_type")} AS signal_type,
-               ${labelDecodeSql("signal_sub_type", "s.signal_sub_type")} AS signal_sub_type,
-               s.date,
-               s.time,
-               s.action,
-               (s.signal - s.signal_reference)::float8 AS signal_excess,
-               ((s.signal - s.signal_reference)
-                / NULLIF(abs(s.signal_reference), 0) * 100)::float8
-                                            AS signal_excess_pct,
-               s.signal::float8               AS signal,
-               s.signal_reference::float8     AS signal_threshold,
-               s.confidence,
-               (s.confidence::float8 / 100.0) AS confidence_pct,
-               s.is_day_close_trigger,
-               s.regime_state,
-               s.is_typical,
-               -- the is_rejection column was dropped 2026-10-14 — the
-               -- grey-diamond wait event IS the action code now
-               (s.action = ${LABEL_CODE.action.wait}) AS is_rejection
-        FROM analysis_signals.history_signals s
-        WHERE ${histWhere}
-     ),
-     combined AS (
-        SELECT h.* FROM history h
-        UNION ALL
-        SELECT r.* FROM recent r
-     ),
-     deduped AS (
-        -- One record per (config, day): a live tick wins over the
-        -- history anchor (earliest first — state families re-flag on
-        -- every qualifying tick while the breach persists); a stronger
-        -- confidence breaks remaining ties (the retired day-close
-        -- mirror rows). The EVENT's pass stamp rides the partition
-        -- (max — one event carries exactly one stamp): a live tick
-        -- winning a day inherits its history anchor's pass, so the
-        -- pass toggle still sees the day. is_rejection rides the
-        -- partition too — a rejected NO-ACTION record never collapses
-        -- into its actionable twin.
-        SELECT d.*,
-               bool_or(d.is_typical) OVER (
-                   PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_rejection
-               ) AS event_is_typical,
-               row_number() OVER (
-                   PARTITION BY d.signal_type, d.signal_sub_type, d.date,
-                                d.is_rejection
-                   ORDER BY d.is_day_close_trigger, d.time,
-                            d.confidence DESC
-               ) AS rn
-        FROM combined d
-     ),
-     name AS (
-        SELECT i.name FROM ${IDENTITY_TABLE[st]!} i
-        WHERE i.code = $2
-        ORDER BY i.date DESC LIMIT 1
-     )
-     SELECT r.code,
-            n.name                       AS code_name,
-            r.sec_type,
-            r.signal_type,
-            r.signal_sub_type,
-            to_char(r.date, 'YYYY-MM-DD') AS date,
-            to_char(r.time, 'HH24:MI')    AS time,
-            ${labelDecodeSql("action", "r.action")} AS action,
-            r.signal_excess,
-            r.signal_excess_pct,
-            r.signal,
-            r.signal_threshold,
-            r.confidence,
-            r.confidence_pct,
-            r.is_day_close_trigger,
-            ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
-            r.event_is_typical AS is_typical,
-            r.is_rejection,
-            (SELECT to_char(win_start, 'YYYY-MM-DD') FROM win)
-                AS recent_window_start
-     FROM deduped r
-     LEFT JOIN name n ON TRUE
-     WHERE r.rn = 1
-     ORDER BY r.date DESC, r.time DESC, r.confidence DESC
-     LIMIT 2000`,
+    renderSqlView("data_viz/api/services/trading-signals/history", {
+      basic_stats_table: sqlFrag(`${BASIC_STATS_TABLE[st]!}`),
+      identity_table: sqlFrag(`${IDENTITY_TABLE[st]!}`),
+      where_clause: sqlFrag(where),
+      hist_where_clause: sqlFrag(histWhere),
+      anchor_expr: sqlFrag(anchorExpr),
+      sec_type_decode: sqlFrag(labelDecodeSql("sec_type", "s.sec_type")),
+      signal_type_decode: sqlFrag(labelDecodeSql("signal_type", "s.signal_type")),
+      signal_sub_type_decode: sqlFrag(labelDecodeSql("signal_sub_type", "s.signal_sub_type")),
+      action_decode: sqlFrag(labelDecodeSql("action", "r.action")),
+      regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime_state")),
+      action_wait: sqlFrag(`${LABEL_CODE.action.wait}`),
+      name_code: sqlFrag("$2"),
+    }).sql,
     params,
   );
   // The window boundary rides every row (one scalar subquery) — peel it
@@ -798,35 +560,25 @@ export async function fetchSignalRules(
   // rules panel degrades to the params digest). The latest performance
   // snapshot (the measured half — the 2026-10-19 split) laterally
   // joins per cell and mergeRulePerformance folds it back into the
-  // response's rule_params shape.
-  const rows = await queryRows<
+  // response's rule_params shape. The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/signal_rules.
+  const rows = await querySqlView<
     SignalRuleRow & QueryResultRow & PerformanceSnapshotRow
   >(
-    `SELECT r.code,
-            ${labelDecodeSql("sec_type", "r.sec_type")} AS sec_type,
-            ${labelDecodeSql("signal_type", "r.signal_type")} AS signal_type,
-            ${labelDecodeSql("signal_sub_type", "r.signal_sub_type")} AS signal_sub_type,
-            ${labelDecodeSql("trend", "r.trend")} AS trend,
-            ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
-            ${labelDecodeSql("action", "r.action")} AS action,
-            r.signal_rule_id::float8 AS signal_rule_id,
-            r.is_valid,
-            r.is_in_portfolio,
-            r.rule_entry,
-            r.rule_params,
-            perf.perf_date,
-            perf.perf_n_episodes, perf.perf_dir_ave_pct,
-            perf.perf_dir_std_pct, perf.perf_t_stat,
-            perf.perf_hit_rate,
-            COALESCE(d.document, '{}'::jsonb) AS document,
-            to_char(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at
-     FROM analysis_signals.signal_rules r
-     LEFT JOIN static.signal_rules_docs d
-            ON d.signal_type = r.signal_type${LATEST_PERFORMANCE_JOIN}
-     WHERE r.sec_type = ${LABEL_CODE.sec_type[st]} AND r.code = $1
-     ORDER BY r.signal_type, r.signal_sub_type, r.trend,
-              r.regime_state, r.action`,
-    [c],
+    "data_viz/api/services/trading-signals/signal_rules",
+    {
+      code: c,
+      sec_type_decode: sqlFrag(labelDecodeSql("sec_type", "r.sec_type")),
+      signal_type_decode: sqlFrag(
+        labelDecodeSql("signal_type", "r.signal_type")),
+      signal_sub_type_decode: sqlFrag(
+        labelDecodeSql("signal_sub_type", "r.signal_sub_type")),
+      trend_decode: sqlFrag(labelDecodeSql("trend", "r.trend")),
+      regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime_state")),
+      action_decode: sqlFrag(labelDecodeSql("action", "r.action")),
+      perf_join: sqlFrag(LATEST_PERFORMANCE_JOIN),
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+    },
   );
   return rows.map(mergeRulePerformance);
 }
@@ -900,29 +652,18 @@ export async function fetchSignalPortfolios(
     }
     predicates.push(`p.portfolio_type = ${ptCode}`);
   }
-  return queryRows<SignalPortfolioRow & QueryResultRow>(
-    `SELECT p.code,
-            ${labelDecodeSql("portfolio_type", "p.portfolio_type")} AS portfolio_type,
-            ${labelDecodeSql("portfolio_sub_type", "p.portfolio_sub_type")} AS portfolio_sub_type,
-            cardinality(p.signal_rule_ids)::int AS n_rules,
-            (SELECT count(*)::int
-             FROM analysis_signals.signal_rules r
-             WHERE r.signal_rule_id = ANY(p.signal_rule_ids)
-               AND r.is_valid) AS n_valid,
-            COALESCE((SELECT count(*)::int
-             FROM jsonb_object_keys(p.rule_params->'subs')), 0)
-              AS n_sub_types,
-            to_char(e.latest_event, 'YYYY-MM-DD') AS latest_event,
-            to_char(p.created_at, 'YYYY-MM-DD HH24:MI') AS latest_built
-     FROM analysis_signals.portfolio_signal_rules p
-     LEFT JOIN LATERAL (
-        SELECT max(h.date) AS latest_event
-        FROM analysis_signals.history_signals h
-        WHERE h.code = p.code AND h.sec_type = p.sec_type
-     ) e ON TRUE
-     WHERE ${predicates.join(" AND ")}
-     ORDER BY p.code, p.portfolio_sub_type`,
-    [],
+  // The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/portfolio_roster (the WHERE
+  // predicate list rides as a fragment — literal label codes only).
+  return querySqlView<SignalPortfolioRow & QueryResultRow>(
+    "data_viz/api/services/trading-signals/portfolio_roster",
+    {
+      portfolio_type_decode: sqlFrag(
+        labelDecodeSql("portfolio_type", "p.portfolio_type")),
+      portfolio_sub_type_decode: sqlFrag(
+        labelDecodeSql("portfolio_sub_type", "p.portfolio_sub_type")),
+      sec_predicates: sqlFrag(predicates.join(" AND ")),
+    },
   );
 }
 
@@ -1003,33 +744,24 @@ export async function fetchPortfolioSignals(
   if (cleaned.length === 0) {
     return { sec_type: st, codes: [], portfolios: [], rules: [] };
   }
-  // the PAIR types' leg matching: the composite code is 'A~B' — both
-  // split parts must sit in the requested codes. neg_corr_hedge_pair
-  // (0) is the only portfolio type today; multi-leg types extend this
-  // predicate when they arrive. ONE ROW PER PORTFOLIO RULE (code x
-  // portfolio_sub_type — the 2026-10-25 split: a pair carrying both
-  // rules returns TWO rows)
-  const groups = await queryRows<
+  // ONE ROW PER PORTFOLIO RULE (code x portfolio_sub_type — the
+  // 2026-10-25 split: a pair carrying both rules returns TWO rows).
+  // The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/portfolio_groups.
+  const groups = await querySqlView<
     { code: string; portfolio_sub_type: string;
        latest_event: string | null; latest_built: string } &
     QueryResultRow
   >(
-    `SELECT p.code,
-            ${labelDecodeSql("portfolio_sub_type", "p.portfolio_sub_type")} AS portfolio_sub_type,
-            to_char(e.latest_event, 'YYYY-MM-DD') AS latest_event,
-            to_char(p.created_at, 'YYYY-MM-DD HH24:MI') AS latest_built
-     FROM analysis_signals.portfolio_signal_rules p
-     LEFT JOIN LATERAL (
-        SELECT max(h.date) AS latest_event
-        FROM analysis_signals.history_signals h
-        WHERE h.code = p.code AND h.sec_type = p.sec_type
-     ) e ON TRUE
-     WHERE p.sec_type = ${LABEL_CODE.sec_type[st]}
-       AND p.portfolio_type = ${LABEL_CODE.portfolio_type.neg_corr_hedge_pair}
-       AND split_part(p.code, '~', 1) = ANY($1::text[])
-       AND split_part(p.code, '~', 2) = ANY($1::text[])
-     ORDER BY p.code, p.portfolio_sub_type`,
-    [cleaned],
+    "data_viz/api/services/trading-signals/portfolio_groups",
+    {
+      portfolio_sub_type_decode: sqlFrag(
+        labelDecodeSql("portfolio_sub_type", "p.portfolio_sub_type")),
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      portfolio_type_code: sqlFrag(
+        String(LABEL_CODE.portfolio_type.neg_corr_hedge_pair)),
+      codes: cleaned,
+    },
   );
   if (groups.length === 0) {
     return { sec_type: st, codes: cleaned, portfolios: [], rules: [] };
@@ -1041,8 +773,9 @@ export async function fetchPortfolioSignals(
   // verdict + writing entries, and the LATEST
   // history_portfolio_signal_performance snapshot (the rule's audit —
   // what the portfolio took + the members' COMBINED STATS; laterally
-  // joined newest-date-first, per sub)
-  const portRows = await queryRows<
+  // joined newest-date-first, per sub). The SELECT lives in the sql
+  // view data_viz/api/services/trading-signals/portfolio_rules.
+  const portRows = await querySqlView<
     { code: string; portfolio_sub_type: number;
        signal_rule_ids: number[];
        is_valid: boolean; rule_entry: string;
@@ -1053,71 +786,42 @@ export async function fetchPortfolioSignals(
        pp_gate: Record<string, unknown> | null;
        pp_dd: Record<string, unknown> | null } & QueryResultRow
   >(
-    `SELECT p.code,
-            p.portfolio_sub_type,
-            p.signal_rule_ids,
-            p.is_valid,
-            p.rule_entry,
-            p.rule_params,
-            to_char(pp.pp_date, 'YYYY-MM-DD') AS pp_as_of,
-            pp.pp_pooled,
-            pp.pp_benefit,
-            pp.pp_gate,
-            pp.pp_dd
-     FROM analysis_signals.portfolio_signal_rules p
-     LEFT JOIN LATERAL (
-        SELECT q.date AS pp_date, q.pooled AS pp_pooled,
-               q.benefit AS pp_benefit, q.gate AS pp_gate,
-               q.dd AS pp_dd
-        FROM analysis_signals.history_portfolio_signal_performance q
-        WHERE q.code = p.code AND q.portfolio_type = p.portfolio_type
-          AND q.portfolio_sub_type = p.portfolio_sub_type
-        ORDER BY q.date DESC LIMIT 1
-     ) pp ON TRUE
-     WHERE p.sec_type = ${LABEL_CODE.sec_type[st]}
-       AND p.portfolio_type = ${LABEL_CODE.portfolio_type.neg_corr_hedge_pair}
-       AND p.code = ANY($1::text[])
-     ORDER BY p.code, p.portfolio_sub_type`,
-    [matched],
+    "data_viz/api/services/trading-signals/portfolio_rules",
+    {
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      portfolio_type_code: sqlFrag(
+        String(LABEL_CODE.portfolio_type.neg_corr_hedge_pair)),
+      codes: matched,
+    },
   );
   // the FULL rule rows: the matched portfolios' OWN rows (the
   // composite orchestrating cells — code = the pair id) UNION the
   // rules' member ids expanded (the MAPPED REGISTERED rsi cells at the
   // market + leg codes, riding the is_in_portfolio TRUE tier); each
   // cell's latest performance snapshot laterally joins and
-  // mergeRulePerformance folds it back in (the 2026-10-19 split)
+  // mergeRulePerformance folds it back in (the 2026-10-19 split). The
+  // SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/signal_rules_by_ids.
   const allIds = portRows.flatMap((s) =>
     s.signal_rule_ids.map(Number));
-  const rules = await queryRows<
+  const rules = await querySqlView<
     SignalRuleRow & QueryResultRow & PerformanceSnapshotRow
   >(
-    `SELECT r.code,
-            ${labelDecodeSql("sec_type", "r.sec_type")} AS sec_type,
-            ${labelDecodeSql("signal_type", "r.signal_type")} AS signal_type,
-            ${labelDecodeSql("signal_sub_type", "r.signal_sub_type")} AS signal_sub_type,
-            ${labelDecodeSql("trend", "r.trend")} AS trend,
-            ${labelDecodeSql("regime", "r.regime_state")} AS regime_state,
-            ${labelDecodeSql("action", "r.action")} AS action,
-            r.signal_rule_id::float8 AS signal_rule_id,
-            r.is_valid,
-            r.is_in_portfolio,
-            r.rule_entry,
-            r.rule_params,
-            perf.perf_date,
-            perf.perf_n_episodes, perf.perf_dir_ave_pct,
-            perf.perf_dir_std_pct, perf.perf_t_stat,
-            perf.perf_hit_rate,
-            COALESCE(d.document, '{}'::jsonb) AS document,
-            to_char(r.created_at, 'YYYY-MM-DD HH24:MI') AS created_at
-     FROM analysis_signals.signal_rules r
-     LEFT JOIN static.signal_rules_docs d
-            ON d.signal_type = r.signal_type${LATEST_PERFORMANCE_JOIN}
-     WHERE r.sec_type = ${LABEL_CODE.sec_type[st]}
-       AND (r.code = ANY($1::text[])
-            OR r.signal_rule_id = ANY($2::bigint[]))
-     ORDER BY r.code, r.signal_type, r.signal_sub_type, r.trend,
-              r.regime_state, r.action`,
-    [matched, allIds],
+    "data_viz/api/services/trading-signals/signal_rules_by_ids",
+    {
+      sec_type_decode: sqlFrag(labelDecodeSql("sec_type", "r.sec_type")),
+      signal_type_decode: sqlFrag(
+        labelDecodeSql("signal_type", "r.signal_type")),
+      signal_sub_type_decode: sqlFrag(
+        labelDecodeSql("signal_sub_type", "r.signal_sub_type")),
+      trend_decode: sqlFrag(labelDecodeSql("trend", "r.trend")),
+      regime_decode: sqlFrag(labelDecodeSql("regime", "r.regime_state")),
+      action_decode: sqlFrag(labelDecodeSql("action", "r.action")),
+      perf_join: sqlFrag(LATEST_PERFORMANCE_JOIN),
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      codes: matched,
+      rule_ids: allIds,
+    },
   ).then((rows) => rows.map(mergeRulePerformance));
   // the census per portfolio rule: its OWN members by id (the sub's
   // orchestrating cells + the mapped registered cells; the composite's
@@ -1247,22 +951,23 @@ export async function fetchPortfolioSignalHistory(
   if (!c) {
     throw Object.assign(new Error("code is required"), { status: 400 });
   }
-  const predicates = [
-    `h.sec_type = ${LABEL_CODE.sec_type[st]}`,
-    `h.code = $1`,
-  ];
-  const params: unknown[] = [c];
+  // The common (sec_type, code) predicates live in the view's fixed text;
+  // the optional family predicates ride as a fragment suffix (literal
+  // label codes only — no pg params inside the fragment).
+  const familyPredicates: string[] = [];
   if (signalType != null && signalType.trim() !== "") {
     const sigCode = LABEL_CODE.signal_type[signalType.trim()];
     if (sigCode === undefined) return [];
-    predicates.push(`h.signal_type = ${sigCode}`);
+    familyPredicates.push(`h.signal_type = ${sigCode}`);
   }
   if (signalSubType != null && signalSubType.trim() !== "") {
     const subCode = LABEL_CODE.signal_sub_type[signalSubType.trim()];
     if (subCode === undefined) return [];
-    predicates.push(`h.signal_sub_type = ${subCode}`);
+    familyPredicates.push(`h.signal_sub_type = ${subCode}`);
   }
-  const rows = await queryRows<
+  // The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/portfolio_history.
+  const rows = await querySqlView<
     {
       code: string;
       portfolio_type: string;
@@ -1283,27 +988,23 @@ export async function fetchPortfolioSignalHistory(
       cell_signals: Array<Record<string, unknown>> | null;
     } & QueryResultRow
   >(
-    `SELECT h.code,
-            ${labelDecodeSql("portfolio_type", "h.portfolio_type")} AS portfolio_type,
-            ${labelDecodeSql("portfolio_sub_type", "h.portfolio_sub_type")} AS portfolio_sub_type,
-            ${labelDecodeSql("signal_type", "h.signal_type")} AS signal_type,
-            ${labelDecodeSql("signal_sub_type", "h.signal_sub_type")} AS signal_sub_type,
-            to_char(h.date, 'YYYY-MM-DD') AS date,
-            to_char(h.time, 'HH24:MI')    AS time,
-            ${labelDecodeSql("action", "h.action")} AS action,
-            h.signal::float8               AS signal,
-            h.signal_reference::float8     AS signal_reference,
-            (h.signal - h.signal_reference)::float8 AS signal_excess,
-            h.confidence,
-            (h.confidence::float8 / 100.0) AS confidence_pct,
-            ${labelDecodeSql("regime", "h.regime_state")} AS regime_state,
-            h.is_typical,
-            h.member_signals,
-            h.cell_signals
-     FROM analysis_signals.portfolio_history_signals h
-     WHERE ${predicates.join(" AND ")}
-     ORDER BY h.date DESC, h.time DESC, h.signal_type, h.signal_sub_type`,
-    params,
+    "data_viz/api/services/trading-signals/portfolio_history",
+    {
+      code: c,
+      sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      family_predicates: sqlFrag(
+        familyPredicates.map((p) => ` AND ${p}`).join("")),
+      portfolio_type_decode: sqlFrag(
+        labelDecodeSql("portfolio_type", "h.portfolio_type")),
+      portfolio_sub_type_decode: sqlFrag(
+        labelDecodeSql("portfolio_sub_type", "h.portfolio_sub_type")),
+      signal_type_decode: sqlFrag(
+        labelDecodeSql("signal_type", "h.signal_type")),
+      signal_sub_type_decode: sqlFrag(
+        labelDecodeSql("signal_sub_type", "h.signal_sub_type")),
+      action_decode: sqlFrag(labelDecodeSql("action", "h.action")),
+      regime_decode: sqlFrag(labelDecodeSql("regime", "h.regime_state")),
+    },
   );
   // The cell-level signals are fetched EXPLICITLY from signal history
   // (2026-10-21, user-directed): every sourced member's ``cell_signals``
@@ -1319,7 +1020,9 @@ export async function fetchPortfolioSignalHistory(
   }
   const fetched = new Map<string, PortfolioEventMember>();
   if (keySet.size > 0) {
-    const cellRows = await queryRows<
+    // The SELECT lives in the sql view
+    // data_viz/api/services/trading-signals/portfolio_cell_signals.
+    const cellRows = await querySqlView<
       {
         code: string;
         signal_type: number;
@@ -1333,32 +1036,12 @@ export async function fetchPortfolioSignalHistory(
         is_in_portfolio: boolean;
       } & QueryResultRow
     >(
-      `SELECT h.code,
-              h.signal_type, h.signal_sub_type,
-              ${labelDecodeSql("action", "h.action")} AS action,
-              to_char(h.date, 'YYYY-MM-DD') AS date,
-              to_char(h.time, 'HH24:MI')    AS time,
-              h.signal::float8              AS signal,
-              h.signal_reference::float8    AS signal_reference,
-              h.confidence,
-              h.is_in_portfolio
-       FROM analysis_signals.history_signals h
-       -- the stored cell_signals keys may carry the retired
-       -- is_ohlcv_boosted payload field (rows predating the
-       -- 2026-11-01 axis unlink) — the resolver ignores it; every
-       -- surviving event IS the plain population
-       JOIN jsonb_to_recordset($1::jsonb) AS k(code text,
-              signal_type smallint, signal_sub_type smallint,
-              is_in_portfolio boolean,
-              date date, time text)
-         ON h.code = k.code
-        AND h.signal_type = k.signal_type
-        AND h.signal_sub_type = k.signal_sub_type
-        AND h.is_in_portfolio = COALESCE(k.is_in_portfolio, false)
-        AND h.date = k.date
-        AND h.time = k.time::time
-       WHERE h.sec_type = ${LABEL_CODE.sec_type[st]}`,
-      [JSON.stringify([...keySet].map((s) => JSON.parse(s)))],
+      "data_viz/api/services/trading-signals/portfolio_cell_signals",
+      {
+        cell_keys: JSON.stringify([...keySet].map((s) => JSON.parse(s))),
+        action_decode: sqlFrag(labelDecodeSql("action", "h.action")),
+        sec_type_code: sqlFrag(String(LABEL_CODE.sec_type[st])),
+      },
     );
     for (const cr of cellRows) {
       fetched.set(
@@ -1481,27 +1164,16 @@ export async function fetchTrendSpans(
     throw Object.assign(new Error("code is required"), { status: 400 });
   }
   const days = Math.min(Math.max(Math.round(windowDays ?? 1095), 90), 3650);
-  const rows = await queryRows<TrendSpanRow & QueryResultRow>(
-    `WITH d AS (
-       SELECT date, trend,
-              CASE WHEN trend = lag(trend) OVER (ORDER BY date)
-                   THEN 0 ELSE 1 END AS ch
-       FROM analysis.trend_days
-       WHERE sec_type = $1 AND code = $2
-         AND date >= CURRENT_DATE - make_interval(days => $3)
-     ), g AS (
-       SELECT trend, date,
-              sum(ch) OVER (ORDER BY date) AS grp
-       FROM d
-     )
-     SELECT ${labelDecodeSql("trend", "trend")} AS trend,
-            to_char(min(date), 'YYYY-MM-DD') AS start_date,
-            to_char(max(date), 'YYYY-MM-DD') AS end_date,
-            count(*)::int AS span_days
-     FROM g
-     GROUP BY trend, grp
-     ORDER BY trend, start_date`,
-    [LABEL_CODE.sec_type[st], c, days],
+  // The SELECT lives in the sql view
+  // data_viz/api/services/trading-signals/trend_spans.
+  const rows = await querySqlView<TrendSpanRow & QueryResultRow>(
+    "data_viz/api/services/trading-signals/trend_spans",
+    {
+      sec_type_code: LABEL_CODE.sec_type[st],
+      code: c,
+      window_days: days,
+      trend_decode: sqlFrag(labelDecodeSql("trend", "trend")),
+    },
   );
   const spans: Record<string, TrendSpanRow[]> = {};
   for (const r of rows) {

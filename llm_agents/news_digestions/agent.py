@@ -137,7 +137,7 @@ async def digest_article(
     for attempt in (1, 2):
         try:
             # The digested article IS the request's sole source — bound so
-            # the text.llm_requests row links it by ref id.
+            # the llm.llm_requests row links it by ref id.
             with bind_ref_ids([article["news_id"]]):
                 reply, _usage = await provider._chat_complete(
                     messages, model=model)

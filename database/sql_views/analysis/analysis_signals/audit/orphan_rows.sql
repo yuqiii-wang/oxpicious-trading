@@ -1,0 +1,11 @@
+-- Audit gate check 7 (orphan rows): rows of the run's (sec_type,
+-- signal_type, tier) scope lingering at codes OUTSIDE the run's universe
+-- — the universe-shrink incident class — grouped per lingering code.
+-- args:
+--   table: fragment — the audited table (signal_rules / history_signals)
+--   sec_type: value int — the sec_type smallint code
+--   signal_type: value int — the run's signal_type code
+--   tier_filter: fragment — the tier partition predicate built by the
+--     caller (" AND is_in_portfolio" / " AND NOT is_in_portfolio" / "")
+--   codes: value text[] — the run's wiped codes (the universe)
+SELECT code, count(*) AS n FROM {{table}} WHERE sec_type = {{sec_type}} AND signal_type = {{signal_type}}{{tier_filter}} AND NOT (code = ANY({{codes}})) GROUP BY code

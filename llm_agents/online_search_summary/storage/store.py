@@ -1,4 +1,4 @@
-"""llm_agents.online_search_summary.storage.store — text-schema persistence.
+"""llm_agents.online_search_summary.storage.store — text/llm-schema persistence.
 
 ``OnlineSearchSummaryStore`` persists a SearchSummary (one async conn):
 
@@ -11,14 +11,14 @@
     ('corpus' / 'ddgs'); unresolvable refs as a NULL-CONTENT placeholder
     news row carrying the echo's own metadata (``exact``) — every ref
     links to a news_id either way;
-  * the per-ref typing lands in ``text.llm_qa_refs`` (qa_id, news_id) ->
+  * the per-ref typing lands in ``llm.llm_qa_refs`` (qa_id, news_id) ->
     (ref — the representative citation tag, ref_type, is_used — whether
     the answer cites the article, resolved_url, ref_time — the reference's
     ACTUAL publish time (response date or URL date; NULL when unknown,
     never now()), resolved_via — the provenance behind ref_type), upserted
     so re-storing refreshes the resolution in place; every hit lands
     here, cited or not (build_ref_rows collapses same-article refs);
-  * Q&A -> text.llm_qa through llm_agents.llm_qa.upsert_qa with the
+  * Q&A -> llm.llm_qa through llm_agents.llm_qa.upsert_qa with the
     resolved news_ids grouped as provenance (text.news_groups ->
     text.news_group_items), the formatted reference list as ``context``,
     and llm_model = the chat model.
@@ -29,7 +29,7 @@ resolved_via 'summary' — the rows are the response's own echo hits; no
 network beyond the search call itself. Keyword rows (text.news_keywords)
 are deliberately NOT written here — corpus keyword stats stay owned by
 the builds.text pipeline (see the DDL contract in
-database/sql/text/01_news.sql; llm_qa_refs DDL: 03_llm_qa_refs.sql).
+database/sql/text/01_news.sql; llm_qa_refs DDL: 02_llm_qa_refs.sql).
 """
 from __future__ import annotations
 
@@ -55,11 +55,11 @@ logger = logging.getLogger(__name__)
 
 
 class OnlineSearchSummaryStore:
-    """Persists search references + Q&A summaries into the text schema."""
+    """Persists search references + Q&A summaries into the text/llm schemas."""
 
     NEWS_TABLE = "text.news"
-    REFS_TABLE = "text.llm_qa_refs"
-    QA_TABLE = "text.llm_qa"
+    REFS_TABLE = "llm.llm_qa_refs"
+    QA_TABLE = "llm.llm_qa"
     _NEWS_COLUMNS = ("title", "content", "date", "source", "url", "author",
                      "industry_id", "sector_id", "word_count", "votes")
 
@@ -201,7 +201,7 @@ class OnlineSearchSummaryStore:
                          type(self).__name__, hit.title[:60])
         return nid
 
-    # -- text.llm_qa + text.llm_qa_refs --------------------------------------
+    # -- llm.llm_qa + llm.llm_qa_refs --------------------------------------
     async def store_summary(
         self, summary: SearchSummary,
         *,
@@ -217,8 +217,8 @@ class OnlineSearchSummaryStore:
         With *resolve* (default), each citation tag is classified by
         RefResolver: corpus/zhihu match or ddgs+markitdown verification,
         falling back to a null-content news placeholder. Every resolution
-        is written to text.llm_qa_refs on (qa_id, ref). *qa_date* is the
-        question's own data date (text.llm_qa.qa_date); None keeps the
+        is written to llm.llm_qa_refs on (qa_id, ref). *qa_date* is the
+        question's own data date (llm.llm_qa.qa_date); None keeps the
         now() default. Refs whose KNOWN publish date falls outside the
         qa's interest window ([qa day - 20d, qa day]) are dropped before
         the news-group provenance and the refs rows — they predate what
@@ -277,7 +277,7 @@ class OnlineSearchSummaryStore:
             news_ids=group_ids or None,
             request_ids=request_ids or None,
             llm_model=summary.model, language=language, qa_date=qa_date)
-        logger.info("    [DB] stored text.llm_qa qa_id=%s (sources=%d)",
+        logger.info("    [DB] stored llm.llm_qa qa_id=%s (sources=%d)",
                     qa_id, len(group_ids))
         # is_used per ref: the answer's own citation tags (the LLM-answer
         # half of the search/summary separation — refs load regardless).
@@ -289,8 +289,8 @@ class OnlineSearchSummaryStore:
         self, qa_id: int, resolved: Sequence[ResolvedRef],
         *, cited: Sequence[str],
     ) -> bool:
-        """Write text.llm_qa_refs rows (PK qa_id+news_id; re-store
-        refreshes) and set text.llm_qa.has_refs to whether ref rows now
+        """Write llm.llm_qa_refs rows (PK qa_id+news_id; re-store
+        refreshes) and set llm.llm_qa.has_refs to whether ref rows now
         exist for this qa_id; return the flag.
 
         build_ref_rows collapses same-article refs onto one row per
@@ -313,11 +313,11 @@ class OnlineSearchSummaryStore:
                 await bulk_upsert_async(self._conn, self.REFS_TABLE, rows,
                                         ["qa_id", "news_id"])
                 n_used = sum(1 for r in rows if r["is_used"])
-                logger.info("    [DB] %d text.llm_qa_refs row(s) written "
+                logger.info("    [DB] %d llm.llm_qa_refs row(s) written "
                             "(used=%d, unused=%d)", len(rows), n_used,
                             len(rows) - n_used)
             except Exception as e:
-                logger.warning("    [DB] text.llm_qa_refs write FAILED "
+                logger.warning("    [DB] llm.llm_qa_refs write FAILED "
                                "for qa_id=%s — keeping the Q&A (has_refs "
                                "stays false unless older refs exist): "
                                "%s: %s", qa_id, type(e).__name__, e)

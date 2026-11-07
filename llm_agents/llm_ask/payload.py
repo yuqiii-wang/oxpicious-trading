@@ -53,6 +53,9 @@ from llm_agents.online_search_summary.core.models import (
     SearchHit, SearchOptions, SearchSummary,
 )
 
+from llm_agents.llm_ask.data_definitions import (
+    AiAskPayload,
+)
 logger = logging.getLogger(__name__)
 
 # Mirror of the Express service caps (ai-ask.service.ts): per-image
@@ -61,18 +64,6 @@ MAX_IMAGE_CHARS = 4 * 1024 * 1024
 MAX_IMAGES = 4
 
 
-@dataclass
-class AiAskPayload:
-    """One validated AI Ask request from the Express ai-ask service."""
-
-    question: str
-    plot_info: Dict[str, Any]
-    screenshots: Tuple[str, ...] = ()
-    theme_mode: Optional[str] = None
-    online_search: bool = False
-    # Web-search term (the modal's search line, seeded with chart title +
-    # date) — searched instead of the question; None falls back to it.
-    search_query: Optional[str] = None
 
 
 def read_payload_file(path: str) -> AiAskPayload:

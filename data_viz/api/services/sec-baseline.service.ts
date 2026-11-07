@@ -15,8 +15,8 @@
  * sec_type: builds.etf.feeder_nav loads their NAV series into
  * stats.etf_identity, so they flow through the plain "etf" path below.
  */
-import { queryRows } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
+import { querySqlView } from "../lib/sql-views.js";
 import { getIndicesCombined } from "./index.service.js";
 import { getEtfMarginCombined } from "./etf-margin.service.js";
 import { getStocksCombined } from "./stock.service.js";
@@ -65,7 +65,12 @@ export async function getSecBaselineBundle(
   // (the build's cross-sectional member mean — the same value analysis.pe
   // carries for sec_type=3).
   if (secType === "industry") {
-    const rows = await queryRows<DbIndustryBaselineRow>(INDUSTRY_BUNDLE_SQL, [target]);
+    // The SELECT lives in the sql view
+    // data_viz/api/services/sec-baseline/industry_bundle.
+    const rows = await querySqlView<DbIndustryBaselineRow>(
+      "data_viz/api/services/sec-baseline/industry_bundle",
+      { industry_code: target },
+    );
     if (rows.length === 0) return null;
     return {
       code: target,
@@ -114,33 +119,6 @@ interface DbIndustryBaselineRow extends QueryResultRow {
   ma255: number | null;
 }
 
-/** Composite-industry baseline rows + label (pool-'all' slice; window MAs). */
-const INDUSTRY_BUNDLE_SQL = `
-  WITH src AS (
-    SELECT b.date, b.industry_id,
-           b.mean_open AS open, b.mean_high AS high,
-           b.mean_low AS low, b.mean_close AS close,
-           b.total_trading_amount AS trading_amount,
-           b.mean_pe AS pe
-    FROM stats.industry_basic_stats b
-    WHERE b.industry_id = $1 AND b.pool_size = 3 AND b.mean_close IS NOT NULL
-  )
-  SELECT
-    (SELECT name FROM stats.industry_identity
-      WHERE code = $1 ORDER BY date DESC LIMIT 1) AS name,
-    to_char(s.date, 'YYYY-MM-DD') AS date,
-    s.open::float8, s.high::float8, s.low::float8, s.close::float8,
-    s.trading_amount::float8, s.pe::float8,
-    AVG(s.close) OVER (PARTITION BY s.industry_id ORDER BY s.date
-      ROWS BETWEEN 4 PRECEDING AND CURRENT ROW)::float8 AS ma5,
-    AVG(s.close) OVER (PARTITION BY s.industry_id ORDER BY s.date
-      ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)::float8 AS ma20,
-    AVG(s.close) OVER (PARTITION BY s.industry_id ORDER BY s.date
-      ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)::float8 AS ma60,
-    AVG(s.close) OVER (PARTITION BY s.industry_id ORDER BY s.date
-      ROWS BETWEEN 119 PRECEDING AND CURRENT ROW)::float8 AS ma120,
-    AVG(s.close) OVER (PARTITION BY s.industry_id ORDER BY s.date
-      ROWS BETWEEN 254 PRECEDING AND CURRENT ROW)::float8 AS ma255
-  FROM src s
-  ORDER BY s.date
-`;
+// Composite-industry baseline rows + label (pool-'all' slice; window MAs) —
+// the SELECT lives in the sql view
+// data_viz/api/services/sec-baseline/industry_bundle.

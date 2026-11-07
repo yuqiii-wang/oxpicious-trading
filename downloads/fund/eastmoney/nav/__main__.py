@@ -32,6 +32,10 @@ Usage:
   python -m downloads.fund.eastmoney.nav --fund-codes 012761,460300
   python -m downloads.fund.eastmoney.nav --max-funds 50 --sleep-sec 0.8
   python -m downloads.fund.eastmoney.nav --force
+
+The entry point is the :class:`EastmoneyNavDownload` DownloadJob — the
+former ``download_fund_nav`` body is its method (verbatim) and the pure
+parser/universe helpers stay module-level.
 """
 from __future__ import annotations
 
@@ -51,6 +55,7 @@ from downloads._common import (
     AntiBotProxy,
     antibot_config_for,
     build_default_session,
+    DownloadJob,
     is_fresh_within,
     resolve_out_dir,
     service_urls,
@@ -176,117 +181,131 @@ def order_feeders_by_target_rank(feeder_codes: List[str]) -> List[str]:
     return order_codes_by_importance(feeder_codes, ranks)
 
 
-def download_fund_nav(
-    *,
-    out_root: str | None = None,
-    fund_codes: List[str] | None = None,
-    sleep_sec: float | None = None,
-    max_funds: Optional[int] = None,
-    force: bool = False,
-) -> Dict[str, object]:
-    out_dir = resolve_out_dir("", "fund_nav", out_root)
-    if fund_codes is None:
-        # Default universe: CSV row order -> importance rank 0 -> 9 by
-        # target ETF so --max-funds slices keep the important feeders.
-        codes = order_feeders_by_target_rank(feeder_codes_from_map())
-    else:
-        codes = [c.strip() for c in fund_codes if c.strip()]
-    if max_funds is not None and max_funds > 0:
-        codes = codes[:max_funds]
-    if not codes:
-        logger.error("[main] no fund codes available (pass --fund-codes or run "
-                     "downloads.etf.csindex.linked_etf first)")
-        return {"out_dir": str(out_dir), "funds": 0}
+class EastmoneyNavDownload(DownloadJob):
+    """DownloadJob for the eastmoney fund NAV (pingzhongdata) fetch cycle.
 
-    session = build_default_session()
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
-    # overrides the row's base sleep only.
-    if sleep_sec is None:
-        proxy = AntiBotProxy(service=SERVICE)
-    else:
-        proxy = AntiBotProxy(replace(
-            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-        ))
-    stats = RunStats()
+    The former module-level ``download_fund_nav`` orchestrator became a
+    method; the pure parser / universe helpers and constants above stay
+    module-level.
+    """
 
-    registry: List[Dict[str, Any]] = []
-    for code in codes:
-        csv_path = out_dir / f"fund_nav_{code}.csv"
-        if not force and is_fresh_within(csv_path, hours=FRESH_HOURS):
-            logger.info("[nav %s] cached (fresh within %dh)", code, FRESH_HOURS // 24)
-            stats.skipped_cached += 1
-            continue
+    description = ("Download OTC fund NAV history (feeder funds) from "
+                   "eastmoney pingzhongdata.")
+    component = "fund_nav_eastmoney"
 
-        resp = proxy.get(
-            session, PINGZHONG_URL.format(code=code),
-            headers=None, logger=logger, log_tag=f"[nav {code}]",
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--fund-codes", type=str, default=None,
+                            help="Comma-separated fund codes (default: feeder universe from "
+                                 "the latest etf_feeder_map CSV)")
+        parser.add_argument("--out-root", type=str, default=None,
+                            help="Alternative output root directory")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                            help="Sleep seconds between requests "
+                                 f"(default: external_request_config JSON for {SERVICE})")
+        parser.add_argument("--max-funds", type=int, default=None,
+                            help="Limit to first N funds (dev/testing)")
+        parser.add_argument("--force", action="store_true",
+                            help="Re-download even when the CSV is fresh.")
+
+    def download_fund_nav(
+        self,
+        *,
+        out_root: str | None = None,
+        fund_codes: List[str] | None = None,
+        sleep_sec: float | None = None,
+        max_funds: Optional[int] = None,
+        force: bool = False,
+    ) -> Dict[str, object]:
+        """Former module-level orchestrator — moved verbatim into the job
+        class; ``run()`` calls it with the CLI-derived arguments."""
+        out_dir = resolve_out_dir("", "fund_nav", out_root)
+        if fund_codes is None:
+            # Default universe: CSV row order -> importance rank 0 -> 9 by
+            # target ETF so --max-funds slices keep the important feeders.
+            codes = order_feeders_by_target_rank(feeder_codes_from_map())
+        else:
+            codes = [c.strip() for c in fund_codes if c.strip()]
+        if max_funds is not None and max_funds > 0:
+            codes = codes[:max_funds]
+        if not codes:
+            logger.error("[main] no fund codes available (pass --fund-codes or run "
+                         "downloads.etf.csindex.linked_etf first)")
+            return {"out_dir": str(out_dir), "funds": 0}
+
+        session = build_default_session()
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+        # overrides the row's base sleep only.
+        if sleep_sec is None:
+            proxy = AntiBotProxy(service=SERVICE)
+        else:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+            ))
+        stats = RunStats()
+
+        registry: List[Dict[str, Any]] = []
+        for code in codes:
+            csv_path = out_dir / f"fund_nav_{code}.csv"
+            if not force and is_fresh_within(csv_path, hours=FRESH_HOURS):
+                logger.info("[nav %s] cached (fresh within %dh)", code, FRESH_HOURS // 24)
+                stats.skipped_cached += 1
+                continue
+
+            resp = proxy.get(
+                session, PINGZHONG_URL.format(code=code),
+                headers=None, logger=logger, log_tag=f"[nav {code}]",
+            )
+            if resp is None or resp.status_code != 200:
+                logger.warning("[nav %s] fetch failed, skipping", code)
+                stats.failed += 1
+                continue
+
+            parsed = parse_pingzhong(resp.text)
+            if parsed is None:
+                logger.warning("[nav %s] no NAV trend in payload, skipping", code)
+                stats.empty += 1
+                continue
+
+            frame = pd.DataFrame(parsed["rows"])
+            frame.insert(1, "code", code)
+            frame = frame.drop_duplicates(subset=["date"], keep="first")
+            frame = frame.sort_values("date").reset_index(drop=True)
+            frame.to_csv(csv_path, index=False, encoding=CSV_ENCODING)
+            stats.downloaded += 1
+            registry.append({
+                "code": code,
+                "name": parsed["name"],
+                "n_rows": len(frame),
+                "first_date": frame["date"].iloc[0],
+                "latest_date": frame["date"].iloc[-1],
+            })
+            logger.info("[nav %s] %s — %d rows (%s → %s)", code, parsed["name"],
+                        len(frame), frame["date"].iloc[0], frame["date"].iloc[-1])
+
+        if registry:
+            reg = pd.DataFrame(registry).sort_values("code")
+            reg.to_csv(out_dir / f"fund_nav_universe_{date.today().isoformat()}.csv",
+                       index=False, encoding=CSV_ENCODING)
+
+        summary = stats.to_dict(out_dir=str(out_dir), funds=len(codes))
+        logger.info("Done fund NAV: %s", summary)
+        return summary
+
+    def run(self) -> None:
+        """One fetch cycle (the former __main__ body verbatim)."""
+        fund_codes_arg = None
+        if self.args.fund_codes:
+            fund_codes_arg = [c.strip() for c in self.args.fund_codes.split(",") if c.strip()]
+
+        self.download_fund_nav(
+            out_root=self.args.out_root,
+            fund_codes=fund_codes_arg,
+            sleep_sec=self.args.sleep_sec,
+            max_funds=self.args.max_funds,
+            force=self.args.force,
         )
-        if resp is None or resp.status_code != 200:
-            logger.warning("[nav %s] fetch failed, skipping", code)
-            stats.failed += 1
-            continue
-
-        parsed = parse_pingzhong(resp.text)
-        if parsed is None:
-            logger.warning("[nav %s] no NAV trend in payload, skipping", code)
-            stats.empty += 1
-            continue
-
-        frame = pd.DataFrame(parsed["rows"])
-        frame.insert(1, "code", code)
-        frame = frame.drop_duplicates(subset=["date"], keep="first")
-        frame = frame.sort_values("date").reset_index(drop=True)
-        frame.to_csv(csv_path, index=False, encoding=CSV_ENCODING)
-        stats.downloaded += 1
-        registry.append({
-            "code": code,
-            "name": parsed["name"],
-            "n_rows": len(frame),
-            "first_date": frame["date"].iloc[0],
-            "latest_date": frame["date"].iloc[-1],
-        })
-        logger.info("[nav %s] %s — %d rows (%s → %s)", code, parsed["name"],
-                    len(frame), frame["date"].iloc[0], frame["date"].iloc[-1])
-
-    if registry:
-        reg = pd.DataFrame(registry).sort_values("code")
-        reg.to_csv(out_dir / f"fund_nav_universe_{date.today().isoformat()}.csv",
-                   index=False, encoding=CSV_ENCODING)
-
-    summary = stats.to_dict(out_dir=str(out_dir), funds=len(codes))
-    logger.info("Done fund NAV: %s", summary)
-    return summary
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download OTC fund NAV history (feeder funds) from eastmoney pingzhongdata."
-    )
-    ap.add_argument("--fund-codes", type=str, default=None,
-                    help="Comma-separated fund codes (default: feeder universe from "
-                         "the latest etf_feeder_map CSV)")
-    ap.add_argument("--out-root", type=str, default=None,
-                    help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=None,
-                    help="Sleep seconds between requests "
-                         f"(default: external_request_config JSON for {SERVICE})")
-    ap.add_argument("--max-funds", type=int, default=None,
-                    help="Limit to first N funds (dev/testing)")
-    ap.add_argument("--force", action="store_true",
-                    help="Re-download even when the CSV is fresh.")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    fund_codes_arg = None
-    if args.fund_codes:
-        fund_codes_arg = [c.strip() for c in args.fund_codes.split(",") if c.strip()]
-
-    download_fund_nav(
-        out_root=args.out_root,
-        fund_codes=fund_codes_arg,
-        sleep_sec=args.sleep_sec,
-        max_funds=args.max_funds,
-        force=args.force,
-    )
+    EastmoneyNavDownload().execute()

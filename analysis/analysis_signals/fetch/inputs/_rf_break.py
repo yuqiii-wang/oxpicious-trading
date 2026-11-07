@@ -28,6 +28,7 @@ import pandas as pd
 
 from _common.labels import SEC_TYPE_CODE
 from _common.build_commons import rec_cols
+from _common.sql_views import frag, render_sql_view
 
 from analysis.analysis_signals.config import RF_BREAK_METHODS, RF_BREAK_WINDOWS
 
@@ -104,40 +105,21 @@ async def fetch_rf_inputs(
     )
     method_codes = ",".join(str(m) for _, m in RF_BREAK_METHODS)
     amt_select, amt_joins = amt_ratio_fragments(sec_type, base_alias="d")
-    sql = f"""
-        WITH don AS (
-            SELECT e.code,
-                   e.date,
-                   max(e.today_close)::float8 AS price,
-                   {level_cols}
-            FROM {RF_ESTIMATE_TABLE} e
-            WHERE e.sec_type = {st_code}
-              AND e.method IN ({method_codes})
-              AND e.code = ANY($1::text[])
-            GROUP BY e.code, e.date
-        )
-        SELECT d.code,
-               extract(epoch from d.date)::float8 AS date,
-               d.price,
-               v.pe::float8 AS pe,
-               {", d.".join(_level_columns())},
-               g.pattern,
-               p.vol_state::float8 AS vol_state,
-               p.px_speed::float8 AS px_speed,
-               {amt_select}
-        FROM don d
-        LEFT JOIN stats.index_valuation v
-               ON v.code = d.code AND v.date = d.date
-        LEFT JOIN {PATTERN_TABLE} g
-               ON g.sec_type = {st_code}
-              AND g.code = d.code AND g.date = d.date
-        LEFT JOIN {PX_VOL_TABLE} p
-               ON p.sec_type = {st_code}
-              AND p.code = d.code AND p.date = d.date
-        {amt_joins}
-        ORDER BY d.code, d.date ASC
-    """
-    rows = await conn.fetch(sql, sorted(codes))
+    # analysis/analysis_signals/fetch/inputs/_rf_break/rf_inputs
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_rf_break/rf_inputs",
+        codes=sorted(codes),
+        rf_estimate_table=frag(RF_ESTIMATE_TABLE),
+        sec_type_code=frag(str(st_code)),
+        method_codes=frag(method_codes),
+        level_cols=frag(level_cols),
+        outer_level_cols=frag(", d.".join(_level_columns())),
+        pattern_table=frag(PATTERN_TABLE),
+        px_vol_table=frag(PX_VOL_TABLE),
+        amt_select=frag(amt_select),
+        amt_joins=frag(amt_joins),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=_RF_INPUT_COLUMNS)
     # amt_ratio is bucketed + dropped by the shared finalize step

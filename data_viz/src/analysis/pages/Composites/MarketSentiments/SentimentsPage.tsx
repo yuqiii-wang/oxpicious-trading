@@ -4,7 +4,7 @@
  * are the thin per-item components):
  *
  *   • ../AiMarketQa/AiMarketQaPage.tsx — /analysis/composites/ai-market-qa
- *     (AI 市场情绪问答): the LLM Q&A knowledge base feed (text.llm_qa —
+ *     (AI 市场情绪问答): the LLM Q&A knowledge base feed (llm.llm_qa —
  *     AiQaCard posts), asks against INSIGHT_PAGES.marketQa.
  *   • ../MarketSentimentNews/MarketSentimentNewsPage.tsx —
  *     /analysis/composites/market-sentiment-news (市场情绪新闻): the raw
@@ -53,7 +53,7 @@
  *         their stats.sec_classification classification, the same two-column
  *         shape the Analysis Summary page's industry scope and the MA-Spread
  *         industry mode use. An entity id IS an industry_id — the same tag
- *         text.llm_qa / text.news rows carry — so the pick resolves the
+ *         llm.llm_qa / text.news rows carry — so the pick resolves the
  *         feed scope IDENTICALLY in both sec types (L2 chip → its
  *         industry_id; strategy/theme pick → the member entities' ids plus
  *         the theme's own id), and the BenchmarkPriceChart's industry
@@ -80,7 +80,7 @@
  *     still scopes to the broad tag alone.
  *
  * INDUSTRY-mode feed scoping — the DataViz AI page's Q&A feed idiom loads
- * the LLM Q&A knowledge base (text.llm_qa / text.llm_qa_refs, written by
+ * the LLM Q&A knowledge base (llm.llm_qa / llm.llm_qa_refs, written by
  * llm_agents) SCOPED BY THE SAME classification pick (see
  * useClassificationScope):
  *   • multi-selected L2 industries → their industry_ids directly;
@@ -151,7 +151,7 @@ export default function SentimentsPage({
   dataLabel,
   chartInsight,
 }: {
-  /** The page's FIXED feed source — "ai" (text.llm_qa) or "news"
+  /** The page's FIXED feed source — "ai" (llm.llm_qa) or "news"
    *  (text.news); the whole page (feed, strip, search, asks) runs over
    *  this corpus. */
   source: FeedSource;
@@ -165,7 +165,7 @@ export default function SentimentsPage({
   chartInsight: InsightPageIdentity;
 }) {
   // Source-derived wording for the shell subtitle.
-  const feedName = source === "ai" ? "AI Q&A (text.llm_qa)" : "news (text.news)";
+  const feedName = source === "ai" ? "AI Q&A (llm.llm_qa)" : "news (text.news)";
   const cardsNote =
     source === "ai"
       ? "Cards expand to the full answer + per-ref citations."

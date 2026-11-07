@@ -57,6 +57,15 @@ next ``builds.text`` run ingests it into the corpus. The parsed result is
 additionally echoed on stdout as a marker-prefixed JSON envelope
 (``SEARCH_RESULT_MARKER``) for the API layer to parse — stdout also carries
 the logger stream, hence the marker.
+
+The entry point is the :class:`ZhihuNewsDownload` DownloadJob — the former
+``main()`` body is its ``run()`` (argparse moved to ``add_arguments`` /
+``apply_args``) and the download/question-search/API-call functions became
+methods; the pure parsers, constants and persistence helpers stay
+module-level, and the per-item comments fetch moved onto the
+:class:`ZhihuCommentsFetcher` class — ``fetch_item_comments`` keeps a
+module-level shim with its exact signature (the import surface
+``builds.text.backfill_comments`` uses).
 """
 from __future__ import annotations
 
@@ -87,6 +96,7 @@ import requests  # noqa: E402
 from downloads._common import (  # noqa: E402
     AntiBotProxy,
     DEFAULT_START_DATE,
+    DownloadJob,
     antibot_config_for,
     resolve_out_dir,
     retry_policy_for,
@@ -165,8 +175,17 @@ def get_api_key() -> str:
     _load_env()
     key = os.environ.get("ZHIHU_API_KEY", "").strip()
     if not key:
+        # The root .env's keys migrated into static.secret_config
+        # (2026-11-06, Config → Secrets tab) and the file was deleted —
+        # fall back to the registry's web_search / zhihu credential.
+        from llm_agents._core.secret_config import get_secret
+
+        key = get_secret("zhihu", "web_search") or ""
+    if not key:
         raise RuntimeError(
-            "ZHIHU_API_KEY not found: set it in the project-root .env or environment."
+            "ZHIHU_API_KEY not found: set it in the environment or store the "
+            "web_search / zhihu credential in static.secret_config "
+            "(Config → Secrets tab)."
         )
     return key
 
@@ -323,80 +342,6 @@ def validate_items(
 
 
 # ----------------------------------------------------------------------------
-# API call
-# ----------------------------------------------------------------------------
-def search_zhihu(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    query: str,
-    api_key: str,
-    *,
-    count: int = DEFAULT_COUNT,
-    max_retries: Optional[int] = None,
-) -> Optional[Dict[str, Any]]:
-    """Call the Zhihu search API via the shared anti-bot proxy.
-
-    Returns the parsed JSON dict or None. Retries on transient rate-limiting
-    (API ``Code=30001``) or network failures with exponential backoff
-    (max_retries / backoff base from the service's external_request_config
-    JSON ``search`` row, former inline constants as fallback). The proxy
-    handles browser-fingerprint rotation, the ``random`` query param,
-    host-blocking detection, and the inter-request sleep cadence; the Bearer
-    credential is injected by the proxy's ``api_key`` support and the
-    request-scoped timestamp header travels in *headers*.
-    """
-    headers = {
-        "X-Request-Timestamp": str(int(time.time())),
-        "Content-Type": "application/json",
-    }
-    params = {"Query": query, "Count": count}
-
-    # Retry policy from the service's external_request_config JSON row
-    # (search: max_retries=3, retry_backoff_sec=1); the former inline
-    # constants apply when the row omits them.
-    row_max_retries, row_backoff_sec = retry_policy_for(SERVICE, "search")
-    if max_retries is None:
-        max_retries = row_max_retries if row_max_retries is not None else 3
-    backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
-
-    for attempt in range(1, max_retries + 1):
-        if proxy.is_blocked(ZHIHU_SEARCH_URL):
-            logger.error("  host blocked, aborting: %s", query)
-            return None
-        resp = proxy.get(
-            session, ZHIHU_SEARCH_URL,
-            params=params, headers=headers,
-            api_key=api_key,
-            logger=logger, log_tag="  ",
-        )
-        if resp is None:
-            logger.warning("  request failed (attempt %d/%d)", attempt, max_retries)
-            time.sleep(min(backoff_sec * 2 ** attempt, 30))
-            continue
-
-        try:
-            data = resp.json()
-        except ValueError as e:
-            logger.error("  JSON parse error: %s (body: %s)", e, resp.text[:200])
-            return None
-
-        code = data.get("Code")
-        if code == 0:
-            return data
-        if code == 30001:  # frequency limit — retry with backoff
-            wait = min(2 ** attempt * 5, 60)
-            logger.warning("  API rate limit (Code=30001), backing off %ds", wait)
-            time.sleep(wait)
-            continue
-        # Non-retryable API error (10001 param, 20001 auth, 90001 internal)
-        logger.error("  API error Code=%s Message=%s", code, data.get("Message"))
-        return data
-
-    logger.error("  exhausted retries for query: %s", query)
-    return None
-
-
-# ----------------------------------------------------------------------------
 # Persistence
 # ----------------------------------------------------------------------------
 def save_response(
@@ -468,7 +413,7 @@ def is_cached(out_path: Path) -> bool:
 
 
 # ----------------------------------------------------------------------------
-# One-off question search (UI question bar -> API route -> this function)
+# Filename / author normalizers (one-off question search helpers)
 # ----------------------------------------------------------------------------
 def _sanitize_filename_part(s: str, max_len: int = 40) -> str:
     """Strip filesystem-unsafe ASCII chars + whitespace for a readable name.
@@ -478,113 +423,6 @@ def _sanitize_filename_part(s: str, max_len: int = 40) -> str:
     """
     cleaned = re.sub(r'[\\/:*?"<>|\s]+', "", s)
     return cleaned[:max_len] or "search"
-
-
-def search_zhihu_question(
-    question: str,
-    api_key: str,
-    *,
-    author: Optional[str] = None,
-    count: int = DEFAULT_COUNT,
-    sleep_sec: Optional[float] = None,
-    out_dir: Optional[Path] = None,
-    with_comments: bool = True,
-) -> Dict[str, Any]:
-    """Search the Zhihu content API for an arbitrary user *question*.
-
-    Same request format as the scheduled download (GET ``zhihu_search`` with
-    ``Query``/``Count`` + Bearer auth), but the query is the raw question
-    text: items are NOT date-validated (no date is embedded in the query to
-    validate against) and an optional *author* narrows the results to one
-    ``AuthorName`` (case-insensitive exact match). The response is stored in
-    the shared artifact dir as ``search_<question>_<md5>_<today>.json`` so
-    the next ``builds.text`` run ingests it, and the parsed result is echoed
-    on stdout as a marker-prefixed JSON envelope for the API layer.
-
-    *sleep_sec* defaults to the service's external_request_config JSON
-    ``search`` row; an explicit value overrides only that base sleep.
-
-    Returns the envelope dict (also what gets printed).
-    """
-    if out_dir is None:
-        out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIR_NAME)
-
-    if sleep_sec is None:
-        sleep_sec = SEARCH_SLEEP_SEC
-    session = requests.Session()
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE, "search"), base_sleep_sec=sleep_sec,
-    ))
-
-    logger.info("question search: %s (author=%s count=%d)", question, author or "-", count)
-    raw = search_zhihu(session, proxy, question, api_key, count=count)
-    ok = raw is not None and raw.get("Code") == 0
-    data_obj = (raw or {}).get("Data") or {}
-    items = data_obj.get("Items") or []
-    total_returned = len(items)
-
-    if author:
-        author_clean = _clean_author(author)
-        kept = [
-            it for it in items
-            if (_clean_author(it.get("AuthorName")) or "").casefold()
-            == author_clean.casefold()
-        ]
-    else:
-        kept = list(items)
-    logger.info("  returned=%d kept=%d (author=%s) ok=%s",
-                total_returned, len(kept), author or "-", ok)
-
-    comments: List[Dict[str, Any]] = []
-    if with_comments and ok and kept:
-        comments_by_cid = with_comments_for_items(kept, sleep_sec=COMMENT_SLEEP_SEC)
-        comments = [
-            {"content_id": cid, "comments": rows}
-            for cid, rows in comments_by_cid.items()
-        ]
-
-    # Persist with the shared schema (target_date = fetch date; items carry
-    # their own EditTime publish dates, which is what the loader dates by).
-    target = date.today()
-    digest = hashlib.md5(question.encode("utf-8")).hexdigest()[:8]
-    out_path = out_dir / (
-        f"search_{_sanitize_filename_part(question)}_{digest}_"
-        f"{target.strftime('%Y-%m-%d')}.json"
-    )
-    save_response(
-        out_path,
-        query=question,
-        keyword=question,
-        target=target,
-        raw_data=raw,
-        accepted_items=kept,
-        rejection_reasons={},
-        rejected_log=[],
-        total_returned=total_returned,
-        author=author,
-        comments=comments,
-    )
-    logger.info("  saved %s (comments=%d)", out_path.name,
-                sum(len(c["comments"]) for c in comments))
-
-    envelope = {
-        "success": bool(ok),
-        "code": (raw or {}).get("Code"),
-        "message": (raw or {}).get("Message"),
-        "question": question,
-        "source": "zhihu",
-        "author": author,
-        "total_returned": total_returned,
-        "returned": len(kept),
-        "comments": sum(len(c["comments"]) for c in comments),
-        "out_file": str(out_path),
-        "items": kept,
-    }
-    print(
-        SEARCH_RESULT_MARKER + json.dumps(envelope, ensure_ascii=False),
-        flush=True,
-    )
-    return envelope
 
 
 def _clean_author(v: Any) -> str:
@@ -678,6 +516,109 @@ def _comment_rows(raw_comments: List[Dict[str, Any]], root_id: Optional[int] = N
     return rows
 
 
+class ZhihuCommentsFetcher:
+    """Per-item comments fetch (--with-comments) — the former
+    ``fetch_item_comments`` / ``with_comments_for_items`` functions as
+    methods with unchanged bodies."""
+
+    def fetch_item_comments(
+        self,
+        session: requests.Session,
+        url: str,
+        *,
+        sleep_sec: Optional[float] = None,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch all root comments (± replies) for one item Url. [] on any failure.
+
+        Through the service's external_request_config ``comments`` row (rotation
+        OFF, random param OFF, short sleep — rotation and the random query param
+        both trip a 403 on the public root_comments API) — with fixed browser
+        headers (see _COMMENT_HEADERS), no Bearer auth — while still getting
+        audit coverage and the jittered post-success pacing sleep.
+        """
+        ref = _content_ref(url or "")
+        if ref is None:
+            return []
+        if sleep_sec is None:
+            sleep_sec = COMMENT_SLEEP_SEC
+        if proxy is None:
+            proxy = AntiBotProxy(service=SERVICE, request_type="comments")
+        kind, cid = ref
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        for _page in range(COMMENT_PAGE_CAP):
+            api = (
+                f"{_COMMENT_API}/{kind}/{cid}/root_comments"
+                f"?limit={COMMENT_PAGE_LIMIT}&offset={offset}&order=normal&status=open"
+            )
+            resp = proxy.get(
+                session, api, headers=_COMMENT_HEADERS,
+                sleep_sec=sleep_sec,
+                logger=logger, log_tag="  [comments] ",
+            )
+            if resp is None:
+                logger.warning("  comments request failed %s/%s", kind, cid)
+                return rows
+            try:
+                data = resp.json()
+            except ValueError:
+                logger.warning("  comments JSON parse error: %s/%s", kind, cid)
+                return rows
+            page_items = data.get("data") or []
+            rows.extend(_comment_rows(page_items))
+            paging = data.get("paging") or {}
+            if paging.get("is_end") or not page_items:
+                break
+            offset += COMMENT_PAGE_LIMIT
+        return rows
+
+    def with_comments_for_items(
+        self,
+        items: List[Dict[str, Any]],
+        *,
+        sleep_sec: Optional[float] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Fetch comments for every *items* entry that reports CommentCount > 0.
+
+        Returns {ContentID: [comment rows]} (PK-deduped per item — the same
+        comment id can never appear twice within one item). Items without a
+        parseable content ref or with zero comments are absent from the result.
+        *sleep_sec* defaults to the service's external_request_config JSON
+        ``comments`` row.
+        """
+        if sleep_sec is None:
+            sleep_sec = COMMENT_SLEEP_SEC
+        session = requests.Session()
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        fetched = skipped = 0
+        for it in items:
+            cid = (it.get("ContentID") or "").strip()
+            try:
+                n_comments = int(it.get("CommentCount") or 0)
+            except (TypeError, ValueError):
+                n_comments = 0
+            if not cid or n_comments <= 0:
+                skipped += 1
+                continue
+            rows = self.fetch_item_comments(session, it.get("Url") or "", sleep_sec=sleep_sec)
+            # PK dedupe within the item: the flat list may repeat an id when the
+            # API returns overlapping pages — a batch with duplicate PKs would
+            # make the build's upsert raise "cannot affect row a second time".
+            deduped: Dict[int, Dict[str, Any]] = {}
+            for row in rows:
+                deduped.setdefault(row["comment_id"], row)
+            out[cid] = list(deduped.values())
+            fetched += 1
+            logger.info("  comments %s: %d row(s) (api count=%s)",
+                        cid, len(out[cid]), n_comments)
+            time.sleep(random.uniform(sleep_sec * 0.8, sleep_sec * 1.2))
+        if fetched or skipped:
+            logger.info("  comments fetched for %d item(s), skipped %d without comments",
+                        fetched, skipped)
+        return out
+
+
 def fetch_item_comments(
     session: requests.Session,
     url: str,
@@ -685,94 +626,11 @@ def fetch_item_comments(
     sleep_sec: Optional[float] = None,
     proxy: Optional[AntiBotProxy] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch all root comments (± replies) for one item Url. [] on any failure.
-
-    Through the service's external_request_config ``comments`` row (rotation
-    OFF, random param OFF, short sleep — rotation and the random query param
-    both trip a 403 on the public root_comments API) — with fixed browser
-    headers (see _COMMENT_HEADERS), no Bearer auth — while still getting
-    audit coverage and the jittered post-success pacing sleep.
-    """
-    ref = _content_ref(url or "")
-    if ref is None:
-        return []
-    if sleep_sec is None:
-        sleep_sec = COMMENT_SLEEP_SEC
-    if proxy is None:
-        proxy = AntiBotProxy(service=SERVICE, request_type="comments")
-    kind, cid = ref
-    rows: List[Dict[str, Any]] = []
-    offset = 0
-    for _page in range(COMMENT_PAGE_CAP):
-        api = (
-            f"{_COMMENT_API}/{kind}/{cid}/root_comments"
-            f"?limit={COMMENT_PAGE_LIMIT}&offset={offset}&order=normal&status=open"
-        )
-        resp = proxy.get(
-            session, api, headers=_COMMENT_HEADERS,
-            sleep_sec=sleep_sec,
-            logger=logger, log_tag="  [comments] ",
-        )
-        if resp is None:
-            logger.warning("  comments request failed %s/%s", kind, cid)
-            return rows
-        try:
-            data = resp.json()
-        except ValueError:
-            logger.warning("  comments JSON parse error: %s/%s", kind, cid)
-            return rows
-        page_items = data.get("data") or []
-        rows.extend(_comment_rows(page_items))
-        paging = data.get("paging") or {}
-        if paging.get("is_end") or not page_items:
-            break
-        offset += COMMENT_PAGE_LIMIT
-    return rows
-
-
-def with_comments_for_items(
-    items: List[Dict[str, Any]],
-    *,
-    sleep_sec: Optional[float] = None,
-) -> Dict[str, List[Dict[str, Any]]]:
-    """Fetch comments for every *items* entry that reports CommentCount > 0.
-
-    Returns {ContentID: [comment rows]} (PK-deduped per item — the same
-    comment id can never appear twice within one item). Items without a
-    parseable content ref or with zero comments are absent from the result.
-    *sleep_sec* defaults to the service's external_request_config JSON
-    ``comments`` row.
-    """
-    if sleep_sec is None:
-        sleep_sec = COMMENT_SLEEP_SEC
-    session = requests.Session()
-    out: Dict[str, List[Dict[str, Any]]] = {}
-    fetched = skipped = 0
-    for it in items:
-        cid = (it.get("ContentID") or "").strip()
-        try:
-            n_comments = int(it.get("CommentCount") or 0)
-        except (TypeError, ValueError):
-            n_comments = 0
-        if not cid or n_comments <= 0:
-            skipped += 1
-            continue
-        rows = fetch_item_comments(session, it.get("Url") or "", sleep_sec=sleep_sec)
-        # PK dedupe within the item: the flat list may repeat an id when the
-        # API returns overlapping pages — a batch with duplicate PKs would
-        # make the build's upsert raise "cannot affect row a second time".
-        deduped: Dict[int, Dict[str, Any]] = {}
-        for row in rows:
-            deduped.setdefault(row["comment_id"], row)
-        out[cid] = list(deduped.values())
-        fetched += 1
-        logger.info("  comments %s: %d row(s) (api count=%s)",
-                    cid, len(out[cid]), n_comments)
-        time.sleep(random.uniform(sleep_sec * 0.8, sleep_sec * 1.2))
-    if fetched or skipped:
-        logger.info("  comments fetched for %d item(s), skipped %d without comments",
-                    fetched, skipped)
-    return out
+    """Module-level shim over :meth:`ZhihuCommentsFetcher.fetch_item_comments`
+    — exact signature, the import surface ``builds.text.backfill_comments``
+    uses."""
+    return ZhihuCommentsFetcher().fetch_item_comments(
+        session, url, sleep_sec=sleep_sec, proxy=proxy)
 
 
 # ----------------------------------------------------------------------------
@@ -794,227 +652,500 @@ def _last_n_biz_days_before(ref: date, n: int) -> List[date]:
     return out
 
 
-def _build_targets(
-    *,
-    out_dir: Path,
-    keyword: str,
-    start_date: Optional[str],
-    lookback: int,
-) -> List[Dict[str, Any]]:
-    """Build the ordered (newest-first) list of download targets.
+class ZhihuNewsDownload(DownloadJob):
+    """DownloadJob for the Zhihu news downloader — the former ``main()``
+    body is ``run()`` verbatim (argparse moved to ``add_arguments`` /
+    ``apply_args``), and the download / one-off-question / API-call
+    functions became methods with unchanged bodies; the pure parsers,
+    constants and persistence helpers stay module-level."""
 
-    Each target is ``{"date": date, "path": Path, "force": bool}`` where
-    ``date`` is the biz date embedded in the query and ``path`` is the output
-    JSON path. Holidays/weekends are skipped via ``_common._holidays_and_weekdays``.
+    description = "Download Zhihu search results for A-share biz dates"
+    component = "zhihu_news"
 
-    Targets (in execution order):
-      1. **Tomorrow** — the next trading day strictly after today. The query
-         asks about tomorrow's market; saved to ``<keyword>_tmr_forcast_<today>.json``
-         and re-fetched every run.
-      2. **Today** — only if today is a trading day. Saved to
-         ``<keyword>_tday_snapshot_<today>.json`` and re-fetched every run.
-      3. **Last ``lookback`` biz days before today** — saved to
-         ``<keyword>_<biz-date>.json`` and force-refreshed (overwritten) every
-         run so recent commentary picks up late-arriving posts.
-      4. **Older biz dates** from ``start_date`` (default 2020-01-01) up to the
-         day before the lookback window — saved to ``<keyword>_<biz-date>.json``
-         and skipped when a valid cached file already exists.
-    """
-    today = date.today()
-    today_str = today.strftime("%Y-%m-%d")
-    targets: List[Dict[str, Any]] = []
+    def __init__(self) -> None:
+        super().__init__()
+        self.comments_fetcher = ZhihuCommentsFetcher()
 
-    # 1. Tomorrow (next trading day strictly after today)
-    tmr = next_business_day(today + timedelta(days=1))
-    targets.append({
-        "date": tmr,
-        "path": out_dir / f"{keyword}_tmr_forcast_{today_str}.json",
-        "force": True,
-    })
+    # ------------------------------------------------------------------
+    # API call
+    # ------------------------------------------------------------------
+    def search_zhihu(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        query: str,
+        api_key: str,
+        *,
+        count: int = DEFAULT_COUNT,
+        max_retries: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Call the Zhihu search API via the shared anti-bot proxy.
 
-    # 2. Today (only if a trading day)
-    if is_trading_day(today):
+        Returns the parsed JSON dict or None. Retries on transient rate-limiting
+        (API ``Code=30001``) or network failures with exponential backoff
+        (max_retries / backoff base from the service's external_request_config
+        JSON ``search`` row, former inline constants as fallback). The proxy
+        handles browser-fingerprint rotation, the ``random`` query param,
+        host-blocking detection, and the inter-request sleep cadence; the Bearer
+        credential is injected by the proxy's ``api_key`` support and the
+        request-scoped timestamp header travels in *headers*.
+        """
+        headers = {
+            "X-Request-Timestamp": str(int(time.time())),
+            "Content-Type": "application/json",
+        }
+        params = {"Query": query, "Count": count}
+
+        # Retry policy from the service's external_request_config JSON row
+        # (search: max_retries=3, retry_backoff_sec=1); the former inline
+        # constants apply when the row omits them.
+        row_max_retries, row_backoff_sec = retry_policy_for(SERVICE, "search")
+        if max_retries is None:
+            max_retries = row_max_retries if row_max_retries is not None else 3
+        backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
+
+        for attempt in range(1, max_retries + 1):
+            if proxy.is_blocked(ZHIHU_SEARCH_URL):
+                logger.error("  host blocked, aborting: %s", query)
+                return None
+            resp = proxy.get(
+                session, ZHIHU_SEARCH_URL,
+                params=params, headers=headers,
+                api_key=api_key,
+                logger=logger, log_tag="  ",
+            )
+            if resp is None:
+                logger.warning("  request failed (attempt %d/%d)", attempt, max_retries)
+                time.sleep(min(backoff_sec * 2 ** attempt, 30))
+                continue
+
+            try:
+                data = resp.json()
+            except ValueError as e:
+                logger.error("  JSON parse error: %s (body: %s)", e, resp.text[:200])
+                return None
+
+            code = data.get("Code")
+            if code == 0:
+                return data
+            if code == 30001:  # frequency limit — retry with backoff
+                wait = min(2 ** attempt * 5, 60)
+                logger.warning("  API rate limit (Code=30001), backing off %ds", wait)
+                time.sleep(wait)
+                continue
+            # Non-retryable API error (10001 param, 20001 auth, 90001 internal)
+            logger.error("  API error Code=%s Message=%s", code, data.get("Message"))
+            return data
+
+        logger.error("  exhausted retries for query: %s", query)
+        return None
+
+    # ------------------------------------------------------------------
+    # One-off question search (UI question bar -> API route -> this method)
+    # ------------------------------------------------------------------
+    def search_zhihu_question(
+        self,
+        question: str,
+        api_key: str,
+        *,
+        author: Optional[str] = None,
+        count: int = DEFAULT_COUNT,
+        sleep_sec: Optional[float] = None,
+        out_dir: Optional[Path] = None,
+        with_comments: bool = True,
+    ) -> Dict[str, Any]:
+        """Search the Zhihu content API for an arbitrary user *question*.
+
+        Same request format as the scheduled download (GET ``zhihu_search`` with
+        ``Query``/``Count`` + Bearer auth), but the query is the raw question
+        text: items are NOT date-validated (no date is embedded in the query to
+        validate against) and an optional *author* narrows the results to one
+        ``AuthorName`` (case-insensitive exact match). The response is stored in
+        the shared artifact dir as ``search_<question>_<md5>_<today>.json`` so
+        the next ``builds.text`` run ingests it, and the parsed result is echoed
+        on stdout as a marker-prefixed JSON envelope for the API layer.
+
+        *sleep_sec* defaults to the service's external_request_config JSON
+        ``search`` row; an explicit value overrides only that base sleep.
+
+        Returns the envelope dict (also what gets printed).
+        """
+        if out_dir is None:
+            out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIR_NAME)
+
+        if sleep_sec is None:
+            sleep_sec = SEARCH_SLEEP_SEC
+        session = requests.Session()
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE, "search"), base_sleep_sec=sleep_sec,
+        ))
+
+        logger.info("question search: %s (author=%s count=%d)", question, author or "-", count)
+        raw = self.search_zhihu(session, proxy, question, api_key, count=count)
+        ok = raw is not None and raw.get("Code") == 0
+        data_obj = (raw or {}).get("Data") or {}
+        items = data_obj.get("Items") or []
+        total_returned = len(items)
+
+        if author:
+            author_clean = _clean_author(author)
+            kept = [
+                it for it in items
+                if (_clean_author(it.get("AuthorName")) or "").casefold()
+                == author_clean.casefold()
+            ]
+        else:
+            kept = list(items)
+        logger.info("  returned=%d kept=%d (author=%s) ok=%s",
+                    total_returned, len(kept), author or "-", ok)
+
+        comments: List[Dict[str, Any]] = []
+        if with_comments and ok and kept:
+            comments_by_cid = self.comments_fetcher.with_comments_for_items(kept, sleep_sec=COMMENT_SLEEP_SEC)
+            comments = [
+                {"content_id": cid, "comments": rows}
+                for cid, rows in comments_by_cid.items()
+            ]
+
+        # Persist with the shared schema (target_date = fetch date; items carry
+        # their own EditTime publish dates, which is what the loader dates by).
+        target = date.today()
+        digest = hashlib.md5(question.encode("utf-8")).hexdigest()[:8]
+        out_path = out_dir / (
+            f"search_{_sanitize_filename_part(question)}_{digest}_"
+            f"{target.strftime('%Y-%m-%d')}.json"
+        )
+        save_response(
+            out_path,
+            query=question,
+            keyword=question,
+            target=target,
+            raw_data=raw,
+            accepted_items=kept,
+            rejection_reasons={},
+            rejected_log=[],
+            total_returned=total_returned,
+            author=author,
+            comments=comments,
+        )
+        logger.info("  saved %s (comments=%d)", out_path.name,
+                    sum(len(c["comments"]) for c in comments))
+
+        envelope = {
+            "success": bool(ok),
+            "code": (raw or {}).get("Code"),
+            "message": (raw or {}).get("Message"),
+            "question": question,
+            "source": "zhihu",
+            "author": author,
+            "total_returned": total_returned,
+            "returned": len(kept),
+            "comments": sum(len(c["comments"]) for c in comments),
+            "out_file": str(out_path),
+            "items": kept,
+        }
+        print(
+            SEARCH_RESULT_MARKER + json.dumps(envelope, ensure_ascii=False),
+            flush=True,
+        )
+        return envelope
+
+    # ------------------------------------------------------------------
+    # Main download orchestrator
+    # ------------------------------------------------------------------
+    def _build_targets(
+        self,
+        *,
+        out_dir: Path,
+        keyword: str,
+        start_date: Optional[str],
+        lookback: int,
+    ) -> List[Dict[str, Any]]:
+        """Build the ordered (newest-first) list of download targets.
+
+        Each target is ``{"date": date, "path": Path, "force": bool}`` where
+        ``date`` is the biz date embedded in the query and ``path`` is the output
+        JSON path. Holidays/weekends are skipped via ``_common._holidays_and_weekdays``.
+
+        Targets (in execution order):
+          1. **Tomorrow** — the next trading day strictly after today. The query
+             asks about tomorrow's market; saved to ``<keyword>_tmr_forcast_<today>.json``
+             and re-fetched every run.
+          2. **Today** — only if today is a trading day. Saved to
+             ``<keyword>_tday_snapshot_<today>.json`` and re-fetched every run.
+          3. **Last ``lookback`` biz days before today** — saved to
+             ``<keyword>_<biz-date>.json`` and force-refreshed (overwritten) every
+             run so recent commentary picks up late-arriving posts.
+          4. **Older biz dates** from ``start_date`` (default 2020-01-01) up to the
+             day before the lookback window — saved to ``<keyword>_<biz-date>.json``
+             and skipped when a valid cached file already exists.
+        """
+        today = date.today()
+        today_str = today.strftime("%Y-%m-%d")
+        targets: List[Dict[str, Any]] = []
+
+        # 1. Tomorrow (next trading day strictly after today)
+        tmr = next_business_day(today + timedelta(days=1))
         targets.append({
-            "date": today,
-            "path": out_dir / f"{keyword}_tday_snapshot_{today_str}.json",
+            "date": tmr,
+            "path": out_dir / f"{keyword}_tmr_forcast_{today_str}.json",
             "force": True,
         })
 
-    # 3. Last `lookback` biz days strictly before today (force-refresh)
-    recent = _last_n_biz_days_before(today, lookback)
-    for d in recent:
-        targets.append({
-            "date": d,
-            "path": build_output_path(out_dir, keyword, d),
-            "force": True,
-        })
+        # 2. Today (only if a trading day)
+        if is_trading_day(today):
+            targets.append({
+                "date": today,
+                "path": out_dir / f"{keyword}_tday_snapshot_{today_str}.json",
+                "force": True,
+            })
 
-    # 4. Older biz dates (cache-skip): start .. day before the lookback window
-    if start_date:
-        start = datetime.strptime(start_date, "%Y-%m-%d").date()
-    else:
-        start = datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d").date()
-    older_end = (recent[-1] if recent else today) - timedelta(days=1)
-    if older_end >= start:
-        for d in business_days(start, older_end, reverse=True):
+        # 3. Last `lookback` biz days strictly before today (force-refresh)
+        recent = _last_n_biz_days_before(today, lookback)
+        for d in recent:
             targets.append({
                 "date": d,
                 "path": build_output_path(out_dir, keyword, d),
-                "force": False,
+                "force": True,
             })
 
-    return targets
+        # 4. Older biz dates (cache-skip): start .. day before the lookback window
+        if start_date:
+            start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        else:
+            start = datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d").date()
+        older_end = (recent[-1] if recent else today) - timedelta(days=1)
+        if older_end >= start:
+            for d in business_days(start, older_end, reverse=True):
+                targets.append({
+                    "date": d,
+                    "path": build_output_path(out_dir, keyword, d),
+                    "force": False,
+                })
 
+        return targets
 
-def download_zhihu_news(
-    *,
-    out_root: Optional[str] = None,
-    start_date: Optional[str] = None,
-    lookback: int = DEFAULT_LOOKBACK,
-    keyword: str = DEFAULT_KEYWORD,
-    count: int = DEFAULT_COUNT,
-    sleep_sec: Optional[float] = None,
-    force: bool = False,
-    with_comments: bool = True,
-) -> Dict[str, Any]:
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIR_NAME, out_root)
-    api_key = get_api_key()
-    targets = _build_targets(
-        out_dir=out_dir, keyword=keyword,
-        start_date=start_date, lookback=lookback,
-    )
+    def download_zhihu_news(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        start_date: Optional[str] = None,
+        lookback: int = DEFAULT_LOOKBACK,
+        keyword: str = DEFAULT_KEYWORD,
+        count: int = DEFAULT_COUNT,
+        sleep_sec: Optional[float] = None,
+        force: bool = False,
+        with_comments: bool = True,
+    ) -> Dict[str, Any]:
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIR_NAME, out_root)
+        api_key = get_api_key()
+        targets = self._build_targets(
+            out_dir=out_dir, keyword=keyword,
+            start_date=start_date, lookback=lookback,
+        )
 
-    logger.info(
-        "Zhihu news download: %d target(s) [%s .. %s] lookback=%d -> %s",
-        len(targets),
-        targets[0]["date"] if targets else "-",
-        targets[-1]["date"] if targets else "-",
-        lookback,
-        out_dir,
-    )
+        logger.info(
+            "Zhihu news download: %d target(s) [%s .. %s] lookback=%d -> %s",
+            len(targets),
+            targets[0]["date"] if targets else "-",
+            targets[-1]["date"] if targets else "-",
+            lookback,
+            out_dir,
+        )
 
-    # Pacing from the service's external_request_config JSON ``crawl`` row
-    # (sleep_sec, jitter, timeouts, toggles); an explicit sleep_sec overrides
-    # the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    session = requests.Session()
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE, "crawl"), base_sleep_sec=sleep_sec,
-    ))
-    downloaded = skipped_cached = failed = 0
-    accepted_total = rejected_total = 0
-    # Cached skips are buffered silently and summarized as a single count
-    # before the next real download, instead of one log line per skip — keeps
-    # long backfill runs readable while still showing progress between real
-    # downloads.
-    cached_since_last_real = 0
-    try:
-        for i, t in enumerate(targets, 1):
-            if proxy.is_blocked(ZHIHU_SEARCH_URL):
-                logger.warning("  host blocked — stopping download loop")
-                break
+        # Pacing from the service's external_request_config JSON ``crawl`` row
+        # (sleep_sec, jitter, timeouts, toggles); an explicit sleep_sec overrides
+        # the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        session = requests.Session()
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE, "crawl"), base_sleep_sec=sleep_sec,
+        ))
+        downloaded = skipped_cached = failed = 0
+        accepted_total = rejected_total = 0
+        # Cached skips are buffered silently and summarized as a single count
+        # before the next real download, instead of one log line per skip — keeps
+        # long backfill runs readable while still showing progress between real
+        # downloads.
+        cached_since_last_real = 0
+        try:
+            for i, t in enumerate(targets, 1):
+                if proxy.is_blocked(ZHIHU_SEARCH_URL):
+                    logger.warning("  host blocked — stopping download loop")
+                    break
 
-            target_date = t["date"]
-            out_path = t["path"]
-            force_this = t["force"] or force
-            if not force_this and is_cached(out_path):
-                skipped_cached += 1
-                cached_since_last_real += 1
-                continue
+                target_date = t["date"]
+                out_path = t["path"]
+                force_this = t["force"] or force
+                if not force_this and is_cached(out_path):
+                    skipped_cached += 1
+                    cached_since_last_real += 1
+                    continue
 
-            # About to perform a real download — flush any buffered cached
-            # skips so the user sees what was skipped between this and the
-            # previous real download.
-            if cached_since_last_real > 0:
-                logger.info(
-                    "[%d/%d] %d cached file(s) skipped since last download",
-                    i, len(targets), cached_since_last_real,
-                )
-                cached_since_last_real = 0
+                # About to perform a real download — flush any buffered cached
+                # skips so the user sees what was skipped between this and the
+                # previous real download.
+                if cached_since_last_real > 0:
+                    logger.info(
+                        "[%d/%d] %d cached file(s) skipped since last download",
+                        i, len(targets), cached_since_last_real,
+                    )
+                    cached_since_last_real = 0
 
-            query = build_query(target_date)
-            logger.info("[%d/%d] %s query=%s", i, len(targets), target_date, query)
+                query = build_query(target_date)
+                logger.info("[%d/%d] %s query=%s", i, len(targets), target_date, query)
 
-            raw = search_zhihu(session, proxy, query, api_key, count=count)
-            if raw is None:
-                failed += 1
-                # API call rejected/failed — log an empty JSON with the
-                # required filename so is_cached can skip this target on
-                # future runs (compatible with the cache-skip backfill).
+                raw = self.search_zhihu(session, proxy, query, api_key, count=count)
+                if raw is None:
+                    failed += 1
+                    # API call rejected/failed — log an empty JSON with the
+                    # required filename so is_cached can skip this target on
+                    # future runs (compatible with the cache-skip backfill).
+                    save_response(
+                        out_path,
+                        query=query,
+                        keyword=keyword,
+                        target=target_date,
+                        raw_data=None,
+                        accepted_items=[],
+                        rejection_reasons={},
+                        rejected_log=[],
+                        total_returned=0,
+                    )
+                    logger.info("  saved empty %s (API rejected)", out_path.name)
+                    # search_zhihu already backed off during retries; ensure a
+                    # cadence sleep before the next target on hard failure.
+                    proxy.sleep()
+                    continue
+
+                data_obj = raw.get("Data") or {}
+                items = data_obj.get("Items") or []
+                total_returned = len(items)
+
+                accepted, reasons, rejected_log = validate_items(items, target_date)
+                accepted_total += len(accepted)
+                rejected_total += total_returned - len(accepted)
+
+                comments: List[Dict[str, Any]] = []
+                if with_comments and accepted:
+                    comments_by_cid = self.comments_fetcher.with_comments_for_items(accepted)
+                    comments = [
+                        {"content_id": cid, "comments": rows}
+                        for cid, rows in comments_by_cid.items()
+                    ]
+
                 save_response(
                     out_path,
                     query=query,
                     keyword=keyword,
                     target=target_date,
-                    raw_data=None,
-                    accepted_items=[],
-                    rejection_reasons={},
-                    rejected_log=[],
-                    total_returned=0,
+                    raw_data=raw,
+                    accepted_items=accepted,
+                    rejection_reasons=reasons,
+                    rejected_log=rejected_log,
+                    total_returned=total_returned,
+                    comments=comments,
                 )
-                logger.info("  saved empty %s (API rejected)", out_path.name)
-                # search_zhihu already backed off during retries; ensure a
-                # cadence sleep before the next target on hard failure.
-                proxy.sleep()
-                continue
+                downloaded += 1
+                logger.info(
+                    "  saved %s (returned=%d accepted=%d rejected=%s)",
+                    out_path.name, total_returned, len(accepted),
+                    {k: v for k, v in reasons.items()} if reasons else "{}",
+                )
+                # Inter-request cadence is handled by proxy.get()'s auto-sleep.
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
 
-            data_obj = raw.get("Data") or {}
-            items = data_obj.get("Items") or []
-            total_returned = len(items)
+        summary = {
+            "downloaded": downloaded,
+            "skipped_cached": skipped_cached,
+            "failed": failed,
+            "accepted_total": accepted_total,
+            "rejected_total": rejected_total,
+            "out_dir": str(out_dir),
+            "targets": len(targets),
+        }
+        logger.info(
+            "Done. downloaded=%d skipped=%d failed=%d accepted=%d rejected=%d",
+            downloaded, skipped_cached, failed, accepted_total, rejected_total,
+        )
+        return summary
 
-            accepted, reasons, rejected_log = validate_items(items, target_date)
-            accepted_total += len(accepted)
-            rejected_total += total_returned - len(accepted)
+    # ------------------------------------------------------------------
+    # CLI hooks (DownloadJob)
+    # ------------------------------------------------------------------
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--start-date", type=str, default=None,
+                            help=f"Floor for older (cache-skip) biz dates YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
+        parser.add_argument("--lookback", type=int, default=DEFAULT_LOOKBACK,
+                            help=f"Force-refresh the last N biz days before today. Default: {DEFAULT_LOOKBACK}")
+        parser.add_argument("--keyword", type=str, default=DEFAULT_KEYWORD,
+                            help=f"Keyword / filename prefix. Default: {DEFAULT_KEYWORD}")
+        parser.add_argument("--count", type=int, default=DEFAULT_COUNT,
+                            help=f"Result count per query (1-10). Default: {DEFAULT_COUNT}")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                            help="Anti-bot sleep between requests (s). Default: "
+                                 f"external_request_config JSON for {SERVICE} "
+                                 f"(crawl={SLEEP_SEC}, search={SEARCH_SLEEP_SEC})")
+        parser.add_argument("--out-root", type=str, default=None,
+                            help="Output root dir. Default: <project>/temps/zhihu_news")
+        parser.add_argument("--force", action="store_true",
+                            help="Force re-download of every target, including cache-skip (older) ones.")
+        # One-off question mode (News page question bar): plain --question is for
+        # humans; --question-b64/--author-b64 is what the API route sends (see
+        # _b64_arg for why).
+        parser.add_argument("--question", type=str, default=None,
+                            help="One-off search for this raw question text instead of the scheduled download.")
+        parser.add_argument("--question-b64", type=str, default=None,
+                            help="Same as --question but base64(utf-8) encoded (API route).")
+        parser.add_argument("--author", type=str, default=None,
+                            help="Question mode: keep only items whose AuthorName matches (case-insensitive).")
+        parser.add_argument("--author-b64", type=str, default=None,
+                            help="Same as --author but base64(utf-8) encoded (API route).")
+        parser.add_argument("--no-comments", action="store_true",
+                            help="Skip the per-item comments fetch (default: ON — comments of every "
+                                 "kept item are stored in the artifact for text.news_comments).")
 
-            comments: List[Dict[str, Any]] = []
-            if with_comments and accepted:
-                comments_by_cid = with_comments_for_items(accepted)
-                comments = [
-                    {"content_id": cid, "comments": rows}
-                    for cid, rows in comments_by_cid.items()
-                ]
+    def apply_args(self) -> None:
+        if self.args.count < 1 or self.args.count > 10:
+            self.parser.error("--count must be between 1 and 10")
+        if self.args.lookback < 0:
+            self.parser.error("--lookback must be >= 0")
 
-            save_response(
-                out_path,
-                query=query,
-                keyword=keyword,
-                target=target_date,
-                raw_data=raw,
-                accepted_items=accepted,
-                rejection_reasons=reasons,
-                rejected_log=rejected_log,
-                total_returned=total_returned,
-                comments=comments,
+    def run(self) -> None:
+        """One download cycle — the former ``main()`` body (argparse parsing
+        and the count/lookback validation are owned by the base template
+        methods / ``apply_args``)."""
+        question = self.args.question or _b64_arg(self.args.question_b64)
+        with_comments = not self.args.no_comments
+        if question:
+            self.search_zhihu_question(
+                question.strip(),
+                get_api_key(),
+                author=_b64_arg(self.args.author_b64) or self.args.author,
+                count=self.args.count,
+                sleep_sec=self.args.sleep_sec,
+                out_dir=resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIR_NAME, self.args.out_root),
+                with_comments=with_comments,
             )
-            downloaded += 1
-            logger.info(
-                "  saved %s (returned=%d accepted=%d rejected=%s)",
-                out_path.name, total_returned, len(accepted),
-                {k: v for k, v in reasons.items()} if reasons else "{}",
-            )
-            # Inter-request cadence is handled by proxy.get()'s auto-sleep.
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+            return
 
-    summary = {
-        "downloaded": downloaded,
-        "skipped_cached": skipped_cached,
-        "failed": failed,
-        "accepted_total": accepted_total,
-        "rejected_total": rejected_total,
-        "out_dir": str(out_dir),
-        "targets": len(targets),
-    }
-    logger.info(
-        "Done. downloaded=%d skipped=%d failed=%d accepted=%d rejected=%d",
-        downloaded, skipped_cached, failed, accepted_total, rejected_total,
-    )
-    return summary
+        summary = self.download_zhihu_news(
+            out_root=self.args.out_root,
+            start_date=self.args.start_date,
+            lookback=self.args.lookback,
+            keyword=self.args.keyword,
+            count=self.args.count,
+            sleep_sec=self.args.sleep_sec,
+            force=self.args.force,
+            with_comments=with_comments,
+        )
+        logger.info(summary)
 
 
 # ----------------------------------------------------------------------------
-# CLI
+# CLI helper
 # ----------------------------------------------------------------------------
 def _b64_arg(value: Optional[str]) -> Optional[str]:
     """Decode a base64(utf-8) CLI value (--question-b64 / --author-b64).
@@ -1029,71 +1160,5 @@ def _b64_arg(value: Optional[str]) -> Optional[str]:
     return base64.b64decode(value).decode("utf-8")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Download Zhihu search results for A-share biz dates")
-    parser.add_argument("--start-date", type=str, default=None,
-                        help=f"Floor for older (cache-skip) biz dates YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
-    parser.add_argument("--lookback", type=int, default=DEFAULT_LOOKBACK,
-                        help=f"Force-refresh the last N biz days before today. Default: {DEFAULT_LOOKBACK}")
-    parser.add_argument("--keyword", type=str, default=DEFAULT_KEYWORD,
-                        help=f"Keyword / filename prefix. Default: {DEFAULT_KEYWORD}")
-    parser.add_argument("--count", type=int, default=DEFAULT_COUNT,
-                        help=f"Result count per query (1-10). Default: {DEFAULT_COUNT}")
-    parser.add_argument("--sleep-sec", type=float, default=None,
-                        help="Anti-bot sleep between requests (s). Default: "
-                             f"external_request_config JSON for {SERVICE} "
-                             f"(crawl={SLEEP_SEC}, search={SEARCH_SLEEP_SEC})")
-    parser.add_argument("--out-root", type=str, default=None,
-                        help="Output root dir. Default: <project>/temps/zhihu_news")
-    parser.add_argument("--force", action="store_true",
-                        help="Force re-download of every target, including cache-skip (older) ones.")
-    # One-off question mode (News page question bar): plain --question is for
-    # humans; --question-b64/--author-b64 is what the API route sends (see
-    # _b64_arg for why).
-    parser.add_argument("--question", type=str, default=None,
-                        help="One-off search for this raw question text instead of the scheduled download.")
-    parser.add_argument("--question-b64", type=str, default=None,
-                        help="Same as --question but base64(utf-8) encoded (API route).")
-    parser.add_argument("--author", type=str, default=None,
-                        help="Question mode: keep only items whose AuthorName matches (case-insensitive).")
-    parser.add_argument("--author-b64", type=str, default=None,
-                        help="Same as --author but base64(utf-8) encoded (API route).")
-    parser.add_argument("--no-comments", action="store_true",
-                        help="Skip the per-item comments fetch (default: ON — comments of every "
-                             "kept item are stored in the artifact for text.news_comments).")
-    args = parser.parse_args()
-
-    if args.count < 1 or args.count > 10:
-        parser.error("--count must be between 1 and 10")
-    if args.lookback < 0:
-        parser.error("--lookback must be >= 0")
-
-    question = args.question or _b64_arg(args.question_b64)
-    with_comments = not args.no_comments
-    if question:
-        search_zhihu_question(
-            question.strip(),
-            get_api_key(),
-            author=_b64_arg(args.author_b64) or args.author,
-            count=args.count,
-            sleep_sec=args.sleep_sec,
-            out_dir=resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIR_NAME, args.out_root),
-            with_comments=with_comments,
-        )
-        return
-
-    summary = download_zhihu_news(
-        out_root=args.out_root,
-        start_date=args.start_date,
-        lookback=args.lookback,
-        keyword=args.keyword,
-        count=args.count,
-        sleep_sec=args.sleep_sec,
-        force=args.force,
-        with_comments=with_comments,
-    )
-    logger.info(summary)
-
-
 if __name__ == "__main__":
-    main()
+    ZhihuNewsDownload().execute()

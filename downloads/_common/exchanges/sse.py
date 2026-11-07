@@ -196,42 +196,6 @@ def build_sse_proxy(service: str) -> AntiBotProxy:
     ))
 
 
-def _fetch_snapshot_page(
-    session: requests.Session,
-    begin: int,
-    end: int,
-    list_url: str,
-    headers: Dict[str, str],
-    proxy: Optional[AntiBotProxy] = None,
-) -> Optional[Dict[str, Any]]:
-    """Fetch one page from an SSE list endpoint with full real-time fields."""
-    if proxy is None:
-        raise ValueError("build the proxy via build_sse_proxy(service)")
-    params = {
-        "callback": JSONP_CALLBACK,
-        "begin": str(begin),
-        "end": str(end),
-        "select": STREAM_SELECT_FIELDS,
-    }
-    resp = proxy.get(
-        session,
-        list_url,
-        params=params,
-        headers=headers,
-        logger=logger,
-        log_tag=f"[sse-page {begin}-{end}] ",
-    )
-    if resp is None:
-        logger.warning("SSE list page %d-%d request failed", begin, end)
-        return None
-
-    try:
-        return _parse_jsonp(resp.text)
-    except ValueError as e:
-        logger.warning("SSE list page %d-%d JSONP parse failed: %s", begin, end, e)
-        return None
-
-
 def _parse_snapshot_to_trend_row(
     row: List[Any], trade_date_str: str
 ) -> Optional[Dict[str, Any]]:
@@ -277,81 +241,247 @@ def _parse_snapshot_to_trend_row(
     }
 
 
-def _fetch_today_snapshot(
-    session: requests.Session,
-    list_url: str,
-    service: str,
-    proxy: Optional[AntiBotProxy] = None,
-) -> Tuple[Optional[datetime], Optional[str], List[Dict[str, Any]]]:
-    """Fetch the SSE list endpoint snapshot (all securities, full field set)."""
-    if proxy is None:
-        proxy = build_sse_proxy(service)
-    headers = sse_list_headers(service_urls(service)["referer"])
-    asset_tag = list_url.rsplit("/", 1)[-1]
+class SseSnapshotDownloader:
+    """Downloader for the SSE list-endpoint EOD snapshots (stateless).
 
-    first = _fetch_snapshot_page(
-        session, 0, PAGE_SIZE, list_url=list_url, headers=headers, proxy=proxy
-    )
-    if first is None:
-        logger.error("Failed to fetch first SSE list page (%s)", asset_tag)
-        return None, None, []
+    Code motion only (2026-11-07): the former module-level fetch functions
+    ``_fetch_snapshot_page`` / ``_fetch_today_snapshot`` /
+    ``download_one_type`` / ``run_snapshot_download`` are now methods with
+    the same names, signatures and sequencing. The class holds no state —
+    each method still constructs its own ``AntiBotProxy`` per call exactly
+    as the functions did (pacing / host-block lifecycle unchanged) — and
+    the module-level ``download_one_type`` / ``run_snapshot_download``
+    functions at the bottom of this file are thin delegates to the shared
+    instance so every existing import keeps working. The JSONP/pagination
+    constants and the pure parse/format helpers stay module-level.
+    """
 
-    update_dt = _extract_update_datetime(first)
-    trade_date_str = _extract_trade_date_str(first)
-    if trade_date_str is None:
-        logger.error("Failed to extract trade date from SSE list response (%s)", asset_tag)
-        return update_dt, None, []
-
-    total = int(first.get("total", 0))
-    logger.info(
-        "SSE snapshot [%s]: trade_date=%s 更新时间=%s total=%d",
-        asset_tag, trade_date_str,
-        update_dt.strftime("%Y-%m-%d %H:%M:%S") if update_dt else "N/A",
-        total,
-    )
-
-    rows: List[Dict[str, Any]] = []
-    for row in first.get("list", []) or []:
-        parsed = _parse_snapshot_to_trend_row(row, trade_date_str)
-        if parsed:
-            rows.append(parsed)
-
-    written = len(first.get("list", []) or [])
-    page_index = 1
-    while written < total:
-        if proxy.is_blocked(list_url):
-            logger.warning(
-                "SSE host blocked mid-pagination, using partial snapshot (%d items)",
-                len(rows),
-            )
-            break
-        begin = page_index * PAGE_SIZE
-        end = begin + PAGE_SIZE
-        # Inter-page pacing is the proxy's post-success sleep.
-        payload = _fetch_snapshot_page(
-            session, begin, end, list_url=list_url, headers=headers, proxy=proxy
+    def _fetch_snapshot_page(
+        self,
+        session: requests.Session,
+        begin: int,
+        end: int,
+        list_url: str,
+        headers: Dict[str, str],
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch one page from an SSE list endpoint with full real-time fields."""
+        if proxy is None:
+            raise ValueError("build the proxy via build_sse_proxy(service)")
+        params = {
+            "callback": JSONP_CALLBACK,
+            "begin": str(begin),
+            "end": str(end),
+            "select": STREAM_SELECT_FIELDS,
+        }
+        resp = proxy.get(
+            session,
+            list_url,
+            params=params,
+            headers=headers,
+            logger=logger,
+            log_tag=f"[sse-page {begin}-{end}] ",
         )
-        if payload is None:
-            logger.warning(
-                "page %d (begin=%d) failed; using partial snapshot",
-                page_index + 1, begin,
-            )
-            break
-        page_rows = payload.get("list", []) or []
-        if not page_rows:
-            break
-        for row in page_rows:
+        if resp is None:
+            logger.warning("SSE list page %d-%d request failed", begin, end)
+            return None
+
+        try:
+            return _parse_jsonp(resp.text)
+        except ValueError as e:
+            logger.warning("SSE list page %d-%d JSONP parse failed: %s", begin, end, e)
+            return None
+
+    def _fetch_today_snapshot(
+        self,
+        session: requests.Session,
+        list_url: str,
+        service: str,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Tuple[Optional[datetime], Optional[str], List[Dict[str, Any]]]:
+        """Fetch the SSE list endpoint snapshot (all securities, full field set)."""
+        if proxy is None:
+            proxy = build_sse_proxy(service)
+        headers = sse_list_headers(service_urls(service)["referer"])
+        asset_tag = list_url.rsplit("/", 1)[-1]
+
+        first = self._fetch_snapshot_page(
+            session, 0, PAGE_SIZE, list_url=list_url, headers=headers, proxy=proxy
+        )
+        if first is None:
+            logger.error("Failed to fetch first SSE list page (%s)", asset_tag)
+            return None, None, []
+
+        update_dt = _extract_update_datetime(first)
+        trade_date_str = _extract_trade_date_str(first)
+        if trade_date_str is None:
+            logger.error("Failed to extract trade date from SSE list response (%s)", asset_tag)
+            return update_dt, None, []
+
+        total = int(first.get("total", 0))
+        logger.info(
+            "SSE snapshot [%s]: trade_date=%s 更新时间=%s total=%d",
+            asset_tag, trade_date_str,
+            update_dt.strftime("%Y-%m-%d %H:%M:%S") if update_dt else "N/A",
+            total,
+        )
+
+        rows: List[Dict[str, Any]] = []
+        for row in first.get("list", []) or []:
             parsed = _parse_snapshot_to_trend_row(row, trade_date_str)
             if parsed:
                 rows.append(parsed)
-        written += len(page_rows)
-        page_index += 1
 
-    logger.info(
-        "Fetched %d rows (total=%d, pages=%d) for trade_date=%s [%s]",
-        len(rows), total, page_index, trade_date_str, asset_tag,
-    )
-    return update_dt, trade_date_str, rows
+        written = len(first.get("list", []) or [])
+        page_index = 1
+        while written < total:
+            if proxy.is_blocked(list_url):
+                logger.warning(
+                    "SSE host blocked mid-pagination, using partial snapshot (%d items)",
+                    len(rows),
+                )
+                break
+            begin = page_index * PAGE_SIZE
+            end = begin + PAGE_SIZE
+            # Inter-page pacing is the proxy's post-success sleep.
+            payload = self._fetch_snapshot_page(
+                session, begin, end, list_url=list_url, headers=headers, proxy=proxy
+            )
+            if payload is None:
+                logger.warning(
+                    "page %d (begin=%d) failed; using partial snapshot",
+                    page_index + 1, begin,
+                )
+                break
+            page_rows = payload.get("list", []) or []
+            if not page_rows:
+                break
+            for row in page_rows:
+                parsed = _parse_snapshot_to_trend_row(row, trade_date_str)
+                if parsed:
+                    rows.append(parsed)
+            written += len(page_rows)
+            page_index += 1
+
+        logger.info(
+            "Fetched %d rows (total=%d, pages=%d) for trade_date=%s [%s]",
+            len(rows), total, page_index, trade_date_str, asset_tag,
+        )
+        return update_dt, trade_date_str, rows
+
+    def download_one_type(
+        self,
+        sess: requests.Session,
+        out_dir: Path,
+        expected_latest_str: str,
+        list_url: str,
+        prefix: str,
+        *,
+        force: bool = False,
+        sec_type: str = "auto",
+        proxy: Optional[AntiBotProxy] = None,
+        service: str = "",
+    ) -> dict:
+        """Download one snapshot type (equity / fund / index) and write its CSV."""
+        out_file = _get_out_file(out_dir, expected_latest_str, prefix=prefix)
+
+        if not force and is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
+            try:
+                with open(out_file, encoding=CSV_ENCODING, newline="") as f:
+                    reader = csv.DictReader(f)
+                    file_rows = [dict(r) for r in reader]
+                if file_rows:
+                    dates_in_file = {r.get("交易日期", "") for r in file_rows}
+                    if expected_latest_str in dates_in_file:
+                        logger.info(
+                            "  %s already exists with %d rows for %s, skipping "
+                            "(use --force to overwrite)",
+                            out_file.name, len(file_rows), expected_latest_str,
+                        )
+                        return {
+                            "downloaded": 0,
+                            "failed": 0,
+                            "file": str(out_file),
+                            "trade_date": expected_latest_str,
+                            "skipped": True,
+                            "cached_rows": len(file_rows),
+                        }
+                    else:
+                        logger.info(
+                            "  %s exists but does not contain %s, proceeding with fetch",
+                            out_file.name, expected_latest_str,
+                        )
+            except Exception:
+                logger.info(
+                    "  %s exists but is unreadable, proceeding with fetch",
+                    out_file.name,
+                )
+
+        update_dt, trade_date_str, rows = self._fetch_today_snapshot(
+            sess, list_url=list_url, service=service, proxy=proxy
+        )
+        if trade_date_str is None or not rows:
+            logger.error("No snapshot data fetched for %s", prefix)
+            return {"downloaded": 0, "failed": 1, "file": str(out_file)}
+
+        _write_rows(out_file, rows, write_header=True)
+        # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type columns
+        from downloads._common.io_csv import ensure_canonical_csv
+        ensure_canonical_csv(out_file, "SS", sec_type=sec_type)
+        logger.info("Wrote %d rows -> %s", len(rows), out_file.name)
+
+        return {
+            "downloaded": len(rows),
+            "failed": 0,
+            "file": str(out_file),
+            "trade_date": trade_date_str,
+            "update_time": update_dt.strftime("%Y-%m-%d %H:%M:%S") if update_dt else None,
+        }
+
+    def run_snapshot_download(
+        self,
+        list_url: str,
+        prefix: str,
+        *,
+        out_root: Optional[str] = None,
+        force: bool = False,
+        session: Optional[requests.Session] = None,
+        service: str,
+    ) -> dict:
+        """Shared entry point for the equity / fund / index snapshot leaves.
+
+        *service* (the caller's dotted service name, required) resolves the
+        pacing row AND the page referer (urls role "referer") from the
+        external_request_config JSON tree; *list_url* comes from the same
+        row's urls object (the leaf passes it in).
+        """
+        out_dir = resolve_out_dir(__file__, "sse_trend", out_root)
+        sess = session or requests.Session()
+
+        today = date.today()
+        expected_latest_biz_date = last_business_day(today)
+        expected_latest_str = expected_latest_biz_date.isoformat()
+        logger.info(
+            "Today: %s, expected latest trading day: %s", today, expected_latest_biz_date,
+        )
+
+        # single-type exports: sse_trend_stock -> stock, sse_trend_etf -> etf,
+        # sse_trend_index -> index
+        prefix_sec_type = prefix.rsplit("_", 1)[-1] if prefix.rsplit("_", 1)[-1] in (
+            "stock", "etf", "index") else "auto"
+        result = self.download_one_type(
+            sess, out_dir, expected_latest_str,
+            list_url, prefix, force=force, sec_type=prefix_sec_type,
+            proxy=build_sse_proxy(service), service=service,
+        )
+        return {"out_dir": str(out_dir), "result": result}
+
+
+# ---------------------------------------------------------------------------
+# Compatibility shims — the pre-conversion import surface (the class is
+# stateless, so one shared instance serves every call).
+# ---------------------------------------------------------------------------
+_SSE_DOWNLOADER = SseSnapshotDownloader()
 
 
 def download_one_type(
@@ -366,61 +496,10 @@ def download_one_type(
     proxy: Optional[AntiBotProxy] = None,
     service: str = "",
 ) -> dict:
-    """Download one snapshot type (equity / fund / index) and write its CSV."""
-    out_file = _get_out_file(out_dir, expected_latest_str, prefix=prefix)
-
-    if not force and is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
-        try:
-            with open(out_file, encoding=CSV_ENCODING, newline="") as f:
-                reader = csv.DictReader(f)
-                file_rows = [dict(r) for r in reader]
-            if file_rows:
-                dates_in_file = {r.get("交易日期", "") for r in file_rows}
-                if expected_latest_str in dates_in_file:
-                    logger.info(
-                        "  %s already exists with %d rows for %s, skipping "
-                        "(use --force to overwrite)",
-                        out_file.name, len(file_rows), expected_latest_str,
-                    )
-                    return {
-                        "downloaded": 0,
-                        "failed": 0,
-                        "file": str(out_file),
-                        "trade_date": expected_latest_str,
-                        "skipped": True,
-                        "cached_rows": len(file_rows),
-                    }
-                else:
-                    logger.info(
-                        "  %s exists but does not contain %s, proceeding with fetch",
-                        out_file.name, expected_latest_str,
-                    )
-        except Exception:
-            logger.info(
-                "  %s exists but is unreadable, proceeding with fetch",
-                out_file.name,
-            )
-
-    update_dt, trade_date_str, rows = _fetch_today_snapshot(
-        sess, list_url=list_url, service=service, proxy=proxy
+    return _SSE_DOWNLOADER.download_one_type(
+        sess, out_dir, expected_latest_str, list_url, prefix,
+        force=force, sec_type=sec_type, proxy=proxy, service=service,
     )
-    if trade_date_str is None or not rows:
-        logger.error("No snapshot data fetched for %s", prefix)
-        return {"downloaded": 0, "failed": 1, "file": str(out_file)}
-
-    _write_rows(out_file, rows, write_header=True)
-    # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type columns
-    from downloads._common.io_csv import ensure_canonical_csv
-    ensure_canonical_csv(out_file, "SS", sec_type=sec_type)
-    logger.info("Wrote %d rows -> %s", len(rows), out_file.name)
-
-    return {
-        "downloaded": len(rows),
-        "failed": 0,
-        "file": str(out_file),
-        "trade_date": trade_date_str,
-        "update_time": update_dt.strftime("%Y-%m-%d %H:%M:%S") if update_dt else None,
-    }
 
 
 def run_snapshot_download(
@@ -432,33 +511,10 @@ def run_snapshot_download(
     session: Optional[requests.Session] = None,
     service: str,
 ) -> dict:
-    """Shared entry point for the equity / fund / index snapshot leaves.
-
-    *service* (the caller's dotted service name, required) resolves the
-    pacing row AND the page referer (urls role "referer") from the
-    external_request_config JSON tree; *list_url* comes from the same
-    row's urls object (the leaf passes it in).
-    """
-    out_dir = resolve_out_dir(__file__, "sse_trend", out_root)
-    sess = session or requests.Session()
-
-    today = date.today()
-    expected_latest_biz_date = last_business_day(today)
-    expected_latest_str = expected_latest_biz_date.isoformat()
-    logger.info(
-        "Today: %s, expected latest trading day: %s", today, expected_latest_biz_date,
+    return _SSE_DOWNLOADER.run_snapshot_download(
+        list_url, prefix, out_root=out_root, force=force,
+        session=session, service=service,
     )
-
-    # single-type exports: sse_trend_stock -> stock, sse_trend_etf -> etf,
-    # sse_trend_index -> index
-    prefix_sec_type = prefix.rsplit("_", 1)[-1] if prefix.rsplit("_", 1)[-1] in (
-        "stock", "etf", "index") else "auto"
-    result = download_one_type(
-        sess, out_dir, expected_latest_str,
-        list_url, prefix, force=force, sec_type=prefix_sec_type,
-        proxy=build_sse_proxy(service), service=service,
-    )
-    return {"out_dir": str(out_dir), "result": result}
 
 
 __all__ = [

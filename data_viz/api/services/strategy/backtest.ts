@@ -21,14 +21,11 @@
  * decisions array is returned (the UI shows an "info" alert).
  */
 import { getMovAveSpreadChart } from "../analysis/mov-ave-spreads/index.js";
-import { queryRows, formatDate, toNum } from "../db.service.js";
+import { formatDate, toNum } from "../db.service.js";
+import { querySqlView } from "@api/lib/sql-views";
 import type { MaSpreadSecType, StrategyDailyRow } from "../../../shared/types.js";
 import {
   DEFAULT_STRATEGY_NAME,
-  SEQ_SQL,
-  INFO_SQL,
-  DECISIONS_SQL,
-  DAILY_SQL,
   type TradeDecisionRow,
   type SeqRow,
   type InfoRow,
@@ -151,7 +148,9 @@ export async function runSingletonBacktest(
   }));
 
   // 2. Fetch the latest strategy_seq for this (sec_type, code) from the DB.
-  const seqRows = await queryRows<SeqRow>(SEQ_SQL, [secType, rawCode, strategyName]);
+  const seqRows = await querySqlView<SeqRow>(
+    "data_viz/api/services/strategy/_shared/seq",
+    { sec_type: secType, code: rawCode, strategy_name: strategyName });
 
   // No backtest run found — return chart-only response with empty decisions.
   if (seqRows.length === 0) {
@@ -178,7 +177,8 @@ export async function runSingletonBacktest(
   //    buy normalization anchor, P&L summary). The summary is sourced from
   //    here rather than recomputed from decisions so it stays consistent
   //    with the Python-written values.
-  const infoRows = await queryRows<InfoRow>(INFO_SQL, [seq_id]);
+  const infoRows = await querySqlView<InfoRow>(
+    "data_viz/api/services/strategy/_shared/info", { seq_id });
   const info = infoRows[0];
   const totalBuyCost = toNum(info?.total_buy_cost) ?? 0;
   const firstBuyDate = info?.first_buy_date ? formatDate(info.first_buy_date) : null;
@@ -189,13 +189,13 @@ export async function runSingletonBacktest(
 
   // 4. Fetch trade_decision rows for this seq (seq is per-code, so no code
   //    filter needed).
-  const decisionRows = await queryRows<TradeDecisionRow>(
-    DECISIONS_SQL, [seq_id],
-  );
+  const decisionRows = await querySqlView<TradeDecisionRow>(
+    "data_viz/api/services/strategy/_shared/decisions", { seq_id });
   const decisions = decisionRows.map(mapDecision);
 
   // 5. Fetch strategy_daily rows (daily portfolio state with unrealized_pnl).
-  const dailyRows = await queryRows<DailyRow>(DAILY_SQL, [seq_id]);
+  const dailyRows = await querySqlView<DailyRow>(
+    "data_viz/api/services/strategy/_shared/daily", { seq_id });
   const daily = dailyRows.map(mapDaily);
 
   // 6. final_cash = cash_after of the last decision (cash starts at 0; goes

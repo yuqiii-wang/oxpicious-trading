@@ -8,6 +8,12 @@ CSV stamped to today's date.  This catches all month-boundary scenarios
 
 Default sleep between requests is ``SLEEP_SEC``, resolved from the service's
 external_request_config JSON row (sleep_sec=300, jitter 0.3).
+
+Code motion only (2026-11-07): the former module-level
+``download_index_composition`` orchestrator is now the method of the same
+name on :class:`CsindexCompositionRunner` (body verbatim); the cache /
+fetch / parse helpers in ``_cache.py`` / ``_fetch.py`` / ``_parse.py``
+stay module-level.
 """
 from __future__ import annotations
 
@@ -48,15 +54,22 @@ from ._fetch import fetch_closeweight_xls
 from ._parse import normalize_closeweight_df, parse_closeweight_xls
 
 
-def download_index_composition(
-    *,
-    index_codes: Optional[List[str]] = None,
-    out_root: Optional[str] = None,
-    skip_cached: bool = True,
-    sleep_sec: Optional[float] = None,
-    force_month_start: bool = False,
-) -> dict:
-    """Download CSI index composition (closeweight) for the given index codes.
+class CsindexCompositionRunner:
+    """Runner for the CSI composition fetch cycle — the former
+    ``download_index_composition`` function is the method of the same name
+    (same keyword-only signature and body verbatim); state (session /
+    proxy / stats) stays per-call locals exactly as before."""
+
+    def download_index_composition(
+        self,
+        *,
+        index_codes: Optional[List[str]] = None,
+        out_root: Optional[str] = None,
+        skip_cached: bool = True,
+        sleep_sec: Optional[float] = None,
+        force_month_start: bool = False,
+    ) -> dict:
+        """Download CSI index composition (closeweight) for the given index codes.
 
     Args:
         index_codes: list of 6-digit index codes (default: ICONIC_INDEXES keys)
@@ -70,199 +83,199 @@ def download_index_composition(
     Returns:
         Summary dict with download stats and output directory.
     """
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csi_index_composition", out_root)
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csi_index_composition", out_root)
 
-    if not index_codes:
-        index_codes = sorted(load_classification_index_names().keys())
+        if not index_codes:
+            index_codes = sorted(load_classification_index_names().keys())
 
-    if not index_codes:
-        logger.warning("No index codes to download (sec_classification cache has no indices)")
-        return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
+        if not index_codes:
+            logger.warning("No index codes to download (sec_classification cache has no indices)")
+            return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
 
-    # Importance rank 0 -> 9 (monthly stats.sec_importance_ranks build):
-    # study/benchmark/broad indices' compositions first so an interrupted
-    # monthly sweep has covered the important codes. Falls back to sorted()
-    # when the rank table is unavailable (fresh install before the first build).
-    index_codes = order_codes_or_sorted(index_codes)
+        # Importance rank 0 -> 9 (monthly stats.sec_importance_ranks build):
+        # study/benchmark/broad indices' compositions first so an interrupted
+        # monthly sweep has covered the important codes. Falls back to sorted()
+        # when the rank table is unavailable (fresh install before the first build).
+        index_codes = order_codes_or_sorted(index_codes)
 
-    # Load index metadata from the sec_classification cache (replaces _classification.py).
-    _index_meta = load_classification_indices()
-    _index_names = {c: info.get("name", c) for c, info in _index_meta.items()}
+        # Load index metadata from the sec_classification cache (replaces _classification.py).
+        _index_meta = load_classification_indices()
+        _index_names = {c: info.get("name", c) for c, info in _index_meta.items()}
 
-    today = date.today()
-    yday = today - timedelta(days=1)
-    forced = force_month_start
-    if forced:
+        today = date.today()
+        yday = today - timedelta(days=1)
+        forced = force_month_start
+        if forced:
+            logger.info(
+                "Force-month-start: all indices will be re-downloaded and stamped "
+                "with today's date (%s).",
+                today.isoformat(),
+            )
         logger.info(
-            "Force-month-start: all indices will be re-downloaded and stamped "
-            "with today's date (%s).",
-            today.isoformat(),
+            "Starting CSI index composition download: %d indices, out=%s",
+            len(index_codes), out_dir,
         )
-    logger.info(
-        "Starting CSI index composition download: %d indices, out=%s",
-        len(index_codes), out_dir,
-    )
 
-    session = build_default_session()
-    stats = RunStats()
+        session = build_default_session()
+        stats = RunStats()
 
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter=0.3, timeouts, anti-bot toggles); an explicit --sleep-sec
-    # overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter=0.3, timeouts, anti-bot toggles); an explicit --sleep-sec
+        # overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
 
-    results: List[Dict[str, Any]] = []
+        results: List[Dict[str, Any]] = []
 
-    # Download-service routing by exchange (stats.sec_importance_ranks
-    # via _common.importance, cache-first): codes whose curated exchange
-    # carries the SZSE published-index marker are OWNED by the SZSE
-    # downloader — csindex.com.cn does not serve them.
-    # CSINDEX_SKIP_CODES (exclusion-store backed, see _config) adds the
-    # codes csindex.com.cn never serves regardless of routing — and
-    # covers codes with no rank row (fresh install before the first
-    # monthly build).
-    _szse_owned = (set(szse_downloader_codes(exchange_map_or_empty()))
-                   | CSINDEX_SKIP_CODES)
+        # Download-service routing by exchange (stats.sec_importance_ranks
+        # via _common.importance, cache-first): codes whose curated exchange
+        # carries the SZSE published-index marker are OWNED by the SZSE
+        # downloader — csindex.com.cn does not serve them.
+        # CSINDEX_SKIP_CODES (exclusion-store backed, see _config) adds the
+        # codes csindex.com.cn never serves regardless of routing — and
+        # covers codes with no rank row (fresh install before the first
+        # monthly build).
+        _szse_owned = (set(szse_downloader_codes(exchange_map_or_empty()))
+                       | CSINDEX_SKIP_CODES)
 
-    try:
-        for code in index_codes:
-            code = str(code).strip()
-            if not code:
-                continue
-
-            name = _index_names.get(code, code)
-
-            if code in _szse_owned:
-                logger.info("== Index %s (%s) — skipped (exchange-routed: SZSE downloader owns it) ==", code, name)
-                stats.skipped_cached += 1
-                results.append({
-                    "code": code, "name": name,
-                    "status": "szse_index_skip",
-                })
-                continue
-
-            logger.info("== Index %s (%s) ==", code, name)
-
-            # Debt sector indices (国债指数, 企债指数) track bonds, not stocks,
-            # so they don't have meaningful composition data. Skip them —
-            # daily index OHLCV data (downloaded by download_csindex.py) is
-            # sufficient.  Sector/industry are read from the sec_classification cache.
-            idx_info = _index_meta.get(code, {})
-            sid = idx_info.get("sector_id")
-            iid = idx_info.get("industry_id")
-            ilabel = idx_info.get("name", code)
-            if sid == DEBT_SECTOR_ID or iid in DEBT_SECTOR_INDUSTRY_IDS:
-                logger.info("  [debt] %s is a debt sector index (%s), skipping "
-                            "composition download (daily index only)", code, ilabel)
-                stats.skipped_cached += 1
-                results.append({
-                    "code": code, "name": name,
-                    "status": "debt_index_skip",
-                    "sector": sid,
-                    "industry": iid,
-                })
-                continue
-
-            # Check cache & determine if monthly refresh is needed for
-            # THIS specific index code.
-            cached = find_cached_csv(out_dir, code)
-            today_csv = out_dir / f"{code}_closeweight_{today.strftime('%Y%m%d')}.csv"
-            monthly_refresh = forced
-            if not monthly_refresh and cached:
-                m = re.search(r'_closeweight_(\d{8})\.csv$', cached.name)
-                if m:
-                    cached_month = int(m.group(1)[:6])  # YYYYMM
-                    yday_month = yday.year * 100 + yday.month
-                    if cached_month < yday_month:
-                        monthly_refresh = True
-
-            if monthly_refresh:
-                # Monthly refresh mode: skip only if already downloaded TODAY
-                if is_valid_file(today_csv, min_bytes=MIN_VALID_BYTES):
-                    logger.info("  [cache] %s monthly-refresh but already done today: %s", code, today_csv.name)
-                    stats.skipped_cached += 1
-                    results.append({"code": code, "name": name, "status": "cached", "file": str(today_csv)})
+        try:
+            for code in index_codes:
+                code = str(code).strip()
+                if not code:
                     continue
-                log_tag = "force-month-start" if forced else "monthly-refresh"
-                logger.info("  [%s] %s cache=%s yday_month=%s → refreshing",
-                            log_tag, code,
-                            cached.name if cached else "(none)",
-                            f"{yday.year:04d}{yday.month:02d}")
-            elif skip_cached and cached:
-                # Normal nightly mode: any valid cache is good enough
-                logger.info("  [cache] %s already cached: %s", code, cached.name)
-                stats.skipped_cached += 1
-                results.append({"code": code, "name": name, "status": "cached", "file": str(cached)})
-                continue
 
-            if proxy.is_blocked(CLOSEWEIGHT_URL_TEMPLATE):
-                logger.warning("  [host-blocked] OSS bucket blocked, skipping %s", code)
-                stats.failed += 1
-                results.append({"code": code, "name": name, "status": "blocked"})
-                continue
+                name = _index_names.get(code, code)
 
-            # Download
-            raw = fetch_closeweight_xls(session, code, proxy)
-            if raw is None:
-                stats.failed += 1
-                results.append({"code": code, "name": name, "status": "download_failed"})
-                continue
+                if code in _szse_owned:
+                    logger.info("== Index %s (%s) — skipped (exchange-routed: SZSE downloader owns it) ==", code, name)
+                    stats.skipped_cached += 1
+                    results.append({
+                        "code": code, "name": name,
+                        "status": "szse_index_skip",
+                    })
+                    continue
 
-            # Parse
-            df = parse_closeweight_xls(raw)
-            if df is None:
-                stats.failed += 1
-                results.append({"code": code, "name": name, "status": "parse_failed"})
-                continue
+                logger.info("== Index %s (%s) ==", code, name)
 
-            normalized = normalize_closeweight_df(df)
-            if normalized is None or len(normalized) == 0:
-                stats.empty += 1
-                results.append({"code": code, "name": name, "status": "empty"})
-                continue
+                # Debt sector indices (国债指数, 企债指数) track bonds, not stocks,
+                # so they don't have meaningful composition data. Skip them —
+                # daily index OHLCV data (downloaded by download_csindex.py) is
+                # sufficient.  Sector/industry are read from the sec_classification cache.
+                idx_info = _index_meta.get(code, {})
+                sid = idx_info.get("sector_id")
+                iid = idx_info.get("industry_id")
+                ilabel = idx_info.get("name", code)
+                if sid == DEBT_SECTOR_ID or iid in DEBT_SECTOR_INDUSTRY_IDS:
+                    logger.info("  [debt] %s is a debt sector index (%s), skipping "
+                                "composition download (daily index only)", code, ilabel)
+                    stats.skipped_cached += 1
+                    results.append({
+                        "code": code, "name": name,
+                        "status": "debt_index_skip",
+                        "sector": sid,
+                        "industry": iid,
+                    })
+                    continue
 
-            # Save CSV. On monthly refresh, stamp the CSV with today's
-            # date (overriding the xls's snapshot_date, which is usually the
-            # previous business day) so a fresh monthly snapshot flows to
-            # prod (stats.sec_composition) under the new month's date.
-            if monthly_refresh:
-                snapshot_date = today.isoformat()
-                normalized["snapshot_date"] = snapshot_date
-            else:
-                snapshot_date = normalized["snapshot_date"].iloc[0]
-            csv_name = csv_filename_for(code, snapshot_date)
-            csv_path = out_dir / csv_name
-            normalized.to_csv(csv_path, index=False, encoding="utf-8-sig")
+                # Check cache & determine if monthly refresh is needed for
+                # THIS specific index code.
+                cached = find_cached_csv(out_dir, code)
+                today_csv = out_dir / f"{code}_closeweight_{today.strftime('%Y%m%d')}.csv"
+                monthly_refresh = forced
+                if not monthly_refresh and cached:
+                    m = re.search(r'_closeweight_(\d{8})\.csv$', cached.name)
+                    if m:
+                        cached_month = int(m.group(1)[:6])  # YYYYMM
+                        yday_month = yday.year * 100 + yday.month
+                        if cached_month < yday_month:
+                            monthly_refresh = True
 
-            stats.downloaded += 1
-            stats.files.append(str(csv_path))
-            results.append({
-                "code": code,
-                "name": name,
-                "status": "downloaded",
-                "file": str(csv_path),
-                "n_constituents": len(normalized),
-                "snapshot_date": snapshot_date,
-                "monthly_refresh": monthly_refresh,
-            })
-            logger.info("  [ok] %s: %d constituents, snapshot=%s → %s%s",
-                        code, len(normalized), snapshot_date, csv_name,
-                        " (monthly stamp)" if monthly_refresh else "")
+                if monthly_refresh:
+                    # Monthly refresh mode: skip only if already downloaded TODAY
+                    if is_valid_file(today_csv, min_bytes=MIN_VALID_BYTES):
+                        logger.info("  [cache] %s monthly-refresh but already done today: %s", code, today_csv.name)
+                        stats.skipped_cached += 1
+                        results.append({"code": code, "name": name, "status": "cached", "file": str(today_csv)})
+                        continue
+                    log_tag = "force-month-start" if forced else "monthly-refresh"
+                    logger.info("  [%s] %s cache=%s yday_month=%s → refreshing",
+                                log_tag, code,
+                                cached.name if cached else "(none)",
+                                f"{yday.year:04d}{yday.month:02d}")
+                elif skip_cached and cached:
+                    # Normal nightly mode: any valid cache is good enough
+                    logger.info("  [cache] %s already cached: %s", code, cached.name)
+                    stats.skipped_cached += 1
+                    results.append({"code": code, "name": name, "status": "cached", "file": str(cached)})
+                    continue
 
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+                if proxy.is_blocked(CLOSEWEIGHT_URL_TEMPLATE):
+                    logger.warning("  [host-blocked] OSS bucket blocked, skipping %s", code)
+                    stats.failed += 1
+                    results.append({"code": code, "name": name, "status": "blocked"})
+                    continue
 
-    summary = stats.to_dict(
-        out_dir=str(out_dir),
-        n_indices=len(index_codes),
-        results=results,
-    )
-    logger.info(
-        "Done CSI index composition. downloaded=%d skipped_cached=%d failed=%d empty=%d",
-        stats.downloaded, stats.skipped_cached, stats.failed, stats.empty,
-    )
-    return summary
+                # Download
+                raw = fetch_closeweight_xls(session, code, proxy)
+                if raw is None:
+                    stats.failed += 1
+                    results.append({"code": code, "name": name, "status": "download_failed"})
+                    continue
+
+                # Parse
+                df = parse_closeweight_xls(raw)
+                if df is None:
+                    stats.failed += 1
+                    results.append({"code": code, "name": name, "status": "parse_failed"})
+                    continue
+
+                normalized = normalize_closeweight_df(df)
+                if normalized is None or len(normalized) == 0:
+                    stats.empty += 1
+                    results.append({"code": code, "name": name, "status": "empty"})
+                    continue
+
+                # Save CSV. On monthly refresh, stamp the CSV with today's
+                # date (overriding the xls's snapshot_date, which is usually the
+                # previous business day) so a fresh monthly snapshot flows to
+                # prod (stats.sec_composition) under the new month's date.
+                if monthly_refresh:
+                    snapshot_date = today.isoformat()
+                    normalized["snapshot_date"] = snapshot_date
+                else:
+                    snapshot_date = normalized["snapshot_date"].iloc[0]
+                csv_name = csv_filename_for(code, snapshot_date)
+                csv_path = out_dir / csv_name
+                normalized.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+                stats.downloaded += 1
+                stats.files.append(str(csv_path))
+                results.append({
+                    "code": code,
+                    "name": name,
+                    "status": "downloaded",
+                    "file": str(csv_path),
+                    "n_constituents": len(normalized),
+                    "snapshot_date": snapshot_date,
+                    "monthly_refresh": monthly_refresh,
+                })
+                logger.info("  [ok] %s: %d constituents, snapshot=%s → %s%s",
+                            code, len(normalized), snapshot_date, csv_name,
+                            " (monthly stamp)" if monthly_refresh else "")
+
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
+
+        summary = stats.to_dict(
+            out_dir=str(out_dir),
+            n_indices=len(index_codes),
+            results=results,
+        )
+        logger.info(
+            "Done CSI index composition. downloaded=%d skipped_cached=%d failed=%d empty=%d",
+            stats.downloaded, stats.skipped_cached, stats.failed, stats.empty,
+        )
+        return summary

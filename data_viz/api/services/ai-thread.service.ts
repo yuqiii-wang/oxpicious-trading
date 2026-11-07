@@ -4,15 +4,15 @@
  * so the UI can poll it while a run is live.
  *
  *   GET /api/ai/threads/:threadId  (routes/ai-threads.ts)
- *     → AgentThreadDetail: every text.deep_agent_states row of the thread
+ *     → AgentThreadDetail: every llm.deep_agent_states row of the thread
  *       (top-level plan steps AND spawned-subagent child states), every
- *       text.deep_agent_contexts payload they point into (kind
+ *       llm.deep_agent_contexts payload they point into (kind
  *       plan / step-input / step-result / subagent-result, plus the
  *       runner's hardcoded result node's kind final-result — the UI
  *       Result view's display document), PLUS the
  *       LangGraph store's items (database/sql/text/
- *       12_deep_agent_store.sql — written by the runner via
- *       llm_agents/deep_agents/graph/state_store.py DeepAgentStore, hooked
+ *       10_deep_agent_store.sql — written by the runner via
+ *       llm_agents/deep_agents/langgraph/state_store.py DeepAgentStore, hooked
  *       with compile(store=...)): the runner-lane NODE states
  *       (plan/execute/finalize lifecycle + counts — real statuses, not
  *       the client-side derivation) and the LLM-context REGISTRY (one
@@ -21,6 +21,13 @@
  *       design; each state row's llm_context_id points into the
  *       registry). One node one LLM context: plan steps share the
  *       execute context, each subagent child has its own item.
+ *       Node items carry their elapsed wall time (created_at is the
+ *       begin write, updated_at the finish write — the runner writes
+ *       node items only at begin/finish, so the row columns ARE the
+ *       node's start/end stamps; a running node's elapsed is computed
+ *       against now() so the live poll ticks it), and llm_usage rolls
+ *       the thread's llm.llm_requests up per context (chain_id = the
+ *       context id — token consumption, busy time, first/last call).
  *
  * Uncached by design (the api-client side skips its cache too): a live
  * thread's rows change on every tick, and a just-ticked step must show
@@ -28,8 +35,8 @@
  * pattern). Write side: llm_agents/deep_agents/planning/store.py +
  * state_store.py.
  */
-import { queryRows } from "./db.service.js";
 import { labelDecodeSql } from "./label-codes.js";
+import { querySqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 
 /** One deep-agent state row — a plan step or a spawned subagent. */
@@ -60,7 +67,8 @@ export interface AgentThreadStateRow {
  *  node's item (node:step-<state_id>) carries the state row its hop
  *  executed — the UI's join key for the dynamic step chain. */
 export interface AgentNodeStateRow {
-  /** plan | step-<state_id> | finalize. */
+  /** plan | step-<state_id> | compact-<ordinal> | supervisor |
+   *  finalize | result. */
   node: string;
   status: "running" | "completed" | "failed" | "skipped";
   llm_context_id: string | null;
@@ -75,7 +83,15 @@ export interface AgentNodeStateRow {
   /** The deep_agent_states row this item's step hop executed (null for
    *  the runner-lane nodes plan/finalize/result). */
   state_id: number | null;
+  /** The item's FIRST write — the node's begin stamp (runner-lane nodes
+   *  write only at begin/finish), Shanghai-local text. */
+  created_at: string;
   updated_at: string;
+  /** The node's wall time in seconds: updated_at (the finish write) −
+   *  created_at for settled nodes, now() − created_at while running
+   *  (computed server-side so the live poll's elapsed ticks without
+   *  client-side timezone math on the Shanghai-local text). */
+  elapsed_s: number | null;
 }
 
 /** One LLM-context registry item from the LangGraph store — references
@@ -106,6 +122,7 @@ export interface AgentThreadContextRow {
     | "step-result"
     | "subagent-result"
     | "final-result"
+    | "supervisor-review"
     | string;
   /** The graph node / task the entry belongs to (the step's business
    *  tag, a fork slug, or a runner-lane tag plan|compact|result); null
@@ -125,18 +142,63 @@ export interface AgentThreadContextRow {
   created_at: string;
 }
 
+/** One context's recorded LLM traffic — llm.llm_requests aggregated by
+ *  chain_id (the context id): the Contexts panel's token consumption and
+ *  LLM busy-time. One row per context that recorded at least one
+ *  request; token sums are NULL when no request in the chain carried a
+ *  usage block. */
+export interface AgentLlmUsageRow {
+  context_id: string;
+  n_requests: number;
+  /** Sum of the calls' duration_ms — the context's LLM busy time (ms). */
+  llm_ms: number | null;
+  /** First → last request wall-clock span in seconds. */
+  span_s: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  first_at: string | null;
+  last_at: string | null;
+}
+
 /** One thread's full graph — states + contexts + the store's node
  *  states and context registry (empty arrays for threads that predate
- *  the store — the UI falls back to its derived runner-lane statuses). */
+ *  the store — the UI falls back to its derived runner-lane statuses).
+ *
+ *  THREE-GRAPH CHAIN (2026-11-06): a run is a CHAIN of three threads
+ *  (plan / custom / result) sharing ``super_thread_id``; the read of
+ *  ANY member resolves the whole chain and returns the MERGED view —
+ *  every segment's rows concatenated (states/contexts are id-unique;
+ *  the store's runner-lane NODE NAMES collide across segments, so
+ *  segment k>0's non-step names carry an ``s<k>:`` namespace that is
+ *  exactly the canvas node id). ``segments`` carries the chain
+ *  metadata; ``thread_id`` stays the REQUESTED member (the root when
+ *  the UI opens a run — its id is the chain id). */
+export interface AgentThreadSegmentMeta {
+  thread_id: string;
+  /** plan | custom | result by chain position (single = a legacy /
+   *  degraded one-thread run — no chain split). */
+  graph_type: "plan" | "custom" | "result" | "single";
+}
+
 export interface AgentThreadDetail {
   thread_id: string;
+  /** The chain's ROOT thread id (= the run's super_thread_id; equals
+   *  thread_id on legacy single-thread runs). */
+  super_thread_id?: string;
+  /** The chain's segments in order (single-element "single" when the
+   *  run predates the three-graph refactor). */
+  segments?: AgentThreadSegmentMeta[];
   states: AgentThreadStateRow[];
   contexts: AgentThreadContextRow[];
   node_states: AgentNodeStateRow[];
   llm_contexts: AgentLlmContextRow[];
+  /** Per-context LLM traffic rollup (empty for runs that predate the
+   *  request-chain binding). */
+  llm_usage: AgentLlmUsageRow[];
 }
 
-/** One text.llm_requests row attributed to a task (plan step /
+/** One llm.llm_requests row attributed to a task (plan step /
  *  subagent child): the request/response payloads as recorded by the
  *  transport. A chain-bound row's request_payload is INCREMENTAL (the
  *  shared conversation stored once — _chain_incremental /
@@ -173,83 +235,131 @@ export interface AgentStateLlmRequests {
  *  junk id fails fast with a 400 instead of a pointless table scan. */
 const THREAD_ID_RE = /^[0-9a-f]{32}$/i;
 
-export async function getAgentThreadDetail(
+/** One thread's raw rows (states / contexts / node states / registry /
+ *  usage) — the per-member read the chain merge below fans out. */
+async function readOneThread(
   threadId: string,
 ): Promise<AgentThreadDetail | null> {
-  if (!THREAD_ID_RE.test(threadId)) return null;
   // The BIGINT id columns cast to int: node-postgres hands int8 back as
   // a STRING, and the declared contract (AgentThreadStateRow, the
   // client's AgentThreadState) is number — the ThreadGraph keys its
   // child-state lookups on these ids. Row volumes are a handful per
   // thread, int4 range is far away.
-  const states = await queryRows<AgentThreadStateRow & QueryResultRow>(
-    `SELECT state_id::int AS state_id, thread_id,
-            parent_state_id::int AS parent_state_id, node, title, status,
-            ordinal, input_context_id::int AS input_context_id,
-            result_context_id::int AS result_context_id, error,
-            llm_context_id,
-            (created_at AT TIME ZONE 'Asia/Shanghai')::text  AS created_at,
-            (started_at AT TIME ZONE 'Asia/Shanghai')::text  AS started_at,
-            (finished_at AT TIME ZONE 'Asia/Shanghai')::text AS finished_at
-       FROM text.deep_agent_states
-      WHERE thread_id = $1
-      ORDER BY ordinal, state_id`,
-    [threadId],
+  const states = await querySqlView<AgentThreadStateRow & QueryResultRow>(
+    "data_viz/api/services/ai-thread/thread_states",
+    { thread_id: threadId },
   );
   if (states.length === 0) return null;
-  const contexts = await queryRows<AgentThreadContextRow & QueryResultRow>(
-    `SELECT context_id::int AS context_id,
-            ${labelDecodeSql("agent_context_kind", "kind")} AS kind,
-            node,
-            state_id::int AS state_id,
-            llm_context_id,
-            payload,
-            (created_at AT TIME ZONE 'Asia/Shanghai')::text AS created_at
-       FROM text.deep_agent_contexts
-      WHERE thread_id = $1
-      ORDER BY context_id`,
-    [threadId],
+  const contexts = await querySqlView<AgentThreadContextRow & QueryResultRow>(
+    "data_viz/api/services/ai-thread/thread_contexts",
+    {
+      thread_id: threadId,
+      kind_decode: sqlFrag(labelDecodeSql("agent_context_kind", "kind")),
+    },
   );
   // The LangGraph store's items (state_store.DeepAgentStore writes):
   // node states under ("deep_agent", <tid>), the context registry under
   // ("deep_agent", <tid>, "contexts"). The value JSONB parses to the
   // row shape minus the key/updated_at tail; jsonb numbers are numbers.
-  const node_states = await queryRows<AgentNodeStateRow & QueryResultRow>(
-    `SELECT (value->>'node')   AS node,
-            (value->>'status') AS status,
-            value->>'llm_context_id' AS llm_context_id,
-            value->>'checkpoint_id'  AS checkpoint_id,
-            value->>'model'          AS model,
-            value->>'error'          AS error,
-            (value->>'n_llm_calls')::int   AS n_llm_calls,
-            (value->>'n_tool_calls')::int  AS n_tool_calls,
-            (value->>'n_states')::int      AS n_states,
-            (value->>'answer_chars')::int  AS answer_chars,
-            NULLIF(value->>'state_id', '')::int AS state_id,
-            (updated_at AT TIME ZONE 'Asia/Shanghai')::text AS updated_at
-       FROM text.deep_agent_store_items
-      WHERE namespace = ARRAY['deep_agent', $1]::text[]
-        AND key LIKE 'node:%'
-      ORDER BY key`,
-    [threadId],
+  // The SELECTs live in the sql views
+  // data_viz/api/services/ai-thread/node_states and .../llm_contexts.
+  const node_states = await querySqlView<AgentNodeStateRow & QueryResultRow>(
+    "data_viz/api/services/ai-thread/node_states",
+    { thread_id: threadId },
   );
-  const llm_contexts = await queryRows<AgentLlmContextRow & QueryResultRow>(
-    `SELECT key AS context_id,
-            (value->>'kind') AS kind,
-            (value->>'node') AS node,
-            NULLIF(value->>'state_id', '')::int AS state_id,
-            value->>'parent_context_id' AS parent_context_id,
-            value->>'checkpoint_id'     AS checkpoint_id,
-            value->>'model'             AS model,
-            (value->>'n_llm_calls')::int  AS n_llm_calls,
-            (value->>'n_tool_calls')::int AS n_tool_calls,
-            (updated_at AT TIME ZONE 'Asia/Shanghai')::text AS updated_at
-       FROM text.deep_agent_store_items
-      WHERE namespace = ARRAY['deep_agent', $1, 'contexts']::text[]
-      ORDER BY key`,
-    [threadId],
+  const llm_contexts = await querySqlView<AgentLlmContextRow & QueryResultRow>(
+    "data_viz/api/services/ai-thread/llm_contexts",
+    { thread_id: threadId },
   );
-  return { thread_id: threadId, states, contexts, node_states, llm_contexts };
+  // Per-context LLM traffic — the thread's request chains rolled up by
+  // context id (a node's registry item is written only at finish, so the
+  // chain set unions the node items' live context ids in too; a running
+  // node's requests are already recording under its chain).
+  const chainIds = Array.from(
+    new Set([
+      ...node_states.flatMap((n) => (n.llm_context_id ? [n.llm_context_id] : [])),
+      ...llm_contexts.map((c) => c.context_id),
+    ]),
+  );
+  const llm_usage =
+    chainIds.length === 0
+      ? []
+      : await querySqlView<AgentLlmUsageRow & QueryResultRow>(
+          "data_viz/api/services/ai-thread/llm_usage",
+          { chain_ids: chainIds },
+        );
+  return { thread_id: threadId, states, contexts, node_states, llm_contexts, llm_usage };
+}
+
+/** The chain's graph types by position — the three-graph refactor mints
+ *  plan (root) → custom → result in that order; a single-member chain
+ *  is a legacy / degraded one-thread run ("single"). */
+const CHAIN_TYPES: AgentThreadSegmentMeta["graph_type"][] = [
+  "plan", "custom", "result",
+];
+
+export async function getAgentThreadDetail(
+  threadId: string,
+): Promise<AgentThreadDetail | null> {
+  if (!THREAD_ID_RE.test(threadId)) return null;
+  // THE CHAIN RESOLUTION: any member's id resolves the run — every row
+  // of the run carries the root's super_thread_id (legacy runs resolve
+  // to their single thread; the root is the earliest row's thread).
+  const members = await querySqlView<{ thread_id: string } & QueryResultRow>(
+    "data_viz/api/services/ai-thread/chain_threads",
+    { thread_id: threadId },
+  );
+  if (members.length === 0) return null;
+  const ones = await Promise.all(
+    members.map((m) => readOneThread(m.thread_id)),
+  );
+  const segments: AgentThreadSegmentMeta[] = [];
+  const states: AgentThreadStateRow[] = [];
+  const contexts: AgentThreadContextRow[] = [];
+  const node_states: AgentNodeStateRow[] = [];
+  const llm_contexts: AgentLlmContextRow[] = [];
+  const llm_usage: AgentLlmUsageRow[] = [];
+  for (const [k, one] of ones.entries()) {
+    if (one === null) continue;
+    segments.push({
+      thread_id: one.thread_id,
+      graph_type: members.length === 1
+        ? "single"
+        : CHAIN_TYPES[k] ?? "custom",
+    });
+    states.push(...one.states);
+    contexts.push(...one.contexts);
+    llm_usage.push(...one.llm_usage);
+    // Runner-lane node names ("output", "finalize", "compact-*") collide
+    // across the chain's segments — namespace segment k>0's non-step
+    // names ("s<k>:output"); step-* names are unique per state id and
+    // the canvas ids rely on them staying bare. The namespaced name IS
+    // the canvas node id, so the panel lookups join on it directly.
+    if (k === 0) {
+      node_states.push(...one.node_states);
+      llm_contexts.push(...one.llm_contexts);
+    } else {
+      const nsName = (node: string): string =>
+        node.startsWith("step-") ? node : `s${k}:${node}`;
+      node_states.push(
+        ...one.node_states.map((n) => ({ ...n, node: nsName(n.node) })),
+      );
+      llm_contexts.push(
+        ...one.llm_contexts.map((c) => ({ ...c, node: nsName(c.node) })),
+      );
+    }
+  }
+  if (segments.length === 0) return null;
+  return {
+    thread_id: threadId,
+    super_thread_id: members[0].thread_id,
+    segments,
+    states,
+    contexts,
+    node_states,
+    llm_contexts,
+    llm_usage,
+  };
 }
 
 /**
@@ -258,7 +368,7 @@ export async function getAgentThreadDetail(
  *
  * Attribution — the runner binds each node's request-log chain to its
  * LLM-context id (llm_agents/_core/request_log.py bind_request_chain;
- * chain_id = text.deep_agent_states.llm_context_id), so the requests
+ * chain_id = llm.deep_agent_states.llm_context_id), so the requests
  * join by chain. A TOP-LEVEL plan step shares the execute node's
  * context with its sibling steps (one node one context), so its rows
  * narrow by a tick window:
@@ -282,56 +392,24 @@ export async function getAgentStateLlmRequests(
   stateId: number,
 ): Promise<AgentStateLlmRequests | null> {
   if (!THREAD_ID_RE.test(threadId) || !Number.isInteger(stateId)) return null;
-  const requests = await queryRows<
+  // The SELECT lives in the sql view
+  // data_viz/api/services/ai-thread/state_llm_requests.
+  const requests = await querySqlView<
     (AgentStateLlmRequestRow & { llm_context_id: string | null }) &
     QueryResultRow
   >(
-    `WITH s AS (
-       SELECT state_id, parent_state_id, llm_context_id, created_at,
-              started_at, finished_at,
-              COALESCE(
-                started_at,
-                (SELECT max(p.finished_at) FROM text.deep_agent_states p
-                  WHERE p.thread_id = s.thread_id
-                    AND p.parent_state_id IS NULL
-                    AND p.state_id < s.state_id),
-                s.created_at) AS win_start
-         FROM text.deep_agent_states s
-        WHERE s.thread_id = $1 AND s.state_id = $2
-     )
-     SELECT r.request_id::text          AS request_id,
-            s.llm_context_id            AS llm_context_id,
-            r.model,
-            r.status_code::int          AS status_code,
-            r.is_failed,
-            r.failure_reason,
-            r.duration_ms::int          AS duration_ms,
-            r.input_tokens::int         AS input_tokens,
-            r.output_tokens::int        AS output_tokens,
-            r.total_tokens::int         AS total_tokens,
-            r.prev_request_id::text     AS prev_request_id,
-            r.request_payload,
-            r.response_payload,
-            (r.created_at AT TIME ZONE 'Asia/Shanghai')::text AS created_at
-       FROM s
-       JOIN text.llm_requests r
-         ON r.chain_id = s.llm_context_id
-        AND (s.parent_state_id IS NOT NULL
-             OR ((s.started_at IS NOT NULL OR s.finished_at IS NOT NULL)
-                 AND r.created_at >= s.win_start - interval '2 seconds'
-                 AND r.created_at <= COALESCE(s.finished_at, now())
-                                        + interval '2 seconds'))
-      ORDER BY r.request_id`,
-    [threadId, stateId],
+    "data_viz/api/services/ai-thread/state_llm_requests",
+    { thread_id: threadId, state_id: stateId },
   );
   if (requests.length === 0) {
     // Distinguish "task exists, nothing recorded" from "unknown task".
-    const known = await queryRows<
+    // The SELECT lives in the sql view
+    // data_viz/api/services/ai-thread/state_llm_context.
+    const known = await querySqlView<
       { llm_context_id: string | null } & QueryResultRow
     >(
-      `SELECT llm_context_id FROM text.deep_agent_states
-        WHERE thread_id = $1 AND state_id = $2`,
-      [threadId, stateId],
+      "data_viz/api/services/ai-thread/state_llm_context",
+      { thread_id: threadId, state_id: stateId },
     );
     if (known.length === 0) return null;
     return {

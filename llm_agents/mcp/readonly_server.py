@@ -3,7 +3,7 @@ as a single class.
 
 Owns the whole stack: connection params, the read-only SQL guard, the
 query runner, the schema helpers, the MCPServer instance, and the
-registered tools (as bound methods): the three DB tools, the text-schema
+registered tools (as bound methods): the three DB tools, the text/llm-schema
 full-text search (``text_search`` — segmented tsvector queries over the
 GIN-indexed ``search_tsv`` columns), and the web
 tools (``web_search`` / ``web_summarize`` — the
@@ -13,7 +13,7 @@ DB). ``__main__.py`` stays a thin launcher (args, heartbeat, ``run()``).
 
 The web tools reuse the ``llm_agents.online_search_summary``
 providers (ZhiPu web search + LLM summary) and PERSIST NOTHING —
-writing text.* stays with the CLI's ``--store`` path, keeping this
+writing to the DB stays with the CLI's ``--store`` path, keeping this
 server's no-DB-writes contract. That package is imported LAZILY (on
 the first web-tool call, then cached in ``sys.modules``): importing
 any of its submodules executes the facade ``__init__``, which pulls
@@ -90,7 +90,16 @@ class DbReadonlyServer:
     # tight cap keeps one tool call well inside an LLM context).
     TEXT_SEARCH_MAX_ROWS = 50
 
-    # text_search: the searchable text-schema tables — display columns
+    # text_search: the engagement orderings beside rank/date — the tables
+    # each supports. "votes" = the thumbs-up column (news article upvotes,
+    # comment like counts); "comments" = the most-discussed ordering (the
+    # text.news_comments count per article, riding back as n_comments).
+    _TEXT_SEARCH_ENGAGEMENT_ORDERS: dict[str, set[str]] = {
+        "votes": {"news", "news_comments"},
+        "comments": {"news"},
+    }
+
+    # text_search: the searchable text/llm-schema tables — display columns
     # (snippets pre-truncated), the scalar filters each supports, and the
     # date column date_from/date_to bound to (timestamptz on the QA
     # tables, DATE on news). search_tsv is the weighted GIN-indexed
@@ -118,7 +127,7 @@ class DbReadonlyServer:
             "date_col": "date",
         },
         "llm_qa": {
-            "table": "text.llm_qa",
+            "table": "llm.llm_qa",
             "select": ("qa_id, LEFT(question, 200) AS question,"
                        " LEFT(answer, 400) AS snippet, industry_id,"
                        " (qa_date AT TIME ZONE 'Asia/Shanghai')::date::text"
@@ -128,7 +137,7 @@ class DbReadonlyServer:
             "active_only": True,
         },
         "llm_qa_by_ask": {
-            "table": "text.llm_qa_by_ask",
+            "table": "llm.llm_qa_by_ask",
             "select": ("ask_id, LEFT(question, 200) AS question,"
                        " LEFT(COALESCE(answer, error_tail), 400) AS snippet,"
                        " code, status,"
@@ -139,7 +148,7 @@ class DbReadonlyServer:
             "active_only": True,
         },
         "llm_qa_by_research": {
-            "table": "text.llm_qa_by_research",
+            "table": "llm.llm_qa_by_research",
             "select": ("qa_id, LEFT(question, 200) AS question,"
                        " LEFT(answer, 400) AS snippet, industry_id,"
                        " (qa_date AT TIME ZONE 'Asia/Shanghai')::date::text"
@@ -183,10 +192,10 @@ class DbReadonlyServer:
                 "Query the oxpicious-trading PostgreSQL database READ-ONLY "
                 "as the readonly_analytics role. Schemas: stats, analysis, "
                 "analysis_signals, analysis_composites, "
-                "analysis_insight_metrics, strategy, static, live, text. "
+                "analysis_insight_metrics, strategy, static, live, text, llm. "
                 "Call db_list_tables / db_describe_table first when unsure "
                 "of column names, then db_run_query. For KEYWORD search "
-                "over the text schema (news, Q&A) call text_search — the "
+                "over the text/llm schemas (news corpus, Q&A) call text_search — the "
                 "large-text tables carry a GIN-indexed search_tsv that "
                 "hand-written ILIKE cannot use on Chinese text. Results are "
                 "capped at "
@@ -450,15 +459,20 @@ class DbReadonlyServer:
         source: str | None = None, author: str | None = None,
         code: str | None = None, news_id: int | None = None,
         date_from: str | None = None, date_to: str | None = None,
+        order_by: str = "rank",
     ) -> dict:
-        """Weighted FULL-TEXT search over the text schema's GIN-indexed
+        """Weighted FULL-TEXT search over the text/llm schemas' GIN-indexed
         ``search_tsv`` columns (Chinese is segmented automatically — raw
         Chinese text in a plain db_run_query ILIKE/tsquery will NOT match).
         Ranks by ts_rank, best first; when EVERY query word is overly
         common (text.search_lexicon_df >= 25%-DF lexemes) it orders by the
         article date instead (rank stays a returned column + tiebreak) —
-        see the "ordered_by" field. Returns {"query", "table",
-        "search_tokens", "ordered_by", "row_count", "truncated",
+        see the "ordered_by" field. *order_by* picks the ranking:
+        "rank" (default — the relevance strategy above), "date" (newest
+        first), "votes" (thumbs-up count DESC — news articles / news
+        comments) or "comments" (most-discussed DESC, news only — the
+        comment count rides back as n_comments). Returns {"query",
+        "table", "search_tokens", "ordered_by", "row_count", "truncated",
         "hits": [{columns + rank + snippet}]}.
 
         *query*: free text; words are AND-ed (websearch syntax: "a b" both
@@ -470,7 +484,10 @@ class DbReadonlyServer:
         are accepted: industry_id / sector_id / source / author (news,
         llm_qa, llm_qa_by_research per set), code (llm_qa_by_ask), news_id
         (news_comments, news_digestions), date_from / date_to (the table's
-        article/qa date, inclusive; e.g. 2026-10-01)."""
+        article/qa date, inclusive; e.g. 2026-10-01). *order_by* —
+        rank | date | votes | comments per the table's support (votes:
+        news, news_comments; comments: news); an unsupported combination
+        errors listing what the table supports."""
         spec = self._TEXT_SEARCH_TABLES.get(table)
         if spec is None:
             return {"error": f"unknown table {table!r} — one of: "
@@ -491,7 +508,7 @@ class DbReadonlyServer:
         if not tokens.strip():
             return {"error": "query produced no search tokens"}
 
-        # DF-aware ranking strategy (text.search_lexicon_df — the >= 25%-DF
+        # Rank strategy: DF-aware (text.search_lexicon_df — the >= 25%-DF
         # lexemes per table, refreshed after each tsv write pass): when
         # EVERY query lexeme is overly common (市场 alone, or a query whose
         # words are all ubiquitous), ORDER BY rank must detoast + score
@@ -503,32 +520,78 @@ class DbReadonlyServer:
         # those in the ms range). Common lexemes are NEVER dropped from
         # the tsquery: ANDing one with a rarer lexeme only shrinks the
         # matched set (2026-11-01 study). A missing/stale stats table
-        # degrades silently to the rank order.
+        # degrades silently to the rank order. The engagement orderings
+        # (date / votes / comments) skip the lookup — the caller asked for
+        # an explicit order, which is the point of passing it.
         # ORDER BY keys are QUALIFIED with the table name: a bare `date`
         # resolves to the select list's `date::text AS date` OUTPUT ALIAS —
         # a text cast no date index serves, which forces the seq-scan+sort
         # slow path even under LIMIT (2026-11-01 probe: 市场 128ms vs 1.05ms
         # with the index walk + early stop).
         tbl_ref = spec["table"].rsplit(".", 1)[-1]
-        order_by = f"rank DESC, {tbl_ref}.{spec['date_col']} DESC"
-        ordered_by = "rank"
-        lexemes = [t for t in tokens.split() if self._LEXEME_RE.search(t)]
-        if lexemes:
-            try:
-                from _common.labels import SEARCH_TABLE_CODE
-                stats = self.run_query(
-                    "SELECT lexeme FROM text.search_lexicon_df "
-                    "WHERE search_table = %s AND lexeme = ANY(%s)",
-                    params=[SEARCH_TABLE_CODE[table], lexemes],
-                    max_rows=len(lexemes))
-                common = {row[0] for row in stats["rows"]}
-                if all(lex in common for lex in lexemes):
-                    order_by = (f"{tbl_ref}.{spec['date_col']} DESC, "
-                                f"rank DESC")
-                    ordered_by = "date"
-            except Exception as exc:
-                logger.debug("text_search: lexicon-DF lookup failed, "
-                             "ranking by relevance: %r", exc)
+        order = (order_by or "rank").strip().lower()
+        supported_orders = ({"rank", "date"}
+                            | set(self._TEXT_SEARCH_ENGAGEMENT_ORDERS))
+        if order not in supported_orders:
+            return {"error": (f"unknown order_by {order_by!r} — one of: "
+                              f"{', '.join(sorted(supported_orders))}")}
+        if (order in self._TEXT_SEARCH_ENGAGEMENT_ORDERS
+                and table not in self._TEXT_SEARCH_ENGAGEMENT_ORDERS[order]):
+            return {"error": (
+                f"table {table!r} does not support order_by={order!r} — "
+                "supported tables: "
+                + ", ".join(sorted(
+                    self._TEXT_SEARCH_ENGAGEMENT_ORDERS[order])))}
+        if order == "comments":
+            order_clause = (f"n_comments DESC, {tbl_ref}.{spec['date_col']}"
+                            " DESC, rank DESC")
+            ordered_by = "comments"
+        elif order == "votes":
+            order_clause = (f"{tbl_ref}.votes DESC NULLS LAST, "
+                            f"{tbl_ref}.{spec['date_col']} DESC, rank DESC")
+            ordered_by = "votes"
+        elif order == "date":
+            order_clause = f"{tbl_ref}.{spec['date_col']} DESC, rank DESC"
+            ordered_by = "date"
+        else:
+            order_clause = f"rank DESC, {tbl_ref}.{spec['date_col']} DESC"
+            ordered_by = "rank"
+            lexemes = [t for t in tokens.split() if self._LEXEME_RE.search(t)]
+            if lexemes:
+                try:
+                    from _common.labels import SEARCH_TABLE_CODE
+                    stats = self.run_query(
+                        "SELECT lexeme FROM text.search_lexicon_df "
+                        "WHERE search_table = %s AND lexeme = ANY(%s)",
+                        params=[SEARCH_TABLE_CODE[table], lexemes],
+                        max_rows=len(lexemes))
+                    common = {row[0] for row in stats["rows"]}
+                    if all(lex in common for lex in lexemes):
+                        order_clause = (
+                            f"{tbl_ref}.{spec['date_col']} DESC, rank DESC")
+                        ordered_by = "date"
+                except Exception as exc:
+                    logger.debug("text_search: lexicon-DF lookup failed, "
+                                 "ranking by relevance: %r", exc)
+
+        # The engagement selects: the comments ordering joins the
+        # pre-aggregated per-article comment count (one grouped scan of
+        # news_comments, then a hash join — the count column rides back so
+        # the caller sees the engagement value it ordered by); the votes
+        # ordering adds the thumbs-up column.
+        extra_select = ""
+        join_sql = ""
+        if order == "comments":
+            extra_select = ", COALESCE(cc.n_comments, 0)::int AS n_comments"
+            # The count subquery aliases its news_id out (cc_news_id) so
+            # the table's own bare select columns stay unambiguous.
+            join_sql = (
+                "LEFT JOIN (SELECT news_id AS cc_news_id, "
+                "count(*) AS n_comments "
+                "FROM text.news_comments GROUP BY news_id) cc "
+                f"ON cc.cc_news_id = {tbl_ref}.news_id")
+        elif order == "votes":
+            extra_select = f", {tbl_ref}.votes"
 
         where = ["search_tsv @@ tsq"]  # tsq = the CROSS JOINed query below
         params: list[Any] = [tokens]
@@ -568,12 +631,13 @@ class DbReadonlyServer:
         # JOIN (first in the SQL text), then the sorted WHERE filters, the
         # date bounds, and the LIMIT.
         sql = (
-            f"SELECT {spec['select']}, "
+            f"SELECT {spec['select']}{extra_select}, "
             f"ROUND(ts_rank(search_tsv, tsq)::numeric, 4)::float AS rank "
             f"FROM {spec['table']} "
-            f"CROSS JOIN websearch_to_tsquery('simple', %s) tsq "
+            + (f"{join_sql} " if join_sql else "")
+            + f"CROSS JOIN websearch_to_tsquery('simple', %s) tsq "
             f"WHERE {' AND '.join(where)} "
-            f"ORDER BY {order_by} LIMIT %s"
+            f"ORDER BY {order_clause} LIMIT %s"
         )
         try:
             result = self.run_query(

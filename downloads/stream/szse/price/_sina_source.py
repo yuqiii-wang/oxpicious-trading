@@ -14,6 +14,14 @@ breaker. The direct call is one GET per attempt through the proxy, with
 the real HTTP status on every audit row (host quotes.sina.cn decodes to
 ext_http_source ``sina``); parse-after-200 failures land in the service
 log only, like sources C/D.
+
+Class shape: the former module-level singletons (the ``_sina_proxy``
+AntiBotProxy built at import, the lazily-created ``_session``) are instance
+state of :class:`SinaSource`, and ``SINA_SOURCE = SinaSource()`` replaces
+them as the module singleton — created at import exactly when the proxy was
+created before, so the lifecycle (proxy at import, session lazy on first
+fetch / pre-warm) is unchanged. ``_parse_sina_kline`` stays module-level
+(pure parser).
 """
 from __future__ import annotations
 
@@ -65,34 +73,108 @@ SINA_RETRY_BACKOFF_SEC: float = (
     _SINA_RETRY_BACKOFF_JSON if _SINA_RETRY_BACKOFF_JSON is not None else 1.0
 )
 
-# Every attempt goes through this proxy so the audit sees the fetches (real
-# HTTP status; 4xx-tracked). Pacing (sleep) stays OFF — the worker dispatches
-# per-stock fetches in threads under a hard per-fetch timeout and its own
-# per-source cooldown (the source_a_sina row's 90s) governs; a proxy sleep
-# here would eat the thread's FETCH_TIMEOUT_SEC budget. Host tracking stays
-# off too: the worker layer already runs its own circuit breakers / source
-# fallback, and a proxy-level block would silently change that policy.
-# rotate_browser_profile / add_random_param stay row-driven (both true —
-# fingerprint rotation plus a cache-buster against Sina's kline cache).
-_sina_proxy = AntiBotProxy(replace(
-    antibot_config_for(SERVICE, "source_a_sina"),
-    enable_sleep=False,
-    enable_host_tracking=False,
-))
 
-_session: Optional[requests.Session] = None
+class SinaSource:
+    """Source A (Sina 1-min kline) fetch scope — owns the source's shared
+    AntiBotProxy and its lazy persistent requests.Session.
 
-
-def _get_sina_session() -> requests.Session:
-    """Lazy-create the persistent requests.Session for the Sina source.
-
-    A Session reuses TLS connections across the round's fetches (one
-    handshake per worker life instead of per stock).
+    Every attempt goes through this proxy so the audit sees the fetches (real
+    HTTP status; 4xx-tracked). Pacing (sleep) stays OFF — the worker dispatches
+    per-stock fetches in threads under a hard per-fetch timeout and its own
+    per-source cooldown (the source_a_sina row's 90s) governs; a proxy sleep
+    here would eat the thread's FETCH_TIMEOUT_SEC budget. Host tracking stays
+    off too: the worker layer already runs its own circuit breakers / source
+    fallback, and a proxy-level block would silently change that policy.
+    rotate_browser_profile / add_random_param stay row-driven (both true —
+    fingerprint rotation plus a cache-buster against Sina's kline cache).
     """
-    global _session
-    if _session is None:
-        _session = requests.Session()
-    return _session
+
+    def __init__(self) -> None:
+        self._proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE, "source_a_sina"),
+            enable_sleep=False,
+            enable_host_tracking=False,
+        ))
+        self._session: Optional[requests.Session] = None
+
+    def _get_sina_session(self) -> requests.Session:
+        """Lazy-create the persistent requests.Session for the Sina source.
+
+        A Session reuses TLS connections across the round's fetches (one
+        handshake per worker life instead of per stock).
+        """
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
+
+    def fetch_sina_minute(self, bare_code: str) -> Optional[List[MinuteSample]]:
+        """Fetch today's 1-minute bars for one SZSE stock from Sina.
+
+        Returns a list of (datetime, close, volume) samples, or None when the
+        request fails / is blocked / yields nothing parseable (treated as a
+        failure trigger for the fallback). Every HTTP attempt is audited by the
+        proxy with its real status; parse-after-200 failures only log here.
+        """
+        symbol = f"sz{bare_code}"
+        params = {"symbol": symbol, "scale": "1", "ma": "no", "datalen": "1970"}
+        rows: Optional[list] = None
+        err = "no attempts"
+        for attempt in range(SINA_MAX_RETRIES + 1):
+            r = self._proxy.get(
+                self._get_sina_session(), SINA_MINUTE_URL, params=params,
+                logger=logger, log_tag=f"[sina {bare_code}] ",
+            )
+            if r is None:
+                err = "request failed (see audit)"
+            else:
+                parsed = _parse_sina_kline(r.text)
+                if parsed is None:
+                    err = (f"HTTP {r.status_code} body unparseable "
+                           "(blocked page or format change?)")
+                elif not parsed:
+                    err = "empty kline list (unknown/delisted symbol?)"
+                    break
+                else:
+                    rows = parsed
+                    break
+            if attempt < SINA_MAX_RETRIES:
+                _time.sleep(SINA_RETRY_BACKOFF_SEC)
+        if not rows:
+            logger.warning("[sina %s] kline fetch failed after retries: %s",
+                           bare_code, err)
+            return None
+
+        # Bar dicts: day, open, high, low, close, volume(, amount)
+        samples: List[MinuteSample] = []
+        for row in rows:
+            day_val = row.get("day")
+            close = row.get("close")
+            vol = row.get("volume")
+            if day_val is None or close is None:
+                continue
+            try:
+                dt = datetime.strptime(str(day_val), "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                try:
+                    dt = datetime.strptime(str(day_val), "%Y-%m-%d %H:%M")
+                except (ValueError, TypeError):
+                    continue
+            try:
+                price = float(close)
+            except (ValueError, TypeError):
+                continue
+            try:
+                volume = float(vol) if vol is not None else 0.0
+            except (ValueError, TypeError):
+                volume = 0.0
+            samples.append((dt, price, volume))
+        return samples or None
+
+
+# Module singleton — replaces the former module-level `_sina_proxy` /
+# `_session` pair with the SAME construction scope (proxy built at import,
+# session lazy).
+SINA_SOURCE = SinaSource()
 
 
 def _parse_sina_kline(text: str) -> Optional[list]:
@@ -109,67 +191,3 @@ def _parse_sina_kline(text: str) -> Optional[list]:
     except (IndexError, ValueError, TypeError):
         return None
     return data if isinstance(data, list) else None
-
-
-def fetch_sina_minute(bare_code: str) -> Optional[List[MinuteSample]]:
-    """Fetch today's 1-minute bars for one SZSE stock from Sina.
-
-    Returns a list of (datetime, close, volume) samples, or None when the
-    request fails / is blocked / yields nothing parseable (treated as a
-    failure trigger for the fallback). Every HTTP attempt is audited by the
-    proxy with its real status; parse-after-200 failures only log here.
-    """
-    symbol = f"sz{bare_code}"
-    params = {"symbol": symbol, "scale": "1", "ma": "no", "datalen": "1970"}
-    rows: Optional[list] = None
-    err = "no attempts"
-    for attempt in range(SINA_MAX_RETRIES + 1):
-        r = _sina_proxy.get(
-            _get_sina_session(), SINA_MINUTE_URL, params=params,
-            logger=logger, log_tag=f"[sina {bare_code}] ",
-        )
-        if r is None:
-            err = "request failed (see audit)"
-        else:
-            parsed = _parse_sina_kline(r.text)
-            if parsed is None:
-                err = (f"HTTP {r.status_code} body unparseable "
-                       "(blocked page or format change?)")
-            elif not parsed:
-                err = "empty kline list (unknown/delisted symbol?)"
-                break
-            else:
-                rows = parsed
-                break
-        if attempt < SINA_MAX_RETRIES:
-            _time.sleep(SINA_RETRY_BACKOFF_SEC)
-    if not rows:
-        logger.warning("[sina %s] kline fetch failed after retries: %s",
-                       bare_code, err)
-        return None
-
-    # Bar dicts: day, open, high, low, close, volume(, amount)
-    samples: List[MinuteSample] = []
-    for row in rows:
-        day_val = row.get("day")
-        close = row.get("close")
-        vol = row.get("volume")
-        if day_val is None or close is None:
-            continue
-        try:
-            dt = datetime.strptime(str(day_val), "%Y-%m-%d %H:%M:%S")
-        except (ValueError, TypeError):
-            try:
-                dt = datetime.strptime(str(day_val), "%Y-%m-%d %H:%M")
-            except (ValueError, TypeError):
-                continue
-        try:
-            price = float(close)
-        except (ValueError, TypeError):
-            continue
-        try:
-            volume = float(vol) if vol is not None else 0.0
-        except (ValueError, TypeError):
-            volume = 0.0
-        samples.append((dt, price, volume))
-    return samples or None

@@ -2,7 +2,8 @@
  * Benchmark price chart + industry attribution price series.
  * Extracted from the former analysis.service.ts.
  */
-import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { formatDate, toNum } from "../../lib/db.js";
+import { querySqlView } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import type {
   BenchmarkPriceChartResponse,
@@ -33,30 +34,13 @@ export async function getBenchmarkPriceChart(
   if (!code) throw new Error("Missing 'code' parameter");
 
   const [priceRows, nameRows] = await Promise.all([
-    queryRows<DbBenchmarkPriceRow>(
-      `SELECT
-        ib.date,
-        ib.close,
-        ib.trading_amount,
-        CASE
-          WHEN pb.close IS NOT NULL AND pb.close != 0
-          THEN (ib.close - pb.close) / pb.close
-          ELSE NULL
-        END AS daily_return
-       FROM stats.index_basic_stats ib
-       LEFT JOIN LATERAL (
-         SELECT close FROM stats.index_basic_stats
-         WHERE code = ib.code AND date < ib.date
-         ORDER BY date DESC LIMIT 1
-       ) pb ON true
-       WHERE ib.code = $1::text
-       ORDER BY ib.date ASC`,
-      [code],
+    querySqlView<DbBenchmarkPriceRow>(
+      "data_viz/api/services/analysis/benchmark-price-chart/benchmark_price_series",
+      { code },
     ),
-    queryRows<{ name: string | null }>(
-      `SELECT DISTINCT ON (code) code, name FROM stats.index_identity
-       WHERE code = $1::text ORDER BY code, date DESC`,
-      [code],
+    querySqlView<{ name: string | null }>(
+      "data_viz/api/services/analysis/benchmark-price-chart/benchmark_name",
+      { code },
     ),
   ]);
 
@@ -119,57 +103,11 @@ export async function getIndustryAttributionPriceSeries(
   // row keys match the DbAttributionPriceRow interface and the response
   // payload field names. Also uses LATERAL ... LIMIT 1 for industry_label to
   // avoid row multiplication when an industry has multiple member indices
-  // in stats.sec_classification.
-  const rows = await queryRows<DbAttributionPriceRow>(
-    `SELECT
-        ia.date,
-        ib.close AS benchmark_close,
-        -- Rebase benchmark close to 100 at the first date in the partition
-        -- so it's comparable to non_this_industry_rolling_*_price (also 100-based).
-        100.0 * ib.close / NULLIF(
-          FIRST_VALUE(ib.close) OVER (
-            PARTITION BY ia.benchmark_code
-            ORDER BY ia.date
-            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-          ), 0
-        ) AS benchmark_rolling,
-        ia.benchmark_non_this_industry_price                    AS non_this_industry_price,
-        ia.benchmark_non_this_industry_rolling_5days_price      AS non_this_industry_rolling_5days_price,
-        ia.benchmark_non_this_industry_rolling_20days_price      AS non_this_industry_rolling_20days_price,
-        ia.benchmark_non_this_industry_rolling_60days_price      AS non_this_industry_rolling_60days_price,
-        ia.benchmark_non_this_industry_rolling_120days_price     AS non_this_industry_rolling_120days_price,
-        ia.benchmark_non_this_industry_rolling_255days_price     AS non_this_industry_rolling_255days_price,
-        ia.benchmark_non_this_industry_rolling_500days_price    AS non_this_industry_rolling_500days_price,
-        ia.benchmark_shared_weight,
-        sc.industry_label,
-        ii.name AS benchmark_name,
-        sit.is_broad_market
-     FROM analysis.industry_attributions ia
-     LEFT JOIN stats.index_basic_stats ib
-        ON ib.code = ia.benchmark_code AND ib.date = ia.date
-     LEFT JOIN LATERAL (
-        SELECT industry_label
-        FROM stats.sec_classification
-        WHERE industry_id = ia.industry_id AND type = 'index'
-          AND industry_label IS NOT NULL
-        LIMIT 1
-     ) sc ON true
-     LEFT JOIN LATERAL (
-        SELECT DISTINCT ON (code) code, name
-        FROM stats.index_identity
-        WHERE code = ia.benchmark_code
-        ORDER BY code, date DESC
-     ) ii ON true
-     LEFT JOIN LATERAL (
-        SELECT is_broad_market
-        FROM stats.sec_index_tags
-        WHERE code = ia.benchmark_code
-        LIMIT 1
-     ) sit ON true
-     WHERE ia.industry_id = $1::text
-       AND ia.benchmark_code = $2::text
-     ORDER BY ia.date ASC`,
-    [industryId, benchmarkCode],
+  // in stats.sec_classification. The SELECT lives in the sql view
+  // data_viz/api/services/analysis/benchmark-price-chart/attribution_price_series.
+  const rows = await querySqlView<DbAttributionPriceRow>(
+    "data_viz/api/services/analysis/benchmark-price-chart/attribution_price_series",
+    { industry_id: industryId, benchmark_code: benchmarkCode },
   );
 
   return {

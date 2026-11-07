@@ -19,7 +19,7 @@ from ._parse import (
     normalize_closeweight_df,
     parse_closeweight_xls,
 )
-from .runner import download_index_composition
+from .runner import CsindexCompositionRunner
 
 __all__ = [
     # Config
@@ -39,5 +39,5 @@ __all__ = [
     "parse_closeweight_xls",
     "normalize_closeweight_df",
     # Runner
-    "download_index_composition",
+    "CsindexCompositionRunner",
 ]

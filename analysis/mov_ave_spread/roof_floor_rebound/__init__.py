@@ -17,10 +17,10 @@ from analysis.mov_ave_spread.roof_floor_rebound.events import (
     compute_rebound_events,
 )
 from analysis.mov_ave_spread.roof_floor_rebound.step import (
-    run_roof_floor_rebounds,
+    RoofFloorReboundStep,
 )
 
 __all__ = [
     "compute_rebound_events",
-    "run_roof_floor_rebounds",
+    "RoofFloorReboundStep",
 ]

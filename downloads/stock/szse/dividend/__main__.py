@@ -75,6 +75,10 @@ Usage:
   python -m downloads.stock.szse.dividend --no-etf-filter  # all SZSE equities from DB
   python -m downloads.stock.szse.dividend --code 000651    # single stock
   python -m downloads.stock.szse.dividend --force          # overwrite existing files
+
+The entry point is the :class:`SzseStockDividendDownload` DownloadJob — the
+former ``download_szse_dividends`` body is its method (verbatim) and pure
+helpers/constants stay module-level.
 """
 from __future__ import annotations
 
@@ -96,6 +100,7 @@ from downloads._common import (
     AntiBotProxy,
     COMMON_BASE_HEADERS,
     antibot_config_for,
+    DownloadJob,
     is_valid_file,
     resolve_out_dir,
     service_urls,
@@ -416,261 +421,276 @@ def _load_all_szse_stocks_from_db(conn) -> List[Tuple[str, str]]:
     return [(r[0].split(".")[0], r[1] or "") for r in rows]
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-def download_szse_dividends(
-    out_root: Optional[str] = None,
-    *,
-    sleep_sec: Optional[float] = None,
-    force: bool = False,
-    session: Optional[requests.Session] = None,
-    etf_filter: bool = True,
-    code_filter: Optional[str] = None,
-    batch_size: int = 20,
-    batch_pause_sec: float = 70 * 60,
-) -> dict:
-    """Download SZSE per-stock dividend (分红转增信息) data from cninfo.
+class SzseStockDividendDownload(DownloadJob):
+    """DownloadJob for the SZSE per-stock dividend (cninfo) fetch cycle.
 
-    For each SZSE stock (default: ETF-held only; ``--no-etf-filter`` for all
-    in DB), fetches the full dividend history via the cninfo
-    ``p_sysapi1139`` endpoint and writes one CSV per stock under
-    ``temps/szse_archive/{code}_dividend_{YYYYMMDD}.csv``.
-
-    Anti-bot: cninfo mcode token (AES-128-CBC of timestamp, regenerated per
-    request) + AntiBotProxy (browser fingerprint rotation, random param,
-    sleep with jitter, host blocking detection; pacing from the service's
-    external_request_config JSON row — 600s base sleep).
-
-    Batch pause: after every ``batch_size`` successful dividend fetches
-    (default 20), the downloader sleeps ``batch_pause_sec`` (default 70
-    minutes) before continuing, as an extra anti-bot cool-down. Set
-    ``batch_pause_sec=0`` (or ``--batch-pause-sec 0``) to disable.
-
-    Resumable: a stock is skipped if (a) a local CSV whose file mtime is
-    within the last 180 days exists, or (b) ``stats.stock_dividends`` already
-    has rows for the stock with ``last_updated`` within the last 180 days.
-    ``--force`` overrides both checks.
+    The former module-level ``download_szse_dividends`` orchestrator became
+    a method; the pure fetch/parse/freshness/token helpers and constants
+    above stay module-level.
     """
-    archive_dir = resolve_out_dir(
-        str(Path(__file__).resolve()), DIVIDEND_DIRNAME, out_root
-    )
-    sess = session or requests.Session()
-    today_suffix = _today_str()
 
-    # Resolve the target stock list.
-    # ``--code`` overrides everything (single-stock mode).
-    # ``--no-etf-filter`` fetches all SZSE stocks from stock_identity.
-    # Default: ETF-held SZSE stocks via load_target_szse_stocks (DB-backed).
-    db_conn = None
-    if code_filter:
-        bare = code_filter.split(".")[0]
-        stocks: List[Tuple[str, str]] = [(bare, "")]
-        logger.info("Single-stock mode: %s", code_filter)
-    else:
-        from _common.db_commons import get_db_connection
-        db_conn = get_db_connection()
-        try:
-            if etf_filter:
-                stocks = load_target_szse_stocks(db_conn)
-            else:
-                stocks = _load_all_szse_stocks_from_db(db_conn)
-        except Exception:
-            db_conn.close()
-            db_conn = None
-            raise
-    if not stocks:
-        logger.error("No stocks found")
+    description = ("Download SZSE per-stock dividend (分红转增信息) data from "
+                   "cninfo (webapi.cninfo.com.cn p_sysapi1139). Anti-bot: "
+                   "AES-128-CBC mcode token (regenerated per request) + "
+                   "AntiBotProxy (fingerprint rotation, random param, "
+                   "sleep jitter, host blocking; pacing from the service's "
+                   "external_request_config JSON, 600s base sleep). "
+                   "Output: {code}_dividend_{YYYYMMDD}.csv under temps/szse_archive/. "
+                   "Skips stocks with a local CSV whose mtime is within the "
+                   "last 180 days or DB rows updated within the last 180 days.")
+    component = "szse_dividend_download"
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--no-etf-filter", action="store_true",
+            help="Disable the ETF filter and fetch ALL SZSE stocks from "
+                 "stats.stock_identity instead.",
+        )
+        parser.add_argument(
+            "--code", type=str, default=None,
+            help="Single-stock mode: download dividend data for one stock "
+                 "(bare 6-digit code or suffixed). Overrides --no-etf-filter.",
+        )
+        parser.add_argument(
+            "--force", action="store_true",
+            help="Force download: ignore freshness checks (local CSV + DB "
+                 "last_updated) and re-download all stocks.",
+        )
+        parser.add_argument(
+            "--batch-size", type=int, default=20,
+            help="Number of successful dividend fetches between long cool-down "
+                 "pauses (default: 20).",
+        )
+        parser.add_argument(
+            "--batch-pause-sec", type=float, default=70 * 60,
+            help="Long cool-down pause in seconds applied every --batch-size "
+                 "downloads (default: 4200 = 70 min). Set to 0 to disable the "
+                 "batch pause entirely.",
+        )
+
+    # ---------------------------------------------------------------------------
+    # Main entry point
+    # ---------------------------------------------------------------------------
+    def download_szse_dividends(
+        self,
+        out_root: Optional[str] = None,
+        *,
+        sleep_sec: Optional[float] = None,
+        force: bool = False,
+        session: Optional[requests.Session] = None,
+        etf_filter: bool = True,
+        code_filter: Optional[str] = None,
+        batch_size: int = 20,
+        batch_pause_sec: float = 70 * 60,
+    ) -> dict:
+        """Download SZSE per-stock dividend (分红转增信息) data from cninfo.
+
+        For each SZSE stock (default: ETF-held only; ``--no-etf-filter`` for all
+        in DB), fetches the full dividend history via the cninfo
+        ``p_sysapi1139`` endpoint and writes one CSV per stock under
+        ``temps/szse_archive/{code}_dividend_{YYYYMMDD}.csv``.
+
+        Anti-bot: cninfo mcode token (AES-128-CBC of timestamp, regenerated per
+        request) + AntiBotProxy (browser fingerprint rotation, random param,
+        sleep with jitter, host blocking detection; pacing from the service's
+        external_request_config JSON row — 600s base sleep).
+
+        Batch pause: after every ``batch_size`` successful dividend fetches
+        (default 20), the downloader sleeps ``batch_pause_sec`` (default 70
+        minutes) before continuing, as an extra anti-bot cool-down. Set
+        ``batch_pause_sec=0`` (or ``--batch-pause-sec 0``) to disable.
+
+        Resumable: a stock is skipped if (a) a local CSV whose file mtime is
+        within the last 180 days exists, or (b) ``stats.stock_dividends`` already
+        has rows for the stock with ``last_updated`` within the last 180 days.
+        ``--force`` overrides both checks.
+
+        Former module-level orchestrator — moved verbatim into the job class;
+        ``run()`` calls it and logs the returned summary dict.
+        """
+        archive_dir = resolve_out_dir(
+            str(Path(__file__).resolve()), DIVIDEND_DIRNAME, out_root
+        )
+        sess = session or requests.Session()
+        today_suffix = _today_str()
+
+        # Resolve the target stock list.
+        # ``--code`` overrides everything (single-stock mode).
+        # ``--no-etf-filter`` fetches all SZSE stocks from stock_identity.
+        # Default: ETF-held SZSE stocks via load_target_szse_stocks (DB-backed).
+        db_conn = None
+        if code_filter:
+            bare = code_filter.split(".")[0]
+            stocks: List[Tuple[str, str]] = [(bare, "")]
+            logger.info("Single-stock mode: %s", code_filter)
+        else:
+            from _common.db_commons import get_db_connection
+            db_conn = get_db_connection()
+            try:
+                if etf_filter:
+                    stocks = load_target_szse_stocks(db_conn)
+                else:
+                    stocks = _load_all_szse_stocks_from_db(db_conn)
+            except Exception:
+                db_conn.close()
+                db_conn = None
+                raise
+        if not stocks:
+            logger.error("No stocks found")
+            if db_conn:
+                db_conn.close()
+            return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
+
+        # Freshness check — skip stocks that are already up-to-date.
+        # Checks BOTH: (a) local CSV whose mtime is within the last 180 days,
+        # (b) DB rows with last_updated within the last 180 days. Skips the
+        # stock if either is fresh (unless --force).
+        if not force:
+            fresh_local = 0
+            fresh_db = 0
+            filtered: List[Tuple[str, str]] = []
+            for code, name in stocks:
+                if _is_fresh_local(archive_dir, code):
+                    fresh_local += 1
+                    continue
+                if db_conn and _is_fresh_db(db_conn, f"{code}.SZ"):
+                    fresh_db += 1
+                    continue
+                filtered.append((code, name))
+            stocks = filtered
+            logger.info(
+                "Freshness check (%d-day window): %d stocks skipped (local CSV fresh), "
+                "%d skipped (DB fresh), %d to process.",
+                FRESHNESS_WINDOW_DAYS, fresh_local, fresh_db, len(stocks),
+            )
         if db_conn:
             db_conn.close()
-        return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
 
-    # Freshness check — skip stocks that are already up-to-date.
-    # Checks BOTH: (a) local CSV whose mtime is within the last 180 days,
-    # (b) DB rows with last_updated within the last 180 days. Skips the
-    # stock if either is fresh (unless --force).
-    if not force:
-        fresh_local = 0
-        fresh_db = 0
-        filtered: List[Tuple[str, str]] = []
-        for code, name in stocks:
-            if _is_fresh_local(archive_dir, code):
-                fresh_local += 1
-                continue
-            if db_conn and _is_fresh_db(db_conn, f"{code}.SZ"):
-                fresh_db += 1
-                continue
-            filtered.append((code, name))
-        stocks = filtered
         logger.info(
-            "Freshness check (%d-day window): %d stocks skipped (local CSV fresh), "
-            "%d skipped (DB fresh), %d to process.",
-            FRESHNESS_WINDOW_DAYS, fresh_local, fresh_db, len(stocks),
+            "Starting SZSE dividend download: %d stocks. "
+            "Per-stock: fetch dividend history -> write {code}_dividend_%s.csv",
+            len(stocks), today_suffix,
         )
-    if db_conn:
-        db_conn.close()
 
-    logger.info(
-        "Starting SZSE dividend download: %d stocks. "
-        "Per-stock: fetch dividend history -> write {code}_dividend_%s.csv",
-        len(stocks), today_suffix,
-    )
+        # cninfo endpoint — quarterly cadence so it runs on the service's
+        # external_request_config row (600s base sleep). The mcode token is
+        # handled separately in _build_cninfo_headers(); AntiBotProxy handles
+        # fingerprint rotation, random param, sleep, and host blocking; an
+        # explicit *sleep_sec* argument overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = sleep_sec_for(SERVICE)
+        dividend_proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
 
-    # cninfo endpoint — quarterly cadence so it runs on the service's
-    # external_request_config row (600s base sleep). The mcode token is
-    # handled separately in _build_cninfo_headers(); AntiBotProxy handles
-    # fingerprint rotation, random param, sleep, and host blocking; an
-    # explicit *sleep_sec* argument overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = sleep_sec_for(SERVICE)
-    dividend_proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
+        stocks_done = 0
+        stocks_failed = 0
+        rows_fetched = 0
+        rows_empty = 0
+        # Counter for the periodic long cool-down: every ``batch_size``
+        # successful dividend fetches (empty or not), sleep ``batch_pause_sec``
+        # before continuing. Failed fetches don't count toward the batch.
+        downloads_since_pause = 0
 
-    stocks_done = 0
-    stocks_failed = 0
-    rows_fetched = 0
-    rows_empty = 0
-    # Counter for the periodic long cool-down: every ``batch_size``
-    # successful dividend fetches (empty or not), sleep ``batch_pause_sec``
-    # before continuing. Failed fetches don't count toward the batch.
-    downloads_since_pause = 0
-
-    for idx, (code, name) in enumerate(stocks):
-        if dividend_proxy.is_blocked(CNINFO_DIVIDEND_URL):
-            logger.warning(
-                "  [host-blocked] webapi.cninfo.com.cn blocked, stopping"
-            )
-            stocks_failed += len(stocks) - idx
-            break
-
-        if (idx + 1) % 25 == 0 or idx == 0:
-            logger.info(
-                "Stock %d/%d: %s %s", idx + 1, len(stocks), code, name,
-            )
-
-        out_file = archive_dir / f"{code}_dividend_{today_suffix}.csv"
-
-        payload = _fetch_dividend(sess, code, dividend_proxy)
-
-        if payload is None:
-            stocks_failed += 1
-            continue
-
-        records = payload.get("records") or []
-        if not records:
-            logger.info("  -> %s dividend: no data", code)
-            rows_empty += 1
-            # Write an empty marker file so the freshness check skips it
-            # next time. This avoids re-fetching stocks with no dividend history.
-            if not out_file.exists():
-                _write_dividend_csv(out_file, [])
-        else:
-            parsed_rows = [
-                _parse_dividend_row(r, code, name) for r in records
-            ]
-            # Dedupe by 除息交易日 — keep the first occurrence.
-            seen_dates: set = set()
-            deduped_rows: List[Dict[str, Any]] = []
-            for r in parsed_rows:
-                key = (r.get("除息交易日"), r.get("股权登记日"))
-                if key in seen_dates:
-                    continue
-                seen_dates.add(key)
-                deduped_rows.append(r)
-
-            _write_dividend_csv(out_file, deduped_rows)
-            rows_fetched += len(deduped_rows)
-            stocks_done += 1
-
-            logger.info(
-                "  -> %s dividend: %d rows -> %s",
-                code, len(deduped_rows), out_file.name,
-            )
-
-        # One successful dividend fetch completed — count it toward the
-        # periodic batch cool-down (covers both empty and non-empty results,
-        # since each is a real server request).
-        downloads_since_pause += 1
-
-        if (
-            batch_pause_sec > 0
-            and batch_size > 0
-            and downloads_since_pause >= batch_size
-        ):
-            remaining = len(stocks) - (idx + 1)
-            if remaining > 0:
-                logger.info(
-                    "  [batch pause] %d dividends downloaded; "
-                    "sleeping %.0f min before continuing "
-                    "(%d stocks remaining).",
-                    downloads_since_pause,
-                    batch_pause_sec / 60.0,
-                    remaining,
+        for idx, (code, name) in enumerate(stocks):
+            if dividend_proxy.is_blocked(CNINFO_DIVIDEND_URL):
+                logger.warning(
+                    "  [host-blocked] webapi.cninfo.com.cn blocked, stopping"
                 )
-                time.sleep(batch_pause_sec)
-            downloads_since_pause = 0
+                stocks_failed += len(stocks) - idx
+                break
 
-    logger.info(
-        "Done SZSE dividend download. stocks_done=%d stocks_failed=%d "
-        "rows_fetched=%d stocks_empty=%d archive_dir=%s",
-        stocks_done, stocks_failed, rows_fetched, rows_empty, archive_dir,
-    )
-    return {
-        "downloaded": stocks_done,
-        "failed": stocks_failed,
-        "rows_fetched": rows_fetched,
-        "stocks_empty": rows_empty,
-        "archive_dir": str(archive_dir),
-        "total_stocks": len(stocks),
-    }
+            if (idx + 1) % 25 == 0 or idx == 0:
+                logger.info(
+                    "Stock %d/%d: %s %s", idx + 1, len(stocks), code, name,
+                )
+
+            out_file = archive_dir / f"{code}_dividend_{today_suffix}.csv"
+
+            payload = _fetch_dividend(sess, code, dividend_proxy)
+
+            if payload is None:
+                stocks_failed += 1
+                continue
+
+            records = payload.get("records") or []
+            if not records:
+                logger.info("  -> %s dividend: no data", code)
+                rows_empty += 1
+                # Write an empty marker file so the freshness check skips it
+                # next time. This avoids re-fetching stocks with no dividend history.
+                if not out_file.exists():
+                    _write_dividend_csv(out_file, [])
+            else:
+                parsed_rows = [
+                    _parse_dividend_row(r, code, name) for r in records
+                ]
+                # Dedupe by 除息交易日 — keep the first occurrence.
+                seen_dates: set = set()
+                deduped_rows: List[Dict[str, Any]] = []
+                for r in parsed_rows:
+                    key = (r.get("除息交易日"), r.get("股权登记日"))
+                    if key in seen_dates:
+                        continue
+                    seen_dates.add(key)
+                    deduped_rows.append(r)
+
+                _write_dividend_csv(out_file, deduped_rows)
+                rows_fetched += len(deduped_rows)
+                stocks_done += 1
+
+                logger.info(
+                    "  -> %s dividend: %d rows -> %s",
+                    code, len(deduped_rows), out_file.name,
+                )
+
+            # One successful dividend fetch completed — count it toward the
+            # periodic batch cool-down (covers both empty and non-empty results,
+            # since each is a real server request).
+            downloads_since_pause += 1
+
+            if (
+                batch_pause_sec > 0
+                and batch_size > 0
+                and downloads_since_pause >= batch_size
+            ):
+                remaining = len(stocks) - (idx + 1)
+                if remaining > 0:
+                    logger.info(
+                        "  [batch pause] %d dividends downloaded; "
+                        "sleeping %.0f min before continuing "
+                        "(%d stocks remaining).",
+                        downloads_since_pause,
+                        batch_pause_sec / 60.0,
+                        remaining,
+                    )
+                    time.sleep(batch_pause_sec)
+                downloads_since_pause = 0
+
+        logger.info(
+            "Done SZSE dividend download. stocks_done=%d stocks_failed=%d "
+            "rows_fetched=%d stocks_empty=%d archive_dir=%s",
+            stocks_done, stocks_failed, rows_fetched, rows_empty, archive_dir,
+        )
+        return {
+            "downloaded": stocks_done,
+            "failed": stocks_failed,
+            "rows_fetched": rows_fetched,
+            "stocks_empty": rows_empty,
+            "archive_dir": str(archive_dir),
+            "total_stocks": len(stocks),
+        }
+
+    def run(self) -> None:
+        """One fetch cycle (the former __main__ body verbatim)."""
+        logger.info(self.download_szse_dividends(
+            force=self.args.force,
+            etf_filter=not self.args.no_etf_filter,
+            code_filter=self.args.code,
+            batch_size=self.args.batch_size,
+            batch_pause_sec=self.args.batch_pause_sec,
+        ))
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download SZSE per-stock dividend (分红转增信息) data from "
-                    "cninfo (webapi.cninfo.com.cn p_sysapi1139). Anti-bot: "
-                    "AES-128-CBC mcode token (regenerated per request) + "
-                    "AntiBotProxy (fingerprint rotation, random param, "
-                    "sleep jitter, host blocking; pacing from the service's "
-                    "external_request_config JSON, 600s base sleep). "
-                    "Output: {code}_dividend_{YYYYMMDD}.csv under temps/szse_archive/. "
-                    "Skips stocks with a local CSV whose mtime is within the "
-                    "last 180 days or DB rows updated within the last 180 days."
-    )
-    ap.add_argument(
-        "--no-etf-filter", action="store_true",
-        help="Disable the ETF filter and fetch ALL SZSE stocks from "
-             "stats.stock_identity instead.",
-    )
-    ap.add_argument(
-        "--code", type=str, default=None,
-        help="Single-stock mode: download dividend data for one stock "
-             "(bare 6-digit code or suffixed). Overrides --no-etf-filter.",
-    )
-    ap.add_argument(
-        "--force", action="store_true",
-        help="Force download: ignore freshness checks (local CSV + DB "
-             "last_updated) and re-download all stocks.",
-    )
-    ap.add_argument(
-        "--batch-size", type=int, default=20,
-        help="Number of successful dividend fetches between long cool-down "
-             "pauses (default: 20).",
-    )
-    ap.add_argument(
-        "--batch-pause-sec", type=float, default=70 * 60,
-        help="Long cool-down pause in seconds applied every --batch-size "
-             "downloads (default: 4200 = 70 min). Set to 0 to disable the "
-             "batch pause entirely.",
-    )
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    logger.info(download_szse_dividends(
-        force=args.force,
-        etf_filter=not args.no_etf_filter,
-        code_filter=args.code,
-        batch_size=args.batch_size,
-        batch_pause_sec=args.batch_pause_sec,
-    ))
+    SzseStockDividendDownload().execute()

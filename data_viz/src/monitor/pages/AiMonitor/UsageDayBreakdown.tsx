@@ -1,5 +1,5 @@
 /**
- * UsageDayBreakdown — the selected GMT day's text.llm_requests buckets,
+ * UsageDayBreakdown — the selected GMT day's llm.llm_requests buckets,
  * one row per (service, model): request / failed counts, the usage-block
  * token sums (input / output / total) and whole-call durations. Rows
  * arrive from the page's usage payload (already pivoted once), sorted

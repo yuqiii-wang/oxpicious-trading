@@ -43,6 +43,7 @@ from _common.build_commons import (
     recent_trading_day_cutoff,
 )
 from _common.df_utils import epoch_col_to_dt64
+from _common.sql_views import frag, render_sql_view
 
 from analysis.pe_and_dividends._common.config import SEC_TYPE_IDENTITY_TABLE
 
@@ -79,22 +80,13 @@ async def fetch_index_pe_and_close(
     """
     if not codes:
         return pd.DataFrame(columns=["code", "date", "close", "pe"])
-    rows = await conn.fetch(
-        """
-        SELECT
-            b.code,
-            extract(epoch from b.date)::float8 AS date,
-            b.close::float8 AS close,
-            v.pe::float8 AS pe
-        FROM stats.index_basic_stats b
-        LEFT JOIN stats.index_valuation v
-            ON v.date = b.date AND v.code = b.code
-        WHERE b.code = ANY($1::text[])
-          AND b.close IS NOT NULL
-        ORDER BY b.code, b.date ASC
-        """,
-        sorted(codes),
+    # index_pe_and_close view: index_valuation LEFT-joined onto
+    # index_basic_stats, close non-null.
+    view = render_sql_view(
+        "analysis/pe_and_dividends/_common/fetch/index_pe_and_close",
+        codes=sorted(codes),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["code", "date", "close", "pe"])
     # Whole-column positional unpack (rec_cols) — no per-row dict access.
@@ -123,29 +115,13 @@ async def fetch_latest_index_composition(
     """
     if not index_codes:
         return pd.DataFrame(columns=["index_code", "stock_code", "weight_pct"])
-    rows = await conn.fetch(
-        """
-        WITH latest AS (
-            SELECT code, MAX(snapshot_date) AS max_date
-            FROM stats.sec_composition
-            WHERE source_type = 'index'
-              AND stock_code IS NOT NULL
-              AND code = ANY($1::text[])
-            GROUP BY code
-        )
-        SELECT
-            sc.code AS index_code,
-            sc.stock_code,
-            sc.weight_pct::float8 AS weight_pct
-        FROM stats.sec_composition sc
-        JOIN latest ld
-            ON sc.code = ld.code AND sc.snapshot_date = ld.max_date
-        WHERE sc.source_type = 'index'
-          AND sc.stock_code IS NOT NULL
-          AND sc.weight_pct > 0
-        """,
-        sorted(index_codes),
+    # latest_index_composition view: latest sec_composition snapshot per
+    # index code (temporal extrapolation — market_beta pattern).
+    view = render_sql_view(
+        "analysis/pe_and_dividends/_common/fetch/latest_index_composition",
+        index_codes=sorted(index_codes),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["index_code", "stock_code", "weight_pct"])
     # weight_pct arrives as float8 (::float8 cast) — no to_numeric needed.
@@ -178,18 +154,12 @@ async def fetch_constituent_closes(
     })
     if not stripped_codes:
         return pd.DataFrame(columns=["code", "date", "close"])
-    rows = await conn.fetch(
-        """
-        SELECT REGEXP_REPLACE(code, '\\.(SS|SZ|SH|BJ|HK)$', '') AS code,
-               extract(epoch from date)::float8 AS date,
-               close::float8 AS close
-        FROM stats.stock_basic_stats
-        WHERE close IS NOT NULL
-          AND REGEXP_REPLACE(code, '\\.(SS|SZ|SH|BJ|HK)$', '') = ANY($1::text[])
-        ORDER BY code, date ASC
-        """,
-        stripped_codes,
+    # constituent_closes view: suffix-stripped stock_basic_stats closes.
+    view = render_sql_view(
+        "analysis/pe_and_dividends/_common/fetch/constituent_closes",
+        codes=stripped_codes,
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["code", "date", "close"])
     cols = rec_cols(rows)
@@ -219,33 +189,19 @@ async def fetch_stock_dividends(
         )
 
     if stock_codes is None:
-        # Fetch all — small table (~12K rows)
-        rows = await conn.fetch(
-            """
-            SELECT code,
-                   extract(epoch from ex_dividend_date)::float8 AS ex_dividend_date,
-                   dividend_per_share_pre_tax::float8 AS dividend_per_share_pre_tax
-            FROM stats.stock_dividends
-            WHERE dividend_per_share_pre_tax IS NOT NULL
-              AND dividend_per_share_pre_tax > 0
-            ORDER BY code, ex_dividend_date ASC
-            """
+        # Fetch all — small table (~12K rows); stock_dividends_all view.
+        view = render_sql_view(
+            "analysis/pe_and_dividends/_common/fetch/stock_dividends_all",
         )
+        rows = await conn.fetch(view.sql, *view.params)
     else:
-        # Filter by stripped code match (handles mixed suffix conventions)
-        rows = await conn.fetch(
-            """
-            SELECT code,
-                   extract(epoch from ex_dividend_date)::float8 AS ex_dividend_date,
-                   dividend_per_share_pre_tax::float8 AS dividend_per_share_pre_tax
-            FROM stats.stock_dividends
-            WHERE dividend_per_share_pre_tax IS NOT NULL
-              AND dividend_per_share_pre_tax > 0
-              AND REGEXP_REPLACE(code, '\\.(SS|SZ|SH|BJ|HK)$', '') = ANY($1::text[])
-            ORDER BY code, ex_dividend_date ASC
-            """,
-            sorted(stock_codes),
+        # Filter by stripped code match (handles mixed suffix conventions);
+        # stock_dividends_by_codes view.
+        view = render_sql_view(
+            "analysis/pe_and_dividends/_common/fetch/stock_dividends_by_codes",
+            codes=sorted(stock_codes),
         )
+        rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(
             columns=["code", "ex_dividend_date", "dividend_per_share_pre_tax"]
@@ -278,27 +234,12 @@ async def fetch_etf_close_and_dividends(
         return pd.DataFrame(
             columns=["code", "date", "close", "pe", "eps", "implied_dividend_per_share"]
         )
-    rows = await conn.fetch(
-        """
-        SELECT
-            b.code,
-            extract(epoch from b.date)::float8 AS date,
-            b.close::float8 AS close,
-            b.pe::float8 AS pe,
-            -- COALESCE to NaN: an all-NULL column (no-PE codes) would
-            -- otherwise build an object-dtype all-None column in the
-            -- frame — NaN keeps it float64 end to end.
-            COALESCE(b.eps::float8, 'NaN'::float8) AS eps,
-            COALESCE(a.implied_dividend_per_share, 0)::float8 AS implied_dividend_per_share
-        FROM stats.etf_basic_stats b
-        LEFT JOIN stats.etf_adjustment a
-            ON a.date = b.date AND a.code = b.code
-        WHERE b.code = ANY($1::text[])
-          AND b.close IS NOT NULL
-        ORDER BY b.code, b.date ASC
-        """,
-        sorted(codes),
+    # etf_close_and_dividends view: etf_basic_stats + etf_adjustment.
+    view = render_sql_view(
+        "analysis/pe_and_dividends/_common/fetch/etf_close_and_dividends",
+        codes=sorted(codes),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(
             columns=["code", "date", "close", "pe", "eps", "implied_dividend_per_share"]
@@ -323,22 +264,12 @@ async def fetch_stock_close(
     """
     if not codes:
         return pd.DataFrame(columns=["code", "date", "close", "pe", "eps"])
-    rows = await conn.fetch(
-        """
-        SELECT code,
-               extract(epoch from date)::float8 AS date,
-               close::float8 AS close, pe::float8 AS pe,
-               -- COALESCE to NaN: an all-NULL column (no-PE codes) would
-               -- otherwise build an object-dtype all-None column in the
-               -- frame — NaN keeps it float64 end to end.
-               COALESCE(eps::float8, 'NaN'::float8) AS eps
-        FROM stats.stock_basic_stats
-        WHERE code = ANY($1::text[])
-          AND close IS NOT NULL
-        ORDER BY code, date ASC
-        """,
-        sorted(codes),
+    # stock_close view: stock_basic_stats close + pe + eps.
+    view = render_sql_view(
+        "analysis/pe_and_dividends/_common/fetch/stock_close",
+        codes=sorted(codes),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["code", "date", "close", "pe", "eps"])
     cols = rec_cols(rows)
@@ -353,9 +284,13 @@ async def fetch_trading_dates(conn, sec_type: str) -> list[datetime.date]:
     """Fetch distinct trading dates from the identity table for the given
     sec_type. Used as the date axis for trailing-12m DPS computation."""
     identity_table = SEC_TYPE_IDENTITY_TABLE[sec_type]
-    rows = await conn.fetch(
-        f"SELECT DISTINCT date FROM {identity_table} ORDER BY date ASC"
+    # trading_dates view: distinct identity-table dates (the date axis for
+    # trailing-12m DPS compute).
+    view = render_sql_view(
+        "analysis/pe_and_dividends/_common/fetch/trading_dates",
+        identity_table=frag(identity_table),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     return [r["date"] for r in rows if r["date"] is not None]
 
 
@@ -377,21 +312,12 @@ async def fetch_industry_pe_and_close(
     """
     if not codes:
         return pd.DataFrame(columns=["code", "date", "close", "pe"])
-    rows = await conn.fetch(
-        """
-        SELECT
-            b.industry_id AS code,
-            extract(epoch from b.date)::float8 AS date,
-            b.mean_close::float8 AS close,
-            b.mean_pe::float8 AS pe
-        FROM stats.industry_basic_stats b
-        WHERE b.industry_id = ANY($1::text[])
-          AND b.pool_size = 3
-          AND b.mean_close IS NOT NULL
-        ORDER BY b.industry_id, b.date ASC
-        """,
-        sorted(codes),
+    # industry_pe_and_close view: industry_basic_stats pool-'all' slice.
+    view = render_sql_view(
+        "analysis/pe_and_dividends/_common/fetch/industry_pe_and_close",
+        codes=sorted(codes),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["code", "date", "close", "pe"])
     # Whole-column positional unpack + epoch->datetime64[us] at the frame
@@ -424,21 +350,12 @@ async def fetch_industry_member_yields(conn) -> pd.DataFrame:
     (datetime64[us]), dividend_yield (one row per member index with a
     yield on that date).
     """
-    rows = await conn.fetch(
-        """
-        SELECT
-            sc.industry_id AS code,
-            extract(epoch from d.date)::float8 AS date,
-            d.dividend_yield::float8 AS dividend_yield
-        FROM stats.sec_classification sc
-        JOIN analysis.dividends d
-          ON d.code = sc.code AND d.sec_type = 1
-        WHERE sc.type = 'index'
-          AND sc.is_active = TRUE
-          AND sc.industry_id IS NOT NULL
-          AND sc.industry_id <> ''
-        """
+    # industry_member_yields view: analysis.dividends (sec_type=1) joined
+    # to the members' sec_classification industry rows.
+    view = render_sql_view(
+        "analysis/pe_and_dividends/_common/fetch/industry_member_yields",
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["code", "date", "dividend_yield"])
     cols = rec_cols(rows)

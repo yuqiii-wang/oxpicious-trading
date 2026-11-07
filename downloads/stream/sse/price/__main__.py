@@ -72,6 +72,11 @@ Usage:
   python -m downloads.stream.sse.price --no-options     # stream stocks + ETFs + indices
   python -m downloads.stream.sse.price --options-eod    # capture today's options EOD
                                                         # bars once (post-close), exit
+
+The entry point is the :class:`SseStreamDaemon` DownloadJob — the former
+``stream()`` poll-loop body is its ``stream()`` method (called from ``run()``),
+the former ``_emit_*_bars`` module helpers are methods, and the conn-first
+helper modules are the StreamIo / StreamFetcher / StreamCsvBackfill classes.
 """
 from __future__ import annotations
 
@@ -84,6 +89,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from downloads._common import (
+    DownloadJob,
     build_default_session,
     build_headers_with_referer,
     is_trading_day,
@@ -97,21 +103,13 @@ from _common.study_and_select_stocks import (
     load_etf_member_codes,
 )
 
-from ._csv_backfill import BACKFILL_INTERVAL_SEC, backfill_all_csvs
-from ._fetch import build_stream_proxy, fetch_snapshot
-from ._io import (
-    _ensure_conn,
-    _recover_conn,
-    get_intraday_progress,
-    is_intraday_complete,
-    load_bars,
-    write_snapshot_csv,
-)
+from ._csv_backfill import BACKFILL_INTERVAL_SEC, StreamCsvBackfill
+from ._fetch import StreamFetcher, build_stream_proxy
+from ._io import StreamIo, write_snapshot_csv
 from ._model import (
     DEFAULT_BAR_WINDOW,
     DEFAULT_POLL_INTERVAL_SEC,
     AssetStream,
-    aggregate_bars,
     in_trading_hours,
     next_trading_moment,
     sleep_until,
@@ -126,14 +124,9 @@ from ._index import (
 )
 from ._options import (
     OptionsStream,
-    aggregate_options_bars,
     build_options_asset,
     load_options_bars,
-    load_options_oi_base,
-    prepopulate_options_finished_codes,
-    refresh_options_universe,
     run_options_eod_capture,
-    write_options_snapshot_csv,
 )
 from downloads._common.exchanges.sse_options import fetch_options_snapshot
 
@@ -161,454 +154,496 @@ URLS = service_urls(SERVICE)
 SSE_HEADERS = build_headers_with_referer(URLS["referer"], extra={"Accept": "*/*"})
 
 
-def _emit_options_bars(conn, asset: OptionsStream, trade_date: date, verb: str):
-    """Aggregate + upsert one options bar window, isolated from the other assets.
+class SseStreamDaemon(DownloadJob):
+    """DownloadJob for the SSE price streamer — the former ``stream()``
+    poll-loop body is the ``stream()`` method (dispatched from ``run()``),
+    the former ``_emit_options_bars`` / ``_emit_asset_bars`` module helpers
+    are methods, and the helper-module scopes (StreamIo, StreamFetcher,
+    StreamCsvBackfill) are constructed once in ``__init__``.
 
-    The options leg shares the polling loop with stock/etf/index, so an
-    options-side failure here must never propagate — one used to kill the
-    whole streamer at the day's first bar and starve every live page of
-    ticks. Failures are logged and the window dropped (the CSV backfill
-    recovers it on a later startup/periodic pass). Returns the (possibly
-    reconnected) connection.
+    execute() override: the base DownloadJob.execute() would call the lazy
+    ``autoregister()`` unconditionally; the former main() registered the
+    heartbeat ONLY for the long-running mode (``--once`` / ``--options-eod``
+    are one-shot modes that must exit before a beat would matter — a beat
+    from a dying one-shot would make the watchdog think the real service is
+    alive). autoregister derives the same "downloads.stream.sse.price" name
+    (register_service itself is idempotent per process), but the one-shot
+    runs would GAIN a registration they never had, so the base hook is
+    skipped and the former conditional ``register_service`` call is kept
+    verbatim. No single-instance lock existed before — ``service`` stays "".
+
+    Note (pre-existing, preserved verbatim): the trade-date rollover passes
+    ``service=SERVICE`` to ``OptionsStream.refresh_options_universe``, which
+    does not accept that keyword — the call raises TypeError there and the
+    surrounding try/except logs "options daily refresh failed" (as before
+    conversion).
     """
-    try:
-        identity_rows, bar_rows, oi_rows, bar_time = aggregate_options_bars(asset, trade_date)
-        if bar_rows:
-            conn = _ensure_conn(conn)
-            load_options_bars(conn, asset, identity_rows, bar_rows, oi_rows)
-            logger.info(
-                "%s %d %s bars for %s %s",
-                verb, len(bar_rows), asset.name, trade_date, bar_time,
-            )
-    except Exception as e:  # noqa: BLE001
-        logger.error(
-            "options bar emission failed for %s: %s: %s",
-            trade_date, type(e).__name__, e,
-            exc_info=True,
-        )
-        conn = _recover_conn(conn)
-    return conn
 
+    description = ("Stream SSE prices into 5-min OHLCV bars "
+                   "(stocks + ETFs + indices + options).")
+    component = "stream_sse"
+    service = ""  # long-lived daemon with no single-instance lock (as before)
 
-def _emit_asset_bars(
-    conn, asset: AssetStream, trade_date: date, verb: str, etf_member_codes: set,
-):
-    """Aggregate + upsert one 5-min bar window for stock/etf/index, isolated
-    from the other assets.
+    def __init__(self) -> None:
+        super().__init__()
+        self.io = StreamIo()
+        self.fetcher = StreamFetcher()
+        self.backfill = StreamCsvBackfill(self.io)
 
-    Same isolation contract as _emit_options_bars: a bad payload or a
-    rejected write on one asset (e.g. a CheckViolation on its identity
-    rows) must not kill the streamer or starve the other assets — the
-    window is dropped (the periodic CSV backfill recovers it) and the DB
-    session is rolled back / reconnected so the next asset writes on a
-    clean connection. Returns the (possibly reconnected) connection.
-    """
-    try:
-        identity_rows, bar_rows, bar_time = aggregate_bars(
-            asset, trade_date, etf_member_codes=etf_member_codes,
-        )
-        if bar_rows:
-            conn = _ensure_conn(conn)
-            load_bars(conn, asset, identity_rows, bar_rows)
-            logger.info(
-                "%s %d %s bars for %s %s (vol baseline=%d codes)",
-                verb, len(bar_rows), asset.name, trade_date, bar_time,
-                len(asset.prev_bar_cumvol),
-            )
-            # Index bars landed: sync the has_intraday_5mins flag on
-            # index_basic_stats for this date so the frontend knows
-            # intraday data is available.
-            if asset.name == "index":
-                n = sync_index_has_intraday_flag(conn, trade_date)
-                if n:
-                    logger.info("synced has_intraday_5mins=TRUE for %d index rows", n)
-    except Exception as e:  # noqa: BLE001
-        logger.error(
-            "%s bar emission failed for %s: %s: %s",
-            asset.name, trade_date, type(e).__name__, e,
-            exc_info=True,
-        )
-        conn = _recover_conn(conn)
-    return conn
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--interval", type=float, default=None,
+                            help="Poll interval in seconds "
+                                 f"(default: external_request_config JSON for {SERVICE}).")
+        parser.add_argument("--bar-window", type=int, default=DEFAULT_BAR_WINDOW,
+                            help=f"Samples per 5-min bar (default {DEFAULT_BAR_WINDOW}).")
+        parser.add_argument("--once", action="store_true",
+                            help="Emit one bar then exit (dev/test).")
+        parser.add_argument("--no-index", action="store_true",
+                            help="Skip the 指数 tab / index_intraday_5min (stream stocks + ETFs + options only).")
+        parser.add_argument("--no-etf", action="store_true",
+                            help="Skip the 基金 tab / etf_intraday_5min (stream stocks + indices + options only).")
+        parser.add_argument("--no-options", action="store_true",
+                            help="Skip the 期权 endpoints / options_intraday_5min (stream stocks + ETFs + indices only).")
+        parser.add_argument("--options-eod", action="store_true",
+                            help="Capture the current SSE options snapshot once as today's 15:00 EOD bars, then exit (post-close daily capture; idempotent).")
 
-
-# ---------------------------------------------------------------------------
-# Main streaming loop
-# ---------------------------------------------------------------------------
-def stream(
-    poll_interval: Optional[float] = None,
-    bar_window: int = DEFAULT_BAR_WINDOW,
-    once: bool = False,
-    enable_index: bool = True,
-    enable_etf: bool = True,
-    enable_options: bool = True,
-) -> None:
-    # Long-lived daemon: resolve the poll cadence ONCE at startup (None =
-    # CLI left the default, which is the JSON-resolved module constant).
-    if poll_interval is None:
-        poll_interval = DEFAULT_POLL_INTERVAL_SEC
-
-    session = build_default_session(SSE_HEADERS)
-    # One shared proxy paces + audits every SSE leg (stock/ETF/index pages
-    # and the options sweeps all sit behind the same yunhq host).
-    proxy = build_stream_proxy()
-
-    conn = get_db_connection()
-    logger.info("DB ready (stats.stock_intraday_5min / stats.etf_intraday_5min / stats.index_intraday_5min expected to pre-exist).")
-
-    # Load the current ETF-member set once per session (snapshots change
-    # quarterly). Used by aggregate_bars to set is_in_index_or_etf on new stock identity
-    # rows so they don't default to FALSE before the next backfill runs.
-    t0 = _time.time()
-    etf_member_codes = load_etf_member_codes(conn)
-    logger.info(
-        "Loaded %d ETF-member codes (latest snapshot, weight_pct > %.1f%%) in %.1fs",
-        len(etf_member_codes), ETF_WEIGHT_THRESHOLD, _time.time() - t0,
-    )
-
-    # Build the asset-stream contexts. Stocks stream unconditionally; ETFs
-    # and indices are gated on --enable-etf / --enable-index (both default on).
-    # Indices are additionally filtered to codes already present in
-    # stats.index_identity ("only load to existing index").
-    stock_asset = build_stock_asset()
-    assets = [stock_asset]
-
-    if enable_etf:
-        etf_asset = build_etf_asset()
-        assets.append(etf_asset)
-
-    if enable_index:
-        t0 = _time.time()
-        existing_index_codes = load_existing_index_codes(conn)
-        logger.info(
-            "Loaded %d existing index codes from stats.index_identity in %.1fs",
-            len(existing_index_codes), _time.time() - t0,
-        )
-        if existing_index_codes:
-            index_asset = build_index_asset(existing_index_codes)
-            assets.append(index_asset)
+    def execute(self, argv: Optional[list] = None) -> None:
+        """parse → conditional register_service (verbatim former main()) → run()."""
+        if self.args is None:
+            self.parse_argv(argv)
         else:
-            logger.warning(
-                "No existing index codes found in stats.index_identity; "
-                "index streaming disabled (run build_csindex.py first to seed "
-                "index_identity, then restart this service)."
-            )
+            self.apply_args()
+        # Liveness heartbeat for database/stream_watchdog.py — long-running
+        # mode only; the one-shot dev modes exit before a beat would matter.
+        if not self.args.once and not self.args.options_eod:
+            register_service(SERVICE)
+        self.run()
 
-    # Options stream on by default: sweeps the (underlying, expiry-month)
-    # tstyle endpoints each cycle. Universe discovery (underlyings, months,
-    # contract-code map) happens here and again on every trade-date rollover.
-    options_asset = None
-    if enable_options:
-        t0 = _time.time()
-        options_asset = build_options_asset(session, proxy)
-        if options_asset is not None:
-            assets.append(options_asset)
-        else:
-            logger.warning(
-                "Options universe discovery failed; options streaming "
-                "disabled for this run."
-            )
+    def _emit_options_bars(self, conn, asset: OptionsStream, trade_date: date, verb: str):
+        """Aggregate + upsert one options bar window, isolated from the other assets.
 
-    current_trade_date = None
-    last_backfill_time = 0.0
-
-    # Run initial CSV backfill at startup to catch up on any missed data
-    # before entering the polling loop. Uses DB-completeness guard internally.
-    logger.info("Running initial CSV backfill at startup ...")
-    t0 = _time.time()
-    try:
-        n_backfilled = backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
-        if n_backfilled > 0:
-            logger.info(
-                "Initial backfill: %d bars upserted in %.1fs.",
-                n_backfilled, _time.time() - t0,
-            )
-        else:
-            logger.info("Initial backfill: no new bars needed (DB already up to date).")
-    except Exception as e:
-        logger.warning("Initial backfill failed: %s", e)
-    last_backfill_time = _time.time()
-
-    # Pre-populate finished_codes from DB: securities that already have a
-    # 15:00 bar for today. This prevents re-processing if the script restarts
-    # after close. Done per asset (stock/ETF filter exchange='SS'; index
-    # has no exchange column).
-    today = datetime.now().date()
-    if is_trading_day(today):
-        for asset in assets:
-            t0 = _time.time()
-            if asset.name == "stock":
-                prepopulate_stock_finished_codes(conn, today, asset.finished_codes)
-            elif asset.name == "etf":
-                prepopulate_etf_finished_codes(conn, today, asset.finished_codes)
-            elif asset.name == "options":
-                # Same isolation as the streaming loop: a failed options
-                # start must not abort the whole streamer before it begins.
-                try:
-                    prepopulate_options_finished_codes(conn, asset, today)
-                    # OI estimator base: prev-trading-day daily OI per contract.
-                    load_options_oi_base(conn, asset, today)
-                except Exception as e:  # noqa: BLE001
-                    logger.error(
-                        "options startup prepopulate failed for %s: %s: %s",
-                        today, type(e).__name__, e,
-                    )
-            else:
-                prepopulate_index_finished_codes(conn, today, asset.finished_codes)
-            logger.info(
-                "Pre-populated %d finished %s codes from DB for %s in %.1fs",
-                len(asset.finished_codes), asset.name, today, _time.time() - t0,
-            )
-        # Set current_trade_date to avoid clearing finished_codes on first iteration.
-        current_trade_date = today
-
-    logger.info(
-        "stream_sse_price started (poll=%.0fs bar_window=%d once=%s assets=[%s])",
-        poll_interval, bar_window, once, ",".join(a.name for a in assets),
-    )
-
-    try:
-        while True:
-            now = datetime.now()
-
-            # Outside trading hours: flush any partial buffers, then sleep
-            # until the next trading moment. CSV backfill is handled by
-            # download/archive modules (not the streaming loop).
-            if not (is_trading_day(now.date()) and in_trading_hours(now)):
-                for asset in assets:
-                    if not asset.buffer:
-                        continue
-                    logger.info("Session ended; flushing %d partial %s samples.", len(asset.buffer), asset.name)
-                    update_dt = asset.buffer[-1][0]
-                    trade_date = update_dt.date()
-                    if asset.name == "options":
-                        conn = _emit_options_bars(conn, asset, trade_date, "flushed")
-                    else:
-                        conn = _emit_asset_bars(
-                            conn, asset, trade_date, "flushed", etf_member_codes,
-                        )
-                    asset.buffer.clear()
-                if once:
-                    logger.info("--once set and outside trading hours; exiting.")
-                    break
-                nxt = next_trading_moment(now)
+        The options leg shares the polling loop with stock/etf/index, so an
+        options-side failure here must never propagate — one used to kill the
+        whole streamer at the day's first bar and starve every live page of
+        ticks. Failures are logged and the window dropped (the CSV backfill
+        recovers it on a later startup/periodic pass). Returns the (possibly
+        reconnected) connection.
+        """
+        try:
+            identity_rows, bar_rows, oi_rows, bar_time = asset.aggregate_options_bars(trade_date)
+            if bar_rows:
+                conn = self.io._ensure_conn(conn)
+                load_options_bars(conn, asset, identity_rows, bar_rows, oi_rows)
                 logger.info(
-                    "Outside trading hours; sleeping until %s.",
-                    nxt.strftime("%Y-%m-%d %H:%M"),
+                    "%s %d %s bars for %s %s",
+                    verb, len(bar_rows), asset.name, trade_date, bar_time,
                 )
-                sleep_until(nxt)
-                continue
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "options bar emission failed for %s: %s: %s",
+                trade_date, type(e).__name__, e,
+                exc_info=True,
+            )
+            conn = self.io._recover_conn(conn)
+        return conn
 
-            # --- DB completeness check: if all assets already have complete
-            #     intraday data for today (latest bar >= CLOSE_TIME), skip
-            #     polling entirely and sleep until the next trading hour.
-            today = now.date()
-            if is_trading_day(today):
-                all_complete = True
-                progress_msgs = []
-                for asset in assets:
-                    p = get_intraday_progress(conn, asset, today)
-                    pct = (p["n_codes_done"] / p["n_total_codes"] * 100) if p["n_total_codes"] else 0.0
-                    progress_msgs.append(
-                        f"{asset.name}: {p['n_codes_done']}/{p['n_total_codes']} codes "
-                        f"({pct:.1f}%), max_time={p['max_time']}"
-                    )
-                    if not p["complete"]:
-                        all_complete = False
-                if all_complete:
-                    logger.info(
-                        "All assets have complete intraday data for %s "
-                        "(latest bar >= 15:00); skipping polling and sleeping "
-                        "until next trading moment. Details: %s",
-                        today, "; ".join(progress_msgs),
-                    )
-                    # Run a final backfill to ensure CSV files are fully
-                    # reconciled with DB, then sleep.
+    def _emit_asset_bars(
+        self, conn, asset: AssetStream, trade_date: date, verb: str, etf_member_codes: set,
+    ):
+        """Aggregate + upsert one 5-min bar window for stock/etf/index, isolated
+        from the other assets.
+
+        Same isolation contract as _emit_options_bars: a bad payload or a
+        rejected write on one asset (e.g. a CheckViolation on its identity
+        rows) must not kill the streamer or starve the other assets — the
+        window is dropped (the periodic CSV backfill recovers it) and the DB
+        session is rolled back / reconnected so the next asset writes on a
+        clean connection. Returns the (possibly reconnected) connection.
+        """
+        try:
+            identity_rows, bar_rows, bar_time = asset.aggregate_bars(
+                trade_date, etf_member_codes=etf_member_codes,
+            )
+            if bar_rows:
+                conn = self.io._ensure_conn(conn)
+                self.io.load_bars(conn, asset, identity_rows, bar_rows)
+                logger.info(
+                    "%s %d %s bars for %s %s (vol baseline=%d codes)",
+                    verb, len(bar_rows), asset.name, trade_date, bar_time,
+                    len(asset.prev_bar_cumvol),
+                )
+                # Index bars landed: sync the has_intraday_5mins flag on
+                # index_basic_stats for this date so the frontend knows
+                # intraday data is available.
+                if asset.name == "index":
+                    n = sync_index_has_intraday_flag(conn, trade_date)
+                    if n:
+                        logger.info("synced has_intraday_5mins=TRUE for %d index rows", n)
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "%s bar emission failed for %s: %s: %s",
+                asset.name, trade_date, type(e).__name__, e,
+                exc_info=True,
+            )
+            conn = self.io._recover_conn(conn)
+        return conn
+
+    def run(self) -> None:
+        """One daemon entry — the former main() dispatch after registration
+        (verbatim): --options-eod capture, or the streaming loop."""
+        if self.args.options_eod:
+            session = build_default_session(SSE_HEADERS)
+            conn = get_db_connection()
+            try:
+                run_options_eod_capture(session, conn, proxy=build_stream_proxy())
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                session.close()
+            return
+
+        self.stream(
+            poll_interval=self.args.interval,
+            bar_window=self.args.bar_window,
+            once=self.args.once,
+            enable_index=not self.args.no_index,
+            enable_etf=not self.args.no_etf,
+            enable_options=not self.args.no_options,
+        )
+
+    # -----------------------------------------------------------------------
+    # Main streaming loop (the former module-level stream(), verbatim)
+    # -----------------------------------------------------------------------
+    def stream(
+        self,
+        poll_interval: Optional[float] = None,
+        bar_window: int = DEFAULT_BAR_WINDOW,
+        once: bool = False,
+        enable_index: bool = True,
+        enable_etf: bool = True,
+        enable_options: bool = True,
+    ) -> None:
+        # Long-lived daemon: resolve the poll cadence ONCE at startup (None =
+        # CLI left the default, which is the JSON-resolved module constant).
+        if poll_interval is None:
+            poll_interval = DEFAULT_POLL_INTERVAL_SEC
+
+        session = build_default_session(SSE_HEADERS)
+        # One shared proxy paces + audits every SSE leg (stock/ETF/index pages
+        # and the options sweeps all sit behind the same yunhq host).
+        proxy = build_stream_proxy()
+
+        conn = get_db_connection()
+        logger.info("DB ready (stats.stock_intraday_5min / stats.etf_intraday_5min / stats.index_intraday_5min expected to pre-exist).")
+
+        # Load the current ETF-member set once per session (snapshots change
+        # quarterly). Used by aggregate_bars to set is_in_index_or_etf on new stock identity
+        # rows so they don't default to FALSE before the next backfill runs.
+        t0 = _time.time()
+        etf_member_codes = load_etf_member_codes(conn)
+        logger.info(
+            "Loaded %d ETF-member codes (latest snapshot, weight_pct > %.1f%%) in %.1fs",
+            len(etf_member_codes), ETF_WEIGHT_THRESHOLD, _time.time() - t0,
+        )
+
+        # Build the asset-stream contexts. Stocks stream unconditionally; ETFs
+        # and indices are gated on --enable-etf / --enable-index (both default on).
+        # Indices are additionally filtered to codes already present in
+        # stats.index_identity ("only load to existing index").
+        stock_asset = build_stock_asset()
+        assets = [stock_asset]
+
+        if enable_etf:
+            etf_asset = build_etf_asset()
+            assets.append(etf_asset)
+
+        if enable_index:
+            t0 = _time.time()
+            existing_index_codes = load_existing_index_codes(conn)
+            logger.info(
+                "Loaded %d existing index codes from stats.index_identity in %.1fs",
+                len(existing_index_codes), _time.time() - t0,
+            )
+            if existing_index_codes:
+                index_asset = build_index_asset(existing_index_codes)
+                assets.append(index_asset)
+            else:
+                logger.warning(
+                    "No existing index codes found in stats.index_identity; "
+                    "index streaming disabled (run build_csindex.py first to seed "
+                    "index_identity, then restart this service)."
+                )
+
+        # Options stream on by default: sweeps the (underlying, expiry-month)
+        # tstyle endpoints each cycle. Universe discovery (underlyings, months,
+        # contract-code map) happens here and again on every trade-date rollover.
+        options_asset = None
+        if enable_options:
+            t0 = _time.time()
+            options_asset = build_options_asset(session, proxy)
+            if options_asset is not None:
+                assets.append(options_asset)
+            else:
+                logger.warning(
+                    "Options universe discovery failed; options streaming "
+                    "disabled for this run."
+                )
+
+        current_trade_date = None
+        last_backfill_time = 0.0
+
+        # Run initial CSV backfill at startup to catch up on any missed data
+        # before entering the polling loop. Uses DB-completeness guard internally.
+        logger.info("Running initial CSV backfill at startup ...")
+        t0 = _time.time()
+        try:
+            n_backfilled = self.backfill.backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
+            if n_backfilled > 0:
+                logger.info(
+                    "Initial backfill: %d bars upserted in %.1fs.",
+                    n_backfilled, _time.time() - t0,
+                )
+            else:
+                logger.info("Initial backfill: no new bars needed (DB already up to date).")
+        except Exception as e:
+            logger.warning("Initial backfill failed: %s", e)
+        last_backfill_time = _time.time()
+
+        # Pre-populate finished_codes from DB: securities that already have a
+        # 15:00 bar for today. This prevents re-processing if the script restarts
+        # after close. Done per asset (stock/ETF filter exchange='SS'; index
+        # has no exchange column).
+        today = datetime.now().date()
+        if is_trading_day(today):
+            for asset in assets:
+                t0 = _time.time()
+                if asset.name == "stock":
+                    prepopulate_stock_finished_codes(conn, today, asset.finished_codes)
+                elif asset.name == "etf":
+                    prepopulate_etf_finished_codes(conn, today, asset.finished_codes)
+                elif asset.name == "options":
+                    # Same isolation as the streaming loop: a failed options
+                    # start must not abort the whole streamer before it begins.
                     try:
-                        backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
-                    except Exception:
-                        pass
+                        asset.prepopulate_options_finished_codes(conn, today)
+                        # OI estimator base: prev-trading-day daily OI per contract.
+                        asset.load_options_oi_base(conn, today)
+                    except Exception as e:  # noqa: BLE001
+                        logger.error(
+                            "options startup prepopulate failed for %s: %s: %s",
+                            today, type(e).__name__, e,
+                        )
+                else:
+                    prepopulate_index_finished_codes(conn, today, asset.finished_codes)
+                logger.info(
+                    "Pre-populated %d finished %s codes from DB for %s in %.1fs",
+                    len(asset.finished_codes), asset.name, today, _time.time() - t0,
+                )
+            # Set current_trade_date to avoid clearing finished_codes on first iteration.
+            current_trade_date = today
+
+        logger.info(
+            "stream_sse_price started (poll=%.0fs bar_window=%d once=%s assets=[%s])",
+            poll_interval, bar_window, once, ",".join(a.name for a in assets),
+        )
+
+        try:
+            while True:
+                now = datetime.now()
+
+                # Outside trading hours: flush any partial buffers, then sleep
+                # until the next trading moment. CSV backfill is handled by
+                # download/archive modules (not the streaming loop).
+                if not (is_trading_day(now.date()) and in_trading_hours(now)):
+                    for asset in assets:
+                        if not asset.buffer:
+                            continue
+                        logger.info("Session ended; flushing %d partial %s samples.", len(asset.buffer), asset.name)
+                        update_dt = asset.buffer[-1][0]
+                        trade_date = update_dt.date()
+                        if asset.name == "options":
+                            conn = self._emit_options_bars(conn, asset, trade_date, "flushed")
+                        else:
+                            conn = self._emit_asset_bars(
+                                conn, asset, trade_date, "flushed", etf_member_codes,
+                            )
+                        asset.buffer.clear()
                     if once:
-                        logger.info("--once set and data complete; exiting.")
+                        logger.info("--once set and outside trading hours; exiting.")
                         break
                     nxt = next_trading_moment(now)
                     logger.info(
-                        "Data complete for %s; sleeping until %s.",
-                        today, nxt.strftime("%Y-%m-%d %H:%M"),
+                        "Outside trading hours; sleeping until %s.",
+                        nxt.strftime("%Y-%m-%d %H:%M"),
                     )
                     sleep_until(nxt)
                     continue
 
-            # --- Periodic CSV backfill (every BACKFILL_INTERVAL_SEC):
-            #     Recovers missed data from CSV files, guarded by DB
-            #     completeness check inside backfill_csv_file.
-            if _time.time() - last_backfill_time >= BACKFILL_INTERVAL_SEC:
-                logger.info("Periodic CSV backfill check ...")
-                try:
-                    n_bf = backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
-                    if n_bf > 0:
-                        logger.info("Periodic backfill: %d bars upserted.", n_bf)
-                except Exception as e:
-                    logger.warning("Periodic backfill failed: %s", e)
-                last_backfill_time = _time.time()
-
-            # New trading day: reset per-asset streaming state.
-            if current_trade_date != now.date():
-                current_trade_date = now.date()
-                for asset in assets:
-                    asset.prev_bar_cumvol.clear()
-                    asset.finished_codes.clear()
-                    asset.buffer.clear()
-                    if asset.name == "options":
-                        asset.prev_bar_cumamt.clear()
-                if options_asset is not None:
-                    # New listings/expiries roll daily — re-discover the
-                    # universe (underlyings, months, contract-code map)
-                    # and advance the OI base to the fresh daily snapshot.
-                    # Same isolation as _emit_options_bars: the options leg
-                    # must not take the other assets' day down with it.
-                    try:
-                        refresh_options_universe(options_asset, session, proxy,
-                                                 service=SERVICE)
-                        load_options_oi_base(conn, options_asset, current_trade_date)
-                    except Exception as e:  # noqa: BLE001
-                        logger.error(
-                            "options daily refresh failed for %s: %s: %s",
-                            current_trade_date, type(e).__name__, e,
+                # --- DB completeness check: if all assets already have complete
+                #     intraday data for today (latest bar >= CLOSE_TIME), skip
+                #     polling entirely and sleep until the next trading hour.
+                today = now.date()
+                if is_trading_day(today):
+                    all_complete = True
+                    progress_msgs = []
+                    for asset in assets:
+                        p = self.io.get_intraday_progress(conn, asset, today)
+                        pct = (p["n_codes_done"] / p["n_total_codes"] * 100) if p["n_total_codes"] else 0.0
+                        progress_msgs.append(
+                            f"{asset.name}: {p['n_codes_done']}/{p['n_total_codes']} codes "
+                            f"({pct:.1f}%), max_time={p['max_time']}"
                         )
-                logger.info("New trading day %s; per-asset state reset.", current_trade_date)
-
-            cycle_start = _time.time()
-            once_done = False  # set when --once emits a bar this cycle
-            for asset in assets:
-                # Per-asset isolation: a fetch or CSV-write failure on one
-                # asset skips only that asset's sample this cycle; the
-                # other assets keep streaming.
-                try:
-                    if asset.name == "options":
-                        update_dt, snapshot = fetch_options_snapshot(
-                            session, asset.months, service=SERVICE, proxy=proxy,
+                        if not p["complete"]:
+                            all_complete = False
+                    if all_complete:
+                        logger.info(
+                            "All assets have complete intraday data for %s "
+                            "(latest bar >= 15:00); skipping polling and sleeping "
+                            "until next trading moment. Details: %s",
+                            today, "; ".join(progress_msgs),
                         )
-                    else:
-                        update_dt, snapshot = fetch_snapshot(
-                            session,
-                            list_url=asset.list_url,
-                            proxy=proxy,
-                            allowed_codes=asset.allowed_codes,
+                        # Run a final backfill to ensure CSV files are fully
+                        # reconciled with DB, then sleep.
+                        try:
+                            self.backfill.backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
+                        except Exception:
+                            pass
+                        if once:
+                            logger.info("--once set and data complete; exiting.")
+                            break
+                        nxt = next_trading_moment(now)
+                        logger.info(
+                            "Data complete for %s; sleeping until %s.",
+                            today, nxt.strftime("%Y-%m-%d %H:%M"),
                         )
-
-                    if update_dt is None or not snapshot:
-                        logger.warning("Poll returned no %s data; skipping cycle.", asset.name)
+                        sleep_until(nxt)
                         continue
 
-                    asset.buffer.append((update_dt, snapshot))
-                    if asset.name == "options":
-                        csv_path = write_options_snapshot_csv(
-                            update_dt, snapshot, asset.contract_map,
-                            csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
+                # --- Periodic CSV backfill (every BACKFILL_INTERVAL_SEC):
+                #     Recovers missed data from CSV files, guarded by DB
+                #     completeness check inside backfill_csv_file.
+                if _time.time() - last_backfill_time >= BACKFILL_INTERVAL_SEC:
+                    logger.info("Periodic CSV backfill check ...")
+                    try:
+                        n_bf = self.backfill.backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
+                        if n_bf > 0:
+                            logger.info("Periodic backfill: %d bars upserted.", n_bf)
+                    except Exception as e:
+                        logger.warning("Periodic backfill failed: %s", e)
+                    last_backfill_time = _time.time()
+
+                # New trading day: reset per-asset streaming state.
+                if current_trade_date != now.date():
+                    current_trade_date = now.date()
+                    for asset in assets:
+                        asset.prev_bar_cumvol.clear()
+                        asset.finished_codes.clear()
+                        asset.buffer.clear()
+                        if asset.name == "options":
+                            asset.prev_bar_cumamt.clear()
+                    if options_asset is not None:
+                        # New listings/expiries roll daily — re-discover the
+                        # universe (underlyings, months, contract-code map)
+                        # and advance the OI base to the fresh daily snapshot.
+                        # Same isolation as _emit_options_bars: the options leg
+                        # must not take the other assets' day down with it.
+                        try:
+                            options_asset.refresh_options_universe(session, proxy,
+                                                                   service=SERVICE)
+                            options_asset.load_options_oi_base(conn, current_trade_date)
+                        except Exception as e:  # noqa: BLE001
+                            logger.error(
+                                "options daily refresh failed for %s: %s: %s",
+                                current_trade_date, type(e).__name__, e,
+                            )
+                    logger.info("New trading day %s; per-asset state reset.", current_trade_date)
+
+                cycle_start = _time.time()
+                once_done = False  # set when --once emits a bar this cycle
+                for asset in assets:
+                    # Per-asset isolation: a fetch or CSV-write failure on one
+                    # asset skips only that asset's sample this cycle; the
+                    # other assets keep streaming.
+                    try:
+                        if asset.name == "options":
+                            update_dt, snapshot = fetch_options_snapshot(
+                                session, asset.months, service=SERVICE, proxy=proxy,
+                            )
+                        else:
+                            update_dt, snapshot = self.fetcher.fetch_snapshot(
+                                session,
+                                list_url=asset.list_url,
+                                proxy=proxy,
+                                allowed_codes=asset.allowed_codes,
+                            )
+
+                        if update_dt is None or not snapshot:
+                            logger.warning("Poll returned no %s data; skipping cycle.", asset.name)
+                            continue
+
+                        asset.buffer.append((update_dt, snapshot))
+                        if asset.name == "options":
+                            csv_path = asset.write_options_snapshot_csv(
+                                update_dt, snapshot,
+                                csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
+                            )
+                        else:
+                            csv_path = write_snapshot_csv(
+                                update_dt, snapshot,
+                                csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        logger.error(
+                            "%s sample cycle failed: %s: %s",
+                            asset.name, type(e).__name__, e,
+                            exc_info=True,
                         )
-                    else:
-                        csv_path = write_snapshot_csv(
-                            update_dt, snapshot,
-                            csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
-                        )
-                except Exception as e:  # noqa: BLE001
-                    logger.error(
-                        "%s sample cycle failed: %s: %s",
-                        asset.name, type(e).__name__, e,
-                        exc_info=True,
+                        continue
+
+                    logger.info(
+                        "sample %d/%d @ %s: %d %ss -> %s",
+                        len(asset.buffer), bar_window,
+                        update_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        len(snapshot), asset.name,
+                        csv_path.name,
                     )
-                    continue
+                    if len(asset.buffer) >= bar_window:
+                        trade_date = update_dt.date()
+                        if asset.name == "options":
+                            conn = self._emit_options_bars(conn, asset, trade_date, "emitted")
+                        else:
+                            conn = self._emit_asset_bars(
+                                conn, asset, trade_date, "emitted", etf_member_codes,
+                            )
+                        # Buffer cleared even on emission failure: the window
+                        # is dropped (recovered later by the CSV backfill);
+                        # keeping it would grow the buffer unboundedly while a
+                        # persistent failure retries every cycle.
+                        asset.buffer.clear()
+                        if once:
+                            logger.info("--once set; exiting after first bar.")
+                            once_done = True
+                            break
 
-                logger.info(
-                    "sample %d/%d @ %s: %d %ss -> %s",
-                    len(asset.buffer), bar_window,
-                    update_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                    len(snapshot), asset.name,
-                    csv_path.name,
-                )
-                if len(asset.buffer) >= bar_window:
-                    trade_date = update_dt.date()
-                    if asset.name == "options":
-                        conn = _emit_options_bars(conn, asset, trade_date, "emitted")
-                    else:
-                        conn = _emit_asset_bars(
-                            conn, asset, trade_date, "emitted", etf_member_codes,
-                        )
-                    # Buffer cleared even on emission failure: the window
-                    # is dropped (recovered later by the CSV backfill);
-                    # keeping it would grow the buffer unboundedly while a
-                    # persistent failure retries every cycle.
-                    asset.buffer.clear()
-                    if once:
-                        logger.info("--once set; exiting after first bar.")
-                        once_done = True
-                        break
+                if once_done:
+                    break
 
-            if once_done:
-                break
-
-            # Sleep for the remainder of the poll interval to keep cadence.
-            elapsed = _time.time() - cycle_start
-            sleep_sec = poll_interval - elapsed
-            if sleep_sec > 0:
-                _time.sleep(sleep_sec)
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user; exiting.")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-        session.close()
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Stream SSE prices into 5-min OHLCV bars (stocks + ETFs + indices + options).")
-    ap.add_argument("--interval", type=float, default=None,
-                    help="Poll interval in seconds "
-                         f"(default: external_request_config JSON for {SERVICE}).")
-    ap.add_argument("--bar-window", type=int, default=DEFAULT_BAR_WINDOW,
-                    help=f"Samples per 5-min bar (default {DEFAULT_BAR_WINDOW}).")
-    ap.add_argument("--once", action="store_true",
-                    help="Emit one bar then exit (dev/test).")
-    ap.add_argument("--no-index", action="store_true",
-                    help="Skip the 指数 tab / index_intraday_5min (stream stocks + ETFs + options only).")
-    ap.add_argument("--no-etf", action="store_true",
-                    help="Skip the 基金 tab / etf_intraday_5min (stream stocks + indices + options only).")
-    ap.add_argument("--no-options", action="store_true",
-                    help="Skip the 期权 endpoints / options_intraday_5min (stream stocks + ETFs + indices only).")
-    ap.add_argument("--options-eod", action="store_true",
-                    help="Capture the current SSE options snapshot once as today's 15:00 EOD bars, then exit (post-close daily capture; idempotent).")
-    args = ap.parse_args()
-
-    # Liveness heartbeat for database/stream_watchdog.py — long-running
-    # mode only; the one-shot dev modes exit before a beat would matter.
-    if not args.once and not args.options_eod:
-        register_service("downloads.stream.sse.price")
-
-    if args.options_eod:
-        session = build_default_session(SSE_HEADERS)
-        conn = get_db_connection()
-        try:
-            run_options_eod_capture(session, conn, proxy=build_stream_proxy())
+                # Sleep for the remainder of the poll interval to keep cadence.
+                elapsed = _time.time() - cycle_start
+                sleep_sec = poll_interval - elapsed
+                if sleep_sec > 0:
+                    _time.sleep(sleep_sec)
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user; exiting.")
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
             session.close()
-        return
-
-    stream(
-        poll_interval=args.interval,
-        bar_window=args.bar_window,
-        once=args.once,
-        enable_index=not args.no_index,
-        enable_etf=not args.no_etf,
-        enable_options=not args.no_options,
-    )
 
 
 if __name__ == "__main__":
-    main()
+    SseStreamDaemon().execute()

@@ -96,13 +96,13 @@ async def main() -> None:
 
     if args.payload_file:
         payload = read_payload_file(args.payload_file)
-        # Flow start for the text.llm_qa_by_ask.request_ids backlink — all
+        # Flow start for the llm.llm_qa_by_ask.request_ids backlink — all
         # of the ask's LLM requests (plain completion, or search + compose
         # + ask on the online-search path) happen below.
         import datetime
         flow_start = datetime.datetime.now(datetime.timezone.utc)
         # Payload-mode asks are persisted to the ask-history tables
-        # (text.llm_qa_by_ask + context/images/keywords — see
+        # (llm.llm_qa_by_ask + context/images/keywords — see
         # llm_agents.llm_ask.storage) after the answer exists; failures
         # persist too (status='failed'), then re-raise so the service
         # still reports them. Persistence itself is fail-soft.

@@ -11,11 +11,6 @@ import type {
   MovAveSpreadOhlcGapDay,
   MovAveSpreadOhlcRow,
 } from "@shared/types";
-import {
-  ROOF_FLOOR_PERIODS,
-  ohlcPivotCteSql,
-  ohlcPivotSelectSql,
-} from "./ohlc-pivot.js";
 
 /** One row of the "ohlc" extras group: the full 7-window rolling extrema
  *  (anchors + dates + line slopes + change/days since the last extreme)
@@ -26,25 +21,12 @@ export interface DbExtremaRow extends QueryResultRow {
   [column: string]: unknown;
 }
 
-/** SQL for the "ohlc" extras group: the FULL 7-window extrema pivot driven
- *  off the detail rows' dates (index-aligned with the chart response;
- *  sec_type binds through the $1 parameter at call time). */
-export function buildOhlcExtrasSql(): string {
-  return `
-    WITH d AS MATERIALIZED (
-      SELECT * FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-        AND code = ANY($2::text[])
-    ),
-    ${ohlcPivotCteSql(ROOF_FLOOR_PERIODS)}
-    SELECT
-      d.date,
-      ${ohlcPivotSelectSql(ROOF_FLOOR_PERIODS, "")}
-    FROM d
-    LEFT JOIN ohlc ON ohlc.code = d.code AND ohlc.date = d.date
-    ORDER BY d.date ASC
-  `;
-}
+/** The "ohlc" group's query: the FULL 7-window extrema pivot driven off
+ *  the detail rows' dates (index-aligned with the chart response). The
+ *  SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/ohlc-extras/extrema_pivot
+ *  (the ohlc-pivot CTE/SELECT fragments passed as fragment args by
+ *  extras.ts). */
 
 /** Map one DB extrema row to a top-level ohlc row (all 7 windows).
  *  Used to build the "ohlc" extras group — ONE copy per date shared by all
@@ -161,27 +143,12 @@ export interface DbOhlcGapRow {
   pattern: string | null;
 }
 
-/** SQL for the "gaps" extras group: one (sec_type, code)'s daily OHLC gap
+/** The "gaps" group's query: one (sec_type, code)'s daily OHLC gap
  *  anatomy + pattern block (analysis.mov_ave_spreads_detail_ohlc_gaps — PK
  *  (code, sec_type, date) on HASH(code) partitions; estimated rows are
- *  excluded at build time). Serves the Top-10% OHLC Days group. */
-export function buildOhlcGapsSql(): string {
-  return `
-    SELECT
-      g.date,
-      g.gap_open::float8  AS gap_open,
-      g.intra::float8     AS intra,
-      g.uw::float8        AS uw,
-      g.lw::float8        AS lw,
-      g.uw_top10,
-      g.lw_top10,
-      g.pattern
-    FROM analysis.mov_ave_spreads_detail_ohlc_gaps g
-    WHERE g.sec_type = $1
-      AND g.code = ANY($2::text[])
-    ORDER BY g.date
-  `;
-}
+ *  excluded at build time). Serves the Top-10% OHLC Days group. The SELECT
+ *  lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/ohlc-extras/gaps. */
 
 /** DB row → API shape (fraction legs to num, booleans as-is, dates
  *  ISO-formatted). */

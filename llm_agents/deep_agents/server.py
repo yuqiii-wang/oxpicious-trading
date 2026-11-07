@@ -6,11 +6,16 @@ the spawn paid a WSL cold start per ask and had to smuggle the payload
 through a temp file because of the Windows ~32k command-line limit —
 here the whole request IS one JSON body).
 
-  POST /run   {goal, data?, model?, max_steps?, system?, temperature?}
+  POST /run   {goal, data?, model?, max_steps?, system?, temperature?,
+               plan_template_id?}
               → one thread (runner.run_thread): the plan node proposes
                 the plan JSON from the request's plan prompts
-                (text.ai_prompts prompt_type 2) and persists it as
-                text.deep_agent_states rows; the execute node is the
+                (llm.ai_prompts prompt_type 2) and persists it as
+                llm.deep_agent_states rows — UNLESS plan_template_id
+                names a SAVED PLAN TEMPLATE (the Thread Graph Save
+                button's placeholder-templated plan), in which case the
+                plan materializes from the template with the run's
+                input args, zero planning LLM calls; the execute node is the
                 DeepAgent tool-calling loop over the read-only DB MCP
                 daemon (127.0.0.1:8765/mcp), ticking each plan step via
                 its update_plan_step tool; finalize settles the thread;
@@ -98,6 +103,7 @@ from _common.pre_check import pre_check
 
 pre_check(min_sys_gb=4, require_gpu=False)
 
+import logging
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402
@@ -110,11 +116,18 @@ from typing import Any, Dict, List, Optional, Union  # noqa: E402
 import uvicorn  # noqa: E402
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
+from pydantic import ConfigDict, BaseModel, Field  # noqa: E402
+
+from llm_agents.deep_agents.run_input import RunInput, ScopePick
 
 from _common.service_heartbeat import register_service  # noqa: E402
 from llm_agents.deep_agents import events  # noqa: E402
-from llm_agents.deep_agents.graph import runner  # noqa: E402
+from llm_agents.deep_agents.langgraph import runner  # noqa: E402  (settle_thread)
+from llm_agents.deep_agents.langgraph.super_run import run_thread  # noqa: E402
+from llm_agents.deep_agents.llm_config import (  # noqa: E402
+    build_chat_provider, load_llm_config,
+)
+from llm_agents.deep_agents.limits import run_limits  # noqa: E402
 from llm_agents.deep_agents.core.mcp import (  # noqa: E402
     DEFAULT_MCP_URL, McpToolClient,
 )
@@ -125,20 +138,56 @@ logger = logging.getLogger("deep_agents.server")
 SERVICE = "llm_agents.deep_agents.server"
 DEFAULT_PORT = 8766
 
-# Constructed once at startup (the API-key resolution + retrying
-# transport are per-process, not per-run).
+# The ENV-KEY fallback provider, constructed once at startup (the
+# retrying transport is per-process). Every RUN resolves its own
+# provider first — static.llm_config at agent start
+# (llm_config.load_llm_config) — and only a missing row / failed load
+# runs on this one.
 _provider: Optional[ZhipuChatProvider] = None
 
-# In-flight runs: thread_id → the task executing one /run. The /stop
-# endpoint cancels these tasks; each popped itself in a finally when it
-# finishes (stopped, failed or done).
-_active_runs: Dict[str, "asyncio.Task[RunResponse]"] = {}
+class ActiveRunRegistry:
+    """The daemon's in-flight run registry (2026-11-07 — the former
+    ``_active_runs`` / ``_active_started`` module globals): thread_id →
+    the task executing one /run, plus each run's registration time (the
+    event loop's monotonic clock, opaque ordering info for the /active
+    endpoint — the UI's live-view poll reads the endpoint to open the
+    graph the moment the click lands, ~20-80s before the plan phase
+    persists any rows). /stop cancels the tasks; each pops itself in a
+    finally when it finishes (stopped, failed or done)."""
 
-# When each in-flight run was registered (thread_id → the event loop's
-# monotonic time, opaque ordering info for the /active endpoint) — the
-# UI's live-view poll reads the endpoint to open the graph the moment
-# the click lands, ~20-80s before the plan phase persists any rows.
-_active_started: Dict[str, float] = {}
+    def __init__(self) -> None:
+        self._runs: Dict[str, "asyncio.Task[RunResponse]"] = {}
+        self._started: Dict[str, float] = {}
+
+    def register(self, thread_id: str, task: "asyncio.Task[RunResponse]",
+                 started_at: float) -> None:
+        self._runs[thread_id] = task
+        self._started[thread_id] = started_at
+
+    def pop(self, thread_id: str) -> None:
+        self._runs.pop(thread_id, None)
+        self._started.pop(thread_id, None)
+
+    def is_active(self, thread_id: str) -> bool:
+        return thread_id in self._runs
+
+    def get(self, thread_id: str) -> Optional["asyncio.Task[RunResponse]"]:
+        return self._runs.get(thread_id)
+
+    def snapshot(self) -> Dict[str, "asyncio.Task[RunResponse]"]:
+        """A copy — /stop cancels the copy so the registry never mutates
+        during iteration."""
+        return dict(self._runs)
+
+    def ids(self) -> List[str]:
+        return sorted(self._runs)
+
+    def started_at(self, thread_id: str) -> float:
+        return self._started.get(thread_id, 0.0)
+
+
+# The process-wide registry (one daemon process).
+RUNS = ActiveRunRegistry()
 
 # The failure note settle_thread writes over steps still in_progress
 # when the run was stopped (the audit trail's "why it ended").
@@ -152,12 +201,31 @@ class RunRequest(BaseModel):
     goal: str = Field(min_length=1)
     data: Optional[Dict[str, Any]] = None
     model: Optional[str] = None
-    # Default raised 12 → 20 (and the cap 60 → 100) alongside the
-    # per-request token ceiling: the runaway guard is max_tokens now,
-    # so the step budgets stay generous.
-    max_steps: int = Field(default=20, ge=1, le=100)
+    # The provider override ('zhipu' | 'dummy' — build_chat_provider's
+    # labels): an explicit request wins over the active secret_config
+    # row, the same way model does. 'dummy' runs the offline test
+    # double — in-process canned replies, or HTTP-sim (the real
+    # transport against the running dummy llm server) when the row's
+    # api_url applies; a run named dummy never spends zhipu tokens.
+    provider: Optional[str] = None
+    # The step budget defaults from the static deep_agent_config at
+    # REQUEST time (run_limits() — config edits apply without a daemon
+    # restart); ge/le stay the hard API sanity bound. Raised 12 → 20
+    # (and the cap 60 → 100) alongside the per-request token ceiling:
+    # the runaway guard is max_tokens now, so the budgets stay
+    # generous.
+    max_steps: int = Field(
+        default_factory=lambda: run_limits().max_conversation_steps,
+        ge=1, le=100)
     system: Optional[str] = None
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # A SAVED PLAN TEMPLATE (a type-plan row of
+    # llm.deep_agent_langgraph_templates) to plan from instead of the
+    # LLM — the Thread Graph Save button's placeholder-templated plan,
+    # materialized by the plan session with the run's input args (zero
+    # planning LLM calls; fail-soft — an unusable template falls back
+    # to the normal proposal session).
+    plan_template_id: Optional[int] = Field(default=None, ge=1)
 
 
 class PlanStepState(BaseModel):
@@ -171,8 +239,12 @@ class PlanStepState(BaseModel):
 
 
 class RunResponse(BaseModel):
-    """The final answer plus how the agent got there (and under which
-    thread — set only when the run planned + persisted). ``stopped`` is
+    """The final answer plus how the agent got there. ``thread_id`` is
+    the run's CHAIN ROOT (the plan thread — the id the run was
+    registered under); ``super_thread_id`` is the same chain id (the
+    plan/custom/result threads all share it — the UI resolves the
+    whole chain through either). ``plan`` is the settled CHAIN
+    snapshot (every thread's rows in chain order). ``stopped`` is
     true when POST /stop cancelled the run before it finished (empty
     answer; the plan snapshot, when a plan had persisted, is the
     settled one)."""
@@ -182,6 +254,7 @@ class RunResponse(BaseModel):
     n_tool_calls: int
     model: str
     thread_id: Optional[str] = None
+    super_thread_id: Optional[str] = None
     plan: List[PlanStepState] = Field(default_factory=list)
     stopped: bool = False
 
@@ -235,8 +308,8 @@ async def active() -> ActiveResponse:
     UI's live-view poll, which opens the thread graph on the first id
     (the graph itself 404-polls until the plan rows persist)."""
     return ActiveResponse(active=[
-        ActiveRun(thread_id=thread_id, started_at=_active_started.get(thread_id, 0.0))
-        for thread_id in sorted(_active_runs)
+        ActiveRun(thread_id=thread_id, started_at=RUNS.started_at(thread_id))
+        for thread_id in RUNS.ids()
     ])
 
 
@@ -277,23 +350,39 @@ class ExternalStepsResponse(BaseModel):
           response_model=ExternalStepsResponse)
 async def add_thread_steps(thread_id: str,
                            req: ExternalStepsRequest) -> ExternalStepsResponse:
-    """External topology change on a RUNNING thread (see the module
+    """External topology change on a RUNNING run (see the module
     header). The liveness gate is THIS process's run registry — the one
-    daemon that owns the graph; the guarantees (history kept, other
-    paths' future nodes kept, pickup next hop) live in
-    authorities.external_add_steps."""
-    if thread_id not in _active_runs:
+    daemon that owns the graphs. Any chain member id resolves the run;
+    the steps land on the chain thread that still has runnable rows
+    (the custom or result graph's lane — the root's plan row is never
+    the target); the guarantees (history kept, other paths' future
+    nodes kept, pickup next hop) live in authorities.external_add_steps."""
+    if not RUNS.is_active(thread_id):
         return JSONResponse(
             status_code=409,
             content={"detail": "thread is not running on this daemon "
                                "(settled, unknown, or another process)"})
     from llm_agents.deep_agents.planning.authorities import (
-        ExternalPlanError, external_add_steps,
+        ExternalPlanError, PlanAuthority,
     )
+    from llm_agents.deep_agents.planning.store import (PLAN_STORE)
+    # Resolve the chain's ACTIVE lane: the member with pending or
+    # in_progress rows (fall back to the named thread — a run still in
+    # its plan phase has none yet, and the add then 400s in the
+    # authority's pending-rows check, the old behavior).
+    lane_id = thread_id
+    try:
+        for member in await PLAN_STORE.fetch_chain_threads(thread_id):
+            rows = await PLAN_STORE.list_thread_states(member)
+            if any(s.status in ("pending", "in_progress") for s in rows):
+                lane_id = member
+                break
+    except Exception as exc:  # noqa: BLE001 — degrade to the named thread
+        logger.warning("chain lane resolve failed (%s): %s", thread_id, exc)
     raw = [s.model_dump(exclude_none=True) for s in req.add_steps]
     try:
-        added = await external_add_steps(
-            thread_id, raw, after_ordinal=req.after_ordinal)
+        added = await PlanAuthority.external_add_steps(
+            lane_id, raw, after_ordinal=req.after_ordinal)
     except ExternalPlanError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     return ExternalStepsResponse(added=[
@@ -330,32 +419,68 @@ async def _run_one(req: RunRequest, thread_id: str) -> RunResponse:
     task running this). A cancellation unwinds the graph at its current
     await (the in-flight LLM/MCP call dies with it, so no further LLM
     spend); the fail-soft settle keeps the thread's audit trail closed
-    and the response reports stopped instead of failing."""
+    and the response reports stopped instead of failing.
+
+    The provider + model resolve AT AGENT START: static.llm_config's
+    active row (llm_config.load_llm_config — one DB read per run, never
+    cached past it) names the provider (build_chat_provider — zhipu or
+    the dummy test double) and becomes a fresh key/endpoint/model; no
+    row or a failed load falls back to the lifespan-built env-key
+    provider and the class DEFAULT_MODEL. An explicit RunRequest.model
+    / RunRequest.provider still wins over the config's — a request
+    naming a DIFFERENT provider than the row runs that provider on its
+    own defaults (the row's key/endpoint/model do not leak across)."""
+    cfg = await load_llm_config()
+    if cfg is not None or req.provider:
+        label = (req.provider
+                 or (cfg.provider if cfg is not None
+                     else "")).strip().lower()
+        row_applies = cfg is not None and (
+            not req.provider
+            or req.provider.strip().lower() == cfg.provider)
+        provider = build_chat_provider(
+            label,
+            api_key=cfg.api_key if row_applies else None,
+            api_url=cfg.api_url if row_applies else None)
+    else:
+        # No row, no request override — the lifespan-built env-key
+        # provider (its key resolved once at startup).
+        assert _provider is not None  # lifespan ran before any request
+        provider = _provider
+        row_applies = False
+    model = (req.model
+             or (cfg.model_name if row_applies else None)
+             or ZhipuChatProvider.DEFAULT_MODEL)
     mcp = McpToolClient(url=DEFAULT_MCP_URL)
     async with mcp:
         try:
-            outcome = await runner.run_thread(
-                _provider, mcp, goal=req.goal, data=req.data,
-                model=req.model, max_steps=req.max_steps,
+            outcome = await run_thread(
+                provider, mcp, goal=req.goal, data=req.data,
+                model=model, max_steps=req.max_steps,
                 system=req.system, temperature=req.temperature,
-                thread_id=thread_id)
+                thread_id=thread_id,
+                plan_template_id=req.plan_template_id)
         except asyncio.CancelledError:
             plan_rows: List[Any] = []
             try:
+                # Chain-aware: the stop settle closes every thread the
+                # run minted (plan / custom / result).
                 plan_rows = await runner.settle_thread(
                     thread_id, failure=STOPPED_FAILURE)
             except Exception as exc:  # noqa: BLE001 — fail-soft settle
                 logger.warning("stopped-thread settle failed: %s", exc)
             return RunResponse(
                 answer="", steps=0, n_tool_calls=0,
-                model=req.model or ZhipuChatProvider.DEFAULT_MODEL,
+                model=model,
                 thread_id=thread_id if plan_rows else None,
+                super_thread_id=thread_id,
                 plan=_plan_states(plan_rows), stopped=True)
         return RunResponse(
             answer=outcome.result.answer, steps=outcome.result.steps,
             n_tool_calls=outcome.n_tool_calls,
-            model=req.model or ZhipuChatProvider.DEFAULT_MODEL,
+            model=model,
             thread_id=outcome.thread_id,
+            super_thread_id=outcome.super_thread_id or outcome.thread_id,
             plan=_plan_states(outcome.plan),
         )
 
@@ -366,32 +491,35 @@ async def run(req: RunRequest) -> RunResponse:
     # The thread_id is minted HERE (not inside run_thread) so the run is
     # registered — and stoppable — from its first await onward.
     thread_id = uuid.uuid4().hex
+    req.data = RunInput.validate_boundary(req.data)
     task = asyncio.create_task(_run_one(req, thread_id))
-    _active_runs[thread_id] = task
-    _active_started[thread_id] = asyncio.get_running_loop().time()
+    RUNS.register(thread_id, task, asyncio.get_running_loop().time())
     # The run's birth announcement — the /ws channel's first event: the
     # UI creates + loads the Generate click's Summary History record on
     # it (the running planning node row lands in the same instants
-    # through run_thread's begin_thread).
-    events.publish({"type": "thread_started", "thread_id": thread_id,
-                    "ts": events.now_iso()})
+    # through run_thread's begin_thread). The chain id rides along so
+    # clients can group the later threads' state events (the custom /
+    # result graphs publish under their own thread ids).
+    events.publish(events.DeepAgentEvent(
+        type=events.EventType.THREAD_STARTED, thread_id=thread_id,
+        super_thread_id=thread_id))
     try:
         response = await task
     except BaseException:
         # The engine itself failed (the nodes' own fail-soft lanes never
         # reach here) — the run is over either way; announce it so no
         # client keeps waiting on a live view.
-        events.publish({"type": "thread_settled", "thread_id": thread_id,
-                        "outcome": "failed", "ts": events.now_iso()})
+        events.publish(events.DeepAgentEvent(
+            type=events.EventType.THREAD_SETTLED, thread_id=thread_id,
+            super_thread_id=thread_id, outcome="failed"))
         raise
     finally:
-        _active_runs.pop(thread_id, None)
-        _active_started.pop(thread_id, None)
-    events.publish({
-        "type": "thread_settled", "thread_id": thread_id,
-        "outcome": ("stopped" if response.stopped
-                    else "completed" if response.answer else "failed"),
-        "ts": events.now_iso()})
+        RUNS.pop(thread_id)
+    events.publish(events.DeepAgentEvent(
+        type=events.EventType.THREAD_SETTLED, thread_id=thread_id,
+        super_thread_id=thread_id,
+        outcome=("stopped" if response.stopped
+                 else "completed" if response.answer else "failed")))
     return response
 
 
@@ -494,7 +622,7 @@ async def ws(socket: WebSocket) -> None:
 
     try:
         await socket.send_text(events.encode({
-            "type": "hello", "active": sorted(_active_runs),
+            "type": "hello", "active": RUNS.ids(),
             "ts": events.now_iso()}))
         while not closed.is_set():
             event = await next_event()
@@ -518,11 +646,11 @@ async def ws(socket: WebSocket) -> None:
 @app.post("/stop", response_model=StopResponse)
 async def stop(req: StopRequest) -> StopResponse:
     if req.thread_id is not None:
-        task = _active_runs.get(req.thread_id)
+        task = RUNS.get(req.thread_id)
         targets: Dict[str, Any] = (
             {req.thread_id: task} if task is not None else {})
     else:
-        targets = dict(_active_runs)
+        targets = RUNS.snapshot()
     for run_task in targets.values():
         run_task.cancel()
     return StopResponse(stopped=len(targets), thread_ids=sorted(targets))

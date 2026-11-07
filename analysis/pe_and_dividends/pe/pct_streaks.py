@@ -103,6 +103,7 @@ from _common.db_commons import (
     DEFAULT_MAX_REPLICA_LAG_MB,
 )
 from _common.df_utils import host_array, safe_columns
+from _common.sql_views import render_sql_view
 from analysis._common import upsert_analysis_identity
 from analysis.pe_and_dividends.pe.config import (
     PE_PCT_GAP_TOLERANCE,
@@ -111,7 +112,6 @@ from analysis.pe_and_dividends.pe.config import (
     PE_PCT_STREAKS_DESCRIPTION,
     PE_PCT_STREAKS_NAME,
     PE_PCT_STREAKS_TABLE,
-    PE_PCT_TABLE,
     PE_PCT_TYPES,
 )
 
@@ -143,17 +143,20 @@ async def fetch_bands_async(
     the table holds the current scope's bands (in --code mode the bands
     step deleted + recomputed the code's bands first).
     """
-    where = "WHERE sec_type = $1"
-    args: list = [SEC_TYPE_CODE[sec_type]]
     if code is not None:
-        where += " AND code = $2"
-        args.append(code)
-    rows = await conn.fetch(
-        f"SELECT sec_type, code, date_year_month, period, pct_type, "
-        f"high_val, low_val FROM {PE_PCT_TABLE} {where} "
-        f"ORDER BY code, date_year_month",
-        *args,
-    )
+        # fetch_bands_by_code view: single-code rebuild scope.
+        view = render_sql_view(
+            "analysis/pe_and_dividends/pe/pct_streaks/fetch_bands_by_code",
+            sec_type=SEC_TYPE_CODE[sec_type], code=code,
+        )
+    else:
+        # fetch_bands_by_sec_type view: the whole sec_type's bands.
+        view = render_sql_view(
+            "analysis/pe_and_dividends/pe/pct_streaks/"
+            "fetch_bands_by_sec_type",
+            sec_type=SEC_TYPE_CODE[sec_type],
+        )
+    rows = await conn.fetch(view.sql, *view.params)
     cols = rec_cols(rows)
     if not cols:
         return pd.DataFrame(

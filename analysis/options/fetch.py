@@ -29,6 +29,7 @@ import pandas as pd
 
 from _common.build_commons import rec_cols
 from _common.df_utils import epoch_col_to_dt64, host_array
+from _common.sql_views import frag, render_sql_view
 from analysis.options.compute._shared import _apply_open_expiry_collapse
 from analysis.options.config import (
     SKEWNESS_TABLE_NAME,
@@ -101,28 +102,11 @@ async def fetch_options_skewness_rows(conn, sec_type: str | None = None) -> pd.D
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT
-            extract(epoch from t.date)::float8 AS date,
-            t.contract_code,
-            t.option_type,
-            t.underlying_code,
-            extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            k.strike_price::float8 AS strike_price,
-            s.underlying_close::float8 AS underlying_close,
-            v.open_interest::float8 AS open_interest
-        FROM stats.options_terms t
-        JOIN stats.options_strike k
-          ON k.date = t.date AND k.contract_code = t.contract_code
-        JOIN stats.options_settlement s
-          ON s.date = t.date AND s.contract_code = t.contract_code
-        JOIN stats.options_volume_oi v
-          ON v.date = t.date AND v.contract_code = t.contract_code
-        WHERE {_SKEWNESS_VALID_WHERE}
-        {sec_filter}
-        ORDER BY t.option_type, t.underlying_code, t.expiry_date, t.date
-    """
-    rows = await conn.fetch(sql)
+    # skewness_rows view (sec_filter = the optional venue fragment).
+    view = render_sql_view(
+        "analysis/options/fetch/skewness_rows", sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=SKEWNESS_FETCH_COLUMNS)
 
@@ -268,20 +252,12 @@ async def fetch_expiry_identity_rows(conn, sec_type: str | None = None) -> list:
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT DISTINCT extract(epoch from t.date)::float8 AS date,
-               t.option_type, t.underlying_code,
-               extract(epoch from t.expiry_date)::float8 AS expiry_date
-        FROM stats.options_terms t
-        JOIN stats.options_strike k
-          ON k.date = t.date AND k.contract_code = t.contract_code
-        JOIN stats.options_settlement s
-          ON s.date = t.date AND s.contract_code = t.contract_code
-        WHERE {_SKEWNESS_VALID_WHERE}
-          {sec_filter}
-        ORDER BY date, option_type, underlying_code, expiry_date
-    """
-    rows = await conn.fetch(sql)
+    # expiry_identity_rows view — pipeline 0's source pull.
+    view = render_sql_view(
+        "analysis/options/fetch/expiry_identity_rows",
+        sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return []
 
@@ -330,27 +306,11 @@ async def fetch_oi_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT
-            extract(epoch from t.date)::float8 AS date,
-            t.contract_code,
-            t.option_type,
-            t.underlying_code,
-            extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            v.open_interest::float8 AS open_interest,
-            s.underlying_close::float8 AS underlying_close
-        FROM stats.options_terms t
-        JOIN stats.options_strike k
-          ON k.date = t.date AND k.contract_code = t.contract_code
-        JOIN stats.options_settlement s
-          ON s.date = t.date AND s.contract_code = t.contract_code
-        JOIN stats.options_volume_oi v
-          ON v.date = t.date AND v.contract_code = t.contract_code
-        WHERE {_SKEWNESS_VALID_WHERE}
-          {sec_filter}
-        ORDER BY t.underlying_code, t.expiry_date, t.date
-    """
-    rows = await conn.fetch(sql)
+    # oi_rows view — per-expiry OI stats compute input.
+    view = render_sql_view(
+        "analysis/options/fetch/oi_rows", sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=OI_FETCH_COLUMNS)
 
@@ -454,36 +414,11 @@ async def fetch_iv_skew_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT
-            extract(epoch from t.date)::float8 AS date,
-            t.contract_code,
-            t.option_type,
-            t.underlying_code,
-            extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            k.strike_price::float8 AS strike_price,
-            s.underlying_close::float8 AS underlying_close,
-            v.open_interest::float8 AS open_interest,
-            g.implied_vol::float8 AS implied_vol,
-            g.delta::float8 AS delta,
-            g.theta::float8 AS theta,
-            g.gamma::float8 AS gamma,
-            g.vega::float8 AS vega,
-            g.rho::float8 AS rho
-        FROM stats.options_terms t
-        JOIN stats.options_strike k
-          ON k.date = t.date AND k.contract_code = t.contract_code
-        JOIN stats.options_settlement s
-          ON s.date = t.date AND s.contract_code = t.contract_code
-        JOIN stats.options_volume_oi v
-          ON v.date = t.date AND v.contract_code = t.contract_code
-        JOIN stats.options_greeks g
-          ON g.date = t.date AND g.contract_code = t.contract_code
-        WHERE {_IV_SKEW_VALID_WHERE}
-          {sec_filter}
-        ORDER BY t.underlying_code, t.expiry_date, t.date
-    """
-    rows = await conn.fetch(sql)
+    # iv_skew_rows view — IV/greek skew + bands-IV compute input.
+    view = render_sql_view(
+        "analysis/options/fetch/iv_skew_rows", sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=IV_SKEW_FETCH_COLUMNS)
 
@@ -601,31 +536,13 @@ async def fetch_vol_index_rows(conn, sec_type: str | None = None) -> pd.DataFram
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT
-            extract(epoch from t.date)::float8 AS date,
-            t.contract_code,
-            t.option_type,
-            t.underlying_code,
-            t.underlying_target_type,
-            extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            t.days_to_expiry,
-            k.strike_price::float8 AS strike_price,
-            s.underlying_close::float8 AS underlying_close,
-            s.settle::float8 AS settle
-        FROM stats.options_terms t
-        JOIN stats.options_strike k
-          ON k.date = t.date AND k.contract_code = t.contract_code
-        JOIN stats.options_settlement s
-          ON s.date = t.date AND s.contract_code = t.contract_code
-        JOIN stats.options_volume_oi v
-          ON v.date = t.date AND v.contract_code = t.contract_code
-        WHERE {_VOL_INDEX_VALID_WHERE}
-          {sec_filter}
-        ORDER BY t.underlying_code, t.date, t.expiry_date,
-                 k.strike_price, t.option_type
-    """
-    rows = await conn.fetch(sql)
+    # vol_index_rows view — raw-settlement basis for the CBOE-style
+    # model-free vol index.
+    view = render_sql_view(
+        "analysis/options/fetch/vol_index_rows",
+        sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=VOL_INDEX_FETCH_COLUMNS)
 
@@ -774,28 +691,12 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT
-            extract(epoch from t.date)::float8 AS date,
-            t.contract_code,
-            t.option_type,
-            t.underlying_code,
-            extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            k.strike_price::float8 AS strike_price,
-            v.open_interest::float8 AS open_interest,
-            s.underlying_close::float8 AS underlying_close
-        FROM stats.options_terms t
-        JOIN stats.options_strike k
-          ON k.date = t.date AND k.contract_code = t.contract_code
-        JOIN stats.options_volume_oi v
-          ON v.date = t.date AND v.contract_code = t.contract_code
-        LEFT JOIN stats.options_settlement s
-          ON s.date = t.date AND s.contract_code = t.contract_code
-        WHERE k.strike_price > 0
-          {sec_filter}
-        ORDER BY t.option_type, t.underlying_code, t.expiry_date, t.date
-    """
-    rows = await conn.fetch(sql)
+    # walls_rows view — strike/OI/underlying_close basis for the zone
+    # wall compute.
+    view = render_sql_view(
+        "analysis/options/fetch/walls_rows", sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=WALLS_FETCH_COLUMNS)
 
@@ -835,31 +736,13 @@ async def fetch_computed_zone_rows(
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT
-            extract(epoch from w.date)::float8 AS date,
-            w.underlying_code,
-            w.option_type,
-            w.wall_low::float8 AS wall_low,
-            w.wall_high::float8 AS wall_high,
-            w.wall_oi::float8 AS wall_oi,
-            w.mass_share::float8 AS mass_share,
-            w.state,
-            w.strength_score::float8 AS strength_score
-        FROM analysis.options_walls w
-        WHERE w.wall_type = 'zone'
-          AND EXISTS (
-              SELECT 1
-              FROM stats.options_terms t
-              JOIN stats.options_strike k
-                ON k.date = t.date AND k.contract_code = t.contract_code
-              WHERE t.date = w.date
-                AND t.underlying_code = w.underlying_code
-                {sec_filter}
-          )
-        ORDER BY w.underlying_code, w.date
-    """
-    rows = await conn.fetch(sql)
+    # computed_zone_rows view — the walls step's zone rows scoped to
+    # codes with live option terms (bands exit-quality context).
+    view = render_sql_view(
+        "analysis/options/fetch/computed_zone_rows",
+        sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=ZONE_ROWS_FETCH_COLUMNS)
 
@@ -954,31 +837,13 @@ async def fetch_moneyness_rows(conn, sec_type: str | None = None) -> pd.DataFram
     Dates stay datetime64 (compute boundary).
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT
-            extract(epoch from t.date)::float8 AS date,
-            t.contract_code,
-            t.option_type,
-            t.underlying_code,
-            extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            k.strike_price::float8 AS strike_price,
-            s.underlying_close::float8 AS underlying_close,
-            v.open_interest::float8 AS open_interest,
-            g.implied_vol::float8 AS implied_vol
-        FROM stats.options_terms t
-        LEFT JOIN stats.options_strike k
-          ON k.date = t.date AND k.contract_code = t.contract_code
-        LEFT JOIN stats.options_settlement s
-          ON s.date = t.date AND s.contract_code = t.contract_code
-        LEFT JOIN stats.options_volume_oi v
-          ON v.date = t.date AND v.contract_code = t.contract_code
-        LEFT JOIN stats.options_greeks g
-          ON g.date = t.date AND g.contract_code = t.contract_code
-        WHERE 1=1
-          {sec_filter}
-        ORDER BY t.underlying_code, t.date, t.expiry_date
-    """
-    rows = await conn.fetch(sql)
+    # moneyness_rows view — LEFT-join basis (NULL-tolerant), exactly the
+    # former live SQL's scoped CTE.
+    view = render_sql_view(
+        "analysis/options/fetch/moneyness_rows",
+        sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=MONEYNESS_FETCH_COLUMNS)
 
@@ -1115,23 +980,12 @@ async def fetch_vol_spot_corr_rows(
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
     """
     sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT extract(epoch from v.date)::float8 AS date,
-               v.underlying_code,
-               v.vol_index_30d::float8 AS vol_index_30d,
-               s.close::float8 AS spot_close
-        FROM analysis.options_vol_index v
-        LEFT JOIN analysis.options_spot_daily s
-          ON s.underlying_code = v.underlying_code AND s.date = v.date
-        WHERE EXISTS (
-            SELECT 1
-            FROM stats.options_terms t
-            WHERE t.underlying_code = v.underlying_code
-              {sec_filter}
-        )
-        ORDER BY v.underlying_code, v.date
-    """
-    rows = await conn.fetch(sql)
+    # vol_spot_corr_rows view — vol-index rows LEFT-joined to spot closes.
+    view = render_sql_view(
+        "analysis/options/fetch/vol_spot_corr_rows",
+        sec_filter=frag(sec_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=VOL_SPOT_CORR_FETCH_COLUMNS)
 
@@ -1237,7 +1091,8 @@ async def fetch_stored_max_corr_dates(
     from analysis.options.config import VOL_SPOT_CORR_TABLE_NAME
 
     rows = await conn.fetch(
-        f"SELECT underlying_code, MAX(date) AS max_date "
+        f"SELECT underlying_code, "
+        f"extract(epoch from MAX(date))::float8 AS max_date "
         f"FROM {VOL_SPOT_CORR_TABLE_NAME} GROUP BY underlying_code"
     )
     columns = ["underlying_code", "max_date"]
@@ -1247,39 +1102,6 @@ async def fetch_stored_max_corr_dates(
     df = _records_frame(rows, columns)
     df["max_date"] = epoch_col_to_dt64(df["max_date"], index=df.index)
     return df
-
-
-async def fetch_null_corr5_pairs(
-    conn,
-) -> pd.DataFrame:
-    """Stored (underlying_code, date) pairs whose corr_5d is still NULL —
-    rows written before the column existed (the stride-20 era, and daily
-    rows written by interim runs). The pipeline re-emits them so the
-    upsert fills the new column; every other value is recomputed
-    identically (trailing windows at a fixed date are immutable).
-
-    Returns a DataFrame with the PK columns (dates datetime64).
-
-    Args:
-        conn: async DB connection.
-    """
-    from analysis.options.config import (
-        VOL_SPOT_CORR_PK_COLUMNS,
-        VOL_SPOT_CORR_TABLE_NAME,
-    )
-
-    rows = await conn.fetch(
-        f"SELECT underlying_code, "
-        f"extract(epoch from date)::float8 AS date "
-        f"FROM {VOL_SPOT_CORR_TABLE_NAME} "
-        f"WHERE corr_5d IS NULL"
-    )
-    if not rows:
-        return pd.DataFrame(columns=VOL_SPOT_CORR_PK_COLUMNS)
-
-    df = _records_frame(rows, VOL_SPOT_CORR_PK_COLUMNS)
-    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
-    return df[VOL_SPOT_CORR_PK_COLUMNS].drop_duplicates()
 
 
 async def fetch_missing_vol_spot_corr_dates(
@@ -1293,11 +1115,7 @@ async def fetch_missing_vol_spot_corr_dates(
     the stride grid seed PLUS every session strictly after each
     underlying's latest stored corr date — so a new trading day produces
     exactly one new row per underlying (a multi-day gap backfills each
-    day), while the stored history is never touched. Stored rows whose
-    corr_5d is still NULL (written before the column existed — the
-    stride-20 era) are ALSO returned for re-upsert: they are all stride-5
-    candidates, so the upsert fills the new column without touching any
-    other value.
+    day), while the stored history is never touched.
 
     Args:
         conn: async DB connection.
@@ -1316,16 +1134,13 @@ async def fetch_missing_vol_spot_corr_dates(
 
     rows = await conn.fetch(
         f"SELECT underlying_code, "
-        f"extract(epoch from date)::float8 AS date, "
-        f"(corr_5d IS NULL) AS needs_5d "
+        f"extract(epoch from date)::float8 AS date "
         f"FROM {VOL_SPOT_CORR_TABLE_NAME}"
     )
     if not rows:
         return sorted(candidate_set)
 
-    df = _records_frame(
-        rows, VOL_SPOT_CORR_PK_COLUMNS + ["needs_5d"],
-    )
+    df = _records_frame(rows, VOL_SPOT_CORR_PK_COLUMNS)
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     # _missing_pk_tuples with an empty existing set = plain tuple
     # materialization (python dates — same shape as the candidate tuples).
@@ -1334,9 +1149,4 @@ async def fetch_missing_vol_spot_corr_dates(
         [],
         VOL_SPOT_CORR_PK_COLUMNS,
     ))
-    null_5d = set(_missing_pk_tuples(
-        df.loc[df["needs_5d"], VOL_SPOT_CORR_PK_COLUMNS].drop_duplicates(),
-        [],
-        VOL_SPOT_CORR_PK_COLUMNS,
-    ))
-    return sorted((candidate_set - stored) | null_5d)
+    return sorted(candidate_set - stored)

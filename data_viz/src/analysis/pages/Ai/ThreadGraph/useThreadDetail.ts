@@ -98,6 +98,10 @@ export function useThreadDetail(
           activeRef.current = true; // transient failure — keep trying
         }
       } finally {
+        // Release the in-flight guard — without this the next poll tick
+        // (and every event-channel push tick) no-ops at the busy check
+        // below and the graph freezes on its first fetch.
+        busyRef.current = false;
         if (!cancelled) {
           first = false;
           setLoading(false);

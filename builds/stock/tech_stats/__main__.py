@@ -3,11 +3,12 @@
 Run via ``python -m builds.stock.tech_stats`` (add ``--date YYYY-MM-DD``
 to force a single-date refresh; add ``--force`` for a full recompute).
 
-For integrated mode (called from builds.stock), import run_tech_stats_chunked:
-    from builds.stock.tech_stats import run_tech_stats_chunked
+For integrated mode (called from builds.stock), construct TechStatsRunner:
+    from builds.stock.tech_stats import TechStatsRunner
 
-The :class:`StockTechStatsBuild` entry class (a :class:`DataBuild`
-subclass) owns the runtime lifecycle + common argparse (--force/--date)
+The :class:`StockTechStatsBuild` entry class (a :class:`StockBuild`
+subclass — inheritance mirrors the directory layout) owns the runtime
+lifecycle + common argparse (--force/--date)
 + header/wall time; the runner module is imported lazily inside run()
 (this package's __init__ re-exports the pandas-using runner).
 """
@@ -15,15 +16,18 @@ from __future__ import annotations
 
 from datetime import date
 
-from _common.data_build import DataBuild
+from builds.stock.__main__ import StockBuild
 
 
-class StockTechStatsBuild(DataBuild):
+class StockTechStatsBuild(StockBuild):
     """``python -m builds.stock.tech_stats`` — lifecycle + delegation."""
 
     title = ("BUILD STOCK TECH_STATS  ·  "
              "MA5/20/60/120/255 + EMA6/12/20/26/60/120/255 from close")
     component = "tech_stats"
+    # StockBuild delegates argv to its pipeline.cli (allow_unknown_args
+    # True); this child owns its argparse — restore the strict default.
+    allow_unknown_args = False
 
     def add_arguments(self, parser) -> None:
         from builds.stock.tech_stats import SOURCE_TABLE, TABLE
@@ -51,7 +55,7 @@ class StockTechStatsBuild(DataBuild):
 
     async def run(self) -> None:
         from _common.build_commons import forced_date_scope
-        from builds.stock.tech_stats import run_tech_stats_chunked
+        from builds.stock.tech_stats.runner import TechStatsRunner
 
         conn = await self.connect_db()
         try:
@@ -68,8 +72,8 @@ class StockTechStatsBuild(DataBuild):
                     {r["date"] for r in rows}, self.forced_date,
                     source_label=str(self.SOURCE_TABLE),
                 )
-            total = await run_tech_stats_chunked(
-                conn, force=self.args.force,
+            total = await TechStatsRunner(conn).run(
+                force=self.args.force,
                 chunk_size=self.args.chunk_size, verbose=True,
                 target_dates=target_dates,
             )

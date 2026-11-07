@@ -42,7 +42,7 @@ pointing one way (providers/cli -> core, never back):
     adviser ask request; screenshots default the model to the
     provider's vision model).
   ``storage.py``  — ask-history persistence: every payload-mode ask is
-    appended to text.llm_qa_by_ask (+ ask context, screenshots in
+    appended to llm.llm_qa_by_ask (+ ask context, screenshots in
     multi_media.src_images, derived keywords) — fail-soft.
   ``cli.py``     — argparse CLI (ask via --question or --payload-file,
     --json).

@@ -31,6 +31,12 @@ Usage::
     python -m downloads.macro.gov.articles --start-date 2025-01-01
     python -m downloads.macro.gov.articles --max-articles 5       # test run
     python -m downloads.macro.gov.articles --force                # full re-crawl
+
+The entry point is the :class:`GovArticlesDownload` DownloadJob — the former
+``main()`` body is its ``run()`` and the crawl orchestration lives on the
+:class:`GovArticlesFetcher` class (``download_articles`` + ``fetch_detail``,
+bodies unchanged); the pure keyword/slug/HTML/markdown helpers stay
+module-level.
 """
 from __future__ import annotations
 
@@ -54,6 +60,7 @@ from downloads._common import (  # noqa: E402
     AntiBotProxy,
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
+    DownloadJob,
     antibot_config_for,
     build_default_session,
     resolve_out_dir,
@@ -267,60 +274,6 @@ def build_markdown(
 
 
 # ----------------------------------------------------------------------------
-# Detail fetcher
-# ----------------------------------------------------------------------------
-def fetch_detail(
-    session: Any,
-    proxy: AntiBotProxy,
-    url: str,
-    *,
-    max_retries: int = 2,
-) -> Optional[str]:
-    """Fetch a gov.cn article detail page HTML via the anti-bot proxy.
-
-    Returns the HTML string, or None on hard failure. Retries on transient
-    network errors with exponential backoff (max_retries / backoff base from
-    the service's external_request_config JSON row, former inline constants
-    as fallback); the proxy handles fingerprint rotation, the ``random``
-    query param, host-blocking detection, and the inter-request sleep
-    cadence (its timeouts come from the JSON row).
-    """
-    headers = dict(COMMON_BASE_HEADERS)
-    headers["Referer"] = GOV_LIST_URL
-
-    # Retry policy from the service's external_request_config JSON row
-    # (max_retries=2, retry_backoff_sec=1); the former inline constants
-    # apply when the row omits them.
-    row_max_retries, row_backoff_sec = retry_policy_for(SERVICE)
-    if row_max_retries is not None:
-        max_retries = row_max_retries
-    backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
-
-    for attempt in range(1, max_retries + 1):
-        if proxy.is_blocked(url):
-            logger.error("  host blocked, aborting detail fetch: %s", url)
-            return None
-        resp = proxy.get(
-            session, url,
-            headers=headers,
-            logger=logger, log_tag="  ",
-        )
-        if resp is None:
-            logger.warning("  detail fetch failed (attempt %d/%d): %s", attempt, max_retries, url)
-            if attempt < max_retries:
-                import time
-                time.sleep(min(backoff_sec * 2 ** attempt, 30))
-            continue
-        if len(resp.content) < GOV_MIN_VALID_BYTES:
-            logger.warning("  detail too small (%d bytes): %s", len(resp.content), url)
-            return None
-        resp.encoding = resp.apparent_encoding or "utf-8"
-        return resp.text
-
-    return None
-
-
-# ----------------------------------------------------------------------------
 # Index CSV
 # ----------------------------------------------------------------------------
 def write_index_csv(rows: List[Dict[str, str]], out_path: Path) -> None:
@@ -333,244 +286,316 @@ def write_index_csv(rows: List[Dict[str, str]], out_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------------
-# Main orchestrator
+# Main orchestrator — the GovArticlesFetcher crawl engine
 # ----------------------------------------------------------------------------
-def download_articles(
-    *,
-    out_root: Optional[str] = None,
-    start_date: Optional[str] = None,
-    sleep_sec: Optional[float] = None,
-    max_articles: Optional[int] = None,
-    force: bool = False,
-    titles_csv: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Scan gov_news titles for keyword matches and crawl matched detail pages.
+class GovArticlesFetcher:
+    """The gov.cn 政策解读 article-detail crawl engine — the former
+    ``download_articles`` / ``fetch_detail`` functions as methods with
+    unchanged bodies. Stateless: sessions and proxies are built per run."""
 
-    By default the run is **incremental**: when ``articles_index.csv`` already
-    exists, only matched titles on/after its latest ``pub_date`` are scanned
-    (same-day additions are re-checked; cached ``.md`` files skip re-fetches).
-    ``--force`` re-scans all titles and re-fetches every matched detail page.
+    # ------------------------------------------------------------------------
+    # Detail fetcher
+    # ------------------------------------------------------------------------
+    def fetch_detail(
+        self,
+        session: Any,
+        proxy: AntiBotProxy,
+        url: str,
+        *,
+        max_retries: int = 2,
+    ) -> Optional[str]:
+        """Fetch a gov.cn article detail page HTML via the anti-bot proxy.
 
-    *sleep_sec* defaults to the service's external_request_config JSON row
-    (sleep_sec); an explicit value overrides only that base sleep.
+        Returns the HTML string, or None on hard failure. Retries on transient
+        network errors with exponential backoff (max_retries / backoff base from
+        the service's external_request_config JSON row, former inline constants
+        as fallback); the proxy handles fingerprint rotation, the ``random``
+        query param, host-blocking detection, and the inter-request sleep
+        cadence (its timeouts come from the JSON row).
+        """
+        headers = dict(COMMON_BASE_HEADERS)
+        headers["Referer"] = GOV_LIST_URL
 
-    Returns a summary dict with counts and output paths.
-    """
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIRNAME, out_root)
-    articles_dir = out_dir / ARTICLES_SUBDIR
-    index_path = out_dir / INDEX_FILENAME
-    csv_path = Path(titles_csv) if titles_csv else out_dir / TITLES_FILENAME
+        # Retry policy from the service's external_request_config JSON row
+        # (max_retries=2, retry_backoff_sec=1); the former inline constants
+        # apply when the row omits them.
+        row_max_retries, row_backoff_sec = retry_policy_for(SERVICE)
+        if row_max_retries is not None:
+            max_retries = row_max_retries
+        backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
 
-    start = datetime.strptime(start_date or DEFAULT_START_DATE, "%Y-%m-%d").date()
+        for attempt in range(1, max_retries + 1):
+            if proxy.is_blocked(url):
+                logger.error("  host blocked, aborting detail fetch: %s", url)
+                return None
+            resp = proxy.get(
+                session, url,
+                headers=headers,
+                logger=logger, log_tag="  ",
+            )
+            if resp is None:
+                logger.warning("  detail fetch failed (attempt %d/%d): %s", attempt, max_retries, url)
+                if attempt < max_retries:
+                    import time
+                    time.sleep(min(backoff_sec * 2 ** attempt, 30))
+                continue
+            if len(resp.content) < GOV_MIN_VALID_BYTES:
+                logger.warning("  detail too small (%d bytes): %s", len(resp.content), url)
+                return None
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            return resp.text
 
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
-    # overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
+        return None
 
-    # Incremental state: latest pub_date already present in the index CSV.
-    index_floor: Optional[date] = None
-    if not force:
-        index_floor = latest_csv_date(read_csv_rows(index_path))
-        if index_floor is not None:
-            logger.info("Incremental: index has data up to %s — only newer titles scanned", index_floor)
+    def download_articles(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        start_date: Optional[str] = None,
+        sleep_sec: Optional[float] = None,
+        max_articles: Optional[int] = None,
+        force: bool = False,
+        titles_csv: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Scan gov_news titles for keyword matches and crawl matched detail pages.
 
-    # 1. Load keyword rows + build reverse map
-    rows = load_keyword_maps()
-    rev_map = build_reverse_map_from_rows(rows)
-    type_industry = KW_CATEGORY_TYPE_CODE["industry"]
-    type_broadmarket = KW_CATEGORY_TYPE_CODE["broadmarket"]
-    logger.info(
-        "Loaded %d keywords (%d industry rows, %d broadmarket rows) "
-        "from static.keyword_maps",
-        len(rev_map),
-        sum(1 for r in rows if r.category_type == type_industry),
-        sum(1 for r in rows if r.category_type == type_broadmarket),
-    )
+        By default the run is **incremental**: when ``articles_index.csv`` already
+        exists, only matched titles on/after its latest ``pub_date`` are scanned
+        (same-day additions are re-checked; cached ``.md`` files skip re-fetches).
+        ``--force`` re-scans all titles and re-fetches every matched detail page.
 
-    # 2. Read titles CSV
-    titles = read_titles_csv(csv_path)
-    logger.info("Read %d titles from %s", len(titles), csv_path.name)
+        *sleep_sec* defaults to the service's external_request_config JSON row
+        (sleep_sec); an explicit value overrides only that base sleep.
 
-    # 3. Scan titles for keyword matches, filter to start_date + matched
-    matched: List[Tuple[Dict[str, str], Dict[str, Set[str]]]] = []
-    for row in titles:
-        pd = datetime.strptime(row["pub_date"], "%Y-%m-%d").date()
-        if pd < start:
-            continue
-        if index_floor is not None and pd < index_floor:
-            continue
-        cats = extract_categories(row.get("title", ""), rev_map)
-        if not cats:
-            continue
-        matched.append((row, cats))
+        Returns a summary dict with counts and output paths.
+        """
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIRNAME, out_root)
+        articles_dir = out_dir / ARTICLES_SUBDIR
+        index_path = out_dir / INDEX_FILENAME
+        csv_path = Path(titles_csv) if titles_csv else out_dir / TITLES_FILENAME
 
-    logger.info(
-        "Matched %d / %d titles (start=%s, index_floor=%s)%s",
-        len(matched), len(titles), start,
-        index_floor if index_floor is not None else "-",
-        f" — capping to {max_articles}" if max_articles else "",
-    )
+        start = datetime.strptime(start_date or DEFAULT_START_DATE, "%Y-%m-%d").date()
 
-    if max_articles is not None and max_articles >= 0:
-        matched = matched[:max_articles]
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+        # overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
 
-    # 4. Fetch detail pages for matched titles
-    session = build_default_session()
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
+        # Incremental state: latest pub_date already present in the index CSV.
+        index_floor: Optional[date] = None
+        if not force:
+            index_floor = latest_csv_date(read_csv_rows(index_path))
+            if index_floor is not None:
+                logger.info("Incremental: index has data up to %s — only newer titles scanned", index_floor)
 
-    index_rows: List[Dict[str, str]] = []
-    fetched = skipped_cached = failed = 0
-
-    # Track runs of consecutively cached files between actual fetches so we
-    # can emit a single concise summary line (date range + count) instead of
-    # one INFO line per cached file. The run is flushed lazily when the next
-    # fetch starts, or once at the end of the loop for any trailing tail.
-    cached_run_start_date: Optional[str] = None
-    cached_run_end_date: Optional[str] = None
-    cached_run_count = 0
-
-    def _flush_cached_run(idx: int, total: int, *, tail: bool = False) -> None:
-        if cached_run_count == 0:
-            return
-        tag = "tail (no further fetch)" if tail else "before next fetch"
+        # 1. Load keyword rows + build reverse map
+        rows = load_keyword_maps()
+        rev_map = build_reverse_map_from_rows(rows)
+        type_industry = KW_CATEGORY_TYPE_CODE["industry"]
+        type_broadmarket = KW_CATEGORY_TYPE_CODE["broadmarket"]
         logger.info(
-            "[%d/%d] skipped %d cached files (%s -> %s) %s",
-            idx, total, cached_run_count,
-            cached_run_start_date, cached_run_end_date, tag,
+            "Loaded %d keywords (%d industry rows, %d broadmarket rows) "
+            "from static.keyword_maps",
+            len(rev_map),
+            sum(1 for r in rows if r.category_type == type_industry),
+            sum(1 for r in rows if r.category_type == type_broadmarket),
         )
 
-    try:
-        for i, (row, cats) in enumerate(matched, 1):
-            if proxy.is_blocked(GOV_HOST):
-                logger.warning("  host blocked — stopping at article %d/%d", i, len(matched))
-                break
+        # 2. Read titles CSV
+        titles = read_titles_csv(csv_path)
+        logger.info("Read %d titles from %s", len(titles), csv_path.name)
 
-            pub_date = row["pub_date"]
-            title = row.get("title", "")
-            url = row.get("url", "")
-            industries = sorted(cats.get("industry", set()))
-            broadmarkets = sorted(cats.get("broadmarket", set()))
-            md_path = detail_md_path(articles_dir, url)
+        # 3. Scan titles for keyword matches, filter to start_date + matched
+        matched: List[Tuple[Dict[str, str], Dict[str, Set[str]]]] = []
+        for row in titles:
+            pd = datetime.strptime(row["pub_date"], "%Y-%m-%d").date()
+            if pd < start:
+                continue
+            if index_floor is not None and pd < index_floor:
+                continue
+            cats = extract_categories(row.get("title", ""), rev_map)
+            if not cats:
+                continue
+            matched.append((row, cats))
 
-            status = "no_slug"
-            detail_file = ""
+        logger.info(
+            "Matched %d / %d titles (start=%s, index_floor=%s)%s",
+            len(matched), len(titles), start,
+            index_floor if index_floor is not None else "-",
+            f" — capping to {max_articles}" if max_articles else "",
+        )
 
-            if md_path is None:
-                # No parseable slug — can't cache; record as skipped.
-                logger.warning("[%d/%d] no slug: %s", i, len(matched), title[:50])
-            elif not force and is_cached(md_path):
-                skipped_cached += 1
-                status = "cached"
-                detail_file = md_path.name
-                # Accumulate into the current cached run; the summary is
-                # emitted lazily when the next fetch starts (or at loop end).
-                if cached_run_count == 0:
-                    cached_run_start_date = pub_date
-                cached_run_end_date = pub_date
-                cached_run_count += 1
-            else:
-                # Actual fetch — first flush any cached run we just finished.
-                _flush_cached_run(i, len(matched))
-                cached_run_count = 0
-                cached_run_start_date = None
-                cached_run_end_date = None
-                logger.info("[%d/%d] %s fetching: %s",
-                            i, len(matched), pub_date, title[:50])
-                html = fetch_detail(session, proxy, url)
-                if html is None:
-                    failed += 1
-                    status = "fetch_failed"
-                    logger.warning("  fetch failed: %s", url)
-                else:
-                    detail = parse_detail_html(html)
-                    md_content = build_markdown(
-                        pub_date=pub_date, title=title, url=url,
-                        industries=industries, broadmarkets=broadmarkets,
-                        detail=detail,
-                    )
-                    md_path.parent.mkdir(parents=True, exist_ok=True)
-                    md_path.write_text(md_content, encoding="utf-8")
-                    fetched += 1
-                    status = "fetched"
+        if max_articles is not None and max_articles >= 0:
+            matched = matched[:max_articles]
+
+        # 4. Fetch detail pages for matched titles
+        session = build_default_session()
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
+
+        index_rows: List[Dict[str, str]] = []
+        fetched = skipped_cached = failed = 0
+
+        # Track runs of consecutively cached files between actual fetches so we
+        # can emit a single concise summary line (date range + count) instead of
+        # one INFO line per cached file. The run is flushed lazily when the next
+        # fetch starts, or once at the end of the loop for any trailing tail.
+        cached_run_start_date: Optional[str] = None
+        cached_run_end_date: Optional[str] = None
+        cached_run_count = 0
+
+        def _flush_cached_run(idx: int, total: int, *, tail: bool = False) -> None:
+            if cached_run_count == 0:
+                return
+            tag = "tail (no further fetch)" if tail else "before next fetch"
+            logger.info(
+                "[%d/%d] skipped %d cached files (%s -> %s) %s",
+                idx, total, cached_run_count,
+                cached_run_start_date, cached_run_end_date, tag,
+            )
+
+        try:
+            for i, (row, cats) in enumerate(matched, 1):
+                if proxy.is_blocked(GOV_HOST):
+                    logger.warning("  host blocked — stopping at article %d/%d", i, len(matched))
+                    break
+
+                pub_date = row["pub_date"]
+                title = row.get("title", "")
+                url = row.get("url", "")
+                industries = sorted(cats.get("industry", set()))
+                broadmarkets = sorted(cats.get("broadmarket", set()))
+                md_path = detail_md_path(articles_dir, url)
+
+                status = "no_slug"
+                detail_file = ""
+
+                if md_path is None:
+                    # No parseable slug — can't cache; record as skipped.
+                    logger.warning("[%d/%d] no slug: %s", i, len(matched), title[:50])
+                elif not force and is_cached(md_path):
+                    skipped_cached += 1
+                    status = "cached"
                     detail_file = md_path.name
-                    logger.info("  saved %s (%d chars body)",
-                                md_path.name, len(detail.get("body", "")))
+                    # Accumulate into the current cached run; the summary is
+                    # emitted lazily when the next fetch starts (or at loop end).
+                    if cached_run_count == 0:
+                        cached_run_start_date = pub_date
+                    cached_run_end_date = pub_date
+                    cached_run_count += 1
+                else:
+                    # Actual fetch — first flush any cached run we just finished.
+                    _flush_cached_run(i, len(matched))
+                    cached_run_count = 0
+                    cached_run_start_date = None
+                    cached_run_end_date = None
+                    logger.info("[%d/%d] %s fetching: %s",
+                                i, len(matched), pub_date, title[:50])
+                    html = self.fetch_detail(session, proxy, url)
+                    if html is None:
+                        failed += 1
+                        status = "fetch_failed"
+                        logger.warning("  fetch failed: %s", url)
+                    else:
+                        detail = parse_detail_html(html)
+                        md_content = build_markdown(
+                            pub_date=pub_date, title=title, url=url,
+                            industries=industries, broadmarkets=broadmarkets,
+                            detail=detail,
+                        )
+                        md_path.parent.mkdir(parents=True, exist_ok=True)
+                        md_path.write_text(md_content, encoding="utf-8")
+                        fetched += 1
+                        status = "fetched"
+                        detail_file = md_path.name
+                        logger.info("  saved %s (%d chars body)",
+                                    md_path.name, len(detail.get("body", "")))
 
-            index_rows.append({
-                "pub_date": pub_date,
-                "title": title,
-                "url": url,
-                "industries": ";".join(industries),
-                "broadmarkets": ";".join(broadmarkets),
-                "detail_file": detail_file,
-                "status": status,
-            })
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+                index_rows.append({
+                    "pub_date": pub_date,
+                    "title": title,
+                    "url": url,
+                    "industries": ";".join(industries),
+                    "broadmarkets": ";".join(broadmarkets),
+                    "detail_file": detail_file,
+                    "status": status,
+                })
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
 
-    # Flush any trailing cached run that had no subsequent fetch (e.g. all
-    # remaining articles were already cached, or the run was interrupted).
-    _flush_cached_run(len(matched), len(matched), tail=True)
-    cached_run_count = 0
+        # Flush any trailing cached run that had no subsequent fetch (e.g. all
+        # remaining articles were already cached, or the run was interrupted).
+        _flush_cached_run(len(matched), len(matched), tail=True)
+        cached_run_count = 0
 
-    # 5. Write index CSV (always, even on partial/interrupt)
-    write_index_csv(index_rows, index_path)
+        # 5. Write index CSV (always, even on partial/interrupt)
+        write_index_csv(index_rows, index_path)
 
-    summary = {
-        "matched": len(matched),
-        "mode": "incremental" if index_floor is not None else "full",
-        "index_floor": str(index_floor) if index_floor is not None else None,
-        "fetched": fetched,
-        "skipped_cached": skipped_cached,
-        "failed": failed,
-        "out_dir": str(out_dir),
-        "articles_dir": str(articles_dir),
-        "index_path": str(index_path),
-        "start_date": str(start),
-    }
-    logger.info(
-        "Done. matched=%d fetched=%d cached=%d failed=%d -> %s",
-        len(matched), fetched, skipped_cached, failed, index_path.name,
-    )
-    return summary
+        summary = {
+            "matched": len(matched),
+            "mode": "incremental" if index_floor is not None else "full",
+            "index_floor": str(index_floor) if index_floor is not None else None,
+            "fetched": fetched,
+            "skipped_cached": skipped_cached,
+            "failed": failed,
+            "out_dir": str(out_dir),
+            "articles_dir": str(articles_dir),
+            "index_path": str(index_path),
+            "start_date": str(start),
+        }
+        logger.info(
+            "Done. matched=%d fetched=%d cached=%d failed=%d -> %s",
+            len(matched), fetched, skipped_cached, failed, index_path.name,
+        )
+        return summary
 
 
 # ----------------------------------------------------------------------------
-# CLI
+# CLI — DownloadJob entry
 # ----------------------------------------------------------------------------
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Crawl gov.cn 政策解读 article details for keyword-matched titles",
-    )
-    parser.add_argument("--start-date", type=str, default=None,
-                        help=f"Floor date YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
-    parser.add_argument("--sleep-sec", type=float, default=None,
-                        help="Anti-bot sleep between requests (s). "
-                             f"Default: external_request_config JSON for {SERVICE}")
-    parser.add_argument("--max-articles", type=int, default=None,
-                        help="Cap number of detail fetches (for testing). Default: no cap.")
-    parser.add_argument("--out-root", type=str, default=None,
-                        help="Output root dir. Default: <project>/temps/gov_news")
-    parser.add_argument("--titles-csv", type=str, default=None,
-                        help="Path to titles CSV. Default: <out_root>/gov_news_titles.csv")
-    parser.add_argument("--force", action="store_true",
-                        help="Force re-fetch of all matched detail pages even if cached.")
-    args = parser.parse_args()
+class GovArticlesDownload(DownloadJob):
+    """DownloadJob for the gov.cn article-detail crawler — the former
+    ``main()`` body is ``run()`` verbatim (argparse moved to
+    ``add_arguments``); the crawl itself is the GovArticlesFetcher held in
+    ``__init__``."""
 
-    summary = download_articles(
-        out_root=args.out_root,
-        start_date=args.start_date,
-        sleep_sec=args.sleep_sec,
-        max_articles=args.max_articles,
-        force=args.force,
-        titles_csv=args.titles_csv,
-    )
-    logger.info(summary)
+    description = "Crawl gov.cn 政策解读 article details for keyword-matched titles"
+    component = "gov_articles"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fetcher = GovArticlesFetcher()
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--start-date", type=str, default=None,
+                            help=f"Floor date YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                            help="Anti-bot sleep between requests (s). "
+                                 f"Default: external_request_config JSON for {SERVICE}")
+        parser.add_argument("--max-articles", type=int, default=None,
+                            help="Cap number of detail fetches (for testing). Default: no cap.")
+        parser.add_argument("--out-root", type=str, default=None,
+                            help="Output root dir. Default: <project>/temps/gov_news")
+        parser.add_argument("--titles-csv", type=str, default=None,
+                            help="Path to titles CSV. Default: <out_root>/gov_news_titles.csv")
+        parser.add_argument("--force", action="store_true",
+                            help="Force re-fetch of all matched detail pages even if cached.")
+
+    def run(self) -> None:
+        """One crawl cycle — the former ``main()`` body (argparse parsing is
+        owned by the base template methods)."""
+        summary = self.fetcher.download_articles(
+            out_root=self.args.out_root,
+            start_date=self.args.start_date,
+            sleep_sec=self.args.sleep_sec,
+            max_articles=self.args.max_articles,
+            force=self.args.force,
+            titles_csv=self.args.titles_csv,
+        )
+        logger.info(summary)
 
 
 if __name__ == "__main__":
-    main()
+    GovArticlesDownload().execute()

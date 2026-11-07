@@ -60,9 +60,12 @@ from downloads._common import (
 from downloads.etf.szse.archive.extract import (
     CSV_NAMES,
     IDENTIFY_CSV_NAME,
-    write_section_csvs,
+    SzseArchiveExtractor,
 )
 
+from downloads.etf.szse.archive.data_definitions import (
+    QuarterlyReport,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -198,138 +201,7 @@ def _write_empty_markers(etf_dir: Path, etf_code: str, yq: Tuple[int, int]) -> N
 # Data classes
 # ---------------------------------------------------------------------------
 
-@dataclass
-class QuarterlyReport:
-    """A single quarterly report announcement from the annList API."""
-    etf_code: str        # bare 6-digit code, e.g. "160812"
-    etf_name: str        # fund name, e.g. "长盛同益LOF"
-    year: int            # report year, e.g. 2026
-    quarter: int         # 1-4
-    title: str           # full announcement title
-    publish_date: str    # YYYY-MM-DD
-    attach_path: str     # path under PDF_BASE_URL, e.g. "/download/..."
-    attach_id: str       # announcement uuid (unique id)
 
-    @property
-    def tag(self) -> str:
-        return f"{self.etf_code}_{self.year}Q{self.quarter}"
-
-    @property
-    def pdf_filename(self) -> str:
-        return f"{self.tag}.pdf"
-
-
-# ---------------------------------------------------------------------------
-# ETF universe (DB)
-# ---------------------------------------------------------------------------
-
-def fetch_sz_etf_codes(
-    other_only: bool = True,
-    include_lof: bool = True,
-) -> List[Tuple[str, str]]:
-    """Return distinct (code, name) for SZ ETFs.
-
-    *code* is returned as the bare 6-digit string (suffix stripped) so it
-    can be passed directly to the annList API. *name* is the most recent
-    non-empty name for that code.
-
-    Both branches filter to ETFs whose ``stats.sec_classification.is_active``
-    is TRUE — i.e. ETFs with >=1 record in ``stats.etf_identity`` within the
-    trailing 365 days. Delisted ETFs (no recent identity records) are
-    skipped, avoiding wasteful annList API calls + 90s anti-bot sleeps
-    for funds that no longer publish quarterly reports.
-
-    When *other_only* is True (default), the universe is additionally
-    restricted to ETFs whose ``sec_classification.sector_id = 'OTHER'``
-    — i.e. ETFs not yet assigned to a specific sector/industry. This
-    avoids downloading quarterly reports for ETFs that are already
-    well-classified (BROAD, TECH, FIN, …) and focuses the download on
-    the "unclassified" set whose reports are most useful for
-    classification.
-
-    When *include_lof* is True (default), all active SZSE LOFs (codes
-    matching ``16____.SZ`` — Listed Open-End Funds) are added to the
-    universe regardless of *other_only*. LOF quarterly reports publish
-    the same holdings sections as ETF reports, so they are always worth
-    downloading even when the LOF has already been sector-classified
-    (e.g. BROAD/TECH). Has no effect when *other_only* is False (the
-    non-OTHER branch already returns all active SZ ETFs, including LOFs).
-    """
-    from _common.db_commons import get_db_connection
-
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            if other_only:
-                # JOIN sec_classification to restrict to sector_id='OTHER'
-                # AND is_active=TRUE (skip delisted ETFs). Use DISTINCT ON
-                # (code) because an ETF may have multiple rows in
-                # sec_classification (one per parent_index_code); pick the
-                # primary parent when available.
-                #
-                # When include_lof=True, additionally include all active
-                # LOFs (16xxxx codes) regardless of their sector_id —
-                # LOF holdings are useful across all sectors, not just
-                # OTHER. Implemented as an OR inside the LATERAL WHERE so
-                # a single round-trip returns the merged universe.
-                if include_lof:
-                    cur.execute(
-                        "SELECT i.code, i.name FROM stats.etf_identity i "
-                        "JOIN LATERAL ("
-                        "  SELECT code FROM stats.sec_classification c"
-                        "  WHERE c.code = i.code"
-                        "    AND c.type = 'etf'"
-                        "    AND c.is_active = TRUE"
-                        "    AND (c.sector_id = 'OTHER'"
-                        "         OR i.code LIKE '16____')"
-                        "  ORDER BY c.parent_index_is_primary DESC"
-                        "  LIMIT 1"
-                        ") sc ON TRUE "
-                        "WHERE i.exchange = 'SZ' "
-                        "ORDER BY i.code DESC"
-                    )
-                else:
-                    cur.execute(
-                        "SELECT i.code, i.name FROM stats.etf_identity i "
-                        "JOIN LATERAL ("
-                        "  SELECT code FROM stats.sec_classification c"
-                        "  WHERE c.code = i.code"
-                        "    AND c.type = 'etf'"
-                        "    AND c.sector_id = 'OTHER'"
-                        "    AND c.is_active = TRUE"
-                        "  ORDER BY c.parent_index_is_primary DESC"
-                        "  LIMIT 1"
-                        ") sc ON TRUE "
-                        "WHERE i.exchange = 'SZ' "
-                        "ORDER BY i.code DESC"
-                    )
-            else:
-                # Filter to active ETFs only (skip delisted / dead funds).
-                # LOFs are already included here regardless of include_lof
-                # since this branch returns ALL active SZ ETFs.
-                cur.execute(
-                    "SELECT i.code, i.name FROM stats.etf_identity i "
-                    "WHERE i.exchange = 'SZ' "
-                    "  AND EXISTS ("
-                    "    SELECT 1 FROM stats.sec_classification c"
-                    "    WHERE c.code = i.code"
-                    "      AND c.type = 'etf'"
-                    "      AND c.is_active = TRUE"
-                    "  ) "
-                    "ORDER BY i.code DESC"
-                )
-            rows = cur.fetchall()
-    finally:
-        conn.close()
-
-    seen: Dict[str, str] = {}
-    for code, name in rows:
-        # Suffix-strip guard: codes are bare post-2026-09-30; the split is
-        # a no-op then but keeps pre-migration runs working.
-        bare = code.split(".")[0] if "." in code else code
-        if bare and bare not in seen and name:
-            seen[bare] = name
-    return sorted(seen.items())
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +222,8 @@ def _build_annlist_headers() -> Dict[str, str]:
         "Referer": REFERER_PAGE,
         "Origin": "https://www.szse.cn",
     }
+
+
 
 
 def _parse_quarterly(
@@ -389,77 +263,6 @@ def _parse_quarterly(
     return reports
 
 
-def fetch_annlist_page(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    etf_code: str,
-    page: int,
-) -> Tuple[List[Dict[str, Any]], bool]:
-    """Fetch a single annList page. Returns (rows, has_more_pages)."""
-    headers = _build_annlist_headers()
-    body = {
-        "type": 2,
-        "pageSize": PAGE_SIZE,
-        "pageNum": page,
-        "stock": [etf_code],
-        "channelCode": ["fundinfoNotice_disc"],
-    }
-    resp = proxy.post(
-        session, ANL_LIST_URL,
-        params={"random": str(time.time())},
-        data=json.dumps(body),
-        headers=headers,
-        logger=logger,
-        log_tag=f"[{etf_code} annList p{page}]",
-    )
-    if resp is None:
-        logger.warning("[%s] annList page %d returned None", etf_code, page)
-        return [], False
-    try:
-        j = resp.json()
-    except ValueError:
-        logger.warning("[%s] annList page %d: non-JSON response", etf_code, page)
-        return [], False
-    head = j[0] if isinstance(j, list) and j else j
-    if not isinstance(head, dict):
-        return [], False
-    md = head.get("metadata") or {}
-    rows = head.get("data") or head.get("rows") or []
-    pagecount = int(md.get("pagecount") or 0)
-    has_more = bool(rows) and (not pagecount or page < pagecount)
-    logger.info(
-        "[%s] annList p%d: %d rows (pagecount=%s, recordcount=%s)",
-        etf_code, page, len(rows), md.get("pagecount"), md.get("recordcount"),
-    )
-    return rows, has_more
-
-
-def fetch_quarterly_reports(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    etf_code: str,
-    etf_name: str = "",
-) -> List[QuarterlyReport]:
-    """Paginate the annList API and return quarterly reports for *etf_code*.
-
-    Kept for backwards compatibility. The orchestration loop now uses
-    lazy per-page download (see download_szse_etf_reports) instead of
-    fetching all pages upfront.
-    """
-    all_rows: List[Dict[str, Any]] = []
-    for page in range(1, MAX_PAGES + 1):
-        if proxy.is_blocked(ANL_LIST_URL):
-            logger.warning("[%s] annList host blocked, stopping pagination", etf_code)
-            break
-        rows, has_more = fetch_annlist_page(session, proxy, etf_code, page)
-        if not rows:
-            break
-        all_rows.extend(rows)
-        if not has_more:
-            break
-    return _parse_quarterly(etf_code, etf_name, all_rows)
-
-
 # ---------------------------------------------------------------------------
 # PDF download
 # ---------------------------------------------------------------------------
@@ -482,61 +285,19 @@ def is_report_cached(report: QuarterlyReport, out_dir: Path) -> bool:
     return is_valid_file(out_dir / report.pdf_filename, min_bytes=MIN_VALID_BYTES)
 
 
-def download_report_pdf(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    report: QuarterlyReport,
-    out_dir: Path,
-    *,
-    sleep_sec: Optional[float] = None,
-) -> Optional[Path]:
-    """Download a single quarterly-report PDF. Returns the saved path or None.
+def all_csvs_exist(pdf_path: Path) -> bool:
+    """True if extraction was already completed for *pdf_path*.
 
-    Anti-bot: sleeps *sleep_sec* (default: proxy's configured base_sleep_sec,
-    the service JSON row's 90s in production) after each HTTP request
-    via the AntiBotProxy. Cached PDFs skip the request and the sleep.
+    The identify CSV is written as the last step of extraction, so its
+    presence (and non-zero size) is the "extraction done" marker. When it
+    exists, all six section CSVs were also written (some may be 0-byte
+    placeholders for sections not present in the PDF).
     """
-    out_file = out_dir / report.pdf_filename
-    if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
-        logger.info("[%s] PDF cached, skipping", report.tag)
-        return out_file
+    prefix = pdf_path.stem + "_"
+    out_dir = pdf_path.parent
+    identify = out_dir / f"{prefix}{IDENTIFY_CSV_NAME}"
+    return identify.exists() and identify.stat().st_size > 0
 
-    pdf_url = PDF_BASE_URL + report.attach_path
-    # proxy.get() applies anti-bot: browser fingerprint rotation, random
-    # param, and sleep with jitter after the request. sleep_sec overrides
-    # the proxy's base_sleep_sec for this call. Timeouts come from the
-    # service row (30s connect / 120s read — headroom for the multi-MB
-    # PDFs the throttling CDN serves).
-    resp = proxy.get(
-        session, pdf_url,
-        headers=_pdf_headers(),
-        sleep_sec=sleep_sec,
-        logger=logger,
-        log_tag=f"[{report.tag} pdf]",
-    )
-    if resp is None:
-        logger.error("[%s] PDF download failed (None response)", report.tag)
-        return None
-    ctype = resp.headers.get("Content-Type", "")
-    if "pdf" not in ctype.lower() and len(resp.content) < MIN_VALID_BYTES:
-        logger.warning(
-            "[%s] PDF response not pdf (ctype=%s, %d bytes)",
-            report.tag, ctype, len(resp.content),
-        )
-        return None
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file.write_bytes(resp.content)
-    if not is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
-        logger.warning("[%s] PDF saved but too small (%d bytes)", report.tag, len(resp.content))
-        out_file.unlink(missing_ok=True)
-        return None
-    logger.info("[%s] PDF downloaded (%d bytes)", report.tag, len(resp.content))
-    return out_file
-
-
-# ---------------------------------------------------------------------------
-# Extraction
-# ---------------------------------------------------------------------------
 
 def _existing_csvs(pdf_path: Path) -> Dict[str, Path]:
     """Return {section_label: csv_path} for CSVs next to *pdf_path*.
@@ -554,274 +315,508 @@ def _existing_csvs(pdf_path: Path) -> Dict[str, Path]:
     return existing
 
 
-def all_csvs_exist(pdf_path: Path) -> bool:
-    """True if extraction was already completed for *pdf_path*.
-
-    The identify CSV is written as the last step of extraction, so its
-    presence (and non-zero size) is the "extraction done" marker. When it
-    exists, all six section CSVs were also written (some may be 0-byte
-    placeholders for sections not present in the PDF).
-    """
-    prefix = pdf_path.stem + "_"
-    out_dir = pdf_path.parent
-    identify = out_dir / f"{prefix}{IDENTIFY_CSV_NAME}"
-    return identify.exists() and identify.stat().st_size > 0
-
-
-def extract_report_csvs(pdf_path: Path, *, force: bool = False) -> Dict[str, Path]:
-    """Extract the target sections from *pdf_path* to CSVs.
-
-    All six section CSVs are written next to the PDF with a ``{tag}_`` prefix
-    (0-byte placeholders for sections not present in the PDF), plus a
-    key-value identify CSV. Returns {section_label: csv_path} for ALL sections.
-
-    Skips re-extraction when the identify CSV already exists (see
-    :func:`all_csvs_exist`), unless *force* is True.
-
-    Also skips 0-byte PDFs (empty markers created when annList returned no
-    new reports) — these are not real PDFs and would fail to parse.
-    """
-    if pdf_path.stat().st_size < MIN_VALID_BYTES:
-        logger.info("[%s] PDF is empty marker, skipping extraction", pdf_path.stem)
-        return {}
-    if not force and all_csvs_exist(pdf_path):
-        logger.info("[%s] CSVs already exist, skipping extraction", pdf_path.stem)
-        return _existing_csvs(pdf_path)
-    prefix = pdf_path.stem + "_"  # e.g. "160812_2026Q2_"
-    return write_section_csvs(pdf_path, out_dir=pdf_path.parent, prefix=prefix)
-
-
 # ---------------------------------------------------------------------------
-# Orchestration
+# SzseArchiveReports — the download orchestration
 # ---------------------------------------------------------------------------
 
-def download_szse_etf_reports(
-    *,
-    out_root: Optional[str] = None,
-    etf_codes: Optional[List[str]] = None,
-    sleep_sec: Optional[float] = None,
-    extract: bool = True,
-    max_etfs: Optional[int] = None,
-    other_only: bool = True,
-    include_lof: bool = True,
-    start_date: str = DEFAULT_START_DATE,
-) -> dict:
-    """Download SZSE ETF quarterly reports and extract holdings CSVs.
+class SzseArchiveReports:
+    """The SZSE ETF quarterly-report download orchestration — the former
+    module-level functions (fetch_sz_etf_codes / fetch_annlist_page /
+    fetch_quarterly_reports / download_report_pdf / extract_report_csvs /
+    download_szse_etf_reports) are now methods of the same names with the
+    same signatures and bodies. Stateless: session / proxy / out_dir /
+    pacing stay per-call arguments (built inside download_szse_etf_reports
+    exactly as before); the tiny pure helpers, the header builders and the
+    file-marker utilities above stay module-level. PDF→CSV extraction is
+    delegated to the ``SzseArchiveExtractor`` instance held in ``__init__``
+    (the former ``write_section_csvs`` call)."""
 
-    Args:
-        out_root: Override output root (default: temps/szse_etf_reports/).
-        etf_codes: Optional list of bare 6-digit codes to process. If None,
-            the SZ ETF universe is built from the DB. Explicit codes bypass
-            the *other_only* and *include_lof* filters.
-        sleep_sec: Sleep between HTTP requests (default: the service's
-            external_request_config JSON row — 90s for
-            downloads.etf.szse.archive).
-        extract: If True, extract the 3 target sections to CSV after each PDF
-            download.
-        max_etfs: Limit to N ETFs (dev/testing).
-        other_only: When True (default) and *etf_codes* is None, restrict the
-            ETF universe to those with ``sec_classification.sector_id='OTHER'``
-            — i.e. unclassified ETFs whose quarterly reports are most useful
-            for classification. Ignored when *etf_codes* is given.
-        include_lof: When True (default) and *etf_codes* is None, also include
-            all active SZSE LOFs (codes matching ``16____.SZ``) in the
-            universe regardless of *other_only*. LOF holdings are useful
-            across all sectors, not just OTHER. Ignored when *etf_codes* is
-            given or when *other_only* is False (the all-active branch
-            already contains LOFs).
-        start_date: Only download reports at or after this date
-            (default: DEFAULT_START_DATE = 2020-01-01). Reports with
-            (year, quarter) before the cutoff are skipped, and pagination
-            stops once a page contains only reports older than the cutoff.
-    """
-    out_dir = resolve_out_dir(__file__, "szse_etf_reports", out_root)
-    cutoff_year, cutoff_quarter = _parse_start_cutoff(start_date)
+    def __init__(self) -> None:
+        self.extractor = SzseArchiveExtractor()
 
-    # Build the ETF universe. Explicit --etf-code always bypasses other_only
-    # and include_lof.
-    if etf_codes is not None:
-        universe: List[Tuple[str, str]] = [(c, "") for c in etf_codes]
-    else:
-        universe = fetch_sz_etf_codes(other_only=other_only, include_lof=include_lof)
-    if max_etfs is not None and max_etfs > 0:
-        universe = universe[:max_etfs]
+    def fetch_sz_etf_codes(
+        self,
+        other_only: bool = True,
+        include_lof: bool = True,
+    ) -> List[Tuple[str, str]]:
+        """Return distinct (code, name) for SZ ETFs.
 
-    logger.info(
-        "Starting SZSE ETF quarterly-report download: %d ETFs "
-        "(other_only=%s, include_lof=%s), sleep=%.1fs, out=%s, start_date=%s",
-        len(universe),
-        other_only if etf_codes is None else "bypassed",
-        include_lof if etf_codes is None else "bypassed",
-        sleep_sec, out_dir, start_date,
-    )
+        *code* is returned as the bare 6-digit string (suffix stripped) so it
+        can be passed directly to the annList API. *name* is the most recent
+        non-empty name for that code.
 
-    session = build_default_session()
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
-    # overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
-    stats = RunStats()
-    reports_found = 0
-    csvs_written = 0
+        Both branches filter to ETFs whose ``stats.sec_classification.is_active``
+        is TRUE — i.e. ETFs with >=1 record in ``stats.etf_identity`` within the
+        trailing 365 days. Delisted ETFs (no recent identity records) are
+        skipped, avoiding wasteful annList API calls + 90s anti-bot sleeps
+        for funds that no longer publish quarterly reports.
 
-    try:
-        for idx, (code, name) in enumerate(universe, 1):
-            if proxy.is_blocked(ANL_LIST_URL):
-                logger.warning("[host-blocked] szse.cn blocked, stopping at ETF %s", code)
-                break
-            logger.info("== ETF %s (%s) %d/%d ==", code, name or "?", idx, len(universe))
+        When *other_only* is True (default), the universe is additionally
+        restricted to ETFs whose ``sec_classification.sector_id = 'OTHER'``
+        — i.e. ETFs not yet assigned to a specific sector/industry. This
+        avoids downloading quarterly reports for ETFs that are already
+        well-classified (BROAD, TECH, FIN, …) and focuses the download on
+        the "unclassified" set whose reports are most useful for
+        classification.
 
-            etf_dir = out_dir / code
+        When *include_lof* is True (default), all active SZSE LOFs (codes
+        matching ``16____.SZ`` — Listed Open-End Funds) are added to the
+        universe regardless of *other_only*. LOF quarterly reports publish
+        the same holdings sections as ETF reports, so they are always worth
+        downloading even when the LOF has already been sector-classified
+        (e.g. BROAD/TECH). Has no effect when *other_only* is False (the
+        non-OTHER branch already returns all active SZ ETFs, including LOFs).
+        """
+        from _common.db_commons import get_db_connection
 
-            # Cache-first skip: if the latest PDF or CSV was written within
-            # the last 3 months, skip the annList API call entirely.
-            # Quarterly reports are published every ~3 months, so no new
-            # report can be available within that window. This saves a 90s
-            # anti-bot sleep per ETF. Empty marker files (created when
-            # annList returned no new reports) also trigger this skip via
-            # their mtime.
-            latest_mtime = _latest_file_mtime(etf_dir, code)
-            if latest_mtime is not None and (time.time() - latest_mtime) < SKIP_WITHIN_SEC:
-                age_days = int((time.time() - latest_mtime) / 86400)
-                logger.info(
-                    "[%s] latest file %d days old (< %d days), skipping annList",
-                    code, age_days, SKIP_WITHIN_SEC // 86400,
-                )
-                stats.skipped_cached += 1
-                continue
-
-            # Lazy pagination: fetch page 1, download its quarterly reports,
-            # and only fetch page 2+ if ALL reports on the current page were
-            # already cached (i.e. nothing new was downloaded). This avoids
-            # paginating through all 6+ pages when the newest reports are
-            # the only ones missing — a common case for incremental runs.
-            page = 1
-            n_new_total = 0
-            pagination_blocked = False
-            while page <= MAX_PAGES:
-                if proxy.is_blocked(ANL_LIST_URL):
-                    logger.warning("[%s] annList host blocked, stopping", code)
-                    pagination_blocked = True
-                    break
-
-                rows, has_more = fetch_annlist_page(session, proxy, code, page)
-                if not rows:
-                    break
-
-                reports = _parse_quarterly(code, name, rows)
-                # Filter out reports older than the start_date cutoff.
-                # annList returns newest-first, so once we see reports before
-                # the cutoff, all subsequent pages will also be too old.
-                in_range: List[QuarterlyReport] = []
-                too_old = False
-                for rpt in reports:
-                    if (rpt.year, rpt.quarter) < (cutoff_year, cutoff_quarter):
-                        too_old = True
-                        continue
-                    in_range.append(rpt)
-                reports_found += len(in_range)
-
-                if not in_range:
-                    # All reports on this page are before the cutoff (or no
-                    # quarterly reports at all). Stop paginating since older
-                    # pages will only have older reports.
-                    if too_old:
-                        logger.info(
-                            "[%s] page %d: all reports before cutoff %s, stopping",
-                            code, page, start_date,
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                if other_only:
+                    # JOIN sec_classification to restrict to sector_id='OTHER'
+                    # AND is_active=TRUE (skip delisted ETFs). Use DISTINCT ON
+                    # (code) because an ETF may have multiple rows in
+                    # sec_classification (one per parent_index_code); pick the
+                    # primary parent when available.
+                    #
+                    # When include_lof=True, additionally include all active
+                    # LOFs (16xxxx codes) regardless of their sector_id —
+                    # LOF holdings are useful across all sectors, not just
+                    # OTHER. Implemented as an OR inside the LATERAL WHERE so
+                    # a single round-trip returns the merged universe.
+                    if include_lof:
+                        cur.execute(
+                            "SELECT i.code, i.name FROM stats.etf_identity i "
+                            "JOIN LATERAL ("
+                            "  SELECT code FROM stats.sec_classification c"
+                            "  WHERE c.code = i.code"
+                            "    AND c.type = 'etf'"
+                            "    AND c.is_active = TRUE"
+                            "    AND (c.sector_id = 'OTHER'"
+                            "         OR i.code LIKE '16____')"
+                            "  ORDER BY c.parent_index_is_primary DESC"
+                            "  LIMIT 1"
+                            ") sc ON TRUE "
+                            "WHERE i.exchange = 'SZ' "
+                            "ORDER BY i.code DESC"
                         )
-                    break
+                    else:
+                        cur.execute(
+                            "SELECT i.code, i.name FROM stats.etf_identity i "
+                            "JOIN LATERAL ("
+                            "  SELECT code FROM stats.sec_classification c"
+                            "  WHERE c.code = i.code"
+                            "    AND c.type = 'etf'"
+                            "    AND c.sector_id = 'OTHER'"
+                            "    AND c.is_active = TRUE"
+                            "  ORDER BY c.parent_index_is_primary DESC"
+                            "  LIMIT 1"
+                            ") sc ON TRUE "
+                            "WHERE i.exchange = 'SZ' "
+                            "ORDER BY i.code DESC"
+                        )
+                else:
+                    # Filter to active ETFs only (skip delisted / dead funds).
+                    # LOFs are already included here regardless of include_lof
+                    # since this branch returns ALL active SZ ETFs.
+                    cur.execute(
+                        "SELECT i.code, i.name FROM stats.etf_identity i "
+                        "WHERE i.exchange = 'SZ' "
+                        "  AND EXISTS ("
+                        "    SELECT 1 FROM stats.sec_classification c"
+                        "    WHERE c.code = i.code"
+                        "      AND c.type = 'etf'"
+                        "      AND c.is_active = TRUE"
+                        "  ) "
+                        "ORDER BY i.code DESC"
+                    )
+                rows = cur.fetchall()
+        finally:
+            conn.close()
 
-                # Download each in-range quarterly report on this page.
-                # PDF downloads use the same anti-bot sleep (sleep_sec,
-                # the service JSON row's 90s) as the annList API.
-                n_new = 0
-                for rpt in in_range:
-                    if proxy.is_blocked(PDF_BASE_URL):
-                        logger.warning("[host-blocked] disc.static.szse.cn blocked, stopping")
+        seen: Dict[str, str] = {}
+        for code, name in rows:
+            # Suffix-strip guard: codes are bare post-2026-09-30; the split is
+            # a no-op then but keeps pre-migration runs working.
+            bare = code.split(".")[0] if "." in code else code
+            if bare and bare not in seen and name:
+                seen[bare] = name
+        return sorted(seen.items())
+
+    def fetch_annlist_page(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        etf_code: str,
+        page: int,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Fetch a single annList page. Returns (rows, has_more_pages)."""
+        headers = _build_annlist_headers()
+        body = {
+            "type": 2,
+            "pageSize": PAGE_SIZE,
+            "pageNum": page,
+            "stock": [etf_code],
+            "channelCode": ["fundinfoNotice_disc"],
+        }
+        resp = proxy.post(
+            session, ANL_LIST_URL,
+            params={"random": str(time.time())},
+            data=json.dumps(body),
+            headers=headers,
+            logger=logger,
+            log_tag=f"[{etf_code} annList p{page}]",
+        )
+        if resp is None:
+            logger.warning("[%s] annList page %d returned None", etf_code, page)
+            return [], False
+        try:
+            j = resp.json()
+        except ValueError:
+            logger.warning("[%s] annList page %d: non-JSON response", etf_code, page)
+            return [], False
+        head = j[0] if isinstance(j, list) and j else j
+        if not isinstance(head, dict):
+            return [], False
+        md = head.get("metadata") or {}
+        rows = head.get("data") or head.get("rows") or []
+        pagecount = int(md.get("pagecount") or 0)
+        has_more = bool(rows) and (not pagecount or page < pagecount)
+        logger.info(
+            "[%s] annList p%d: %d rows (pagecount=%s, recordcount=%s)",
+            etf_code, page, len(rows), md.get("pagecount"), md.get("recordcount"),
+        )
+        return rows, has_more
+
+    def fetch_quarterly_reports(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        etf_code: str,
+        etf_name: str = "",
+    ) -> List[QuarterlyReport]:
+        """Paginate the annList API and return quarterly reports for *etf_code*.
+
+        Kept for backwards compatibility. The orchestration loop now uses
+        lazy per-page download (see download_szse_etf_reports) instead of
+        fetching all pages upfront.
+        """
+        all_rows: List[Dict[str, Any]] = []
+        for page in range(1, MAX_PAGES + 1):
+            if proxy.is_blocked(ANL_LIST_URL):
+                logger.warning("[%s] annList host blocked, stopping pagination", etf_code)
+                break
+            rows, has_more = self.fetch_annlist_page(session, proxy, etf_code, page)
+            if not rows:
+                break
+            all_rows.extend(rows)
+            if not has_more:
+                break
+        return _parse_quarterly(etf_code, etf_name, all_rows)
+
+    def download_report_pdf(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        report: QuarterlyReport,
+        out_dir: Path,
+        *,
+        sleep_sec: Optional[float] = None,
+    ) -> Optional[Path]:
+        """Download a single quarterly-report PDF. Returns the saved path or None.
+
+        Anti-bot: sleeps *sleep_sec* (default: proxy's configured base_sleep_sec,
+        the service JSON row's 90s in production) after each HTTP request
+        via the AntiBotProxy. Cached PDFs skip the request and the sleep.
+        """
+        out_file = out_dir / report.pdf_filename
+        if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
+            logger.info("[%s] PDF cached, skipping", report.tag)
+            return out_file
+
+        pdf_url = PDF_BASE_URL + report.attach_path
+        # proxy.get() applies anti-bot: browser fingerprint rotation, random
+        # param, and sleep with jitter after the request. sleep_sec overrides
+        # the proxy's base_sleep_sec for this call. Timeouts come from the
+        # service row (30s connect / 120s read — headroom for the multi-MB
+        # PDFs the throttling CDN serves).
+        resp = proxy.get(
+            session, pdf_url,
+            headers=_pdf_headers(),
+            sleep_sec=sleep_sec,
+            logger=logger,
+            log_tag=f"[{report.tag} pdf]",
+        )
+        if resp is None:
+            logger.error("[%s] PDF download failed (None response)", report.tag)
+            return None
+        ctype = resp.headers.get("Content-Type", "")
+        if "pdf" not in ctype.lower() and len(resp.content) < MIN_VALID_BYTES:
+            logger.warning(
+                "[%s] PDF response not pdf (ctype=%s, %d bytes)",
+                report.tag, ctype, len(resp.content),
+            )
+            return None
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(resp.content)
+        if not is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
+            logger.warning("[%s] PDF saved but too small (%d bytes)", report.tag, len(resp.content))
+            out_file.unlink(missing_ok=True)
+            return None
+        logger.info("[%s] PDF downloaded (%d bytes)", report.tag, len(resp.content))
+        return out_file
+
+    def extract_report_csvs(self, pdf_path: Path, *, force: bool = False) -> Dict[str, Path]:
+        """Extract the target sections from *pdf_path* to CSVs.
+
+        All six section CSVs are written next to the PDF with a ``{tag}_`` prefix
+        (0-byte placeholders for sections not present in the PDF), plus a
+        key-value identify CSV. Returns {section_label: csv_path} for ALL sections.
+
+        Skips re-extraction when the identify CSV already exists (see
+        :func:`all_csvs_exist`), unless *force* is True.
+
+        Also skips 0-byte PDFs (empty markers created when annList returned no
+        new reports) — these are not real PDFs and would fail to parse.
+        """
+        if pdf_path.stat().st_size < MIN_VALID_BYTES:
+            logger.info("[%s] PDF is empty marker, skipping extraction", pdf_path.stem)
+            return {}
+        if not force and all_csvs_exist(pdf_path):
+            logger.info("[%s] CSVs already exist, skipping extraction", pdf_path.stem)
+            return _existing_csvs(pdf_path)
+        prefix = pdf_path.stem + "_"  # e.g. "160812_2026Q2_"
+        return self.extractor.write_section_csvs(
+            pdf_path, out_dir=pdf_path.parent, prefix=prefix)
+
+    def download_szse_etf_reports(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        etf_codes: Optional[List[str]] = None,
+        sleep_sec: Optional[float] = None,
+        extract: bool = True,
+        max_etfs: Optional[int] = None,
+        other_only: bool = True,
+        include_lof: bool = True,
+        start_date: str = DEFAULT_START_DATE,
+    ) -> dict:
+        """Download SZSE ETF quarterly reports and extract holdings CSVs.
+
+        Args:
+            out_root: Override output root (default: temps/szse_etf_reports/).
+            etf_codes: Optional list of bare 6-digit codes to process. If None,
+                the SZ ETF universe is built from the DB. Explicit codes bypass
+                the *other_only* and *include_lof* filters.
+            sleep_sec: Sleep between HTTP requests (default: the service's
+                external_request_config JSON row — 90s for
+                downloads.etf.szse.archive).
+            extract: If True, extract the 3 target sections to CSV after each PDF
+                download.
+            max_etfs: Limit to N ETFs (dev/testing).
+            other_only: When True (default) and *etf_codes* is None, restrict the
+                ETF universe to those with ``sec_classification.sector_id='OTHER'``
+                — i.e. unclassified ETFs whose quarterly reports are most useful
+                for classification. Ignored when *etf_codes* is given.
+            include_lof: When True (default) and *etf_codes* is None, also include
+                all active SZSE LOFs (codes matching ``16____.SZ``) in the
+                universe regardless of *other_only*. LOF holdings are useful
+                across all sectors, not just OTHER. Ignored when *etf_codes* is
+                given or when *other_only* is False (the all-active branch
+                already contains LOFs).
+            start_date: Only download reports at or after this date
+                (default: DEFAULT_START_DATE = 2020-01-01). Reports with
+                (year, quarter) before the cutoff are skipped, and pagination
+                stops once a page contains only reports older than the cutoff.
+        """
+        out_dir = resolve_out_dir(__file__, "szse_etf_reports", out_root)
+        cutoff_year, cutoff_quarter = _parse_start_cutoff(start_date)
+
+        # Build the ETF universe. Explicit --etf-code always bypasses other_only
+        # and include_lof.
+        if etf_codes is not None:
+            universe: List[Tuple[str, str]] = [(c, "") for c in etf_codes]
+        else:
+            universe = self.fetch_sz_etf_codes(other_only=other_only, include_lof=include_lof)
+        if max_etfs is not None and max_etfs > 0:
+            universe = universe[:max_etfs]
+
+        logger.info(
+            "Starting SZSE ETF quarterly-report download: %d ETFs "
+            "(other_only=%s, include_lof=%s), sleep=%.1fs, out=%s, start_date=%s",
+            len(universe),
+            other_only if etf_codes is None else "bypassed",
+            include_lof if etf_codes is None else "bypassed",
+            sleep_sec, out_dir, start_date,
+        )
+
+        session = build_default_session()
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+        # overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
+        stats = RunStats()
+        reports_found = 0
+        csvs_written = 0
+
+        try:
+            for idx, (code, name) in enumerate(universe, 1):
+                if proxy.is_blocked(ANL_LIST_URL):
+                    logger.warning("[host-blocked] szse.cn blocked, stopping at ETF %s", code)
+                    break
+                logger.info("== ETF %s (%s) %d/%d ==", code, name or "?", idx, len(universe))
+
+                etf_dir = out_dir / code
+
+                # Cache-first skip: if the latest PDF or CSV was written within
+                # the last 3 months, skip the annList API call entirely.
+                # Quarterly reports are published every ~3 months, so no new
+                # report can be available within that window. This saves a 90s
+                # anti-bot sleep per ETF. Empty marker files (created when
+                # annList returned no new reports) also trigger this skip via
+                # their mtime.
+                latest_mtime = _latest_file_mtime(etf_dir, code)
+                if latest_mtime is not None and (time.time() - latest_mtime) < SKIP_WITHIN_SEC:
+                    age_days = int((time.time() - latest_mtime) / 86400)
+                    logger.info(
+                        "[%s] latest file %d days old (< %d days), skipping annList",
+                        code, age_days, SKIP_WITHIN_SEC // 86400,
+                    )
+                    stats.skipped_cached += 1
+                    continue
+
+                # Lazy pagination: fetch page 1, download its quarterly reports,
+                # and only fetch page 2+ if ALL reports on the current page were
+                # already cached (i.e. nothing new was downloaded). This avoids
+                # paginating through all 6+ pages when the newest reports are
+                # the only ones missing — a common case for incremental runs.
+                page = 1
+                n_new_total = 0
+                pagination_blocked = False
+                while page <= MAX_PAGES:
+                    if proxy.is_blocked(ANL_LIST_URL):
+                        logger.warning("[%s] annList host blocked, stopping", code)
                         pagination_blocked = True
                         break
-                    was_cached = is_report_cached(rpt, etf_dir)
-                    pdf_path = download_report_pdf(
-                        session, proxy, rpt, etf_dir, sleep_sec=sleep_sec,
-                    )
-                    if pdf_path is None:
-                        stats.failed += 1
-                        continue
-                    if was_cached:
-                        # PDF was already on disk — count as cached, not new.
-                        stats.skipped_cached += 1
-                    elif pdf_path.stat().st_size >= MIN_VALID_BYTES:
-                        n_new += 1
-                        stats.downloaded += 1
-                        stats.files.append(str(pdf_path))
-                    else:
-                        stats.failed += 1
-                        continue
 
-                    if extract:
-                        try:
-                            written = extract_report_csvs(pdf_path)
-                            # Count only CSVs with actual content
-                            # (non-zero size). Empty 0-byte placeholders
-                            # are expected for sections not in the PDF.
-                            n_with_content = sum(
-                                1 for p in written.values()
-                                if p.stat().st_size > 0
-                            )
-                            csvs_written += n_with_content
+                    rows, has_more = self.fetch_annlist_page(session, proxy, code, page)
+                    if not rows:
+                        break
+
+                    reports = _parse_quarterly(code, name, rows)
+                    # Filter out reports older than the start_date cutoff.
+                    # annList returns newest-first, so once we see reports before
+                    # the cutoff, all subsequent pages will also be too old.
+                    in_range: List[QuarterlyReport] = []
+                    too_old = False
+                    for rpt in reports:
+                        if (rpt.year, rpt.quarter) < (cutoff_year, cutoff_quarter):
+                            too_old = True
+                            continue
+                        in_range.append(rpt)
+                    reports_found += len(in_range)
+
+                    if not in_range:
+                        # All reports on this page are before the cutoff (or no
+                        # quarterly reports at all). Stop paginating since older
+                        # pages will only have older reports.
+                        if too_old:
                             logger.info(
-                                "[%s] %d/%d CSV(s) with content",
-                                rpt.tag, n_with_content, len(written),
+                                "[%s] page %d: all reports before cutoff %s, stopping",
+                                code, page, start_date,
                             )
-                        except Exception as e:
-                            logger.warning("[%s] CSV extraction failed: %s", rpt.tag, e)
+                        break
 
-                n_new_total += n_new
-                logger.info(
-                    "[%s] page %d: %d quarterly reports (in range), "
-                    "%d newly downloaded, %d cached",
-                    code, page, len(in_range), n_new,
-                    len(in_range) - n_new,
-                )
+                    # Download each in-range quarterly report on this page.
+                    # PDF downloads use the same anti-bot sleep (sleep_sec,
+                    # the service JSON row's 90s) as the annList API.
+                    n_new = 0
+                    for rpt in in_range:
+                        if proxy.is_blocked(PDF_BASE_URL):
+                            logger.warning("[host-blocked] disc.static.szse.cn blocked, stopping")
+                            pagination_blocked = True
+                            break
+                        was_cached = is_report_cached(rpt, etf_dir)
+                        pdf_path = self.download_report_pdf(
+                            session, proxy, rpt, etf_dir, sleep_sec=sleep_sec,
+                        )
+                        if pdf_path is None:
+                            stats.failed += 1
+                            continue
+                        if was_cached:
+                            # PDF was already on disk — count as cached, not new.
+                            stats.skipped_cached += 1
+                        elif pdf_path.stat().st_size >= MIN_VALID_BYTES:
+                            n_new += 1
+                            stats.downloaded += 1
+                            stats.files.append(str(pdf_path))
+                        else:
+                            stats.failed += 1
+                            continue
 
-                # If at least one report was newly downloaded on this page,
-                # stop paginating — we've caught up. Only fetch the next page
-                # when everything was already cached (looking for older
-                # missing reports further back in the announcement history).
-                if n_new > 0:
-                    break
-                if not has_more:
-                    break
-                page += 1
+                        if extract:
+                            try:
+                                written = self.extract_report_csvs(pdf_path)
+                                # Count only CSVs with actual content
+                                # (non-zero size). Empty 0-byte placeholders
+                                # are expected for sections not in the PDF.
+                                n_with_content = sum(
+                                    1 for p in written.values()
+                                    if p.stat().st_size > 0
+                                )
+                                csvs_written += n_with_content
+                                logger.info(
+                                    "[%s] %d/%d CSV(s) with content",
+                                    rpt.tag, n_with_content, len(written),
+                                )
+                            except Exception as e:
+                                logger.warning("[%s] CSV extraction failed: %s", rpt.tag, e)
 
-            # If pagination completed normally (not blocked) and no new
-            # reports were downloaded, write empty marker files for the
-            # latest expected quarter. The markers' mtime allows the
-            # cache-first skip to avoid annList on the next run (saving a
-            # 90s anti-bot sleep). After 90 days the mtime expires and
-            # annList will be re-queried for the next quarter's reports.
-            if not pagination_blocked and n_new_total == 0:
-                _write_empty_markers(etf_dir, code, _latest_expected_quarter())
-                stats.empty += 1
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+                    n_new_total += n_new
+                    logger.info(
+                        "[%s] page %d: %d quarterly reports (in range), "
+                        "%d newly downloaded, %d cached",
+                        code, page, len(in_range), n_new,
+                        len(in_range) - n_new,
+                    )
 
-    summary = stats.to_dict(
-        out_dir=str(out_dir),
-        etfs_total=len(universe),
-        reports_found=reports_found,
-        csvs_written=csvs_written,
-        sleep_sec=sleep_sec,
-    )
-    logger.info(
-        "Done SZSE ETF quarterly reports. downloaded=%d skipped_cached=%d "
-        "failed=%d reports_found=%d csvs_written=%d etfs=%d",
-        stats.downloaded, stats.skipped_cached, stats.failed,
-        reports_found, csvs_written, len(universe),
-    )
-    return summary
+                    # If at least one report was newly downloaded on this page,
+                    # stop paginating — we've caught up. Only fetch the next page
+                    # when everything was already cached (looking for older
+                    # missing reports further back in the announcement history).
+                    if n_new > 0:
+                        break
+                    if not has_more:
+                        break
+                    page += 1
+
+                # If pagination completed normally (not blocked) and no new
+                # reports were downloaded, write empty marker files for the
+                # latest expected quarter. The markers' mtime allows the
+                # cache-first skip to avoid annList on the next run (saving a
+                # 90s anti-bot sleep). After 90 days the mtime expires and
+                # annList will be re-queried for the next quarter's reports.
+                if not pagination_blocked and n_new_total == 0:
+                    _write_empty_markers(etf_dir, code, _latest_expected_quarter())
+                    stats.empty += 1
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
+
+        summary = stats.to_dict(
+            out_dir=str(out_dir),
+            etfs_total=len(universe),
+            reports_found=reports_found,
+            csvs_written=csvs_written,
+            sleep_sec=sleep_sec,
+        )
+        logger.info(
+            "Done SZSE ETF quarterly reports. downloaded=%d skipped_cached=%d "
+            "failed=%d reports_found=%d csvs_written=%d etfs=%d",
+            stats.downloaded, stats.skipped_cached, stats.failed,
+            reports_found, csvs_written, len(universe),
+        )
+        return summary

@@ -6,6 +6,6 @@ source covers. Content-freshness gated (see runner docstring).
 """
 from __future__ import annotations
 
-from .runner import download_cnindex_archive
+from .runner import CnindexArchiveRunner
 
-__all__ = ["download_cnindex_archive"]
+__all__ = ["CnindexArchiveRunner"]

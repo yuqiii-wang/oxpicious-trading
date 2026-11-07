@@ -1,0 +1,11 @@
+-- SQL write action — llm.deep_agent_store_items DELETE (UI: Summary
+-- History, entry delete). Executed by
+-- data_viz/api/services/ai-summary.service.ts (deleteSummaryRun) through
+-- the pg primary client inside the per-member transaction; convention of
+-- this tree:
+--   database/sql_writes/<app>/<layer>/<table>/<action>.sql
+--
+-- Params (node-postgres $n, in order):
+--   $1 namespace_slice TEXT[] — the member's namespace[1:2] slice,
+--      ARRAY['deep_agent', <thread_id>]
+DELETE FROM llm.deep_agent_store_items WHERE namespace[1:2] = $1::text[]

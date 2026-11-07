@@ -122,4 +122,7 @@ confirms the down-move, exhaustion-prone".
 - New dataframe compute follows `cudf-dtypes`; new tables/columns follow
   `db-smallint-type-codes` + `db-sql-write`; these route via
   `oxpicious-dev-conventions`.
+- Reusable study/analysis code is class-first pydantic
+  (`oxpicious-dev-conventions`); throwaway `temp_scripts/` study
+  scripts are exempt.
 - This skill is methodology only — it introduces no DB writes.

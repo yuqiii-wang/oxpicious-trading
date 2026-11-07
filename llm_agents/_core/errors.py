@@ -23,3 +23,25 @@ class LlmProviderError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.code = code
+
+
+class LlmRequestBudgetExceeded(LlmProviderError):
+    """One logical LLM call outran its overall WALL-CLOCK budget — the
+    transport's retry ladder was terminated at *budget* seconds instead
+    of playing every attempt out (the per-attempt read timeout bounds
+    each try; the budget bounds the whole call).
+
+    The caller-side contract: a request this heavy means the INPUT is
+    too big for one call — terminate (done here) and REFACTOR the input
+    into smaller tasks rather than retrying the same payload (the
+    deep-agent planning session does exactly that: batched proposals,
+    and a slimmed init message when even the first batch overruns).
+    Duck-typable from layer-pure modules via the ``budget_exceeded``
+    attribute (they cannot import this class without breaking
+    layering)."""
+
+    budget_exceeded = True
+
+    def __init__(self, message: str, *, budget: float) -> None:
+        super().__init__(message)
+        self.budget = budget

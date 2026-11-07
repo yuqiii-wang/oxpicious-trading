@@ -87,7 +87,7 @@ from builds.options.cffex.loader import (
     ymd_to_date,
 )
 
-from _common.data_build import DataBuild
+from builds.options.__main__ import OptionsBuild
 
 logger = setup_logging("cffex")
 
@@ -96,108 +96,7 @@ logger = setup_logging("cffex")
 _INDEX_UNDERLYING_CODES = [code for code, _ in PRODUCT_UNDERLYING.values()]
 
 
-async def load_index_ohlcv(
-    conn,
-    min_date: date,
-    max_date: date,
-) -> Optional[pd.DataFrame]:
-    """Load index close prices from stats.index_basic_stats for moneyness calc.
-
-    Args:
-        conn: async database connection
-        min_date: earliest date to fetch
-        max_date: latest date to fetch
-
-    Returns:
-        DataFrame with columns: date, underlying_code, close
-    """
-    if not _INDEX_UNDERLYING_CODES:
-        return None
-
-    try:
-        rows = await conn.fetch(
-            """
-            SELECT extract(epoch from date)::float8 AS date, code, close::float8 AS close
-            FROM stats.index_basic_stats
-            WHERE code = ANY($1)
-              AND date >= $2
-              AND date <= $3
-            ORDER BY date, code
-            """,
-            _INDEX_UNDERLYING_CODES,
-            min_date,
-            max_date,
-        )
-
-        if not rows:
-            return None
-
-        # Whole-column extraction; vectorized conversions — the date
-        # column arrives as float8 epoch (extract(epoch) in SQL) and is
-        # materialized as datetime64[us] in ONE host pass.
-        df = pd.DataFrame(rec_cols(rows))
-        df = df.rename(columns={"code": "underlying_code"})
-        df["underlying_code"] = df["underlying_code"].astype(str)
-        df["close"] = df["close"].astype(float)
-        df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
-        return df
-
-    except Exception:
-        return None
-
-
-async def find_missing_cffex_dates(
-    conn,
-    source_dates: set[date],
-    code_filter: str | None = None,
-) -> set[date]:
-    """Find dates from source_dates that do NOT already have CFFEX options data.
-
-    Scoped to ``exchange = 'CFFEX'`` on the options tables (every options_*
-    table carries the venue column) — SZSE/SSE rows never mask CFFEX gaps.
-
-    With code_filter (bare underlying index code), the check is scoped to
-    that underlying via stats.options_terms — dates loaded for OTHER
-    underlyings no longer mask this underlying's gaps.
-    """
-    if not source_dates:
-        return set()
-
-    if code_filter:
-        sql = (
-            'SELECT DISTINCT date FROM stats.options_terms '
-            "WHERE underlying_code = $1 AND exchange = 'CFFEX'"
-        )
-        existing_rows = await conn.fetch(sql, code_filter)
-    else:
-        sql = "SELECT DISTINCT date FROM stats.options_identity WHERE exchange = 'CFFEX'"
-        existing_rows = await conn.fetch(sql)
-    existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
-
-    return source_dates - existing_dates
-
-
-# ============================================================================
-# --date mode writer
-# ============================================================================
-async def upsert_split_tables_date_mode(conn, tables) -> None:
-    """Upsert each split table (FK parent first) for --date mode.
-
-    insert_split_tables' plain COPY is conflict-free only because rows are
-    PK-checked missing dates upstream; --date mode intentionally re-processes
-    rows that may already exist (refresh semantics), so every table is
-    written with a bulk ON CONFLICT (date, contract_code) DO UPDATE upsert
-    instead — no truncation, no deletes.
-    """
-    for tbl, rows in tables.items():
-        if not rows:
-            logger.info(f"    [DB] No rows to upsert into {tbl}")
-            continue
-        n = await bulk_upsert_async(conn, tbl, rows, key_columns=["date", "contract_code"])
-        logger.info(f"    [DB] Upserted {n:,} rows into {tbl}")
-
-
-class CffexOptionsBuild(DataBuild):
+class CffexOptionsBuild(OptionsBuild):
     """``python -m builds.options.cffex`` — CFFEX options ETL → DB.
 
     Embeddable: builds.options constructs this class with preset args and
@@ -233,6 +132,103 @@ class CffexOptionsBuild(DataBuild):
             "Code filter":       self.code_filter or "(none — all underlyings)",
             "Today":             TODAY_STR,
         }
+
+    async def load_index_ohlcv(
+        self,
+        conn,
+        min_date: date,
+        max_date: date,
+    ) -> Optional[pd.DataFrame]:
+        """Load index close prices from stats.index_basic_stats for moneyness calc.
+
+        Args:
+            conn: async database connection
+            min_date: earliest date to fetch
+            max_date: latest date to fetch
+
+        Returns:
+            DataFrame with columns: date, underlying_code, close
+        """
+        if not _INDEX_UNDERLYING_CODES:
+            return None
+
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT extract(epoch from date)::float8 AS date, code, close::float8 AS close
+                FROM stats.index_basic_stats
+                WHERE code = ANY($1)
+                  AND date >= $2
+                  AND date <= $3
+                ORDER BY date, code
+                """,
+                _INDEX_UNDERLYING_CODES,
+                min_date,
+                max_date,
+            )
+
+            if not rows:
+                return None
+
+            # Whole-column extraction; vectorized conversions — the date
+            # column arrives as float8 epoch (extract(epoch) in SQL) and is
+            # materialized as datetime64[us] in ONE host pass.
+            df = pd.DataFrame(rec_cols(rows))
+            df = df.rename(columns={"code": "underlying_code"})
+            df["underlying_code"] = df["underlying_code"].astype(str)
+            df["close"] = df["close"].astype(float)
+            df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+            return df
+
+        except Exception:
+            return None
+
+    async def find_missing_cffex_dates(
+        self,
+        conn,
+        source_dates: set[date],
+        code_filter: str | None = None,
+    ) -> set[date]:
+        """Find dates from source_dates that do NOT already have CFFEX options data.
+
+        Scoped to ``exchange = 'CFFEX'`` on the options tables (every options_*
+        table carries the venue column) — SZSE/SSE rows never mask CFFEX gaps.
+
+        With code_filter (bare underlying index code), the check is scoped to
+        that underlying via stats.options_terms — dates loaded for OTHER
+        underlyings no longer mask this underlying's gaps.
+        """
+        if not source_dates:
+            return set()
+
+        if code_filter:
+            sql = (
+                'SELECT DISTINCT date FROM stats.options_terms '
+                "WHERE underlying_code = $1 AND exchange = 'CFFEX'"
+            )
+            existing_rows = await conn.fetch(sql, code_filter)
+        else:
+            sql = "SELECT DISTINCT date FROM stats.options_identity WHERE exchange = 'CFFEX'"
+            existing_rows = await conn.fetch(sql)
+        existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
+
+        return source_dates - existing_dates
+
+    async def upsert_split_tables_date_mode(self, conn, tables) -> None:
+        """Upsert each split table (FK parent first) for --date mode.
+
+        insert_split_tables' plain COPY is conflict-free only because rows are
+        PK-checked missing dates upstream; --date mode intentionally re-processes
+        rows that may already exist (refresh semantics), so every table is
+        written with a bulk ON CONFLICT (date, contract_code) DO UPDATE upsert
+        instead — no truncation, no deletes.
+        """
+        for tbl, rows in tables.items():
+            if not rows:
+                logger.info(f"    [DB] No rows to upsert into {tbl}")
+                continue
+            n = await bulk_upsert_async(conn, tbl, rows, key_columns=["date", "contract_code"])
+            logger.info(f"    [DB] Upserted {n:,} rows into {tbl}")
 
     async def run(self) -> None:
         from _common.build_commons import (
@@ -317,7 +313,7 @@ class CffexOptionsBuild(DataBuild):
                 # With --code, only that underlying's dates are checked (via
                 # options_terms) so other underlyings' loaded dates don't mask
                 # this underlying's gaps.
-                missing_dates = await find_missing_cffex_dates(conn, available_dates, code_filter=code_filter)
+                missing_dates = await self.find_missing_cffex_dates(conn, available_dates, code_filter=code_filter)
 
             logger.info(
                 f"    [DB] {len(missing_dates)} dates missing from "
@@ -344,7 +340,7 @@ class CffexOptionsBuild(DataBuild):
             # Load index close prices for moneyness calculation
             missing_min = min(missing_dates)
             missing_max = max(missing_dates)
-            index_ohlcv = await load_index_ohlcv(conn, missing_min, missing_max)
+            index_ohlcv = await self.load_index_ohlcv(conn, missing_min, missing_max)
             if index_ohlcv is not None and len(index_ohlcv) > 0:
                 logger.info(f"    [INDEX] Loaded {len(index_ohlcv)} index rows for moneyness")
             else:
@@ -402,7 +398,7 @@ class CffexOptionsBuild(DataBuild):
             if forced_date:
                 # --date refresh: rows may already exist → ON CONFLICT upsert
                 # (plain COPY in insert_split_tables would hit PK conflicts)
-                await upsert_split_tables_date_mode(conn, tables)
+                await self.upsert_split_tables_date_mode(conn, tables)
             else:
                 await insert_split_tables(conn, tables)
 

@@ -1,9 +1,13 @@
 """llm_agents.online_search_summary.daily — the daily market request preset.
 
-The one scheduled request the online-search summary agent serves every
-biz day (driven by ``python -m downloads.macro.ai_daily``): a general
+The scheduled requests the online-search summary agent serves every biz
+day (driven by ``python -m downloads.macro.ai_daily``): the general
 summary of the day's stock market — how the broad market traded and
-which sectors saw significant rises and drops.
+which sectors saw significant rises and drops — plus the two daily
+geopolitics/economy asks (``daily_geo_asks``): the day's major GLOBAL
+geopolitics/politics/economy news and its financial-market implications
+(asked and answered in English) and the same for CHINA (asked and
+answered in Chinese).
 
 By default the request triggers on TODAY (Asia/Shanghai) when today is
 a trading day, else on the LATEST biz date before today — a weekend /
@@ -19,7 +23,8 @@ Pure domain: no network, no DB — the calendar lookup comes from
 from __future__ import annotations
 
 import datetime
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 from _common._holidays_and_weekdays import (
     is_trading_day, last_business_day,
@@ -29,7 +34,10 @@ from llm_agents.online_search_summary.core.models import (
     SHANGHAI_TZ, SearchOptions,
 )
 
-# text.llm_qa.category for the scheduled daily run (stored only with
+from llm_agents.online_search_summary.data_definitions import (
+    GeoAsk,
+)
+# llm.llm_qa.category for the scheduled daily run (stored only with
 # --store; the standalone artifact run skips the DB entirely).
 DAILY_CATEGORY = "market_daily"
 
@@ -115,3 +123,73 @@ def daily_target_or_clamp(
     if is_trading_day(target):
         return target, False
     return last_business_day(target), True
+
+
+# ----------------------------------------------------------------------------
+# Daily geopolitics/economy asks — the two questions besides the
+# broad-market general summary. Global news asks (and answers) in
+# English, China news in Chinese; both anchor the same trigger date as
+# the general summary and run EVERY run — no gate, no cooldown (they
+# are broad-market asks, not industry movers).
+# ----------------------------------------------------------------------------
+GEO_SCOPE_GLOBAL = "global"
+GEO_SCOPE_CHINA = "china"
+
+
+
+
+def daily_global_geo_query(
+    target: Optional[datetime.date] = None,
+) -> str:
+    """The daily GLOBAL geopolitics/politics/economy question, in English.
+
+    Asks for the day's major global geopolitics, politics and economy
+    news and what they imply for financial markets. Passing *target*
+    pins an explicit biz date; None anchors on the default trigger date
+    (today / latest biz date).
+    """
+    d = target if target is not None else default_daily_target()
+    return (f"As of {d.strftime('%B')} {d.day}, {d.year}, what are the "
+            f"major global geopolitics, politics and economy news, and "
+            f"what are their implications for financial markets?")
+
+
+def daily_china_geo_query(
+    target: Optional[datetime.date] = None,
+) -> str:
+    """The daily CHINA geopolitics/politics/economy question, in Chinese.
+
+    Asks for the day's major China geopolitics, politics and economy
+    news and their implications for financial markets — the Chinese
+    counterpart of :func:`daily_global_geo_query`.
+    """
+    d = target if target is not None else default_daily_target()
+    return (f"{d.year}年{d.month}月{d.day}日中国地缘政治、政治和经济方面"
+            f"有哪些重要新闻？这些新闻对金融市场有什么影响？")
+
+
+
+
+def daily_geo_asks(
+    target: Optional[datetime.date] = None,
+    *,
+    count: int = DAILY_COUNT,
+) -> List[GeoAsk]:
+    """The two daily geopolitics/economy asks: (global en, china zh).
+
+    The single entry point the daily driver needs — one GeoAsk per
+    scope, global first, each carrying the date-embedded question and
+    the anchor-aware search options (same recency window and reference
+    count as the broad-market summary).
+    """
+    d = target if target is not None else default_daily_target()
+    asks = []
+    for scope, query, lang in (
+        (GEO_SCOPE_GLOBAL, daily_global_geo_query(d), "en"),
+        (GEO_SCOPE_CHINA, daily_china_geo_query(d), "zh"),
+    ):
+        opts = SearchOptions(
+            count=count, recency=daily_recency(d), content_size="high")
+        opts.validate()
+        asks.append(GeoAsk(scope=scope, lang=lang, query=query, opts=opts))
+    return asks

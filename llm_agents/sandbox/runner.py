@@ -86,10 +86,25 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
 # The ONLY things a sandbox script subprocess inherits (the container
 # env is already minimal — PATH/LANG/PYTHON_* from the image — plus the
-# compose-set PG* readonly vars; no secrets ride along).
+# compose-set PG* readonly vars; no secrets ride along). PYTHONPATH
+# carries the image-baked study_kit package (/opt/study_kit — the
+# Dockerfile sets it); without the passthrough a script subprocess
+# would lose the entry and `import study_kit` would fail.
 _ENV_PASSTHROUGH: Tuple[str, ...] = (
     "PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR", "TEMP", "TMP",
+    "PYTHONPATH",
     "PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD",
+)
+
+# The standard session layout, minted with EVERY new session — the
+# fixed workspace contract the tool descriptions and the backend_tech
+# skills teach: scripts/ for the agent's .py files, data/ for fetched
+# or intermediate files, outputs/ for final results, figures/ for
+# plots. Pre-created so runtime writes never need their own
+# os.makedirs (the runner does NOT auto-create parent dirs at run
+# time, only at write-file time).
+SESSION_LAYOUT: Tuple[str, ...] = (
+    "scripts", "data", "outputs", "figures",
 )
 
 
@@ -126,14 +141,20 @@ class SandboxRunner:
         return "none (no PG* preset)"
 
     def new_session(self) -> Dict[str, Any]:
-        """Mint one session directory; reap sessions idle past the GC
-        age first (best effort — a busy mount must not block minting)."""
+        """Mint one session directory (with the standard layout sub
+        dirs — scripts/data/outputs/figures) and reap sessions idle
+        past the GC age first (best effort — a busy mount must not
+        block minting)."""
         self.gc_sessions()
         session = datetime.datetime.now(
             datetime.timezone.utc).strftime("%Y%m%d-%H%M%S") \
             + "-" + uuid.uuid4().hex[:6]
-        (self.root / session).mkdir(parents=True, exist_ok=True)
+        base = self.root / session
+        base.mkdir(parents=True, exist_ok=True)
+        for sub in SESSION_LAYOUT:
+            (base / sub).mkdir(exist_ok=True)
         return {"session": session, "root": str(self.root),
+                "layout": list(SESSION_LAYOUT),
                 "db": self.db_note()}
 
     def gc_sessions(self) -> int:

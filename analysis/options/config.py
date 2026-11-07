@@ -307,9 +307,9 @@ VOL_SPOT_CORR_ANALYSIS_NAME = "options_vol_index_vs_spot_price_corr"
 
 VOL_SPOT_CORR_PK_COLUMNS = ["underlying_code", "date"]
 
-# Correlation windows in TRADING sessions: 5/20/60/255 = ~1 week / 1 month
-# / 3 months / 1 year (the repo ma-convention).
-VOL_SPOT_CORR_WINDOWS = [5, 20, 60, 255]
+# Correlation windows in TRADING sessions: 20/60/255 = 1 month / 3 months
+# / 1 year (the repo ma-convention).
+VOL_SPOT_CORR_WINDOWS = [20, 60, 255]
 
 # Row stride: the seed grid — one row every 5th trading session per
 # underlying (its options_vol_index row ordinal % 5 == 0) plus the
@@ -327,8 +327,8 @@ VOL_SPOT_CORR_DESCRIPTION = (
     "index (analysis.options_vol_index) and the underlying spot close "
     "(analysis.options_spot_daily): per trading session x = ln(spot_t/"
     "spot_{t-1}) (daily log-return) vs y = ln(vol_t/vol_{t-1}) (daily "
-    "log-change); corr_5d/20d/60d/255d = Pearson correlation over the "
-    "trailing 5/20/60/255 sessions, counting only sessions where BOTH "
+    "log-change); corr_20d/60d/255d = Pearson correlation over the "
+    "trailing 20/60/255 sessions, counting only sessions where BOTH "
     "changes exist (NULL until the window holds W joint-valid pairs). "
     "Level-vs-level correlation is deliberately NOT stored — spurious on "
     "trending series. Append-only sampling: fresh underlyings seed the "
@@ -340,12 +340,11 @@ VOL_SPOT_CORR_DESCRIPTION = (
 )
 
 VOL_SPOT_CORR_RESULT_COLUMNS = [
-    "date", "underlying_code", "corr_5d", "corr_20d", "corr_60d",
-    "corr_255d",
+    "date", "underlying_code", "corr_20d", "corr_60d", "corr_255d",
 ]
 
 VOL_SPOT_CORR_NUMERIC_COLS = [
-    "corr_5d", "corr_20d", "corr_60d", "corr_255d",
+    "corr_20d", "corr_60d", "corr_255d",
 ]
 
 # ---- Options bands table (v2 — OI-MASS CORRIDOR) ---------------------------

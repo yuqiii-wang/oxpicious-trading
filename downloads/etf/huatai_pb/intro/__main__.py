@@ -17,6 +17,11 @@ setup_date, risk_level, benchmark, invest_target``): code is the BARE
 基金经理 (brokername) while company is the fund manager firm (managerName).
 Fund intro has no builds/etf consumer yet — reference metadata.
 
+The entry point is the :class:`HuataiPbIntroDownload` DownloadJob — the
+former ``__main__`` body is its ``run()`` and the ``download_intro``
+orchestration function became the method of the same name (same signature
+and body); ``fund_arr_to_frame`` and the constants stay module-level.
+
 Usage:
   python -m downloads.etf.huatai_pb.intro
   python -m downloads.etf.huatai_pb.intro --all-funds   (include non-ETF funds)
@@ -31,6 +36,7 @@ from typing import Dict, List
 import pandas as pd
 
 from downloads._common import (
+    DownloadJob,
     RunStats,
     build_default_session,
     is_valid_file,
@@ -77,77 +83,85 @@ def fund_arr_to_frame(funds: List[Dict[str, str]], *, etf_only: bool) -> pd.Data
     return pd.DataFrame(rows, columns=INTRO_COLS).sort_values("code").reset_index(drop=True)
 
 
-def download_intro(
-    *,
-    out_root: str | None = None,
-    sleep_sec: float | None = None,
-    all_funds: bool = False,
-    force: bool = False,
-) -> Dict[str, object]:
-    out_dir = resolve_out_dir("", "huatai_pb_intro", out_root)
-    raw_dir = out_dir / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    today = date.today()
-    out_path = out_dir / f"huatai_pb_intro_{today:%Y%m%d}.csv"
+class HuataiPbIntroDownload(DownloadJob):
+    """DownloadJob for the huatai-pb.com fund intro fetch cycle — the former
+    ``__main__`` body is ``run()`` and the ``download_intro`` function is
+    the method of the same name (same signature and body verbatim);
+    pacing / out_root stay per-call arguments."""
 
-    if not force and is_valid_file(out_path, min_bytes=256):
-        logger.info("[intro] today's file exists: %s (use --force to re-fetch)",
-                    out_path.name)
-        return {"out_path": str(out_path), "status": "cached"}
+    description = "Download huatai-pb.com fund intro (基金概况) from FundArr."
+    component = "huatai_pb_intro"
 
-    session = build_default_session()
-    proxy = build_proxy(SERVICE, sleep_sec)
-    stats = RunStats()
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--out-root", type=str, default=None,
+                        help="Alternative output root directory")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Sleep seconds between requests "
+                             f"(default: external_request_config JSON for {SERVICE})")
+        parser.add_argument("--all-funds", action="store_true",
+                        help="Include non-ETF funds (default: listed ETF codes only).")
+        parser.add_argument("--force", action="store_true",
+                        help="Re-fetch even when today's intro file exists.")
 
-    resp = proxy.get(session, COMMON_JS_URL, headers=None, logger=logger,
-                     log_tag="[intro]")
-    if resp is None or resp.status_code != 200:
-        logger.error("[intro] failed to fetch %s", COMMON_JS_URL)
-        return stats.to_dict(out_dir=str(out_dir))
+    def download_intro(
+        self,
+        *,
+        out_root: str | None = None,
+        sleep_sec: float | None = None,
+        all_funds: bool = False,
+        force: bool = False,
+    ) -> Dict[str, object]:
+        out_dir = resolve_out_dir("", "huatai_pb_intro", out_root)
+        raw_dir = out_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        today = date.today()
+        out_path = out_dir / f"huatai_pb_intro_{today:%Y%m%d}.csv"
 
-    raw_path = raw_dir / f"huatai_pb_common_{today:%Y%m%d}.js"
-    raw_path.write_text(resp.text, encoding="utf-8", errors="replace")
+        if not force and is_valid_file(out_path, min_bytes=256):
+            logger.info("[intro] today's file exists: %s (use --force to re-fetch)",
+                        out_path.name)
+            return {"out_path": str(out_path), "status": "cached"}
 
-    funds = parse_fund_arr(resp.text)
-    if not funds:
-        logger.error("[intro] FundArr parse yielded 0 funds")
-        stats.failed += 1
-        return stats.to_dict(out_dir=str(out_dir))
+        session = build_default_session()
+        proxy = build_proxy(SERVICE, sleep_sec)
+        stats = RunStats()
 
-    frame = fund_arr_to_frame(funds, etf_only=not all_funds)
-    if frame.empty:
-        logger.warning("[intro] 0 funds after filter (all_funds=%s)", all_funds)
-        stats.empty += 1
-        return stats.to_dict(out_dir=str(out_dir))
+        resp = proxy.get(session, COMMON_JS_URL, headers=None, logger=logger,
+                         log_tag="[intro]")
+        if resp is None or resp.status_code != 200:
+            logger.error("[intro] failed to fetch %s", COMMON_JS_URL)
+            return stats.to_dict(out_dir=str(out_dir))
 
-    frame.to_csv(out_path, index=False, encoding=CSV_ENCODING)
-    stats.downloaded += 1
-    logger.info("[intro] saved %s (%d funds from %d FundArr entries)",
-                out_path.name, len(frame), len(funds))
-    return stats.to_dict(out_path=str(out_path), out_dir=str(out_dir),
-                         funds_parsed=len(funds), funds_written=len(frame))
+        raw_path = raw_dir / f"huatai_pb_common_{today:%Y%m%d}.js"
+        raw_path.write_text(resp.text, encoding="utf-8", errors="replace")
+
+        funds = parse_fund_arr(resp.text)
+        if not funds:
+            logger.error("[intro] FundArr parse yielded 0 funds")
+            stats.failed += 1
+            return stats.to_dict(out_dir=str(out_dir))
+
+        frame = fund_arr_to_frame(funds, etf_only=not all_funds)
+        if frame.empty:
+            logger.warning("[intro] 0 funds after filter (all_funds=%s)", all_funds)
+            stats.empty += 1
+            return stats.to_dict(out_dir=str(out_dir))
+
+        frame.to_csv(out_path, index=False, encoding=CSV_ENCODING)
+        stats.downloaded += 1
+        logger.info("[intro] saved %s (%d funds from %d FundArr entries)",
+                    out_path.name, len(frame), len(funds))
+        return stats.to_dict(out_path=str(out_path), out_dir=str(out_dir),
+                             funds_parsed=len(funds), funds_written=len(frame))
+
+    def run(self) -> None:
+        self.download_intro(
+            out_root=self.args.out_root,
+            sleep_sec=self.args.sleep_sec,
+            all_funds=self.args.all_funds,
+            force=self.args.force,
+        )
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download huatai-pb.com fund intro (基金概况) from FundArr."
-    )
-    ap.add_argument("--out-root", type=str, default=None,
-                    help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=None,
-                    help="Sleep seconds between requests "
-                         f"(default: external_request_config JSON for {SERVICE})")
-    ap.add_argument("--all-funds", action="store_true",
-                    help="Include non-ETF funds (default: listed ETF codes only).")
-    ap.add_argument("--force", action="store_true",
-                    help="Re-fetch even when today's intro file exists.")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    download_intro(
-        out_root=args.out_root,
-        sleep_sec=args.sleep_sec,
-        all_funds=args.all_funds,
-        force=args.force,
-    )
+    HuataiPbIntroDownload().execute()

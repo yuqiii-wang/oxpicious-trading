@@ -1,12 +1,17 @@
 """CSIndex stream CSV IO — archive bar rows to CSV and load CSV back to DB.
 
 ``write_bars_csv`` archives one fetch's 5-min bar rows to a CSV under
-``temps/csindex_intraday/``. ``backfill_csvs`` scans all archived CSVs
-and upserts bars to ``stats.index_intraday_5min``.
+``temps/csindex_intraday/``. ``StreamCsvBackfill.backfill_csvs`` scans all
+archived CSVs and upserts bars to ``stats.index_intraday_5min``.
 
 CSV archival is important for CSIndex because the streamer makes ~15-30s
 antibot-sleep-delayed fetches — if the DB connection drops mid-sweep, the
 fetched data is lost without CSV backup. Backfill recovers it.
+
+Class shape: the conn-first backfill orchestration is the
+``backfill_csvs`` method of :class:`StreamCsvBackfill` (the live ``conn``
+stays an explicit per-call argument); the pure CSV writer stays
+module-level.
 """
 from __future__ import annotations
 
@@ -58,97 +63,102 @@ def write_bars_csv(cycle_dt: datetime, bar_rows: List[dict]) -> Path | None:
     return out_file
 
 
-def backfill_csvs(conn) -> int:
-    """Scan all CSIndex intraday CSV files and upsert bars to DB.
+class StreamCsvBackfill:
+    """CSV backfill scope for the CSIndex stream — the former module-level
+    ``backfill_csvs`` orchestration grouped as one stateless object (the
+    live ``conn`` stays an explicit argument)."""
 
-    Each CSV row has: update_time, date, code, name, time,
-    open, high, low, close, change, change_pct.
+    def backfill_csvs(self, conn) -> int:
+        """Scan all CSIndex intraday CSV files and upsert bars to DB.
 
-    All rows go to ``stats.index_intraday_5min`` (+ ``stats.index_identity``
-    FK parent). Idempotent: ON CONFLICT just updates existing rows.
+        Each CSV row has: update_time, date, code, name, time,
+        open, high, low, close, change, change_pct.
 
-    Returns total number of bars upserted.
-    """
-    out_dir = resolve_out_dir(None, "csindex_intraday", None)
-    csv_files = sorted(out_dir.glob("csindex_intraday_*.csv"))
-    if not csv_files:
-        return 0
+        All rows go to ``stats.index_intraday_5min`` (+ ``stats.index_identity``
+        FK parent). Idempotent: ON CONFLICT just updates existing rows.
 
-    t0 = _time.time()
-    total_bars = 0
+        Returns total number of bars upserted.
+        """
+        out_dir = resolve_out_dir(None, "csindex_intraday", None)
+        csv_files = sorted(out_dir.glob("csindex_intraday_*.csv"))
+        if not csv_files:
+            return 0
 
-    # Accumulate rows across all CSVs, then batch-upsert once.
-    index_identity: List[dict] = []
-    index_bars: List[dict] = []
+        t0 = _time.time()
+        total_bars = 0
 
-    for csv_path in csv_files:
-        try:
-            with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    code = (row.get("code") or "").strip()
-                    if not code:
-                        continue
-                    date_str = (row.get("date") or "").strip()[:10]
-                    time_str = (row.get("time") or "").strip()[:8]
-                    name = row.get("name") or code
-                    if not date_str or not time_str:
-                        continue
-                    try:
-                        from datetime import date as _date, time as _time_mod
-                        bar_date = _date.fromisoformat(date_str)
-                        parts = time_str.split(":")
-                        h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
-                        bar_time = _time_mod(h, m, s)
-                    except (ValueError, IndexError):
-                        continue
+        # Accumulate rows across all CSVs, then batch-upsert once.
+        index_identity: List[dict] = []
+        index_bars: List[dict] = []
 
-                    def _f(v):
+        for csv_path in csv_files:
+            try:
+                with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        code = (row.get("code") or "").strip()
+                        if not code:
+                            continue
+                        date_str = (row.get("date") or "").strip()[:10]
+                        time_str = (row.get("time") or "").strip()[:8]
+                        name = row.get("name") or code
+                        if not date_str or not time_str:
+                            continue
                         try:
-                            return float(v) if v not in (None, "") else None
-                        except (ValueError, TypeError):
-                            return None
+                            from datetime import date as _date, time as _time_mod
+                            bar_date = _date.fromisoformat(date_str)
+                            parts = time_str.split(":")
+                            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+                            bar_time = _time_mod(h, m, s)
+                        except (ValueError, IndexError):
+                            continue
 
-                    open_ = _f(row.get("open"))
-                    high = _f(row.get("high"))
-                    low = _f(row.get("low"))
-                    close = _f(row.get("close"))
-                    change = _f(row.get("change"))
-                    change_pct = _f(row.get("change_pct"))
+                        def _f(v):
+                            try:
+                                return float(v) if v not in (None, "") else None
+                            except (ValueError, TypeError):
+                                return None
 
-                    if close is None:
-                        continue
+                        open_ = _f(row.get("open"))
+                        high = _f(row.get("high"))
+                        low = _f(row.get("low"))
+                        close = _f(row.get("close"))
+                        change = _f(row.get("change"))
+                        change_pct = _f(row.get("change_pct"))
 
-                    index_identity.append({
-                        "date": bar_date, "code": code, "name": name,
-                    })
-                    index_bars.append({
-                        "date": bar_date, "code": code, "time": bar_time,
-                        "open": open_, "high": high, "low": low,
-                        "close": close, "change": change,
-                        "change_pct": change_pct,
-                    })
-        except Exception as e:
-            logger.warning("backfill csindex: %s failed: %s", csv_path.name, e)
+                        if close is None:
+                            continue
 
-    # Dedup identity rows and batch-upsert
-    if index_identity:
-        seen = set()
-        uniq = []
-        for r in index_identity:
-            k = (r["date"], r["code"])
-            if k in seen:
-                continue
-            seen.add(k)
-            uniq.append(r)
-        bulk_upsert(conn, "stats.index_identity", uniq, ["date", "code"])
-    if index_bars:
-        bulk_upsert(conn, "stats.index_intraday_5min", index_bars, ["date", "code", "time"])
-        total_bars = len(index_bars)
+                        index_identity.append({
+                            "date": bar_date, "code": code, "name": name,
+                        })
+                        index_bars.append({
+                            "date": bar_date, "code": code, "time": bar_time,
+                            "open": open_, "high": high, "low": low,
+                            "close": close, "change": change,
+                            "change_pct": change_pct,
+                        })
+            except Exception as e:
+                logger.warning("backfill csindex: %s failed: %s", csv_path.name, e)
 
-    elapsed = _time.time() - t0
-    logger.info(
-        "backfill csindex: %d CSVs → %d index bars in %.1fs",
-        len(csv_files), len(index_bars), elapsed,
-    )
-    return total_bars
+        # Dedup identity rows and batch-upsert
+        if index_identity:
+            seen = set()
+            uniq = []
+            for r in index_identity:
+                k = (r["date"], r["code"])
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append(r)
+            bulk_upsert(conn, "stats.index_identity", uniq, ["date", "code"])
+        if index_bars:
+            bulk_upsert(conn, "stats.index_intraday_5min", index_bars, ["date", "code", "time"])
+            total_bars = len(index_bars)
+
+        elapsed = _time.time() - t0
+        logger.info(
+            "backfill csindex: %d CSVs → %d index bars in %.1fs",
+            len(csv_files), len(index_bars), elapsed,
+        )
+        return total_bars

@@ -152,4 +152,7 @@ from downloads._common.plans import (
 # --- cross-process single-instance locks -------------------------------------
 from downloads._common.locking import single_instance_lock
 
+# --- entry-point lifecycle (the downloads.* DataPipeline counterpart) --------
+from downloads._common.job import DownloadJob
+
 __all__ = [name for name in dir() if not name.startswith("_")]

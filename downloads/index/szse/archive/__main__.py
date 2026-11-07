@@ -13,6 +13,12 @@ When the archive endpoint returns no data for a date (header-only xlsx),
 the download falls back to the trend endpoint (CATALOGID=1815_stock_snapshot)
 which may have data for the same date. Files from the archive attempt are
 cleaned up before the trend fallback runs.
+
+The entry point is the :class:`SzseIndexArchiveDownload` DownloadJob — the
+former module body is its ``run()`` and the ``download_szse_archive_index``
+orchestration function became the method of the same name (same signature
+and body); the request-config constants and the tiny param/log-tag builders
+stay module-level.
 """
 from __future__ import annotations
 
@@ -24,7 +30,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from downloads._common import DEFAULT_START_DATE, service_urls
+from downloads._common import DEFAULT_START_DATE, DownloadJob, service_urls
 from downloads._common.exchanges.szse import (
     build_headers,
     run_szse_download,
@@ -106,37 +112,47 @@ def _archive_log_tag(security_type: str, ymd: str) -> str:
     return f"[{security_type} {ymd}]"
 
 
-def download_szse_archive_index(
-    out_root: Optional[str] = None,
-    end_date: Optional[str] = None,
-    start_date: str = DEFAULT_START_DATE,
-    sleep_sec: Optional[float] = None,
-    session: Optional[requests.Session] = None,
-) -> dict:
-    return run_szse_download(
-        caller_file=str(Path(__file__).resolve()),
-        out_dirname="szse_archive",
-        banner_label="archive-index",
-        security_cfgs=SECURITY_CFGS,
-        headers=ARCHIVE_HEADERS,
-        params_builder=_build_archive_params,
-        log_tag_fn=_archive_log_tag,
-        out_root=out_root,
-        end_date=end_date,
-        start_date=start_date,
-        security_types=["index"],
-        sleep_sec=sleep_sec,
-        session=session,
-        service=SERVICE,
-        exchange="SZ",
-        code_filter_by_type=CODE_FILTER_BY_TYPE,
-        skip_empty_markers=True,
-        fallback_params_builder=_build_trend_fallback_params,
-        fallback_headers=TREND_HEADERS,
-    )
+class SzseIndexArchiveDownload(DownloadJob):
+    """DownloadJob for the SZSE index archive fetch cycle — the former module
+    body is ``run()`` and the ``download_szse_archive_index`` function is the
+    method of the same name (same signature and body verbatim); pacing and
+    date range stay per-call arguments. The module had no argparse."""
+
+    description = "Download SZSE index (tab7) archive market data day by day."
+
+    def download_szse_archive_index(
+        self,
+        out_root: Optional[str] = None,
+        end_date: Optional[str] = None,
+        start_date: str = DEFAULT_START_DATE,
+        sleep_sec: Optional[float] = None,
+        session: Optional[requests.Session] = None,
+    ) -> dict:
+        return run_szse_download(
+            caller_file=str(Path(__file__).resolve()),
+            out_dirname="szse_archive",
+            banner_label="archive-index",
+            security_cfgs=SECURITY_CFGS,
+            headers=ARCHIVE_HEADERS,
+            params_builder=_build_archive_params,
+            log_tag_fn=_archive_log_tag,
+            out_root=out_root,
+            end_date=end_date,
+            start_date=start_date,
+            security_types=["index"],
+            sleep_sec=sleep_sec,
+            session=session,
+            service=SERVICE,
+            exchange="SZ",
+            code_filter_by_type=CODE_FILTER_BY_TYPE,
+            skip_empty_markers=True,
+            fallback_params_builder=_build_trend_fallback_params,
+            fallback_headers=TREND_HEADERS,
+        )
+
+    def run(self) -> None:
+        logger.info(self.download_szse_archive_index())
 
 
 if __name__ == "__main__":
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    logger.info(download_szse_archive_index())
+    SzseIndexArchiveDownload().execute()

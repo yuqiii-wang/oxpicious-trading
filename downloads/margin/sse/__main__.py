@@ -21,6 +21,14 @@ from ``_download_commons`` and ``download_szse_margin``.
 
 CRITICAL: Stock codes in the detail CSV are suffixed with ``.SS`` per the
 project convention (Shanghai-listed securities).
+
+Code motion only (2026-11-07): the former ``__main__`` body is the
+:class:`SseMarginDownload` DownloadJob ``run()`` (the single-instance lock
+moved to the base ``execute()`` via the ``service`` class attribute) and the
+fetch orchestration functions (``_fetch_page`` / ``_download_summary`` /
+``_download_detail`` / ``download_sse_margin``) are methods of the same
+names (same signatures and bodies verbatim); the pure parse/cache/CSV
+helpers and constants stay module-level.
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ from downloads._common import (
     DEFAULT_START_DATE,
     EMPTY_MARKER_RETRY_DAYS,
     AntiBotProxy,
+    DownloadJob,
     antibot_config_for,
     build_headers_with_referer,
     business_days,
@@ -47,7 +56,6 @@ from downloads._common import (
     resolve_out_dir,
     service_urls,
     setup_logger,
-    single_instance_lock,
     sleep_sec_for,
 )
 
@@ -119,51 +127,6 @@ def _parse_jsonp(text: str) -> Dict[str, Any]:
     raise ValueError("Cannot parse JSONP response from SSE endpoint")
 
 
-def _fetch_page(
-    session: requests.Session,
-    sql_id: str,
-    trade_date: date,
-    page_no: int,
-    page_size: int,
-    proxy: AntiBotProxy,
-) -> Optional[Dict[str, Any]]:
-    """Fetch one page from the SSE commonSoaQuery JSONP endpoint.
-
-    ``sql_id`` selects summary (RZRQ_HZ_INFO) vs detail (RZRQ_MX_INFO).
-    Single-day queries set ``beginDate`` = ``endDate`` = trade_date (YYYYMMDD).
-    """
-    ymd = trade_date.strftime("%Y%m%d")
-    params: Dict[str, Any] = {
-        "isPagination": "true",
-        "pageHelp.pageSize": page_size,
-        "pageHelp.pageNo": page_no,
-        "pageHelp.beginPage": page_no,
-        "pageHelp.cacheSize": 1,
-        "pageHelp.endPage": page_no,
-        "beginDate": ymd,
-        "endDate": ymd,
-        "sqlId": sql_id,
-        "jsonCallBack": JSONP_CALLBACK,
-    }
-    # Summary uses stockCode; detail uses preStockCode (both empty = all).
-    if sql_id == SUMMARY_SQL_ID:
-        params["stockCode"] = ""
-    else:
-        params["preStockCode"] = ""
-
-    resp = proxy.get(
-        session,
-        SSE_QUERY_URL,
-        params=params,
-        headers=SSE_HEADERS,
-        logger=logger,
-        log_tag=f"[{sql_id} {ymd} p{page_no}]",
-    )
-    if resp is None:
-        return None
-    return _parse_jsonp(resp.text)
-
-
 def _num(val: Any) -> Any:
     """Render a numeric cell: blank for None/NaN, otherwise the raw number."""
     if val is None:
@@ -215,130 +178,6 @@ def _write_csv(out_file: Path, rows: List[Dict[str, Any]], columns: List[str]) -
             writer.writerow(r)
 
 
-def _download_summary(
-    session: requests.Session,
-    trade_date: date,
-    out_dir: Path,
-    proxy: AntiBotProxy,
-    sleep_sec: float,
-) -> Tuple[Optional[Path], int]:
-    """Fetch the single-row market-wide summary for one trade date.
-
-    Returns (path_or_None, n_rows). n_rows == -1 indicates a cache hit.
-    """
-    ymd = trade_date.strftime("%Y%m%d")
-    out_file = out_dir / f"sse_margin_summary_{ymd}.csv"
-    if _csv_cache_hit(out_file, trade_date, "summary"):
-        logger.debug("[summary %s] already exists, skipping", ymd)
-        return out_file, -1
-
-    payload = _fetch_page(
-        session, SUMMARY_SQL_ID, trade_date, 1, SUMMARY_PAGE_SIZE, proxy,
-    )
-    if payload is None:
-        logger.error("[summary %s] request failed", ymd)
-        return None, 0
-
-    rows_raw = payload.get("result") or []
-    if not rows_raw:
-        # API confirmed no data for this date — write a header-only CSV so
-        # the next run's cache check skips it. Recent markers are retried
-        # by _csv_cache_hit in case the export simply wasn't published yet.
-        logger.info("[summary %s] no data, writing empty CSV", ymd)
-        _write_csv(out_file, [], SUMMARY_COLUMNS)
-        return out_file, 0
-
-    parsed = [_parse_summary_row(r) for r in rows_raw]
-    _write_csv(out_file, parsed, SUMMARY_COLUMNS)
-    logger.info("[summary %s] saved %d row(s) -> %s", ymd, len(parsed), out_file.name)
-    # Auto-sleep handled by proxy.get()/post()
-    return out_file, len(parsed)
-
-
-def _download_detail(
-    session: requests.Session,
-    trade_date: date,
-    out_dir: Path,
-    proxy: AntiBotProxy,
-    sleep_sec: float,
-) -> Tuple[Optional[Path], int]:
-    """Fetch the per-security detail for one trade date, paginating to the end.
-
-    Returns (path_or_None, n_rows). n_rows == -1 indicates a cache hit.
-    """
-    ymd = trade_date.strftime("%Y%m%d")
-    out_file = out_dir / f"sse_margin_detail_{ymd}.csv"
-    if _csv_cache_hit(out_file, trade_date, "detail"):
-        logger.debug("[detail %s] already exists, skipping", ymd)
-        return out_file, -1
-
-    all_rows: List[Dict[str, Any]] = []
-    page_no = 1
-    total: Optional[int] = None
-    # True when page 1 returned a valid payload with zero rows — i.e. the API
-    # confirmed there is no data for this date (as opposed to a transient
-    # request failure that left all_rows empty).
-    api_confirmed_empty = False
-
-    while True:
-        if proxy.is_blocked(SSE_QUERY_URL):
-            logger.warning("[detail %s] host blocked, stopping pagination", ymd)
-            break
-
-        payload = _fetch_page(
-            session, DETAIL_SQL_ID, trade_date, page_no, DETAIL_PAGE_SIZE, proxy,
-        )
-        if payload is None:
-            logger.error("[detail %s] page %d failed", ymd, page_no)
-            break
-
-        rows_raw = payload.get("result") or []
-        if not rows_raw:
-            logger.info("[detail %s] page %d returned no rows, stopping", ymd, page_no)
-            if page_no == 1:
-                api_confirmed_empty = True
-            break
-
-        all_rows.extend(_parse_detail_row(r) for r in rows_raw)
-
-        if total is None:
-            page_help = payload.get("pageHelp") or {}
-            total = int(page_help.get("total", 0))
-            logger.info("[detail %s] total=%d, paginating", ymd, total)
-
-        if total and len(all_rows) >= total:
-            break
-
-        page_no += 1
-        # Auto-sleep handled by proxy.get()/post()
-
-    if not all_rows:
-        if api_confirmed_empty:
-            # API confirmed no data for this date — write a header-only CSV
-            # so the next run's cache check skips it. Recent markers are
-            # retried by _csv_cache_hit in case the export simply wasn't
-            # published yet.
-            logger.info("[detail %s] no data, writing empty CSV", ymd)
-            _write_csv(out_file, [], DETAIL_COLUMNS)
-            return out_file, 0
-        logger.info("[detail %s] no data (transient failure)", ymd)
-        return None, 0
-
-    _write_csv(out_file, all_rows, DETAIL_COLUMNS)
-    # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type columns
-    # (margin detail mixes stocks and ETFs -> per-row "auto" inference)
-    from downloads._common import ensure_canonical_csv
-    ensure_canonical_csv(
-        out_file, "SS", sec_type="auto",
-        logger=logger, log_tag="[detail %s] " % ymd,
-    )
-    logger.info(
-        "[detail %s] saved %d row(s) across %d page(s) -> %s",
-        ymd, len(all_rows), page_no, out_file.name,
-    )
-    return out_file, len(all_rows)
-
-
 def _csv_has_data_rows(path: Path) -> bool:
     """Check whether a written CSV has at least one data row (i.e. is not a
     header-only/0-byte "no data" marker)."""
@@ -380,162 +219,344 @@ def _csv_cache_hit(out_file: Path, trade_date: date, log_tag: str) -> bool:
     return False
 
 
-def download_sse_margin(
-    out_root: Optional[str] = None,
-    end_date: Optional[str] = None,
-    start_date: str = DEFAULT_START_DATE,
-    report_types: Optional[List[str]] = None,
-    sleep_sec: Optional[float] = None,
-    session: Optional[requests.Session] = None,
-) -> dict:
-    """Download SSE margin (融资融券) data day by day.
+class SseMarginDownload(DownloadJob):
+    """DownloadJob for the SSE margin fetch cycle — the former ``__main__``
+    body is ``run()`` (the single-instance lock moved to the base
+    ``execute()`` via ``service``) and the fetch orchestration functions
+    (``_fetch_page`` / ``_download_summary`` / ``_download_detail`` /
+    ``download_sse_margin``) are methods of the same names (same signatures
+    and bodies verbatim); the pure parse/cache/CSV helpers and constants
+    stay module-level. The module had no argparse."""
 
-    For each trading day in ``[start_date, end_date]`` fetches both the
-    market-wide summary (1 row) and the per-security detail (~1900 rows,
-    paginated). Skips dates where the output CSV already exists.
+    description = ("Download Shanghai Stock Exchange (SSE) margin (融资融券) "
+                   "data — market-wide summary + per-security detail per "
+                   "trade date.")
+    component = "sse_margin_download"
+    service = SERVICE
 
-    Margin exports for trade date T are published by the exchange on T+1
-    (daytime), so the newest date or two may legitimately have no data yet
-    when this runs late at night or early morning. Those fetches write
-    empty CSVs that ``_csv_cache_hit`` retries on subsequent runs, so any
-    run after publication picks the dates up automatically (weekends
-    included).
+    def _fetch_page(
+        self,
+        session: requests.Session,
+        sql_id: str,
+        trade_date: date,
+        page_no: int,
+        page_size: int,
+        proxy: AntiBotProxy,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch one page from the SSE commonSoaQuery JSONP endpoint.
 
-    Args:
-        out_root: Override output root dir (default: ``temps/sse_margin``).
-        end_date: ``YYYY-MM-DD`` inclusive (default: the most recent
-            trading day; not-yet-published dates are retried on later runs).
-        start_date: ``YYYY-MM-DD`` inclusive (default: ``DEFAULT_START_DATE``).
-        report_types: Subset of ``["summary", "detail"]`` (default: both).
-        sleep_sec: Sleep between requests for anti-bot throttling
-            (default: the service's external_request_config JSON row).
-        session: Optional ``requests.Session`` to reuse.
+        ``sql_id`` selects summary (RZRQ_HZ_INFO) vs detail (RZRQ_MX_INFO).
+        Single-day queries set ``beginDate`` = ``endDate`` = trade_date (YYYYMMDD).
+        """
+        ymd = trade_date.strftime("%Y%m%d")
+        params: Dict[str, Any] = {
+            "isPagination": "true",
+            "pageHelp.pageSize": page_size,
+            "pageHelp.pageNo": page_no,
+            "pageHelp.beginPage": page_no,
+            "pageHelp.cacheSize": 1,
+            "pageHelp.endPage": page_no,
+            "beginDate": ymd,
+            "endDate": ymd,
+            "sqlId": sql_id,
+            "jsonCallBack": JSONP_CALLBACK,
+        }
+        # Summary uses stockCode; detail uses preStockCode (both empty = all).
+        if sql_id == SUMMARY_SQL_ID:
+            params["stockCode"] = ""
+        else:
+            params["preStockCode"] = ""
 
-    Returns:
-        Dict with per-report download/skip/fail counts and the output dir.
-    """
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_margin", out_root)
-    sess = session or requests.Session()
+        resp = proxy.get(
+            session,
+            SSE_QUERY_URL,
+            params=params,
+            headers=SSE_HEADERS,
+            logger=logger,
+            log_tag=f"[{sql_id} {ymd} p{page_no}]",
+        )
+        if resp is None:
+            return None
+        return _parse_jsonp(resp.text)
 
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
-    # argument overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = sleep_sec_for(SERVICE)
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
+    def _download_summary(
+        self,
+        session: requests.Session,
+        trade_date: date,
+        out_dir: Path,
+        proxy: AntiBotProxy,
+        sleep_sec: float,
+    ) -> Tuple[Optional[Path], int]:
+        """Fetch the single-row market-wide summary for one trade date.
 
-    if end_date is None:
-        # Walk all the way to the most recent trading day; dates whose
-        # export is not published yet produce empty CSVs that later runs
-        # retry (see _csv_cache_hit).
-        effective_end_date = last_business_day(date.today())
-    else:
-        effective_end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+        Returns (path_or_None, n_rows). n_rows == -1 indicates a cache hit.
+        """
+        ymd = trade_date.strftime("%Y%m%d")
+        out_file = out_dir / f"sse_margin_summary_{ymd}.csv"
+        if _csv_cache_hit(out_file, trade_date, "summary"):
+            logger.debug("[summary %s] already exists, skipping", ymd)
+            return out_file, -1
 
-    _start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        payload = self._fetch_page(
+            session, SUMMARY_SQL_ID, trade_date, 1, SUMMARY_PAGE_SIZE, proxy,
+        )
+        if payload is None:
+            logger.error("[summary %s] request failed", ymd)
+            return None, 0
 
-    if report_types is None:
-        report_types = ["summary", "detail"]
+        rows_raw = payload.get("result") or []
+        if not rows_raw:
+            # API confirmed no data for this date — write a header-only CSV so
+            # the next run's cache check skips it. Recent markers are retried
+            # by _csv_cache_hit in case the export simply wasn't published yet.
+            logger.info("[summary %s] no data, writing empty CSV", ymd)
+            _write_csv(out_file, [], SUMMARY_COLUMNS)
+            return out_file, 0
 
-    days = business_days(_start, effective_end_date, reverse=True)
-    total_days = len(days)
+        parsed = [_parse_summary_row(r) for r in rows_raw]
+        _write_csv(out_file, parsed, SUMMARY_COLUMNS)
+        logger.info("[summary %s] saved %d row(s) -> %s", ymd, len(parsed), out_file.name)
+        # Auto-sleep handled by proxy.get()/post()
+        return out_file, len(parsed)
 
-    logger.info(
-        "Starting SSE margin download: %s -> %s (%d trading days). types=%s",
-        _start, effective_end_date, total_days, report_types,
-    )
+    def _download_detail(
+        self,
+        session: requests.Session,
+        trade_date: date,
+        out_dir: Path,
+        proxy: AntiBotProxy,
+        sleep_sec: float,
+    ) -> Tuple[Optional[Path], int]:
+        """Fetch the per-security detail for one trade date, paginating to the end.
 
-    stats: Dict[str, Any] = {
-        "downloaded_summary": 0, "downloaded_detail": 0,
-        "skipped_summary": 0, "skipped_detail": 0,
-        "failed_summary": 0, "failed_detail": 0,
-        "empty_summary": 0, "empty_detail": 0,
-        "out_dir": str(out_dir),
-        "start_date": str(_start),
-        "end_date": str(effective_end_date),
-    }
+        Returns (path_or_None, n_rows). n_rows == -1 indicates a cache hit.
+        """
+        ymd = trade_date.strftime("%Y%m%d")
+        out_file = out_dir / f"sse_margin_detail_{ymd}.csv"
+        if _csv_cache_hit(out_file, trade_date, "detail"):
+            logger.debug("[detail %s] already exists, skipping", ymd)
+            return out_file, -1
 
-    # Track consecutive cache-skip dates per report type. Instead of logging
-    # each skipped file individually, accumulate a streak and emit a single
-    # consolidated line when an actual download (or failure) interrupts the
-    # run, or once at loop end.
-    skip_streak: Dict[str, List[date]] = {rt: [] for rt in report_types}
+        all_rows: List[Dict[str, Any]] = []
+        page_no = 1
+        total: Optional[int] = None
+        # True when page 1 returned a valid payload with zero rows — i.e. the API
+        # confirmed there is no data for this date (as opposed to a transient
+        # request failure that left all_rows empty).
+        api_confirmed_empty = False
 
-    def _flush_skip_streak() -> None:
-        parts: List[str] = []
-        total_files = 0
-        for rt in report_types:
-            dates = skip_streak[rt]
-            if not dates:
-                continue
-            # days are iterated newest-first, so dates[0] is the newest
-            newest = dates[0].strftime("%Y%m%d")
-            oldest = dates[-1].strftime("%Y%m%d")
-            n = len(dates)
-            total_files += n
-            rng = newest if newest == oldest else f"{newest}->{oldest}"
-            parts.append(f"{rt} {rng} ({n})")
-            dates.clear()
-        if parts:
-            logger.info(
-                "[cache] skipped %d file(s): %s",
-                total_files, ", ".join(parts),
-            )
-
-    try:
-        for d in days:
+        while True:
             if proxy.is_blocked(SSE_QUERY_URL):
-                logger.warning("[host-blocked] query.sse.com.cn is blocked, stopping")
+                logger.warning("[detail %s] host blocked, stopping pagination", ymd)
                 break
 
-            if "summary" in report_types:
-                path, n = _download_summary(sess, d, out_dir, proxy, sleep_sec)
-                if n == -1:
-                    skip_streak["summary"].append(d)
-                    stats["skipped_summary"] += 1
-                else:
-                    _flush_skip_streak()
-                    if path is None:
-                        stats["failed_summary"] += 1
-                    elif n == 0:
-                        stats["empty_summary"] += 1
+            payload = self._fetch_page(
+                session, DETAIL_SQL_ID, trade_date, page_no, DETAIL_PAGE_SIZE, proxy,
+            )
+            if payload is None:
+                logger.error("[detail %s] page %d failed", ymd, page_no)
+                break
+
+            rows_raw = payload.get("result") or []
+            if not rows_raw:
+                logger.info("[detail %s] page %d returned no rows, stopping", ymd, page_no)
+                if page_no == 1:
+                    api_confirmed_empty = True
+                break
+
+            all_rows.extend(_parse_detail_row(r) for r in rows_raw)
+
+            if total is None:
+                page_help = payload.get("pageHelp") or {}
+                total = int(page_help.get("total", 0))
+                logger.info("[detail %s] total=%d, paginating", ymd, total)
+
+            if total and len(all_rows) >= total:
+                break
+
+            page_no += 1
+            # Auto-sleep handled by proxy.get()/post()
+
+        if not all_rows:
+            if api_confirmed_empty:
+                # API confirmed no data for this date — write a header-only CSV
+                # so the next run's cache check skips it. Recent markers are
+                # retried by _csv_cache_hit in case the export simply wasn't
+                # published yet.
+                logger.info("[detail %s] no data, writing empty CSV", ymd)
+                _write_csv(out_file, [], DETAIL_COLUMNS)
+                return out_file, 0
+            logger.info("[detail %s] no data (transient failure)", ymd)
+            return None, 0
+
+        _write_csv(out_file, all_rows, DETAIL_COLUMNS)
+        # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type columns
+        # (margin detail mixes stocks and ETFs -> per-row "auto" inference)
+        from downloads._common import ensure_canonical_csv
+        ensure_canonical_csv(
+            out_file, "SS", sec_type="auto",
+            logger=logger, log_tag="[detail %s] " % ymd,
+        )
+        logger.info(
+            "[detail %s] saved %d row(s) across %d page(s) -> %s",
+            ymd, len(all_rows), page_no, out_file.name,
+        )
+        return out_file, len(all_rows)
+
+    def download_sse_margin(
+        self,
+        out_root: Optional[str] = None,
+        end_date: Optional[str] = None,
+        start_date: str = DEFAULT_START_DATE,
+        report_types: Optional[List[str]] = None,
+        sleep_sec: Optional[float] = None,
+        session: Optional[requests.Session] = None,
+    ) -> dict:
+        """Download SSE margin (融资融券) data day by day.
+
+        For each trading day in ``[start_date, end_date]`` fetches both the
+        market-wide summary (1 row) and the per-security detail (~1900 rows,
+        paginated). Skips dates where the output CSV already exists.
+
+        Margin exports for trade date T are published by the exchange on T+1
+        (daytime), so the newest date or two may legitimately have no data yet
+        when this runs late at night or early morning. Those fetches write
+        empty CSVs that ``_csv_cache_hit`` retries on subsequent runs, so any
+        run after publication picks the dates up automatically (weekends
+        included).
+
+        Args:
+            out_root: Override output root dir (default: ``temps/sse_margin``).
+            end_date: ``YYYY-MM-DD`` inclusive (default: the most recent
+                trading day; not-yet-published dates are retried on later runs).
+            start_date: ``YYYY-MM-DD`` inclusive (default: ``DEFAULT_START_DATE``).
+            report_types: Subset of ``["summary", "detail"]`` (default: both).
+            sleep_sec: Sleep between requests for anti-bot throttling
+                (default: the service's external_request_config JSON row).
+            session: Optional ``requests.Session`` to reuse.
+
+        Returns:
+            Dict with per-report download/skip/fail counts and the output dir.
+        """
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_margin", out_root)
+        sess = session or requests.Session()
+
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+        # argument overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = sleep_sec_for(SERVICE)
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
+
+        if end_date is None:
+            # Walk all the way to the most recent trading day; dates whose
+            # export is not published yet produce empty CSVs that later runs
+            # retry (see _csv_cache_hit).
+            effective_end_date = last_business_day(date.today())
+        else:
+            effective_end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+        _start = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+        if report_types is None:
+            report_types = ["summary", "detail"]
+
+        days = business_days(_start, effective_end_date, reverse=True)
+        total_days = len(days)
+
+        logger.info(
+            "Starting SSE margin download: %s -> %s (%d trading days). types=%s",
+            _start, effective_end_date, total_days, report_types,
+        )
+
+        stats: Dict[str, Any] = {
+            "downloaded_summary": 0, "downloaded_detail": 0,
+            "skipped_summary": 0, "skipped_detail": 0,
+            "failed_summary": 0, "failed_detail": 0,
+            "empty_summary": 0, "empty_detail": 0,
+            "out_dir": str(out_dir),
+            "start_date": str(_start),
+            "end_date": str(effective_end_date),
+        }
+
+        # Track consecutive cache-skip dates per report type. Instead of logging
+        # each skipped file individually, accumulate a streak and emit a single
+        # consolidated line when an actual download (or failure) interrupts the
+        # run, or once at loop end.
+        skip_streak: Dict[str, List[date]] = {rt: [] for rt in report_types}
+
+        def _flush_skip_streak() -> None:
+            parts: List[str] = []
+            total_files = 0
+            for rt in report_types:
+                dates = skip_streak[rt]
+                if not dates:
+                    continue
+                # days are iterated newest-first, so dates[0] is the newest
+                newest = dates[0].strftime("%Y%m%d")
+                oldest = dates[-1].strftime("%Y%m%d")
+                n = len(dates)
+                total_files += n
+                rng = newest if newest == oldest else f"{newest}->{oldest}"
+                parts.append(f"{rt} {rng} ({n})")
+                dates.clear()
+            if parts:
+                logger.info(
+                    "[cache] skipped %d file(s): %s",
+                    total_files, ", ".join(parts),
+                )
+
+        try:
+            for d in days:
+                if proxy.is_blocked(SSE_QUERY_URL):
+                    logger.warning("[host-blocked] query.sse.com.cn is blocked, stopping")
+                    break
+
+                if "summary" in report_types:
+                    path, n = self._download_summary(sess, d, out_dir, proxy, sleep_sec)
+                    if n == -1:
+                        skip_streak["summary"].append(d)
+                        stats["skipped_summary"] += 1
                     else:
-                        stats["downloaded_summary"] += 1
+                        _flush_skip_streak()
+                        if path is None:
+                            stats["failed_summary"] += 1
+                        elif n == 0:
+                            stats["empty_summary"] += 1
+                        else:
+                            stats["downloaded_summary"] += 1
 
-            if "detail" in report_types:
-                path, n = _download_detail(sess, d, out_dir, proxy, sleep_sec)
-                if n == -1:
-                    skip_streak["detail"].append(d)
-                    stats["skipped_detail"] += 1
-                else:
-                    _flush_skip_streak()
-                    if path is None:
-                        stats["failed_detail"] += 1
-                    elif n == 0:
-                        stats["empty_detail"] += 1
+                if "detail" in report_types:
+                    path, n = self._download_detail(sess, d, out_dir, proxy, sleep_sec)
+                    if n == -1:
+                        skip_streak["detail"].append(d)
+                        stats["skipped_detail"] += 1
                     else:
-                        stats["downloaded_detail"] += 1
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+                        _flush_skip_streak()
+                        if path is None:
+                            stats["failed_detail"] += 1
+                        elif n == 0:
+                            stats["empty_detail"] += 1
+                        else:
+                            stats["downloaded_detail"] += 1
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
 
-    _flush_skip_streak()
+        _flush_skip_streak()
 
-    logger.info(
-        "Done SSE margin. summary: dl=%d skip=%d fail=%d empty=%d | detail: dl=%d skip=%d fail=%d empty=%d out=%s",
-        stats["downloaded_summary"], stats["skipped_summary"], stats["failed_summary"], stats["empty_summary"],
-        stats["downloaded_detail"], stats["skipped_detail"], stats["failed_detail"], stats["empty_detail"],
-        out_dir,
-    )
-    return stats
+        logger.info(
+            "Done SSE margin. summary: dl=%d skip=%d fail=%d empty=%d | detail: dl=%d skip=%d fail=%d empty=%d out=%s",
+            stats["downloaded_summary"], stats["skipped_summary"], stats["failed_summary"], stats["empty_summary"],
+            stats["downloaded_detail"], stats["skipped_detail"], stats["failed_detail"], stats["empty_detail"],
+            out_dir,
+        )
+        return stats
+
+    def run(self) -> None:
+        logger.info(self.download_sse_margin())
 
 
 if __name__ == "__main__":
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    try:
-        with single_instance_lock(SERVICE):
-            logger.info(download_sse_margin())
-    except RuntimeError as exc:
-        logger.warning("%s — exiting", exc)
+    SseMarginDownload().execute()

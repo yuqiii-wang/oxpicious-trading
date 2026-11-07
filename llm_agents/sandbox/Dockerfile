@@ -8,15 +8,20 @@
 #
 # The only additions: psycopg (sandbox scripts connect to the DB
 # read-only via the compose-preset PG* env — verified to reach the
-# `db` service as readonly_analytics) and the stdlib-only runner API.
+# `db` service as readonly_analytics), the stdlib-only runner API, and
+# the study_kit helper package (finished query/calculation functions —
+# db.query / fetch_daily_bars, studies.* — importable from EVERY
+# session through the PYTHONPATH entry below: env, not session data).
 FROM sagacient/cutepandas:latest
 
 USER root
 RUN pip install --no-cache-dir psycopg
 COPY runner.py /opt/sandbox-runner/runner.py
+COPY study_kit /opt/study_kit/study_kit
 USER pandas
 WORKDIR /home/pandas
 ENV SANDBOX_ROOT=/home/pandas/sandbox
+ENV PYTHONPATH=/opt/study_kit
 
 EXPOSE 8788
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

@@ -51,6 +51,9 @@ class ZhihuSearchProvider(BaseOnlineSearchProvider):
 
     name = "zhihu"
     API_KEY_ENV_VARS = ("ZHIHU_API_KEY",)
+    # The DB secret registry's credential family (web_search — provider
+    # decodes via ext_http_source).
+    SECRET_TYPE = "web_search"
     ENGINES: Dict[str, str] = {}          # zhihu exposes a single engine
     DEFAULT_ENGINE = None
 

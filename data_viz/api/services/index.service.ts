@@ -8,6 +8,7 @@
  * No classification logic lives in TS.
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import { matchesExchange } from "../lib/classify-etf.js";
 import { listClassificationMetaRows } from "./classification-cache.js";
@@ -96,17 +97,9 @@ function transformRow(r: DbIndexRow): IndexDailyRow {
  *  Filters out indices with fewer than 40 trading days (insufficient for
  *  visualization — matches the "Insufficient data" alert threshold). */
 export async function listIndices(): Promise<IndexInfo[]> {
-  const rows = await queryRows<DbIndexMetaRow>(`
-    SELECT code,
-           MAX(name) AS name,
-           COUNT(*)   AS n_days,
-           MIN(date)::text AS first_date,
-           MAX(date)::text AS last_date
-      FROM stats.index_identity
-     GROUP BY code
-    HAVING COUNT(*) >= 40
-     ORDER BY n_days DESC, code
-  `);
+  const rows = await querySqlView<DbIndexMetaRow>(
+    "data_viz/api/services/index/list_indices",
+  );
   return rows.map((r) => ({
     code: r.code,
     name: r.name ?? "",
@@ -124,31 +117,31 @@ export async function getIndexDaily(
 ): Promise<IndexDailyResponse> {
   const params: unknown[] = [code];
   let paramIdx = 2;
-  const whereParts: string[] = [`code = $1`];
+  const dateWhere: string[] = [];
   const sd = toDateParam(startDate);
   const ed = toDateParam(endDate);
   if (sd) {
-    whereParts.push(`date >= $${paramIdx++}::date`);
+    dateWhere.push(` AND date >= $${paramIdx++}::date`);
     params.push(sd);
   }
   if (ed) {
-    whereParts.push(`date <= $${paramIdx++}::date`);
+    dateWhere.push(` AND date <= $${paramIdx++}::date`);
     params.push(ed);
   }
 
-  const sql = `
-    SELECT date, open, high, low, close, trading_shares, trading_amount, change_pct,
-           pe, cons_number, ma5, ma20, ma60, ma120, ma255, has_intraday_5mins
-      FROM stats.v_index_daily
-     WHERE ${whereParts.join(" AND ")}
-     ORDER BY date ASC
-  `;
+  // The SELECT lives in the sql view data_viz/api/services/index/daily_rows
+  // (code = $1 via the value slot; the optional date bounds ride the
+  // date_where fragment).
+  const { sql } = renderSqlView("data_viz/api/services/index/daily_rows", {
+    code,
+    date_where: sqlFrag(dateWhere.join("")),
+  });
   const rows = await queryRows<DbIndexRow>(sql, params);
 
   // Fetch the index name
-  const metaRows = await queryRows<DbIndexMetaRow>(
-    `SELECT code, MAX(name) AS name FROM stats.index_identity WHERE code = $1 GROUP BY code`,
-    [code],
+  const metaRows = await querySqlView<DbIndexMetaRow>(
+    "data_viz/api/services/index/index_name",
+    { code },
   );
   const name = metaRows.length > 0 ? (metaRows[0].name ?? "") : "";
 
@@ -444,38 +437,29 @@ export async function getIndicesCombined(
   // rationale as getStocksCombined / getEtfMarginCombined; INNER JOIN
   // basic_stats also skips bogus identity-only rows (incomplete same-day
   // entries with NULL close).
+  // The SELECT lives in the sql view
+  // data_viz/api/services/index/combined_rows (codes = $1 via the repeated
+  // value slot; the optional date bounds ride the date_where fragment with
+  // continuing $n numbering).
   const params: unknown[] = [];
   params.push(pageCodes);
-  let paramIdx = 2; // $1 = the code array; date bounds start at $2
-  const codePred = `= ANY($1::text[])`;
-  const whereParts: string[] = [`i.code ${codePred}`];
+  let paramIdx = 2; // date bounds start at $2 (codes = $1)
+  const dateWhere: string[] = [];
   const startDate = toDateParam(q.start_date);
   const endDate = toDateParam(q.end_date);
   if (startDate) {
-    whereParts.push(`i.date >= $${paramIdx++}::date`);
+    dateWhere.push(` AND i.date >= $${paramIdx++}::date`);
     params.push(startDate);
   }
   if (endDate) {
-    whereParts.push(`i.date <= $${paramIdx++}::date`);
+    dateWhere.push(` AND i.date <= $${paramIdx++}::date`);
     params.push(endDate);
   }
 
-  const sql = `
-    SELECT i.code, i.date,
-           bs.open, bs.high, bs.low, bs.close, bs.trading_shares, bs.trading_amount, bs.change_pct,
-           bs.has_intraday_5mins,
-           v.pe, v.cons_number,
-           t.ma5, t.ma20, t.ma60, t.ma120, t.ma255
-      FROM stats.index_identity i
-      JOIN stats.index_basic_stats bs
-        ON bs.date = i.date AND bs.code = i.code AND bs.code ${codePred}
-      LEFT JOIN stats.index_valuation v
-        ON v.date = i.date AND v.code = i.code AND v.code ${codePred}
-      LEFT JOIN stats.index_tech_stats t
-        ON t.date = i.date AND t.code = i.code AND t.code ${codePred}
-     WHERE ${whereParts.join(" AND ")}
-     ORDER BY i.code, i.date ASC
-  `;
+  const { sql } = renderSqlView("data_viz/api/services/index/combined_rows", {
+    codes: pageCodes,
+    date_where: sqlFrag(dateWhere.join("")),
+  });
   const dbRows = await queryRows<DbIndexRow>(sql, params);
 
   // Group rows by code
@@ -534,18 +518,14 @@ export async function getIndexIntraday5min(
   date: string,
 ): Promise<IndexIntraday5minResponse> {
   const d = toDateParam(date);
-  const bars = await queryRows<DbIntradayRow>(
-    `SELECT to_char(time, 'HH24:MI:SS') AS time,
-            open, high, low, close, change, change_pct
-       FROM stats.index_intraday_5min
-      WHERE code = $1 AND date = $2::date
-      ORDER BY time ASC`,
-    [code, d],
+  const bars = await querySqlView<DbIntradayRow>(
+    "data_viz/api/services/index/intraday_5min",
+    { code, date: d },
   );
   // Resolve the index name for display (falls back to "" if unknown).
-  const metaRows = await queryRows<DbIndexMetaRow>(
-    `SELECT code, MAX(name) AS name FROM stats.index_identity WHERE code = $1 GROUP BY code`,
-    [code],
+  const metaRows = await querySqlView<DbIndexMetaRow>(
+    "data_viz/api/services/index/index_name",
+    { code },
   );
   const name = metaRows.length > 0 ? (metaRows[0].name ?? "") : "";
 

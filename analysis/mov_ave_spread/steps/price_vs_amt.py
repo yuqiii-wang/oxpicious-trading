@@ -99,6 +99,8 @@ from analysis.mov_ave_spread.steps.px_vol import (
     fetch_price_vs_amt_source,
 )
 from analysis.mov_ave_spread._common.steps import (
+    StepRun,
+    TableStep,
     diff_write_scope_async,
     sec_type_code,
 )
@@ -279,17 +281,8 @@ async def _copy_rows_chunked(
 #  Pipeline (internal step — invoked from mov_ave_spread.__main__)
 # ---------------------------------------------------------------------------
 
-async def run_price_vs_amt(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
-    """Run the price-vs-amt STATE registry pipeline.
+class PriceVsAmtStep(TableStep):
+    """Price-vs-amt STATE registry step (analysis.mov_ave_price_vs_amt).
 
     The registry must classify on EXACTLY the analysis_signals input
     price series — so the source frame is NOT the parent's DataFrame
@@ -313,146 +306,164 @@ async def run_price_vs_amt(
       3. Upsert analysis.analysis_identity registry.
 
     Args:
-      conn: asyncpg connection (reused from parent).
+      run: the parent-built execution context (see
+          _common.steps.StepRun) — ``conn`` (asyncpg connection, reused
+          from parent), ``pool`` (optional connection pool for parallel
+          COPY chunks), ``max_concurrent`` (maximum parallel COPY
+          chunks), ``force`` (accepted for API compatibility with the
+          other internal steps — the rebuild is wholesale regardless),
+          and ``code_filter`` (single-code mode --code: rebuild this
+          code only).
       df: the parent's source DataFrame — only its (sec_type, code)
           universe is used (the active codes with recent data).
-      force: accepted for API compatibility with the other internal
-          steps — the rebuild is wholesale regardless.
-      pool: optional connection pool for parallel COPY chunks.
-      max_concurrent: maximum parallel COPY chunks.
       sec_type: when provided, process only this sec_type (parent loop
                 passes one sec_type at a time to bound memory).
-      code_filter: single-code mode (--code): rebuild this code only.
     """
-    t0 = time.time()
-    logger.info("\n" + "=" * 78)
-    logger.info("  MOV_AVE_PRICE_VS_AMT (internal step of mov_ave_spread)")
-    logger.info("=" * 78)
 
-    if code_filter is not None:
-        logger.info(f"    mode: SINGLE-CODE (wholesale registry rebuild for "
-              f"{code_filter})")
-    elif force:
-        logger.info("    mode: FORCE (wholesale registry rebuild; the parent "
-              "truncated the table upfront)")
-    else:
-        logger.info("    mode: WHOLESALE PER-SEC_TYPE (registry rows are "
-              "rebuilt on every run — adj_close back-adjustments rewrite "
-              "price history)")
+    title = "MOV_AVE_PRICE_VS_AMT (internal step of mov_ave_spread)"
+    tag = "p"
+    table = PRICE_VS_AMT_TABLE
+    analysis_name = PRICE_VS_AMT_ANALYSIS_NAME
+    detail_name = "mov_ave_price_vs_amt"
+    description = PRICE_VS_AMT_DESCRIPTION
+    needed_cols = ("sec_type", "code")
 
-    needed_cols = column_subset(df, ["sec_type", "code"])
-    if df[needed_cols].empty:
-        logger.info("    -> no source data; skipping price-vs-amt step.")
-        return
+    async def execute(
+        self,
+        run: StepRun,
+        df: pd.DataFrame,
+        *,
+        sec_type: str | None = None,
+    ) -> None:
+        t0 = time.time()
+        logger.info("\n" + "=" * 78)
+        logger.info("  MOV_AVE_PRICE_VS_AMT (internal step of mov_ave_spread)")
+        logger.info("=" * 78)
 
-    if sec_type is not None:
-        sec_types = (sec_type,)
-    else:
-        sec_types = tuple(
-            SEC_TYPE_LABEL[c] for c in host_unique(df["sec_type"])
-        )
-
-    # ---- Step 1: fetch clean source + features + classification ------
-    # add_px_vol_features groups by ``code`` — codes are unique within
-    # one sec_type, so one frame per sec_type.
-    logger.info(f"\n[p1/2] Fetching the forecast-engine price/amt series + "
-          f"classifying the 15 categories (σ-window {PX_VOL_SIGMA_WINDOW} "
-          f"rows, vol leg {PX_VOL_AMT_METRIC} (量比 base "
-          f"{PX_VOL_LB_WINDOW} evidence-only), bars t ±{PX_VOL_K_SHARP}/±"
-          f"{PX_VOL_K_SLOW_UP}/{PX_VOL_K_SLOW_DN}, z +{PX_VOL_Z_HEAVY}/"
-          f"{PX_VOL_Z_SHRINK}, σ floor {PX_VOL_SIGMA_FLOOR})...")
-    parts: list[pd.DataFrame] = []
-    for st in sec_types:
-        if code_filter is None:
-            # the frame's sec_type rides as its int16 code — compare codes
-            codes = host_unique(
-                df.loc[df["sec_type"] == SEC_TYPE_CODE[st], "code"]
-            )
+        if run.code_filter is not None:
+            logger.info(f"    mode: SINGLE-CODE (wholesale registry rebuild for "
+                  f"{run.code_filter})")
+        elif run.force:
+            logger.info("    mode: FORCE (wholesale registry rebuild; the parent "
+                  "truncated the table upfront)")
         else:
-            codes = [code_filter]
-        if not codes:
-            continue
-        src = await fetch_price_vs_amt_source(conn, st, codes)
-        if src.empty:
-            logger.info(f"    [{st}] no source rows; skipped")
-            continue
-        src = src.sort_values(["code", "date"]).reset_index(drop=True)
-        src = add_px_vol_features(src)
-        parts.append(classify_price_vs_amt(src))
-        logger.info(f"    [{st}] {len(src):,} feature rows -> "
-              f"{len(parts[-1]):,} state rows")
-        del src
-    if not parts:
-        logger.info("    -> no state rows; nothing to write.")
-        return
-    rows_df = pd.concat(parts, ignore_index=True)
-    del parts
+            logger.info("    mode: WHOLESALE PER-SEC_TYPE (registry rows are "
+                  "rebuilt on every run — adj_close back-adjustments rewrite "
+                  "price history)")
 
-    # Attach the recorded build parameters + fix the column order.
-    rows_df = rows_df.reindex(columns=list(PRICE_VS_AMT_COLUMNS))
-    rows_df["sigma_window"] = PX_VOL_SIGMA_WINDOW
-    rows_df["lb_window"] = PX_VOL_LB_WINDOW
-    rows_df["k_slow_up"] = PX_VOL_K_SLOW_UP
-    rows_df["k_slow_dn"] = PX_VOL_K_SLOW_DN
-    rows_df["k_sharp"] = PX_VOL_K_SHARP
-    rows_df["z_heavy"] = PX_VOL_Z_HEAVY
-    rows_df["z_shrink"] = PX_VOL_Z_SHRINK
-    rows_df["sigma_floor"] = PX_VOL_SIGMA_FLOOR
-    rows_df["amt_metric"] = PX_VOL_AMT_METRIC
-    # CSV-COPY boundary prep: round the parameter columns + null
-    # non-finite state values (once, frame-level — before chunking).
-    rows_df = prep_price_vs_amt_frame(rows_df)
+        needed_cols = column_subset(df, ["sec_type", "code"])
+        if df[needed_cols].empty:
+            logger.info("    -> no source data; skipping price-vs-amt step.")
+            return
 
-    n_codes = rows_df[["sec_type", "code"]].drop_duplicates().shape[0]
-    logger.info(f"    -> {len(rows_df):,} state rows across {n_codes:,} "
-          f"(sec_type, code) groups")
-
-    # ---- Step 2: replace the scope's rows wholesale -------------------
-    if code_filter is not None:
-        for st in sec_types:
-            status = await conn.execute(
-                f"DELETE FROM {PRICE_VS_AMT_TABLE} "
-                f"WHERE sec_type = $1 AND code = $2",
-                sec_type_code(st), code_filter,
+        if sec_type is not None:
+            sec_types = (sec_type,)
+        else:
+            sec_types = tuple(
+                SEC_TYPE_LABEL[c] for c in host_unique(df["sec_type"])
             )
-            n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-            logger.info(f"    -> deleted {n_del:,} existing state rows "
-                  f"({st}/{code_filter})")
-    else:
-        # Incremental run with missing dates: recompute the FULL history
-        # (the rolling stats need it), then a diff write — only rows
-        # affected by the new dates are upserted and vanished PKs
-        # deleted. History rows freeze once their windows close, so the
-        # nightly write volume is the tail, not the table.
-        n_ins, _ = await diff_write_scope_async(
-            conn, table=PRICE_VS_AMT_TABLE, frame=rows_df,
-            columns=PRICE_VS_AMT_COLUMNS,
-            key_cols=("code", "sec_type", "date"),
-            sec_types=sec_types, label="price_vs_amt", insert_only=True)
-        logger.info(f"    -> insert-only write: {n_ins:,} new rows "
-              f"inserted, existing rows frozen")
+
+        # ---- Step 1: fetch clean source + features + classification ------
+        # add_px_vol_features groups by ``code`` — codes are unique within
+        # one sec_type, so one frame per sec_type.
+        logger.info(f"\n[p1/2] Fetching the forecast-engine price/amt series + "
+              f"classifying the 15 categories (σ-window {PX_VOL_SIGMA_WINDOW} "
+              f"rows, vol leg {PX_VOL_AMT_METRIC} (量比 base "
+              f"{PX_VOL_LB_WINDOW} evidence-only), bars t ±{PX_VOL_K_SHARP}/±"
+              f"{PX_VOL_K_SLOW_UP}/{PX_VOL_K_SLOW_DN}, z +{PX_VOL_Z_HEAVY}/"
+              f"{PX_VOL_Z_SHRINK}, σ floor {PX_VOL_SIGMA_FLOOR})...")
+        parts: list[pd.DataFrame] = []
+        for st in sec_types:
+            if run.code_filter is None:
+                # the frame's sec_type rides as its int16 code — compare codes
+                codes = host_unique(
+                    df.loc[df["sec_type"] == SEC_TYPE_CODE[st], "code"]
+                )
+            else:
+                codes = [run.code_filter]
+            if not codes:
+                continue
+            src = await fetch_price_vs_amt_source(run.conn, st, codes)
+            if src.empty:
+                logger.info(f"    [{st}] no source rows; skipped")
+                continue
+            src = src.sort_values(["code", "date"]).reset_index(drop=True)
+            src = add_px_vol_features(src)
+            parts.append(classify_price_vs_amt(src))
+            logger.info(f"    [{st}] {len(src):,} feature rows -> "
+                  f"{len(parts[-1]):,} state rows")
+            del src
+        if not parts:
+            logger.info("    -> no state rows; nothing to write.")
+            return
+        rows_df = pd.concat(parts, ignore_index=True)
+        del parts
+
+        # Attach the recorded build parameters + fix the column order.
+        rows_df = rows_df.reindex(columns=list(PRICE_VS_AMT_COLUMNS))
+        rows_df["sigma_window"] = PX_VOL_SIGMA_WINDOW
+        rows_df["lb_window"] = PX_VOL_LB_WINDOW
+        rows_df["k_slow_up"] = PX_VOL_K_SLOW_UP
+        rows_df["k_slow_dn"] = PX_VOL_K_SLOW_DN
+        rows_df["k_sharp"] = PX_VOL_K_SHARP
+        rows_df["z_heavy"] = PX_VOL_Z_HEAVY
+        rows_df["z_shrink"] = PX_VOL_Z_SHRINK
+        rows_df["sigma_floor"] = PX_VOL_SIGMA_FLOOR
+        rows_df["amt_metric"] = PX_VOL_AMT_METRIC
+        # CSV-COPY boundary prep: round the parameter columns + null
+        # non-finite state values (once, frame-level — before chunking).
+        rows_df = prep_price_vs_amt_frame(rows_df)
+
+        n_codes = rows_df[["sec_type", "code"]].drop_duplicates().shape[0]
+        logger.info(f"    -> {len(rows_df):,} state rows across {n_codes:,} "
+              f"(sec_type, code) groups")
+
+        # ---- Step 2: replace the scope's rows wholesale -------------------
+        if run.code_filter is not None:
+            for st in sec_types:
+                status = await run.conn.execute(
+                    f"DELETE FROM {PRICE_VS_AMT_TABLE} "
+                    f"WHERE sec_type = $1 AND code = $2",
+                    sec_type_code(st), run.code_filter,
+                )
+                n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
+                logger.info(f"    -> deleted {n_del:,} existing state rows "
+                      f"({st}/{run.code_filter})")
+        else:
+            # Incremental run with missing dates: recompute the FULL history
+            # (the rolling stats need it), then a diff write — only rows
+            # affected by the new dates are upserted and vanished PKs
+            # deleted. History rows freeze once their windows close, so the
+            # nightly write volume is the tail, not the table.
+            n_ins, _ = await diff_write_scope_async(
+                run.conn, table=PRICE_VS_AMT_TABLE, frame=rows_df,
+                columns=PRICE_VS_AMT_COLUMNS,
+                key_cols=("code", "sec_type", "date"),
+                sec_types=sec_types, label="price_vs_amt", insert_only=True)
+            logger.info(f"    -> insert-only write: {n_ins:,} new rows "
+                  f"inserted, existing rows frozen")
+            del rows_df
+            await upsert_analysis_identity(
+                run.conn,
+                name=PRICE_VS_AMT_ANALYSIS_NAME,
+                detail_name="mov_ave_price_vs_amt",
+                description=PRICE_VS_AMT_DESCRIPTION,
+            )
+            return
+        n = await _copy_rows_chunked(
+            run.conn, run.pool, rows_df, max_concurrent=run.max_concurrent,
+        )
         del rows_df
+        logger.info(f"    -> inserted {n:,} state rows")
+
+        # ---- Step 3: register in analysis_identity ------------------------
+        logger.info(f"\n[p2/2] Upserting analysis.analysis_identity registry...")
         await upsert_analysis_identity(
-            conn,
+            run.conn,
             name=PRICE_VS_AMT_ANALYSIS_NAME,
             detail_name="mov_ave_price_vs_amt",
             description=PRICE_VS_AMT_DESCRIPTION,
         )
-        return
-    n = await _copy_rows_chunked(
-        conn, pool, rows_df, max_concurrent=max_concurrent,
-    )
-    del rows_df
-    logger.info(f"    -> inserted {n:,} state rows")
 
-    # ---- Step 3: register in analysis_identity ------------------------
-    logger.info(f"\n[p2/2] Upserting analysis.analysis_identity registry...")
-    await upsert_analysis_identity(
-        conn,
-        name=PRICE_VS_AMT_ANALYSIS_NAME,
-        detail_name="mov_ave_price_vs_amt",
-        description=PRICE_VS_AMT_DESCRIPTION,
-    )
-
-    logger.info(f"\n  mov_ave_price_vs_amt wall time: "
-          f"{time.time() - t0:.1f}s")
+        logger.info(f"\n  mov_ave_price_vs_amt wall time: "
+              f"{time.time() - t0:.1f}s")

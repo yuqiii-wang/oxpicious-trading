@@ -5,7 +5,8 @@
  * PE and Dividends pages.
  * Split out of the former monolithic pe.ts.
  */
-import { queryRows, formatDate, toNum } from "@api/lib/db";
+import { formatDate, toNum } from "@api/lib/db";
+import { querySqlView } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
@@ -37,24 +38,9 @@ export interface DbCodeRow extends QueryResultRow {
 //  DISTINCT-ON latest-row and identity-name lookups — took 4.7s index /
 //  35s stock per request and gated the PE / Dividends pages' first open;
 //  this is the same result from a small indexed table (~10ms), the
-//  mov_ave_spreads_codes pattern.
+//  mov_ave_spreads_codes pattern. The SELECT lives in the sql view
+//  data_viz/api/services/analysis/pe/codes/codes_list.
 // ----------------------------------------------------------------------------
-export function buildCodesSql(): string {
-  return `
-    SELECT
-      c.code,
-      c.name,
-      c.first_date,
-      c.last_date,
-      c.n_dates,
-      c.latest_pe,
-      c.latest_dividend_yield
-    FROM analysis.pe_codes c
-    WHERE c.sec_type = $1
-    ORDER BY c.code
-  `;
-}
-
 export async function listValuationCodes(
   rawSecType: string | undefined | null,
   sector?: string | null,
@@ -75,8 +61,10 @@ export async function listValuationCodes(
   const needMeta = secType !== "industry"
     && (hasClassFilter || !!exFilter);
 
-  const rows = await queryRows<DbCodeRow>(buildCodesSql(),
-    [LABEL_CODE.sec_type[secType]]);
+  const rows = await querySqlView<DbCodeRow>(
+    "data_viz/api/services/analysis/pe/codes/codes_list",
+    { sec_type: LABEL_CODE.sec_type[secType] },
+  );
 
   let classMap: Map<string, DbMetaRow> | null = null;
   if (needMeta) {

@@ -22,6 +22,7 @@ import pandas as pd
 
 from _common.build_commons import rec_cols
 from _common.df_utils import epoch_col_to_dt64
+from _common.sql_views import render_sql_view
 
 from ._shared import _OW_TARGET_TYPE
 
@@ -52,46 +53,25 @@ async def fetch_options_wall_inputs(
     # NOTE: each SELECT aliases underlying_code AS code so the rec_cols
     # dict keys match the frame columns list (a missing key silently
     # NaNs the column — and NaN join keys cross-join under cudf).
-    spot_rows = await conn.fetch(
-        """
-        SELECT underlying_code AS code,
-               extract(epoch from date)::float8 AS date,
-               close::float8 AS price
-        FROM analysis.options_spot_daily
-        WHERE underlying_code = ANY($1::text[])
-        ORDER BY underlying_code, date ASC
-        """,
-        sorted(codes),
+    # analysis/analysis_signals/fetch/inputs/_options_wall/spot_series
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_options_wall/spot_series",
+        codes=sorted(codes),
     )
-    wall_rows = await conn.fetch(
-        """
-        SELECT DISTINCT ON (underlying_code, date, option_type)
-               underlying_code AS code,
-               extract(epoch from date)::float8 AS date,
-               option_type,
-               wall_low::float8 AS wall_low,
-               wall_high::float8 AS wall_high,
-               wall_center::float8 AS wall_center
-        FROM analysis.options_walls
-        WHERE wall_type = 'zone'
-          AND underlying_code = ANY($1::text[])
-        ORDER BY underlying_code, date, option_type,
-                 strength_score DESC NULLS LAST,
-                 wall_oi DESC NULLS LAST
-        """,
-        sorted(codes),
+    spot_rows = await conn.fetch(view.sql, *view.params)
+    # analysis/analysis_signals/fetch/inputs/_options_wall/wall_edges
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_options_wall/wall_edges",
+        codes=sorted(codes),
     )
-    vol_rows = await conn.fetch(
-        """
-        SELECT underlying_code AS code,
-               extract(epoch from date)::float8 AS date,
-               vol_index_30d::float8 AS vol30
-        FROM analysis.options_vol_index
-        WHERE underlying_code = ANY($1::text[])
-        ORDER BY underlying_code, date ASC
-        """,
-        sorted(codes),
+    wall_rows = await conn.fetch(view.sql, *view.params)
+    # analysis/analysis_signals/fetch/inputs/_options_wall/vol_index_series
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_options_wall/"
+        "vol_index_series",
+        codes=sorted(codes),
     )
+    vol_rows = await conn.fetch(view.sql, *view.params)
     if not spot_rows:
         return pd.DataFrame(columns=_OW_INPUT_COLUMNS)
     df = pd.DataFrame(rec_cols(spot_rows), columns=[

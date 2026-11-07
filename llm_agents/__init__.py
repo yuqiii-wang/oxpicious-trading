@@ -2,7 +2,7 @@
 
 Home of the project's LLM agents. The agents consume the `text` schema
 (text.news / text.news_keywords as the retrieval corpus) and persist their
-curated output in text.llm_qa (see database/sql/text/02_llm_qa.sql).
+curated output in llm.llm_qa (see database/sql/text/llm/01_llm_qa.sql).
 
 ``_core`` is the shared provider plumbing inside this package (the
 LlmProviderError type, the retrying JSON transport + .env loader, and
@@ -24,7 +24,7 @@ Modules:
     provider classes (ZhiPu BigModel today, subclass
     BaseOnlineSearchProvider to add more), normalized reference/citation
     handling ([来源：ref_N] -> ref_N), and persistence of search references
-    into text.news + the Q&A into text.llm_qa. CLI::
+    into text.news + the Q&A into llm.llm_qa. CLI::
 
         python -m llm_agents.online_search_summary search --query "…"
         python -m llm_agents.online_search_summary summarize --query "…" --store
@@ -87,8 +87,8 @@ Modules:
         python -m llm_agents.mcp [--stdio]
 
 The historical industry hypes & drains Q&A backfill (category
-'industry' / 'market' rows in text.llm_qa) was removed with its
+'industry' / 'market' rows in llm.llm_qa) was removed with its
 ``industry_qa_weekly`` package — the live daily flow is
 ``downloads.macro.ai_daily`` (category 'market_daily'); the historical
-rows remain queryable in text.llm_qa.
+rows remain queryable in llm.llm_qa.
 """

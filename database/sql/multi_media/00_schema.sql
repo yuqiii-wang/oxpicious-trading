@@ -4,11 +4,11 @@
 --    Holds source media binaries shared across features: chart screenshots
 --    attached to AI asks, downloaded article images, and (later) generated
 --    figures. Consumer tables live in their OWN schemas and map to images
---    through junction tables there (e.g. text.llm_qa_ask_context_images) —
+--    through junction tables there (e.g. llm.llm_qa_ask_context_images) —
 --    this schema stays consumer-agnostic so one stored image can back
 --    several references.
 --
---  Apply order: BEFORE database/sql/text/05_llm_qa_by_ask.sql — that file's
+--  Apply order: BEFORE database/sql/text/llm/03_llm_qa_by_ask.sql — that file's
 --  llm_qa_ask_context_images junction has a foreign key into
 --  multi_media.src_images.
 -- ============================================================================

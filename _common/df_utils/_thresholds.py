@@ -88,6 +88,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from _common.df_utils.data_definitions import (
+    OpProfile,
+)
 
 # ---------------------------------------------------------------------------
 #  Hardware constants - RTX 5090 + PCIe Gen5 x16
@@ -107,25 +110,14 @@ CONSERVATIVE_MULTIPLIER = 4.0
 VRAM_USAGE_CAP = 0.75
 
 
-# ---------------------------------------------------------------------------
-#  Per-operation benchmark constants
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class OpProfile:
-    """Benchmark constants for one operation type.
-
-    Attributes:
-        cpu_rate_sec_per_mrow: pandas seconds per 1M rows x 10 numeric cols.
-        gpu_rate_sec_per_mrow: cuDF   seconds per 1M rows x 10 numeric cols.
-        fixed_overhead_sec:    cuDF fixed overhead (JIT + launch + context).
-    """
-    cpu_rate_sec_per_mrow: float
-    gpu_rate_sec_per_mrow: float
-    fixed_overhead_sec: float
 
 
 # Named operation profiles. Keys are the ``op_type`` values accepted by
 # ``should_use_gpu()`` and ``breakeven_rows()``.
+
+
+
+
 OP_PROFILES: dict[str, OpProfile] = {
     # Rolling aggregations - pandas Cython path, cuDF ~30x faster.
     "rolling_mean": OpProfile(2.5, 0.08, 0.15),

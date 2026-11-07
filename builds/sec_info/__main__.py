@@ -64,9 +64,7 @@ from builds.sec_info.loaders import (  # noqa: E402
     iter_report_files, load_identify, load_asset_portfolio, load_top10_holdings,
 )
 from builds.sec_info.upsert import (  # noqa: E402
-    upsert_owners, fetch_existing_sec_info, build_sec_info_rows, upsert_sec_info,
-    fetch_existing_sec_reports, build_sec_reports_rows, upsert_sec_reports,
-    fetch_existing_composition_keys, build_composition_rows, inject_top10_composition,
+    SecInfoUpsert, build_sec_info_rows, build_sec_reports_rows, build_composition_rows,
 )
 from builds.classification.sector_industry.owners import load_owners  # noqa: E402
 
@@ -235,6 +233,7 @@ class SecInfoBuild(DataBuild):
         # --- 2. Connect to DB ---
         logger.info("\n[2/4] Connecting to database …")
         conn = await self.connect_db()
+        upsert = SecInfoUpsert(conn)
 
         try:
             # --- 3. sec_owners (truncate + rebuild) ---
@@ -247,7 +246,7 @@ class SecInfoBuild(DataBuild):
             else:
                 logger.info("\n[3/4] Rebuilding stats.sec_owners …")
                 owners = _parse_owners_from_json()
-                await upsert_owners(conn, owners, verbose=True)
+                await upsert.upsert_owners(owners, verbose=True)
 
             # --- 4. sec_info (latest snapshot per code, missing-data) ---
             logger.info("\n[4/4] Upserting stats.sec_info + sec_reports + sec_composition …")
@@ -259,26 +258,26 @@ class SecInfoBuild(DataBuild):
             if bypass:
                 logger.info("    [DB] DATE MODE: sec_info/sec_reports missing-data "
                       "skips bypassed — forced-date rows re-upserted")
-            existing_info = {} if bypass else await fetch_existing_sec_info(conn)
+            existing_info = {} if bypass else await upsert.fetch_existing_sec_info()
             info_rows = build_sec_info_rows(latest_per_code, existing_info, self.args.force)
-            await upsert_sec_info(conn, info_rows, self.args.force)
+            await upsert.upsert_sec_info(info_rows, self.args.force)
 
             # --- sec_reports (missing-data unless --force / --date) ---
-            existing_reports = set() if bypass else await fetch_existing_sec_reports(conn)
+            existing_reports = set() if bypass else await upsert.fetch_existing_sec_reports()
             report_rows_to_write = build_sec_reports_rows(report_rows, existing_reports, self.args.force)
-            await upsert_sec_reports(conn, report_rows_to_write, self.args.force)
+            await upsert.upsert_sec_reports(report_rows_to_write, self.args.force)
 
             # --- sec_composition top10 injection (always missing-data) ---
             if self.args.no_composition:
                 logger.info("    [DB] --no-composition: skipping top10 → sec_composition")
             else:
-                existing_comp = await fetch_existing_composition_keys(conn)
+                existing_comp = await upsert.fetch_existing_composition_keys()
                 if self.forced_date is not None:
                     logger.info("    [DB] DATE MODE: sec_composition keeps its "
                           "missing-snapshot guard (builds.etf full snapshots are "
                           "never overwritten by the top-10 source)")
                 comp_rows = build_composition_rows(top10_snapshots, existing_comp)
-                await inject_top10_composition(conn, comp_rows)
+                await upsert.inject_top10_composition(comp_rows)
 
             # --- Summary ---
             logger.info(f"\n    Summary:")

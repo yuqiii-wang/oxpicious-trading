@@ -1,0 +1,12 @@
+-- SQL write action — live.sec_alloc_live_attribution DELETE (one date's
+-- tick rows). Executed by live/sec_alloc_live_attribution/ticks.py
+-- (TickLoader.invalidate_ticks_for_date) in the "Build Yday Ref" chain
+-- (--rebuild-latest-date): ticks computed from stale/estimated closes
+-- are invalidated so both passes rebuild them from the fresh data.
+--
+-- Params (asyncpg $n, in order):
+--   $1 live_date  DATE — the trading date whose ticks to drop
+--
+-- The caller parses the command tag ("DELETE <n>") for the deleted
+-- count. Not the retention prune — that one is chunked_purge_async.
+DELETE FROM live.sec_alloc_live_attribution WHERE date = $1::date

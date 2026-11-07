@@ -9,6 +9,7 @@
  * the annual-sentiment panel (split-adjusted OHLCV).
  */
 import { queryRows, queryReadWithSession, toDateParam, formatDate, toNum } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, codeVariants } from "../lib/classify-etf.js";
 import { decodeLabel, LABEL_CODE } from "./label-codes.js";
@@ -213,12 +214,10 @@ export async function listUnderlyings(
   // 11.8k buffer hits / ~260ms per request) to answer a handful of codes
   // that only change with the daily rebuild — ride the same version-keyed
   // aggregate cache as the per-plot queries so venue switches skip it.
-  const sql = `
-    SELECT DISTINCT underlying_code, underlying_name
-    FROM stats.options_terms
-    WHERE ${where.join(" AND ")}
-    ORDER BY underlying_code
-  `;
+  // The SELECT lives in the sql view data_viz/api/services/options/underlyings.
+  const sql = renderSqlView("data_viz/api/services/options/underlyings", {
+    where_clause: sqlFrag(where.join(" AND ")),
+  }).sql;
   const rows = await cachedAggregate(
     aggKey("underlyings", { target_type: t, exchange: ex }),
     () => queryRows<DbUnderlyingRow>(sql, params),
@@ -285,8 +284,8 @@ async function aggVersion(): Promise<string> {
   if (aggVersionMemo && Date.now() < aggVersionMemo.expiresAt) {
     return aggVersionMemo.value;
   }
-  const rows = await queryRows<{ d: Date | string | null }>(
-    "SELECT MAX(date) AS d FROM stats.options_identity",
+  const rows = await querySqlView<{ d: Date | string | null }>(
+    "data_viz/api/services/options/agg_max_date",
   );
   const value = rows[0]?.d ? formatDate(rows[0].d) : "";
   aggVersionMemo = { value, expiresAt: Date.now() + AGG_VERSION_TTL_MS };
@@ -322,26 +321,9 @@ async function cachedAggregate<T>(
   return value;
 }
 
-const COMBINED_SQL = `
-    SELECT
-        t.date, i.contract_code, i.contract_name, i.exchange,
-        t.underlying_code, t.underlying_name, t.option_type,
-        t.expiry_month, t.expiry_date, t.days_to_expiry,
-        s.strike_price, st.settle, st.underlying_close, st.moneyness_ratio,
-        vo.open_interest, vo.volume,
-        g.implied_vol, g.delta, g.theta, g.gamma, g.vega, g.rho
-    FROM stats.options_terms t
-    JOIN stats.options_identity i
-        ON i.contract_code = t.contract_code AND i.date = t.date
-    LEFT JOIN stats.options_strike s
-        ON s.contract_code = t.contract_code AND s.date = t.date
-    LEFT JOIN stats.options_settlement st
-        ON st.contract_code = t.contract_code AND st.date = t.date
-    LEFT JOIN stats.options_greeks g
-        ON g.contract_code = t.contract_code AND g.date = t.date
-    LEFT JOIN stats.options_volume_oi vo
-        ON vo.contract_code = t.contract_code AND vo.date = t.date
-`;
+// The combined 6-way join block lives in the sql view
+// data_viz/api/services/options/combined (also reused by the
+// combined_snapshot_rows view for the per-date quote fetch).
 
 export async function getOptionsCombined(
   q: OptionsQuery,
@@ -379,7 +361,10 @@ export async function getOptionsCombined(
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
 
-  const sql = `${COMBINED_SQL} ${whereClause} ORDER BY t.date ASC, t.contract_code ASC`;
+  // The SELECT lives in the sql view data_viz/api/services/options/combined.
+  const { sql } = renderSqlView("data_viz/api/services/options/combined", {
+    where_clause: sqlFrag(whereClause),
+  });
   const result = await queryReadWithSession<DbOptionsRow>(
     COMBINED_SESSION_SETS,
     sql,
@@ -441,15 +426,10 @@ export async function getOptionsWalls(
     params.push(endDate);
   }
 
-  const sql = `
-    SELECT date, option_type, underlying_code, expiry_date, wall_type,
-           wall_strike, wall_oi,
-           wall_low, wall_high, wall_center,
-           mass_share, gap_pct, days_persisted, state, strength_score
-    FROM analysis.options_walls
-    WHERE ${where.join(" AND ")}
-    ORDER BY date ASC, expiry_date ASC, option_type ASC
-  `;
+  // The SELECT lives in the sql view data_viz/api/services/options/walls.
+  const sql = renderSqlView("data_viz/api/services/options/walls", {
+    where_clause: sqlFrag(where.join(" AND ")),
+  }).sql;
   const rows = await queryRows<DbOptionsWallRow>(sql, params);
   const transformed: OptionsWallRow[] = rows.map((r) => ({
     date: formatDate(r.date),
@@ -514,18 +494,11 @@ export async function getOptionsWallsDominant(
     params.push(endDate);
   }
 
-  const sql = `
-    SELECT DISTINCT ON (date, option_type)
-           date, option_type, underlying_code, expiry_date, wall_type,
-           wall_strike, wall_oi, wall_low, wall_high, wall_center,
-           mass_share, gap_pct, days_persisted, state, strength_score
-    FROM analysis.options_walls
-    WHERE ${where.join(" AND ")}
-    ORDER BY date ASC, option_type ASC,
-             (COALESCE(strength_score, -1)::float8 * 1e9
-              + COALESCE(wall_oi, 0)::float8) DESC,
-             expiry_date ASC
-  `;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/options/walls_dominant.
+  const sql = renderSqlView("data_viz/api/services/options/walls_dominant", {
+    where_clause: sqlFrag(where.join(" AND ")),
+  }).sql;
   const rows = await queryRows<DbOptionsWallRow>(sql, params);
   const transformed: OptionsWallRow[] = rows.map((r) => ({
     date: formatDate(r.date),
@@ -566,24 +539,23 @@ export async function getEtfOhlcv(
   const ed = toDateParam(endDate);
 
   // ---- INDEX mode: query v_index_daily with the raw index code ----
+  // The SELECT lives in the sql view data_viz/api/services/options/ohlcv_index.
   if (t === "INDEX") {
-    const params: unknown[] = [cleanedCode];
-    const where: string[] = [`code = $1`];
+    const dateWhere: string[] = [];
     let i = 2;
     if (sd) {
-      where.push(`date >= $${i++}::date`);
-      params.push(sd);
+      dateWhere.push(` AND date >= $${i++}::date`);
     }
     if (ed) {
-      where.push(`date <= $${i++}::date`);
-      params.push(ed);
+      dateWhere.push(` AND date <= $${i++}::date`);
     }
-    const rows = await queryRows<DbIndexOhlcvRow>(`
-      SELECT date, open, high, low, close, trading_shares
-      FROM stats.v_index_daily
-      WHERE ${where.join(" AND ")}
-      ORDER BY date ASC
-    `, params);
+    const { sql, params } = renderSqlView("data_viz/api/services/options/ohlcv_index", {
+      code: cleanedCode,
+      date_where: sqlFrag(dateWhere.join("")),
+    });
+    if (sd) params.push(sd);
+    if (ed) params.push(ed);
+    const rows = await queryRows<DbIndexOhlcvRow>(sql, params);
     // null-preserving: CN-holiday rows of cross-border indices / estimated
     // rows carry NULL OHLC or volume — render as chart gaps, never 0
     const transformed = rows.map((r) => ({
@@ -602,30 +574,24 @@ export async function getEtfOhlcv(
   }
 
   // ---- ETF mode (default): v_etf_margin with the native ETF code ----
+  // The SELECT lives in the sql view data_viz/api/services/options/ohlcv_etf.
   const targetCode = cleanedCode;
 
-  const params: unknown[] = [codeVariants(targetCode)];
-  const where: string[] = [
-    `code = ANY($1::text[])`,
-  ];
+  const dateWhere: string[] = [];
   let i = 2;
-
   if (sd) {
-    where.push(`date >= $${i++}::date`);
-    params.push(sd);
+    dateWhere.push(` AND date >= $${i++}::date`);
   }
   if (ed) {
-    where.push(`date <= $${i++}::date`);
-    params.push(ed);
+    dateWhere.push(` AND date <= $${i++}::date`);
   }
 
-  const sql = `
-    SELECT date, adj_open, adj_high, adj_low, adj_close,
-           open, high, low, close, trading_shares
-    FROM stats.v_etf_margin
-    WHERE ${where.join(" AND ")}
-    ORDER BY date ASC
-  `;
+  const { sql, params } = renderSqlView("data_viz/api/services/options/ohlcv_etf", {
+    codes: codeVariants(targetCode),
+    date_where: sqlFrag(dateWhere.join("")),
+  });
+  if (sd) params.push(sd);
+  if (ed) params.push(ed);
   const rows = await queryRows<DbEtfOhlcvRow>(sql, params);
 
   const transformed = rows.map((r) => {
@@ -689,19 +655,11 @@ export async function getOptionsSkewnessSeries(
     params.push(ed);
   }
 
-  const sql = `
-    SELECT
-      date,
-      underlying_code,
-      DATE_TRUNC('month', expiry_date) AS expiry_month,
-      MAX(expiry_date) AS expiry_date,
-      AVG(skewness) AS skewness
-    FROM analysis.options_skewness_stats
-    WHERE ${where.join(" AND ")}
-      AND skewness IS NOT NULL
-    GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
-    ORDER BY date ASC, DATE_TRUNC('month', expiry_date) ASC
-  `;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/options/skewness_series.
+  const sql = renderSqlView("data_viz/api/services/options/skewness_series", {
+    where_clause: sqlFrag(where.join(" AND ")),
+  }).sql;
 
   const rows = await queryRows<DbSkewnessSeriesRow>(sql, params);
   const transformed: SkewnessSeriesRow[] = rows.map((r) => ({
@@ -768,34 +726,10 @@ export async function getOptionsBands(
     params.push(ed);
   }
 
-  const sql = `
-    SELECT
-      date,
-      underlying_close::float8 AS underlying_close,
-      corridor_low::float8 AS corridor_low,
-      corridor_high::float8 AS corridor_high,
-      oi_total::float8 AS oi_total,
-      spot_pct::float8 AS spot_pct,
-      gap_low_pct::float8 AS gap_low_pct,
-      gap_high_pct::float8 AS gap_high_pct,
-      pos_state,
-      lean,
-      event,
-      new_hi_40d,
-      new_lo_40d,
-      edge_sig,
-      n_expiries,
-      skew_all_above,
-      skew_all_below,
-      min_em::float8 AS min_em,
-      mean_em::float8 AS mean_em,
-      em5_pct::float8 AS em5_pct,
-      ret5_pct::float8 AS ret5_pct,
-      exhausted_5d
-    FROM analysis.options_bands
-    WHERE ${where.join(" AND ")}
-    ORDER BY date ASC
-  `;
+  // The SELECT lives in the sql view data_viz/api/services/options/bands.
+  const sql = renderSqlView("data_viz/api/services/options/bands", {
+    where_clause: sqlFrag(where.join(" AND ")),
+  }).sql;
 
   const rows = await queryRows<DbBandsRow>(sql, params);
   const transformed: OptionsBandsRow[] = rows.map((r) => ({
@@ -869,28 +803,11 @@ export async function getOptionsOiStats(
   // the frontend keys on: SUM across the month's expiries (1 per month for
   // the monthly ETF convention — exact; CFFEX weeklies sum to the month
   // group's total), MAX of the per-expiry trailing maxes (approximate for
-  // multi-expiry months).
-  const sql = `
-    SELECT
-      date,
-      underlying_code,
-      expiry_month,
-      MAX(expiry_date) AS expiry_date,
-      SUM(oi_total) AS oi_total,
-      SUM(oi_delta_5d) AS oi_delta_5d,
-      SUM(oi_delta_20d) AS oi_delta_20d,
-      MAX(oi_max_20d) AS oi_max_20d
-    FROM (
-      SELECT DISTINCT date, underlying_code,
-             DATE_TRUNC('month', expiry_date) AS expiry_month,
-             expiry_date,
-             oi_total, oi_delta_5d, oi_delta_20d, oi_max_20d
-      FROM analysis.options_oi_stats
-      WHERE ${where.join(" AND ")}
-    ) t
-    GROUP BY date, underlying_code, expiry_month
-    ORDER BY date ASC, expiry_month ASC
-  `;
+  // multi-expiry months). The SELECT lives in the sql view
+  // data_viz/api/services/options/oi_stats.
+  const sql = renderSqlView("data_viz/api/services/options/oi_stats", {
+    where_clause: sqlFrag(where.join(" AND ")),
+  }).sql;
 
   const rows = await queryRows<DbOiStatsRow>(sql, params);
   const transformed: OptionsOiStatsRow[] = rows.map((r) => ({
@@ -958,34 +875,11 @@ export async function getOptionsIvSkew(
   // AVG across CALL/PUT rows (pair metrics are duplicated per option_type;
   // smile_skewness differs per type, so the mean is the group-level value).
   // MAX(expiry_date) gives the latest exact expiry in the month group (for
-  // the frontend shade boundaries / expiry marks).
-  const sql = `
-    SELECT
-      date,
-      underlying_code,
-      DATE_TRUNC('month', expiry_date) AS expiry_month,
-      MAX(expiry_date) AS expiry_date,
-      AVG(atm_iv) AS atm_iv,
-      AVG(iv_call25) AS iv_call25,
-      AVG(iv_put25) AS iv_put25,
-      AVG(risk_reversal_25d) AS risk_reversal_25d,
-      AVG(put_skew_25d) AS put_skew_25d,
-      AVG(call_skew_25d) AS call_skew_25d,
-      AVG(iv_call10) AS iv_call10,
-      AVG(iv_put10) AS iv_put10,
-      AVG(risk_reversal_10d) AS risk_reversal_10d,
-      AVG(smile_skewness) AS smile_skewness,
-      AVG(rr25_ma5) AS rr25_ma5,
-      AVG(rr25_ma20) AS rr25_ma20,
-      AVG(rr25_ma60) AS rr25_ma60,
-      AVG(corr_rr25_ma5_vs_spot_ma5) AS corr_rr25_ma5_vs_spot_ma5,
-      AVG(corr_rr25_ma20_vs_spot_ma20) AS corr_rr25_ma20_vs_spot_ma20,
-      AVG(corr_rr25_ma60_vs_spot_ma60) AS corr_rr25_ma60_vs_spot_ma60
-    FROM analysis.options_iv_skew_stats
-    WHERE ${where.join(" AND ")}
-    GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
-    ORDER BY date ASC, DATE_TRUNC('month', expiry_date) ASC
-  `;
+  // the frontend shade boundaries / expiry marks). The SELECT lives in the
+  // sql view data_viz/api/services/options/iv_skew.
+  const sql = renderSqlView("data_viz/api/services/options/iv_skew", {
+    where_clause: sqlFrag(where.join(" AND ")),
+  }).sql;
 
   const rows = await queryRows<DbIvSkewRow>(sql, params);
   const transformed: IvSkewRow[] = rows.map((r) => ({
@@ -1058,15 +952,11 @@ export async function getOptionsVolIndex(
     params.push(ed);
   }
 
-  const sql = `
-    SELECT date, underlying_code,
-           near_expiry_date, far_expiry_date,
-           dte_near, dte_far,
-           var_near, var_far, variance_30d, vol_index_30d
-    FROM analysis.options_vol_index
-    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
-    ORDER BY date ASC, underlying_code ASC
-  `;
+  // The SELECT lives in the sql view data_viz/api/services/options/vol_index.
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const sql = renderSqlView("data_viz/api/services/options/vol_index", {
+    where_clause: sqlFrag(whereClause),
+  }).sql;
 
   const rows = await queryRows<DbVolIndexRow>(sql, params);
   const transformed: VolIndexRow[] = rows.map((r) => ({
@@ -1093,7 +983,6 @@ export async function getOptionsVolIndex(
 interface DbVolIndexCorrRow extends QueryResultRow {
   date: Date | string;
   underlying_code: string;
-  corr_5d: number | string | null;
   corr_20d: number | string | null;
   corr_60d: number | string | null;
   corr_255d: number | string | null;
@@ -1102,7 +991,7 @@ interface DbVolIndexCorrRow extends QueryResultRow {
 /**
  * Rolling correlation between the 30d model-free vol index and the
  * underlying spot close (analysis.options_vol_index_vs_spot_price_corr):
- * Pearson corr of daily log-changes over trailing 5/20/60/255 sessions.
+ * Pearson corr of daily log-changes over trailing 20/60/255 sessions.
  * The STORED table samples a 5-session stride grid through history plus
  * the daily tail; this endpoint LINEARLY INTERPOLATES each window onto
  * every session of the underlying's vol-index calendar (in session-
@@ -1125,14 +1014,14 @@ export async function getOptionsVolIndexCorr(
     calParams.push(stripExchangeSuffix(underlying).trim());
   }
 
-  // The interpolation calendar: every stored vol-index session per
-  // underlying (the same basis the corr table was sampled on).
-  const calSql = `
-    SELECT date, underlying_code
-    FROM analysis.options_vol_index
-    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
-    ORDER BY underlying_code ASC, date ASC
-  `;
+  // The calendar and sample SELECTs live in the sql views
+  // data_viz/api/services/options/vol_index_corr_cal and
+  // data_viz/api/services/options/vol_index_corr_rows (the same optional
+  // underlying WHERE on both).
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const calSql = renderSqlView("data_viz/api/services/options/vol_index_corr_cal", {
+    where_clause: sqlFrag(whereClause),
+  }).sql;
   const calRows = await queryRows<
     QueryResultRow & { date: Date | string; underlying_code: string }
   >(calSql, calParams);
@@ -1144,19 +1033,16 @@ export async function getOptionsVolIndexCorr(
   // The stored samples load WITHOUT date bounds: interpolation inside
   // [start, end] needs the surrounding samples, so the window filters
   // the OUTPUT rows, not the fetch.
-  const sql = `
-    SELECT date, underlying_code, corr_5d, corr_20d, corr_60d, corr_255d
-    FROM analysis.options_vol_index_vs_spot_price_corr
-    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
-    ORDER BY date ASC, underlying_code ASC
-  `;
+  const sql = renderSqlView("data_viz/api/services/options/vol_index_corr_rows", {
+    where_clause: sqlFrag(whereClause),
+  }).sql;
 
   const rows = await queryRows<DbVolIndexCorrRow>(sql, rowParams);
 
   // Per underlying: stored samples keyed by their calendar index, each
   // window interpolated independently (a window's own NULL span stays
-  // null — e.g. corr_255d fills long after corr_5d).
-  const CORR_KEYS = ["corr_5d", "corr_20d", "corr_60d", "corr_255d"] as const;
+  // null — e.g. corr_255d fills long after corr_20d).
+  const CORR_KEYS = ["corr_20d", "corr_60d", "corr_255d"] as const;
   const calIdx = new Map<string, string[]>();
   for (const r of calRows) {
     const list = calIdx.get(r.underlying_code) ?? [];
@@ -1212,10 +1098,9 @@ export async function getOptionsVolIndexCorr(
       transformed.push({
         date: d,
         underlying_code: code,
-        corr_5d: interp[j][0],
-        corr_20d: interp[j][1],
-        corr_60d: interp[j][2],
-        corr_255d: interp[j][3],
+        corr_20d: interp[j][0],
+        corr_60d: interp[j][1],
+        corr_255d: interp[j][2],
       });
     }
   }
@@ -1252,13 +1137,11 @@ export async function getOptionsDates(
     const params: unknown[] = [];
     const where = termsWhere(q, params);
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-    const rows = await queryRows<QueryResultRow & { date: Date | string; row_count: string | number; contract_count: string | number }>(`
-      SELECT t.date, COUNT(*) AS row_count, COUNT(*) AS contract_count
-      FROM stats.options_terms t
-      ${whereClause}
-      GROUP BY t.date
-      ORDER BY t.date ASC
-    `, params);
+    // The SELECT lives in the sql view data_viz/api/services/options/dates.
+    const sql = renderSqlView("data_viz/api/services/options/dates", {
+      where_clause: sqlFrag(whereClause),
+    }).sql;
+    const rows = await queryRows<QueryResultRow & { date: Date | string; row_count: string | number; contract_count: string | number }>(sql, params);
     return {
       underlying_code: (q.underlying ?? "").trim(),
       dates: rows.map((r) => formatDate(r.date)),
@@ -1288,9 +1171,14 @@ export async function getOptionsSnapshotRows(
   const where = termsWhere(q, params);
   params.push(cleaned);
   where.push(`t.date = ANY($${params.length}::date[])`);
+  // The SELECT lives in the sql view
+  // data_viz/api/services/options/combined_snapshot_rows.
+  const { sql } = renderSqlView("data_viz/api/services/options/combined_snapshot_rows", {
+    where_clause: sqlFrag(where.join(" AND ")),
+  });
   const result = await queryReadWithSession<DbOptionsRow>(
     COMBINED_SESSION_SETS,
-    `${COMBINED_SQL} WHERE ${where.join(" AND ")} ORDER BY t.date ASC, t.contract_code ASC`,
+    sql,
     params,
   );
   return { underlying_code: underlying, rows: result.rows.map(transformOptionsRow) };
@@ -1311,22 +1199,24 @@ export async function getOptionsSnapshotAxes(
       metaParams,
     );
     const metaWhereClause = metaWhere.length > 0 ? `WHERE ${metaWhere.join(" AND ")}` : "";
+    // The strike/month axis SELECTs live in the sql views
+    // data_viz/api/services/options/snapshot_axes_strikes and
+    // data_viz/api/services/options/snapshot_axes_months.
     const meta = await queryReadWithSession<QueryResultRow>(
       COMBINED_SESSION_SETS,
-      `SELECT DISTINCT s.strike_price
-         FROM stats.options_terms t
-         JOIN stats.options_strike s ON s.contract_code = t.contract_code AND s.date = t.date
-         ${metaWhereClause}
-         ORDER BY 1`,
+      renderSqlView("data_viz/api/services/options/snapshot_axes_strikes", {
+        where_clause: sqlFrag(metaWhereClause),
+      }).sql,
       metaParams,
     );
     // MAX(date) OVER () rides the same scan — the client cache's version
     // anchor for this response (it carries no per-row dates).
-    const months = await queryRows<QueryResultRow & { expiry_month: string; latest_date: Date | string | null }>(`
-      SELECT DISTINCT t.expiry_month, MAX(t.date) OVER () AS latest_date
-      FROM stats.options_terms t
-      ${metaWhereClause}
-    `, metaParams.slice());
+    const months = await queryRows<QueryResultRow & { expiry_month: string; latest_date: Date | string | null }>(
+      renderSqlView("data_viz/api/services/options/snapshot_axes_months", {
+        where_clause: sqlFrag(metaWhereClause),
+      }).sql,
+      metaParams.slice(),
+    );
     // month labels are Chinese ("10月") — order by their numeric month part
     const sortedMonths = months.map((r) => r.expiry_month);
     sortedMonths.sort((a, b) => monthSortKey(a) - monthSortKey(b));
@@ -1372,27 +1262,14 @@ export async function getOptionsSkewDaily(
       put10_iv: string | number | null;
     }>(
       COMBINED_SESSION_SETS,
-      `
-      SELECT t.date, t.expiry_date,
-             MIN(t.days_to_expiry) AS dte,
-             MAX(st.underlying_close) AS spot,
-             (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(st.moneyness_ratio - 1.0) NULLS LAST, t.contract_code))[1] AS atm_iv,
-             (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(g.delta - 0.25), t.contract_code)
-               FILTER (WHERE t.option_type = ${LABEL_CODE.option_type.CALL} AND g.delta > 0 AND g.delta < 0.5))[1] AS call25_iv,
-             (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(g.delta + 0.25), t.contract_code)
-               FILTER (WHERE t.option_type = ${LABEL_CODE.option_type.PUT} AND g.delta < 0 AND g.delta > -0.5))[1] AS put25_iv,
-             (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(g.delta - 0.10), t.contract_code)
-               FILTER (WHERE t.option_type = ${LABEL_CODE.option_type.CALL} AND g.delta > 0 AND g.delta < 0.5))[1] AS call10_iv,
-             (ARRAY_AGG(g.implied_vol * 100.0 ORDER BY abs(g.delta + 0.10), t.contract_code)
-               FILTER (WHERE t.option_type = ${LABEL_CODE.option_type.PUT} AND g.delta < 0 AND g.delta > -0.5))[1] AS put10_iv
-      FROM stats.options_terms t
-      JOIN stats.options_greeks g ON g.contract_code = t.contract_code AND g.date = t.date
-      JOIN stats.options_settlement st ON st.contract_code = t.contract_code AND st.date = t.date
-      JOIN stats.options_strike s ON s.contract_code = t.contract_code AND s.date = t.date
-      WHERE ${where.join(" AND ")}
-      GROUP BY t.date, t.expiry_date
-      ORDER BY t.date ASC, t.expiry_date ASC
-    `,
+      // The SELECT lives in the sql view
+      // data_viz/api/services/options/skew_daily (option_type codes ride
+      // the label-code fragment args).
+      renderSqlView("data_viz/api/services/options/skew_daily", {
+        where_clause: sqlFrag(where.join(" AND ")),
+        option_type_call: sqlFrag(`${LABEL_CODE.option_type.CALL}`),
+        option_type_put: sqlFrag(`${LABEL_CODE.option_type.PUT}`),
+      }).sql,
       params,
     );
     return {
@@ -1424,21 +1301,17 @@ export async function getOptionsOiDaily(
     const params: unknown[] = [];
     const where = termsWhere(q, params);
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    // The SELECT lives in the sql view data_viz/api/services/options/oi_daily
+    // (option_type codes ride the label-code fragment args).
+    const sql = renderSqlView("data_viz/api/services/options/oi_daily", {
+      where_clause: sqlFrag(whereClause),
+      option_type_call: sqlFrag(`${LABEL_CODE.option_type.CALL}`),
+      option_type_put: sqlFrag(`${LABEL_CODE.option_type.PUT}`),
+    }).sql;
     const rows = await queryRows<QueryResultRow & {
       date: Date | string; expiry_date: Date | string; call_oi: string | number; put_oi: string | number;
       spot_close: string | number | null;
-    }>(`
-      SELECT t.date, t.expiry_date,
-             SUM(CASE WHEN t.option_type = ${LABEL_CODE.option_type.CALL} THEN vo.open_interest ELSE 0 END) AS call_oi,
-             SUM(CASE WHEN t.option_type = ${LABEL_CODE.option_type.PUT}  THEN vo.open_interest ELSE 0 END) AS put_oi,
-             MAX(MAX(st.underlying_close)) OVER (PARTITION BY t.date) AS spot_close
-      FROM stats.options_terms t
-      JOIN stats.options_volume_oi vo ON vo.contract_code = t.contract_code AND vo.date = t.date
-      LEFT JOIN stats.options_settlement st ON st.contract_code = t.contract_code AND st.date = t.date
-      ${whereClause}
-      GROUP BY t.date, t.expiry_date
-      ORDER BY t.date ASC, t.expiry_date ASC
-    `, params);
+    }>(sql, params);
 
     const daily: OptionsOiDailyResponse["daily"] = [];
     const spot: OptionsOiDailyResponse["spot"] = [];
@@ -1475,20 +1348,19 @@ export async function getOptionsOiCells(
   const where = termsWhere(q, params);
   params.push(expiries);
   where.push(`t.expiry_date = ANY($${params.length}::date[])`);
+  // The SELECT lives in the sql view data_viz/api/services/options/oi_cells
+  // (option_type codes ride the label-code fragment args).
   const rows = await queryRows<QueryResultRow & {
     date: Date | string; expiry_date: Date | string; strike_price: string | number;
     call_oi: string | number; put_oi: string | number;
-  }>(`
-    SELECT t.date, t.expiry_date, s.strike_price,
-           SUM(CASE WHEN t.option_type = ${LABEL_CODE.option_type.CALL} THEN vo.open_interest ELSE 0 END) AS call_oi,
-           SUM(CASE WHEN t.option_type = ${LABEL_CODE.option_type.PUT}  THEN vo.open_interest ELSE 0 END) AS put_oi
-    FROM stats.options_terms t
-    JOIN stats.options_strike s ON s.contract_code = t.contract_code AND s.date = t.date
-    JOIN stats.options_volume_oi vo ON vo.contract_code = t.contract_code AND vo.date = t.date
-    WHERE ${where.join(" AND ")}
-    GROUP BY t.date, t.expiry_date, s.strike_price
-    ORDER BY t.date ASC, t.expiry_date ASC, s.strike_price ASC
-  `, params);
+  }>(
+    renderSqlView("data_viz/api/services/options/oi_cells", {
+      where_clause: sqlFrag(where.join(" AND ")),
+      option_type_call: sqlFrag(`${LABEL_CODE.option_type.CALL}`),
+      option_type_put: sqlFrag(`${LABEL_CODE.option_type.PUT}`),
+    }).sql,
+    params,
+  );
   return {
     underlying_code: (q.underlying ?? "").trim(),
     cells: rows.map((r) => ({
@@ -1514,20 +1386,18 @@ export async function getOptionsExpiryMeta(
     const params: unknown[] = [];
     const where = termsWhere(q, params);
     where.push(`t.date <= t.expiry_date`);
+    // The SELECT lives in the sql view
+    // data_viz/api/services/options/expiry_meta.
     const markers = await queryRows<QueryResultRow & {
       contract_code: string; contract_name: string; /** label_dim 'option_type' code (0 CALL / 1 PUT). */
       option_type: number;
       expiry_date: Date | string; last_date: Date | string; open_interest: string | number;
-    }>(`
-      SELECT DISTINCT ON (t.contract_code)
-             t.contract_code, i.contract_name, t.option_type, t.expiry_date,
-             t.date AS last_date, vo.open_interest
-      FROM stats.options_terms t
-      JOIN stats.options_identity i ON i.contract_code = t.contract_code AND i.date = t.date
-      JOIN stats.options_volume_oi vo ON vo.contract_code = t.contract_code AND vo.date = t.date
-      WHERE ${where.join(" AND ")}
-      ORDER BY t.contract_code, t.date DESC
-    `, params);
+    }>(
+      renderSqlView("data_viz/api/services/options/expiry_meta", {
+        where_clause: sqlFrag(where.join(" AND ")),
+      }).sql,
+      params,
+    );
 
     return {
       underlying_code: (q.underlying ?? "").trim(),
@@ -1577,40 +1447,44 @@ async function computeMoneynessSeries(q: OptionsQuery): Promise<OptionsMoneyness
   const ed = toDateParam(q.end_date);
 
   // The two reads share one parameter list (underlying, optional range).
-  const params: unknown[] = [underlying];
+  // Both SELECTs live in the sql views
+  // data_viz/api/services/options/moneyness_groups and moneyness_spot.
   const range: string[] = [];
+  let n = 1; // $1 = underlying_code
   if (sd) {
-    params.push(sd);
-    range.push(`date >= $${params.length}::date`);
+    n += 1;
+    range.push(`date >= $${n}::date`);
   }
   if (ed) {
-    params.push(ed);
-    range.push(`date <= $${params.length}::date`);
+    n += 1;
+    range.push(`date <= $${n}::date`);
   }
   const rangeClause = range.length > 0 ? ` AND ${range.join(" AND ")}` : "";
+  const queryMoneyness = async <T extends QueryResultRow>(
+    view: string,
+  ): Promise<T[]> => {
+    const { sql, params } = renderSqlView(
+      `data_viz/api/services/options/${view}`,
+      {
+        underlying_code: underlying,
+        range_clause: sqlFrag(rangeClause),
+      },
+    );
+    if (sd) params.push(sd);
+    if (ed) params.push(ed);
+    return queryRows<T>(sql, params);
+  };
 
   const [groupRows, spotRows] = await Promise.all([
-    queryRows<QueryResultRow & {
+    queryMoneyness<QueryResultRow & {
       date: Date | string; expiry_month: Date | string | null; expiry_date: Date | string | null;
       n_valid: number | null; e_m: number | null;
       wsum_k: number | null; wsum: number | null;
       call_oi: number | null; put_oi: number | null; call_otm_oi: number | null; put_otm_oi: number | null;
-    }>(`
-      SELECT date, expiry_month, expiry_date, n_valid,
-             e_m::float8 AS e_m,
-             wsum_k::float8 AS wsum_k, wsum::float8 AS wsum,
-             call_oi::float8 AS call_oi, put_oi::float8 AS put_oi,
-             call_otm_oi::float8 AS call_otm_oi, put_otm_oi::float8 AS put_otm_oi
-      FROM analysis.options_moneyness_series
-      WHERE underlying_code = $1${rangeClause}
-      ORDER BY date ASC, expiry_month ASC
-    `, params),
-    queryRows<QueryResultRow & { date: Date | string; close: number | null }>(`
-      SELECT date, close::float8 AS close
-      FROM analysis.options_spot_daily
-      WHERE underlying_code = $1${rangeClause}
-      ORDER BY date ASC
-    `, params.slice()),
+    }>("moneyness_groups"),
+    queryMoneyness<QueryResultRow & { date: Date | string; close: number | null }>(
+      "moneyness_spot",
+    ),
   ]);
 
   const groups: OptionsMoneynessSeriesResponse["groups"] = [];

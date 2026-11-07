@@ -16,7 +16,6 @@
 -- the DROP makes the old rows vanish with the table.
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_roof_and_floor_lines CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail_ohlc CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_ohlc';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_roof_and_floor_lines  (renamed 2026-10

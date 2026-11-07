@@ -276,16 +276,15 @@ export function buildVolIndexOption(
   });
 }
 
-/** Corr chart series spec — one curve per rolling window. The four
+/** Corr chart series spec — one curve per rolling window. The three
  *  windows are horizons of ONE metric (the vol-vs-spot rolling corr of
  *  the SAME underlying), so they share one blue hue at graded darkness
- *  (windowBlueColor: dark = 5d, light = 255d) — the futures dark-near /
+ *  (windowBlueColor: dark = 20d, light = 255d) — the futures dark-near /
  *  light-far ramp convention, not MUTED_PALETTE's hue-per-series. */
 const CORR_SERIES: Array<{
-  key: "corr_5d" | "corr_20d" | "corr_60d" | "corr_255d";
+  key: "corr_20d" | "corr_60d" | "corr_255d";
   name: string;
 }> = [
-  { key: "corr_5d", name: "Corr 5d" },
   { key: "corr_20d", name: "Corr 20d" },
   { key: "corr_60d", name: "Corr 60d" },
   { key: "corr_255d", name: "Corr 255d" },
@@ -379,7 +378,7 @@ export function buildVolIndexCorrOption(
       splitLine: { lineStyle: { color: c.splitLineColor } },
     },
     series: CORR_SERIES.map((s, i) => {
-      // One blue family at graded darkness (dark = 5d … light = 255d) —
+      // One blue family at graded darkness (dark = 20d … light = 255d) —
       // the same ramp convention as the pair hedge-ratio windows.
       const ramp = windowBlueColor(i, CORR_SERIES.length);
       // The corr_20d curve hosts the in-signal layers: the family's
@@ -429,7 +428,7 @@ export function buildVolIndexCorrOption(
                 symbolSize: 9,
                 itemStyle: {
                   // the pin rides the corr_20d host curve — its ramp shade
-                  color: windowBlueColor(1, CORR_SERIES.length),
+                  color: windowBlueColor(0, CORR_SERIES.length),
                   borderColor: "#fff",
                   borderWidth: 1,
                 },

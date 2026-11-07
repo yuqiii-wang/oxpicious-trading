@@ -89,9 +89,9 @@ class EtfBuild(DataBuild):
         self.args.resolved_code = self.resolve_code_filter(strip_suffix=True)
 
     async def run(self) -> None:
-        from builds.etf.pipeline.main import run
+        from builds.etf.pipeline.main import EtfPipeline
 
-        await run(self.args)
+        await EtfPipeline(self.args).run()
 
 
 if __name__ == "__main__":

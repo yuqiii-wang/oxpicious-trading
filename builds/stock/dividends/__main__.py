@@ -59,7 +59,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from _common.data_build import DataBuild
+from builds.stock.__main__ import StockBuild
 from _common.build_commons import PROJECT_ROOT
 from _common.db_commons import get_db_connection
 
@@ -309,7 +309,7 @@ def _fetch_active_stock_codes() -> Optional[set]:
 # ============================================================================
 # Main pipeline — StockDividendsBuild entry class
 # ============================================================================
-class StockDividendsBuild(DataBuild):
+class StockDividendsBuild(StockBuild):
     """``python -m builds.stock.dividends`` — SSE+SZSE dividends loader.
 
     The only build with fully custom flags (bare 6-digit --code without
@@ -321,6 +321,9 @@ class StockDividendsBuild(DataBuild):
 
     title = "STOCK DIVIDENDS BUILDER  ·  SSE + SZSE  →  stats.stock_dividends"
     component = "dividends"
+    # StockBuild delegates argv to its pipeline.cli (allow_unknown_args
+    # True); this child owns its argparse — restore the strict default.
+    allow_unknown_args = False
 
     def add_arguments(self, parser) -> None:
         parser.add_argument(

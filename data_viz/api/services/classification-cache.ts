@@ -23,7 +23,7 @@
  * counts v_etf_margin rows) can still wrap THEIR loader with cachedRows() to
  * get the same single-query-per-TTL behavior.
  */
-import { queryRows } from "../lib/db.js";
+import { querySqlView } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import type { IndustryEntityClassRow } from "./_shared.js";
 
@@ -116,32 +116,12 @@ export interface ClassificationMetaRow extends QueryResultRow {
 export async function listClassificationMetaRows(
   secType: ClassificationSecType,
 ): Promise<ClassificationMetaRow[]> {
+  // The SELECT lives in the sql view
+  // data_viz/api/services/classification-cache/classification_meta.
   const rows = await cachedRows(`sec_classification:${secType}`, () =>
-    queryRows<ClassificationMetaRow>(
-      `
-      SELECT DISTINCT ON (sc.code)
-             sc.code,
-             COALESCE(sc.name, '')                  AS name,
-             COALESCE(sc.n_days, 0)                 AS n_days,
-             sc.first_date::text                    AS first_date,
-             sc.last_date::text                     AS last_date,
-             COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
-             COALESCE(sc.sector_label,    '其他')   AS sector_label,
-             COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
-             COALESCE(sc.industry_label,  '未分类')  AS industry_label,
-             COALESCE(sc.industry_slug,   'other')  AS industry_slug,
-             COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
-             COALESCE(sc.exchange, '')               AS exchange,
-             COALESCE(sc.is_dummy, false)            AS is_dummy
-        FROM stats.sec_classification sc
-       WHERE sc.type = $1
-         AND sc.is_active = TRUE
-       ORDER BY sc.code,
-                sc.parent_index_is_primary DESC NULLS LAST,
-                sc.parent_index_weight DESC NULLS LAST,
-                sc.parent_index_code
-      `,
-      [secType],
+    querySqlView<ClassificationMetaRow>(
+      "data_viz/api/services/classification-cache/classification_meta",
+      { sec_type: secType },
     ),
   );
   // Stable liquidity ordering (DISTINCT ON requires ORDER BY code first, so
@@ -172,20 +152,12 @@ export async function listIndustryEntityClassRows(
   const clean = [...new Set(ids.filter((id): id is string => !!id))];
   if (clean.length === 0) return [];
   const key = `sec_classification:industry-entities:${clean.join(",")}`;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/classification-cache/industry_entity_class.
   return cachedRows(key, () =>
-    queryRows<IndustryEntityClassRow>(
-      `
-      SELECT industry_id,
-             MIN(sector_id)      AS sector_id,
-             MIN(sector_label)   AS sector_label,
-             MIN(industry_label) AS industry_label,
-             MIN(industry_slug)  AS industry_slug,
-             BOOL_AND(is_industry_not_strategy) AS is_industry_not_strategy
-        FROM stats.sec_classification
-       WHERE industry_id = ANY($1::text[])
-       GROUP BY industry_id
-      `,
-      [clean],
+    querySqlView<IndustryEntityClassRow>(
+      "data_viz/api/services/classification-cache/industry_entity_class",
+      { ids: clean },
     ),
   );
 }

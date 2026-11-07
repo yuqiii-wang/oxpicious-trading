@@ -17,6 +17,12 @@ publishes mcaf zips for realized trading days (the report is final in the
 evening) and keeps ~1 year of archives — so the proxy's None-on-4xx is
 treated as "no report" and retried per the service policy before giving up.
 
+The fetch layer is the :class:`MsciA50Downloader` class — the former
+module-level proxy/session singletons are per-instance attributes
+(``self.proxy`` / ``self._session``) and the functions that used them are
+its methods, while the parsers and DB-row shapers stay module-level
+functions.
+
 Report layout (both kinds, RFC-quoted CSV, ASCII):
 
   Day report (mcaf): the "Contract Month" block has 17 cells per row —
@@ -71,19 +77,6 @@ logger: logging.Logger = setup_logger("hkex_mca")
 # code fallback (2 retries) only applies if the row omits them.
 _MAX_RETRIES_JSON, _RETRY_BACKOFF_JSON = retry_policy_for(SERVICE)
 MAX_RETRIES: int = _MAX_RETRIES_JSON if _MAX_RETRIES_JSON is not None else 2
-
-# Built on the service row: base sleep + jitter, timeouts, host tracking
-# (900s cooldown on 403/429; 404 misses never block).
-proxy = AntiBotProxy(service=SERVICE)
-
-_session: Optional[requests.Session] = None
-
-
-def _get_session() -> requests.Session:
-    global _session
-    if _session is None:
-        _session = requests.Session()
-    return _session
 
 
 # "NOV-26" single-contract rows — excludes calendar spreads ("NOV-26/DEC-26").
@@ -180,27 +173,93 @@ def _trading_day(rows: List[List[str]]) -> Optional[date]:
     return None
 
 
-def _fetch_zip(url: str, sleep_sec: Optional[float]) -> Optional[bytes]:
-    """One report zip via the anti-bot proxy, with the service retry policy.
+class MsciA50Downloader:
+    """Report-zip fetch layer of the family (proxy/session-scoped class).
 
-    Returns the zip bytes, or None when the report does not exist (404 —
-    non-trading day, not yet final, or beyond archive retention) or every
-    attempt failed; callers log the distinction at the call site.
-    """
-    headers = build_headers_with_referer(REFERER_URL)
-    session = _get_session()
-    for attempt in range(1, MAX_RETRIES + 1):
-        resp = proxy.get(session, url, headers=headers, sleep_sec=sleep_sec,
-                         logger=logger)
-        if resp is not None and resp.status_code == 200:
-            return resp.content
-        logger.warning("  %s <- HTTP %s (attempt %d/%d)",
-                       url.rsplit("/", 1)[-1],
-                       resp.status_code if resp is not None else "suppressed/failed",
-                       attempt, MAX_RETRIES)
-        if attempt < MAX_RETRIES:
-            proxy.sleep()
-    return None
+    Every request goes through the shared :class:`AntiBotProxy` and a lazy
+    ``requests`` session — the former module-level singletons are now
+    instance attributes (``self.proxy`` / ``self._session``) built in
+    ``__init__``, and the functions that used them are methods with the
+    same names and sequencing; the pure parsers and DB-row shapers below
+    stay module-level functions."""
+
+    def __init__(self) -> None:
+        # Built on the service row: base sleep + jitter, timeouts, host tracking
+        # (900s cooldown on 403/429; 404 misses never block).
+        self.proxy = AntiBotProxy(service=SERVICE)
+        self._session: Optional[requests.Session] = None
+
+    def _get_session(self) -> requests.Session:
+        if self._session is None:
+            self._session = requests.Session()
+        return self._session
+
+    def _fetch_zip(self, url: str, sleep_sec: Optional[float]) -> Optional[bytes]:
+        """One report zip via the anti-bot proxy, with the service retry policy.
+
+        Returns the zip bytes, or None when the report does not exist (404 —
+        non-trading day, not yet final, or beyond archive retention) or every
+        attempt failed; callers log the distinction at the call site.
+        """
+        headers = build_headers_with_referer(REFERER_URL)
+        session = self._get_session()
+        for attempt in range(1, MAX_RETRIES + 1):
+            resp = self.proxy.get(session, url, headers=headers, sleep_sec=sleep_sec,
+                                  logger=logger)
+            if resp is not None and resp.status_code == 200:
+                return resp.content
+            logger.warning("  %s <- HTTP %s (attempt %d/%d)",
+                           url.rsplit("/", 1)[-1],
+                           resp.status_code if resp is not None else "suppressed/failed",
+                           attempt, MAX_RETRIES)
+            if attempt < MAX_RETRIES:
+                self.proxy.sleep()
+        return None
+
+    def fetch_daily_rows(self, day: date,
+                         sleep_sec: Optional[float] = None) -> Optional[List[Dict[str, object]]]:
+        """Fetch one trading date's full bars (day session + after-hours).
+
+        Args:
+            day: HKEX trading date to fetch.
+            sleep_sec: Explicit pacing override; None = the service row's base sleep.
+
+        Returns:
+            Raw report rows (mapped to the shared futures tables by
+            :func:`db_rows_for` / :func:`identity_rows_for`) — day session + settlement +
+            OI always; after-hours fields and the combined volume only when the
+            mcafa report is already published. None when the day report does not
+            exist (404 — non-trading day, day session not yet final, or beyond
+            the ~1y archive retention).
+        """
+        yymmdd = day.strftime("%y%m%d")
+        content = self._fetch_zip(f"{REPORT_BASE}/{DAY_REPORT_ZIP.format(yymmdd=yymmdd)}",
+                                  sleep_sec)
+        if content is None:
+            return None
+
+        rows = parse_day_report(content, day)
+        if not rows:
+            return rows
+
+        ah_content = self._fetch_zip(f"{REPORT_BASE}/{AH_REPORT_ZIP.format(yymmdd=yymmdd)}",
+                                     sleep_sec)
+        if ah_content is None:
+            logger.info("  %s: no after-hours report yet — volume stays NULL "
+                        "(next run completes it)", day)
+            for row in rows:
+                row.update(_AH_NULLS)
+            return rows
+
+        ah_by_code = parse_ah_report(ah_content, day)
+        for row in rows:
+            ah = ah_by_code.pop(row["code"], None)  # type: ignore[arg-type]
+            if ah is None:
+                row.update(_AH_NULLS)
+                continue
+            row.update(ah)
+            row["volume"] = (row["day_volume"] or 0) + (ah["ah_volume"] or 0)
+        return rows
 
 
 def parse_day_report(content: bytes, expected_date: date) -> List[Dict[str, object]]:
@@ -276,52 +335,6 @@ def parse_ah_report(content: bytes, expected_date: date) -> Dict[str, Dict[str, 
         }
     logger.info("  mcafa %s: %d contract rows", trading_day or expected_date, len(out))
     return out
-
-
-def fetch_daily_rows(day: date,
-                     sleep_sec: Optional[float] = None) -> Optional[List[Dict[str, object]]]:
-    """Fetch one trading date's full bars (day session + after-hours).
-
-    Args:
-        day: HKEX trading date to fetch.
-        sleep_sec: Explicit pacing override; None = the service row's base sleep.
-
-    Returns:
-        Raw report rows (mapped to the shared futures tables by
-        :func:`db_rows_for` / :func:`identity_rows_for`) — day session + settlement +
-        OI always; after-hours fields and the combined volume only when the
-        mcafa report is already published. None when the day report does not
-        exist (404 — non-trading day, day session not yet final, or beyond
-        the ~1y archive retention).
-    """
-    yymmdd = day.strftime("%y%m%d")
-    content = _fetch_zip(f"{REPORT_BASE}/{DAY_REPORT_ZIP.format(yymmdd=yymmdd)}",
-                         sleep_sec)
-    if content is None:
-        return None
-
-    rows = parse_day_report(content, day)
-    if not rows:
-        return rows
-
-    ah_content = _fetch_zip(f"{REPORT_BASE}/{AH_REPORT_ZIP.format(yymmdd=yymmdd)}",
-                            sleep_sec)
-    if ah_content is None:
-        logger.info("  %s: no after-hours report yet — volume stays NULL "
-                    "(next run completes it)", day)
-        for row in rows:
-            row.update(_AH_NULLS)
-        return rows
-
-    ah_by_code = parse_ah_report(ah_content, day)
-    for row in rows:
-        ah = ah_by_code.pop(row["code"], None)  # type: ignore[arg-type]
-        if ah is None:
-            row.update(_AH_NULLS)
-            continue
-        row.update(ah)
-        row["volume"] = (row["day_volume"] or 0) + (ah["ah_volume"] or 0)
-    return rows
 
 
 # ---------------------------------------------------------------------------

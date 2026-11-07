@@ -8,7 +8,8 @@
  * evidence), with the name looked up from the sec_type's identity
  * source.
  */
-import { queryRows, formatDate, toNum } from "@api/lib/db";
+import { formatDate, toNum } from "@api/lib/db";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { codeVariants } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
@@ -69,43 +70,22 @@ export async function getMarketCrowdednessChart(
   // The code predicate is repeated inside the LEFT JOIN ON clause on
   // purpose (the analysis.pe chart pattern): without it the planner
   // merge-joins by sorting the ENTIRE metric table and degenerates.
-  const chartSql = `
-    SELECT
-      b.date,
-      b.close,
-      b.trading_amount,
-      m.crowdedness_score,
-      m.concentration,
-      m.flow_change,
-      m.comovement,
-      m.valuation,
-      m.top1_share,
-      m.top5_share,
-      m.top10_share,
-      m.effective_n,
-      m.concentration_pct,
-      m.flow_pct,
-      m.comovement_pct,
-      m.valuation_pct,
-      m.top_stocks
-    ${CHART_FROM_CLAUSE[secType]}
-    LEFT JOIN analysis.market_crowdedness m
-      ON m.code = b.code AND m.date = b.date AND m.sec_type = $2
-      AND m.code = ANY($1::text[])
-    WHERE b.close IS NOT NULL
-      AND b.code = ANY($1::text[])
-    ORDER BY b.date ASC
-  `;
-  const nameSql = `
-    SELECT DISTINCT ON (code) code, name
-    FROM ${IDENTITY_TABLE[secType]}
-    WHERE code = ANY($1::text[])
-    ORDER BY code, date DESC
-  `;
-
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/market-crowdedness/chart/chart_series.
+  const codes = codeVariants(target);
   const [chartRows, nameRows] = await Promise.all([
-    queryRows<DbChartRow>(chartSql, [codeVariants(target), LABEL_CODE.sec_type[secType]]),
-    queryRows<{ code: string; name: string | null }>(nameSql, [codeVariants(target)]),
+    querySqlView<DbChartRow>(
+      "data_viz/api/services/analysis/market-crowdedness/chart/chart_series",
+      {
+        codes,
+        sec_type: LABEL_CODE.sec_type[secType],
+        from_clause: sqlFrag(CHART_FROM_CLAUSE[secType]),
+      },
+    ),
+    querySqlView<{ code: string; name: string | null }>(
+      "data_viz/api/services/analysis/market-crowdedness/chart/security_name",
+      { codes, identity_table: sqlFrag(IDENTITY_TABLE[secType]) },
+    ),
   ]);
 
   const name = nameRows[0]?.name ?? "";

@@ -63,6 +63,7 @@ bootstrap_runtime()
 from _common.log_setup import setup_logging
 
 from _common.data_analysis import DataAnalysis
+from _common.sql_views import render_sql_view
 
 from analysis.analysis_composites.config import (
     BASELINE_TABLE,
@@ -138,13 +139,17 @@ class CompositesAnalysis(DataAnalysis):
                 resolved = await self.resolve_codes_to_industries(
                     self.code_args,
                 )
+                classification_view = render_sql_view(
+                    "analysis/analysis_composites/__main__/"
+                    "classification_codes",
+                    codes=self.code_args,
+                )
                 unmapped = sorted(
                     set(self.code_args)
                     - {
                         r["code"] for r in await conn.fetch(
-                            "SELECT code FROM stats.sec_classification "
-                            "WHERE type = 'index' AND code = ANY($1)",
-                            self.code_args,
+                            classification_view.sql,
+                            *classification_view.params,
                         )
                     }
                 )

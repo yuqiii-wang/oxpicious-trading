@@ -1,9 +1,9 @@
 """llm_agents.online_search_summary — Online search + LLM summary agent.
 
 Runs an online web search for a question, summarizes the retrieved results
-with an LLM, and (optionally) persists the outcome into the text schema:
+with an LLM, and (optionally) persists the outcome into the text/llm schemas:
 the reference articles land in ``text.news``, and the question/answer pair
-lands in ``text.llm_qa`` with news-group provenance via the existing
+lands in ``llm.llm_qa`` with news-group provenance via the existing
 ``llm_agents.llm_qa`` storage layer.
 
 Package layout — three layered subpackages plus the CLI, dependencies
@@ -23,8 +23,10 @@ pointing one way (providers/storage/cli -> core, never back):
     * ``core.prompts``   — the summary output contract and its builders
       (summary_system_prompt, native_search_prompt, lang_label).
     * ``daily``        — the scheduled daily request preset (today /
-      latest-biz-date trigger, date-embedded market + sector question,
-      anchor-aware recency): what ``downloads.macro.ai_daily`` runs.
+      latest-biz-date trigger, date-embedded market + sector question
+      plus the two daily geopolitics/economy asks — global in English,
+      China in Chinese, anchor-aware recency): what
+      ``downloads.macro.ai_daily`` runs.
   ``providers/`` — the search/chat provider integrations (network):
     * ``providers.base`` — BaseOnlineSearchProvider: the abstract contract
       (search / _chat_complete / summarize) and the provider-agnostic
@@ -39,7 +41,7 @@ pointing one way (providers/storage/cli -> core, never back):
       chat provider.
     * ``providers.registry`` — PROVIDERS / get_provider: where providers
       register — subclass the base in ``providers/``, then add here.
-  ``storage/``   — the text-schema persistence layer (DB + verification
+  ``storage/``   — the text/llm-schema persistence layer (DB + verification
   fetches):
     * ``storage.matching`` — the ref_type/resolved_via vocabulary and the
       pure match helpers (normalize_text, is_exact_article,
@@ -51,13 +53,13 @@ pointing one way (providers/storage/cli -> core, never back):
       ddgs search + markitdown content verification -> ``exact``;
       unresolvable -> a null-content placeholder text.news row typed
       ``exact`` (the metadata IS the response's own). Outcomes land in
-      ``text.llm_qa_refs`` (qa_id, news_id) -> (ref — the representative
+      ``llm.llm_qa_refs`` (qa_id, news_id) -> (ref — the representative
       citation tag, ref_type, is_used — whether the answer cites the
       article, resolved_url, ref_time — the reference's publish time per
       the search response, now() when absent); DDL:
-      database/sql/text/03_llm_qa_refs.sql.
+      database/sql/text/llm/02_llm_qa_refs.sql.
     * ``storage.store``    — OnlineSearchSummaryStore: persists references
-      into text.news and the Q&A into text.llm_qa with news-group
+      into text.news and the Q&A into llm.llm_qa with news-group
       provenance; no text.news_keywords writes (corpus stats stay owned
       by builds.text).
   ``cli.py``     — argparse CLI (search / summarize, --store, --json).
@@ -94,9 +96,10 @@ from llm_agents.online_search_summary.core.citations import (
 )
 from llm_agents.online_search_summary.core.prompts import lang_label
 from llm_agents.online_search_summary.daily import (
-    DAILY_CATEGORY, DAILY_COUNT, RECENCY_5D, daily_market_query,
-    daily_recency, daily_request, daily_target_or_clamp,
-    default_daily_target,
+    DAILY_CATEGORY, DAILY_COUNT, GEO_SCOPE_CHINA, GEO_SCOPE_GLOBAL, GeoAsk,
+    RECENCY_5D, daily_china_geo_query, daily_global_geo_query,
+    daily_geo_asks, daily_market_query, daily_recency, daily_request,
+    daily_target_or_clamp, default_daily_target,
 )
 from llm_agents.online_search_summary.providers.base import (
     BaseOnlineSearchProvider,
@@ -126,7 +129,8 @@ __all__ = [
     "RECENCY_FILTERS", "CONTENT_SIZES", "SHANGHAI_TZ",
     "DAILY_CATEGORY", "DAILY_COUNT", "RECENCY_5D", "daily_market_query",
     "daily_recency", "daily_request", "daily_target_or_clamp",
-    "default_daily_target",
+    "default_daily_target", "GEO_SCOPE_GLOBAL", "GEO_SCOPE_CHINA", "GeoAsk",
+    "daily_global_geo_query", "daily_china_geo_query", "daily_geo_asks",
     "BaseOnlineSearchProvider", "ZhipuSearchProvider", "ZhihuSearchProvider",
     "PROVIDERS", "get_provider",
     "REF_TYPE_EXACT", "REF_TYPE_RELEVANT",

@@ -10,7 +10,7 @@
  *   • AI  → INSIGHT_PAGES.marketQa + the authored QA feed doc
  *     (ui.composites.ai-market-qa.feed): the keyword audit over the Q&A
  *     corpus (下跌/上涨, 放量/缩量, 利空/利好 occurrence counts with 10y
- *     rarity — text.llm_qa_keyword_audit), read against the news audit
+ *     rarity — llm.llm_qa_keyword_audit), read against the news audit
  *     for tone divergence.
  *   • News → INSIGHT_PAGES.marketNews + the news feed doc
  *     (ui.composites.market-sentiment-news.feed): the keyword audit over
@@ -72,7 +72,7 @@ export default function SentimentFeedAskButton({
   const plotInfo = useMemo<AiAskPlotInfo>(() => {
     const source = SOURCE_ASK[feed];
     const state: Record<string, string> = {
-      source: feed === "ai" ? "AI Q&A (text.llm_qa)" : "News (text.news)",
+      source: feed === "ai" ? "AI Q&A (llm.llm_qa)" : "News (text.news)",
       mode: mode === "market" ? "Market" : "Industry",
       scope: scopeLabel,
     };

@@ -11,15 +11,16 @@ module beside it —
   * ``mcp``       — the tool transport (an MCP session exposed as
     chat-completion tool schemas; the repo's read-only DB daemon by
     default);
-  * ``tools``     — the builtin-tool plumbing (BuiltinTool) and the
-    user-message assembly;
+  * ``tools``     — the user-message assembly + the BuiltinTool
+    re-export (the tool OBJECTS live in the tools/ layer);
   * ``delegation``— the subagent contract (schemas, SubagentRun/
     SubagentRequest, the supervision hooks) — the Task-tool layer;
   * ``loop``      — DeepAgent: the loop itself, the spawner (sync +
     background forks + collect + the programmatic run_delegation), and
     the answer-gating / no-orphan-task policies;
-  * ``sandbox``   — the code-execution capability (one scratch
-    directory per run, sandbox_* builtin tools).
+  * ``sandbox``   — the code-execution CLIENT (one scratch directory
+    per run; the sandbox_* tools that drive it are tool-layer objects,
+    ``tools.sandbox_tools``).
 """
 from llm_agents.deep_agents.core.delegation import (
     COLLECT_SUBAGENTS_SCHEMA,

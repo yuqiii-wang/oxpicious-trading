@@ -54,8 +54,10 @@ DB — nullable exceptions noted):
                  gov=11 pboc=12 zhihu=13 other=99
                  (external_resource_audit.sub_type when resource_type=0 —
                  the request host family, suffix-matched from the URL)
-  ext_llm_provider zhipu=0 other=99 (external_resource_audit.sub_type
-                 when resource_type=1 — the provider name)
+  ext_llm_provider zhipu=0 dummy=1 other=99 (external_resource_audit.
+                 sub_type when resource_type=1 — the provider name;
+                 dummy = the offline test double, never an audited
+                 live provider)
   analysis_cache_kind boost_derivation=0 (analysis_signals.
                  analysis_cache.kind — the generic intermediate-result
                  cache's tenant discriminator)
@@ -69,17 +71,21 @@ DB — nullable exceptions noted):
                  recorded extreme)
   research_logic growth=0 value=1 dividend=2 commodity=3 cyclical=4
                  defensive=5 quality=6 theme=7 other=99
-                 (text.llm_qa_by_research.logic_label — the dominant
+                 (llm.llm_qa_by_research.logic_label — the dominant
                  investing logic a research-logic Q&A row classifies;
-                 99 other = the fallback; first text.* LLM-layer enum
+                 99 other = the fallback; first llm.* LLM-layer enum
                  converted, 2026-10-27)
-  prompt_type   system=0 skills=1 plan=2 internal=3
-                 (text.ai_prompts.prompt_type — the prompt row's role in
+  prompt_type   system=0 skills=1 plan=2 internal=3 tool=4
+                 (llm.ai_prompts.prompt_type — the prompt row's role in
                  a deep-agent run: the standing system prompt / an
                  approach instruction the UI picker lists / a
                  generation-plan prompt / the agent's own machinery
-                 prompt seeded from the Python constants; second text.*
-                 LLM-layer enum converted, 2026-10-29)
+                 prompt seeded from the Python constants / a tool
+                 description seeded from the deep-agent tool classes'
+                 DEFAULT_DESCRIPTION constants (static/ai_prompts/
+                 10_tool_prompts.sql); second text.*
+                 LLM-layer enum converted, 2026-10-29, internal added
+                 2026-11-01, tool added 2026-11-02)
   kw_category_type  industry=0 market=1 broadmarket=2 skip=3 adj=4
                  adv=5 adv_noun=6 adv_verb=7
                  (static.keyword_maps.category_type — the seeded keyword →
@@ -128,7 +134,7 @@ NOT converted (deliberate — see static.label_dim's header): industry_id /
 sector_id / exchange (API-facing identity and filter columns; exchange
 additionally blocked by a partition-key table), signal_type /
 signal_sub_type (open family identifiers), scale_method
-(reserved vocabulary), and the REMAINING text.* LLM-layer enums
+(reserved vocabulary), and the REMAINING llm.* LLM-layer enums
 (research_logic 2026-10-27, prompt_type 2026-10-29 — the module mirror
 below).
 
@@ -740,9 +746,19 @@ EXT_HTTP_SOURCE_CODE: dict[str, int] = {
     "cnindex": 5, "chinabond": 6, "shibor": 7, "huatai": 8,
     "eastmoney": 9, "cninfo": 10, "gov": 11, "pboc": 12, "zhihu": 13,
     "sina": 14,
+    # zhipu joins as an HTTP source for static.secret_config's
+    # web_search rows (the BigModel web_search endpoint) — the audit
+    # itself records zhipu traffic as ext_llm_provider.
+    "zhipu": 15,
     "other": 99,
 }
-EXT_LLM_PROVIDER_CODE: dict[str, int] = {"zhipu": 0, "other": 99}
+EXT_LLM_PROVIDER_CODE: dict[str, int] = {"zhipu": 0, "dummy": 1,
+                                    "other": 99}
+# static.secret_config.secret_type — the credential family a secret row
+# serves; the row's provider domain is selected by it (llm ->
+# ext_llm_provider, web_search -> ext_http_source — the audit's
+# selected-domain pattern).
+SECRET_TYPE_CODE: dict[str, int] = {"llm": 0, "web_search": 1}
 # DB health sampler (monitor.db_health) — replication_state is the WAL
 # shipping state as seen from the SAMPLED instance (primary: the standby's
 # pg_stat_replication.state; replica: pg_stat_wal_receiver.status);
@@ -786,7 +802,7 @@ RF_REBOUND_OUTCOME_CODE: dict[str, int] = {
     "no_rebound": 0, "never_retested": 1, "held": 2,
     "broken": 3, "unresolved": 4,
 }
-# the dominant investing logic of a text.llm_qa_by_research row's
+# the dominant investing logic of a llm.llm_qa_by_research row's
 # underlying industry/security (logic_label) — 99 other = the fallback
 # (the logic did not fit / the model could not classify); first text.*
 # LLM-layer enum converted to the label-code contract (2026-10-27)
@@ -795,24 +811,43 @@ RESEARCH_LOGIC_CODE: dict[str, int] = {
     "cyclical": 4, "defensive": 5, "quality": 6, "theme": 7,
     "other": 99,
 }
-# text.ai_prompts.prompt_type — the prompt row's role in a deep-agent
+# llm.ai_prompts.prompt_type — the prompt row's role in a deep-agent
 # run: 0 system = the run's standing prompt, 1 skills = an approach
 # instruction (the UI Skills picker's rows), 2 plan = a generation-plan
 # prompt, 3 internal = the agent's own machinery prompt (planner system,
 # step addendum, fork addenda — seeded from the Python constants, hidden
-# from the Skills picker). Second text.* LLM-layer enum converted
-# (2026-10-29), internal added 2026-11-01
+# from the Skills picker), 4 tool = a tool description (one row per
+# model-callable tool — seeded from the deep-agent tool classes'
+# DEFAULT_DESCRIPTION constants by static/ai_prompts/10_tool_prompts.sql,
+# overriding the built-in schema text fail-soft at run start; hidden from
+# the Skills picker). Second llm.* LLM-layer enum converted
+# (2026-10-29), internal added 2026-11-01, tool added 2026-11-02
 PROMPT_TYPE_CODE: dict[str, int] = {"system": 0, "skills": 1, "plan": 2,
-                                    "internal": 3}
-# text.deep_agent_contexts.kind — which payload a context row carries.
+                                    "internal": 3, "tool": 4}
+# llm.deep_agent_contexts.kind — which payload a context row carries.
 # Code order = the run's data flow: the plan node's plan JSON, each
 # step's input notes and tick result note, a spawned subagent's final
-# answer, and the runner's HARDCODED result node's fixed output (the
-# run's final answer document — the UI Result view's display source).
-# Third text.* LLM-layer enum converted (2026-10-31)
+# answer, the runner's HARDCODED result node's fixed output (the
+# run's final answer document — the UI Result view's display source),
+# the supervisor node's main-path review (2026-11-02), and a MIDDLE
+# graph's final output node payload (the CUSTOM graph's synthesis —
+# what the next graph in the three-graph chain reads as its input,
+# 2026-11-06). Third llm.* LLM-layer enum converted (2026-10-31)
 AGENT_CONTEXT_KIND_CODE: dict[str, int] = {
     "plan": 0, "step-input": 1, "step-result": 2,
-    "subagent-result": 3, "final-result": 4,
+    "subagent-result": 3, "final-result": 4, "supervisor-review": 5,
+    "graph-output": 6,
+}
+# llm.deep_agent_langgraph_templates.type — which of a run's three
+# chained LangGraphs a template drives (the three-graph refactor,
+# 2026-11-06): 0 plan = a saved plan template (reuse skips the
+# planning session), 1 custom = a saved custom-graph step set
+# (reserved — the on-demand graph the planner builds is type custom
+# at runtime), 2 result = the result graph's fixed four-review-wave
+# definition (the seeded default-result-wave row). Fifth llm.*
+# vocabulary converted (2026-11-06)
+LANGGRAPH_TYPE_CODE: dict[str, int] = {
+    "plan": 0, "custom": 1, "result": 2,
 }
 # text.search_lexicon_df.search_table — which searchable table a high-DF
 # lexeme row's document frequency counts. Code order = TSV_SPECS order
@@ -907,6 +942,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "ext_resource": EXT_RESOURCE_CODE,
     "ext_http_source": EXT_HTTP_SOURCE_CODE,
     "ext_llm_provider": EXT_LLM_PROVIDER_CODE,
+    "secret_type": SECRET_TYPE_CODE,
     "db_instance": DB_INSTANCE_CODE,
     "db_replication_state": DB_REPLICATION_STATE_CODE,
     "analysis_cache_kind": ANALYSIS_CACHE_KIND_CODE,
@@ -917,6 +953,7 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "research_logic": RESEARCH_LOGIC_CODE,
     "prompt_type": PROMPT_TYPE_CODE,
     "agent_context_kind": AGENT_CONTEXT_KIND_CODE,
+    "langgraph_type": LANGGRAPH_TYPE_CODE,
     "search_table": SEARCH_TABLE_CODE,
     "kw_category_type": KW_CATEGORY_TYPE_CODE,
     "kw_market": KW_MARKET_CODE,
@@ -953,6 +990,7 @@ TRADE_SIDE_LABEL: dict[int, str] = CODE_MAPS["trade_side"]
 EXT_RESOURCE_LABEL: dict[int, str] = CODE_MAPS["ext_resource"]
 EXT_HTTP_SOURCE_LABEL: dict[int, str] = CODE_MAPS["ext_http_source"]
 EXT_LLM_PROVIDER_LABEL: dict[int, str] = CODE_MAPS["ext_llm_provider"]
+SECRET_TYPE_LABEL: dict[int, str] = CODE_MAPS["secret_type"]
 DB_INSTANCE_LABEL: dict[int, str] = CODE_MAPS["db_instance"]
 DB_REPLICATION_STATE_LABEL: dict[int, str] = CODE_MAPS["db_replication_state"]
 ANALYSIS_CACHE_KIND_LABEL: dict[int, str] = CODE_MAPS["analysis_cache_kind"]
@@ -963,6 +1001,7 @@ RF_REBOUND_OUTCOME_LABEL: dict[int, str] = CODE_MAPS["rf_rebound_outcome"]
 RESEARCH_LOGIC_LABEL: dict[int, str] = CODE_MAPS["research_logic"]
 PROMPT_TYPE_LABEL: dict[int, str] = CODE_MAPS["prompt_type"]
 AGENT_CONTEXT_KIND_LABEL: dict[int, str] = CODE_MAPS["agent_context_kind"]
+LANGGRAPH_TYPE_LABEL: dict[int, str] = CODE_MAPS["langgraph_type"]
 SEARCH_TABLE_LABEL: dict[int, str] = CODE_MAPS["search_table"]
 
 # Display order for responses that list a domain's vocabulary —
@@ -994,6 +1033,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "ext_resource": tuple(EXT_RESOURCE_CODE),
     "ext_http_source": tuple(EXT_HTTP_SOURCE_CODE),
     "ext_llm_provider": tuple(EXT_LLM_PROVIDER_CODE),
+    "secret_type": tuple(SECRET_TYPE_CODE),
     "db_instance": tuple(DB_INSTANCE_CODE),
     "db_replication_state": tuple(DB_REPLICATION_STATE_CODE),
     "analysis_cache_kind": tuple(ANALYSIS_CACHE_KIND_CODE),
@@ -1004,6 +1044,7 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "research_logic": tuple(RESEARCH_LOGIC_CODE),
     "prompt_type": tuple(PROMPT_TYPE_CODE),
     "agent_context_kind": tuple(AGENT_CONTEXT_KIND_CODE),
+    "langgraph_type": tuple(LANGGRAPH_TYPE_CODE),
     "search_table": tuple(SEARCH_TABLE_CODE),
     "kw_category_type": tuple(KW_CATEGORY_TYPE_CODE),
     "kw_market": tuple(KW_MARKET_CODE),

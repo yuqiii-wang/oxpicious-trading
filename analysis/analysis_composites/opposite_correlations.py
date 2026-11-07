@@ -101,6 +101,7 @@ from _common.build_commons import (
 from _common.db_commons import batched_copy_by_key_async
 from _common.df_utils import epoch_col_to_dt64, host_array
 from _common.labels import POOL_SIZE_LABEL
+from _common.sql_views import frag, render_sql_view
 from analysis._common import upsert_analysis_identity
 from analysis.market_beta.correlations import (
     _grid_start_indices,
@@ -253,65 +254,6 @@ async def find_missing_offset_window_ends(
 #  Consolidated offset curves (per industry, pool — from stats.cross_stats)
 # ---------------------------------------------------------------------------
 
-_OFFSET_CURVES_SQL = """
-WITH latest AS (
-    SELECT code, MAX(snapshot_date) AS max_date
-    FROM stats.sec_composition
-    WHERE source_type = 'index' AND stock_code IS NOT NULL
-    GROUP BY code
-),
-stock_num AS (
-    SELECT h.code, COUNT(DISTINCT h.stock_code) AS n
-    FROM stats.sec_composition h
-    JOIN latest ld ON h.code = ld.code AND h.snapshot_date = ld.max_date
-    WHERE h.source_type = 'index' AND h.stock_code IS NOT NULL
-    GROUP BY h.code
-),
-cls AS (
-    -- EVERY classified industry, including strategy themes (DIV_GENERAL
-    -- 红利 etc.): the baseline table (stats.industry_basic_stats) carries
-    -- them, so restricting the offset curves to genuine industries left
-    -- their pairs' offset_sub_corr_* eternally NULL — half-populated
-    -- audit rows (2026-10-17). The offset math (member close-change
-    -- minus benchmark change, averaged + cumulated) is
-    -- classification-agnostic.
-    SELECT code, industry_id
-    FROM stats.sec_classification
-    WHERE type = 'index'
-      AND is_active = TRUE
-      AND industry_id IS NOT NULL AND industry_id <> ''
-),
-member_pool AS (
-    -- Pool buckets mirror builds.industry.classify_pool_vectorized
-    -- (static.label_dim SMALLINT codes: 0 small / 1 mid / 2 large):
-    -- small < 51 constituent stocks, mid <= 180, large otherwise;
-    -- compositionless members contribute to the 'all' (3) pool only.
-    SELECT cls.code, cls.industry_id,
-           CASE
-               WHEN sn.n IS NULL THEN NULL
-               WHEN sn.n < 51 THEN 0
-               WHEN sn.n <= 180 THEN 1
-               ELSE 2
-           END::smallint AS bucket
-    FROM cls cls
-    LEFT JOIN stock_num sn ON sn.code = cls.code
-),
-pools(pool_size) AS (
-    VALUES (0::smallint), (1::smallint), (2::smallint), (3::smallint)
-)
-SELECT mp.industry_id, p.pool_size,
-       extract(epoch from cs.date)::float8 AS date,
-       AVG(cs.code_price_with_benchmark_offset)::float8 AS offset_pts
-FROM member_pool mp
-JOIN stats.cross_stats cs
-    ON cs.code = mp.code
-   AND cs.benchmark_code = $1::text
-   AND cs.sec_type = 'index'
-   AND cs.code_price_with_benchmark_offset IS NOT NULL
-JOIN pools p ON p.pool_size = 3 OR p.pool_size = mp.bucket
-GROUP BY mp.industry_id, p.pool_size, cs.date
-"""
-
 
 async def fetch_offset_curves(
     conn,
@@ -332,21 +274,23 @@ async def fetch_offset_curves(
     the targeted windows actually need (2026-10-12 probes).
     """
     where_parts: list[str] = []
-    params: list = [benchmark_code]
+    extra_params: list = []
     if industry_ids:
-        params.append(sorted(industry_ids))
-        where_parts.append(f"mp.industry_id = ANY(${len(params)})")
+        extra_params.append(sorted(industry_ids))
+        where_parts.append(f"mp.industry_id = ANY(${len(extra_params) + 1})")
     if from_date is not None:
-        params.append(from_date)
-        where_parts.append(f"cs.date >= ${len(params)}")
+        extra_params.append(from_date)
+        where_parts.append(f"cs.date >= ${len(extra_params) + 1}")
     where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
-    rows = await conn.fetch(
-        _OFFSET_CURVES_SQL.replace(
-            "GROUP BY mp.industry_id, p.pool_size, cs.date",
-            f"{where}\nGROUP BY mp.industry_id, p.pool_size, cs.date",
-        ),
-        *params,
+    # analysis/analysis_composites/opposite_correlations/offset_curves —
+    # the optional predicates ride as a fragment; their $n references are
+    # bound by the caller right after the benchmark param
+    view = render_sql_view(
+        "analysis/analysis_composites/opposite_correlations/offset_curves",
+        benchmark_code=benchmark_code,
+        extra_where=frag(where),
     )
+    rows = await conn.fetch(view.sql, benchmark_code, *extra_params)
     return pd.DataFrame(
         rec_cols(rows),
         columns=["industry_id", "pool_size", "date", "offset_pts"],
@@ -446,11 +390,14 @@ async def run_opposite_correlations(
     # full-history run.
     pool_cal: dict[int, pd.DatetimeIndex] = {}
     if bounded:
-        cal_rows = await conn.fetch(f"""
-            SELECT DISTINCT pool_size, date FROM {BASELINE_TABLE}
-            WHERE mean_close IS NOT NULL
-            ORDER BY pool_size, date
-        """)
+        # analysis/analysis_composites/opposite_correlations/
+        # pool_calendars
+        view = render_sql_view(
+            "analysis/analysis_composites/opposite_correlations/"
+            "pool_calendars",
+            baseline_table=frag(BASELINE_TABLE),
+        )
+        cal_rows = await conn.fetch(view.sql)
         for r in cal_rows:
             pool_cal.setdefault(r["pool_size"], []).append(r["date"])
         # Pin [ns]: a default-resolution DatetimeIndex (cudf.pandas picks
@@ -467,23 +414,26 @@ async def run_opposite_correlations(
     date_bound = "AND date >= $1" if bounded else ""
     bound_args = [load_from] if bounded else []
     if filtered:
-        rows = await conn.fetch(f"""
-            SELECT extract(epoch from date)::float8 AS date,
-                   industry_id, pool_size, mean_close
-            FROM {BASELINE_TABLE}
-            WHERE mean_close IS NOT NULL
-              AND industry_id = ANY($1)
-            ORDER BY industry_id, pool_size, date
-        """, sorted(industry_ids))
+        # analysis/analysis_composites/opposite_correlations/
+        # industry_mean_closes_filtered
+        view = render_sql_view(
+            "analysis/analysis_composites/opposite_correlations/"
+            "industry_mean_closes_filtered",
+            baseline_table=frag(BASELINE_TABLE),
+            codes=sorted(industry_ids),
+        )
+        rows = await conn.fetch(view.sql, *view.params)
     else:
-        rows = await conn.fetch(f"""
-            SELECT extract(epoch from date)::float8 AS date,
-                   industry_id, pool_size, mean_close
-            FROM {BASELINE_TABLE}
-            WHERE mean_close IS NOT NULL
-              {date_bound}
-            ORDER BY industry_id, pool_size, date
-        """, *bound_args)
+        # analysis/analysis_composites/opposite_correlations/
+        # industry_mean_closes — the optional date bound rides as a
+        # fragment ($1 bound by the caller when bounded)
+        view = render_sql_view(
+            "analysis/analysis_composites/opposite_correlations/"
+            "industry_mean_closes",
+            baseline_table=frag(BASELINE_TABLE),
+            date_bound=frag(date_bound),
+        )
+        rows = await conn.fetch(view.sql, *bound_args)
     if not rows:
         logger.info("      -> no industry data; skipping.")
         return

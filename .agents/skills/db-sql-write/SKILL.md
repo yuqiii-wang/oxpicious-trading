@@ -97,9 +97,41 @@ bulk_upsert(conn, "stats.my_table", rows, key_columns=["date", "code"])
   stale planner statistics turn value-blind prepared-statement readers
   into seq scans (the 2026-09-27 30s+ API-read regression).
 - Schema/DDL changes are SQL first under `database/sql/`, applied from a
-  `temp_scripts/` script. Run Python through WSL — see the
-  `oxpicious-dev-conventions` skill, which this skill specializes for
-  writes.
+  `temp_scripts/` script. ONE-TIME SQL — migration ALTERs, backfills,
+  renames, legacy-row DELETEs, temp-table rewrites — runs ONCE from
+  `temp_scripts/` and is never parked in `database/sql/`: those files are
+  re-applied wholesale (fresh installs, re-syncs), so a parked one-time
+  statement is dead weight at best and a fresh-apply breaker at worst.
+  Fold its effect into the original DDL definition instead (new columns →
+  the CREATE TABLE column list, constraint/index changes → their CREATE
+  statements) — the 2026-11-02 cleanup removed exactly such parked
+  migrations. Seed INSERT files are the exception: they ARE the initial
+  population / source of record, so they stay under `database/sql/` in
+  their re-appliable shape (per-scope DELETE + INSERT, or upsert). Run
+  Python through WSL — see the `oxpicious-dev-conventions` skill, which
+  this skill specializes for writes.
+- Query SQL is file-first, never inline in logic: reads render from
+  `database/sql_views/` via `_common.sql_views.render_sql_view` (the
+  returned `(sql, params)` pair feeds the db_commons read path; the
+  template dir mirrors the service file's dir — see that tree's
+  README), and custom parameterized writes live as `database/sql_writes/`
+  action files (layout in that tree's README; Python renders via
+  `_common.sql_writes.render_sql_write` — one-statement calls,
+  arity-checked — or `load_sql_write` for `executemany`; the data_viz
+  API loads via `loadSqlWrite`). Inline SQL is allowed only at the
+  plain-SQL study rung
+  above (a handful of rows from a `temp_scripts/` script) and inside the
+  `_common` helpers themselves. Those SELECTs never map or decode values
+  with `CASE` / `CASE WHEN` — the mapping always comes from the index
+  (`static.label_dim` scalar subquery / join on `(domain, code)`); a
+  missing label is fixed in SQL, by adding the row to its domain's
+  INSERT file under `database/sql/static/label_dim/` (plus the other
+  mirrors — `db-smallint-type-codes`), never by inlining a CASE map.
+- Row contracts are class-first pydantic (`oxpicious-dev-conventions`):
+  what a pipeline writes crosses module boundaries as typed `BaseModel`
+  carriers and converts at the write boundary via `model_dump()` into
+  the row dicts the helpers take — never reimplement the write
+  machinery as a class hierarchy wrapped around it.
 
 Sync vs async: pipelines use async (asyncpg). A simple study script can
 use the sync psycopg API — simpler, no event loop.

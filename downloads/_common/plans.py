@@ -24,6 +24,15 @@ from downloads._common.filescan import (
     scan_present_year_keys,
 )
 
+from downloads._common.data_definitions import (
+    ChunkDownloadPlan,
+    ChunkDownloadPlanItem,
+    DayDownloadPlan,
+    DayDownloadPlanItem,
+    RunStats,
+    YearDownloadPlan,
+    YearDownloadPlanItem,
+)
 logger = logging.getLogger(__name__)
 
 # Empty markers newer than this many calendar days are retried on each run
@@ -40,24 +49,6 @@ EMPTY_MARKER_RETRY_DAYS: int = 10
 DEFAULT_START_DATE = "2020-01-01"
 
 
-@dataclass
-class DayDownloadPlanItem:
-    type_key: str
-    prefix: str
-    day: date
-
-
-@dataclass
-class DayDownloadPlan:
-    items: List[DayDownloadPlanItem] = field(default_factory=list)
-    present_count: int = 0
-    total_expected: int = 0
-
-    def summary_str(self) -> str:
-        return (
-            f"expected={self.total_expected} cached={self.present_count} "
-            f"missing_to_download={len(self.items)}"
-        )
 
 
 def _add_stale_empty_markers(
@@ -216,24 +207,6 @@ def build_day_download_plan(
     return plan
 
 
-@dataclass
-class YearDownloadPlanItem:
-    type_key: str
-    prefix: str
-    year: int
-
-
-@dataclass
-class YearDownloadPlan:
-    items: List[YearDownloadPlanItem] = field(default_factory=list)
-    present_count: int = 0
-    total_expected: int = 0
-
-    def summary_str(self) -> str:
-        return (
-            f"expected={self.total_expected} cached={self.present_count} "
-            f"missing_to_download={len(self.items)}"
-        )
 
 
 def build_year_download_plan(
@@ -313,25 +286,6 @@ def build_year_download_plan(
     return plan
 
 
-@dataclass
-class ChunkDownloadPlanItem:
-    type_key: str
-    prefix: str
-    chunk_start: date
-    chunk_end: date
-
-
-@dataclass
-class ChunkDownloadPlan:
-    items: List[ChunkDownloadPlanItem] = field(default_factory=list)
-    present_count: int = 0
-    total_expected: int = 0
-
-    def summary_str(self) -> str:
-        return (
-            f"expected={self.total_expected} cached={self.present_count} "
-            f"missing_to_download={len(self.items)}"
-        )
 
 
 def build_chunk_download_plan(
@@ -424,24 +378,6 @@ def build_chunk_download_plan(
     return plan
 
 
-@dataclass
-class RunStats:
-    downloaded: int = 0
-    skipped_cached: int = 0
-    failed: int = 0
-    empty: int = 0
-    files: List[str] = field(default_factory=list)
-
-    def to_dict(self, **extra: Any) -> Dict[str, Any]:
-        d = {
-            "downloaded": self.downloaded,
-            "skipped_cached": self.skipped_cached,
-            "failed": self.failed,
-            "empty": self.empty,
-            "files": list(self.files),
-        }
-        d.update(extra)
-        return d
 
 
 def run_plan_with_sleep(

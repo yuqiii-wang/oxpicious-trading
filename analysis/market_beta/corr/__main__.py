@@ -26,8 +26,9 @@ The correlations step is NOT part of the default
     --industry. Driven by the UI refresh button on the Pairwise
     Correlation chart, so a small selection recomputes in seconds.
 
-The :class:`CorrAnalysis` entry class (a :class:`DataAnalysis` subclass)
-owns the runtime lifecycle + DB connection lifecycle; the
+The :class:`CorrAnalysis` entry class (a :class:`MarketBetaAnalysis`
+subclass — inheritance mirrors the directory layout) owns the
+runtime lifecycle + DB connection lifecycle; the
 ``--code → industry_ids`` resolution is the shared
 ``DataAnalysis.resolve_codes_to_industries`` (was duplicated here and in
 analysis_composites). Bootstrap-first layout: the runtime setup runs
@@ -43,7 +44,7 @@ bootstrap_runtime()
 
 from _common.log_setup import setup_logging
 
-from _common.data_analysis import DataAnalysis
+from analysis.market_beta.__main__ import MarketBetaAnalysis
 
 from analysis.market_beta.correlations import (
     run_correlations,
@@ -60,7 +61,7 @@ def _parse_csv(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
-class CorrAnalysis(DataAnalysis):
+class CorrAnalysis(MarketBetaAnalysis):
     """``python -m analysis.market_beta.corr`` — correlations only."""
 
     title = ("ANALYZE INDUSTRY CORRELATIONS (standalone; source: "

@@ -521,6 +521,11 @@ never a detection, no per-family logic (the rules-era rewire of
 - New family = new engine package + registry entry (+ label_dim rows
   in all three mirrors + a SIGNAL_VALUE_SOURCE entry if live-wired);
   dispatch through the registry, never if/else.
+- Engines and fetch/inputs helpers are class-first pydantic
+  (`oxpicious-dev-conventions`): a family engine is a `rule_base` ABC
+  subclass (never free functions), and new typed carriers — prepared-bar
+  params, gate/confidence constants, row contracts — cross module
+  boundaries as pydantic `BaseModel`s, not loose dicts.
 - Study scope: the 10 study indices only (config.STUDY_INDEX_CODES);
   the options families' universe is data-driven (stats.options_terms).
 - Testing: `--sec-type index --families <one>` first, `--force` for

@@ -52,18 +52,14 @@ from _common.request_config import (
     request_config_for,
 )
 
-
-DEFAULT_TIMEOUT: Tuple[Optional[float], Optional[float]] = (
-    FALLBACK_TIMEOUT_CONNECT_SEC, FALLBACK_TIMEOUT_READ_SEC,
+from downloads._common.data_definitions import (
+    AntiBotConfig,
+    HostStatus,
+    DEFAULT_SLEEP_SEC,
+    DEFAULT_TIMEOUT,
 )
 
-# Shared default sleep seconds between HTTP requests for anti-bot protection.
-# Fallback only — the runtime source is the external_request_config JSON tree
-# (see module docstring); individual downloaders resolve their per-service
-# cadence from it via sleep_sec_for / AntiBotProxy(service=...). The former
-# SHORT/LONG/VERY_LONG/SUPER_LONG interval constants are gone: each service's
-# cadence lives in its own external_request_config JSON row.
-DEFAULT_SLEEP_SEC = FALLBACK_SLEEP_SEC
+
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -308,12 +304,7 @@ def build_default_session(headers: Optional[Dict[str, str]] = None) -> requests.
 # Host blocking detection: track 4xx errors per host and skip subsequent requests
 # ---------------------------------------------------------------------------
 
-@dataclass
-class HostStatus:
-    blocked: bool = False
-    blocked_reason: str = ""
-    last_error_time: float = 0.0
-    error_count: int = 0
+
 
 
 class HostStatusTracker:
@@ -387,26 +378,7 @@ class HostStatusTracker:
 # Unified Anti-Bot Proxy: consolidates all anti-bot mechanisms into one class
 # ---------------------------------------------------------------------------
 
-@dataclass
-class AntiBotConfig:
-    """Configuration for anti-bot behavior.
 
-    All anti-bot features are enabled by default and can be selectively disabled.
-    """
-    # Browser fingerprint rotation
-    rotate_browser_profile: bool = True
-    # Add random parameter to requests
-    add_random_param: bool = True
-    # Sleep between requests
-    enable_sleep: bool = True
-    # Base sleep duration (seconds)
-    base_sleep_sec: float = DEFAULT_SLEEP_SEC
-    # Jitter factor for sleep (0.0 = no jitter, 1.0 = 100% jitter)
-    sleep_jitter: float = FALLBACK_SLEEP_JITTER
-    # Track host blocking (4xx errors)
-    enable_host_tracking: bool = True
-    # Timeout for requests
-    timeout: Tuple[Optional[float], Optional[float]] = DEFAULT_TIMEOUT
 
 
 def antibot_config_for(

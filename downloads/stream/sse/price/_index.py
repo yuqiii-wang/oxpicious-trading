@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from downloads._common import service_urls, setup_logger
 
-from ._io import _prepopulate_finished_codes
+from ._io import StreamIo
 from ._model import AssetStream
 
 logger = setup_logger("stream_sse")
@@ -53,7 +53,7 @@ def build_index_asset(allowed_codes: set) -> AssetStream:
 
 def prepopulate_index_finished_codes(conn, trade_date, finished_codes: set) -> None:
     """Pre-populate finished_codes with SSE indices that already have a 15:00 bar."""
-    _prepopulate_finished_codes(
+    StreamIo._prepopulate_finished_codes(
         conn, trade_date, finished_codes,
         table="stats.index_intraday_5min", exchange_filter=None,
     )

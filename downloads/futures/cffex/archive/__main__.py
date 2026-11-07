@@ -11,6 +11,13 @@ Each ZIP contains daily settlement CSV files named ``{YYYYMMDD}_1.csv``
 Archive-only: downloads from 2020-01 to the last completed month.
 Pacing (90s base sleep, jitter, timeouts, anti-bot toggles) resolves from
 the service's external_request_config JSON row (downloads.futures.cffex.archive).
+
+Class-first shape (code motion of the former module functions — same
+names, sequencing and log lines): the pure CSV/zip/BOM helpers stay
+module-level (``_split_csv_futures_options`` is imported cross-module by
+options/cffex/trend); the orchestrator is
+``CffexArchiveDownloader.download_cffex_archive``; the CLI is the
+``CffexArchiveDownload`` DownloadJob.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from downloads._common import (
     EMPTY_HTML_MAX_BYTES,
     MIN_VALID_BYTES,
     AntiBotProxy,
+    DownloadJob,
     build_headers_with_referer,
     clean_table_cell,
     is_error_html,
@@ -297,240 +305,255 @@ def _is_month_complete(month_dir: Path, expected: Set[str]) -> bool:
     return all((month_dir / name).is_file() for name in expected)
 
 
-def download_cffex_archive(
-    out_root: Optional[str] = None,
-    start_date: date = START_DATE,
-    end_date: Optional[date] = None,
-    force: bool = False,
-    session: Optional[requests.Session] = None,
-) -> dict:
-    """Download CFFEX monthly archive ZIPs and extract CSV files.
+class CffexArchiveDownloader:
+    """The CFFEX monthly-archive download cycle (stateless orchestrator).
 
-    Downloads from ``start_date`` (default 2020-01-01) to
-    ``end_date`` (default last completed month). Each month's ZIP is
-    downloaded once and all contained CSVs are extracted into a
-    month-named subdirectory. Months already downloaded are skipped
-    (``--force`` re-downloads everything).
+    Code motion of the former ``download_cffex_archive`` module function —
+    same name, sequencing and log lines; pacing resolves per call from the
+    service's external_request_config row (the AntiBotProxy is constructed
+    per run, as before)."""
 
-    Pacing (base sleep 90s, jitter, timeouts, anti-bot toggles) resolves
-    from the service's external_request_config JSON row
-    (``downloads.futures.cffex.archive``).
-    """
-    archive_dir = resolve_out_dir(
-        str(Path(__file__).resolve()), ARCHIVE_DIRNAME, out_root,
-    )
-    sess = session or requests.Session()
-    headers = build_headers_with_referer(CFFEX_REFERER)
+    def download_cffex_archive(
+        self,
+        out_root: Optional[str] = None,
+        start_date: date = START_DATE,
+        end_date: Optional[date] = None,
+        force: bool = False,
+        session: Optional[requests.Session] = None,
+    ) -> dict:
+        """Download CFFEX monthly archive ZIPs and extract CSV files.
 
-    if end_date is None:
-        end_date = _last_completed_month()
+        Downloads from ``start_date`` (default 2020-01-01) to
+        ``end_date`` (default last completed month). Each month's ZIP is
+        downloaded once and all contained CSVs are extracted into a
+        month-named subdirectory. Months already downloaded are skipped
+        (``--force`` re-downloads everything).
 
-    months = _month_range(start_date, end_date)
-    logger.info(
-        "CFFEX archive: %d months to download (%s -> %s)",
-        len(months),
-        start_date.strftime("%Y-%m"),
-        end_date.strftime("%Y-%m"),
-    )
+        Pacing (base sleep 90s, jitter, timeouts, anti-bot toggles) resolves
+        from the service's external_request_config JSON row
+        (``downloads.futures.cffex.archive``).
+        """
+        archive_dir = resolve_out_dir(
+            str(Path(__file__).resolve()), ARCHIVE_DIRNAME, out_root,
+        )
+        sess = session or requests.Session()
+        headers = build_headers_with_referer(CFFEX_REFERER)
 
-    # Pacing from the service's external_request_config JSON row: base
-    # sleep 90s (the old LONG_SLEEP_INTERVAL), jitter 0.3, all anti-bot
-    # toggles on, timeouts (15, 60).
-    proxy = AntiBotProxy(service=SERVICE)
+        if end_date is None:
+            end_date = _last_completed_month()
 
-    downloaded = 0
-    skipped = 0
-    failed = 0
+        months = _month_range(start_date, end_date)
+        logger.info(
+            "CFFEX archive: %d months to download (%s -> %s)",
+            len(months),
+            start_date.strftime("%Y-%m"),
+            end_date.strftime("%Y-%m"),
+        )
 
-    for i, month in enumerate(months):
-        mk = _month_key(month)
-        zip_path = archive_dir / f"{mk}.zip"
-        month_dir = archive_dir / mk
-        url = _build_month_url(mk)
-        tag = f"[{mk}]"
+        # Pacing from the service's external_request_config JSON row: base
+        # sleep 90s (the old LONG_SLEEP_INTERVAL), jitter 0.3, all anti-bot
+        # toggles on, timeouts (15, 60).
+        proxy = AntiBotProxy(service=SERVICE)
 
-        if proxy.is_blocked(CFFEX_BASE_URL):
-            logger.warning(
-                "  [host-blocked] cffex.com.cn blocked, stopping at month %s", mk,
-            )
-            failed += len(months) - i
-            break
+        downloaded = 0
+        skipped = 0
+        failed = 0
 
-        # --- Skip check 1: month_dir already has valid futures+options pairs ---
-        if not force and _is_month_complete_heuristic(month_dir):
-            logger.info(
-                "%s already extracted and valid (%d days), skipping",
-                tag, _count_valid_futures_options_pairs(month_dir),
-            )
-            skipped += 1
-            continue
+        for i, month in enumerate(months):
+            mk = _month_key(month)
+            zip_path = archive_dir / f"{mk}.zip"
+            month_dir = archive_dir / mk
+            url = _build_month_url(mk)
+            tag = f"[{mk}]"
 
-        # --- Repair: combined CSVs exist but haven't been split yet ---
-        if not force and month_dir.exists():
-            combined_csvs = sorted(month_dir.glob("*_1.csv"))
-            if combined_csvs and not list(month_dir.glob("*_futures.csv")):
-                logger.info(
-                    "%s found combined CSVs without split files, splitting...",
-                    tag,
-                )
-                for combined in combined_csvs:
-                    _split_csv_futures_options(
-                        combined, month_dir, logger_tag=tag,
-                    )
-                if _is_month_complete_heuristic(month_dir):
-                    downloaded += 1
-                    continue
-                else:
-                    logger.warning(
-                        "%s split incomplete, will re-download", tag,
-                    )
-
-        # --- Skip check 2: ZIP still exists (backward compat) ---
-        if not force and is_valid_file(zip_path, min_bytes=MIN_VALID_BYTES):
-            try:
-                with open(zip_path, "rb") as f:
-                    zip_content = f.read()
-                expected = _get_expected_csv_names(zip_content)
-                if _is_month_complete(month_dir, expected):
-                    logger.info(
-                        "%s already downloaded and extracted (%d CSVs), skipping",
-                        tag, len(expected),
-                    )
-                    skipped += 1
-                    zip_path.unlink(missing_ok=True)
-                    continue
-                else:
-                    logger.info(
-                        "%s ZIP exists, extracting missing CSVs...", tag,
-                    )
-                    _extract_csvs_from_zip(zip_content, month_dir, logger_tag=tag)
-                    zip_path.unlink(missing_ok=True)
-                    downloaded += 1
-                    continue
-            except Exception:
+            if proxy.is_blocked(CFFEX_BASE_URL):
                 logger.warning(
-                    "%s existing ZIP is corrupt, will re-download", tag,
+                    "  [host-blocked] cffex.com.cn blocked, stopping at month %s", mk,
                 )
+                failed += len(months) - i
+                break
+
+            # --- Skip check 1: month_dir already has valid futures+options pairs ---
+            if not force and _is_month_complete_heuristic(month_dir):
+                logger.info(
+                    "%s already extracted and valid (%d days), skipping",
+                    tag, _count_valid_futures_options_pairs(month_dir),
+                )
+                skipped += 1
+                continue
+
+            # --- Repair: combined CSVs exist but haven't been split yet ---
+            if not force and month_dir.exists():
+                combined_csvs = sorted(month_dir.glob("*_1.csv"))
+                if combined_csvs and not list(month_dir.glob("*_futures.csv")):
+                    logger.info(
+                        "%s found combined CSVs without split files, splitting...",
+                        tag,
+                    )
+                    for combined in combined_csvs:
+                        _split_csv_futures_options(
+                            combined, month_dir, logger_tag=tag,
+                        )
+                    if _is_month_complete_heuristic(month_dir):
+                        downloaded += 1
+                        continue
+                    else:
+                        logger.warning(
+                            "%s split incomplete, will re-download", tag,
+                        )
+
+            # --- Skip check 2: ZIP still exists (backward compat) ---
+            if not force and is_valid_file(zip_path, min_bytes=MIN_VALID_BYTES):
+                try:
+                    with open(zip_path, "rb") as f:
+                        zip_content = f.read()
+                    expected = _get_expected_csv_names(zip_content)
+                    if _is_month_complete(month_dir, expected):
+                        logger.info(
+                            "%s already downloaded and extracted (%d CSVs), skipping",
+                            tag, len(expected),
+                        )
+                        skipped += 1
+                        zip_path.unlink(missing_ok=True)
+                        continue
+                    else:
+                        logger.info(
+                            "%s ZIP exists, extracting missing CSVs...", tag,
+                        )
+                        _extract_csvs_from_zip(zip_content, month_dir, logger_tag=tag)
+                        zip_path.unlink(missing_ok=True)
+                        downloaded += 1
+                        continue
+                except Exception:
+                    logger.warning(
+                        "%s existing ZIP is corrupt, will re-download", tag,
+                    )
+                    zip_path.unlink(missing_ok=True)
+
+            # --- Re-download if month_dir exists but is incomplete ---
+            if not force and month_dir.exists() and not _is_month_complete_heuristic(month_dir):
+                logger.info(
+                    "%s incomplete extraction found, re-downloading...", tag,
+                )
+                shutil.rmtree(month_dir, ignore_errors=True)
+
+            # --- Force re-download: clean the month directory ---
+            if force and month_dir.exists():
+                shutil.rmtree(month_dir, ignore_errors=True)
+            if force and zip_path.exists():
                 zip_path.unlink(missing_ok=True)
 
-        # --- Re-download if month_dir exists but is incomplete ---
-        if not force and month_dir.exists() and not _is_month_complete_heuristic(month_dir):
+            # --- Download the ZIP ---
             logger.info(
-                "%s incomplete extraction found, re-downloading...", tag,
+                "%s downloading %s (%d/%d)...", tag, url, i + 1, len(months),
             )
-            shutil.rmtree(month_dir, ignore_errors=True)
+            resp = proxy.get(
+                sess,
+                url,
+                headers=headers,
+                logger=logger,
+                log_tag=tag,
+            )
 
-        # --- Force re-download: clean the month directory ---
-        if force and month_dir.exists():
-            shutil.rmtree(month_dir, ignore_errors=True)
-        if force and zip_path.exists():
+            if resp is None:
+                logger.error("%s download failed", tag)
+                failed += 1
+                continue
+
+            # Validate Content-Type: expect application/zip
+            content_type = resp.headers.get("Content-Type", "")
+            if "zip" not in content_type.lower() and is_error_html(
+                content_type, resp.content, max_html_bytes=EMPTY_HTML_MAX_BYTES,
+            ):
+                logger.warning(
+                    "%s got HTML response (no data for this month?), skipping",
+                    tag,
+                )
+                failed += 1
+                continue
+
+            if "zip" not in content_type.lower():
+                logger.warning(
+                    "%s unexpected Content-Type: %s, skipping",
+                    tag, content_type,
+                )
+                failed += 1
+                continue
+
+            # Extract CSVs directly from response content (no need to save to disk)
+            try:
+                _extract_csvs_from_zip(resp.content, month_dir, logger_tag=tag)
+            except Exception as e:
+                logger.error(
+                    "%s extraction failed: %s", tag, e,
+                )
+                failed += 1
+                continue
+
+            # Delete the ZIP — keep only the extracted directory and CSVs
             zip_path.unlink(missing_ok=True)
 
-        # --- Download the ZIP ---
+            downloaded += 1
+
         logger.info(
-            "%s downloading %s (%d/%d)...", tag, url, i + 1, len(months),
-        )
-        resp = proxy.get(
-            sess,
-            url,
-            headers=headers,
-            logger=logger,
-            log_tag=tag,
+            "Done CFFEX archive. downloaded=%d skipped=%d failed=%d archive_dir=%s",
+            downloaded, skipped, failed, archive_dir,
         )
 
-        if resp is None:
-            logger.error("%s download failed", tag)
-            failed += 1
-            continue
+        return {
+            "downloaded": downloaded,
+            "skipped": skipped,
+            "failed": failed,
+            "archive_dir": str(archive_dir),
+        }
 
-        # Validate Content-Type: expect application/zip
-        content_type = resp.headers.get("Content-Type", "")
-        if "zip" not in content_type.lower() and is_error_html(
-            content_type, resp.content, max_html_bytes=EMPTY_HTML_MAX_BYTES,
-        ):
-            logger.warning(
-                "%s got HTML response (no data for this month?), skipping",
-                tag,
-            )
-            failed += 1
-            continue
 
-        if "zip" not in content_type.lower():
-            logger.warning(
-                "%s unexpected Content-Type: %s, skipping",
-                tag, content_type,
-            )
-            failed += 1
-            continue
+class CffexArchiveDownload(DownloadJob):
+    """CLI entry: the CFFEX monthly-archive download (component
+    ``cffex_archive``; no single-instance lock — the old entry had none)."""
 
-        # Extract CSVs directly from response content (no need to save to disk)
-        try:
-            _extract_csvs_from_zip(resp.content, month_dir, logger_tag=tag)
-        except Exception as e:
-            logger.error(
-                "%s extraction failed: %s", tag, e,
-            )
-            failed += 1
-            continue
+    component = "cffex_archive"
 
-        # Delete the ZIP — keep only the extracted directory and CSVs
-        zip_path.unlink(missing_ok=True)
+    def add_arguments(self, parser) -> None:
+        parser.description = "Download CFFEX historical archive data"
+        parser.add_argument(
+            "--start",
+            default="2020-01",
+            help="Start month (YYYY-MM, default: 2020-01)",
+        )
+        parser.add_argument(
+            "--end",
+            default=None,
+            help="End month (YYYY-MM, default: last completed month)",
+        )
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Re-download all months even if already cached",
+        )
+        parser.add_argument(
+            "--out-root",
+            default=None,
+            help="Override output directory root",
+        )
 
-        downloaded += 1
+    def apply_args(self) -> None:
+        args = self.args
+        self.start = datetime.strptime(args.start, "%Y-%m").date()
+        self.end = None
+        if args.end:
+            self.end = datetime.strptime(args.end, "%Y-%m").date()
 
-    logger.info(
-        "Done CFFEX archive. downloaded=%d skipped=%d failed=%d archive_dir=%s",
-        downloaded, skipped, failed, archive_dir,
-    )
+    def run(self) -> None:
+        result = CffexArchiveDownloader().download_cffex_archive(
+            out_root=self.args.out_root,
+            start_date=self.start,
+            end_date=self.end,
+            force=self.args.force,
+        )
 
-    return {
-        "downloaded": downloaded,
-        "skipped": skipped,
-        "failed": failed,
-        "archive_dir": str(archive_dir),
-    }
+        logger.info(f"\nSummary: {result}")
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="Download CFFEX historical archive data",
-    )
-    parser.add_argument(
-        "--start",
-        default="2020-01",
-        help="Start month (YYYY-MM, default: 2020-01)",
-    )
-    parser.add_argument(
-        "--end",
-        default=None,
-        help="End month (YYYY-MM, default: last completed month)",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Re-download all months even if already cached",
-    )
-    parser.add_argument(
-        "--out-root",
-        default=None,
-        help="Override output directory root",
-    )
-    args = parser.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    start = datetime.strptime(args.start, "%Y-%m").date()
-    end = None
-    if args.end:
-        end = datetime.strptime(args.end, "%Y-%m").date()
-
-    result = download_cffex_archive(
-        out_root=args.out_root,
-        start_date=start,
-        end_date=end,
-        force=args.force,
-    )
-
-    logger.info(f"\nSummary: {result}")
+    CffexArchiveDownload().execute()

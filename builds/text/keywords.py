@@ -323,7 +323,7 @@ def extract_for_articles(
 
 
 def extract_for_qa(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Attach keyword occurrences to text.llm_qa rows (the QA-side audit).
+    """Attach keyword occurrences to llm.llm_qa rows (the QA-side audit).
 
     Same taxonomy, counting, and negation rules as the news audit
     (:meth:`KeywordTaxonomy.match` — 并未下跌 does not count): one pass

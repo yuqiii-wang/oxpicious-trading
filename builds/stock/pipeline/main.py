@@ -66,86 +66,533 @@ from builds.stock.pipeline.gap_detection import (
     collect_missing_file_pairs,
     detect_missing_dates,
 )
-from builds.stock.pipeline.margin_gap import detect_margin_gaps
+from builds.stock.pipeline.margin_gap import StockMarginGaps
 from builds.stock.pipeline.writer import (
     build_estimated_pe_rows,
     build_identity_rows,
     build_insert_rows,
     build_margin_upsert_rows,
     build_pe_upsert_rows,
-    upsert_margin_only_conn,
-    write_basic_stats_ohlcv,
-    write_identity,
-    write_liquidity_margin,
-    write_pe_only_conn,
+    StockWriter,
 )
 
 import logging
 logger = logging.getLogger(__name__)
 
 
-async def purge_for_force(conn, code_filter: str | None) -> None:
-    """--force: truncate target tables (or delete only the --code's rows)."""
-    if code_filter:
-        logger.info(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code")
-        await conn.execute(
-            "DELETE FROM stats.stock_liquidity_margin WHERE code = $1",
-            code_filter,
-        )
-        await conn.execute(
-            "DELETE FROM stats.stock_tech_stats WHERE code = $1",
-            code_filter,
-        )
-        await conn.execute(
-            "DELETE FROM stats.stock_basic_stats WHERE code = $1",
-            code_filter,
-        )
-        # stock_identity rows are FK-referenced by e.g. stock_intraday_5min
-        # (deleting raises ForeignKeyViolation) and are dimension-like —
-        # the build re-upserts them right before basic_stats anyway.
-        logger.info("    [DB] Skipping stock_identity delete (FK-referenced; "
-              "re-upserted during insert)")
-    else:
-        logger.info("    [DB] Force mode: truncating existing tables")
-        await truncate_table_async(conn, "stats.stock_liquidity_margin")
-        await truncate_table_async(conn, "stats.stock_basic_stats")
-        await truncate_table_async(conn, "stats.stock_identity")
+class StockPipeline:
+    """The ``python -m builds.stock`` orchestration (former ``main()``).
 
+    Code motion of the former module-level orchestration (OOP batch B):
+    ``main()``'s body became :meth:`run` verbatim — same SQL, logs and
+    sequencing; the ctor receives nothing (the pipeline parses argv
+    itself via pipeline.cli.parse_args). Conn-scoped helpers moved onto
+    conn-scoped collaborators constructed once the DB connection exists:
+    ``purge_for_force`` / ``_run_tech_stats_step`` became private methods
+    here (tech stats route through
+    :class:`builds.stock.tech_stats.runner.TechStatsRunner`), the DB
+    writes went to :class:`builds.stock.pipeline.writer.StockWriter`
+    (``self.writer``) and the margin-gap detection to
+    :class:`builds.stock.pipeline.margin_gap.StockMarginGaps`
+    (``self.margin_gaps``). Pure helpers stay module-level
+    (``_update_history_range`` below; ``discover_sources`` /
+    ``collect_missing_file_pairs`` in their own modules).
+    """
 
-async def _run_tech_stats_step(conn, args, code_filter: str | None,
-                               forced: date | None = None) -> None:
-    """Run tech stats only when behind basic_stats (single cheap
-    max-date check) — a no-op tech-stats run costs ~15s of lookback
-    loading, so skip it when there is nothing new to compute.
+    def __init__(self) -> None:
+        # Conn-scoped collaborators, constructed in run() once the DB
+        # connection exists (see class docstring).
+        self.writer: StockWriter | None = None
+        self.margin_gaps: StockMarginGaps | None = None
 
-    --date mode (forced): bypass the max-date skip and recompute ONLY
-    the forced date's rows via the runner's target_dates mechanism —
-    never a full --force-style history recompute."""
-    if code_filter:
-        # In single-code mode, skip full tech-stats scan (it processes
-        # all codes). The target code's existing tech stats remain valid.
-        logger.info(f"    [TECH-STATS] Skipped in single-code mode ({code_filter})")
-        return
-    if not args.force and forced is None:
-        row = await conn.fetchrow(
-            "SELECT "
-            "  (SELECT MAX(date) FROM stats.stock_basic_stats) AS max_basic, "
-            "  (SELECT MAX(date) FROM stats.stock_tech_stats)  AS max_tech"
-        )
-        if row and row["max_basic"] is not None \
-                and row["max_tech"] is not None \
-                and row["max_basic"] <= row["max_tech"]:
-            logger.info("    [TECH-STATS] Up to date "
-                  f"(max date {row['max_tech']}) — skipped")
+    async def _purge_for_force(self, conn, code_filter: str | None) -> None:
+        """--force: truncate target tables (or delete only the --code's rows)."""
+        if code_filter:
+            logger.info(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code")
+            await conn.execute(
+                "DELETE FROM stats.stock_liquidity_margin WHERE code = $1",
+                code_filter,
+            )
+            await conn.execute(
+                "DELETE FROM stats.stock_tech_stats WHERE code = $1",
+                code_filter,
+            )
+            await conn.execute(
+                "DELETE FROM stats.stock_basic_stats WHERE code = $1",
+                code_filter,
+            )
+            # stock_identity rows are FK-referenced by e.g. stock_intraday_5min
+            # (deleting raises ForeignKeyViolation) and are dimension-like —
+            # the build re-upserts them right before basic_stats anyway.
+            logger.info("    [DB] Skipping stock_identity delete (FK-referenced; "
+                  "re-upserted during insert)")
+        else:
+            logger.info("    [DB] Force mode: truncating existing tables")
+            await truncate_table_async(conn, "stats.stock_liquidity_margin")
+            await truncate_table_async(conn, "stats.stock_basic_stats")
+            await truncate_table_async(conn, "stats.stock_identity")
+
+    async def _run_tech_stats_step(self, conn, args, code_filter: str | None,
+                                   forced: date | None = None) -> None:
+        """Run tech stats only when behind basic_stats (single cheap
+        max-date check) — a no-op tech-stats run costs ~15s of lookback
+        loading, so skip it when there is nothing new to compute.
+
+        --date mode (forced): bypass the max-date skip and recompute ONLY
+        the forced date's rows via the runner's target_dates mechanism —
+        never a full --force-style history recompute."""
+        if code_filter:
+            # In single-code mode, skip full tech-stats scan (it processes
+            # all codes). The target code's existing tech stats remain valid.
+            logger.info(f"    [TECH-STATS] Skipped in single-code mode ({code_filter})")
             return
-    logger.info("\n[5/5] Computing stock tech stats (MA/EMA) …")
-    from builds.stock.tech_stats import run_tech_stats_chunked
-    tech_total = await run_tech_stats_chunked(
-        conn, force=args.force, chunk_size=500,
-        target_dates={forced} if forced is not None else None,
-    )
-    logger.info(f"    [TECH-STATS] Total rows upserted into stats.stock_tech_stats: "
-          f"{tech_total:,}")
+        if not args.force and forced is None:
+            row = await conn.fetchrow(
+                "SELECT "
+                "  (SELECT MAX(date) FROM stats.stock_basic_stats) AS max_basic, "
+                "  (SELECT MAX(date) FROM stats.stock_tech_stats)  AS max_tech"
+            )
+            if row and row["max_basic"] is not None \
+                    and row["max_tech"] is not None \
+                    and row["max_basic"] <= row["max_tech"]:
+                logger.info("    [TECH-STATS] Up to date "
+                      f"(max date {row['max_tech']}) — skipped")
+                return
+        logger.info("\n[5/5] Computing stock tech stats (MA/EMA) …")
+        from builds.stock.tech_stats.runner import TechStatsRunner
+        tech_total = await TechStatsRunner(conn).run(
+            force=args.force, chunk_size=500,
+            target_dates={forced} if forced is not None else None,
+        )
+        logger.info(f"    [TECH-STATS] Total rows upserted into stats.stock_tech_stats: "
+              f"{tech_total:,}")
+
+    async def run(self) -> None:
+        args = parse_args()
+        enforce_date_force_exclusion(args)
+        forced = parse_date_arg(args.date)
+        code_filter: str | None = normalize_code(args.code)
+        t0 = time.time()
+        if forced is not None:
+            logger.info(f"[DATE MODE] Forced single-date build: {forced}")
+            # Restrict discovery + the SSE archive loader to the single date
+            # BEFORE any source scanning happens below.
+            args.start_date = forced.isoformat()
+            args.end_date = forced.isoformat()
+        if code_filter:
+            logger.info(f"    [CODE FILTER] Restricting build to single stock: {code_filter}")
+
+        print_build_header(
+            "SZSE + SSE + BSE STOCK BUILDER  ·  missing-dates-only → DATABASE",
+            **{
+                "SZSE Archive dir": SZSE_ARCHIVE_DIR,
+                "SZSE Trend dir":   SZSE_TREND_DIR,
+                "SSE Trend dir":    SSE_TREND_DIR,
+                "BSE Trend dir":    BSE_TREND_DIR,
+                "BSE Archive dir":  BSE_ARCHIVE_DIR,
+                "Date range":       f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
+                "Code filter":      code_filter or "(none — all stocks)",
+                "Today":            TODAY_STR,
+            }
+        )
+
+        # ------------------------------------------------------------------
+        # 1. Discover all source CSV files in date range
+        # ------------------------------------------------------------------
+        logger.info("\n[1/4] Discovering source CSV files …")
+        # Exchange-dir rule: a single --code stock can only ever appear in its
+        # own exchange's source dirs, so cross-exchange files must never be
+        # read. .SZ → SZSE dirs (szse_stock_ / szse_trend_stock_ + SZSE margin),
+        # .SS → SSE dirs (+ SSE margin), .BJ → BSE dir only (no margin detail
+        # exists for BSE). OHLCV pruning happens inside discover_sources (the
+        # per-file non-empty peek is per-file I/O); margin lists are pruned here.
+        code_suffix = code_filter[-3:] if code_filter else None  # ".SZ"/".SS"/".BJ"
+        disc: SourceDiscovery = discover_sources(
+            args.start_date, args.end_date, args.limit, code_suffix,
+        )
+
+        if code_suffix:
+            ex_name = {"SZ": "SZSE", "SS": "SSE", "BJ": "BSE"}.get(code_suffix.lstrip("."), "?")
+            if code_suffix == ".SZ":
+                disc.sse_margin_files = []
+            elif code_suffix == ".SS":
+                disc.szse_margin_files = []
+            else:  # ".BJ": neither market's margin details carry BSE codes
+                disc.sse_margin_files = []
+                disc.szse_margin_files = []
+            logger.info(f"    [CODE FILTER] Exchange-dir rule: {code_filter} ({ex_name}) → "
+                  f"{len(disc.all_files)} source files in scope "
+                  f"(cross-exchange dirs excluded)")
+
+        logger.info(f"    → {len(disc.all_files)} source CSV files in range")
+        if not disc.all_files:
+            logger.error("    [FATAL] No source CSVs found")
+            raise SystemExit(1)
+
+        n_unloadable = len(disc.available_dates) - len(disc.loadable_dates)
+        logger.info(f"    → {len(disc.available_dates)} unique dates available in source files "
+              f"({len(disc.loadable_dates)} loadable, {n_unloadable} holiday/placeholder)")
+        logger.info(f"    → Margin: {len(disc.szse_margin_files)} szse + {len(disc.sse_margin_files)} sse files")
+
+        history_start: date | None = min(disc.available_dates) if disc.available_dates else None
+        history_end: date | None = max(disc.available_dates) if disc.available_dates else None
+        if forced is not None:
+            # --date clamps discovery (and thus this range) to the single day,
+            # which would starve the step-4d PE estimation of any baseline:
+            # the estimator only looks STRICTLY before the target date. Widen
+            # the start to the estimator's own lookback window — rows are
+            # still only WRITTEN for the forced date.
+            history_start = forced - timedelta(days=31 * PE_ESTIMATE_MAX_MONTHS)
+        if history_start and history_end:
+            logger.info(f"    → history date range: {history_start} → {history_end}")
+
+        # ------------------------------------------------------------------
+        # 2. Connect to DB and find missing dates
+        # ------------------------------------------------------------------
+        logger.info("\n[2/4] Connecting to database and detecting missing dates …")
+        conn = await get_db_or_exit()
+        pool = await get_db_pool_async(min_size=1, max_size=4)
+        # Conn-scoped collaborators (the former conn-first module functions):
+        # constructed here, once the DB connection exists.
+        self.writer = StockWriter(conn)
+        self.margin_gaps = StockMarginGaps(conn)
+
+        try:
+            if args.force:
+                await self._purge_for_force(conn, code_filter)
+            if forced is not None:
+                # --date: bypass missing-date detection entirely — the forced
+                # date is ALWAYS processed. Rows already in the DB are
+                # refreshed through the normal upsert write paths; the
+                # --force purge above can never run here (mutually exclusive).
+                missing_dates = forced_date_scope(disc.loadable_dates, forced)
+            else:
+                missing_dates = await detect_missing_dates(
+                    conn, disc.loadable_dates, code_filter, args.force
+                )
+
+            # ------------------------------------------------------------------
+            # 2c. Exchange-level margin summary (analysis.exchange_margin_summary)
+            # Independent of the OHLCV/detail-margin passes — runs on EVERY
+            # invocation (including the early-return paths below) and fills any
+            # date whose summary CSV has data but the table lacks the
+            # (exchange, date) row. Not code-scoped (the table has no code
+            # dimension): --code runs still fill missing market-wide dates;
+            # only a whole-table --force truncates it.
+            # ------------------------------------------------------------------
+            await sync_exchange_margin_summary_async(
+                conn, force=args.force and not code_filter, forced_date=forced,
+            )
+
+            # ------------------------------------------------------------------
+            # 3. Filter source files to only missing dates and build rows
+            # ------------------------------------------------------------------
+            combined = pd.DataFrame()
+            if missing_dates:
+                logger.info(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …")
+                missing_file_pairs = await collect_missing_file_pairs(
+                    conn, disc.all_files, args.force, code_filter,
+                    force_dates=missing_dates if forced is not None else None,
+                )
+                logger.info(f"    → {len(missing_file_pairs)} source CSV files to read (all suffixes)")
+                combined = build_missing_rows(missing_file_pairs, verbose=True, code=code_filter)
+
+            # ------------------------------------------------------------------
+            # 3b. Load SSE + BSE archive historical OHLCV (per-stock
+            #     {code}_trend.csv) — incremental: file mtime + per-code DB max
+            # ------------------------------------------------------------------
+            # --date: pass force=True so the loaders' mtime/per-code DB-max
+            # gating cannot skip the forced date's rows. The load stays
+            # restricted to the single date via start/end (rows are filtered
+            # to that day inside the loader) — pure upsert refresh downstream,
+            # no truncation.
+            for _loader, _label in ((load_sse_archive, "SSE"), (load_bse_archive, "BSE")):
+                archive_df = await _loader(
+                    conn, args.start_date, args.end_date, args.limit,
+                    args.force or forced is not None, code_filter,
+                )
+                if len(archive_df) > 0:
+                    if len(combined) > 0:
+                        combined = pd.concat([combined, archive_df], ignore_index=True)
+                    else:
+                        combined = archive_df
+                    combined = combined.sort_values(["date", "code"]).reset_index(drop=True)
+                    combined = combined.drop_duplicates(
+                        subset=["date", "code"], keep="last"
+                    ).reset_index(drop=True)
+
+            history_start, history_end = _update_history_range(combined, history_start, history_end)
+
+            # ------------------------------------------------------------------
+            # 3c. (removed) SSE PE no longer merges into the combined frame —
+            #     it is an INDEPENDENT pass after the DB writes (step 4c), with
+            #     latest-missing-dates gating inside _read_sse_pe_files
+            # ------------------------------------------------------------------
+
+            # ------------------------------------------------------------------
+            # 3d. Load stock margin (融资融券)
+            # ------------------------------------------------------------------
+            margin_avail_dates = margin_loadable_dates(
+                disc.szse_margin_files + disc.sse_margin_files
+            )
+            if forced is not None:
+                # --date: the gap checks below scan margin_available_dates and
+                # UNION their findings into the target set — left unrestricted
+                # they would pull historical repair dates into a single-date
+                # run. Restrict the check window to the forced date;
+                # missing_dates already guarantees the date is targeted.
+                margin_avail_dates &= missing_dates
+            mg = await self.margin_gaps.detect_margin_gaps(
+                margin_avail_dates, missing_dates, code_filter, args.force,
+                disc.szse_margin_files, disc.sse_margin_files,
+            )
+            margin_target_dates = mg.target_dates
+
+            # Re-read OHLCV source CSVs ONLY for dates where stock_identity has
+            # a row but liquidity_margin has none (partial exports). The
+            # independent margin pass covers every other case: zero-liquidity
+            # dates get their rows from margin-only upserts with trading
+            # defaults, so reading snapshots for them is pure waste.
+            needs_ohlcv_backfill = bool(mg.missing_liq_dates)
+            if needs_ohlcv_backfill and margin_target_dates:
+                logger.info(f"\n    [MARGIN-BACKFILL] Loading OHLCV source CSVs for "
+                      f"{len(mg.missing_liq_dates)} dates missing from "
+                      f"liquidity_margin …")
+                # Reuse the discovery result: already date-ranged AND pruned to
+                # the --code exchange scope (if set) by the exchange-dir rule.
+                all_source_files = disc.all_files
+                backfill_file_pairs: list[tuple] = []
+                for path, market, _suffix in all_source_files:
+                    for _dir, _pat, prefix, _mkt, _sfx in SOURCE_FILE_SETS:
+                        ymd = ymd_from_filename(path, prefix)
+                        if ymd:
+                            d = ymd_to_date(ymd)
+                            if d and d in margin_target_dates:
+                                backfill_file_pairs.append((path, market))
+                                break
+                logger.info(f"    → {len(backfill_file_pairs)} source CSV files to read "
+                      f"for margin backfill")
+                ohlcv_backfill = build_missing_rows(
+                    backfill_file_pairs, verbose=True, code=code_filter,
+                )
+                if len(ohlcv_backfill) > 0:
+                    if len(combined) > 0:
+                        combined = pd.concat(
+                            [combined, ohlcv_backfill], ignore_index=True
+                        )
+                        combined["date"] = _safe_to_datetime(combined["date"])
+                        combined = combined.sort_values(
+                            ["date", "code", "close"], na_position="first"
+                        ).reset_index(drop=True)
+                        combined = combined.drop_duplicates(
+                            subset=["date", "code"], keep="last"
+                        ).reset_index(drop=True)
+                    else:
+                        combined = ohlcv_backfill
+                    n_recovered = len(ohlcv_backfill)
+                    backfill_cols = _safe_columns(ohlcv_backfill)
+                    had_close = ohlcv_backfill["close"].notna().sum() \
+                        if "close" in backfill_cols else 0
+                    had_amount = ohlcv_backfill["trading_amount"].notna().sum() \
+                        if "trading_amount" in backfill_cols else 0
+                    logger.info(f"    [MARGIN-BACKFILL] Recovered {n_recovered:,} rows "
+                          f"({had_close:,} with OHLCV close, {had_amount:,} "
+                          f"with trading_amount). "
+                          f"Combined now has {len(combined):,} rows.")
+
+            if len(combined) == 0 and not margin_target_dates:
+                logger.info("    [INFO] No new rows to insert")
+                await self._run_tech_stats_step(conn, args, code_filter, forced)
+                print_wall_time(t0)
+                return
+
+            if margin_target_dates:
+                logger.info(f"\n    Loading stock margin from SZSE + SSE detail CSVs "
+                      f"({len(margin_target_dates)} target dates) …")
+                if args.force:
+                    margin_file_sets = {
+                        "szse": disc.szse_margin_files,
+                        "sse":  disc.sse_margin_files,
+                    }
+                else:
+                    missing_szse_margin = [
+                        f for f in disc.szse_margin_files
+                        if ymd_from_filename(f, "szse_margin_detail_")
+                        and ymd_to_date(ymd_from_filename(f, "szse_margin_detail_"))
+                        in margin_target_dates
+                    ]
+                    missing_sse_margin = [
+                        f for f in disc.sse_margin_files
+                        if ymd_from_filename(f, "sse_margin_detail_")
+                        and ymd_to_date(ymd_from_filename(f, "sse_margin_detail_"))
+                        in margin_target_dates
+                    ]
+                    margin_file_sets = {
+                        "szse": missing_szse_margin,
+                        "sse":  missing_sse_margin,
+                    }
+                margin_df = build_stock_margin_df(
+                    SZSE_MARGIN_DIR, SSE_MARGIN_DIR,
+                    verbose=True, margin_files=margin_file_sets,
+                    code=code_filter,
+                )
+            else:
+                margin_df = None
+
+            # Filter to target code if --code is set (mask results are fresh
+            # frames; DB emission is index-blind — no reindex)
+            if code_filter and len(combined) > 0:
+                n_before = len(combined)
+                combined = combined[combined["code"] == code_filter]
+                logger.info(f"    [CODE FILTER] Filtered combined from {n_before:,} → {len(combined):,} rows for code {code_filter}")
+            if code_filter and margin_df is not None and len(margin_df) > 0:
+                margin_df = margin_df[margin_df["code"] == code_filter]
+
+            # ------------------------------------------------------------------
+            # 4. Insert into database
+            # ------------------------------------------------------------------
+            logger.info(f"\n[4/4] Inserting data to database …")
+
+            # Single explicit GPU→host transfer at the DB boundary: all row
+            # building below ends in Python objects for asyncpg anyway, and
+            # .dt.date on a cudf-backed frame falls back per element
+            # (Timestamp.date has no GPU fast path). On host pandas it is a
+            # plain vectorized conversion.
+            n_margin_rows = len(margin_df) if margin_df is not None else 0
+            if len(combined) > 0:
+                # May already be host pandas when every loader took a CPU path
+                # (e.g. margin-only recovery from plain CSV reads) — hasattr
+                # guard, not isinstance, since cudf.pandas proxies blur types
+                combined_db = combined.to_pandas() if hasattr(combined, "to_pandas") else combined
+                combined_db["date"] = combined_db["date"].dt.date
+                combined_db = combined_db.drop_duplicates(subset=["date", "code"], keep="last")
+            else:
+                combined_db = None
+
+            if (combined_db is None or len(combined_db) == 0) and n_margin_rows == 0:
+                logger.info("    [INFO] No new OHLCV/PE/margin rows to insert "
+                      "(all missing dates are holidays/empty)")
+                await self._run_tech_stats_step(conn, args, code_filter, forced)
+                print_wall_time(t0)
+                return
+
+            rows = None
+            if combined_db is not None and len(combined_db) > 0:
+                # --- 4a. Build & insert identity rows ---
+                batch_dates = set(combined_db["date"].tolist())
+                logger.info(f"    [ETF] Resolving is_in_index_or_etf for {len(batch_dates)} dates from "
+                      f"sec_composition (source_type='etf', weight_pct > {ETF_WEIGHT_THRESHOLD}) …")
+                etf_membership = await compute_is_in_index_or_etf_async(conn, batch_dates)
+                identity_rows, n_in_etf = build_identity_rows(combined_db, etf_membership)
+                logger.info(f"    [ETF] {n_in_etf:,} / {len(identity_rows):,} rows flagged "
+                      f"is_in_index_or_etf=true in this batch")
+                await self.writer.write_identity(identity_rows)
+
+                rows = build_insert_rows(combined_db)
+                logger.info(f"    [BUILD] Snapshot-PE rows: {rows.n_actual:,} | "
+                      f"Rows without pe (estimation candidates): {rows.n_missing:,}")
+
+                # --- Parallel DB writes (OHLCV-scoped basic_stats + liquidity) ---
+                logger.info(f"\n    [POOL] Running basic_stats(OHLCV) + liquidity_margin writes in parallel "
+                      f"(pool size={pool.get_size()}) …")
+                await asyncio.gather(
+                    self.writer.write_basic_stats_ohlcv(pool, rows.ov_rows),
+                    self.writer.write_liquidity_margin(pool, rows.liq_rows),
+                )
+            else:
+                logger.info("    [MARGIN-ONLY] No OHLCV/PE rows in scope — margin pass only")
+
+            # --- 4b. Independent margin pass (column-scoped upsert) ---
+            # Writes ONLY the 6 margin columns; self-seeds identity keys; runs
+            # after all parallel writes so identity/FK state is final.
+            if n_margin_rows > 0:
+                await self.writer.upsert_margin_only(
+                    build_margin_upsert_rows(margin_df)
+                )
+            elif rows is not None:
+                logger.info("    [DB] No new margin data to upsert")
+
+            # --- 4c. Independent SSE PE pass (column-scoped, latest-missing-dates)
+            # Reads {code}_pe.csv tail rows beyond each code's DB max PE date and
+            # upserts pe/eps/is_pe_estimated ONLY. Runs BEFORE estimation so fresh
+            # actual PEs become baselines and are never overwritten by estimates.
+            sse_pe_df = await load_sse_pe(conn, args.force, code_filter)
+            if len(sse_pe_df) > 0:
+                file_pe_rows = build_pe_upsert_rows(sse_pe_df)
+                await self.writer.write_pe_only(file_pe_rows, "SSE PE files")
+            elif rows is not None:
+                logger.info("    [PE] No new SSE PE file data beyond DB max")
+            if rows is not None and rows.snapshot_pe_rows:
+                await self.writer.write_pe_only(rows.snapshot_pe_rows, "snapshot pe")
+
+            # --- 4d. Estimate still-missing PE from the DB state ---
+            # Source of truth is the DATABASE (not the frame): rows that just
+            # received an actual PE via the passes above are excluded here.
+            batch_dates: list[date] = []
+            if combined_db is not None and len(combined_db) > 0:
+                batch_dates = sorted(set(combined_db["date"].tolist()))
+            missing_rows = await fetch_pe_estimate_candidates(conn, batch_dates)
+            if missing_rows:
+                logger.info(f"    [ESTIMATE] Looking up last actual PE for {len(missing_rows):,} "
+                      f"DB rows lacking pe (history range: {history_start} → {history_end}) …")
+                estimated_pe_map = await estimate_missing_pe_async(
+                    conn, missing_rows, history_start, history_end
+                )
+                n_estimated = len(estimated_pe_map)
+                n_no_baseline = len(missing_rows) - n_estimated
+                estimated_basic_stats_rows = build_estimated_pe_rows(
+                    missing_rows, estimated_pe_map
+                )
+                await self.writer.write_pe_only(
+                    estimated_basic_stats_rows, "estimated"
+                )
+                logger.info(f"    [ESTIMATE] Estimated PE for {n_estimated:,} rows "
+                      f"(is_pe_estimated=true) | {n_no_baseline:,} rows have no "
+                      f"usable prior actual PE within {PE_ESTIMATE_MAX_MONTHS} "
+                      f"months — pe stays NULL (is_pe_estimated=false)")
+            else:
+                logger.info(f"    [ESTIMATE] No rows lacking pe among ingested dates")
+
+            # ------------------------------------------------------------------
+            # 5. Compute tech stats (MA/EMA) for all stocks
+            # ------------------------------------------------------------------
+            await self._run_tech_stats_step(conn, args, code_filter, forced)
+
+            # ------------------------------------------------------------------
+            # 6. Refresh the stock board slice (stats.sec_board_map)
+            # Identity rows were just written above — the board lookup reads
+            # the LATEST identity row per code, so new codes/corporate actions
+            # land here in the same run.
+            # ------------------------------------------------------------------
+            await stage_stock_boards(conn)
+            n_board_rows = await upsert_stock_board_rows(conn, force=args.force)
+            logger.info(f"    [BOARD-MAP] stock board rows written: {n_board_rows:,}")
+
+            # ------------------------------------------------------------------
+            # 7. OPT-IN (--analyze): refresh planner statistics. Bulk writes
+            # leave column stats stale until autovacuum catches up (hours on
+            # these tables), and value-blind prepared-statement readers
+            # (node-pg plans before bind values) then misestimate into whole-
+            # table seq scans (the 2026-09-29 v_stock_daily ANY-array 35s UI
+            # regression). Same convention as analysis_forecasts --analysis.
+            # ------------------------------------------------------------------
+            if getattr(args, "analyze", False):
+                from _common.db_commons import analyze_tables_async
+                durations = await analyze_tables_async(conn, (
+                    "stats.stock_identity",
+                    "stats.stock_basic_stats",
+                    "stats.stock_liquidity_margin",
+                    "stats.stock_tech_stats",
+                ))
+                if durations:
+                    logger.info("    [ANALYZE] refreshed: "
+                          + ", ".join(f"{t} ({d:.1f}s)" for t, d in durations.items()))
+
+        finally:
+            await conn.close()
+            await pool.close()
+
+        print_wall_time(t0)
 
 
 def _update_history_range(combined: pd.DataFrame,
@@ -164,427 +611,3 @@ def _update_history_range(combined: pd.DataFrame,
     if history_end is None or combined_max > history_end:
         history_end = combined_max
     return history_start, history_end
-
-
-async def main() -> None:
-    args = parse_args()
-    enforce_date_force_exclusion(args)
-    forced = parse_date_arg(args.date)
-    code_filter: str | None = normalize_code(args.code)
-    t0 = time.time()
-    if forced is not None:
-        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
-        # Restrict discovery + the SSE archive loader to the single date
-        # BEFORE any source scanning happens below.
-        args.start_date = forced.isoformat()
-        args.end_date = forced.isoformat()
-    if code_filter:
-        logger.info(f"    [CODE FILTER] Restricting build to single stock: {code_filter}")
-
-    print_build_header(
-        "SZSE + SSE + BSE STOCK BUILDER  ·  missing-dates-only → DATABASE",
-        **{
-            "SZSE Archive dir": SZSE_ARCHIVE_DIR,
-            "SZSE Trend dir":   SZSE_TREND_DIR,
-            "SSE Trend dir":    SSE_TREND_DIR,
-            "BSE Trend dir":    BSE_TREND_DIR,
-            "BSE Archive dir":  BSE_ARCHIVE_DIR,
-            "Date range":       f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
-            "Code filter":      code_filter or "(none — all stocks)",
-            "Today":            TODAY_STR,
-        }
-    )
-
-    # ------------------------------------------------------------------
-    # 1. Discover all source CSV files in date range
-    # ------------------------------------------------------------------
-    logger.info("\n[1/4] Discovering source CSV files …")
-    # Exchange-dir rule: a single --code stock can only ever appear in its
-    # own exchange's source dirs, so cross-exchange files must never be
-    # read. .SZ → SZSE dirs (szse_stock_ / szse_trend_stock_ + SZSE margin),
-    # .SS → SSE dirs (+ SSE margin), .BJ → BSE dir only (no margin detail
-    # exists for BSE). OHLCV pruning happens inside discover_sources (the
-    # per-file non-empty peek is per-file I/O); margin lists are pruned here.
-    code_suffix = code_filter[-3:] if code_filter else None  # ".SZ"/".SS"/".BJ"
-    disc: SourceDiscovery = discover_sources(
-        args.start_date, args.end_date, args.limit, code_suffix,
-    )
-
-    if code_suffix:
-        ex_name = {"SZ": "SZSE", "SS": "SSE", "BJ": "BSE"}.get(code_suffix.lstrip("."), "?")
-        if code_suffix == ".SZ":
-            disc.sse_margin_files = []
-        elif code_suffix == ".SS":
-            disc.szse_margin_files = []
-        else:  # ".BJ": neither market's margin details carry BSE codes
-            disc.sse_margin_files = []
-            disc.szse_margin_files = []
-        logger.info(f"    [CODE FILTER] Exchange-dir rule: {code_filter} ({ex_name}) → "
-              f"{len(disc.all_files)} source files in scope "
-              f"(cross-exchange dirs excluded)")
-
-    logger.info(f"    → {len(disc.all_files)} source CSV files in range")
-    if not disc.all_files:
-        logger.error("    [FATAL] No source CSVs found")
-        raise SystemExit(1)
-
-    n_unloadable = len(disc.available_dates) - len(disc.loadable_dates)
-    logger.info(f"    → {len(disc.available_dates)} unique dates available in source files "
-          f"({len(disc.loadable_dates)} loadable, {n_unloadable} holiday/placeholder)")
-    logger.info(f"    → Margin: {len(disc.szse_margin_files)} szse + {len(disc.sse_margin_files)} sse files")
-
-    history_start: date | None = min(disc.available_dates) if disc.available_dates else None
-    history_end: date | None = max(disc.available_dates) if disc.available_dates else None
-    if forced is not None:
-        # --date clamps discovery (and thus this range) to the single day,
-        # which would starve the step-4d PE estimation of any baseline:
-        # the estimator only looks STRICTLY before the target date. Widen
-        # the start to the estimator's own lookback window — rows are
-        # still only WRITTEN for the forced date.
-        history_start = forced - timedelta(days=31 * PE_ESTIMATE_MAX_MONTHS)
-    if history_start and history_end:
-        logger.info(f"    → history date range: {history_start} → {history_end}")
-
-    # ------------------------------------------------------------------
-    # 2. Connect to DB and find missing dates
-    # ------------------------------------------------------------------
-    logger.info("\n[2/4] Connecting to database and detecting missing dates …")
-    conn = await get_db_or_exit()
-    pool = await get_db_pool_async(min_size=1, max_size=4)
-
-    try:
-        if args.force:
-            await purge_for_force(conn, code_filter)
-        if forced is not None:
-            # --date: bypass missing-date detection entirely — the forced
-            # date is ALWAYS processed. Rows already in the DB are
-            # refreshed through the normal upsert write paths; the
-            # --force purge above can never run here (mutually exclusive).
-            missing_dates = forced_date_scope(disc.loadable_dates, forced)
-        else:
-            missing_dates = await detect_missing_dates(
-                conn, disc.loadable_dates, code_filter, args.force
-            )
-
-        # ------------------------------------------------------------------
-        # 2c. Exchange-level margin summary (analysis.exchange_margin_summary)
-        # Independent of the OHLCV/detail-margin passes — runs on EVERY
-        # invocation (including the early-return paths below) and fills any
-        # date whose summary CSV has data but the table lacks the
-        # (exchange, date) row. Not code-scoped (the table has no code
-        # dimension): --code runs still fill missing market-wide dates;
-        # only a whole-table --force truncates it.
-        # ------------------------------------------------------------------
-        await sync_exchange_margin_summary_async(
-            conn, force=args.force and not code_filter, forced_date=forced,
-        )
-
-        # ------------------------------------------------------------------
-        # 3. Filter source files to only missing dates and build rows
-        # ------------------------------------------------------------------
-        combined = pd.DataFrame()
-        if missing_dates:
-            logger.info(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …")
-            missing_file_pairs = await collect_missing_file_pairs(
-                conn, disc.all_files, args.force, code_filter,
-                force_dates=missing_dates if forced is not None else None,
-            )
-            logger.info(f"    → {len(missing_file_pairs)} source CSV files to read (all suffixes)")
-            combined = build_missing_rows(missing_file_pairs, verbose=True, code=code_filter)
-
-        # ------------------------------------------------------------------
-        # 3b. Load SSE + BSE archive historical OHLCV (per-stock
-        #     {code}_trend.csv) — incremental: file mtime + per-code DB max
-        # ------------------------------------------------------------------
-        # --date: pass force=True so the loaders' mtime/per-code DB-max
-        # gating cannot skip the forced date's rows. The load stays
-        # restricted to the single date via start/end (rows are filtered
-        # to that day inside the loader) — pure upsert refresh downstream,
-        # no truncation.
-        for _loader, _label in ((load_sse_archive, "SSE"), (load_bse_archive, "BSE")):
-            archive_df = await _loader(
-                conn, args.start_date, args.end_date, args.limit,
-                args.force or forced is not None, code_filter,
-            )
-            if len(archive_df) > 0:
-                if len(combined) > 0:
-                    combined = pd.concat([combined, archive_df], ignore_index=True)
-                else:
-                    combined = archive_df
-                combined = combined.sort_values(["date", "code"]).reset_index(drop=True)
-                combined = combined.drop_duplicates(
-                    subset=["date", "code"], keep="last"
-                ).reset_index(drop=True)
-
-        history_start, history_end = _update_history_range(combined, history_start, history_end)
-
-        # ------------------------------------------------------------------
-        # 3c. (removed) SSE PE no longer merges into the combined frame —
-        #     it is an INDEPENDENT pass after the DB writes (step 4c), with
-        #     latest-missing-dates gating inside _read_sse_pe_files
-        # ------------------------------------------------------------------
-
-        # ------------------------------------------------------------------
-        # 3d. Load stock margin (融资融券)
-        # ------------------------------------------------------------------
-        margin_avail_dates = margin_loadable_dates(
-            disc.szse_margin_files + disc.sse_margin_files
-        )
-        if forced is not None:
-            # --date: the gap checks below scan margin_available_dates and
-            # UNION their findings into the target set — left unrestricted
-            # they would pull historical repair dates into a single-date
-            # run. Restrict the check window to the forced date;
-            # missing_dates already guarantees the date is targeted.
-            margin_avail_dates &= missing_dates
-        mg = await detect_margin_gaps(
-            conn, margin_avail_dates, missing_dates, code_filter, args.force,
-            disc.szse_margin_files, disc.sse_margin_files,
-        )
-        margin_target_dates = mg.target_dates
-
-        # Re-read OHLCV source CSVs ONLY for dates where stock_identity has
-        # a row but liquidity_margin has none (partial exports). The
-        # independent margin pass covers every other case: zero-liquidity
-        # dates get their rows from margin-only upserts with trading
-        # defaults, so reading snapshots for them is pure waste.
-        needs_ohlcv_backfill = bool(mg.missing_liq_dates)
-        if needs_ohlcv_backfill and margin_target_dates:
-            logger.info(f"\n    [MARGIN-BACKFILL] Loading OHLCV source CSVs for "
-                  f"{len(mg.missing_liq_dates)} dates missing from "
-                  f"liquidity_margin …")
-            # Reuse the discovery result: already date-ranged AND pruned to
-            # the --code exchange scope (if set) by the exchange-dir rule.
-            all_source_files = disc.all_files
-            backfill_file_pairs: list[tuple] = []
-            for path, market, _suffix in all_source_files:
-                for _dir, _pat, prefix, _mkt, _sfx in SOURCE_FILE_SETS:
-                    ymd = ymd_from_filename(path, prefix)
-                    if ymd:
-                        d = ymd_to_date(ymd)
-                        if d and d in margin_target_dates:
-                            backfill_file_pairs.append((path, market))
-                            break
-            logger.info(f"    → {len(backfill_file_pairs)} source CSV files to read "
-                  f"for margin backfill")
-            ohlcv_backfill = build_missing_rows(
-                backfill_file_pairs, verbose=True, code=code_filter,
-            )
-            if len(ohlcv_backfill) > 0:
-                if len(combined) > 0:
-                    combined = pd.concat(
-                        [combined, ohlcv_backfill], ignore_index=True
-                    )
-                    combined["date"] = _safe_to_datetime(combined["date"])
-                    combined = combined.sort_values(
-                        ["date", "code", "close"], na_position="first"
-                    ).reset_index(drop=True)
-                    combined = combined.drop_duplicates(
-                        subset=["date", "code"], keep="last"
-                    ).reset_index(drop=True)
-                else:
-                    combined = ohlcv_backfill
-                n_recovered = len(ohlcv_backfill)
-                backfill_cols = _safe_columns(ohlcv_backfill)
-                had_close = ohlcv_backfill["close"].notna().sum() \
-                    if "close" in backfill_cols else 0
-                had_amount = ohlcv_backfill["trading_amount"].notna().sum() \
-                    if "trading_amount" in backfill_cols else 0
-                logger.info(f"    [MARGIN-BACKFILL] Recovered {n_recovered:,} rows "
-                      f"({had_close:,} with OHLCV close, {had_amount:,} "
-                      f"with trading_amount). "
-                      f"Combined now has {len(combined):,} rows.")
-
-        if len(combined) == 0 and not margin_target_dates:
-            logger.info("    [INFO] No new rows to insert")
-            await _run_tech_stats_step(conn, args, code_filter, forced)
-            print_wall_time(t0)
-            return
-
-        if margin_target_dates:
-            logger.info(f"\n    Loading stock margin from SZSE + SSE detail CSVs "
-                  f"({len(margin_target_dates)} target dates) …")
-            if args.force:
-                margin_file_sets = {
-                    "szse": disc.szse_margin_files,
-                    "sse":  disc.sse_margin_files,
-                }
-            else:
-                missing_szse_margin = [
-                    f for f in disc.szse_margin_files
-                    if ymd_from_filename(f, "szse_margin_detail_")
-                    and ymd_to_date(ymd_from_filename(f, "szse_margin_detail_"))
-                    in margin_target_dates
-                ]
-                missing_sse_margin = [
-                    f for f in disc.sse_margin_files
-                    if ymd_from_filename(f, "sse_margin_detail_")
-                    and ymd_to_date(ymd_from_filename(f, "sse_margin_detail_"))
-                    in margin_target_dates
-                ]
-                margin_file_sets = {
-                    "szse": missing_szse_margin,
-                    "sse":  missing_sse_margin,
-                }
-            margin_df = build_stock_margin_df(
-                SZSE_MARGIN_DIR, SSE_MARGIN_DIR,
-                verbose=True, margin_files=margin_file_sets,
-                code=code_filter,
-            )
-        else:
-            margin_df = None
-
-        # Filter to target code if --code is set (mask results are fresh
-        # frames; DB emission is index-blind — no reindex)
-        if code_filter and len(combined) > 0:
-            n_before = len(combined)
-            combined = combined[combined["code"] == code_filter]
-            logger.info(f"    [CODE FILTER] Filtered combined from {n_before:,} → {len(combined):,} rows for code {code_filter}")
-        if code_filter and margin_df is not None and len(margin_df) > 0:
-            margin_df = margin_df[margin_df["code"] == code_filter]
-
-        # ------------------------------------------------------------------
-        # 4. Insert into database
-        # ------------------------------------------------------------------
-        logger.info(f"\n[4/4] Inserting data to database …")
-
-        # Single explicit GPU→host transfer at the DB boundary: all row
-        # building below ends in Python objects for asyncpg anyway, and
-        # .dt.date on a cudf-backed frame falls back per element
-        # (Timestamp.date has no GPU fast path). On host pandas it is a
-        # plain vectorized conversion.
-        n_margin_rows = len(margin_df) if margin_df is not None else 0
-        if len(combined) > 0:
-            # May already be host pandas when every loader took a CPU path
-            # (e.g. margin-only recovery from plain CSV reads) — hasattr
-            # guard, not isinstance, since cudf.pandas proxies blur types
-            combined_db = combined.to_pandas() if hasattr(combined, "to_pandas") else combined
-            combined_db["date"] = combined_db["date"].dt.date
-            combined_db = combined_db.drop_duplicates(subset=["date", "code"], keep="last")
-        else:
-            combined_db = None
-
-        if (combined_db is None or len(combined_db) == 0) and n_margin_rows == 0:
-            logger.info("    [INFO] No new OHLCV/PE/margin rows to insert "
-                  "(all missing dates are holidays/empty)")
-            await _run_tech_stats_step(conn, args, code_filter, forced)
-            print_wall_time(t0)
-            return
-
-        rows = None
-        if combined_db is not None and len(combined_db) > 0:
-            # --- 4a. Build & insert identity rows ---
-            batch_dates = set(combined_db["date"].tolist())
-            logger.info(f"    [ETF] Resolving is_in_index_or_etf for {len(batch_dates)} dates from "
-                  f"sec_composition (source_type='etf', weight_pct > {ETF_WEIGHT_THRESHOLD}) …")
-            etf_membership = await compute_is_in_index_or_etf_async(conn, batch_dates)
-            identity_rows, n_in_etf = build_identity_rows(combined_db, etf_membership)
-            logger.info(f"    [ETF] {n_in_etf:,} / {len(identity_rows):,} rows flagged "
-                  f"is_in_index_or_etf=true in this batch")
-            await write_identity(conn, identity_rows)
-
-            rows = build_insert_rows(combined_db)
-            logger.info(f"    [BUILD] Snapshot-PE rows: {rows.n_actual:,} | "
-                  f"Rows without pe (estimation candidates): {rows.n_missing:,}")
-
-            # --- Parallel DB writes (OHLCV-scoped basic_stats + liquidity) ---
-            logger.info(f"\n    [POOL] Running basic_stats(OHLCV) + liquidity_margin writes in parallel "
-                  f"(pool size={pool.get_size()}) …")
-            await asyncio.gather(
-                write_basic_stats_ohlcv(pool, rows.ov_rows),
-                write_liquidity_margin(pool, rows.liq_rows),
-            )
-        else:
-            logger.info("    [MARGIN-ONLY] No OHLCV/PE rows in scope — margin pass only")
-
-        # --- 4b. Independent margin pass (column-scoped upsert) ---
-        # Writes ONLY the 6 margin columns; self-seeds identity keys; runs
-        # after all parallel writes so identity/FK state is final.
-        if n_margin_rows > 0:
-            await upsert_margin_only_conn(
-                conn, build_margin_upsert_rows(margin_df)
-            )
-        elif rows is not None:
-            logger.info("    [DB] No new margin data to upsert")
-
-        # --- 4c. Independent SSE PE pass (column-scoped, latest-missing-dates)
-        # Reads {code}_pe.csv tail rows beyond each code's DB max PE date and
-        # upserts pe/eps/is_pe_estimated ONLY. Runs BEFORE estimation so fresh
-        # actual PEs become baselines and are never overwritten by estimates.
-        sse_pe_df = await load_sse_pe(conn, args.force, code_filter)
-        if len(sse_pe_df) > 0:
-            file_pe_rows = build_pe_upsert_rows(sse_pe_df)
-            await write_pe_only_conn(conn, file_pe_rows, "SSE PE files")
-        elif rows is not None:
-            logger.info("    [PE] No new SSE PE file data beyond DB max")
-        if rows is not None and rows.snapshot_pe_rows:
-            await write_pe_only_conn(conn, rows.snapshot_pe_rows, "snapshot pe")
-
-        # --- 4d. Estimate still-missing PE from the DB state ---
-        # Source of truth is the DATABASE (not the frame): rows that just
-        # received an actual PE via the passes above are excluded here.
-        batch_dates: list[date] = []
-        if combined_db is not None and len(combined_db) > 0:
-            batch_dates = sorted(set(combined_db["date"].tolist()))
-        missing_rows = await fetch_pe_estimate_candidates(conn, batch_dates)
-        if missing_rows:
-            logger.info(f"    [ESTIMATE] Looking up last actual PE for {len(missing_rows):,} "
-                  f"DB rows lacking pe (history range: {history_start} → {history_end}) …")
-            estimated_pe_map = await estimate_missing_pe_async(
-                conn, missing_rows, history_start, history_end
-            )
-            n_estimated = len(estimated_pe_map)
-            n_no_baseline = len(missing_rows) - n_estimated
-            estimated_basic_stats_rows = build_estimated_pe_rows(
-                missing_rows, estimated_pe_map
-            )
-            await write_pe_only_conn(
-                conn, estimated_basic_stats_rows, "estimated"
-            )
-            logger.info(f"    [ESTIMATE] Estimated PE for {n_estimated:,} rows "
-                  f"(is_pe_estimated=true) | {n_no_baseline:,} rows have no "
-                  f"usable prior actual PE within {PE_ESTIMATE_MAX_MONTHS} "
-                  f"months — pe stays NULL (is_pe_estimated=false)")
-        else:
-            logger.info(f"    [ESTIMATE] No rows lacking pe among ingested dates")
-
-        # ------------------------------------------------------------------
-        # 5. Compute tech stats (MA/EMA) for all stocks
-        # ------------------------------------------------------------------
-        await _run_tech_stats_step(conn, args, code_filter, forced)
-
-        # ------------------------------------------------------------------
-        # 6. Refresh the stock board slice (stats.sec_board_map)
-        # Identity rows were just written above — the board lookup reads
-        # the LATEST identity row per code, so new codes/corporate actions
-        # land here in the same run.
-        # ------------------------------------------------------------------
-        await stage_stock_boards(conn)
-        n_board_rows = await upsert_stock_board_rows(conn, force=args.force)
-        logger.info(f"    [BOARD-MAP] stock board rows written: {n_board_rows:,}")
-
-        # ------------------------------------------------------------------
-        # 7. OPT-IN (--analyze): refresh planner statistics. Bulk writes
-        # leave column stats stale until autovacuum catches up (hours on
-        # these tables), and value-blind prepared-statement readers
-        # (node-pg plans before bind values) then misestimate into whole-
-        # table seq scans (the 2026-09-29 v_stock_daily ANY-array 35s UI
-        # regression). Same convention as analysis_forecasts --analysis.
-        # ------------------------------------------------------------------
-        if getattr(args, "analyze", False):
-            from _common.db_commons import analyze_tables_async
-            durations = await analyze_tables_async(conn, (
-                "stats.stock_identity",
-                "stats.stock_basic_stats",
-                "stats.stock_liquidity_margin",
-                "stats.stock_tech_stats",
-            ))
-            if durations:
-                logger.info("    [ANALYZE] refreshed: "
-                      + ", ".join(f"{t} ({d:.1f}s)" for t, d in durations.items()))
-
-    finally:
-        await conn.close()
-        await pool.close()
-
-    print_wall_time(t0)

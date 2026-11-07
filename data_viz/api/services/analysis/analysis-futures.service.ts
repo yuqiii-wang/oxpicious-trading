@@ -9,7 +9,7 @@
  */
 
 import type { QueryResultRow } from "pg";
-import { queryRows } from "../../lib/db.js";
+import { querySqlView } from "@api/lib/sql-views";
 
 export interface FuturesExtRow {
   date: string;
@@ -32,19 +32,12 @@ export interface FuturesExtResponse {
  * are returned, by joining against stats.futures_identity.
  */
 export async function getFuturesExt(product: string): Promise<FuturesExtResponse> {
-  const q = `
-    SELECT
-        fe.date,
-        fe.code,
-        fe.gap_price_vs_underlying,
-        fe.corr_price_vs_underlying
-    FROM analysis.futures_ext fe
-    JOIN stats.futures_identity fi
-      ON fi.date = fe.date AND fi.code = fe.code
-    WHERE fi.product_code = $1
-    ORDER BY fe.code, fe.date
-  `;
-  const rows = await queryRows(q, [product]);
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/analysis-futures.service/futures_ext_rows.
+  const rows = await querySqlView(
+    "data_viz/api/services/analysis/analysis-futures.service/futures_ext_rows",
+    { product },
+  );
   const mapped: FuturesExtRow[] = rows.map((r: QueryResultRow) => ({
     date: String(r.date),
     code: String(r.code),

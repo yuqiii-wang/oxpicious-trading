@@ -1,10 +1,10 @@
 """llm_agents.llm_qa — Storage layer for the LLM Q&A knowledge base.
 
-Persists curated question/answer documents into ``text.llm_qa`` (canonical
-DDL: database/sql/text/02_llm_qa.sql) together with their news provenance:
+Persists curated question/answer documents into ``llm.llm_qa`` (canonical
+DDL: database/sql/text/llm/01_llm_qa.sql) together with their news provenance:
 the source-article news_ids are grouped into one ``text.news_groups`` row,
 linked through ``text.news_group_items``, and the group is referenced by
-``text.llm_qa.news_group_id``.
+``llm.llm_qa.news_group_id``.
 
 This module is deliberately storage-only — how agents should retrieve
 context and generate answers is not implemented yet. The write API is
@@ -41,13 +41,14 @@ setup_utf8_stdout()
 
 from _common.build_commons import bulk_upsert_async  # noqa: E402
 from _common.log_setup import setup_logging  # noqa: E402
+from _common.sql_writes import load_sql_write, render_sql_write  # noqa: E402
 from llm_agents._core.text_caps import (  # noqa: E402
     truncate_context, truncate_summary,
 )
 
 logger = setup_logging("llm_qa")
 
-QA_TABLE = "text.llm_qa"
+QA_TABLE = "llm.llm_qa"
 GROUPS_TABLE = "text.news_groups"
 GROUP_ITEMS_TABLE = "text.news_group_items"
 
@@ -55,7 +56,7 @@ GROUP_ITEMS_TABLE = "text.news_group_items"
 # explanation (its sources did not cover the period/move, so it answered
 # with "cannot explain / no source support / will not fabricate"
 # boilerplate — cf. "基于不编造信息的原则，无法提供导致大跌的实质性
-# 原因要点。"). text.llm_qa.is_failed_explanation is derived from these
+# 原因要点。"). llm.llm_qa.is_failed_explanation is derived from these
 # at store time: any hit -> true, none -> false. 无法解释 has not
 # surfaced in stored answers yet but guards the provider's phrasing.
 FAILED_EXPLANATION_KEYWORDS = (
@@ -89,12 +90,13 @@ async def ensure_news_group(
         raise ValueError("news_ids must be non-empty when linking sources")
     if name is None:
         name = f"qa-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
-    group_id = await conn.fetchval(
-        f'INSERT INTO {GROUPS_TABLE} (news_group_name) VALUES ($1) '
-        f'RETURNING news_group_id', name)
+    # llm_agents/llm_qa/news_groups/insert + news_group_items/insert_rows
+    # — the sql_writes action files
+    write = render_sql_write(
+        "llm_agents/llm_qa/news_groups/insert", name)
+    group_id = await conn.fetchval(write.sql, *write.params)
     await conn.executemany(
-        f'INSERT INTO {GROUP_ITEMS_TABLE} (news_group_id, news_id) '
-        f'VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        load_sql_write("llm_agents/llm_qa/news_group_items/insert_rows"),
         [(group_id, int(nid)) for nid in news_ids])
     return group_id
 
@@ -118,7 +120,7 @@ async def upsert_qa(
     is_active: bool = True,
     qa_date: Optional[datetime.datetime] = None,
 ) -> int:
-    """Insert/update one text.llm_qa row; return its qa_id.
+    """Insert/update one llm.llm_qa row; return its qa_id.
 
     With *news_ids*, the sources are grouped (ensure_news_group) and linked.
     Uniqueness is (question, news_group_id); because Postgres UNIQUE treats
@@ -157,17 +159,15 @@ async def upsert_qa(
             f'WHERE question = $1 AND news_group_id IS NULL',
             question)
         if qa_id is not None:
-            await conn.execute(
-                f'UPDATE {QA_TABLE} SET answer = $2, context = $3, '
-                f'category = $4, industry_id = $5, sector_id = $6, '
-                f'llm_model = $7, language = $8, is_active = $9, '
-                f'qa_date = COALESCE($10::timestamptz, qa_date), '
-                f'is_failed_explanation = $11, request_ids = $12, '
-                f'updated_at = now() '
-                f'WHERE qa_id = $1',
+            # llm_agents/llm_qa/llm_qa/update_row — the sql_writes action
+            # file (the news-less case matched explicitly on question +
+            # NULL group — Postgres UNIQUE treats NULLs as distinct)
+            write = render_sql_write(
+                "llm_agents/llm_qa/llm_qa/update_row",
                 qa_id, answer, context, category, industry_id, sector_id,
                 llm_model, language, is_active, qa_date,
                 failed_explanation, list(request_ids or []))
+            await conn.execute(write.sql, *write.params)
             await _refresh_qa_search_tsv(conn, qa_id, question, answer,
                                          context)
             return qa_id
@@ -216,9 +216,8 @@ async def _refresh_qa_search_tsv(conn, qa_id: Optional[int],
 
 async def deactivate_qa(conn, qa_id: int) -> bool:
     """Soft-delete: is_active = false. Returns True when a row matched."""
-    status = await conn.execute(
-        f'UPDATE {QA_TABLE} SET is_active = false, updated_at = now() '
-        f'WHERE qa_id = $1', qa_id)
+    write = render_sql_write("llm_agents/llm_qa/llm_qa/deactivate", qa_id)
+    status = await conn.execute(write.sql, *write.params)
     return status == "UPDATE 1"
 
 
@@ -274,7 +273,7 @@ def _parse_news_ids(value: Optional[str]) -> Optional[List[int]]:
 
 async def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Store Q&A knowledge-base rows in text.llm_qa "
+        description="Store Q&A knowledge-base rows in llm.llm_qa "
                     "(agent orchestration comes later).")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -326,7 +325,7 @@ async def main() -> None:
                 industry_id=args.industry, sector_id=sector_id,
                 news_ids=_parse_news_ids(args.news_ids),
                 llm_model=args.model, language=args.language)
-            logger.info("stored text.llm_qa qa_id=%s", qa_id)
+            logger.info("stored llm.llm_qa qa_id=%s", qa_id)
         elif args.cmd == "list":
             rows = await fetch_qa(conn, limit=args.limit,
                                   include_inactive=args.all,

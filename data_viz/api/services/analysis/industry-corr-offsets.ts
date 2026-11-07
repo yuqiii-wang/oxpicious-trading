@@ -17,6 +17,7 @@
  * mode via POST /api/analysis/industry-corr-offsets/run).
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { renderSqlView, querySqlView, sqlFrag } from "@api/lib/sql-views";
 import { LruCache } from "../../lib/lru-cache.js";
 import type { QueryResultRow } from "pg";
 import type {
@@ -114,35 +115,22 @@ export async function getIndustryCorrOffsets(
     .join(", ");
   const pairParams = pairs.flat();
 
-  const sql = `
-    WITH cal AS (
-      SELECT date, ROW_NUMBER() OVER (ORDER BY date) - 1 AS idx
-      FROM (SELECT DISTINCT date FROM stats.industry_basic_stats) s
-    )
-    SELECT
-      t.industry_id,
-      t.benchmark_industry_id,
-      t.start_date,
-      e20.date AS end_ma20_20d,
-      e60.date AS end_ma60_60d,
-      e255.date AS end_ma255_255d,
-      t."interval",
-      t.overall_corr_ma20_20d,
-      t.overall_corr_ma60_60d,
-      t.overall_corr_ma255_255d,
-      t.offset_sub_corr_ma20_20d,
-      t.offset_sub_corr_ma60_60d,
-      t.offset_sub_corr_ma255_255d
-    FROM analysis_composites.industry_corr_benchmark_offsets t
-    JOIN cal c ON c.date = t.start_date
-    LEFT JOIN cal e20 ON e20.idx = c.idx + 19
-    LEFT JOIN cal e60 ON e60.idx = c.idx + 59
-    LEFT JOIN cal e255 ON e255.idx = c.idx + 254
-    WHERE t.benchmark_code = $${pairParams.length + 1}::text
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-corr-offsets/offsets. The
+  // WHERE tail is passed as a fragment because its param numbering is
+  // dynamic (benchmark_code/pool_size are the LAST two params, after the
+  // 2N pair placeholders); the fragment carries the $n placeholders
+  // verbatim and the params array is bound here.
+  const { sql } = renderSqlView(
+    "data_viz/api/services/analysis/industry-corr-offsets/offsets",
+    {
+      filters: sqlFrag(
+        `t.benchmark_code = $${pairParams.length + 1}::text
       AND t.pool_size = $${pairParams.length + 2}::smallint
-      AND (t.industry_id, t.benchmark_industry_id) IN (${pairPlaceholders})
-    ORDER BY t.start_date ASC, t.industry_id, t.benchmark_industry_id
-  `;
+      AND (t.industry_id, t.benchmark_industry_id) IN (${pairPlaceholders})`,
+      ),
+    },
+  );
   // pool_size crosses as its static.label_dim SMALLINT code.
   const params = [
     ...pairParams,
@@ -214,38 +202,11 @@ export async function listIndustryCorrOffsetBenchmarks(): Promise<
   // (~170 ms). COUNT per benchmark over the deduped union stays exact:
   // an industry that is only ever the lexicographically LARGER endpoint
   // of its pairs is still counted (e.g. {AI, BANKS, SEMI} pairs count 3).
-  const rows = await queryRows<DbBenchmarkRow>(`
-    WITH bounds AS (
-      SELECT benchmark_code, MIN(start_date) AS first_start_date,
-                               MAX(start_date) AS last_start_date
-      FROM analysis_composites.industry_corr_benchmark_offsets
-      GROUP BY benchmark_code
-    ),
-    counts AS (
-      SELECT benchmark_code, COUNT(*) AS n_industries
-      FROM (
-        SELECT DISTINCT benchmark_code, industry_id AS ind
-        FROM analysis_composites.industry_corr_benchmark_offsets
-        UNION
-        SELECT DISTINCT benchmark_code, benchmark_industry_id
-        FROM analysis_composites.industry_corr_benchmark_offsets
-      ) s
-      GROUP BY benchmark_code
-    )
-    SELECT
-      b.benchmark_code,
-      (
-        SELECT COALESCE(NULLIF(MAX(sc.industry_label), ''), b.benchmark_code)
-        FROM stats.sec_classification sc
-        WHERE sc.type = 'index' AND sc.code = b.benchmark_code
-      ) AS benchmark_label,
-      c.n_industries,
-      b.first_start_date,
-      b.last_start_date
-    FROM bounds b
-    JOIN counts c USING (benchmark_code)
-    ORDER BY b.benchmark_code
-  `);
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-corr-offsets/benchmarks.
+  const rows = await querySqlView<DbBenchmarkRow>(
+    "data_viz/api/services/analysis/industry-corr-offsets/benchmarks",
+  );
   const resp: IndustryCorrOffsetBenchmarksResponse = {
     benchmarks: rows.map((r) => ({
       benchmark_code: r.benchmark_code,
@@ -281,29 +242,11 @@ export async function listIndustryCorrOffsetIndustries(): Promise<
   // external-merge disk spill (~2.3 s cold, 2026-10-17 probe); deduped
   // sides keep it a ~50 ms hash pass. Covers both pair endpoints, so an
   // industry that only ever appears as the lexicographically LARGER
-  // endpoint is still flagged has_rows.
-  const rows = await queryRows<DbIndustryRow>(`
-    WITH cov AS (
-      SELECT DISTINCT industry_id AS ind
-      FROM analysis_composites.industry_corr_benchmark_offsets
-      UNION
-      SELECT DISTINCT benchmark_industry_id
-      FROM analysis_composites.industry_corr_benchmark_offsets
-    )
-    SELECT
-      sc.industry_id,
-      COALESCE(NULLIF(sc.industry_label, ''), sc.industry_id) AS industry_label,
-      (c.ind IS NOT NULL) AS has_rows
-    FROM (
-      SELECT DISTINCT industry_id, industry_label
-      FROM stats.sec_classification
-      WHERE type = 'index'
-        AND industry_id IS NOT NULL
-        AND industry_id <> ''
-    ) sc
-    LEFT JOIN cov c ON c.ind = sc.industry_id
-    ORDER BY sc.industry_id
-  `);
+  // endpoint is still flagged has_rows. The SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-corr-offsets/industries.
+  const rows = await querySqlView<DbIndustryRow>(
+    "data_viz/api/services/analysis/industry-corr-offsets/industries",
+  );
   const resp: IndustryCorrOffsetIndustriesResponse = {
     industries: rows.map((r) => ({
       industry_id: r.industry_id,

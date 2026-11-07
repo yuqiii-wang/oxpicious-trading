@@ -6,7 +6,7 @@ per research Q&A row:
   * requests 1-5 — one per evaluation dimension (:class:`DimensionSpec`
     registry ``DIMENSIONS``): each is a dedicated web-searched question
     (``dimension_search_query`` for retrieval, ``dimension_question`` for
-    the answer) whose reply lands in its own text.llm_qa_by_research
+    the answer) whose reply lands in its own llm.llm_qa_by_research
     column — intro (general investors' logic), optimistic_forecast,
     pessimistic_forecast, risks, capitalization (current market-capital
     interests);
@@ -30,23 +30,22 @@ from typing import Dict, List, Tuple
 from _common.labels import RESEARCH_LOGIC_CODE
 from llm_agents._core.prompts import lang_label
 
+from llm_agents.llm_qa_by_research.data_definitions import (
+    DimensionSpec,
+)
 
 class SummaryParseError(RuntimeError):
     """The 5th request's reply could not be parsed into summary + label."""
 
 
-@dataclass(frozen=True)
-class DimensionSpec:
-    """One evaluation dimension: its column and its question contract."""
-    key: str                 # storage kwarg / registry identity
-    column: str              # text.llm_qa_by_research column
-    title: str               # zh display title (UI section header)
-    ask: str                 # the dimension QUESTION template ({subject})
-    search_suffix: str       # retrieval terms appended to the search query
 
 
 # The five evaluation dimensions, in UI/storage order. {subject} in *ask*
 # is the research question verbatim.
+
+
+
+
 DIMENSIONS: Tuple[DimensionSpec, ...] = (
     DimensionSpec(
         key="intro", column="intro", title="投资逻辑总览",

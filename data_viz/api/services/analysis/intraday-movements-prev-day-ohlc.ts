@@ -16,12 +16,15 @@
  * y-axis with today's intraday curves: yesterday's close sits exactly at
  * 0.0 — the same reference today's ticks are measured against.
  *
- * $1 = benchmark_code, $2 = live date (YYYY-MM-DD)
+ * The SELECTs live in sql views under
+ * database/sql_views/data_viz/api/services/analysis/
+ * intraday-movements-prev-day-ohlc/.
  *
  * GET /api/live-data/intraday-movements/prev-day-ohlc
  *   ?benchmark_code=000300&date=YYYY-MM-DD
  */
-import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { formatDate, toNum } from "../../lib/db.js";
+import { querySqlView } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import type {
   PrevDayOhlcEntry,
@@ -45,7 +48,10 @@ interface DbOhlcRow extends QueryResultRow {
 }
 
 // ----------------------------------------------------------------------------
-//  SQL: prev-day raw OHLC for the benchmark + all member indices.
+//  SQL: prev-day raw OHLC for the benchmark + all member indices. The
+//  SELECT lives in the sql view
+//  data_viz/api/services/analysis/intraday-movements-prev-day-ohlc/
+//  prev_day_ohlc.
 //
 //  Member universe mirrors the tick rows' member base — active
 //  stats.sec_classification indices/ETFs with a non-BROAD industry
@@ -69,68 +75,6 @@ interface DbOhlcRow extends QueryResultRow {
 //  client). LEFT JOIN LATERAL keeps codes whose prev-weekday row is
 //  missing/dirty out of the result (they are simply skipped client-side).
 // ----------------------------------------------------------------------------
-const PREV_DAY_OHLC_SQL = `
-WITH params AS (
-    SELECT $2::date - CASE extract(dow FROM $2::date)::int
-                        WHEN 0 THEN 2   -- Sun -> Fri
-                        WHEN 1 THEN 3   -- Mon -> Fri
-                        ELSE 1
-                      END AS prev_date
-),
-members AS (
-    SELECT DISTINCT ON (code)
-        code,
-        industry_id
-    FROM stats.sec_classification
-    WHERE is_active = TRUE
-      AND type IN ('index', 'etf')
-      AND industry_id IS NOT NULL AND industry_id <> ''
-      AND industry_id NOT LIKE 'BROAD_%'
-      AND code <> $1::text
-    ORDER BY code
-),
-codes AS (
-    SELECT code, industry_id FROM members
-    UNION ALL
-    SELECT $1::text, NULL::text
-),
-prev_ohlc AS (
-    SELECT
-        c.code,
-        c.industry_id,
-        p.prev_date,
-        b.open,
-        b.high,
-        b.low,
-        b.close
-    FROM codes c
-    CROSS JOIN params p
-    LEFT JOIN LATERAL (
-        SELECT open, high, low, close
-        FROM stats.index_basic_stats
-        WHERE code = c.code
-          AND date = p.prev_date
-          AND close IS NOT NULL AND close::text <> 'NaN' AND close > 0
-          AND open  IS NOT NULL AND open::text  <> 'NaN'
-          AND high  IS NOT NULL AND high::text  <> 'NaN'
-          AND low   IS NOT NULL AND low::text   <> 'NaN'
-        LIMIT 1
-    ) b ON true
-    ORDER BY c.code
-)
-SELECT
-    p.code,
-    (SELECT name FROM stats.index_identity ii
-      WHERE ii.code = p.code ORDER BY ii.date DESC LIMIT 1) AS code_name,
-    p.industry_id,
-    p.prev_date,
-    p.open,
-    p.high,
-    p.low,
-    p.close
-FROM prev_ohlc p
-ORDER BY p.code
-`;
 
 export async function getIntradayMovementsPrevDayOhlc(
   rawBenchmarkCode: string,
@@ -146,10 +90,9 @@ export async function getIntradayMovementsPrevDayOhlc(
   // does (latest raw intraday date for the benchmark) when not provided.
   let targetDate = date;
   if (!targetDate) {
-    const dateRows = await queryRows<DbLatestDateRow>(
-      `SELECT MAX(date) AS max_date FROM stats.index_intraday_5min
-       WHERE code = $1::text AND close IS NOT NULL`,
-      [benchmarkCode],
+    const dateRows = await querySqlView<DbLatestDateRow>(
+      "data_viz/api/services/analysis/intraday-movements-prev-day-ohlc/latest_raw_date",
+      { benchmark_code: benchmarkCode },
     );
     targetDate = dateRows[0]?.max_date ? formatDate(dateRows[0].max_date) : null;
   }
@@ -162,10 +105,10 @@ export async function getIntradayMovementsPrevDayOhlc(
   };
   if (!targetDate) return empty;
 
-  const rows = await queryRows<DbOhlcRow>(PREV_DAY_OHLC_SQL, [
-    benchmarkCode,
-    targetDate,
-  ]);
+  const rows = await querySqlView<DbOhlcRow>(
+    "data_viz/api/services/analysis/intraday-movements-prev-day-ohlc/prev_day_ohlc",
+    { benchmark_code: benchmarkCode, date: targetDate },
+  );
 
   let benchmark: PrevDayOhlcEntry | null = null;
   const members: PrevDayOhlcMember[] = [];

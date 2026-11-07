@@ -42,17 +42,17 @@ from __future__ import annotations
 import datetime
 import logging
 
+from pydantic import BaseModel
+
 from live.live_signals.analysis.fetch import (
-    fetch_active_codes,
-    fetch_active_signals,
-    fetch_current_values,
-    fetch_daily_close_on,
-    fetch_intraday_bar_on,
-    fetch_regime_state,
-    fetch_trend_state,
+    ActiveSignalStore,
+    AsOfBars,
+    LiveValues,
+    ValueSources,
     resolve_threshold,
     resolve_value,
 )
+from _common.sql_views import frag, render_sql_view
 from live.live_signals.config import (
     ABOVE_ACTION,
     DAY_CLOSE_TIME,
@@ -67,8 +67,34 @@ from _common.labels import ACTION_LABEL, REGIME_CODE, TREND_CODE
 logger = logging.getLogger(__name__)
 
 
+class BreachRecord(BaseModel):
+    """One live.live_signals breach row (the evaluator's output payload).
+
+    The typed contract of the write boundary — ``model_dump()`` at the
+    ``bulk_upsert_async`` call site produces exactly the dict layout the
+    upsert has always received (LIVE_SIGNAL_COLUMNS)."""
+
+    code: str
+    sec_type: str
+    signal_type: str
+    signal_sub_type: str
+    date: datetime.date
+    time: datetime.time
+    action: int
+    signal_excess: float
+    signal_excess_pct: float | None
+    signal: float
+    signal_threshold: float
+    confidence: int
+    is_day_close_trigger: bool
+    regime_state: int
+
+
 class AnalysisEvaluator:
     """Live breach-check engine for the analysis signal scheme.
+
+    The conn-scoped fetch stores (active cells / as-of bars / current
+    values) are built once per connection alongside the engine.
 
     Usage:
         evaluator = AnalysisEvaluator(conn)
@@ -84,6 +110,9 @@ class AnalysisEvaluator:
 
     def __init__(self, conn) -> None:
         self._conn = conn
+        self._active = ActiveSignalStore(conn)
+        self._bars = AsOfBars(conn)
+        self._sources = ValueSources(conn)
 
     # ---- intraday fetcher (shared across signal types) ----------------------
 
@@ -92,12 +121,13 @@ class AnalysisEvaluator:
     ) -> tuple | None:
         """Latest intraday bar (date, time, close) for the code, or None."""
         table = INTRADAY_TABLES[sec_type]
-        row = await self._conn.fetchrow(
-            f"SELECT date, time, close::float8 AS close "
-            f"FROM {table} WHERE code = $1 AND close IS NOT NULL "
-            f"ORDER BY date DESC, time DESC LIMIT 1",
-            code,
+        # live/live_signals/analysis/evaluator/fetch_latest_intraday
+        view = render_sql_view(
+            "live/live_signals/analysis/evaluator/fetch_latest_intraday",
+            intraday_table=frag(table),
+            code=code,
         )
+        row = await self._conn.fetchrow(view.sql, *view.params)
         if row is None:
             return None
         return row["date"], row["time"], row["close"]
@@ -107,7 +137,7 @@ class AnalysisEvaluator:
     async def process_code(
         self, sec_type: str, code: str, *, verbose: bool = False,
         as_of: datetime.date | None = None,
-    ) -> tuple[list[dict], bool]:
+    ) -> tuple[list[BreachRecord], bool]:
         """Evaluate one (sec_type, code) against its active signal configs.
 
         as_of=None → the LATEST intraday bar (the live check).
@@ -129,8 +159,8 @@ class AnalysisEvaluator:
                 logger.info(f"  [{sec_type}] {code} latest intraday bar: "
                       f"{bar_date} {bar_time} close={close}")
         else:
-            bar = await fetch_intraday_bar_on(
-                self._conn, sec_type, code, as_of,
+            bar = await self._bars.fetch_intraday_bar_on(
+                sec_type, code, as_of,
             )
             if bar is not None:
                 bar_date, bar_time, close = bar
@@ -139,8 +169,8 @@ class AnalysisEvaluator:
                     logger.info(f"  [{sec_type}] {code} intraday bar on "
                           f"{as_of}: {bar_time} close={close}")
             else:
-                close = await fetch_daily_close_on(
-                    self._conn, sec_type, code, as_of,
+                close = await self._bars.fetch_daily_close_on(
+                    sec_type, code, as_of,
                 )
                 if close is None:
                     if verbose:
@@ -158,8 +188,8 @@ class AnalysisEvaluator:
         # the active cells with their confidence bases as-of the bar
         # date (the measured dir_ave of the latest performance snapshot
         # at-or-before that day — the 2026-10-19 split)
-        sigs = await fetch_active_signals(
-            self._conn, sec_type, code, as_of=bar_date,
+        sigs = await self._active.fetch_active_signals(
+            sec_type, code, as_of=bar_date,
         )
         if not sigs:
             return [], True
@@ -170,15 +200,15 @@ class AnalysisEvaluator:
         # daily states table — recorded regime context on every breach
         # row AND the cell-match input; calm when the day has no row,
         # the engine's own regime-join default).
-        regime_state = await fetch_regime_state(
-            self._conn, sec_type, code, bar_date,
+        regime_state = await self._active.fetch_regime_state(
+            sec_type, code, bar_date,
         )
         # The day's TREND from the signal rules tier's own store (the
         # latest analysis.trend_days row at-or-before the bar date) — the
         # other cell-match input. No trend row (pipeline never ran /
         # code too young) ⇒ no cell can match.
-        trend_state = await fetch_trend_state(
-            self._conn, sec_type, code, bar_date,
+        trend_state = await self._active.fetch_trend_state(
+            sec_type, code, bar_date,
         )
 
         # THE RULES-ERA GATE — the day-context cell match: only the
@@ -216,15 +246,15 @@ class AnalysisEvaluator:
             if sig.get("window") is not None:
                 rsi_bar_windows.add(int(sig["window"]))
             rsi_bar_pcts.add(int(bar_def["tail_pct"]))
-        values = await fetch_current_values(
-            self._conn, sec_type, code,
+        values: LiveValues = await self._sources.fetch_current_values(
+            sec_type, code,
             {sig["signal_type"] for sig in cells}, as_of,
             rsi_bar_windows=rsi_bar_windows or None,
             rsi_bar_pcts=rsi_bar_pcts or None,
         )
         values.close = close
 
-        records: list[dict] = []
+        records: list[BreachRecord] = []
         for sig in cells:
             value = resolve_value(sig, values)
             # THE bar: resolved from the cell's own bar_def
@@ -271,39 +301,39 @@ class AnalysisEvaluator:
             # confidence scale (rule_params.confidence): the NORMALIZED
             # breach depth amplifies the cell's measured base_pct —
             # the identical formula the history writer applies.
-            records.append({
-                "code": sig["code"],
-                "sec_type": sig["sec_type"],
-                "signal_type": sig["signal_type"],
-                "signal_sub_type": sig["signal_sub_type"],
-                "date": bar_date,
-                "time": bar_time,
-                "action": sig["action"],
-                "signal_excess": signal_excess,
-                "signal_excess_pct": signal_excess_pct,
-                "signal": signal_val,
-                "signal_threshold": threshold,
-                "confidence": rules_confidence_bp(sig, signal_excess),
+            records.append(BreachRecord(
+                code=sig["code"],
+                sec_type=sig["sec_type"],
+                signal_type=sig["signal_type"],
+                signal_sub_type=sig["signal_sub_type"],
+                date=bar_date,
+                time=bar_time,
+                action=sig["action"],
+                signal_excess=signal_excess,
+                signal_excess_pct=signal_excess_pct,
+                signal=signal_val,
+                signal_threshold=threshold,
+                confidence=rules_confidence_bp(sig, signal_excess),
                 # TRUE only on the on-demand mode's daily-close fallback
                 # rows (time 15:00); FALSE on every intraday-bar
                 # observation (live monitor AND as-of replay).
-                "is_day_close_trigger": day_close,
+                is_day_close_trigger=day_close,
                 # the breach bar's date market regime
                 # (stats.market_regimes day label; context, not a gate)
-                "regime_state": regime_state,
-            })
+                regime_state=regime_state,
+            ))
         # The live PK carries no side: when BOTH sides of one
         # (code, signal_sub_type) breach the same bar (their strategy
         # bars can snapshot different window-end days, so one value can
         # sit between them), keep the STRONGER breach — never let the
         # upsert's last-write-wins pick arbitrarily.
-        strongest: dict[tuple, dict] = {}
+        strongest: dict[tuple, BreachRecord] = {}
         for rec in records:
-            key = (rec["code"], rec["signal_type"],
-                   rec["signal_sub_type"], rec["date"], rec["time"])
+            key = (rec.code, rec.signal_type,
+                   rec.signal_sub_type, rec.date, rec.time)
             cur = strongest.get(key)
-            if cur is None or abs(rec["signal_excess"]) > abs(
-                    cur["signal_excess"]):
+            if cur is None or abs(rec.signal_excess) > abs(
+                    cur.signal_excess):
                 strongest[key] = rec
         return list(strongest.values()), True
 
@@ -312,13 +342,13 @@ class AnalysisEvaluator:
     async def process_sec_types(
         self, sec_types: list[str], *, verbose: bool = False,
         as_of: datetime.date | None = None,
-    ) -> list[dict]:
+    ) -> list[BreachRecord]:
         """All breach records for every active code across given sec_types
         (as_of=None → the live check; as_of=D → the on-demand replay with
         the daily-close fallback)."""
-        total_records: list[dict] = []
+        total_records: list[BreachRecord] = []
         for st in sec_types:
-            codes = await fetch_active_codes(self._conn, st)
+            codes = await self._active.fetch_active_codes(st)
             if verbose:
                 logger.info(f"  [{st}] {len(codes)} codes with active signal "
                       f"configs")

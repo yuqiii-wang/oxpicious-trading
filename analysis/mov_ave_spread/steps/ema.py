@@ -73,9 +73,9 @@ import pandas as pd
 
 from analysis._common import sanitize_for_db_insert
 from analysis.mov_ave_spread._common import (
+    TableStep,
     gap_col,
     null_if_overflow_counted,
-    run_table_step,
 )
 from analysis.mov_ave_spread.config import (
     EMA_ANALYSIS_NAME,
@@ -207,20 +207,11 @@ def sanitize_ema_rows(df: pd.DataFrame) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
-#  skeleton lives in _common.steps.run_table_step)
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__ via the
+#  TableStep template in _common.steps)
 # ---------------------------------------------------------------------------
 
-async def run_ema(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
+class EmaStep(TableStep):
     """Run the EMA-spread-detail pipeline against the source data already
     loaded by the parent mov_ave_spread.
 
@@ -230,7 +221,7 @@ async def run_ema(
     filtered to target_dates) so the rolling σ columns are correct for
     the first target date of each code.
 
-    Pipeline (see _common.steps.run_table_step)
+    Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_spreads_detail_ema against source identity
          tables. In force mode, purge the table scope instead.
@@ -239,26 +230,22 @@ async def run_ema(
       2. Upsert into analysis.mov_ave_spreads_detail_ema (chunked by date).
       3. Upsert analysis.analysis_identity registry.
     """
-    await run_table_step(
-        conn, df,
-        title="MOV_AVE_SPREAD_DETAIL_EMA (internal step of mov_ave_spread)",
-        tag="e",
-        table=EMA_DETAIL_TABLE,
-        analysis_name=EMA_ANALYSIS_NAME,
-        detail_name="mov_ave_spreads_detail_ema",
-        description=EMA_DESCRIPTION,
-        needed_cols=(
-            ["sec_type", "code", "date", "price",
-             "ema6", "ema12", "ema26"]
-            + list(EMA_SLOPE_COLUMNS)
-            + list(EMA_CURVATURE_COLUMNS)
-            + list(EMA_STD_COLUMNS)
-        ),
-        compute_fn=compute_ema_vs_columns,
-        sanitize_fn=sanitize_ema_rows,
-        force=force,
-        pool=pool,
-        max_concurrent=max_concurrent,
-        sec_type=sec_type,
-        code_filter=code_filter,
+
+    title = "MOV_AVE_SPREAD_DETAIL_EMA (internal step of mov_ave_spread)"
+    tag = "e"
+    table = EMA_DETAIL_TABLE
+    analysis_name = EMA_ANALYSIS_NAME
+    detail_name = "mov_ave_spreads_detail_ema"
+    description = EMA_DESCRIPTION
+    needed_cols = tuple(
+        ["sec_type", "code", "date", "price", "ema6", "ema12", "ema26"]
+        + list(EMA_SLOPE_COLUMNS)
+        + list(EMA_CURVATURE_COLUMNS)
+        + list(EMA_STD_COLUMNS)
     )
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return compute_ema_vs_columns(df)
+
+    def sanitize_rows(self, df: pd.DataFrame) -> list[dict]:
+        return sanitize_ema_rows(df)

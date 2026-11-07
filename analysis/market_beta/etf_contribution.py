@@ -64,6 +64,7 @@ from _common.build_commons import (
     copy_or_upsert_split_async,
     rec_cols,
 )
+from _common.sql_views import frag, render_sql_view
 from _common.df_utils import epoch_col_to_dt64
 from analysis._common import (
     grouped_rolling_agg,
@@ -101,106 +102,25 @@ ANALYSIS_DESCRIPTION = (
 #  SQL
 # ---------------------------------------------------------------------------
 
-# Guard: bail out early if the upstream table has no ETF amount rows.
-# Source: stats.index_exts (built by builds.index exts phase; the former
-# relay via stats.cross_stats.code_etf_trading_amount was consolidated
-# away 2026-09-07 as a verbatim duplicate).
-COUNT_SOURCE_SQL = """
-    SELECT COUNT(*) AS n
-    FROM stats.index_exts
-    WHERE total_etf_trading_amount IS NOT NULL
-"""
-
-# The full aggregation, server-side.
+# The read-side SELECTs live in sql views (rendered via _common.sql_views):
 #
-# CTE chain:
-#   etf_amt       — (code, date, total_etf_trading_amount) from
-#                   stats.index_exts. One row per (code, date) by the
-#                   table's PK — no DISTINCT needed. {date_filter} applies
-#                   HERE ONLY (incremental mode targets specific dates).
-#   index_info    — per-index: industry_id, industry_label, stock_num (from
-#                   COUNT(DISTINCT stock_code) in sec_composition — same as
-#                   market_beta POOL_UNION_TEMP_SQL).
-#   pool_rows     — one row per (index_code, pool_size): 3 (all) for every
-#                   index, plus the specific pool (0 small / 1 mid /
-#                   2 large) based on stock_num. UNION ALL expands each
-#                   index into 1-2 rows.
-#   Final SELECT  — JOIN etf_amt with pool_rows. GROUP BY
-#                   (date, industry_id, pool_size). Computes:
-#                     industry_etf_count = COUNT(DISTINCT code) [with non-NULL
-#                                          ETF trading amount]
-#                     industry_etf_trading_amount = SUM(total_etf_trading_amount)
+#   analysis/market_beta/etf_contribution/count_source — the guard: bail
+#     out early if stats.index_exts (builds.index exts phase; the former
+#     relay via stats.cross_stats.code_etf_trading_amount was consolidated
+#     away 2026-09-07 as a verbatim duplicate) has no non-NULL
+#     total_etf_trading_amount rows.
 #
-# {date_filter} placeholder: "" for full, "AND ie.date = ANY($1::date[])" for
-# incremental.
-_AGGREGATE_SQL = """
-WITH etf_amt AS (
-    SELECT
-        ie.code,
-        ie.date,
-        ie.total_etf_trading_amount AS code_etf_trading_amount
-    FROM stats.index_exts ie
-    WHERE ie.total_etf_trading_amount IS NOT NULL
-      {date_filter}
-),
-index_info AS (
-    SELECT
-        cls.code,
-        cls.industry_id,
-        COALESCE(cls.industry_label, cls.industry_id) AS industry_label,
-        sc.stock_num
-    FROM (
-        SELECT DISTINCT code, industry_id, industry_label
-        FROM stats.sec_classification
-        WHERE type = 'index'
-          AND is_active = TRUE
-          AND is_industry_not_strategy = TRUE
-          AND industry_id IS NOT NULL
-          AND industry_id <> ''
-    ) cls
-    LEFT JOIN LATERAL (
-        SELECT COUNT(DISTINCT stock_code) AS stock_num
-        FROM stats.sec_composition
-        WHERE source_type = 'index'
-          AND code = cls.code
-    ) sc ON true
-),
--- Generate pool_size rows (static.label_dim SMALLINT codes: 0 small /
--- 1 mid / 2 large / 3 all): 3 (all) for every index, plus the specific
--- pool based on stock_num.
-pool_rows AS (
-    SELECT code, industry_id, industry_label, 3::smallint AS pool_size
-    FROM index_info
-    UNION ALL
-    SELECT code, industry_id, industry_label, 0::smallint AS pool_size
-    FROM index_info WHERE stock_num IS NOT NULL AND stock_num < 51
-    UNION ALL
-    SELECT code, industry_id, industry_label, 1::smallint AS pool_size
-    FROM index_info WHERE stock_num IS NOT NULL
-                       AND stock_num >= 51 AND stock_num <= 180
-    UNION ALL
-    SELECT code, industry_id, industry_label, 2::smallint AS pool_size
-    FROM index_info WHERE stock_num IS NOT NULL AND stock_num > 180
-)
-SELECT
-    extract(epoch from ea.date)::float8 AS date,
-    pr.industry_id,
-    pr.industry_label,
-    pr.pool_size,
-    COUNT(DISTINCT ea.code) AS industry_etf_count,
-    SUM(ea.code_etf_trading_amount) AS industry_etf_trading_amount
-FROM etf_amt ea
-JOIN pool_rows pr ON pr.code = ea.code
-GROUP BY ea.date, pr.industry_id, pr.industry_label, pr.pool_size
-"""
-
-# Full recompute — no date filter.
-AGGREGATE_SQL_FULL = _AGGREGATE_SQL.format(date_filter="")
-
-# Incremental — date filter on the source table.
-AGGREGATE_SQL_INCREMENTAL = _AGGREGATE_SQL.format(
-    date_filter="AND ie.date = ANY($1::date[])"
-)
+#   analysis/market_beta/etf_contribution/aggregate — the full aggregation,
+#     server-side. CTE chain: etf_amt (source rows; the date_filter
+#     fragment applies HERE ONLY) -> index_info (industry_id / label /
+#     stock_num via LATERAL COUNT over sec_composition) -> pool_rows
+#     (static.label_dim pool codes: 3 all for every index + the specific
+#     pool by stock_num) -> final GROUP BY (date, industry_id, pool_size)
+#     with industry_etf_count = COUNT(DISTINCT code) and
+#     industry_etf_trading_amount = SUM. The date_filter fragment slot is
+#     "" for the full recompute and "AND ie.date = ANY($1::date[])" for
+#     incremental (binds the caller's sorted target-date array). MA5 /
+#     MA20 are computed in pandas afterwards.
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +169,8 @@ async def run_etf_contribution(
         logger.info(f"    mode: incremental ({len(target_dates)} target dates)")
 
     # ---- Step 1: guard — check upstream availability ----------------
-    n_src = await conn.fetchval(COUNT_SOURCE_SQL)
+    view = render_sql_view("analysis/market_beta/etf_contribution/count_source")
+    n_src = await conn.fetchval(view.sql)
     if not n_src:
         logger.info("\n[e1/5] stats.index_exts has no non-NULL "
               "total_etf_trading_amount rows — nothing to materialize. "
@@ -272,9 +193,17 @@ async def run_etf_contribution(
     t_sql = time.time()
     if incremental:
         sorted_dates = sorted(target_dates)
-        rows = await conn.fetch(AGGREGATE_SQL_INCREMENTAL, sorted_dates)
+        view = render_sql_view(
+            "analysis/market_beta/etf_contribution/aggregate",
+            date_filter=frag("AND ie.date = ANY($1::date[])"),
+        )
+        rows = await conn.fetch(view.sql, *view.params, sorted_dates)
     else:
-        rows = await conn.fetch(AGGREGATE_SQL_FULL)
+        view = render_sql_view(
+            "analysis/market_beta/etf_contribution/aggregate",
+            date_filter=frag(""),
+        )
+        rows = await conn.fetch(view.sql)
     logger.info(f"    -> {len(rows):,} aggregated rows "
           f"({time.time() - t_sql:.1f}s)")
 

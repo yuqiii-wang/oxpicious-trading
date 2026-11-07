@@ -70,63 +70,15 @@ export interface DailyRow {
 }
 
 // ---------------------------------------------------------------------------
-//  SQL — fetch the latest strategy_seq for a given code + sec_type (strategy_seq
-//  is per-code, so a direct filter on strategy_seq suffices — no JOIN to
-//  trade_decision needed). Run RESULTS (total_buy_cost, first-buy anchor, P&L
-//  summary) live on the 1:1 strategy_results row. Then all trade_decision rows in
-//  that seq (no code filter needed — the seq is already per-code).
+//  SQL — the backtest reads (latest strategy_seq, run results, trade
+//  decisions, daily state) live in the sql views
+//  data_viz/api/services/strategy/_shared/{seq,info,decisions,daily},
+//  rendered by services/strategy/backtest.ts via querySqlView.
+//  Latest-run priority: 1. is_active = TRUE (strategy_identity) — the run
+//  the UI loads by default; 2. seq_no DESC fallback — highest sequence.
+//  strategy_name = algo name (binary mode) or "portfolio:bb*0.5+macd*0.5"
+//  (mixed mode).
 // ---------------------------------------------------------------------------
-// $3 = strategy_name (algo name for binary mode, or portfolio:bb*0.5+macd*0.5 for mixed).
-//
-// Priority order for selecting the "latest" run:
-//   1. is_active = TRUE (strategy_identity) — the run the UI loads by default
-//   2. seq_no DESC fallback — highest sequence number
-export const SEQ_SQL = `
-  SELECT seq_id, fault_tolerance
-  FROM strategy.strategy_identity
-  WHERE sec_type = $1 AND code = $2 AND strategy_name = $3
-  ORDER BY CASE WHEN is_active THEN 0 ELSE 1 END, seq_no DESC
-  LIMIT 1
-`;
-
-export const INFO_SQL = `
-  SELECT total_buy_cost,
-         first_buy_date,
-         first_buy_fill_price,
-         total_realized_pnl,
-         total_abs_pnl,
-         n_sells,
-         n_buys
-  FROM strategy.strategy_results
-  WHERE seq_id = $1
-`;
-
-export const DECISIONS_SQL = `
-  SELECT decision_no, side, exec_date,
-         qty, fill_price, normalized_fill_price, normalized_mean_buy_price,
-         position_before, position_after, cash_before, cash_after,
-         total_qty_before, total_qty_after,
-         realized_pnl, slippage, fee, signal_value, signal_reason,
-         ft_stressed_conf_up, ft_stressed_conf_down
-  FROM strategy.trade_decision
-  WHERE seq_id = $1
-  ORDER BY decision_no ASC
-`;
-
-// Daily portfolio state (one row per trading day from first BUY to end).
-// unrealized_pnl = (total_qty/100) * (normalized_close - cost_basis_norm) —
-// P&L if all remaining position were sold at the day's close.
-// normalized_mean_buy_period = weighted-avg BUY period (calendar days since
-// first BUY), weighted on remaining qty — the mean buy time.
-export const DAILY_SQL = `
-  SELECT trade_date, unrealized_pnl, total_pnl, realized_pnl_cum,
-         total_qty, position_value, normalized_mean_buy_period,
-         return_rate,
-         sharpe_ratio, sharpe_ratio_255d, sharpe_ratio_500d
-  FROM strategy.strategy_daily
-  WHERE seq_id = $1
-  ORDER BY trade_date ASC
-`;
 
 // ---------------------------------------------------------------------------
 //  Mappers

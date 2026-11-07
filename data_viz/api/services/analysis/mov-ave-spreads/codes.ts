@@ -3,7 +3,8 @@
  * first/last date, n_dates, and the latest snapshot of all 9 gap_values.
  * Split out of the former monolithic mov-ave-spreads.ts.
  */
-import { queryRows, formatDate, toNum } from "@api/lib/db";
+import { formatDate, toNum } from "@api/lib/db";
+import { querySqlView } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
@@ -15,7 +16,11 @@ import type {
 } from "@shared/types";
 import { normalizeSecType, secTypeParam } from "./sec-sources.js";
 import { PAIR_ORDER } from "./pairs-config.js";
-import { MA_SPREAD_META_SQL, MA_SPREAD_META_TYPE, type DbMaSpreadMetaRow } from "./meta.js";
+import { MA_SPREAD_META_TYPE, type DbMaSpreadMetaRow } from "./meta.js";
+
+const CODES_LIST_VIEW = "data_viz/api/services/analysis/mov-ave-spreads/codes/codes_list";
+const META_CLASSIFIED_ROWS_VIEW =
+  "data_viz/api/services/analysis/mov-ave-spreads/meta/classified_rows";
 
 // ----------------------------------------------------------------------------
 //  listMovAveSpreadCodes — one row per asset code with first/last date,
@@ -50,39 +55,11 @@ export interface DbCodeRow extends QueryResultRow {
   max_spread: number | null;
 }
 
-/** The codes SQL behind listMovAveSpreadCodes — also the industry branch's
+/** The codes list behind listMovAveSpreadCodes — also the industry branch's
  *  entity-universe source in themes.ts (one row per industry code; the
- *  classification trees join it with the grouped sec_classification read). */
-export function buildCodesSql(): string {
-  return `
-    SELECT
-      c.code,
-      c.name,
-      c.first_date,
-      c.last_date,
-      c.n_dates,
-      c.latest_price_vs_ma5   AS price_vs_ma5,
-      c.latest_price_vs_ma20  AS price_vs_ma20,
-      c.latest_price_vs_ma60  AS price_vs_ma60,
-      c.latest_price_vs_ma120 AS price_vs_ma120,
-      c.latest_price_vs_ma255 AS price_vs_ma255,
-      c.latest_ma5_vs_ma20    AS ma5_vs_ma20,
-      c.latest_ma5_vs_ma60    AS ma5_vs_ma60,
-      c.latest_ma5_vs_ma120   AS ma5_vs_ma120,
-      c.latest_ma5_vs_ma255   AS ma5_vs_ma255,
-      GREATEST(c.max_p5, c.max_p20, c.max_p60, c.max_p120, c.max_p255,
-               c.max_5_20, c.max_5_60, c.max_5_120, c.max_5_255) AS max_gain,
-      LEAST(c.min_p5, c.min_p20, c.min_p60, c.min_p120, c.min_p255,
-            c.min_5_20, c.min_5_60, c.min_5_120, c.min_5_255)    AS max_loss,
-      (GREATEST(c.max_p5, c.max_p20, c.max_p60, c.max_p120, c.max_p255,
-                c.max_5_20, c.max_5_60, c.max_5_120, c.max_5_255)
-       - LEAST(c.min_p5, c.min_p20, c.min_p60, c.min_p120, c.min_p255,
-               c.min_5_20, c.min_5_60, c.min_5_120, c.min_5_255)) AS max_spread
-    FROM analysis.mov_ave_spreads_codes c
-    WHERE c.sec_type = $1
-    ORDER BY max_spread DESC NULLS LAST, c.code
-  `;
-}
+ *  classification trees join it with the grouped sec_classification read).
+ *  The SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/codes/codes_list. */
 
 export async function listMovAveSpreadCodes(
   rawSecType: string | undefined | null,
@@ -106,8 +83,8 @@ export async function listMovAveSpreadCodes(
   const needMeta = secType !== "industry"
     && (hasClassFilter || !!exFilter);
 
-  const rows = await queryRows<DbCodeRow>(buildCodesSql(),
-    [secTypeParam(secType)]);
+  const rows = await querySqlView<DbCodeRow>(CODES_LIST_VIEW,
+    { sec_type: secTypeParam(secType) });
 
   // When a classification filter is active, fetch the meta rows (same query as
   // listMovAveSpreadThemes) and build a code → classification map so
@@ -116,8 +93,8 @@ export async function listMovAveSpreadCodes(
   let classMap: Map<string, DbMaSpreadMetaRow> | null = null;
   if (needMeta) {
     const metaType = MA_SPREAD_META_TYPE[secType];
-    const metaRows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL,
-      [secTypeParam(secType), metaType]);
+    const metaRows = await querySqlView<DbMaSpreadMetaRow>(META_CLASSIFIED_ROWS_VIEW,
+      { sec_type: secTypeParam(secType), m_type: metaType });
     classMap = new Map<string, DbMaSpreadMetaRow>();
     for (const m of metaRows) {
       const code = stripExchangeSuffix(m.code);

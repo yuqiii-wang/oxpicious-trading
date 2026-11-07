@@ -30,6 +30,13 @@ extracted table by its header row, and merge consecutive tables that share
 the same header (dropping repeated header rows). Headerless continuation
 tables are assigned to the most recently seen section with a matching column
 count.
+
+Class motion (behavior-preserving, 2026-11-07): the orchestration functions
+``extract_sections`` / ``write_section_csvs`` (and their internal helpers
+``_extract_section_rows`` / ``_extract_fund_info`` / ``_write_identify_csv``)
+are now methods of ``SzseArchiveExtractor`` below with the same names and
+bodies; the section constants and the tiny pure parsers / row filters stay
+module-level.
 """
 from __future__ import annotations
 
@@ -297,96 +304,6 @@ def _classify_by_content(table: List[List[Optional[str]]]) -> Optional[str]:
     return None
 
 
-def _extract_section_rows(
-    pdf: pdfplumber.PDF,
-) -> Dict[str, List[List[str]]]:
-    """Scan every page, classify tables, and merge tables per section.
-
-    Returns a dict {section_label: [header_row, data_row, ...]}.
-    Tables are merged in page order; repeated header rows (from page breaks)
-    are dropped so each section has exactly one header row at index 0.
-
-    A table is classified first by its header row (_classify_table); if that
-    fails (common for continuation tables on a new page that have no header),
-    we try to assign it to the most recently seen section whose expected
-    column count matches (cross-page continuation), and finally fall back to
-    classifying by data-row content (_classify_by_content).
-
-    A section is "closed" once a 合计 (total) row has been appended to it.
-    Headerless continuation tables are not merged into a closed section —
-    this prevents unrelated trailing tables (e.g. 报告期债券回购融资情况)
-    from being absorbed into the already-complete asset portfolio.
-
-    For tables with empty-column artifacts (older PDFs with merged cells),
-    columns are compacted and multi-row split headers are merged before
-    the rows are stored, so CSV output has the expected column count.
-    """
-    result: Dict[str, List[List[str]]] = {}
-    last_section: Optional[str] = None
-    closed: set = set()
-    for page in pdf.pages:
-        tables = page.extract_tables() or []
-        for tbl in tables:
-            section = _classify_table(tbl)
-            via_header = section is not None
-            if section is None:
-                # Headerless table. Prefer the most recent section if it is
-                # still open and the (compacted) column count matches.
-                rows_tmp = _compact_columns(
-                    [[_clean_cell(c) for c in row] for row in tbl if row]
-                )
-                ncol = max((len(r) for r in rows_tmp), default=0)
-                if (last_section is not None
-                        and last_section not in closed
-                        and ncol == EXPECTED_COLS.get(last_section, -1)):
-                    section = last_section
-                else:
-                    section = _classify_by_content(tbl)
-            if section is None:
-                continue
-            # A content-classified table that maps to an already-closed
-            # section is rejected (e.g. the 债券回购融资 table that follows
-            # the asset portfolio's 合计 row).
-            if not via_header and section in closed:
-                continue
-            rows = [[_clean_cell(c) for c in row] for row in tbl if row]
-            if not rows:
-                continue
-            # Compact empty columns and merge split headers so the stored
-            # rows have the true column count.
-            rows = _compact_columns(rows)
-            rows = _merge_split_header(rows)
-            # Drop extra header-fragment rows that _merge_split_header may
-            # have left behind (rows before the first data row that still
-            # look like header fragments).
-            while len(rows) > 1 and not any(
-                c.strip().replace(",", "").replace(".", "").replace("-", "").isdigit()
-                for c in rows[1] if c
-            ) and not _row_is_header(rows[1], section) and _row_is_header(rows[0], section):
-                # rows[0] is the merged header, rows[1] is another fragment — drop it
-                rows.pop(1)
-            # Per-row compaction for zigzag merge artifacts (older PDFs).
-            want = EXPECTED_COLS[section]
-            rows = _compact_rows(rows, want)
-            # Normalise column count: pad / trim to EXPECTED_COLS so CSV rows
-            # line up even when pdfplumber splits a cell.
-            rows = [r[:want] + [""] * (want - len(r)) if len(r) < want else r[:want]
-                    for r in rows]
-            if section not in result:
-                result[section] = rows
-            else:
-                existing = result[section]
-                # Drop a repeated header row at the top of the continuation table.
-                if _row_is_header(rows[0], section):
-                    rows = rows[1:]
-                existing.extend(rows)
-            last_section = section
-            # Close the section once its 合计 (total) row has been seen.
-            if any(c.strip() == "合计" for r in result[section] for c in r):
-                closed.add(section)
-    return result
-
-
 def _filter_industry_rows(rows: List[List[str]]) -> List[List[str]]:
     """For the industry table, drop trailing non-industry rows that pdfplumber
     sometimes appends from the next sub-section (e.g. 港股通投资组合 header).
@@ -496,163 +413,261 @@ _SECTION_FILTERS = {
 }
 
 
-def _extract_fund_info(pdf: pdfplumber.PDF) -> Dict[str, str]:
-    """Extract basic fund metadata from the 基金产品概况 section.
+class SzseArchiveExtractor:
+    """The quarterly-report PDF → CSV extraction orchestration — the former
+    module-level functions ``extract_sections`` / ``write_section_csvs`` and
+    their internal helpers (``_extract_section_rows`` / ``_extract_fund_info``
+    / ``_write_identify_csv``) are now methods of the same names with the
+    same bodies. Stateless: pdf_path / out_dir / prefix stay per-call
+    arguments; the section constants and the pure table parsers / row
+    filters above stay module-level."""
 
-    Chinese fund quarterly reports include a 2-column key-value table on the
-    first 2-4 pages (基金简称, 基金主代码, 业绩比较基准, …). We scan those
-    pages with ``extract_tables`` and collect recognised keys. The report
-    period (e.g. "2026年第2季度") is read from the page-1 heading text.
+    def _extract_section_rows(
+        self,
+        pdf: pdfplumber.PDF,
+    ) -> Dict[str, List[List[str]]]:
+        """Scan every page, classify tables, and merge tables per section.
 
-    Returns a dict of {key: value}; only keys actually found are included.
-    """
-    info: Dict[str, str] = {}
-    target_keys = (
-        "基金简称", "场内简称", "基金主代码", "基金运作方式",
-        "基金合同生效日", "报告期末基金份额总额",
-        "业绩比较基准", "风险收益特征",
-        "基金管理人", "基金托管人",
-    )
-    # 基金产品概况 usually spans pages 2-3; scan the first 4 pages to be safe.
-    for page in pdf.pages[:4]:
-        tables = page.extract_tables() or []
-        for tbl in tables:
-            for row in tbl:
-                if not row or len(row) < 2:
+        Returns a dict {section_label: [header_row, data_row, ...]}.
+        Tables are merged in page order; repeated header rows (from page breaks)
+        are dropped so each section has exactly one header row at index 0.
+
+        A table is classified first by its header row (_classify_table); if that
+        fails (common for continuation tables on a new page that have no header),
+        we try to assign it to the most recently seen section whose expected
+        column count matches (cross-page continuation), and finally fall back to
+        classifying by data-row content (_classify_by_content).
+
+        A section is "closed" once a 合计 (total) row has been appended to it.
+        Headerless continuation tables are not merged into a closed section —
+        this prevents unrelated trailing tables (e.g. 报告期债券回购融资情况)
+        from being absorbed into the already-complete asset portfolio.
+
+        For tables with empty-column artifacts (older PDFs with merged cells),
+        columns are compacted and multi-row split headers are merged before
+        the rows are stored, so CSV output has the expected column count.
+        """
+        result: Dict[str, List[List[str]]] = {}
+        last_section: Optional[str] = None
+        closed: set = set()
+        for page in pdf.pages:
+            tables = page.extract_tables() or []
+            for tbl in tables:
+                section = _classify_table(tbl)
+                via_header = section is not None
+                if section is None:
+                    # Headerless table. Prefer the most recent section if it is
+                    # still open and the (compacted) column count matches.
+                    rows_tmp = _compact_columns(
+                        [[_clean_cell(c) for c in row] for row in tbl if row]
+                    )
+                    ncol = max((len(r) for r in rows_tmp), default=0)
+                    if (last_section is not None
+                            and last_section not in closed
+                            and ncol == EXPECTED_COLS.get(last_section, -1)):
+                        section = last_section
+                    else:
+                        section = _classify_by_content(tbl)
+                if section is None:
                     continue
-                key = _clean_cell(row[0])
-                val = _clean_cell(row[1])
-                if not key:
+                # A content-classified table that maps to an already-closed
+                # section is rejected (e.g. the 债券回购融资 table that follows
+                # the asset portfolio's 合计 row).
+                if not via_header and section in closed:
                     continue
-                for target in target_keys:
-                    if key == target and target not in info and val:
-                        info[target] = val
-                        break
-    # Report period — from the page-1 heading (e.g. "2026 年第 2 季度报告").
-    if pdf.pages:
-        page1 = pdf.pages[0].extract_text() or ""
-        m = re.search(r"(\d{4})\s*年\s*第\s*([一二三四1-4])\s*季度报告", page1)
-        if m:
-            info["报告期"] = f"{m.group(1)}年第{m.group(2)}季度"
-    return info
+                rows = [[_clean_cell(c) for c in row] for row in tbl if row]
+                if not rows:
+                    continue
+                # Compact empty columns and merge split headers so the stored
+                # rows have the true column count.
+                rows = _compact_columns(rows)
+                rows = _merge_split_header(rows)
+                # Drop extra header-fragment rows that _merge_split_header may
+                # have left behind (rows before the first data row that still
+                # look like header fragments).
+                while len(rows) > 1 and not any(
+                    c.strip().replace(",", "").replace(".", "").replace("-", "").isdigit()
+                    for c in rows[1] if c
+                ) and not _row_is_header(rows[1], section) and _row_is_header(rows[0], section):
+                    # rows[0] is the merged header, rows[1] is another fragment — drop it
+                    rows.pop(1)
+                # Per-row compaction for zigzag merge artifacts (older PDFs).
+                want = EXPECTED_COLS[section]
+                rows = _compact_rows(rows, want)
+                # Normalise column count: pad / trim to EXPECTED_COLS so CSV rows
+                # line up even when pdfplumber splits a cell.
+                rows = [r[:want] + [""] * (want - len(r)) if len(r) < want else r[:want]
+                        for r in rows]
+                if section not in result:
+                    result[section] = rows
+                else:
+                    existing = result[section]
+                    # Drop a repeated header row at the top of the continuation table.
+                    if _row_is_header(rows[0], section):
+                        rows = rows[1:]
+                    existing.extend(rows)
+                last_section = section
+                # Close the section once its 合计 (total) row has been seen.
+                if any(c.strip() == "合计" for r in result[section] for c in r):
+                    closed.add(section)
+        return result
 
+    def _extract_fund_info(self, pdf: pdfplumber.PDF) -> Dict[str, str]:
+        """Extract basic fund metadata from the 基金产品概况 section.
 
-def _write_identify_csv(
-    out_dir: Path,
-    prefix: str,
-    fund_info: Dict[str, str],
-    section_row_counts: Dict[str, int],
-) -> Path:
-    """Write the key-value identify CSV.
+        Chinese fund quarterly reports include a 2-column key-value table on the
+        first 2-4 pages (基金简称, 基金主代码, 业绩比较基准, …). We scan those
+        pages with ``extract_tables`` and collect recognised keys. The report
+        period (e.g. "2026年第2季度") is read from the page-1 heading text.
 
-    Rows:
-      - Basic fund metadata (基金简称, 业绩比较基准, …) from *fund_info*.
-      - One row per 投资组合报告 sub-section: ``投资组合报告-<label>`` →
-        ``有内容(N行)`` or ``无内容``.
+        Returns a dict of {key: value}; only keys actually found are included.
+        """
+        info: Dict[str, str] = {}
+        target_keys = (
+            "基金简称", "场内简称", "基金主代码", "基金运作方式",
+            "基金合同生效日", "报告期末基金份额总额",
+            "业绩比较基准", "风险收益特征",
+            "基金管理人", "基金托管人",
+        )
+        # 基金产品概况 usually spans pages 2-3; scan the first 4 pages to be safe.
+        for page in pdf.pages[:4]:
+            tables = page.extract_tables() or []
+            for tbl in tables:
+                for row in tbl:
+                    if not row or len(row) < 2:
+                        continue
+                    key = _clean_cell(row[0])
+                    val = _clean_cell(row[1])
+                    if not key:
+                        continue
+                    for target in target_keys:
+                        if key == target and target not in info and val:
+                            info[target] = val
+                            break
+        # Report period — from the page-1 heading (e.g. "2026 年第 2 季度报告").
+        if pdf.pages:
+            page1 = pdf.pages[0].extract_text() or ""
+            m = re.search(r"(\d{4})\s*年\s*第\s*([一二三四1-4])\s*季度报告", page1)
+            if m:
+                info["报告期"] = f"{m.group(1)}年第{m.group(2)}季度"
+        return info
 
-    The identify CSV helps tell individual extracted CSVs apart: it records
-    which sections had content and which were 0-byte placeholders.
-    """
-    fname = f"{prefix}{IDENTIFY_CSV_NAME}" if prefix else IDENTIFY_CSV_NAME
-    csv_path = out_dir / fname
-    rows: List[List[str]] = [["key", "value"]]
-    # Metadata keys in a stable, readable order.
-    meta_order = (
-        "基金简称", "场内简称", "基金主代码", "报告期",
-        "基金运作方式", "基金合同生效日", "报告期末基金份额总额",
-        "业绩比较基准", "风险收益特征",
-        "基金管理人", "基金托管人",
-    )
-    for key in meta_order:
-        if key in fund_info:
-            rows.append([key, fund_info[key]])
-    # Any extra metadata keys not in meta_order.
-    for key, val in fund_info.items():
-        if key not in meta_order:
-            rows.append([key, val])
-    # Per-section content summary under 投资组合报告.
-    for section in SECTIONS:
-        label = SECTION_LABELS_CN[section]
-        n = section_row_counts.get(section, 0)
-        status = f"有内容({n}行)" if n > 0 else "无内容"
-        rows.append([f"投资组合报告-{label}", status])
-    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        for row in rows:
-            writer.writerow(row)
-    return csv_path
+    def _write_identify_csv(
+        self,
+        out_dir: Path,
+        prefix: str,
+        fund_info: Dict[str, str],
+        section_row_counts: Dict[str, int],
+    ) -> Path:
+        """Write the key-value identify CSV.
 
+        Rows:
+          - Basic fund metadata (基金简称, 业绩比较基准, …) from *fund_info*.
+          - One row per 投资组合报告 sub-section: ``投资组合报告-<label>`` →
+            ``有内容(N行)`` or ``无内容``.
 
-def extract_sections(pdf_path: Path) -> Dict[str, List[List[str]]]:
-    """Extract the target sections from *pdf_path*.
-
-    Returns {section_label: rows} where rows[0] is the header and the rest
-    are data rows. Only sections with content (header + ≥1 data row) are
-    included; missing sections are omitted.
-    """
-    out: Dict[str, List[List[str]]] = {}
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        raw = _extract_section_rows(pdf)
-    for section, rows in raw.items():
-        flt = _SECTION_FILTERS.get(section)
-        if flt:
-            rows = flt(rows)
-        if len(rows) >= 2:  # header + at least 1 data row
-            out[section] = rows
-    return out
-
-
-def write_section_csvs(
-    pdf_path: Path,
-    out_dir: Optional[Path] = None,
-    *,
-    prefix: str = "",
-) -> Dict[str, Path]:
-    """Extract sections from *pdf_path* and write one CSV per section.
-
-    All six target sections are always written next to the PDF (same
-    directory unless *out_dir* is given). Sections found in the PDF produce
-    a normal CSV (header + data rows); sections not found produce a 0-byte
-    placeholder CSV so every PDF has a consistent set of outputs.
-
-    A key-value identify CSV (``{prefix}identify.csv``) is also written,
-    recording basic fund metadata and which 投资组合报告 sub-sections had
-    content. This is the "extraction done" marker consulted by
-    :func:`downloads.etf.szse.archive.reports.all_csvs_exist`.
-
-    Filenames: ``{prefix}{csv_name}`` — e.g. ``160812_2026Q2_top10_holdings.csv``.
-
-    Returns {section_label: csv_path} for ALL sections (including 0-byte
-    placeholders).
-    """
-    if out_dir is None:
-        out_dir = pdf_path.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        raw = _extract_section_rows(pdf)
-        fund_info = _extract_fund_info(pdf)
-
-    written: Dict[str, Path] = {}
-    section_row_counts: Dict[str, int] = {}
-    for section in SECTIONS:
-        rows = raw.get(section)
-        flt = _SECTION_FILTERS.get(section)
-        if flt and rows:
-            rows = flt(rows)
-        fname = f"{prefix}{CSV_NAMES[section]}" if prefix else CSV_NAMES[section]
+        The identify CSV helps tell individual extracted CSVs apart: it records
+        which sections had content and which were 0-byte placeholders.
+        """
+        fname = f"{prefix}{IDENTIFY_CSV_NAME}" if prefix else IDENTIFY_CSV_NAME
         csv_path = out_dir / fname
-        if rows and len(rows) >= 2:  # header + >= 1 data row
-            with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-                writer = csv.writer(f)
-                for row in rows:
-                    writer.writerow(row)
-            section_row_counts[section] = len(rows) - 1  # exclude header
-        else:
-            # Section not found in PDF — write 0-byte placeholder.
-            csv_path.write_bytes(b"")
-            section_row_counts[section] = 0
-        written[section] = csv_path
+        rows: List[List[str]] = [["key", "value"]]
+        # Metadata keys in a stable, readable order.
+        meta_order = (
+            "基金简称", "场内简称", "基金主代码", "报告期",
+            "基金运作方式", "基金合同生效日", "报告期末基金份额总额",
+            "业绩比较基准", "风险收益特征",
+            "基金管理人", "基金托管人",
+        )
+        for key in meta_order:
+            if key in fund_info:
+                rows.append([key, fund_info[key]])
+        # Any extra metadata keys not in meta_order.
+        for key, val in fund_info.items():
+            if key not in meta_order:
+                rows.append([key, val])
+        # Per-section content summary under 投资组合报告.
+        for section in SECTIONS:
+            label = SECTION_LABELS_CN[section]
+            n = section_row_counts.get(section, 0)
+            status = f"有内容({n}行)" if n > 0 else "无内容"
+            rows.append([f"投资组合报告-{label}", status])
+        with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            for row in rows:
+                writer.writerow(row)
+        return csv_path
 
-    _write_identify_csv(out_dir, prefix, fund_info, section_row_counts)
-    return written
+    def extract_sections(self, pdf_path: Path) -> Dict[str, List[List[str]]]:
+        """Extract the target sections from *pdf_path*.
+
+        Returns {section_label: rows} where rows[0] is the header and the rest
+        are data rows. Only sections with content (header + ≥1 data row) are
+        included; missing sections are omitted.
+        """
+        out: Dict[str, List[List[str]]] = {}
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            raw = self._extract_section_rows(pdf)
+        for section, rows in raw.items():
+            flt = _SECTION_FILTERS.get(section)
+            if flt:
+                rows = flt(rows)
+            if len(rows) >= 2:  # header + at least 1 data row
+                out[section] = rows
+        return out
+
+    def write_section_csvs(
+        self,
+        pdf_path: Path,
+        out_dir: Optional[Path] = None,
+        *,
+        prefix: str = "",
+    ) -> Dict[str, Path]:
+        """Extract sections from *pdf_path* and write one CSV per section.
+
+        All six target sections are always written next to the PDF (same
+        directory unless *out_dir* is given). Sections found in the PDF produce
+        a normal CSV (header + data rows); sections not found produce a 0-byte
+        placeholder CSV so every PDF has a consistent set of outputs.
+
+        A key-value identify CSV (``{prefix}identify.csv``) is also written,
+        recording basic fund metadata and which 投资组合报告 sub-sections had
+        content. This is the "extraction done" marker consulted by
+        :func:`downloads.etf.szse.archive.reports.all_csvs_exist`.
+
+        Filenames: ``{prefix}{csv_name}`` — e.g. ``160812_2026Q2_top10_holdings.csv``.
+
+        Returns {section_label: csv_path} for ALL sections (including 0-byte
+        placeholders).
+        """
+        if out_dir is None:
+            out_dir = pdf_path.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            raw = self._extract_section_rows(pdf)
+            fund_info = self._extract_fund_info(pdf)
+
+        written: Dict[str, Path] = {}
+        section_row_counts: Dict[str, int] = {}
+        for section in SECTIONS:
+            rows = raw.get(section)
+            flt = _SECTION_FILTERS.get(section)
+            if flt and rows:
+                rows = flt(rows)
+            fname = f"{prefix}{CSV_NAMES[section]}" if prefix else CSV_NAMES[section]
+            csv_path = out_dir / fname
+            if rows and len(rows) >= 2:  # header + >= 1 data row
+                with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+                    writer = csv.writer(f)
+                    for row in rows:
+                        writer.writerow(row)
+                section_row_counts[section] = len(rows) - 1  # exclude header
+            else:
+                # Section not found in PDF — write 0-byte placeholder.
+                csv_path.write_bytes(b"")
+                section_row_counts[section] = 0
+            written[section] = csv_path
+
+        self._write_identify_csv(out_dir, prefix, fund_info, section_row_counts)
+        return written

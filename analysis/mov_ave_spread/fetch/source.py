@@ -33,6 +33,7 @@ from _common.df_utils import (
 )
 from _common.importance import order_codes_or_sorted_async
 from _common.labels import SEC_TYPE_CODE
+from _common.sql_views import render_sql_view
 
 from analysis.mov_ave_spread.config import (
     MA_WINDOWS,
@@ -79,10 +80,22 @@ _INDUSTRY_SOURCE_COLUMNS = [
 ]
 
 
-def _fetch_sql_for_sec_type(sec_type: str) -> str:
-    """Build the per-(code, date) source-fetch SQL for the given sec_type,
-    scoped to a caller-supplied code list via the ``$1`` placeholder
-    (``WHERE i.code = ANY($1::text[])``).
+# Per-sec_type source-fetch views (database/sql_views/analysis/
+# mov_ave_spread/fetch/source/<sec_type>_source.sql) — each scopes to a
+# caller-supplied code list through its single ``codes`` slot
+# (``WHERE i.code = ANY($1::text[])``).
+_SOURCE_FETCH_VIEWS = {
+    "etf": "analysis/mov_ave_spread/fetch/source/etf_source",
+    "index": "analysis/mov_ave_spread/fetch/source/index_source",
+    "stock": "analysis/mov_ave_spread/fetch/source/stock_source",
+    "industry": "analysis/mov_ave_spread/fetch/source/industry_source",
+}
+
+
+def _source_fetch_view(sec_type: str) -> str:
+    """The sql-view name of the per-(code, date) source-fetch SELECT for
+    the given sec_type (rendered by ``fetch_source_data``; each view is
+    scoped to a caller-supplied code list via its ``codes`` slot).
 
     ETFs JOIN etf_identity + etf_basic_stats + LEFT JOIN etf_adjustment
     (for adj_close) + JOIN etf_tech_stats + JOIN etf_liquidity_margin
@@ -103,113 +116,23 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
     is the slice's union-stock turnover. Industry has NO *_tech_stats
     table — the MA/EMA columns are computed by fetch_source_data after
     the load (same compute_moving_averages / compute_emas conventions
-    the builds use), so this SQL returns the 8 base columns only.
+    the builds use), so its view returns the 8 base columns only.
     """
-    if sec_type == "etf":
-        return """
-            SELECT
-                i.code,
-                extract(epoch from i.date)::float8 AS date,
-                COALESCE(a.adj_close, b.close)::float8 AS price,
-                COALESCE(a.adj_open, b.open)::float8   AS open,
-                COALESCE(a.adj_low, b.low)::float8     AS low,
-                COALESCE(a.adj_high, b.high)::float8   AS high,
-                t.ma5::float8, t.ma20::float8, t.ma60::float8,
-                t.ma120::float8, t.ma255::float8,
-                t.ema6::float8, t.ema12::float8, t.ema26::float8,
-                m.trading_amount::float8,
-                b.is_ohl_estimated
-            FROM stats.etf_identity i
-            JOIN stats.etf_basic_stats b ON b.date = i.date AND b.code = i.code
-            LEFT JOIN stats.etf_adjustment a ON a.date = i.date AND a.code = i.code
-            JOIN stats.etf_tech_stats t   ON t.date = i.date AND t.code = i.code
-            JOIN stats.etf_liquidity_margin m ON m.date = i.date AND m.code = i.code
-            WHERE i.code = ANY($1::text[])
-              AND b.close IS NOT NULL
-            ORDER BY i.code, i.date ASC
-        """
-    if sec_type == "index":
-        return """
-            SELECT
-                i.code,
-                extract(epoch from i.date)::float8 AS date,
-                b.close::float8 AS price,
-                b.open::float8  AS open,
-                b.low::float8   AS low,
-                b.high::float8  AS high,
-                t.ma5::float8, t.ma20::float8, t.ma60::float8,
-                t.ma120::float8, t.ma255::float8,
-                t.ema6::float8, t.ema12::float8, t.ema26::float8,
-                b.trading_amount::float8,
-                b.is_ohl_estimated
-            FROM stats.index_identity i
-            JOIN stats.index_basic_stats b ON b.date = i.date AND b.code = i.code
-            JOIN stats.index_tech_stats  t ON t.date = i.date AND t.code = i.code
-            WHERE i.code = ANY($1::text[])
-              AND b.close IS NOT NULL
-            ORDER BY i.code, i.date ASC
-        """
-    if sec_type == "stock":
-        return """
-            SELECT
-                i.code,
-                extract(epoch from i.date)::float8 AS date,
-                b.close::float8 AS price,
-                b.open::float8  AS open,
-                b.low::float8   AS low,
-                b.high::float8  AS high,
-                t.ma5::float8, t.ma20::float8, t.ma60::float8,
-                t.ma120::float8, t.ma255::float8,
-                t.ema6::float8, t.ema12::float8, t.ema26::float8,
-                m.trading_amount::float8,
-                b.is_ohl_estimated
-            FROM stats.stock_identity i
-            JOIN stats.stock_basic_stats b ON b.date = i.date AND b.code = i.code
-            JOIN stats.stock_tech_stats  t ON t.date = i.date AND t.code = i.code
-            JOIN stats.stock_liquidity_margin m ON m.date = i.date AND m.code = i.code
-            WHERE i.code = ANY($1::text[])
-              AND b.close IS NOT NULL
-            ORDER BY i.code, i.date ASC
-        """
-    if sec_type == "industry":
-        return """
-            SELECT
-                i.code,
-                extract(epoch from i.date)::float8 AS date,
-                b.mean_close::float8 AS price,
-                b.mean_open::float8  AS open,
-                b.mean_low::float8   AS low,
-                b.mean_high::float8  AS high,
-                b.total_trading_amount::float8,
-                FALSE AS is_ohl_estimated
-            FROM stats.industry_identity i
-            JOIN stats.industry_basic_stats b
-              ON b.date = i.date AND b.industry_id = i.code
-            WHERE i.code = ANY($1::text[])
-              AND b.pool_size = 3
-              AND b.mean_close IS NOT NULL
-            ORDER BY i.code, i.date ASC
-        """
-    raise ValueError(f"Unknown sec_type: {sec_type!r}")
+    view = _SOURCE_FETCH_VIEWS.get(sec_type)
+    if view is None:
+        raise ValueError(f"Unknown sec_type: {sec_type!r}")
+    return view
 
 
-# SQL for the market-share denominator: per-date SUM of
-# stats.exchange_trading_amt.total_trading_amount across exchanges whose
-# stats.sec_classification.is_primary_exchange = TRUE (SS/STAR/SZ/GEM/BJ).
-# The subquery derives the primary-exchange set from sec_classification at
-# query time so changes to the is_primary_exchange flag are picked up
-# without an analysis-script redeploy.
-_MARKET_SHARE_DENOMINATOR_SQL = """
-    SELECT date, SUM(total_trading_amount) AS denominator
-    FROM stats.exchange_trading_amt
-    WHERE exchange IN (
-        SELECT DISTINCT exchange
-        FROM stats.sec_classification
-        WHERE is_primary_exchange = TRUE
-          AND exchange IS NOT NULL
-    )
-    GROUP BY date
-"""
+# Market-share denominator SELECT — sql view
+# analysis/mov_ave_spread/fetch/source/market_share_denominator
+# (per-date SUM of stats.exchange_trading_amt.total_trading_amount
+# across exchanges whose stats.sec_classification.is_primary_exchange =
+# TRUE; the primary-exchange set is derived at query time so flag
+# changes are picked up without an analysis-script redeploy).
+_MARKET_SHARE_DENOMINATOR_VIEW = (
+    "analysis/mov_ave_spread/fetch/source/market_share_denominator"
+)
 
 
 async def _fetch_market_share_denominator(conn) -> dict:
@@ -226,7 +149,8 @@ async def _fetch_market_share_denominator(conn) -> dict:
     Series.map will get NaN for those dates (the market-share MA helper
     nulls those rows).
     """
-    rows = await conn.fetch(_MARKET_SHARE_DENOMINATOR_SQL)
+    rows = await conn.fetch(
+        render_sql_view(_MARKET_SHARE_DENOMINATOR_VIEW).sql)
     out = {}
     for r in rows:
         if r["date"] is not None and r["denominator"] is not None:
@@ -361,12 +285,14 @@ async def fetch_source_data(
     logger.info(f"      market-share denominator: {len(denominator_by_date):,} "
           f"dates")
 
-    sql = _fetch_sql_for_sec_type(sec_type)
     # Importance rank 0 -> 9 (stats.sec_importance_ranks, monthly build):
     # bind the universe most-important-first (whole-frame compute is
     # order-invariant; this drives logs + any future batching/slicing).
-    rows = await conn.fetch(
-        sql, await order_codes_or_sorted_async(conn, active_codes))
+    view = render_sql_view(
+        _source_fetch_view(sec_type),
+        codes=await order_codes_or_sorted_async(conn, active_codes),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",

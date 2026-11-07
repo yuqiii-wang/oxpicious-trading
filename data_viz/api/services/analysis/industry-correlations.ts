@@ -5,6 +5,7 @@
  * Extracted from the former analysis.service.ts.
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { renderSqlView, querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { encodeLabelParam } from "../label-codes.js";
 import type {
@@ -56,14 +57,9 @@ export async function fetchIndustryLabels(
   industryIds: string[],
 ): Promise<Map<string, string>> {
   if (industryIds.length === 0) return new Map();
-  const rows = await queryRows<{ industry_id: string; industry_label: string | null }>(
-    `SELECT industry_id, COALESCE(NULLIF(industry_label, ''), industry_id) AS industry_label
-     FROM (
-       SELECT DISTINCT industry_id, industry_label
-       FROM stats.sec_classification
-       WHERE type = 'index' AND industry_id = ANY($1::text[])
-     ) t`,
-    [industryIds],
+  const rows = await querySqlView<{ industry_id: string; industry_label: string | null }>(
+    "data_viz/api/services/analysis/industry-correlations/industry_labels",
+    { industry_ids: industryIds },
   );
   const m = new Map<string, string>();
   for (const r of rows) {
@@ -121,20 +117,21 @@ export async function getIndustryCorrelations(
     .join(", ");
   const pairParams = pairs.flat();
 
-  const sql = `
-    SELECT
-      industry_id,
-      benchmark_industry_id,
-      start_date,
-      "interval",
-      corr_ma20_20d,
-      corr_ma60_60d,
-      corr_ma255_255d
-    FROM analysis.industry_correlations
-    WHERE pool_size = $${pairParams.length + 1}::smallint
-      AND (industry_id, benchmark_industry_id) IN (${pairPlaceholders})
-    ORDER BY start_date ASC, industry_id, benchmark_industry_id
-  `;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-correlations/correlations. The
+  // WHERE tail is passed as a fragment because its param numbering is
+  // dynamic (pool_size = the LAST param, after the 2N pair placeholders);
+  // the fragment carries the $n placeholders verbatim and the params
+  // array is bound here.
+  const { sql } = renderSqlView(
+    "data_viz/api/services/analysis/industry-correlations/correlations",
+    {
+      filters: sqlFrag(
+        `pool_size = $${pairParams.length + 1}::smallint
+      AND (industry_id, benchmark_industry_id) IN (${pairPlaceholders})`,
+      ),
+    },
+  );
   // pool_size crosses as its static.label_dim SMALLINT code.
   const params = [...pairParams, encodeLabelParam("pool_size", poolSize)];
 

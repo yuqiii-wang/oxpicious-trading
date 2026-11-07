@@ -1,5 +1,5 @@
 /**
- * UsageTrendChart — daily LLM-request volume from text.llm_requests
+ * UsageTrendChart — daily LLM-request volume from llm.llm_requests
  * (GET /api/monitor/ai/usage): one stacked bar per service (total
  * tokens) + a total-request-count line on a second axis. Clicking a
  * date selects it (the page drills into that day's service × model
@@ -66,7 +66,7 @@ export default function UsageTrendChart({
           : "no data"
       } · ${totalRequests.toLocaleString()} requests · ${totalTokens.toLocaleString()} tokens · click a date to drill in`}
       option={option}
-      emptyText="No LLM requests in the window — the text.llm_requests log is empty for these days"
+      emptyText="No LLM requests in the window — the llm.llm_requests log is empty for these days"
       height={300}
       onCanvasClick={(dataIdx) => {
         const d = dates[dataIdx] ?? null;

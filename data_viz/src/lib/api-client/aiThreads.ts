@@ -1,8 +1,8 @@
 /**
  * AI thread-graph client — the Thread Graph view's reads: one planned
  * deep-agent run's full node graph by thread id (GET
- * /api/ai/threads/:threadId — every text.deep_agent_states row plus the
- * text.deep_agent_contexts payloads), polled while the run is live.
+ * /api/ai/threads/:threadId — every llm.deep_agent_states row plus the
+ * llm.deep_agent_contexts payloads), polled while the run is live.
  *
  * The thread LIST comes from the existing fetchSummaryRuns
  * (GET /api/ai/summary-runs, aiSummary.ts) — same source, no duplicate
@@ -38,11 +38,12 @@ export interface AgentThreadState {
 }
 
 /** One runner-lane node state from the LangGraph store — real
- *  plan / step-* / result / finalize lifecycle + counts (empty for
- *  threads that predate the store; the graph model then derives them as
- *  before). A step node's item carries the deep_agent_states row its
- *  hop executed (state_id) — the join key between the dynamic step
- *  chain on the canvas and the per-node call counts. */
+ *  plan / step-* / compact-* / supervisor / result / finalize lifecycle
+ *  + counts (empty for threads that predate the store; the graph model
+ *  then derives them as before). A step node's item carries the
+ *  deep_agent_states row its hop executed (state_id) — the join key
+ *  between the dynamic step chain on the canvas and the per-node call
+ *  counts. */
 export interface AgentNodeState {
   node: string;
   status: "running" | "completed" | "failed" | "skipped";
@@ -58,7 +59,31 @@ export interface AgentNodeState {
   /** The deep_agent_states row this item's step hop executed (null for
    *  the runner-lane nodes plan/finalize/result). */
   state_id: number | null;
+  /** The item's first write — the node's begin stamp (node items are
+   *  written only at begin/finish), Shanghai-local text. */
+  created_at: string;
   updated_at: string;
+  /** The node's wall time in seconds — finish − begin for settled nodes,
+   *  now − begin while running (server-computed at each poll). */
+  elapsed_s: number | null;
+}
+
+/** One context's recorded LLM traffic — llm.llm_requests rolled up by
+ *  chain_id (the context id): the Contexts panel's token consumption
+ *  (rendered in k) and LLM busy time. Absent for contexts that recorded
+ *  no request (or runs predating the chain binding). */
+export interface AgentLlmUsage {
+  context_id: string;
+  n_requests: number;
+  /** Sum of the calls' duration_ms — the context's LLM busy time (ms). */
+  llm_ms: number | null;
+  /** First → last request wall-clock span in seconds. */
+  span_s: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  first_at: string | null;
+  last_at: string | null;
 }
 
 /** One LLM-context registry item — references and counts only: which
@@ -77,8 +102,12 @@ export interface AgentLlmContext {
 }
 
 /** One JSONB context payload the states point into. final-result is the
- *  hardcoded result node's fixed output — the run's answer document the
- *  Result view displays. */
+ *  RESULT graph's final output — the run's answer document the Result
+ *  view displays; graph-output is the CUSTOM graph's final output — the
+ *  chain handoff document the result graph's reviews read as their
+ *  input; supervisor-review is the supervisor node's main-path review —
+ *  the Thread Graph's default beneath-the-graph document (shown when no
+ *  node is clicked). */
 export interface AgentThreadContext {
   context_id: number;
   kind:
@@ -87,6 +116,8 @@ export interface AgentThreadContext {
     | "step-result"
     | "subagent-result"
     | "final-result"
+    | "graph-output"
+    | "supervisor-review"
     | string;
   /** The graph node / task the entry belongs to (null on pre-change
    *  rows). */
@@ -102,16 +133,36 @@ export interface AgentThreadContext {
   created_at: string;
 }
 
-/** GET /api/ai/threads/:threadId — the thread's full graph. */
+/** One segment of the run's three-graph chain (2026-11-06): plan /
+ *  custom / result by chain position; "single" = a legacy or degraded
+ *  one-thread run. */
+export interface AgentThreadSegment {
+  thread_id: string;
+  graph_type: "plan" | "custom" | "result" | "single";
+}
+
+/** GET /api/ai/threads/:threadId — the WHOLE CHAIN's graph (any member
+ *  id resolves the run; the service merges every segment's rows, with
+ *  segment k>0's runner-lane node names namespaced "s<k>:…" — the
+ *  canvas node ids join on them). */
 export interface AgentThreadDetail {
   thread_id: string;
+  /** The chain's ROOT thread id (= the run's super_thread_id; equals
+   *  thread_id on legacy single-thread runs). */
+  super_thread_id?: string;
+  /** The chain's segments in order (single "single" entry when the run
+   *  predates the three-graph refactor). */
+  segments?: AgentThreadSegment[];
   states: AgentThreadState[];
   contexts: AgentThreadContext[];
   node_states: AgentNodeState[];
   llm_contexts: AgentLlmContext[];
+  /** Per-context LLM traffic rollup (token consumption + busy time),
+   *  keyed by context_id in the usageByContext lookups. */
+  llm_usage: AgentLlmUsage[];
 }
 
-/** One text.llm_requests row attributed to a task. A chain-bound row's
+/** One llm.llm_requests row attributed to a task. A chain-bound row's
  *  request_payload is INCREMENTAL — `_chain_incremental` /
  *  `_chain_shared_messages` inside the payload flag it (the shared
  *  conversation stored once in the chain's first row); the response

@@ -1,0 +1,199 @@
+"""Risk-orchestration runner — the former compute_and_upsert_risks.
+
+``RiskRunner.compute_and_upsert_risks()`` (code motion of the former
+package-``__init__`` orchestrator): for each sec_type, fetch the
+(seq_id, code) pairs, pull each pair's decisions / close prices / daily
+unrealized series / total_buy_cost, run the pure ``compute_risk_seq`` /
+``compute_risk_periods`` computations, then upsert the risk tables via the
+``strategy._risks.upsert`` module functions (called as module functions
+exactly as before — ``upsert.py`` / ``compute.py`` untouched).
+
+``__init__`` absorbs only the state constant across every call within one
+run (conn + force — both call sites pass args.force unchanged); sec_types /
+codes_by_st / strategy_name differ per call (binary run vs per-name mixed
+runs) and stay method parameters.
+
+Called by ``strategy.singleton_trading`` after each backtest run so risks
+are always fresh — there is no standalone ``python -m strategy._risks``
+entry point.
+"""
+from __future__ import annotations
+
+import time
+from typing import Any, Dict, List, Optional
+
+from strategy._common.db import print_build_header
+from strategy._common.fetch import (
+    fetch_strategy_seqs, fetch_decisions, fetch_close_prices,
+    fetch_daily_unrealized, fetch_total_buy_cost,
+)
+from strategy._risks.compute import (
+    compute_risk_seq, compute_risk_periods,
+)
+from strategy._risks.upsert import (
+    upsert_risk_seq, upsert_risk_periods, upsert_risk_factors,
+)
+
+import logging
+logger = logging.getLogger(__name__)
+
+
+class RiskRunner:
+    """Conn-scoped orchestrator for the internal risk analytics (one
+    asyncpg connection).
+
+    Code motion of the former ``compute_and_upsert_risks`` package function:
+    same sequencing, SQL, and log lines — ``conn`` became ``self.conn`` and
+    ``force`` became ``self.force`` (ctor state constant across the calls
+    within one run).
+    """
+
+    def __init__(self, conn, *, force: bool = False) -> None:
+        self.conn = conn
+        self.force = force
+
+    async def compute_and_upsert_risks(
+        self,
+        *,
+        sec_types: list,
+        codes_by_st: Optional[Dict[str, list]] = None,
+        strategy_name: Optional[str] = None,
+    ) -> None:
+        """Compute + upsert risk metrics for the given sec_types.
+
+        For each sec_type:
+          - If ``codes_by_st`` is None or the sec_type is absent from it, ALL
+            (seq_id, code) pairs in trade_decision for that sec_type are processed.
+          - Otherwise only the listed codes are processed.
+
+        ``strategy_name`` scopes the recomputed seqs to one algo (e.g.
+        'macd') so a run for one algo doesn't recompute risks
+        for another algo's seqs. When None, all strategies' seqs for the matched
+        (sec_type, code) pairs are processed (legacy behavior).
+
+        With ``force=True``, existing risk rows for the matched (seq_id, code)
+        pairs are deleted before re-inserting (idempotent recompute).
+        """
+        t0 = time.time()
+        print_build_header(
+            "STRATEGY · INTERNAL RISKS",
+            **{
+                "sec_types": ", ".join(sec_types),
+                "codes": "(all)" if not codes_by_st
+                         else "; ".join(f"{st}={len(c)}" for st, c in codes_by_st.items()),
+                "mode": "force" if self.force else "upsert",
+            }
+        )
+
+        total_seq = 0
+        total_per = 0
+        for st in sec_types:
+            codes = (codes_by_st or {}).get(st, [])  # empty = all
+            pairs = await fetch_strategy_seqs(self.conn, st, codes or None, strategy_name)
+            if not pairs:
+                logger.info(f"\n[{st}] no trade_decision data found; skipping.")
+                continue
+
+            logger.info(f"\n[{st}] Computing risk metrics for {len(pairs)} (seq, code) pair(s)...")
+            # Include position_after so the price-drawdown computation can detect
+            # unzero holding periods; default fetch_decisions omits it.
+            # Include total_qty_before so the FT amplified P&L can derive the
+            # baseline SELL confidence = (qty / total_qty_before) * 100 and
+            # compute the amplified qty ratio = stressed_conf / baseline_conf.
+            decision_cols = (
+                "decision_no, side, exec_date, qty, fill_price, "
+                "position_after, realized_pnl, signal_reason, "
+                "total_qty_before, "
+                "ft_stressed_conf_up, ft_stressed_conf_down"
+            )
+            risk_seq_rows: List[Dict[str, Any]] = []
+            risk_period_rows: List[Dict[str, Any]] = []
+            risk_factor_rows: List[Dict[str, Any]] = []
+            for seq_id, code in pairs:
+                decisions = await fetch_decisions(self.conn, seq_id, columns=decision_cols)
+                if not decisions:
+                    continue
+                # Daily close prices over the decisions' exec_date span, used for
+                # the price-based drawdown stats.
+                exec_dates = [d["exec_date"] for d in decisions if d.get("exec_date")]
+                close_prices: Optional[list] = None
+                if exec_dates:
+                    close_prices = await fetch_close_prices(
+                        self.conn, st, code, min(exec_dates), max(exec_dates),
+                    )
+                # Daily unrealized_pnl series — fetched ONCE here and reused for
+                # both the exponential risk score's unrealized-loss component (in
+                # compute_risk_seq) and the per-period MTM change (in
+                # compute_risk_periods).
+                daily_rows = await fetch_daily_unrealized(self.conn, seq_id)
+                # total_buy_cost (peak capital deployed) — the stable "% of
+                # capital" denominator for the risk score's loss_fraction.
+                total_buy_cost = await fetch_total_buy_cost(self.conn, seq_id)
+                rs = compute_risk_seq(
+                    seq_id, code, decisions, close_prices, daily_rows,
+                    total_buy_cost,
+                )
+                if rs is None:
+                    continue
+                risk_seq_rows.append(rs)
+                # Collect risk factor rows (one per contribution component).
+                for f in rs.get("_risk_factors", []):
+                    risk_factor_rows.append({
+                        "seq_id": seq_id, "code": code, **f,
+                    })
+                # total_realized_pnl / total_abs_pnl are carried on rs with a
+                # leading underscore (they were MOVED to strategy_results and are no
+                # longer strategy_risk_seq columns). Use them for the per-period
+                # rollup, then strip the underscore keys before upsert.
+                rp = compute_risk_periods(
+                    seq_id, code, decisions,
+                    rs["_total_abs_pnl"], rs["_total_realized_pnl"],
+                    daily_rows,
+                )
+                risk_period_rows.extend(rp)
+                dd1 = rs['drawdown_1st_date']
+                dd1v = rs['drawdown_1st_val']
+                logger.info(f"    -> seq={seq_id} code={code}: "
+                      f"concentration={rs['concentration_ratio']:.4f} "
+                      f"dd1={dd1} val={dd1v} "
+                      f"drop_unzero={rs['deepest_drop_since_unzero_pos']:.4f} "
+                      f"drop_buy={rs['deepest_drop_since_last_buy']:.4f} "
+                      f"risk_score={rs['risk_score']:.2f} "
+                      f"grade={rs['risk_grade']}")
+
+            if self.force:
+                for seq_id, code in pairs:
+                    await self.conn.execute(
+                        "DELETE FROM strategy.strategy_risk_period "
+                        "WHERE seq_id = $1 AND code = $2",
+                        seq_id, code,
+                    )
+                    await self.conn.execute(
+                        "DELETE FROM strategy.strategy_risk_factors "
+                        "WHERE seq_id = $1 AND code = $2",
+                        seq_id, code,
+                    )
+                    await self.conn.execute(
+                        "DELETE FROM strategy.strategy_risks "
+                        "WHERE seq_id = $1 AND code = $2",
+                        seq_id, code,
+                    )
+
+            # Strip the underscore-prefixed helper keys (totals + risk factors
+            # carried for the per-period rollup / factor upsert) — they are NOT
+            # strategy_risks columns.
+            upsert_rows = [
+                {k: v for k, v in row.items() if not k.startswith("_")}
+                for row in risk_seq_rows
+            ]
+            n_seq = await upsert_risk_seq(self.conn, upsert_rows)
+            n_per = await upsert_risk_periods(self.conn, risk_period_rows)
+            n_fac = await upsert_risk_factors(self.conn, risk_factor_rows)
+            total_seq += n_seq
+            total_per += n_per
+            logger.info(f"    -> [{st}] upserted {n_seq} risk_seq, {n_per} risk_period, "
+                  f"{n_fac} risk_factor rows")
+
+        elapsed = time.time() - t0
+        logger.info(f"\n  risks done: {total_seq} risk_seq + {total_per} risk_period rows "
+              f"({elapsed:.1f}s)")

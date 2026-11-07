@@ -27,6 +27,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from downloads.macro.gov.data_definitions import (
+    SourceConfig,
+)
 # Make the project root importable when this module is executed directly
 # (``python downloads/macro/gov/main_gov.py``) as well as imported as a
 # package. ``__file__`` is downloads/macro/gov/main_gov.py, so parents[3] is
@@ -48,33 +51,16 @@ from downloads._common import (  # noqa: E402
 
 logger = setup_logger("gov_main")
 
-# ----------------------------------------------------------------------------
-# Source configuration
-# ----------------------------------------------------------------------------
-@dataclass
-class SourceConfig:
-    """Describes a gov-family title-list source.
 
-    Attributes:
-        name: short identifier used in logs and the summary (e.g. ``gov_news``).
-        list_url: human-readable list page URL (used as Referer / in logs).
-        out_dirname: sub-directory under ``temps/`` for this source's output.
-        csv_filename: name of the combined titles CSV file.
-        csv_columns: ordered CSV column names.
-        raw_min_bytes: minimum bytes for a cached raw-JSON snapshot to be
-            considered valid (sources may override for very small lists).
-    """
-    name: str
-    list_url: str
-    out_dirname: str
-    csv_filename: str
-    csv_columns: List[str] = field(default_factory=lambda: ["pub_date", "title", "url"])
-    raw_min_bytes: int = 1000
 
 
 # Type aliases for the source-provided callables. ``fetch_fn`` receives
 # ``floor`` — the last pub_date already available in the titles CSV (None on a
 # full backfill) — so paginating fetchers can stop at already-downloaded dates.
+
+
+
+
 FetchFn = Callable[
     [Any, AntiBotProxy, SourceConfig, Optional[date]],
     Optional[List[Dict[str, Any]]],

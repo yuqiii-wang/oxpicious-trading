@@ -2,7 +2,7 @@
  * Search-query segmentation service — the query side of the text schema's
  * GIN full-text search for the Node API.
  *
- * The text.* tables' `search_tsv` columns are StructBERT-segmented weighted
+ * The text/llm schemas' `search_tsv` columns are StructBERT-segmented weighted
  * tsvectors (written by _common.tokenization.SearchIndexer), so a Chinese
  * query matches nothing unless it is segmented the SAME way — a raw Chinese
  * sentence is one giant 'simple'-config lexeme. The segmenter is a torch

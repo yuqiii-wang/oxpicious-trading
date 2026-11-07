@@ -25,6 +25,12 @@ are excluded — the page shows 万份收益/7日年化 for them instead of
 for market trend; this CSV is the fund-side daily increment archive
 (per-fund full history lives in downloads.etf.huatai_pb.archive).
 
+The entry point is the :class:`HuataiPbTrendDownload` DownloadJob — the
+former ``__main__`` body is its ``run()`` (the --fund-codes comma split
+moved to ``apply_args``) and the ``download_nav_trend`` orchestration
+function became the method of the same name (same signature and body);
+``canonical_trend_code`` and the constants stay module-level.
+
 Usage:
   python -m downloads.etf.huatai_pb.trend
   python -m downloads.etf.huatai_pb.trend --fund-codes 510880,510300
@@ -39,6 +45,7 @@ from typing import Dict, List
 import pandas as pd
 
 from downloads._common import (
+    DownloadJob,
     RunStats,
     build_default_session,
     is_valid_file,
@@ -67,92 +74,104 @@ def canonical_trend_code(code: str) -> str:
     return code
 
 
-def download_nav_trend(
-    *,
-    out_root: str | None = None,
-    fund_codes: List[str] | None = None,
-    sleep_sec: float | None = None,
-    force: bool = False,
-) -> Dict[str, object]:
-    out_dir = resolve_out_dir("", "huatai_pb_nav", out_root)
-    today = date.today()
-    out_path = out_dir / f"huatai_pb_nav_trend_{today:%Y%m%d}.csv"
+class HuataiPbTrendDownload(DownloadJob):
+    """DownloadJob for the huatai-pb.com NAV trend fetch cycle — the former
+    ``__main__`` body is ``run()`` and the ``download_nav_trend`` function
+    is the method of the same name (same signature and body verbatim);
+    pacing / filter / out_root stay per-call arguments."""
 
-    if not force and is_valid_file(out_path, min_bytes=64):
-        logger.info("[trend] today's file exists: %s (use --force to re-fetch)",
-                    out_path.name)
-        return {"out_path": str(out_path), "status": "cached"}
+    description = ("Download huatai-pb.com all-funds NAV snapshot "
+                   "(products index page).")
+    component = "huatai_pb_nav_trend"
 
-    session = build_default_session()
-    proxy = build_proxy(SERVICE, sleep_sec)
-    stats = RunStats()
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--fund-codes", type=str, default=None,
+                        help="Comma-separated fund codes to keep (default: all funds on the page)")
+        parser.add_argument("--out-root", type=str, default=None,
+                        help="Alternative output root directory")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Sleep seconds between requests "
+                             f"(default: external_request_config JSON for {SERVICE})")
+        parser.add_argument("--force", action="store_true",
+                        help="Re-fetch even when today's trend file already exists.")
 
-    html_text = fetch_products_index_html(
-        session, proxy, service=SERVICE, logger=logger)
-    if not html_text:
-        logger.warning("[trend] products index fetch failed; nothing written")
-        stats.failed += 1
-        return stats.to_dict(out_dir=str(out_dir))
+    def apply_args(self) -> None:
+        # Former --fund-codes comma split (post-parse derivation).
+        fund_codes_arg: List[str] | None = None
+        if self.args.fund_codes:
+            fund_codes_arg = [c.strip() for c in self.args.fund_codes.split(",") if c.strip()]
+        self.args.fund_codes = fund_codes_arg
 
-    rows = parse_products_index_nav_rows(html_text)
-    if not rows:
-        logger.warning("[trend] no fund rows parsed from products index page")
-        stats.empty += 1
-        return stats.to_dict(out_dir=str(out_dir))
+    def download_nav_trend(
+        self,
+        *,
+        out_root: str | None = None,
+        fund_codes: List[str] | None = None,
+        sleep_sec: float | None = None,
+        force: bool = False,
+    ) -> Dict[str, object]:
+        out_dir = resolve_out_dir("", "huatai_pb_nav", out_root)
+        today = date.today()
+        out_path = out_dir / f"huatai_pb_nav_trend_{today:%Y%m%d}.csv"
 
-    if fund_codes:
-        wanted = {c for c in (s.strip() for s in fund_codes) if c}
-        rows = [r for r in rows if r["code"] in wanted]
+        if not force and is_valid_file(out_path, min_bytes=64):
+            logger.info("[trend] today's file exists: %s (use --force to re-fetch)",
+                        out_path.name)
+            return {"out_path": str(out_path), "status": "cached"}
+
+        session = build_default_session()
+        proxy = build_proxy(SERVICE, sleep_sec)
+        stats = RunStats()
+
+        html_text = fetch_products_index_html(
+            session, proxy, service=SERVICE, logger=logger)
+        if not html_text:
+            logger.warning("[trend] products index fetch failed; nothing written")
+            stats.failed += 1
+            return stats.to_dict(out_dir=str(out_dir))
+
+        rows = parse_products_index_nav_rows(html_text)
         if not rows:
-            logger.warning("[trend] no funds matched the --fund-codes filter")
+            logger.warning("[trend] no fund rows parsed from products index page")
             stats.empty += 1
             return stats.to_dict(out_dir=str(out_dir))
 
-    trend = pd.DataFrame({
-        "date": [r["nav_date"] for r in rows],
-        "code": [canonical_trend_code(r["code"]) for r in rows],
-        "name": [r["name"] for r in rows],
-        "nav": [r["nav"] for r in rows],
-        "day_pct": [r["day_pct"] for r in rows],
-    })
-    trend = trend.drop_duplicates(subset=["code"], keep="first")
-    trend = trend[TREND_COLS]
-    trend = trend.sort_values("code").reset_index(drop=True)
-    trend.to_csv(out_path, index=False, encoding=CSV_ENCODING)
+        if fund_codes:
+            wanted = {c for c in (s.strip() for s in fund_codes) if c}
+            rows = [r for r in rows if r["code"] in wanted]
+            if not rows:
+                logger.warning("[trend] no funds matched the --fund-codes filter")
+                stats.empty += 1
+                return stats.to_dict(out_dir=str(out_dir))
 
-    stats.downloaded += 1
-    no_nav = int(trend["nav"].isna().sum())
-    freshest = str(trend["date"].max()) if len(trend) else ""
-    logger.info("[trend] saved %s (%d funds, %d without NAV, freshest %s)",
-                out_path.name, len(trend), no_nav, freshest or "--")
-    return stats.to_dict(out_path=str(out_path), out_dir=str(out_dir),
-                         funds=len(trend))
+        trend = pd.DataFrame({
+            "date": [r["nav_date"] for r in rows],
+            "code": [canonical_trend_code(r["code"]) for r in rows],
+            "name": [r["name"] for r in rows],
+            "nav": [r["nav"] for r in rows],
+            "day_pct": [r["day_pct"] for r in rows],
+        })
+        trend = trend.drop_duplicates(subset=["code"], keep="first")
+        trend = trend[TREND_COLS]
+        trend = trend.sort_values("code").reset_index(drop=True)
+        trend.to_csv(out_path, index=False, encoding=CSV_ENCODING)
+
+        stats.downloaded += 1
+        no_nav = int(trend["nav"].isna().sum())
+        freshest = str(trend["date"].max()) if len(trend) else ""
+        logger.info("[trend] saved %s (%d funds, %d without NAV, freshest %s)",
+                    out_path.name, len(trend), no_nav, freshest or "--")
+        return stats.to_dict(out_path=str(out_path), out_dir=str(out_dir),
+                             funds=len(trend))
+
+    def run(self) -> None:
+        self.download_nav_trend(
+            out_root=self.args.out_root,
+            fund_codes=self.args.fund_codes,
+            sleep_sec=self.args.sleep_sec,
+            force=self.args.force,
+        )
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download huatai-pb.com all-funds NAV snapshot (products index page)."
-    )
-    ap.add_argument("--fund-codes", type=str, default=None,
-                    help="Comma-separated fund codes to keep (default: all funds on the page)")
-    ap.add_argument("--out-root", type=str, default=None,
-                    help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=None,
-                    help="Sleep seconds between requests "
-                         f"(default: external_request_config JSON for {SERVICE})")
-    ap.add_argument("--force", action="store_true",
-                    help="Re-fetch even when today's trend file already exists.")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    fund_codes_arg: List[str] | None = None
-    if args.fund_codes:
-        fund_codes_arg = [c.strip() for c in args.fund_codes.split(",") if c.strip()]
-
-    download_nav_trend(
-        out_root=args.out_root,
-        fund_codes=fund_codes_arg,
-        sleep_sec=args.sleep_sec,
-        force=args.force,
-    )
+    HuataiPbTrendDownload().execute()

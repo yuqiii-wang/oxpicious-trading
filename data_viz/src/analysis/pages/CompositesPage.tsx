@@ -31,7 +31,7 @@ export const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
     slug: "ai-market-qa",
     title: "AI Market Sentiments QA (AI 市场情绪问答)",
     description:
-      "The LLM Q&A knowledge base feed (text.llm_qa): one ask-and-answer " +
+      "The LLM Q&A knowledge base feed (llm.llm_qa): one ask-and-answer " +
       "per industry per day, scoped by the classification pick or the " +
       "top-ranked HYPE/DRAIN industries, over the benchmark price chart. " +
       "The ask is the keyword audit over the Q&A corpus — per-day " +

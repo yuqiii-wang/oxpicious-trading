@@ -1,8 +1,8 @@
 """llm_agents.llm_qa_by_research.generation — the six-request research flow.
 
-``generate_research_qa`` produces ONE text.llm_qa_by_research row from
+``generate_research_qa`` produces ONE llm.llm_qa_by_research row from
 SIX separate LLM requests (the generation contract in
-database/sql/text/06_llm_qa_by_research.sql):
+database/sql/text/llm/04_llm_qa_by_research.sql):
 
   * requests 1-5 — one per evaluation dimension
     (:data:`~llm_agents.llm_qa_by_research.prompts.DIMENSIONS`): a
@@ -24,13 +24,13 @@ database/sql/text/06_llm_qa_by_research.sql):
 request's hits are fast-resolved into text.news rows right after the
 search (the ``OnlineSearchSummaryStore`` no-network path — the rows ARE
 the search echoes) and the resolved ids are BOUND around the compose
-request, so each dimension's text.llm_requests row carries its
+request, so each dimension's llm.llm_requests row carries its
 references as context_ref_ids. The resolved refs are interest-window
 filtered at store time and MERGED into ONE news group linked from the
-row (the by-research analog of text.llm_qa_refs, which FKs text.llm_qa
+row (the by-research analog of llm.llm_qa_refs, which FKs llm.llm_qa
 only); ``context`` keeps the per-dimension reference blocks so each
 dimension answer's inline [来源：ref_N] citations stay aligned with its
-own block. ``has_refs`` mirrors the group afterwards (the text.llm_qa
+own block. ``has_refs`` mirrors the group afterwards (the llm.llm_qa
 store pattern).
 """
 from __future__ import annotations
@@ -66,25 +66,15 @@ from .prompts import (
 )
 from .storage import set_has_refs, upsert_qa_by_research
 
+from llm_agents.llm_qa_by_research.data_definitions import (
+    DimensionResult,
+)
 logger = logging.getLogger(__name__)
 
 DEFAULT_CATEGORY = "research"
 DEFAULT_SEARCH_COUNT = 8
 
 
-@dataclass
-class DimensionResult:
-    """One dimension request's outcome (text None = the request failed).
-
-    ``resolved`` carries the dimension's hits fast-resolved into
-    text.news rows (the request-time resolution that also binds the
-    text.llm_requests ref ids); empty when the search surfaced nothing
-    or resolution failed (refs stay non-fatal).
-    """
-    spec: DimensionSpec
-    text: Optional[str] = None
-    hits: List[SearchHit] = field(default_factory=list)
-    resolved: List[ResolvedRef] = field(default_factory=list)
 
 
 async def _request_dimension(
@@ -100,7 +90,7 @@ async def _request_dimension(
     industry_id: Optional[str],
 ) -> DimensionResult:
     """One dimension request: search, resolve the hits to text.news ids,
-    then compose over them WITH the ids bound (the text.llm_requests
+    then compose over them WITH the ids bound (the llm.llm_requests
     source-log contract — or a plain no-hits completion when the search
     surfaced nothing). Transport/API retries are the provider's; refs
     resolution failure is non-fatal (the request runs unbound)."""
@@ -205,7 +195,7 @@ async def generate_research_qa(
 
     flow_start = datetime.datetime.now(datetime.timezone.utc)
 
-    # The six requests form ONE chain (text.llm_requests chain_id /
+    # The six requests form ONE chain (llm.llm_requests chain_id /
     # prev_request_id): from the second request on, the logged payload is
     # incremental to the previous request's (shared system prompts and
     # context blocks stored once, in the first row).
@@ -303,7 +293,7 @@ async def _store_research_row(
     """Persist the row: merge the REQUEST-TIME-resolved refs of every
     dimension into ONE news group (the refs mapping — resolution already
     happened in _request_dimension, where it also bound the
-    text.llm_requests ref ids), store the per-dimension reference blocks
+    llm.llm_requests ref ids), store the per-dimension reference blocks
     as context, then mirror has_refs."""
     all_resolved: List[ResolvedRef] = [rr for r in results for rr in r.resolved]
     group_ids: List[int] = []
@@ -330,8 +320,8 @@ async def _store_research_row(
         for r in results if r.hits
     ]
     # Per-dimension ref resolution for the UI's expandable [来源：ref_N]
-    # tags (the text.llm_qa_refs pattern, mirrored as a JSONB column —
-    # text.llm_qa_refs FKs text.llm_qa only). is_used = the dimension's
+    # tags (the llm.llm_qa_refs pattern, mirrored as a JSONB column —
+    # llm.llm_qa_refs FKs llm.llm_qa only). is_used = the dimension's
     # stored answer cites the tag.
     dim_refs: Dict[str, List[dict]] = {}
     for r in results:
@@ -364,6 +354,6 @@ async def _store_research_row(
         llm_model=model, language=lang, qa_date=qa_date)
     if group_ids:
         await set_has_refs(conn, qa_id, True)
-    logger.info("    [DB] stored text.llm_qa_by_research qa_id=%s "
+    logger.info("    [DB] stored llm.llm_qa_by_research qa_id=%s "
                 "(sources=%d, label=%s)", qa_id, len(group_ids), label_name)
     return qa_id

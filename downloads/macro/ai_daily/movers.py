@@ -19,7 +19,7 @@ RELATIVE gaps are what get compared:
   tell one story, so only the leader is asked — NOT necessarily loading
   all 3;
 * 5d cooldown — an industry+side already asked within the last
-  ``MOVERS_COOLDOWN_BD`` trading days (text.llm_qa, category
+  ``MOVERS_COOLDOWN_BD`` trading days (llm.llm_qa, category
   ``market_daily``) is skipped; a direction flip is a different question
   and never matches. The cooldown binds the INDUSTRY movers only — the
   broadmarket general summary asks every run regardless (broad tags are
@@ -41,15 +41,20 @@ Each survivor gets its own search+summary ask (the date-embedded
 why-did-X-move question) whose outcome carries the ask's FULL reference
 list, and the whole block is stored as ``ai_daily_<plan-date>_movers.json``
 under the same output dir as the general summary — ``builds.text`` loads
-the Q&A into text.llm_qa (+ reference provenance) under the mover's own
-industry_id with ``text.llm_qa.qa_date`` = the plan date, and the ask
+the Q&A into llm.llm_qa (+ reference provenance) under the mover's own
+industry_id with ``llm.llm_qa.qa_date`` = the plan date, and the ask
 hits into text.news.
 
 Best run after the market close AND after ``python -m
 builds.cross_stats`` has loaded the day's industry grain. Recency-only
 by design — the legacy weekly history backfill (seasonal top +
 MA5-slope episodes) has been removed; its rows remain queryable in
-text.llm_qa (categories ``industry`` / ``market``).
+llm.llm_qa (categories ``industry`` / ``market``).
+
+The DB-backed plan/ask functions moved onto the :class:`Movers` class
+(bodies unchanged); the pure plan helpers, the artifact-cache helpers and
+every constant stay module-level, and ``broad_industry_id`` keeps a
+module-level shim — the import surface ``builds.text.ai_daily_qa`` uses.
 """
 from __future__ import annotations
 
@@ -66,6 +71,9 @@ from llm_agents.online_search_summary import (
 )
 from _common._holidays_and_weekdays import recent_trading_day_cutoff
 
+from downloads.macro.ai_daily.data_definitions import (
+    MoverPick,
+)
 logger = logging.getLogger("ai_daily")
 
 # --- plan constants ---------------------------------------------------------
@@ -128,7 +136,7 @@ INDUSTRY_LABELS_SQL = """
 # 上涨/下跌 verb is embedded in the question text) within the window.
 IN_COOLDOWN_SQL = """
     SELECT EXISTS (
-        SELECT 1 FROM text.llm_qa
+        SELECT 1 FROM llm.llm_qa
         WHERE category = $1::text
           AND industry_id = $2::text
           AND (qa_date AT TIME ZONE 'Asia/Shanghai')::date >= $3::date
@@ -141,7 +149,7 @@ IN_COOLDOWN_SQL = """
 # never gates the industry step).
 LAST_MOVERS_ASK_SQL = """
     SELECT max((qa_date AT TIME ZONE 'Asia/Shanghai')::date)
-    FROM text.llm_qa
+    FROM llm.llm_qa
     WHERE category = $1::text
       AND industry_id IS NOT NULL
       AND industry_id NOT LIKE 'BROAD%'
@@ -157,23 +165,6 @@ BROAD_INDUSTRY_SQL = """
 """
 
 
-@dataclass
-class MoverPick:
-    """One candidate mover (post-gate, pre/post cooldown)."""
-    industry_id: str
-    label: str
-    offset: float
-    side: str                      # rise | drop
-    rank: int                      # 1-based within its side
-    question: str = ""
-    cooldown: bool = False         # True = suppressed by the 5d cooldown
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "industry_id": self.industry_id, "label": self.label,
-            "offset": self.offset, "side": self.side, "rank": self.rank,
-            "question": self.question, "cooldown": self.cooldown,
-        }
 
 
 # ----------------------------------------------------------------------------
@@ -250,6 +241,8 @@ def build_mover_question(label: str, side: str,
             f"显著{_SIDE_VERB[side]}的原因是什么？")
 
 
+
+
 def pick_movers(
     offsets: Dict[str, float],
     *,
@@ -285,164 +278,174 @@ def pick_movers(
 
 
 # ----------------------------------------------------------------------------
-# DB-backed plan
+# DB-backed plan + ask — the Movers class
 # ----------------------------------------------------------------------------
-async def fetch_latest_offsets(
-    conn, benchmark: str = MOVERS_BENCHMARK,
-) -> Tuple[Optional[datetime.date], Dict[str, float]]:
-    """(latest cross_stats date, {industry_id: offset}) for *benchmark*."""
-    plan_date = await conn.fetchval(LATEST_DATE_SQL)
-    if plan_date is None:
-        return None, {}
-    rows = await conn.fetch(LATEST_OFFSETS_SQL, benchmark)
-    return plan_date, {r["industry_id"]: float(r["offset"]) for r in rows}
+class Movers:
+    """The industry-movers phase engine: DB-backed plan + per-survivor asks.
 
-
-async def fetch_labels(conn, industry_ids: List[str]) -> Dict[str, str]:
-    """{industry_id: label} for the picked ids (id itself when absent)."""
-    if not industry_ids:
-        return {}
-    rows = await conn.fetch(INDUSTRY_LABELS_SQL, industry_ids)
-    return {r["industry_id"]: r["industry_label"] for r in rows}
-
-
-async def apply_cooldown(
-    conn, picks: List[MoverPick], plan_date: datetime.date,
-    *, category: str = COOLDOWN_CATEGORY,
-    cooldown_bd: int = MOVERS_COOLDOWN_BD,
-) -> None:
-    """Flag picks asked within the cooldown window (industry+side).
-
-    BUSINESS-day window: ``[cutoff, plan_date]`` spans exactly
-    ``cooldown_bd + 1`` trading days — the plan date itself plus the
-    last ``cooldown_bd`` (5) trading days, weekends/holidays excluded.
-    Direction flips never match (the 上涨/下跌 verb is part of the
-    match). INDUSTRY-ONLY by contract: broad-market tags are skipped
-    (they are excluded from the movers plan anyway) and the broadmarket
-    general summary never consults this cooldown — it asks every run.
+    Holds the former module-level fetch/plan/ask functions as methods
+    (bodies unchanged): fetch_latest_offsets / fetch_labels / apply_cooldown
+    / broad_industry_id / run_movers. Stateless — *conn* is an open pool
+    owned by the caller of ``run_movers``.
     """
-    window_start = recent_trading_day_cutoff(cooldown_bd + 1, plan_date)
-    for p in picks:
-        if p.industry_id.startswith(BROAD_TAG_PREFIX):
-            continue  # never cooldown-suppressed
-        pattern = f"%{_SIDE_VERB[p.side]}%"
-        p.cooldown = await conn.fetchval(
-            IN_COOLDOWN_SQL, category, p.industry_id, window_start, pattern)
+
+    async def fetch_latest_offsets(
+        self, conn, benchmark: str = MOVERS_BENCHMARK,
+    ) -> Tuple[Optional[datetime.date], Dict[str, float]]:
+        """(latest cross_stats date, {industry_id: offset}) for *benchmark*."""
+        plan_date = await conn.fetchval(LATEST_DATE_SQL)
+        if plan_date is None:
+            return None, {}
+        rows = await conn.fetch(LATEST_OFFSETS_SQL, benchmark)
+        return plan_date, {r["industry_id"]: float(r["offset"]) for r in rows}
+
+    async def fetch_labels(self, conn, industry_ids: List[str]) -> Dict[str, str]:
+        """{industry_id: label} for the picked ids (id itself when absent)."""
+        if not industry_ids:
+            return {}
+        rows = await conn.fetch(INDUSTRY_LABELS_SQL, industry_ids)
+        return {r["industry_id"]: r["industry_label"] for r in rows}
+
+    async def apply_cooldown(
+        self, conn, picks: List[MoverPick], plan_date: datetime.date,
+        *, category: str = COOLDOWN_CATEGORY,
+        cooldown_bd: int = MOVERS_COOLDOWN_BD,
+    ) -> None:
+        """Flag picks asked within the cooldown window (industry+side).
+
+        BUSINESS-day window: ``[cutoff, plan_date]`` spans exactly
+        ``cooldown_bd + 1`` trading days — the plan date itself plus the
+        last ``cooldown_bd`` (5) trading days, weekends/holidays excluded.
+        Direction flips never match (the 上涨/下跌 verb is part of the
+        match). INDUSTRY-ONLY by contract: broad-market tags are skipped
+        (they are excluded from the movers plan anyway) and the broadmarket
+        general summary never consults this cooldown — it asks every run.
+        """
+        window_start = recent_trading_day_cutoff(cooldown_bd + 1, plan_date)
+        for p in picks:
+            if p.industry_id.startswith(BROAD_TAG_PREFIX):
+                continue  # never cooldown-suppressed
+            pattern = f"%{_SIDE_VERB[p.side]}%"
+            p.cooldown = await conn.fetchval(
+                IN_COOLDOWN_SQL, category, p.industry_id, window_start, pattern)
+
+    async def broad_industry_id(self, conn) -> Optional[str]:
+        """The broad-market industry_id the general summary stores under."""
+        return await conn.fetchval(BROAD_INDUSTRY_SQL)
+
+    async def run_movers(
+        self,
+        conn,
+        *,
+        benchmark: str = MOVERS_BENCHMARK,
+        provider_name: str = "zhipu",
+        model: Optional[str] = None,
+        lang: str = "zh",
+        count: Optional[int] = None,
+        category: str = COOLDOWN_CATEGORY,
+    ) -> Dict[str, Any]:
+        """Plan the movers off the latest cross_stats date, ask each survivor.
+
+        Gate order: no-data -> stale (cross_stats too old) -> weekly-skip (an
+        industry ask inside the last MOVERS_WEEK_BD trading days) -> plan,
+        per-pick 5d cooldown, ask. Returns the movers envelope: the plan
+        (candidates + cooldown flags), the per-ask outcomes (question, answer,
+        full reference list) and the failures. A failed ask never kills the
+        batch — its outcome carries the error. *conn* is an open pool; the
+        caller owns opening/closing it.
+        """
+        plan_date, offsets = await self.fetch_latest_offsets(conn, benchmark)
+        if plan_date is None or not offsets:
+            return {"status": "no-data", "benchmark": benchmark,
+                    "plan_date": plan_date.isoformat()
+                    if plan_date else None,
+                    "candidates": {}, "asked": [], "failed": []}
+        if plan_is_stale(plan_date):
+            logger.warning("movers: latest cross_stats date %s is >= %d "
+                           "business days old — skipping industry requests",
+                           plan_date, MOVERS_MAX_LAG_BD)
+            return {"status": "stale", "benchmark": benchmark,
+                    "plan_date": plan_date.isoformat(),
+                    "max_lag_bd": MOVERS_MAX_LAG_BD,
+                    "candidates": {}, "asked": [], "failed": []}
+
+        # Weekly gate: industry asks are the WEEKLY step. An industry ask of
+        # this category inside the last MOVERS_WEEK_BD trading days makes
+        # today's run broadmarket-only (the general summary asks regardless).
+        last_ask_date = await conn.fetchval(LAST_MOVERS_ASK_SQL, category)
+        if not movers_due(last_ask_date):
+            logger.info("movers: last industry ask %s is inside the %d-"
+                        "trading-day weekly window — broadmarket summary only",
+                        last_ask_date, MOVERS_WEEK_BD)
+            return {"status": "weekly-skip", "benchmark": benchmark,
+                    "plan_date": plan_date.isoformat(),
+                    "week_bd": MOVERS_WEEK_BD,
+                    "last_ask_date": last_ask_date.isoformat(),
+                    "candidates": {}, "asked": [], "failed": []}
+
+        labels = await self.fetch_labels(conn, list(offsets))
+        plan = pick_movers(offsets, labels=labels, plan_date=plan_date)
+        for side in ("rises", "drops"):
+            await self.apply_cooldown(conn, plan[side], plan_date, category=category)
+
+        n_cool = sum(1 for s in ("rises", "drops")
+                     for p in plan[s] if p.cooldown)
+        due = [p for s in ("rises", "drops") for p in plan[s]
+               if not p.cooldown]
+        logger.info("movers plan %s [%s]: %d rise(s) / %d drop(s) loaded, "
+                    "%d on cooldown, %d to ask", plan_date, benchmark,
+                    len(plan["rises"]), len(plan["drops"]), n_cool, len(due))
+
+        opts = SearchOptions(
+            count=count if count is not None else DAILY_COUNT,
+            recency=daily_recency(plan_date), content_size="high")
+        provider = get_provider(provider_name)()
+
+        asked: List[Dict[str, Any]] = []
+        failed: List[Dict[str, Any]] = []
+        for p in due:
+            try:
+                summary: SearchSummary = await provider.summarize(
+                    p.question, model=model, opts=opts, lang=lang)
+                outcome: Dict[str, Any] = {
+                    **p.to_dict(),
+                    "answer": summary.answer,
+                    "cited_refs": summary.cited_refs,
+                    "n_refs": len(summary.hits),
+                    # The ask's FULL hit list — builds.text resolves these into
+                    # text.news rows + llm.llm_qa provenance, so the artifact
+                    # must be self-sufficient (the pre-removal --store path got
+                    # them from the live response instead).
+                    "references": [h.to_dict() for h in summary.hits],
+                    "provider": summary.provider, "model": summary.model,
+                }
+                asked.append(outcome)
+                logger.info("  [%s] %s -> ok (%s)", p.side, p.question,
+                            ", ".join(summary.cited_refs[:3]) or "no cites")
+            except Exception as e:  # one failed ask must not kill the batch
+                failed.append({**p.to_dict(),
+                               "error": f"{type(e).__name__}: {e}"})
+                logger.warning("  [%s] %s -> FAILED %s: %s", p.side, p.question,
+                               type(e).__name__, e)
+
+        return {
+            "status": "ok",
+            "benchmark": benchmark,
+            "plan_date": plan_date.isoformat(),
+            "candidates": {
+                "rises": [p.to_dict() for p in plan["rises"]],
+                "drops": [p.to_dict() for p in plan["drops"]],
+            },
+            "asked": asked,
+            "failed": failed,
+        }
 
 
 async def broad_industry_id(conn) -> Optional[str]:
-    """The broad-market industry_id the general summary stores under."""
-    return await conn.fetchval(BROAD_INDUSTRY_SQL)
-
-
-# ----------------------------------------------------------------------------
-# Ask + persist
-# ----------------------------------------------------------------------------
-async def run_movers(
-    conn,
-    *,
-    benchmark: str = MOVERS_BENCHMARK,
-    provider_name: str = "zhipu",
-    model: Optional[str] = None,
-    lang: str = "zh",
-    count: Optional[int] = None,
-    category: str = COOLDOWN_CATEGORY,
-) -> Dict[str, Any]:
-    """Plan the movers off the latest cross_stats date, ask each survivor.
-
-    Gate order: no-data -> stale (cross_stats too old) -> weekly-skip (an
-    industry ask inside the last MOVERS_WEEK_BD trading days) -> plan,
-    per-pick 5d cooldown, ask. Returns the movers envelope: the plan
-    (candidates + cooldown flags), the per-ask outcomes (question, answer,
-    full reference list) and the failures. A failed ask never kills the
-    batch — its outcome carries the error. *conn* is an open pool; the
-    caller owns opening/closing it.
-    """
-    plan_date, offsets = await fetch_latest_offsets(conn, benchmark)
-    if plan_date is None or not offsets:
-        return {"status": "no-data", "benchmark": benchmark,
-                "plan_date": plan_date.isoformat()
-                if plan_date else None,
-                "candidates": {}, "asked": [], "failed": []}
-    if plan_is_stale(plan_date):
-        logger.warning("movers: latest cross_stats date %s is >= %d "
-                       "business days old — skipping industry requests",
-                       plan_date, MOVERS_MAX_LAG_BD)
-        return {"status": "stale", "benchmark": benchmark,
-                "plan_date": plan_date.isoformat(),
-                "max_lag_bd": MOVERS_MAX_LAG_BD,
-                "candidates": {}, "asked": [], "failed": []}
-
-    # Weekly gate: industry asks are the WEEKLY step. An industry ask of
-    # this category inside the last MOVERS_WEEK_BD trading days makes
-    # today's run broadmarket-only (the general summary asks regardless).
-    last_ask_date = await conn.fetchval(LAST_MOVERS_ASK_SQL, category)
-    if not movers_due(last_ask_date):
-        logger.info("movers: last industry ask %s is inside the %d-"
-                    "trading-day weekly window — broadmarket summary only",
-                    last_ask_date, MOVERS_WEEK_BD)
-        return {"status": "weekly-skip", "benchmark": benchmark,
-                "plan_date": plan_date.isoformat(),
-                "week_bd": MOVERS_WEEK_BD,
-                "last_ask_date": last_ask_date.isoformat(),
-                "candidates": {}, "asked": [], "failed": []}
-
-    labels = await fetch_labels(conn, list(offsets))
-    plan = pick_movers(offsets, labels=labels, plan_date=plan_date)
-    for side in ("rises", "drops"):
-        await apply_cooldown(conn, plan[side], plan_date, category=category)
-
-    n_cool = sum(1 for s in ("rises", "drops")
-                 for p in plan[s] if p.cooldown)
-    due = [p for s in ("rises", "drops") for p in plan[s]
-           if not p.cooldown]
-    logger.info("movers plan %s [%s]: %d rise(s) / %d drop(s) loaded, "
-                "%d on cooldown, %d to ask", plan_date, benchmark,
-                len(plan["rises"]), len(plan["drops"]), n_cool, len(due))
-
-    opts = SearchOptions(
-        count=count if count is not None else DAILY_COUNT,
-        recency=daily_recency(plan_date), content_size="high")
-    provider = get_provider(provider_name)()
-
-    asked: List[Dict[str, Any]] = []
-    failed: List[Dict[str, Any]] = []
-    for p in due:
-        try:
-            summary: SearchSummary = await provider.summarize(
-                p.question, model=model, opts=opts, lang=lang)
-            outcome: Dict[str, Any] = {
-                **p.to_dict(),
-                "answer": summary.answer,
-                "cited_refs": summary.cited_refs,
-                "n_refs": len(summary.hits),
-                # The ask's FULL hit list — builds.text resolves these into
-                # text.news rows + text.llm_qa provenance, so the artifact
-                # must be self-sufficient (the pre-removal --store path got
-                # them from the live response instead).
-                "references": [h.to_dict() for h in summary.hits],
-                "provider": summary.provider, "model": summary.model,
-            }
-            asked.append(outcome)
-            logger.info("  [%s] %s -> ok (%s)", p.side, p.question,
-                        ", ".join(summary.cited_refs[:3]) or "no cites")
-        except Exception as e:  # one failed ask must not kill the batch
-            failed.append({**p.to_dict(),
-                           "error": f"{type(e).__name__}: {e}"})
-            logger.warning("  [%s] %s -> FAILED %s: %s", p.side, p.question,
-                           type(e).__name__, e)
-
-    return {
-        "status": "ok",
-        "benchmark": benchmark,
-        "plan_date": plan_date.isoformat(),
-        "candidates": {
-            "rises": [p.to_dict() for p in plan["rises"]],
-            "drops": [p.to_dict() for p in plan["drops"]],
-        },
-        "asked": asked,
-        "failed": failed,
-    }
+    """Module-level shim over :meth:`Movers.broad_industry_id` — the import
+    surface ``builds.text.ai_daily_qa`` uses (``from downloads.macro.ai_daily
+    import movers`` then ``movers.broad_industry_id``)."""
+    return await Movers().broad_industry_id(conn)
 
 
 # ----------------------------------------------------------------------------

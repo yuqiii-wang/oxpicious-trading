@@ -33,27 +33,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
+from _common.df_utils.data_definitions import (
+    GPUInfo,
+)
 
-@dataclass(frozen=True)
-class GPUInfo:
-    """Snapshot of GPU availability + capacity.
 
-    Attributes:
-        available: True iff a CUDA GPU + working cuDF + allocatable VRAM.
-        device_name: GPU name (e.g. "NVIDIA GeForce RTX 5090") or "".
-        driver_version: driver version string or "".
-        vram_total_bytes: total VRAM in bytes (0 if unknown).
-        vram_free_bytes:  free VRAM in bytes  (0 if unknown).
-        cudf_version:     installed cuDF version or "" if not installed.
-        reason:           when unavailable, a short human-readable reason.
-    """
-    available: bool
-    device_name: str = ""
-    driver_version: str = ""
-    vram_total_bytes: int = 0
-    vram_free_bytes: int = 0
-    cudf_version: str = ""
-    reason: str = ""
 
 
 def _is_linux_or_wsl() -> bool:
@@ -149,7 +133,8 @@ def _try_import_cudf() -> Optional[str]:
         return None
 
 
-@lru_cache(maxsize=1)
+
+
 def detect_gpu() -> GPUInfo:
     """Detect GPU availability + capacity. Result is cached.
 

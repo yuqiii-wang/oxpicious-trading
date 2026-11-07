@@ -138,6 +138,16 @@ MONITORED_SERVICES: dict[str, tuple[str, str | None]] = {
     # always-on services); the service name IS the module name (spawn
     # contract).
     "llm_agents.deep_agents.server": ("database", "stream"),
+    # Dummy-LLM provider simulation (llm_agents/test/dummy_llm/server.py,
+    # python -m llm_agents.test.dummy_llm.server) — always-on FastAPI
+    # chat-completions ENDPOINT (127.0.0.1:8768) the offline harness
+    # tests and HTTP-sim runs point the real ZhipuChatProvider at (the
+    # seeded always-present llm/dummy secret_config row; rate-limit
+    # error injection via POST /control). Kept live by the watchdog
+    # like the other daemons so a test never waits on a cold server;
+    # grouped under the stream sub-scope; the service name IS the
+    # module name (spawn contract).
+    "llm_agents.test.dummy_llm.server": ("database", "stream"),
     WATCHDOG_SERVICE: ("database", "monitoring"),
 }
 

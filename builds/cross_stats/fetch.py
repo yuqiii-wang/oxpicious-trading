@@ -30,48 +30,53 @@ from _common.df_utils import epoch_ns_array
 from builds.cross_stats.config import TOP_N_NON_BROAD
 
 
-def _floats(rows, key: str) -> np.ndarray:
-    return np.asarray(
-        [float(r[key]) if r[key] is not None else np.nan for r in rows],
-        dtype="float64",
-    )
+class CrossStatsFetcher:
+    """Conn-scoped DB fetch primitives for the cross_stats pair grain
+    (one asyncpg connection).
 
-
-async def fetch_codes_with_composition(conn) -> set:
-    """Codes with at least one non-cash holding in the LATEST
-    stats.sec_composition snapshot (source_type IN ('etf','index')).
-
-    Used to filter subjects to only those with real composition data so
-    perf-attr rows actually carry shared weights (cross-border ETFs and
-    SSE/SZSE-published indices without published compositions would
-    otherwise emit NULL-weight rows and render zero-height chart bars).
+    Code motion of the former module-level conn-first functions: each keeps
+    its name, SQL, and sequencing — the ``conn`` parameter became
+    ``self.conn``. The pure ``_floats`` column helper (no conn) stays
+    module-level below.
     """
-    rows = await conn.fetch("""
+
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    async def fetch_codes_with_composition(self) -> set:
+        """Codes with at least one non-cash holding in the LATEST
+        stats.sec_composition snapshot (source_type IN ('etf','index')).
+
+        Used to filter subjects to only those with real composition data so
+        perf-attr rows actually carry shared weights (cross-border ETFs and
+        SSE/SZSE-published indices without published compositions would
+        otherwise emit NULL-weight rows and render zero-height chart bars).
+        """
+        rows = await self.conn.fetch("""
         SELECT DISTINCT code
         FROM stats.sec_composition
         WHERE stock_code IS NOT NULL
           AND source_type IN ('etf', 'index')
     """)
-    return {r["code"] for r in rows}
+        return {r["code"] for r in rows}
 
+    async def fetch_shared_weights(self) -> dict:
+        """Shared weight for every (subject, benchmark) pair.
 
-async def fetch_shared_weights(conn) -> dict:
-    """Shared weight for every (subject, benchmark) pair.
+        Uses the LATEST composition snapshot per (code, source_type). For
+        stocks held by BOTH:
+          code_sec_shared_weight      = Σ w_subject   on shared stocks
+          benchmark_sec_shared_weight = Σ w_benchmark on shared stocks
+        All pair families in one query; callers look up the pairs they need.
 
-    Uses the LATEST composition snapshot per (code, source_type). For
-    stocks held by BOTH:
-      code_sec_shared_weight      = Σ w_subject   on shared stocks
-      benchmark_sec_shared_weight = Σ w_benchmark on shared stocks
-    All pair families in one query; callers look up the pairs they need.
+        Pairs with composition data but ZERO overlapping stocks are set to
+        (0, 0) explicitly — disjoint indices (CSI 300 vs CSI 500) appear in
+        charts with explicit zero bars instead of being indistinguishable
+        from pairs lacking composition data.
 
-    Pairs with composition data but ZERO overlapping stocks are set to
-    (0, 0) explicitly — disjoint indices (CSI 300 vs CSI 500) appear in
-    charts with explicit zero bars instead of being indistinguishable
-    from pairs lacking composition data.
-
-    Returns dict: {(subject_code, benchmark_code): (code_wt, bench_wt)}
-    """
-    rows = await conn.fetch("""
+        Returns dict: {(subject_code, benchmark_code): (code_wt, bench_wt)}
+        """
+        rows = await self.conn.fetch("""
         WITH latest AS (
             SELECT code, source_type, MAX(snapshot_date) AS max_date
             FROM stats.sec_composition
@@ -99,51 +104,50 @@ async def fetch_shared_weights(conn) -> dict:
         GROUP BY h1.code, h2.code
     """)
 
-    result: dict = {}
-    for r in rows:
-        csw = float(r["code_sec_shared_weight"])
-        bsw = float(r["benchmark_sec_shared_weight"])
-        # Skip NaN (PostgreSQL NUMERIC supports NaN; SUM propagates it)
-        if csw != csw or bsw != bsw:
-            continue
-        result[(r["subject_code"], r["benchmark_code"])] = (csw, bsw)
+        result: dict = {}
+        for r in rows:
+            csw = float(r["code_sec_shared_weight"])
+            bsw = float(r["benchmark_sec_shared_weight"])
+            # Skip NaN (PostgreSQL NUMERIC supports NaN; SUM propagates it)
+            if csw != csw or bsw != bsw:
+                continue
+            result[(r["subject_code"], r["benchmark_code"])] = (csw, bsw)
 
-    # [PERF-BLOCKER — declared] O(N^2) zero-fill loop: explicit (0,0) for
-    # every compositioned pair without overlap (~1M dict writes once per
-    # run, ~1s). Vectorizing needs a cross-join frame that costs more.
-    all_codes = await conn.fetch("""
+        # [PERF-BLOCKER — declared] O(N^2) zero-fill loop: explicit (0,0) for
+        # every compositioned pair without overlap (~1M dict writes once per
+        # run, ~1s). Vectorizing needs a cross-join frame that costs more.
+        all_codes = await self.conn.fetch("""
         SELECT DISTINCT code
         FROM stats.sec_composition
         WHERE stock_code IS NOT NULL
     """)
-    code_set = {r["code"] for r in all_codes}
-    for c1 in code_set:
-        for c2 in code_set:
-            if c1 != c2 and (c1, c2) not in result:
-                result[(c1, c2)] = (0.0, 0.0)
+        code_set = {r["code"] for r in all_codes}
+        for c1 in code_set:
+            for c2 in code_set:
+                if c1 != c2 and (c1, c2) not in result:
+                    result[(c1, c2)] = (0.0, 0.0)
 
-    return result
+        return result
 
+    async def fetch_index_closes(
+        self, start_date: Optional[datetime.date] = None
+    ) -> pd.DataFrame:
+        """Daily closes for the BENCHMARK pool.
 
-async def fetch_index_closes(
-    conn, start_date: Optional[datetime.date] = None
-) -> pd.DataFrame:
-    """Daily closes for the BENCHMARK pool.
+          1. ALL broad-market indices (sec_classification.sector_id='BROAD').
+          2. Per-industry top-TOP_N_NON_BROAD non-broad indices ranked by
+             aggregate ETF turnover (stats.index_exts.total_etf_trading_amount).
+          3. DEBT-sector indices always excluded.
 
-      1. ALL broad-market indices (sec_classification.sector_id='BROAD').
-      2. Per-industry top-TOP_N_NON_BROAD non-broad indices ranked by
-         aggregate ETF turnover (stats.index_exts.total_etf_trading_amount).
-      3. DEBT-sector indices always excluded.
+        Returns DataFrame [benchmark_code, date, benchmark_close].
+        """
+        date_where: str = ""
+        params: list = [TOP_N_NON_BROAD]
+        if start_date is not None:
+            date_where = "AND b.date >= $2"
+            params.append(start_date)
 
-    Returns DataFrame [benchmark_code, date, benchmark_close].
-    """
-    date_where: str = ""
-    params: list = [TOP_N_NON_BROAD]
-    if start_date is not None:
-        date_where = "AND b.date >= $2"
-        params.append(start_date)
-
-    sql = f"""
+        sql = f"""
         WITH broad_codes AS (
             SELECT b.code
             FROM stats.index_basic_stats b
@@ -186,47 +190,46 @@ async def fetch_index_closes(
         ORDER BY b.code, b.date
     """
 
-    rows = await conn.fetch(sql, *params)
-    if not rows:
-        return pd.DataFrame(
-            columns=["benchmark_code", "date", "benchmark_close",
-                     "benchmark_price_change"]
-        )
+        rows = await self.conn.fetch(sql, *params)
+        if not rows:
+            return pd.DataFrame(
+                columns=["benchmark_code", "date", "benchmark_close",
+                         "benchmark_price_change"]
+            )
 
-    df = pd.DataFrame({
-        "benchmark_code": [r["benchmark_code"] for r in rows],
-        "date": epoch_ns_array(rec_col(rows, "date")),
-        "benchmark_close": _floats(rows, "close"),
-    })
-    df = df.sort_values(["benchmark_code", "date"]).reset_index(drop=True)
-    # Daily point change per benchmark — the second operand of
-    # code_price_with_benchmark_offset. diff() on each series' OWN
-    # trading calendar (before any inner-merge date intersection), so a
-    # date missing on one side never corrupts the other side's lag.
-    df["benchmark_price_change"] = df.groupby("benchmark_code")[
-        "benchmark_close"
-    ].diff()
-    return df[["benchmark_code", "date", "benchmark_close",
-               "benchmark_price_change"]]
+        df = pd.DataFrame({
+            "benchmark_code": [r["benchmark_code"] for r in rows],
+            "date": epoch_ns_array(rec_col(rows, "date")),
+            "benchmark_close": _floats(rows, "close"),
+        })
+        df = df.sort_values(["benchmark_code", "date"]).reset_index(drop=True)
+        # Daily point change per benchmark — the second operand of
+        # code_price_with_benchmark_offset. diff() on each series' OWN
+        # trading calendar (before any inner-merge date intersection), so a
+        # date missing on one side never corrupts the other side's lag.
+        df["benchmark_price_change"] = df.groupby("benchmark_code")[
+            "benchmark_close"
+        ].diff()
+        return df[["benchmark_code", "date", "benchmark_close",
+                   "benchmark_price_change"]]
 
+    async def fetch_index_subject_closes(
+        self, start_date: Optional[datetime.date] = None
+    ) -> pd.DataFrame:
+        """Daily closes for ALL compositioned non-broad non-debt indices
+        (the SUBJECT pool — full universe for the Intraday Attribution view;
+        broad-market indices appear in both benchmark and subject roles and
+        are re-added by the runner).
 
-async def fetch_index_subject_closes(
-    conn, start_date: Optional[datetime.date] = None
-) -> pd.DataFrame:
-    """Daily closes for ALL compositioned non-broad non-debt indices
-    (the SUBJECT pool — full universe for the Intraday Attribution view;
-    broad-market indices appear in both benchmark and subject roles and
-    are re-added by the runner).
+        Returns DataFrame [code, date, subject_close].
+        """
+        date_where: str = ""
+        params: list = []
+        if start_date is not None:
+            date_where = "AND b.date >= $1"
+            params.append(start_date)
 
-    Returns DataFrame [code, date, subject_close].
-    """
-    date_where: str = ""
-    params: list = []
-    if start_date is not None:
-        date_where = "AND b.date >= $1"
-        params.append(start_date)
-
-    sql = f"""
+        sql = f"""
         WITH subject_codes AS (
             SELECT DISTINCT b.code
             FROM stats.index_basic_stats b
@@ -253,19 +256,29 @@ async def fetch_index_subject_closes(
         ORDER BY b.code, b.date
     """
 
-    rows = await conn.fetch(sql, *params)
-    if not rows:
-        return pd.DataFrame(columns=["code", "date", "subject_close",
-                                     "code_price_change"])
+        rows = await self.conn.fetch(sql, *params)
+        if not rows:
+            return pd.DataFrame(columns=["code", "date", "subject_close",
+                                         "code_price_change"])
 
-    df = pd.DataFrame({
-        "code": [r["code"] for r in rows],
-        "date": epoch_ns_array(rec_col(rows, "date")),
-        "subject_close": _floats(rows, "subject_close"),
-    })
-    df = df.sort_values(["code", "date"]).reset_index(drop=True)
-    # Daily point change per subject (own calendar — see the benchmark
-    # fetch); merged with the benchmark change into
-    # code_price_with_benchmark_offset by the pair-grain pipeline.
-    df["code_price_change"] = df.groupby("code")["subject_close"].diff()
-    return df[["code", "date", "subject_close", "code_price_change"]]
+        df = pd.DataFrame({
+            "code": [r["code"] for r in rows],
+            "date": epoch_ns_array(rec_col(rows, "date")),
+            "subject_close": _floats(rows, "subject_close"),
+        })
+        df = df.sort_values(["code", "date"]).reset_index(drop=True)
+        # Daily point change per subject (own calendar — see the benchmark
+        # fetch); merged with the benchmark change into
+        # code_price_with_benchmark_offset by the pair-grain pipeline.
+        df["code_price_change"] = df.groupby("code")["subject_close"].diff()
+        return df[["code", "date", "subject_close", "code_price_change"]]
+
+
+# ----------------------------------------------------------------------------
+# Pure column helper (no conn — stays module-level)
+# ----------------------------------------------------------------------------
+def _floats(rows, key: str) -> np.ndarray:
+    return np.asarray(
+        [float(r[key]) if r[key] is not None else np.nan for r in rows],
+        dtype="float64",
+    )

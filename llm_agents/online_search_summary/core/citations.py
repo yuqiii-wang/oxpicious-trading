@@ -18,7 +18,7 @@ docs.bigmodel.cn/cn/guide/tools/web-search):
     ``extract_cited_refs`` recovers the tags in citation order so stored
     context can be limited to the actually-cited references.
   * ``format_references`` renders hits back into the reference list stored
-    as text.llm_qa.context (and embedded in compose-flow prompts).
+    as llm.llm_qa.context (and embedded in compose-flow prompts).
 """
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def format_references(
     *,
     only_refs: Optional[Sequence[str]] = None,
 ) -> str:
-    """Render hits as the reference list stored in text.llm_qa.context.
+    """Render hits as the reference list stored in llm.llm_qa.context.
 
     One block per hit, ``[ref_N] title — media · date`` header + link +
     snippet. With *only_refs* (e.g. ``summary.cited_refs``) just those tags

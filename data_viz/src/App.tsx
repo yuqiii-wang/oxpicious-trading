@@ -43,8 +43,10 @@ import AiMonitorPage from "@/monitor/pages/AiMonitor";
 import SrcDataAuditPage from "@/monitor/pages/SrcDataAuditPage";
 import ServiceConfigPage from "@/config/pages/ServiceConfigPage";
 import ExtRequestConfigPage from "@/config/pages/ExtRequestConfigPage";
+import SecretsPage from "@/config/pages/SecretsPage";
 import SecStaticsPage from "@/config/pages/SecStaticsPage";
 import KeywordMapsPage from "@/config/pages/KeywordMapsPage";
+import KnowledgeGraphPage from "@/config/pages/KnowledgeGraphPage";
 import OrchestrationPage from "@/config/pages/OrchestrationPage";
 import { useSecAllocLivePipeline } from "@/live/hooks/useSecAllocLivePipeline";
 import { useTradingSignalsSchedule } from "@/live/hooks/useTradingSignalsSchedule";
@@ -129,8 +131,10 @@ export default function App() {
           <Route path="/config" element={<Navigate to="/config/service" replace />} />
           <Route path="/config/service" element={<ServiceConfigPage />} />
           <Route path="/config/external" element={<ExtRequestConfigPage />} />
+          <Route path="/config/secrets" element={<SecretsPage />} />
           <Route path="/config/security" element={<SecStaticsPage />} />
           <Route path="/config/keywords" element={<KeywordMapsPage />} />
+          <Route path="/config/kg" element={<KnowledgeGraphPage />} />
           <Route path="/config/orchestration" element={<OrchestrationPage />} />
         </Routes>
       </Box>

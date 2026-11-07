@@ -28,21 +28,11 @@ from builds.etf.db_query import fetch_latest_etf_composition
 
 import logging
 logger = logging.getLogger(__name__)
+from builds.etf.pipeline.data_definitions import (
+    PeScope,
+)
 
 
-@dataclass
-class PeScope:
-    """Shared mask machinery + PE-augmented frame."""
-    merged: pd.DataFrame = None              # type: ignore[assignment]
-    comp_latest: pd.DataFrame = field(default_factory=pd.DataFrame)
-    in_range: np.ndarray = None              # type: ignore[assignment]
-    exists: np.ndarray = None                # type: ignore[assignment]
-    split_hit: np.ndarray = None              # type: ignore[assignment]
-    split_mask: np.ndarray = None            # type: ignore[assignment]
-    pe_null_df: Optional[pd.DataFrame] = None
-    pe_null_hit: np.ndarray = None            # type: ignore[assignment]
-    forced_mask: np.ndarray = None            # type: ignore[assignment]
-    cand: np.ndarray = None                   # type: ignore[assignment]
 
 
 def _key_exists_mask(keys: pd.DataFrame, other: pd.DataFrame) -> np.ndarray:

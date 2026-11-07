@@ -1,6 +1,6 @@
-"""llm_agents.online_search_summary.storage — text-schema persistence layer.
+"""llm_agents.online_search_summary.storage — text/llm-schema persistence layer.
 
-Everything that writes the agent's outcome into the ``text`` schema, plus
+Everything that writes the agent's outcome into the ``text``/``llm`` schemas, plus
 the per-reference resolution that decides WHERE each citation lands:
 
   * ``matching`` — the ref_type/resolved_via vocabulary and the pure
@@ -11,10 +11,10 @@ the per-reference resolution that decides WHERE each citation lands:
   * ``resolve``  — RefResolver: corpus match -> ddgs + markitdown
     verification -> null-content placeholder; one ResolvedRef per
     citation tag. ``build_ref_rows`` projects them onto the
-    text.llm_qa_refs rows (one per resolved article — representative
+    llm.llm_qa_refs rows (one per resolved article — representative
     ref tag + is_used).
   * ``store``    — OnlineSearchSummaryStore: references -> text.news, the
-    per-ref typing -> text.llm_qa_refs, the Q&A -> text.llm_qa.
+    per-ref typing -> llm.llm_qa_refs, the Q&A -> llm.llm_qa.
 
 Depends only on ``core`` (+ project _common / builds.text utilities);
 never on ``providers``.

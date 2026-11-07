@@ -74,7 +74,7 @@
 --               dividend_est / dividend_deliveries / margin_tech_stats /
 --               margin_changes tables, and monitor.src_data_audit.
 --               analysis_signals.* (2026-10-10);
---               text.deep_agent_identities (2026-10-30 — the deep-agent
+--               llm.deep_agent_identities (2026-10-30 — the deep-agent
 --               thread identities' scope subject, third text.*
 --               conversion). OTHER sec_type columns (stats.*, live.*)
 --               KEEP TEXT — see NOT converted below.
@@ -101,26 +101,26 @@
 --               within its portfolio_type (one row per code x type x
 --               sub since 2026-10-25) — 0 trio_wash, 1 spread.
 --    research_logic
---               text.llm_qa_by_research (logic_label): the dominant
+--               llm.llm_qa_by_research (logic_label): the dominant
 --               investing logic a research-logic Q&A row classifies —
 --               0 growth / 1 value / 2 dividend / 3 commodity /
 --               4 cyclical / 5 defensive / 6 quality / 7 theme,
 --               99 other = the fallback (did not fit / unclassifiable).
---               First text.* LLM-layer enum converted (2026-10-27).
+--               First llm.* LLM-layer enum converted (2026-10-27).
 --    prompt_type
---               text.ai_prompts (prompt_type): the prompt row's role in
+--               llm.ai_prompts (prompt_type): the prompt row's role in
 --               a deep-agent run — 0 system (the run's standing prompt) /
 --               1 skills (an approach instruction, the UI picker's rows) /
 --               2 plan (a generation-plan prompt, reserved). Second
---               text.* LLM-layer enum converted (2026-10-29).
+--               llm.* LLM-layer enum converted (2026-10-29).
 --    agent_context_kind
---               text.deep_agent_contexts (kind): which payload a context
+--               llm.deep_agent_contexts (kind): which payload a context
 --               row carries — 0 plan (the thread's plan JSON) / 1
 --               step-input / 2 step-result (the tick note) / 3
 --               subagent-result (a child state's final answer) / 4
 --               final-result (the runner's HARDCODED result node's
 --               fixed output — the run's final answer document, the UI
---               Result view's display source). Third text.* LLM-layer
+--               Result view's display source). Third llm.* LLM-layer
 --               enum converted (2026-10-31).
 --
 --  PENDING (vocabulary registered, columns STILL TEXT — convert table +
@@ -131,12 +131,12 @@
 --
 --  NOT converted (deliberately): sec_type OUTSIDE the converted tables
 --  (the analysis schema family + monitor.src_data_audit +
---  text.deep_agent_identities; the rest are API-facing identity +
+--  llm.deep_agent_identities; the rest are API-facing identity +
 --  filter columns across stats/live), industry_id / sector_id / exchange
 --  (API-facing identity + filter columns; exchange additionally blocked
 --  by a partition-key table), signal_sub_type
 --  (open parameterized family identifier), scale_method (reserved
---  vocabulary), and the REMAINING text.* LLM-layer enums
+--  vocabulary), and the REMAINING llm.* LLM-layer enums
 --  (research_logic 2026-10-27, prompt_type 2026-10-29,
 --  sec_type@deep_agent_identities + agent_context_kind 2026-10-30/31
 --  converted — the others, e.g. llm_qa_refs.ref_type / resolved_via,
@@ -160,7 +160,7 @@ CREATE TABLE static.label_dim (
 );
 
 COMMENT ON TABLE  static.label_dim IS 'Closed-vocabulary label <-> SMALLINT code map (the label-code contract): every SMALLINT-coded label column stores the code and decodes through this table at the API boundary. Mirrors: _common/labels.py (Python), data_viz/api/services/label-codes.ts (TS) — temp_scripts/check_label_dim.py asserts the three stay identical. Labels never ride cudf compute frames as strings (cuDF 26.08 string host-transfer fault class). Seed rows: the database/sql/static/label_dim/10..60 purpose files.';
-COMMENT ON COLUMN static.label_dim.domain     IS 'Vocabulary name = the owning column family: regime / side / action / weighting / rank_side / pool_size / pair_grain / px_speed / vol_state / board / sec_owner_type / contract_type / option_type / signal_type / sec_type (mov_ave family + analysis_signals + text.deep_agent_identities) / ext_resource / ext_http_source / ext_llm_provider / db_instance / db_replication_state / analysis_cache_kind / prompt_type / agent_context_kind are CONVERTED (columns store the code); skew_type / attribution_type / trade_side are PENDING (vocabulary registered, columns still TEXT).';
+COMMENT ON COLUMN static.label_dim.domain     IS 'Vocabulary name = the owning column family: regime / side / action / weighting / rank_side / pool_size / pair_grain / px_speed / vol_state / board / sec_owner_type / contract_type / option_type / signal_type / sec_type (mov_ave family + analysis_signals + llm.deep_agent_identities) / ext_resource / ext_http_source / ext_llm_provider / db_instance / db_replication_state / analysis_cache_kind / prompt_type / agent_context_kind are CONVERTED (columns store the code); skew_type / attribution_type / trade_side are PENDING (vocabulary registered, columns still TEXT).';
 COMMENT ON COLUMN static.label_dim.code       IS 'The value stored in the owning table''s converted column (0-based, SMALLINT).';
 COMMENT ON COLUMN static.label_dim.label      IS 'The human/API string the code decodes to (calm, buy, HYPE, all, ...).';
 COMMENT ON COLUMN static.label_dim.sort_order IS 'Presentation order for listings that enumerate a domain. pool_size deliberately differs from code order: it preserves the pre-refactor alphabetical TEXT order (all, large, mid, small) the API/UI already render; code order is semantic (small, mid, large, all).';

@@ -1,6 +1,6 @@
 """Entry point for ``python -m builds.market_regimes``.
 
-Thin CLI wrapper around ``run_build`` (runner.py). Populates
+Thin CLI wrapper around :class:`MarketRegimesRunner.run_build` (runner.py). Populates
 stats.market_regimes: one row per (sec_type, code, TRADING date) —
 the DAILY 4-state market-regime label (calm / hot / panic / quiet)
 every downstream consumer splits by (forecast bucket axes, signal
@@ -90,13 +90,13 @@ class MarketRegimesBuild(DataBuild):
         }
 
     async def run(self) -> None:
-        from builds.market_regimes import run_build
+        from builds.market_regimes import MarketRegimesRunner
 
         conn = await self.open_conn()
         pool = await self.open_pool(max_size=self.max_concurrent)
         try:
-            await run_build(
-                conn,
+            runner = MarketRegimesRunner(conn)
+            await runner.run_build(
                 force=self.args.force,
                 sec_types=self.resolve_sec_types(),
                 code_filter=self.args.code,

@@ -1,7 +1,7 @@
 """downloads.macro.ai_daily.research_autorun — the movers-embedded AI Research run.
 
 The AUTO half of the research-logic knowledge base
-(``text.llm_qa_by_research``): embedded in the ai_daily movers phase —
+(``llm.llm_qa_by_research``): embedded in the ai_daily movers phase —
 the industry llm-qa step that asks WHICH industries sit excess
 above/below the broad market after observed large fluctuations. Every
 industry the movers plan loads (rise/drop survivors) triggers ONE
@@ -19,6 +19,9 @@ movers plan excludes them by contract).
 
 A failed industry never kills the batch (movers-style): its outcome is
 logged and returned; the movers envelope carries the research block.
+
+The batch loop moved onto the :class:`ResearchAutorun` class as
+``run()`` (body unchanged); the two tiny pure helpers stay module-level.
 """
 from __future__ import annotations
 
@@ -40,66 +43,72 @@ def _sector_of(industry_id: str) -> Optional[str]:
     return get_taxonomy().sector_of(industry_id)
 
 
-async def run_research_autorun(
-    conn,
-    picks: List[Dict[str, Any]],
-    *,
-    provider_name: str = "zhipu",
-    model: Optional[str] = None,
-    lang: str = "zh",
-    force: bool = False,
-) -> List[Dict[str, Any]]:
-    """Generate research rows for the movers picks; return the outcomes.
+class ResearchAutorun:
+    """The movers-embedded AI Research batch — one quarterly-cooldown-gated
+    generation per picked industry. The former ``run_research_autorun``
+    body is ``run()`` verbatim."""
 
-    *picks* are the movers plan's candidate dicts (``industry_id`` +
-    ``label`` present, both sides merged, duplicates collapsed). Each
-    pick passes the quarterly cooldown gate first
-    (:func:`industry_quarter_present` — skipped when a row exists within
-    the last season, unless *force*), then the five-request flow stores
-    the row. Returns one outcome dict per pick.
-    """
-    from llm_agents.llm_qa_by_research.generation import generate_research_qa
-    from llm_agents.llm_qa_by_research.storage import (
-        RESEARCH_COOLDOWN_DAYS, industry_quarter_present)
-    from llm_agents.online_search_summary.providers.registry import (
-        get_provider)
+    async def run(
+        self,
+        conn,
+        picks: List[Dict[str, Any]],
+        *,
+        provider_name: str = "zhipu",
+        model: Optional[str] = None,
+        lang: str = "zh",
+        force: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Generate research rows for the movers picks; return the outcomes.
 
-    outcomes: List[Dict[str, Any]] = []
-    seen: set = set()
-    for p in picks:
-        industry_id = p.get("industry_id")
-        if not industry_id or industry_id in seen:
-            continue
-        seen.add(industry_id)
-        label = p.get("label") or industry_id
-        outcome: Dict[str, Any] = {"industry_id": industry_id,
-                                   "label": label}
-        try:
-            if not force:
-                present = await industry_quarter_present(conn, industry_id)
-                if present is not None:
-                    outcome.update(status="cooldown", last_qa_date=(
-                        present.date().isoformat()
-                        if isinstance(present, datetime.datetime) else None))
-                    logger.info("  research[%s]: skip — row present %s "
-                                "(quarterly cooldown)", industry_id,
-                                outcome["last_qa_date"])
-                    outcomes.append(outcome)
-                    continue
-            qa_id = await generate_research_qa(
-                conn, get_provider(provider_name)(),
-                research_subject(label), industry_id=industry_id,
-                sector_id=_sector_of(industry_id), model=model, lang=lang)
-            outcome.update(status="ok", qa_id=qa_id)
-            logger.info("  research[%s]: stored qa_id=%s", industry_id, qa_id)
-        except Exception as e:  # one failed industry must not kill the batch
-            outcome.update(status="failed",
-                           error=f"{type(e).__name__}: {e}")
-            logger.warning("  research[%s]: FAILED %s: %s", industry_id,
-                           type(e).__name__, e)
-        outcomes.append(outcome)
-    if outcomes:
-        logger.info("research autorun: %d industry(ies) processed "
-                    "(cooldown window %dd)", len(outcomes),
-                    RESEARCH_COOLDOWN_DAYS)
-    return outcomes
+        *picks* are the movers plan's candidate dicts (``industry_id`` +
+        ``label`` present, both sides merged, duplicates collapsed). Each
+        pick passes the quarterly cooldown gate first
+        (:func:`industry_quarter_present` — skipped when a row exists within
+        the last season, unless *force*), then the five-request flow stores
+        the row. Returns one outcome dict per pick.
+        """
+        from llm_agents.llm_qa_by_research.generation import generate_research_qa
+        from llm_agents.llm_qa_by_research.storage import (
+            RESEARCH_COOLDOWN_DAYS, industry_quarter_present)
+        from llm_agents.online_search_summary.providers.registry import (
+            get_provider)
+
+        outcomes: List[Dict[str, Any]] = []
+        seen: set = set()
+        for p in picks:
+            industry_id = p.get("industry_id")
+            if not industry_id or industry_id in seen:
+                continue
+            seen.add(industry_id)
+            label = p.get("label") or industry_id
+            outcome: Dict[str, Any] = {"industry_id": industry_id,
+                                       "label": label}
+            try:
+                if not force:
+                    present = await industry_quarter_present(conn, industry_id)
+                    if present is not None:
+                        outcome.update(status="cooldown", last_qa_date=(
+                            present.date().isoformat()
+                            if isinstance(present, datetime.datetime) else None))
+                        logger.info("  research[%s]: skip — row present %s "
+                                    "(quarterly cooldown)", industry_id,
+                                    outcome["last_qa_date"])
+                        outcomes.append(outcome)
+                        continue
+                qa_id = await generate_research_qa(
+                    conn, get_provider(provider_name)(),
+                    research_subject(label), industry_id=industry_id,
+                    sector_id=_sector_of(industry_id), model=model, lang=lang)
+                outcome.update(status="ok", qa_id=qa_id)
+                logger.info("  research[%s]: stored qa_id=%s", industry_id, qa_id)
+            except Exception as e:  # one failed industry must not kill the batch
+                outcome.update(status="failed",
+                               error=f"{type(e).__name__}: {e}")
+                logger.warning("  research[%s]: FAILED %s: %s", industry_id,
+                               type(e).__name__, e)
+            outcomes.append(outcome)
+        if outcomes:
+            logger.info("research autorun: %d industry(ies) processed "
+                        "(cooldown window %dd)", len(outcomes),
+                        RESEARCH_COOLDOWN_DAYS)
+        return outcomes

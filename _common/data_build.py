@@ -23,8 +23,8 @@ Typical lazy-import subclass (thin delegate)::
         allow_unknown_args = True   # pipeline.main parses sys.argv itself
 
         async def run(self) -> None:
-            from builds.stock.pipeline.main import main
-            await main()
+            from builds.stock.pipeline.main import StockPipeline
+            await StockPipeline().run()
 
     if __name__ == "__main__":
         StockBuild().execute()
@@ -41,8 +41,8 @@ Typical argparse subclass::
             self.code_filter = self.resolve_code_filter()
 
         async def run(self) -> None:
-            from builds.etf.pipeline.main import run
-            await run(self.args)
+            from builds.etf.pipeline.main import EtfPipeline
+            await EtfPipeline(self.args).run()
 """
 from __future__ import annotations
 

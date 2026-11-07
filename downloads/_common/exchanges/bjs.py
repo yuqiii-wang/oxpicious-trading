@@ -153,62 +153,6 @@ def _parse_jsonp(text: str) -> Any:
     return json.loads(text)
 
 
-def _fetch_page(
-    session: requests.Session,
-    page: int,
-    timeout: Optional[Tuple[float, float]] = None,
-    proxy: Optional[AntiBotProxy] = None,
-    service: str = "",
-) -> Optional[Dict[str, Any]]:
-    """Fetch one page of BSE quotation data.
-
-    POSTs the quotation page's form fields (BSE-tab filters + stable code
-    sort, see ``BSE_TAB_FORM_DATA``) plus ``page=<n>`` to the BSE list
-    endpoint and returns the parsed JSON object (the first element of the
-    response array), or None on failure. The endpoint URL and pacing both
-    resolve from the caller service's external_request_config JSON row.
-    """
-    urls = service_urls(service)
-    if proxy is None:
-        # Rotation stays OFF for BSE: the endpoint needs specific headers
-        # (Content-Type / X-Requested-With) that fingerprint overlay would
-        # clobber.
-        proxy = AntiBotProxy(replace(
-            antibot_config_for(service), rotate_browser_profile=False,
-        ))
-
-    data = {"page": str(page), **BSE_TAB_FORM_DATA}
-    resp = proxy.post(
-        session,
-        urls["list"],
-        data=data,
-        headers=_bse_list_headers(urls["referer_list"]),
-        timeout=timeout,
-        logger=logger,
-        log_tag=f"[fetch-page {page}] ",
-    )
-    if resp is None:
-        return None
-    try:
-        payload = _parse_jsonp(resp.text)
-    except (ValueError, json.JSONDecodeError) as e:
-        logger.error("[fetch-page %d] failed to parse JSONP: %s", page, e)
-        return None
-    # The endpoint returns a JSON array with a single object whose ``content``
-    # key holds the record list. An error response looks like
-    # ``[{"msg": "请求参数异常"}]`` (no ``content`` key).
-    if not isinstance(payload, list) or not payload:
-        logger.error("[fetch-page %d] unexpected payload shape: %s",
-                     page, str(payload)[:200])
-        return None
-    obj = payload[0]
-    if not isinstance(obj, dict) or "content" not in obj:
-        logger.error("[fetch-page %d] response missing 'content' key: %s",
-                     page, str(obj)[:200])
-        return None
-    return obj
-
-
 def _num(val: Any) -> Optional[float]:
     """Coerce a JSON value to float, returning None when not numeric."""
     if val is None:
@@ -346,152 +290,6 @@ def _write_page(
             writer.writerow(r)
 
 
-def download_bse_price(
-    out_root: Optional[str] = None,
-    *,
-    sleep_sec: Optional[float] = None,
-    force: bool = False,
-    session: Optional[requests.Session] = None,
-    service: str,
-) -> dict:
-    """Download the BSE daily price snapshot using the API's trade date.
-
-    Paginates the BSE list endpoint with ``page`` (0-indexed) until all
-    ``totalElements`` records are collected, appending each page's parsed
-    rows to ``temps/bse_trend/bse_trend_stock_YYYYMMDD.csv``.
-
-    The filename and 交易日期 column are derived strictly from the API's
-    per-record ``hqjsrq`` field (the trade date), never from
-    ``datetime.now()``.
-
-    Skips when the file for the returned trade date already contains the
-    expected row count unless ``force=True``. Pacing resolves from the
-    caller service's external_request_config JSON row when *service* is
-    given (sleep_sec still overrides the row's base when passed).
-    """
-    out_dir = resolve_out_dir(__file__, "bse_trend", out_root)
-    sess = session or requests.Session()
-    list_url = service_urls(service)["list"]
-
-    # Rotation stays OFF for BSE (specific headers, see _fetch_page).
-    if sleep_sec is None:
-        sleep_sec = sleep_sec_for(service)
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(service),
-        rotate_browser_profile=False,
-        base_sleep_sec=sleep_sec,
-    ))
-
-    logger.info("Starting BSE price download (BSE tab, page size %d)", PAGE_SIZE)
-
-    # First page: discover the trade date and total record count.
-    first = _fetch_page(sess, 0, proxy=proxy, service=service)
-    if first is None:
-        logger.error("Failed to fetch first BSE page")
-        return {"downloaded": 0, "failed": 1, "out_dir": str(out_dir)}
-
-    total = int(first.get("totalElements", 0))
-    total_pages = int(first.get("totalPages", 0))
-
-    update_dt = _extract_update_datetime(first)
-    if update_dt is None:
-        logger.error(
-            "BSE response missing or invalid trade date (hqjsrq); first record: %s",
-            str((first.get("content") or [{}])[0])[:200],
-        )
-        return {"downloaded": 0, "failed": 1, "out_dir": str(out_dir)}
-
-    trade_date = update_dt.date()
-    ymd = trade_date.strftime("%Y%m%d")
-    date_str = trade_date.strftime("%Y-%m-%d")
-    out_file = out_dir / f"bse_trend_stock_{ymd}.csv"
-
-    logger.info(
-        "BSE 更新时间=%s 交易日期=%s totalElements=%d totalPages=%d page0 rows=%d",
-        update_dt.strftime("%Y-%m-%d %H:%M:%S"),
-        date_str,
-        total,
-        total_pages,
-        len(first.get("content", [])),
-    )
-
-    if not force and is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
-        existing = _count_csv_rows(out_file)
-        if existing >= total:
-            logger.info(
-                "%s already has %d rows (>= total %d), skipping",
-                out_file.name, existing, total,
-            )
-            return {
-                "downloaded": 0,
-                "skipped_cached": 1,
-                "trade_date": date_str,
-                "total": total,
-                "rows": existing,
-                "out_file": str(out_file),
-            }
-        logger.info(
-            "%s has %d rows (< total %d), re-downloading",
-            out_file.name, existing, total,
-        )
-
-    # Parse and write the first page (with header).
-    rows = [_parse_row(r, date_str) for r in first.get("content", [])]
-    _write_page(out_file, rows, write_header=True)
-    written = len(rows)
-    logger.info("page 0: wrote %d rows -> %s", written, out_file.name)
-
-    # Subsequent pages: append until we've collected `total` records or
-    # reach totalPages. Pages past the last one return empty content arrays.
-    page_index = 1
-    while written < total and (total_pages == 0 or page_index < total_pages):
-        if proxy.is_blocked(list_url):
-            logger.warning("  [host-blocked] bse.cn is blocked, stopping pagination")
-            break
-
-        # Auto-sleep is handled by proxy.post() inside _fetch_page
-        payload = _fetch_page(sess, page_index, proxy=proxy, service=service)
-        if payload is None:
-            logger.error("page %d failed: request returned None", page_index)
-            break
-
-        page_rows = payload.get("content", []) or []
-        if not page_rows:
-            logger.info("page %d returned no rows, stopping", page_index)
-            break
-
-        parsed = [_parse_row(r, date_str) for r in page_rows]
-        _write_page(out_file, parsed, write_header=False)
-        written += len(parsed)
-        logger.info(
-            "page %d: wrote %d rows (cumulative %d / %d)",
-            page_index, len(parsed), written, total,
-        )
-        page_index += 1
-
-    logger.info(
-        "Done BSE price. 更新时间=%s 交易日期=%s total=%d written=%d out=%s",
-        update_dt.strftime("%Y-%m-%d %H:%M:%S"),
-        date_str,
-        total,
-        written,
-        out_file,
-    )
-    # canonicalize 证券代码 -> "NNNNNN.BJ" + exchange/board/sec_type columns
-    # so build loaders can filter by plain column equality (no regex)
-    if written:
-        ensure_canonical_csv(out_file, "BJ", sec_type="stock", logger=logger)
-    return {
-        "downloaded": 1,
-        "update_time": update_dt.strftime("%Y-%m-%d %H:%M:%S"),
-        "trade_date": date_str,
-        "total": total,
-        "rows": written,
-        "pages": page_index,
-        "out_file": str(out_file),
-    }
-
-
 # --- BSE indices (北证指数 — /market_data/bse_indices/*.html) -----------------
 # Every BSE index page's chart JS (neeq_bz50.min.js / neeq_zjtx.min.js,
 # apiHost="" so all on www.bse.cn) serves the same two GET JSONP endpoints,
@@ -519,82 +317,6 @@ BSE_INDEX_CODES: Dict[str, str] = {
     "899050": "北证50",
     "899601": "北证专精特新",
 }
-
-
-def _fetch_index_payload(
-    session: requests.Session,
-    url: str,
-    params: Optional[Dict[str, str]] = None,
-    proxy: Optional[AntiBotProxy] = None,
-    timeout: Optional[Tuple[float, float]] = None,
-    referer: str = "",
-    service: str = "",
-) -> Optional[List[Any]]:
-    """GET one BSE index endpoint and return its parsed JSONP record list.
-
-    The endpoint URL and pacing both resolve from the caller service's
-    external_request_config JSON row."""
-    if proxy is None:
-        proxy = AntiBotProxy(replace(
-            antibot_config_for(service), rotate_browser_profile=False,
-        ))
-    headers = _bse_api_headers(referer)
-    r = proxy.get(session, url, params=params, headers=headers,
-                  timeout=timeout, logger=logger, log_tag="[bse-index] ")
-    if r is None:
-        return None
-    try:
-        payload = _parse_jsonp(r.text)
-    except (ValueError, json.JSONDecodeError) as e:
-        logger.error("BSE index payload parse failed (%s): %s", url, e)
-        return None
-    if not isinstance(payload, list):
-        logger.error("BSE index payload not a list (%s): %s", url, str(payload)[:120])
-        return None
-    return payload
-
-
-def fetch_bse_index_kline(
-    session: requests.Session,
-    code: str,
-    *,
-    proxy: Optional[AntiBotProxy] = None,
-    kline_type: str = "dayKline",
-    timeout: Optional[Tuple[float, float]] = None,
-    service: str = "",
-) -> Optional[List[Dict[str, Any]]]:
-    """Fetch the full daily K-line history of one BSE index (899050/899601).
-
-    Returns the raw record list (oldest → newest; the last record is today's
-    live row during the session), or None on failure.
-    """
-    urls = service_urls(service)
-    return _fetch_index_payload(
-        session, urls[f"kline_{code}"], {"type": kline_type},
-        proxy=proxy, timeout=timeout, referer=urls[f"referer_{code}"],
-        service=service,
-    )
-
-
-def fetch_bse_index_realtime(
-    session: requests.Session,
-    code: str,
-    *,
-    proxy: Optional[AntiBotProxy] = None,
-    timeout: Optional[Tuple[float, float]] = None,
-    service: str = "",
-) -> Optional[List[Dict[str, Any]]]:
-    """Fetch today's per-minute intraday series of one BSE index
-    (899050/899601).
-
-    Returns the raw record list (one record per minute since open), or None
-    on failure.
-    """
-    urls = service_urls(service)
-    return _fetch_index_payload(
-        session, urls[f"realtime_{code}"], {}, proxy=proxy, timeout=timeout,
-        referer=urls[f"referer_{code}"], service=service,
-    )
 
 
 def bse_index_kline_rows(
@@ -633,268 +355,6 @@ def bse_index_kline_rows(
             "consNumber": None,
         })
     return rows
-
-
-def fetch_bse_snapshot(
-    session: requests.Session,
-    proxy: Optional[AntiBotProxy] = None,
-    timeout: Optional[Tuple[float, float]] = None,
-    service: str = "",
-) -> Tuple[Optional[datetime], Dict[str, Dict[str, Any]]]:
-    """Fetch one full BSE-listed snapshot for streaming (all pages).
-
-    Returns ``(update_dt, {bare_6digit_code: record})`` or ``(None, {})``.
-    ``update_dt`` comes from the first record's ``hqjsrq``/``hqgxsj`` (the
-    exchange's own update stamp, not the local clock). Records mirror the
-    SSE stream schema — ``code``/``name``/``open``/``high``/``low``/
-    ``last``/``prev_close``/``change``/``volume``/``amount``/``pe`` — with
-    volume in SHARES and amount in YUAN as returned by the endpoint (raw
-    units, same convention as the SSE intraday CSV archive). ``change`` is
-    derived as ``last - prev_close`` (the endpoint publishes only the pct
-    change, ``hqzdf``).
-    """
-    list_url = service_urls(service)["list"]
-    if proxy is None:
-        proxy = AntiBotProxy(replace(
-            antibot_config_for(service), rotate_browser_profile=False,
-        ))
-
-    first = _fetch_page(session, 0, timeout=timeout, proxy=proxy,
-                        service=service)
-    if first is None:
-        return None, {}
-    update_dt = _extract_update_datetime(first)
-    if update_dt is None:
-        return None, {}
-
-    def _rec(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        code = str(row.get("hqzqdm") or "").strip()
-        if not code:
-            return None
-        last = _num(row.get("hqzjcj"))
-        prev_close = _num(row.get("hqzrsp"))
-        change = round(last - prev_close, 4) if last and prev_close else None
-        return {
-            "code": code.zfill(6),
-            "name": str(row.get("hqzqjc") or "").strip(),
-            "open": _num(row.get("hqjrkp")),
-            "high": _num(row.get("hqzgcj")),
-            "low": _num(row.get("hqzdcj")),
-            "last": last,
-            "prev_close": prev_close,
-            "change": change,
-            "volume": _num(row.get("hqcjsl")),
-            "amount": _num(row.get("hqcjje")),
-            "pe": _num(row.get("hqsyl1")),
-        }
-
-    snapshot: Dict[str, Dict[str, Any]] = {}
-    for row in first.get("content", []) or []:
-        rec = _rec(row)
-        if rec:
-            snapshot[rec["code"]] = rec
-
-    total = int(first.get("totalElements", 0))
-    total_pages = int(first.get("totalPages", 0))
-    page_index = 1
-    while len(snapshot) < total and (total_pages == 0 or page_index < total_pages):
-        if proxy.is_blocked(list_url):
-            logger.warning("host blocked mid-sweep, using partial snapshot (%d codes)",
-                           len(snapshot))
-            break
-        payload = _fetch_page(session, page_index, timeout=timeout, proxy=proxy,
-                              service=service)
-        if payload is None:
-            logger.warning("page %d failed; using partial snapshot (%d codes)",
-                           page_index, len(snapshot))
-            break
-        page_rows = payload.get("content", []) or []
-        if not page_rows:
-            break
-        for row in page_rows:
-            rec = _rec(row)
-            if rec:
-                snapshot[rec["code"]] = rec
-        page_index += 1
-
-    return update_dt, snapshot
-
-
-def fetch_bse_stock_list(
-    session: requests.Session,
-    *,
-    proxy: Optional[AntiBotProxy] = None,
-    timeout: Optional[Tuple[float, float]] = None,
-    service: str = "",
-) -> List[Tuple[str, str]]:
-    """Walk the BSE quotation pagination and return ``[(bare_code, name), ...]``.
-
-    Same endpoint/filters as ``download_bse_price`` (BSE tab + listed flag,
-    stable ``hqzqdm`` sort), so the returned universe matches the daily
-    ``bse_trend_stock_<date>.csv`` snapshots. ~348 codes / ~18 pages.
-    """
-    list_url = service_urls(service)["list"]
-    if proxy is None:
-        proxy = AntiBotProxy(replace(
-            antibot_config_for(service), rotate_browser_profile=False,
-        ))
-
-    stocks: List[Tuple[str, str]] = []
-    first = _fetch_page(session, 0, timeout=timeout, proxy=proxy,
-                        service=service)
-    if first is None:
-        logger.error("Failed to fetch first BSE list page")
-        return stocks
-
-    def _extend(content: List[Dict[str, Any]]) -> int:
-        added = 0
-        for row in content:
-            code_raw = str(row.get("hqzqdm") or "").strip()
-            if not code_raw:
-                continue
-            stocks.append((code_raw.zfill(6), str(row.get("hqzqjc") or "").strip()))
-            added += 1
-        return added
-
-    total = int(first.get("totalElements", 0))
-    total_pages = int(first.get("totalPages", 0))
-    written = _extend(first.get("content", []) or [])
-    logger.info("BSE stock list: total=%d page0 rows=%d", total, written)
-
-    page_index = 1
-    while written < total and (total_pages == 0 or page_index < total_pages):
-        if proxy.is_blocked(list_url):
-            logger.warning("[host-blocked] bse.cn blocked, stopping list pagination")
-            break
-        payload = _fetch_page(session, page_index, timeout=timeout, proxy=proxy,
-                              service=service)
-        if payload is None:
-            logger.error("list page %d failed", page_index)
-            break
-        page_rows = payload.get("content", []) or []
-        if not page_rows:
-            logger.info("list page %d returned no rows, stopping", page_index)
-            break
-        written += _extend(page_rows)
-        page_index += 1
-
-    logger.info("Done BSE stock list: collected %d codes", len(stocks))
-    return stocks
-
-
-def fetch_bse_kline(
-    session: requests.Session,
-    code: str,
-    *,
-    proxy: Optional[AntiBotProxy] = None,
-    timeout: Optional[Tuple[float, float]] = None,
-    service: str = "",
-) -> Optional[List[Dict[str, Any]]]:
-    """Fetch one stock's FULL daily K-line history (the 日K series behind the
-    company detail page's chart).
-
-    ``begin=0&end=-1`` makes the endpoint return every daily bar since
-    listing in a single response. Returns the raw ``data`` record list, or
-    None on request/parse failure or when the endpoint reports an error
-    (missing ``data`` key / non-zero ``status``). An empty list means no
-    published history for the code.
-
-    bse.cn fronts the endpoint with a WAF cookie challenge (302 + Set-Cookie
-    ``C3VK``, ``Ws-Action: cc``); the shared ``requests.Session`` passes it
-    transparently by following the redirect.
-    """
-    urls = service_urls(service)
-    if proxy is None:
-        # kline pacing resolves from the caller service's row (the
-        # aggressive-anti-bot cadence).
-        proxy = AntiBotProxy(replace(
-            antibot_config_for(service), rotate_browser_profile=False,
-        ))
-
-    resp = proxy.get(
-        session,
-        urls["kline"].format(code=code),
-        params={"begin": 0, "end": -1, "type": "dayKline", "xxfcbj": 2},
-        headers=_bse_api_headers(urls["referer_kline"]),
-        timeout=timeout,
-        logger=logger,
-        log_tag=f"[kline {code}] ",
-    )
-    if resp is None:
-        return None
-    try:
-        payload = _parse_jsonp(resp.text)
-    except (ValueError, json.JSONDecodeError) as e:
-        logger.error("[kline %s] failed to parse response: %s", code, e)
-        return None
-    if not isinstance(payload, dict) or "data" not in payload:
-        logger.error("[kline %s] unexpected payload shape: %s",
-                     code, str(payload)[:200])
-        return None
-    if payload.get("status") not in (0, "0"):
-        logger.error("[kline %s] endpoint error status=%r msg=%r",
-                     code, payload.get("status"), payload.get("msg"))
-        return None
-    return payload.get("data") or []
-
-
-def fetch_bse_company_timesharing(
-    session: requests.Session,
-    code: str,
-    *,
-    proxy: Optional[AntiBotProxy] = None,
-    timeout: Optional[Tuple[float, float]] = None,
-    service: str = "",
-) -> Optional[List[Dict[str, Any]]]:
-    """Fetch one stock's per-minute time-sharing (分时) series for TODAY.
-
-    ``begin=0&end=-1`` makes the endpoint return the whole session so far;
-    post-close this is the day's final minute series (the page behind
-    company_time_sharing.html, see the ``timesharing`` urls role). Returns the raw
-    ``data.line`` record list (UNSORTED — callers sort by ``HQGXSJ``), ``[]``
-    when the code has no trades today (suspended / no published series), or
-    None on request/parse failure or when the endpoint reports an error.
-
-    Same WAF cookie challenge as ``fetch_bse_kline``; the shared session
-    passes it transparently.
-    """
-    urls = service_urls(service)
-    if proxy is None:
-        proxy = AntiBotProxy(replace(
-            antibot_config_for(service), rotate_browser_profile=False,
-        ))
-
-    resp = proxy.get(
-        session,
-        urls["timesharing"].format(code=code),
-        params={"begin": 0, "end": -1},
-        headers=_bse_api_headers(urls["referer_kline"]),
-        timeout=timeout,
-        logger=logger,
-        log_tag=f"[timesharing {code}] ",
-    )
-    if resp is None:
-        return None
-    try:
-        payload = _parse_jsonp(resp.text)
-    except (ValueError, json.JSONDecodeError) as e:
-        logger.error("[timesharing %s] failed to parse response: %s", code, e)
-        return None
-    if not isinstance(payload, dict) or "data" not in payload:
-        logger.error("[timesharing %s] unexpected payload shape: %s",
-                     code, str(payload)[:200])
-        return None
-    if payload.get("status") not in (0, "0"):
-        logger.error("[timesharing %s] endpoint error status=%r msg=%r",
-                     code, payload.get("status"), payload.get("msg"))
-        return None
-    data = payload.get("data") or {}
-    line = data.get("line") if isinstance(data, dict) else None
-    if line is None:
-        logger.error("[timesharing %s] response missing data.line: %s",
-                     code, str(payload)[:200])
-        return None
-    return line
 
 
 def parse_bse_kline_row(
@@ -941,3 +401,658 @@ def parse_bse_kline_row(
         "成交金额(万元)": amt_wan,
         "市盈率": "",
     }
+
+
+class BjsQuotationDownloader:
+    """BSE quotation-endpoint downloader (stateless).
+
+    Code motion only (2026-11-07): the former module-level fetch functions
+    (``_fetch_page``, ``download_bse_price``, ``_fetch_index_payload``,
+    ``fetch_bse_index_kline``, ``fetch_bse_index_realtime``,
+    ``fetch_bse_snapshot``, ``fetch_bse_stock_list``, ``fetch_bse_kline``,
+    ``fetch_bse_company_timesharing``) are now methods with the same names,
+    signatures and sequencing. The class holds no state — each method still
+    constructs its own ``AntiBotProxy`` per call exactly as the functions
+    did (pacing / host-block lifecycle unchanged) — and the module-level
+    functions at the bottom of this file are thin delegates to the shared
+    instance so every existing import keeps working. The pure parsers, row
+    mappers and CSV writers stay module-level.
+    """
+
+    def _fetch_page(
+        self,
+        session: requests.Session,
+        page: int,
+        timeout: Optional[Tuple[float, float]] = None,
+        proxy: Optional[AntiBotProxy] = None,
+        service: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch one page of BSE quotation data.
+
+        POSTs the quotation page's form fields (BSE-tab filters + stable code
+        sort, see ``BSE_TAB_FORM_DATA``) plus ``page=<n>`` to the BSE list
+        endpoint and returns the parsed JSON object (the first element of the
+        response array), or None on failure. The endpoint URL and pacing both
+        resolve from the caller service's external_request_config JSON row.
+        """
+        urls = service_urls(service)
+        if proxy is None:
+            # Rotation stays OFF for BSE: the endpoint needs specific headers
+            # (Content-Type / X-Requested-With) that fingerprint overlay would
+            # clobber.
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+
+        data = {"page": str(page), **BSE_TAB_FORM_DATA}
+        resp = proxy.post(
+            session,
+            urls["list"],
+            data=data,
+            headers=_bse_list_headers(urls["referer_list"]),
+            timeout=timeout,
+            logger=logger,
+            log_tag=f"[fetch-page {page}] ",
+        )
+        if resp is None:
+            return None
+        try:
+            payload = _parse_jsonp(resp.text)
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.error("[fetch-page %d] failed to parse JSONP: %s", page, e)
+            return None
+        # The endpoint returns a JSON array with a single object whose ``content``
+        # key holds the record list. An error response looks like
+        # ``[{"msg": "请求参数异常"}]`` (no ``content`` key).
+        if not isinstance(payload, list) or not payload:
+            logger.error("[fetch-page %d] unexpected payload shape: %s",
+                         page, str(payload)[:200])
+            return None
+        obj = payload[0]
+        if not isinstance(obj, dict) or "content" not in obj:
+            logger.error("[fetch-page %d] response missing 'content' key: %s",
+                         page, str(obj)[:200])
+            return None
+        return obj
+
+    def download_bse_price(
+        self,
+        out_root: Optional[str] = None,
+        *,
+        sleep_sec: Optional[float] = None,
+        force: bool = False,
+        session: Optional[requests.Session] = None,
+        service: str,
+    ) -> dict:
+        """Download the BSE daily price snapshot using the API's trade date.
+
+        Paginates the BSE list endpoint with ``page`` (0-indexed) until all
+        ``totalElements`` records are collected, appending each page's parsed
+        rows to ``temps/bse_trend/bse_trend_stock_YYYYMMDD.csv``.
+
+        The filename and 交易日期 column are derived strictly from the API's
+        per-record ``hqjsrq`` field (the trade date), never from
+        ``datetime.now()``.
+
+        Skips when the file for the returned trade date already contains the
+        expected row count unless ``force=True``. Pacing resolves from the
+        caller service's external_request_config JSON row when *service* is
+        given (sleep_sec still overrides the row's base when passed).
+        """
+        out_dir = resolve_out_dir(__file__, "bse_trend", out_root)
+        sess = session or requests.Session()
+        list_url = service_urls(service)["list"]
+
+        # Rotation stays OFF for BSE (specific headers, see _fetch_page).
+        if sleep_sec is None:
+            sleep_sec = sleep_sec_for(service)
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(service),
+            rotate_browser_profile=False,
+            base_sleep_sec=sleep_sec,
+        ))
+
+        logger.info("Starting BSE price download (BSE tab, page size %d)", PAGE_SIZE)
+
+        # First page: discover the trade date and total record count.
+        first = self._fetch_page(sess, 0, proxy=proxy, service=service)
+        if first is None:
+            logger.error("Failed to fetch first BSE page")
+            return {"downloaded": 0, "failed": 1, "out_dir": str(out_dir)}
+
+        total = int(first.get("totalElements", 0))
+        total_pages = int(first.get("totalPages", 0))
+
+        update_dt = _extract_update_datetime(first)
+        if update_dt is None:
+            logger.error(
+                "BSE response missing or invalid trade date (hqjsrq); first record: %s",
+                str((first.get("content") or [{}])[0])[:200],
+            )
+            return {"downloaded": 0, "failed": 1, "out_dir": str(out_dir)}
+
+        trade_date = update_dt.date()
+        ymd = trade_date.strftime("%Y%m%d")
+        date_str = trade_date.strftime("%Y-%m-%d")
+        out_file = out_dir / f"bse_trend_stock_{ymd}.csv"
+
+        logger.info(
+            "BSE 更新时间=%s 交易日期=%s totalElements=%d totalPages=%d page0 rows=%d",
+            update_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            date_str,
+            total,
+            total_pages,
+            len(first.get("content", [])),
+        )
+
+        if not force and is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
+            existing = _count_csv_rows(out_file)
+            if existing >= total:
+                logger.info(
+                    "%s already has %d rows (>= total %d), skipping",
+                    out_file.name, existing, total,
+                )
+                return {
+                    "downloaded": 0,
+                    "skipped_cached": 1,
+                    "trade_date": date_str,
+                    "total": total,
+                    "rows": existing,
+                    "out_file": str(out_file),
+                }
+            logger.info(
+                "%s has %d rows (< total %d), re-downloading",
+                out_file.name, existing, total,
+            )
+
+        # Parse and write the first page (with header).
+        rows = [_parse_row(r, date_str) for r in first.get("content", [])]
+        _write_page(out_file, rows, write_header=True)
+        written = len(rows)
+        logger.info("page 0: wrote %d rows -> %s", written, out_file.name)
+
+        # Subsequent pages: append until we've collected `total` records or
+        # reach totalPages. Pages past the last one return empty content arrays.
+        page_index = 1
+        while written < total and (total_pages == 0 or page_index < total_pages):
+            if proxy.is_blocked(list_url):
+                logger.warning("  [host-blocked] bse.cn is blocked, stopping pagination")
+                break
+
+            # Auto-sleep is handled by proxy.post() inside _fetch_page
+            payload = self._fetch_page(sess, page_index, proxy=proxy, service=service)
+            if payload is None:
+                logger.error("page %d failed: request returned None", page_index)
+                break
+
+            page_rows = payload.get("content", []) or []
+            if not page_rows:
+                logger.info("page %d returned no rows, stopping", page_index)
+                break
+
+            parsed = [_parse_row(r, date_str) for r in page_rows]
+            _write_page(out_file, parsed, write_header=False)
+            written += len(parsed)
+            logger.info(
+                "page %d: wrote %d rows (cumulative %d / %d)",
+                page_index, len(parsed), written, total,
+            )
+            page_index += 1
+
+        logger.info(
+            "Done BSE price. 更新时间=%s 交易日期=%s total=%d written=%d out=%s",
+            update_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            date_str,
+            total,
+            written,
+            out_file,
+        )
+        # canonicalize 证券代码 -> "NNNNNN.BJ" + exchange/board/sec_type columns
+        # so build loaders can filter by plain column equality (no regex)
+        if written:
+            ensure_canonical_csv(out_file, "BJ", sec_type="stock", logger=logger)
+        return {
+            "downloaded": 1,
+            "update_time": update_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "trade_date": date_str,
+            "total": total,
+            "rows": written,
+            "pages": page_index,
+            "out_file": str(out_file),
+        }
+
+    def _fetch_index_payload(
+        self,
+        session: requests.Session,
+        url: str,
+        params: Optional[Dict[str, str]] = None,
+        proxy: Optional[AntiBotProxy] = None,
+        timeout: Optional[Tuple[float, float]] = None,
+        referer: str = "",
+        service: str = "",
+    ) -> Optional[List[Any]]:
+        """GET one BSE index endpoint and return its parsed JSONP record list.
+
+        The endpoint URL and pacing both resolve from the caller service's
+        external_request_config JSON row."""
+        if proxy is None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+        headers = _bse_api_headers(referer)
+        r = proxy.get(session, url, params=params, headers=headers,
+                      timeout=timeout, logger=logger, log_tag="[bse-index] ")
+        if r is None:
+            return None
+        try:
+            payload = _parse_jsonp(r.text)
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.error("BSE index payload parse failed (%s): %s", url, e)
+            return None
+        if not isinstance(payload, list):
+            logger.error("BSE index payload not a list (%s): %s", url, str(payload)[:120])
+            return None
+        return payload
+
+    def fetch_bse_index_kline(
+        self,
+        session: requests.Session,
+        code: str,
+        *,
+        proxy: Optional[AntiBotProxy] = None,
+        kline_type: str = "dayKline",
+        timeout: Optional[Tuple[float, float]] = None,
+        service: str = "",
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch the full daily K-line history of one BSE index (899050/899601).
+
+        Returns the raw record list (oldest → newest; the last record is today's
+        live row during the session), or None on failure.
+        """
+        urls = service_urls(service)
+        return self._fetch_index_payload(
+            session, urls[f"kline_{code}"], {"type": kline_type},
+            proxy=proxy, timeout=timeout, referer=urls[f"referer_{code}"],
+            service=service,
+        )
+
+    def fetch_bse_index_realtime(
+        self,
+        session: requests.Session,
+        code: str,
+        *,
+        proxy: Optional[AntiBotProxy] = None,
+        timeout: Optional[Tuple[float, float]] = None,
+        service: str = "",
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch today's per-minute intraday series of one BSE index
+        (899050/899601).
+
+        Returns the raw record list (one record per minute since open), or None
+        on failure.
+        """
+        urls = service_urls(service)
+        return self._fetch_index_payload(
+            session, urls[f"realtime_{code}"], {}, proxy=proxy, timeout=timeout,
+            referer=urls[f"referer_{code}"], service=service,
+        )
+
+    def fetch_bse_snapshot(
+        self,
+        session: requests.Session,
+        proxy: Optional[AntiBotProxy] = None,
+        timeout: Optional[Tuple[float, float]] = None,
+        service: str = "",
+    ) -> Tuple[Optional[datetime], Dict[str, Dict[str, Any]]]:
+        """Fetch one full BSE-listed snapshot for streaming (all pages).
+
+        Returns ``(update_dt, {bare_6digit_code: record})`` or ``(None, {})``.
+        ``update_dt`` comes from the first record's ``hqjsrq``/``hqgxsj`` (the
+        exchange's own update stamp, not the local clock). Records mirror the
+        SSE stream schema — ``code``/``name``/``open``/``high``/``low``/
+        ``last``/``prev_close``/``change``/``volume``/``amount``/``pe`` — with
+        volume in SHARES and amount in YUAN as returned by the endpoint (raw
+        units, same convention as the SSE intraday CSV archive). ``change`` is
+        derived as ``last - prev_close`` (the endpoint publishes only the pct
+        change, ``hqzdf``).
+        """
+        list_url = service_urls(service)["list"]
+        if proxy is None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+
+        first = self._fetch_page(session, 0, timeout=timeout, proxy=proxy,
+                            service=service)
+        if first is None:
+            return None, {}
+        update_dt = _extract_update_datetime(first)
+        if update_dt is None:
+            return None, {}
+
+        def _rec(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            code = str(row.get("hqzqdm") or "").strip()
+            if not code:
+                return None
+            last = _num(row.get("hqzjcj"))
+            prev_close = _num(row.get("hqzrsp"))
+            change = round(last - prev_close, 4) if last and prev_close else None
+            return {
+                "code": code.zfill(6),
+                "name": str(row.get("hqzqjc") or "").strip(),
+                "open": _num(row.get("hqjrkp")),
+                "high": _num(row.get("hqzgcj")),
+                "low": _num(row.get("hqzdcj")),
+                "last": last,
+                "prev_close": prev_close,
+                "change": change,
+                "volume": _num(row.get("hqcjsl")),
+                "amount": _num(row.get("hqcjje")),
+                "pe": _num(row.get("hqsyl1")),
+            }
+
+        snapshot: Dict[str, Dict[str, Any]] = {}
+        for row in first.get("content", []) or []:
+            rec = _rec(row)
+            if rec:
+                snapshot[rec["code"]] = rec
+
+        total = int(first.get("totalElements", 0))
+        total_pages = int(first.get("totalPages", 0))
+        page_index = 1
+        while len(snapshot) < total and (total_pages == 0 or page_index < total_pages):
+            if proxy.is_blocked(list_url):
+                logger.warning("host blocked mid-sweep, using partial snapshot (%d codes)",
+                               len(snapshot))
+                break
+            payload = self._fetch_page(session, page_index, timeout=timeout, proxy=proxy,
+                                  service=service)
+            if payload is None:
+                logger.warning("page %d failed; using partial snapshot (%d codes)",
+                               page_index, len(snapshot))
+                break
+            page_rows = payload.get("content", []) or []
+            if not page_rows:
+                break
+            for row in page_rows:
+                rec = _rec(row)
+                if rec:
+                    snapshot[rec["code"]] = rec
+            page_index += 1
+
+        return update_dt, snapshot
+
+    def fetch_bse_stock_list(
+        self,
+        session: requests.Session,
+        *,
+        proxy: Optional[AntiBotProxy] = None,
+        timeout: Optional[Tuple[float, float]] = None,
+        service: str = "",
+    ) -> List[Tuple[str, str]]:
+        """Walk the BSE quotation pagination and return ``[(bare_code, name), ...]``.
+
+        Same endpoint/filters as ``download_bse_price`` (BSE tab + listed flag,
+        stable ``hqzqdm`` sort), so the returned universe matches the daily
+        ``bse_trend_stock_<date>.csv`` snapshots. ~348 codes / ~18 pages.
+        """
+        list_url = service_urls(service)["list"]
+        if proxy is None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+
+        stocks: List[Tuple[str, str]] = []
+        first = self._fetch_page(session, 0, timeout=timeout, proxy=proxy,
+                            service=service)
+        if first is None:
+            logger.error("Failed to fetch first BSE list page")
+            return stocks
+
+        def _extend(content: List[Dict[str, Any]]) -> int:
+            added = 0
+            for row in content:
+                code_raw = str(row.get("hqzqdm") or "").strip()
+                if not code_raw:
+                    continue
+                stocks.append((code_raw.zfill(6), str(row.get("hqzqjc") or "").strip()))
+                added += 1
+            return added
+
+        total = int(first.get("totalElements", 0))
+        total_pages = int(first.get("totalPages", 0))
+        written = _extend(first.get("content", []) or [])
+        logger.info("BSE stock list: total=%d page0 rows=%d", total, written)
+
+        page_index = 1
+        while written < total and (total_pages == 0 or page_index < total_pages):
+            if proxy.is_blocked(list_url):
+                logger.warning("[host-blocked] bse.cn blocked, stopping list pagination")
+                break
+            payload = self._fetch_page(session, page_index, timeout=timeout, proxy=proxy,
+                                  service=service)
+            if payload is None:
+                logger.error("list page %d failed", page_index)
+                break
+            page_rows = payload.get("content", []) or []
+            if not page_rows:
+                logger.info("list page %d returned no rows, stopping", page_index)
+                break
+            written += _extend(page_rows)
+            page_index += 1
+
+        logger.info("Done BSE stock list: collected %d codes", len(stocks))
+        return stocks
+
+    def fetch_bse_kline(
+        self,
+        session: requests.Session,
+        code: str,
+        *,
+        proxy: Optional[AntiBotProxy] = None,
+        timeout: Optional[Tuple[float, float]] = None,
+        service: str = "",
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch one stock's FULL daily K-line history (the 日K series behind the
+        company detail page's chart).
+
+        ``begin=0&end=-1`` makes the endpoint return every daily bar since
+        listing in a single response. Returns the raw ``data`` record list, or
+        None on request/parse failure or when the endpoint reports an error
+        (missing ``data`` key / non-zero ``status``). An empty list means no
+        published history for the code.
+
+        bse.cn fronts the endpoint with a WAF cookie challenge (302 + Set-Cookie
+        ``C3VK``, ``Ws-Action: cc``); the shared ``requests.Session`` passes it
+        transparently by following the redirect.
+        """
+        urls = service_urls(service)
+        if proxy is None:
+            # kline pacing resolves from the caller service's row (the
+            # aggressive-anti-bot cadence).
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+
+        resp = proxy.get(
+            session,
+            urls["kline"].format(code=code),
+            params={"begin": 0, "end": -1, "type": "dayKline", "xxfcbj": 2},
+            headers=_bse_api_headers(urls["referer_kline"]),
+            timeout=timeout,
+            logger=logger,
+            log_tag=f"[kline {code}] ",
+        )
+        if resp is None:
+            return None
+        try:
+            payload = _parse_jsonp(resp.text)
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.error("[kline %s] failed to parse response: %s", code, e)
+            return None
+        if not isinstance(payload, dict) or "data" not in payload:
+            logger.error("[kline %s] unexpected payload shape: %s",
+                         code, str(payload)[:200])
+            return None
+        if payload.get("status") not in (0, "0"):
+            logger.error("[kline %s] endpoint error status=%r msg=%r",
+                         code, payload.get("status"), payload.get("msg"))
+            return None
+        return payload.get("data") or []
+
+    def fetch_bse_company_timesharing(
+        self,
+        session: requests.Session,
+        code: str,
+        *,
+        proxy: Optional[AntiBotProxy] = None,
+        timeout: Optional[Tuple[float, float]] = None,
+        service: str = "",
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch one stock's per-minute time-sharing (分时) series for TODAY.
+
+        ``begin=0&end=-1`` makes the endpoint return the whole session so far;
+        post-close this is the day's final minute series (the page behind
+        company_time_sharing.html, see the ``timesharing`` urls role). Returns the raw
+        ``data.line`` record list (UNSORTED — callers sort by ``HQGXSJ``), ``[]``
+        when the code has no trades today (suspended / no published series), or
+        None on request/parse failure or when the endpoint reports an error.
+
+        Same WAF cookie challenge as ``fetch_bse_kline``; the shared session
+        passes it transparently.
+        """
+        urls = service_urls(service)
+        if proxy is None:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(service), rotate_browser_profile=False,
+            ))
+
+        resp = proxy.get(
+            session,
+            urls["timesharing"].format(code=code),
+            params={"begin": 0, "end": -1},
+            headers=_bse_api_headers(urls["referer_kline"]),
+            timeout=timeout,
+            logger=logger,
+            log_tag=f"[timesharing {code}] ",
+        )
+        if resp is None:
+            return None
+        try:
+            payload = _parse_jsonp(resp.text)
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.error("[timesharing %s] failed to parse response: %s", code, e)
+            return None
+        if not isinstance(payload, dict) or "data" not in payload:
+            logger.error("[timesharing %s] unexpected payload shape: %s",
+                         code, str(payload)[:200])
+            return None
+        if payload.get("status") not in (0, "0"):
+            logger.error("[timesharing %s] endpoint error status=%r msg=%r",
+                         code, payload.get("status"), payload.get("msg"))
+            return None
+        data = payload.get("data") or {}
+        line = data.get("line") if isinstance(data, dict) else None
+        if line is None:
+            logger.error("[timesharing %s] response missing data.line: %s",
+                         code, str(payload)[:200])
+            return None
+        return line
+
+
+# ---------------------------------------------------------------------------
+# Compatibility shims — the pre-conversion import surface (the class is
+# stateless, so one shared instance serves every call).
+# ---------------------------------------------------------------------------
+_BJS_DOWNLOADER = BjsQuotationDownloader()
+
+
+def download_bse_price(
+    out_root: Optional[str] = None,
+    *,
+    sleep_sec: Optional[float] = None,
+    force: bool = False,
+    session: Optional[requests.Session] = None,
+    service: str,
+) -> dict:
+    return _BJS_DOWNLOADER.download_bse_price(
+        out_root, sleep_sec=sleep_sec, force=force, session=session,
+        service=service,
+    )
+
+
+def fetch_bse_index_kline(
+    session: requests.Session,
+    code: str,
+    *,
+    proxy: Optional[AntiBotProxy] = None,
+    kline_type: str = "dayKline",
+    timeout: Optional[Tuple[float, float]] = None,
+    service: str = "",
+) -> Optional[List[Dict[str, Any]]]:
+    return _BJS_DOWNLOADER.fetch_bse_index_kline(
+        session, code, proxy=proxy, kline_type=kline_type,
+        timeout=timeout, service=service,
+    )
+
+
+def fetch_bse_index_realtime(
+    session: requests.Session,
+    code: str,
+    *,
+    proxy: Optional[AntiBotProxy] = None,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: str = "",
+) -> Optional[List[Dict[str, Any]]]:
+    return _BJS_DOWNLOADER.fetch_bse_index_realtime(
+        session, code, proxy=proxy, timeout=timeout, service=service,
+    )
+
+
+def fetch_bse_snapshot(
+    session: requests.Session,
+    proxy: Optional[AntiBotProxy] = None,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: str = "",
+) -> Tuple[Optional[datetime], Dict[str, Dict[str, Any]]]:
+    return _BJS_DOWNLOADER.fetch_bse_snapshot(
+        session, proxy=proxy, timeout=timeout, service=service,
+    )
+
+
+def fetch_bse_stock_list(
+    session: requests.Session,
+    *,
+    proxy: Optional[AntiBotProxy] = None,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: str = "",
+) -> List[Tuple[str, str]]:
+    return _BJS_DOWNLOADER.fetch_bse_stock_list(
+        session, proxy=proxy, timeout=timeout, service=service,
+    )
+
+
+def fetch_bse_kline(
+    session: requests.Session,
+    code: str,
+    *,
+    proxy: Optional[AntiBotProxy] = None,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: str = "",
+) -> Optional[List[Dict[str, Any]]]:
+    return _BJS_DOWNLOADER.fetch_bse_kline(
+        session, code, proxy=proxy, timeout=timeout, service=service,
+    )
+
+
+def fetch_bse_company_timesharing(
+    session: requests.Session,
+    code: str,
+    *,
+    proxy: Optional[AntiBotProxy] = None,
+    timeout: Optional[Tuple[float, float]] = None,
+    service: str = "",
+) -> Optional[List[Dict[str, Any]]]:
+    return _BJS_DOWNLOADER.fetch_bse_company_timesharing(
+        session, code, proxy=proxy, timeout=timeout, service=service,
+    )

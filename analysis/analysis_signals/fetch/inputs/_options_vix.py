@@ -20,6 +20,7 @@ import pandas as pd
 
 from _common.build_commons import rec_cols
 from _common.df_utils import epoch_col_to_dt64
+from _common.sql_views import render_sql_view
 
 from ._shared import _OW_TARGET_TYPE
 
@@ -47,34 +48,25 @@ async def fetch_options_vix_inputs(
     # NOTE: each SELECT aliases underlying_code AS code so the rec_cols
     # dict keys match the frame columns list (a missing key silently
     # NaNs the column — and NaN join keys cross-join under cudf).
-    vol_rows = await conn.fetch(
-        """
-        SELECT underlying_code AS code,
-               extract(epoch from date)::float8 AS date,
-               vol_index_30d::float8 AS vol30
-        FROM analysis.options_vol_index
-        WHERE underlying_code = ANY($1::text[])
-        ORDER BY underlying_code, date ASC
-        """,
-        sorted(codes),
+    # analysis/analysis_signals/fetch/inputs/_options_vix/vol_index_series
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_options_vix/"
+        "vol_index_series",
+        codes=sorted(codes),
     )
+    vol_rows = await conn.fetch(view.sql, *view.params)
     if not vol_rows:
         return pd.DataFrame(columns=_OVIX_INPUT_COLUMNS)
     df = pd.DataFrame(rec_cols(vol_rows), columns=[
         "code", "date", "vol30",
     ])
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
-    spot_rows = await conn.fetch(
-        """
-        SELECT underlying_code AS code,
-               extract(epoch from date)::float8 AS date,
-               close::float8 AS price
-        FROM analysis.options_spot_daily
-        WHERE underlying_code = ANY($1::text[])
-        ORDER BY underlying_code, date ASC
-        """,
-        sorted(codes),
+    # analysis/analysis_signals/fetch/inputs/_options_vix/spot_series
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_options_vix/spot_series",
+        codes=sorted(codes),
     )
+    spot_rows = await conn.fetch(view.sql, *view.params)
     if spot_rows:
         s = pd.DataFrame(rec_cols(spot_rows), columns=[
             "code", "date", "price",
@@ -83,17 +75,12 @@ async def fetch_options_vix_inputs(
         df = df.merge(s, on=["code", "date"], how="left")
     else:
         df["price"] = np.nan
-    corr_rows = await conn.fetch(
-        """
-        SELECT underlying_code AS code,
-               extract(epoch from date)::float8 AS date,
-               corr_20d::float8 AS corr_20d_pub
-        FROM analysis.options_vol_index_vs_spot_price_corr
-        WHERE underlying_code = ANY($1::text[])
-        ORDER BY underlying_code, date ASC
-        """,
-        sorted(codes),
+    # analysis/analysis_signals/fetch/inputs/_options_vix/corr_series
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_options_vix/corr_series",
+        codes=sorted(codes),
     )
+    corr_rows = await conn.fetch(view.sql, *view.params)
     if corr_rows:
         c = pd.DataFrame(rec_cols(corr_rows), columns=[
             "code", "date", "corr_20d_pub",

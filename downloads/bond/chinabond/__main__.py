@@ -16,6 +16,7 @@ from downloads._common import (
     EMPTY_HTML_MAX_BYTES,
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
+    DownloadJob,
     AntiBotProxy,
     antibot_config_for,
     service_urls,
@@ -242,190 +243,205 @@ def _day_filename(curve_key: str, d: date) -> str:
     return f"{prefix}_{d.strftime('%Y%m%d')}.xlsx"
 
 
-def download_chinabond(
-    *,
-    out_root: Optional[str] = None,
-    mode: str = "year",
-    start_date: Optional[str] = DEFAULT_START_DATE,
-    end_date: Optional[str] = None,
-    lookback_years: int = 3,
-    curve_keys: Optional[List[str]] = None,
-    sleep_sec: Optional[float] = None,
-    db_table: str = "stats.debt_identity",
-) -> dict:
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "chinabond", out_root)
+class ChinabondDownload(DownloadJob):
+    """DownloadJob for the chinabond (中债) yield-curve xlsx fetch cycle.
 
-    if mode not in ("year", "day"):
-        raise ValueError(f"mode must be 'year' or 'day', got: {mode}")
+    The former module-level ``download_chinabond`` orchestrator became a
+    method; the session/fetch/plan helpers and constants above stay
+    module-level. Scheduled runs use the default year mode with no CLI
+    arguments (the old main had none)."""
 
-    if curve_keys is None:
-        curve_keys = [YC_TREASURY_BOND]
-    for k in curve_keys:
-        if k not in YC_CFG_BUILTIN:
-            raise ValueError(
-                f"Unknown curve_key: {k}. Valid: {list(YC_CFG_BUILTIN.keys())}"
-            )
+    component = "chinabond_download"
 
-    today = date.today()
-    _start, _end = parse_date_window(
-        end_date=end_date,
-        start_date=start_date,
-        lookback_years=lookback_years,
-    )
+    def download_chinabond(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        mode: str = "year",
+        start_date: Optional[str] = DEFAULT_START_DATE,
+        end_date: Optional[str] = None,
+        lookback_years: int = 3,
+        curve_keys: Optional[List[str]] = None,
+        sleep_sec: Optional[float] = None,
+        db_table: str = "stats.debt_identity",
+    ) -> dict:
+        """Former module-level orchestrator — moved verbatim into the job
+        class; ``run()`` calls it and logs the returned summary dict."""
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "chinabond", out_root)
 
-    logger.info(
-        "Starting chinabond download: mode=%s window=%s->%s (lookback=%dy) "
-        "curves=%s out=%s",
-        mode, _start, _end, lookback_years, curve_keys, out_dir,
-    )
+        if mode not in ("year", "day"):
+            raise ValueError(f"mode must be 'year' or 'day', got: {mode}")
 
-    session = build_session()
-
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
-    # argument overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
-
-    if not bootstrap_session(session, proxy):
-        return {"error": "bootstrap failed", "out_dir": str(out_dir)}
-
-    stats = RunStats()
-
-    try:
-        for ck in curve_keys:
-            if proxy.is_blocked(YIELD_MAIN):
-                logger.warning("  [host-blocked] yield.chinabond.com.cn is blocked, skipping %s", ck)
-                stats.failed += 1
-                continue
-
-            yc_defid = resolve_yc_defid(session, ck, proxy)
-            if not yc_defid:
-                logger.error(
-                    "[%s] cannot resolve ycDefId, skipping curve", ck,
+        if curve_keys is None:
+            curve_keys = [YC_TREASURY_BOND]
+        for k in curve_keys:
+            if k not in YC_CFG_BUILTIN:
+                raise ValueError(
+                    f"Unknown curve_key: {k}. Valid: {list(YC_CFG_BUILTIN.keys())}"
                 )
-                stats.failed += 1
-                continue
-            cfg = YC_CFG_BUILTIN[ck]
-            logger.info(
-                "== Curve %s (%s) ycDefId=%s ==", ck, cfg["label"], yc_defid,
-            )
 
-            if mode == "year":
-                always_refresh: set = set()
-                if _end.year == today.year:
-                    always_refresh = {today.year}
+        today = date.today()
+        _start, _end = parse_date_window(
+            end_date=end_date,
+            start_date=start_date,
+            lookback_years=lookback_years,
+        )
+
+        logger.info(
+            "Starting chinabond download: mode=%s window=%s->%s (lookback=%dy) "
+            "curves=%s out=%s",
+            mode, _start, _end, lookback_years, curve_keys, out_dir,
+        )
+
+        session = build_session()
+
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+        # argument overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
+
+        if not bootstrap_session(session, proxy):
+            return {"error": "bootstrap failed", "out_dir": str(out_dir)}
+
+        stats = RunStats()
+
+        try:
+            for ck in curve_keys:
+                if proxy.is_blocked(YIELD_MAIN):
+                    logger.warning("  [host-blocked] yield.chinabond.com.cn is blocked, skipping %s", ck)
+                    stats.failed += 1
+                    continue
+
+                yc_defid = resolve_yc_defid(session, ck, proxy)
+                if not yc_defid:
+                    logger.error(
+                        "[%s] cannot resolve ycDefId, skipping curve", ck,
+                    )
+                    stats.failed += 1
+                    continue
+                cfg = YC_CFG_BUILTIN[ck]
+                logger.info(
+                    "== Curve %s (%s) ycDefId=%s ==", ck, cfg["label"], yc_defid,
+                )
+
+                if mode == "year":
+                    always_refresh: set = set()
+                    if _end.year == today.year:
+                        always_refresh = {today.year}
+                        logger.info(
+                            "  Will re-download partial current year %d even if cached",
+                            today.year,
+                        )
+
+                    year_plan = build_year_download_plan(
+                        out_dir=out_dir,
+                        start_date=_start,
+                        end_date=_end,
+                        type_configs={ck: {"prefix": cfg["prefix"]}},
+                        min_bytes=MIN_VALID_BYTES,
+                        always_refresh_years=always_refresh,
+                        ext_glob="*.xlsx",
+                        db_table=db_table,
+                    )
+                    stats.skipped_cached += year_plan.present_count
+
+                    yitem: YearDownloadPlanItem
+                    for yitem in year_plan.items:
+                        if proxy.is_blocked(YIELD_MAIN):
+                            logger.warning("  [host-blocked] yield.chinabond.com.cn blocked, skipping remaining years")
+                            stats.failed += len(year_plan.items) - year_plan.items.index(yitem)
+                            break
+
+                        fpath = out_dir / _year_filename(ck, yitem.year)
+                        # Skip years previously confirmed to have no data (empty marker),
+                        # unless this is an always-refresh (current) year
+                        if yitem.year not in always_refresh and fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                            stats.empty += 1
+                            continue
+                        ok = download_year_bzqx(session, yc_defid, yitem.year, fpath, proxy)
+                        if ok:
+                            if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                                stats.files.append(str(fpath))
+                                # Canonical CSV next to every xlsx — builds read
+                                # CSV ONLY (missing csv = downloads bug).
+                                convert_xlsx_to_csv(fpath, logger=logger, log_tag=str(yitem.year))
+                            stats.downloaded += 1
+                        else:
+                            if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                                stats.skipped_cached += 1
+                            else:
+                                stats.empty += 1
+                        # Auto-sleep is handled by proxy.get() inside download_year_bzqx
+
+                else:
+                    type_cfg = {ck: {"prefix": cfg["prefix"]}}
+                    day_plan = build_day_download_plan(
+                        out_dir=out_dir,
+                        start_date=_start,
+                        end_date=_end,
+                        type_configs=type_cfg,
+                        min_bytes=MIN_VALID_BYTES,
+                        weekdays_only=True,
+                        sort_newest_first=False,
+                        ext_glob="*.xlsx",
+                        db_table=db_table,
+                    )
+                    stats.skipped_cached += day_plan.present_count
                     logger.info(
-                        "  Will re-download partial current year %d even if cached",
-                        today.year,
+                        "  [%s] %s", ck, day_plan.summary_str(),
                     )
 
-                year_plan = build_year_download_plan(
-                    out_dir=out_dir,
-                    start_date=_start,
-                    end_date=_end,
-                    type_configs={ck: {"prefix": cfg["prefix"]}},
-                    min_bytes=MIN_VALID_BYTES,
-                    always_refresh_years=always_refresh,
-                    ext_glob="*.xlsx",
-                    db_table=db_table,
-                )
-                stats.skipped_cached += year_plan.present_count
+                    ditem: DayDownloadPlanItem
+                    for ditem in day_plan.items:
+                        if proxy.is_blocked(YIELD_MAIN):
+                            logger.warning("  [host-blocked] yield.chinabond.com.cn blocked, skipping remaining days")
+                            stats.failed += len(day_plan.items) - day_plan.items.index(ditem)
+                            break
 
-                yitem: YearDownloadPlanItem
-                for yitem in year_plan.items:
-                    if proxy.is_blocked(YIELD_MAIN):
-                        logger.warning("  [host-blocked] yield.chinabond.com.cn blocked, skipping remaining years")
-                        stats.failed += len(year_plan.items) - year_plan.items.index(yitem)
-                        break
-
-                    fpath = out_dir / _year_filename(ck, yitem.year)
-                    # Skip years previously confirmed to have no data (empty marker),
-                    # unless this is an always-refresh (current) year
-                    if yitem.year not in always_refresh and fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
-                        stats.empty += 1
-                        continue
-                    ok = download_year_bzqx(session, yc_defid, yitem.year, fpath, proxy)
-                    if ok:
-                        if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
-                            stats.files.append(str(fpath))
-                            # Canonical CSV next to every xlsx — builds read
-                            # CSV ONLY (missing csv = downloads bug).
-                            convert_xlsx_to_csv(fpath, logger=logger, log_tag=str(yitem.year))
-                        stats.downloaded += 1
-                    else:
-                        if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
-                            stats.skipped_cached += 1
-                        else:
+                        fpath = out_dir / _day_filename(ck, ditem.day)
+                        # Skip dates previously confirmed to have no data (empty marker)
+                        if fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
                             stats.empty += 1
-                    # Auto-sleep is handled by proxy.get() inside download_year_bzqx
-
-            else:
-                type_cfg = {ck: {"prefix": cfg["prefix"]}}
-                day_plan = build_day_download_plan(
-                    out_dir=out_dir,
-                    start_date=_start,
-                    end_date=_end,
-                    type_configs=type_cfg,
-                    min_bytes=MIN_VALID_BYTES,
-                    weekdays_only=True,
-                    sort_newest_first=False,
-                    ext_glob="*.xlsx",
-                    db_table=db_table,
-                )
-                stats.skipped_cached += day_plan.present_count
-                logger.info(
-                    "  [%s] %s", ck, day_plan.summary_str(),
-                )
-
-                ditem: DayDownloadPlanItem
-                for ditem in day_plan.items:
-                    if proxy.is_blocked(YIELD_MAIN):
-                        logger.warning("  [host-blocked] yield.chinabond.com.cn blocked, skipping remaining days")
-                        stats.failed += len(day_plan.items) - day_plan.items.index(ditem)
-                        break
-
-                    fpath = out_dir / _day_filename(ck, ditem.day)
-                    # Skip dates previously confirmed to have no data (empty marker)
-                    if fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
-                        stats.empty += 1
-                        continue
-                    ok = download_day_bzqx(session, yc_defid, ditem.day, fpath, proxy)
-                    if ok:
-                        if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
-                            stats.files.append(str(fpath))
-                            # Canonical CSV next to every xlsx — builds read
-                            # CSV ONLY (missing csv = downloads bug).
-                            convert_xlsx_to_csv(fpath, logger=logger, log_tag=str(ditem.day))
-                        stats.downloaded += 1
-                    else:
-                        if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
-                            stats.skipped_cached += 1
+                            continue
+                        ok = download_day_bzqx(session, yc_defid, ditem.day, fpath, proxy)
+                        if ok:
+                            if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                                stats.files.append(str(fpath))
+                                # Canonical CSV next to every xlsx — builds read
+                                # CSV ONLY (missing csv = downloads bug).
+                                convert_xlsx_to_csv(fpath, logger=logger, log_tag=str(ditem.day))
+                            stats.downloaded += 1
                         else:
-                            stats.empty += 1
-                    # Auto-sleep is handled by proxy.get() inside download_day_bzqx
+                            if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                                stats.skipped_cached += 1
+                            else:
+                                stats.empty += 1
+                        # Auto-sleep is handled by proxy.get() inside download_day_bzqx
 
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
 
-    summary = stats.to_dict(
-        mode=mode,
-        out_dir=str(out_dir),
-        start_date=str(_start),
-        end_date=str(_end),
-        curve_keys=curve_keys,
-    )
-    logger.info(
-        "Done chinabond mode=%s. downloaded=%d skipped(cached)=%d failed=%d empty=%d out=%s",
-        mode, stats.downloaded, stats.skipped_cached, stats.failed, stats.empty, out_dir,
-    )
-    return summary
+        summary = stats.to_dict(
+            mode=mode,
+            out_dir=str(out_dir),
+            start_date=str(_start),
+            end_date=str(_end),
+            curve_keys=curve_keys,
+        )
+        logger.info(
+            "Done chinabond mode=%s. downloaded=%d skipped(cached)=%d failed=%d empty=%d out=%s",
+            mode, stats.downloaded, stats.skipped_cached, stats.failed, stats.empty, out_dir,
+        )
+        return summary
+
+    def run(self) -> None:
+        """One fetch cycle (the former __main__ body verbatim)."""
+        logger.info(self.download_chinabond())
 
 
 if __name__ == "__main__":
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    logger.info(download_chinabond())
+    ChinabondDownload().execute()

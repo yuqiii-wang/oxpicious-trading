@@ -30,6 +30,15 @@ from analysis.mov_ave_spread.config import (
     AMT_SOURCE,
     PRICE_SOURCE,
 )
+from _common.sql_views import frag, render_sql_view
+
+# Registry-source fetch view (database/sql_views/analysis/mov_ave_spread/
+# steps/px_vol/registry_source.sql) — the per-sec_type base table, price
+# and trading-amount expressions from PRICE_SOURCE / AMT_SOURCE ride in
+# as fragment args.
+_REGISTRY_SOURCE_VIEW = (
+    "analysis/mov_ave_spread/steps/px_vol/registry_source"
+)
 
 
 async def fetch_price_vs_amt_source(
@@ -48,19 +57,16 @@ async def fetch_price_vs_amt_source(
     """
     base, price_expr = PRICE_SOURCE[sec_type]
     amt_join, amt_expr, _, est_filter = AMT_SOURCE[sec_type]
-    sql = f"""
-        SELECT b.code,
-               extract(epoch from b.date)::float8 AS date,
-               {price_expr}::float8 AS price,
-               {amt_expr}::float8 AS trading_amount
-        FROM {base}
-        {amt_join}
-        WHERE b.code = ANY($1::text[])
-          AND b.close IS NOT NULL
-          {est_filter}
-        ORDER BY b.code, b.date ASC
-    """
-    rows = await conn.fetch(sql, sorted(codes))
+    view = render_sql_view(
+        _REGISTRY_SOURCE_VIEW,
+        base=frag(base),
+        price_expr=frag(price_expr),
+        amt_join=frag(amt_join),
+        amt_expr=frag(amt_expr),
+        est_filter=frag(est_filter),
+        codes=sorted(codes),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     columns = ["sec_type", "code", "date", "price", "trading_amount"]
     if not rows:
         return pd.DataFrame(columns=columns)

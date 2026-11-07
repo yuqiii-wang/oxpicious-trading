@@ -65,6 +65,12 @@ from strategy.factors_and_algos._optm_engine.space import (
     set_b_grid,
 )
 
+from strategy.factors_and_algos._optm_engine.training.data_definitions import (
+    Candidate,
+    CandidateGridResult,
+    KellyResult,
+    TrainingResult,
+)
 
 # ======================================================================
 #  Kelly components — consolidated into trainer.py (class-bound)
@@ -78,71 +84,13 @@ KELLY_FRACTION: float = 0.25
 MIN_TRADES: int = 3
 
 
-@dataclass(frozen=True)
-class KellyResult:
-    """Analytical Kelly outcome for one candidate's raw signal returns."""
-
-    n_trades: int
-    #: μ — mean per-exit return.
-    mean: float
-    #: σ² — sample variance (ddof=1) of per-exit returns.
-    variance: float
-    #: f* = μ/σ², floored at 0 (negative edge → never bet).
-    full_kelly: float
-    #: min(f*, cap) — the 20% portfolio-risk cap applied.
-    capped_kelly: float
-    #: capped × fraction — the quarter-Kelly betting fraction.
-    fractional_kelly: float
-    #: base_notional × fractional_kelly — the static base amount for
-    #: Set B (fixed position size during the execution grid).
-    notional: float
 
 
 # ======================================================================
 #  Data transfer objects
 # ======================================================================
 
-@dataclass
-class Candidate:
-    """One top-K Set A param set (step 2), enriched with Kelly (step 3)."""
 
-    trial_no: int
-    #: Set A params (conf_threshold + algo model params).
-    params: Dict[str, Any]
-    #: Stage A loss bundle (OmegaLoss evaluate output).
-    metrics: Dict[str, Any]
-    #: Analytical Kelly outcome from this candidate's raw signal returns.
-    kelly: Optional[KellyResult] = None
-
-
-@dataclass
-class CandidateGridResult:
-    """One candidate's best grid point from step 4."""
-
-    candidate: Candidate
-    #: Best Set B execution params for this candidate.
-    set_b_params: Dict[str, Any]
-    #: Stage B loss bundle (CalmarLoss evaluate output) at that point.
-    metrics: Dict[str, Any]
-
-
-@dataclass
-class TrainingResult:
-    """Final nested-training outcome (step 5)."""
-
-    #: Combined best params (Set A ∪ Set B) — what gets upserted.
-    best_params: Dict[str, Any]
-    best_a_params: Dict[str, Any]
-    best_b_params: Dict[str, Any]
-    best_a_metrics: Dict[str, Any]
-    best_b_metrics: Dict[str, Any]
-    #: Kelly outcome of the winning candidate (sizing static, reported).
-    kelly: Optional[KellyResult]
-    winner_trial_no: int
-    n_candidates: int
-    grid_size: int
-    #: Full-series sanity check of the winner (report only).
-    full_series_metrics: Optional[Dict[str, Any]] = None
 
 
 # ======================================================================

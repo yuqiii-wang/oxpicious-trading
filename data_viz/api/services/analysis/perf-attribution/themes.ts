@@ -4,7 +4,6 @@
  * → items) for the Perf Attribution page's ThemeSelector.
  * Split out of the former monolithic perf-attribution.ts.
  */
-import { queryRows } from "@api/lib/db";
 import { stripExchangeSuffix } from "@api/lib/classify-etf";
 import { buildStrategyThemesFromRows } from "@api/services/_shared";
 import type {
@@ -17,8 +16,7 @@ import {
   PERF_ATTR_META_TABLE,
   PERF_ATTR_META_TYPE,
   resolvePerfAttrCodeSource,
-  buildPerfAttrMetaSql,
-  type DbPerfAttrMetaRow,
+  fetchPerfAttrMetaRows,
 } from "./_shared.js";
 
 // ----------------------------------------------------------------------------
@@ -35,10 +33,7 @@ export async function listPerfAttrThemes(
   const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
   const codeSource = await resolvePerfAttrCodeSource(secType);
   if (codeSource === "empty") return [];
-  const rows = await queryRows<DbPerfAttrMetaRow>(
-    buildPerfAttrMetaSql(metaTable, codeSource),
-    [secType, metaType],
-  );
+  const rows = await fetchPerfAttrMetaRows(metaTable, codeSource, secType, metaType);
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -111,10 +106,7 @@ export async function listPerfAttrStrategyThemes(
   const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
   const codeSource = await resolvePerfAttrCodeSource(secType);
   if (codeSource === "empty") return [];
-  const rows = await queryRows<DbPerfAttrMetaRow>(
-    buildPerfAttrMetaSql(metaTable, codeSource),
-    [secType, metaType],
-  );
+  const rows = await fetchPerfAttrMetaRows(metaTable, codeSource, secType, metaType);
 
   const mappedRows = rows.map((r) => ({
     code: stripExchangeSuffix(r.code),

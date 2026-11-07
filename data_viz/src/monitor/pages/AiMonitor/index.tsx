@@ -2,7 +2,7 @@
  * AI Monitor page — the Monitor app's AI tab, a usage + runs audit over
  * the llm_agents layer:
  *
- *   • USAGE — text.llm_requests (the source request log every llm_agents
+ *   • USAGE — llm.llm_requests (the source request log every llm_agents
  *     provider writes) aggregated by GET /api/monitor/ai/usage per
  *     (service, model, GMT date) over a trailing window: a KPI row
  *     (requests / failed / token sums), a trend chart (stacked per-
@@ -11,7 +11,10 @@
  *
  *   • DEEP AGENTS — the runs panel below: the daemon's in-flight runs
  *     plus the recent run history, each row opening the AI summary's
- *     LangGraph thread view on click (RunsPanel).
+ *     LangGraph thread view on click (RunsPanel), and beneath it the
+ *     knowledge-graph panel: the kg_search chain cache / log
+ *     (llm.kg_queries via /api/monitor/ai/kg-queries — what the agents
+ *     asked the KGs and which chain each ask resolved to, KgQueriesPanel).
  *
  * The usage fetch is live (no-store) with a window selector + refresh;
  * the runs panel subscribes to the AI event channel so a generation
@@ -35,6 +38,7 @@ import { fmtDateTimeShanghai } from "@/shared/datetime";
 import UsageTrendChart from "./UsageTrendChart";
 import UsageDayBreakdown from "./UsageDayBreakdown";
 import RunsPanel from "./RunsPanel";
+import KgQueriesPanel from "./KgQueriesPanel";
 
 const WINDOWS = [7, 14, 30] as const;
 
@@ -91,7 +95,7 @@ export default function AiMonitorPage() {
         <Typography variant="h6">AI Usage</Typography>
         <Typography variant="caption" color="text.secondary">
           {data
-            ? `text.llm_requests audit · aggregated ${fmtDateTimeShanghai(data.generatedAt)}`
+            ? `llm.llm_requests audit · aggregated ${fmtDateTimeShanghai(data.generatedAt)}`
             : "loading…"}
         </Typography>
         <Box sx={{ flexGrow: 1 }} />
@@ -165,6 +169,7 @@ export default function AiMonitorPage() {
       )}
 
       <RunsPanel />
+      <KgQueriesPanel />
     </Box>
   );
 }

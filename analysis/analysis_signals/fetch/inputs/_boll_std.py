@@ -12,6 +12,7 @@ import pandas as pd
 
 from _common.labels import SEC_TYPE_CODE
 from _common.build_commons import rec_cols
+from _common.sql_views import frag, render_sql_view
 
 from analysis.analysis_signals.config import BOLL_WINDOWS
 from analysis.mov_ave_spread.config import OHL_EST_FILTER, PRICE_SOURCE
@@ -79,28 +80,20 @@ async def fetch_boll_inputs(
     st_code = SEC_TYPE_CODE[sec_type]
     ohl_est_filter = OHL_EST_FILTER[sec_type]
     amt_select, amt_joins = amt_ratio_fragments(sec_type)
-    sql = f"""
-        SELECT b.code,
-               extract(epoch from b.date)::float8 AS date,
-               {price_expr}::float8 AS price,
-               g.pattern,
-               p.vol_state::float8 AS vol_state,
-               p.px_speed::float8 AS px_speed,
-               {amt_select}
-        FROM {base}
-        LEFT JOIN {PATTERN_TABLE} g
-               ON g.sec_type = {st_code}
-              AND g.code = b.code AND g.date = b.date
-        LEFT JOIN {PX_VOL_TABLE} p
-               ON p.sec_type = {st_code}
-              AND p.code = b.code AND p.date = b.date
-        {amt_joins}
-        WHERE b.code = ANY($1::text[])
-          AND b.close IS NOT NULL
-          {ohl_est_filter}
-        ORDER BY b.code, b.date ASC
-    """
-    rows = await conn.fetch(sql, sorted(codes))
+    # analysis/analysis_signals/fetch/inputs/_boll_std/boll_inputs
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_boll_std/boll_inputs",
+        codes=sorted(codes),
+        price_expr=frag(price_expr),
+        base_table=frag(base),
+        sec_type_code=frag(str(st_code)),
+        pattern_table=frag(PATTERN_TABLE),
+        px_vol_table=frag(PX_VOL_TABLE),
+        amt_select=frag(amt_select),
+        amt_joins=frag(amt_joins),
+        ohl_est_filter=frag(ohl_est_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=_BOLL_FETCH_COLUMNS)
     df = pd.DataFrame(

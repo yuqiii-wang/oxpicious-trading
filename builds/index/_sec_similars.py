@@ -101,48 +101,6 @@ _CHUNK_DATES = 7
 _WORK_MEM = "256MB"
 
 
-async def _fetch_similar_rows(conn, sql: str, dates_param: list, tag: str):
-    """Fetch the combined sec_similars SQL for the target snapshot dates.
-
-    Single query (with a best-effort work_mem bump) for small date sets;
-    date-chunked parallel fetch over a short-lived pool once the set is
-    wide enough to amortize the extra backend connections.
-    """
-    if len(dates_param) < _PARALLEL_MIN_DATES:
-        try:
-            await conn.execute(f"SET work_mem = '{_WORK_MEM}'")
-        except Exception:
-            pass
-        try:
-            return await conn.fetch(sql, dates_param)
-        finally:
-            try:
-                await conn.execute("RESET work_mem")
-            except Exception:
-                pass
-
-    n_chunks = min(_POOL_MAX, -(-len(dates_param) // _CHUNK_DATES))
-    size = -(-len(dates_param) // n_chunks)
-    chunks = [dates_param[i:i + size] for i in range(0, len(dates_param), size)]
-    logger.info(f"{tag} -> {len(chunks)} parallel date-chunks "
-          f"(<= {size} dates each, pool max {_POOL_MAX}, "
-          f"work_mem {_WORK_MEM})")
-    pool = await get_db_pool_async(min_size=1, max_size=_POOL_MAX)
-    try:
-        async def _chunk(ch):
-            async with pool.acquire() as c:
-                try:
-                    await c.execute(f"SET work_mem = '{_WORK_MEM}'")
-                except Exception:
-                    pass
-                return await c.fetch(sql, ch)
-
-        results = await asyncio.gather(*[_chunk(ch) for ch in chunks])
-    finally:
-        await pool.close()
-    return [r for rs in results for r in rs]
-
-
 # Combined SQL: similar codes + similar industries (distinct-industry) +
 # dissimilar industries in one query, pivoted into the wide sec_similars
 # table format.
@@ -491,137 +449,190 @@ COLUMNS = [
 ]
 
 
-async def _build_for_sec_type(conn, sec_type: str, force: bool,
-                              forced_date: Optional[datetime.date] = None) -> None:
-    """Populate stats.sec_similars for a single sec_type ('index' or 'etf').
+class SecSimilarsBuilder:
+    """Conn-scoped builder for stats.sec_similars (one asyncpg connection).
 
-    Incremental when force=False (missing composition snapshot dates only);
-    full recompute when force=True (truncate sec_type rows first). With
-    forced_date (--date mode), only that snapshot date is recomputed — the
-    missing-date skip is bypassed (existing rows are refreshed via the
-    upsert path) and no truncation/deletes happen.
+    Code motion of the former module-level conn-first functions: each keeps
+    its name, SQL, sequencing, and log lines — the ``conn`` parameter became
+    ``self.conn`` and the entry point ``build_sec_similars`` became
+    :meth:`run`. The combined SQL template, column list, and parallel-fetch
+    thresholds stay module-level constants.
     """
-    tag = f"[SEC_SIMILARS:{sec_type}]"
-    source_type = sec_type  # sec_composition.source_type == sec_similars.sec_type
 
-    # ---- Step 1: detect missing composition snapshot dates ----------
-    source_rows = await conn.fetch(
-        f"SELECT DISTINCT snapshot_date FROM {SOURCE_TABLE} "
-        f"WHERE source_type = $1 AND stock_code IS NOT NULL",
-        source_type,
-    )
-    source_dates: Set[datetime.date] = {
-        r["snapshot_date"] for r in source_rows if r["snapshot_date"]
-    }
+    def __init__(self, conn) -> None:
+        self.conn = conn
 
-    if forced_date is not None:
-        # --date mode: bypass the missing-date skip — the forced snapshot
-        # date is ALWAYS recomputed (existing rows refreshed via the upsert
-        # path). The union-level availability gate in build_sec_similars
-        # already exited(1) when no sec_type has the date, so a sec_type
-        # without a snapshot at it is a logged no-op.
-        if forced_date not in source_dates:
-            logger.info(f"{tag} [DATE MODE] no '{source_type}' composition snapshot at "
-                  f"{forced_date}; nothing to do for this sec_type")
-            return
-        target_dates: Optional[Set[datetime.date]] = {forced_date}
-    elif force:
-        logger.info(f"\n{tag} Force mode: truncating {TABLE} "
-              f"WHERE sec_type='{sec_type}'...")
-        await chunked_purge_async(
-            conn, TABLE, where_sql="sec_type = $1", params=(sec_type,)
+    async def _fetch_similar_rows(self, sql: str, dates_param: list, tag: str):
+        """Fetch the combined sec_similars SQL for the target snapshot dates.
+
+        Single query (with a best-effort work_mem bump) for small date sets;
+        date-chunked parallel fetch over a short-lived pool once the set is
+        wide enough to amortize the extra backend connections.
+        """
+        if len(dates_param) < _PARALLEL_MIN_DATES:
+            try:
+                await self.conn.execute(f"SET work_mem = '{_WORK_MEM}'")
+            except Exception:
+                pass
+            try:
+                return await self.conn.fetch(sql, dates_param)
+            finally:
+                try:
+                    await self.conn.execute("RESET work_mem")
+                except Exception:
+                    pass
+
+        n_chunks = min(_POOL_MAX, -(-len(dates_param) // _CHUNK_DATES))
+        size = -(-len(dates_param) // n_chunks)
+        chunks = [dates_param[i:i + size] for i in range(0, len(dates_param), size)]
+        logger.info(f"{tag} -> {len(chunks)} parallel date-chunks "
+              f"(<= {size} dates each, pool max {_POOL_MAX}, "
+              f"work_mem {_WORK_MEM})")
+        pool = await get_db_pool_async(min_size=1, max_size=_POOL_MAX)
+        try:
+            async def _chunk(ch):
+                async with pool.acquire() as c:
+                    try:
+                        await c.execute(f"SET work_mem = '{_WORK_MEM}'")
+                    except Exception:
+                        pass
+                    return await c.fetch(sql, ch)
+
+            results = await asyncio.gather(*[_chunk(ch) for ch in chunks])
+        finally:
+            await pool.close()
+        return [r for rs in results for r in rs]
+
+    async def _build_for_sec_type(self, sec_type: str, force: bool,
+                                  forced_date: Optional[datetime.date] = None) -> None:
+        """Populate stats.sec_similars for a single sec_type ('index' or 'etf').
+
+        Incremental when force=False (missing composition snapshot dates only);
+        full recompute when force=True (truncate sec_type rows first). With
+        forced_date (--date mode), only that snapshot date is recomputed — the
+        missing-date skip is bypassed (existing rows are refreshed via the
+        upsert path) and no truncation/deletes happen.
+        """
+        tag = f"[SEC_SIMILARS:{sec_type}]"
+        source_type = sec_type  # sec_composition.source_type == sec_similars.sec_type
+
+        # ---- Step 1: detect missing composition snapshot dates ----------
+        source_rows = await self.conn.fetch(
+            f"SELECT DISTINCT snapshot_date FROM {SOURCE_TABLE} "
+            f"WHERE source_type = $1 AND stock_code IS NOT NULL",
+            source_type,
         )
-        target_dates = source_dates
-    else:
-        existing_rows = await conn.fetch(
-            f"SELECT DISTINCT date FROM {TABLE} WHERE sec_type = $1",
-            sec_type,
-        )
-        existing_dates = {r["date"] for r in existing_rows}
-        target_dates = source_dates - existing_dates
+        source_dates: Set[datetime.date] = {
+            r["snapshot_date"] for r in source_rows if r["snapshot_date"]
+        }
 
-    logger.info(f"{tag} {len(source_dates)} composition snapshot dates "
-          f"in {SOURCE_TABLE} (source_type='{source_type}')")
-    if forced_date is not None:
-        logger.info(f"{tag} [DATE MODE] -> recompute snapshot date {forced_date} "
-              f"(missing-date skip bypassed)")
-    elif force:
-        logger.info(f"{tag} force mode -> recompute all dates")
-    else:
-        logger.info(f"{tag} {len(target_dates)} dates missing from {TABLE} "
-              f"(sec_type='{sec_type}')")
-        if not target_dates:
-            logger.info(f"{tag} DB is up to date; nothing to do.")
-            return
-
-    if not source_dates:
-        logger.info(f"{tag} No source data; nothing to do.")
-        return
-
-    # ---- Step 2: compute top-3 similar codes + industries -----------
-    dates_param = sorted(target_dates) if target_dates else sorted(source_dates)
-    logger.info(f"{tag} Computing similar codes + similar/dissimilar industries "
-          f"for {len(dates_param)} snapshot dates...")
-    sql = _SQL_SEC_SIMILARS_TEMPLATE.format(
-        src=SOURCE_TABLE, source_type=source_type, sec_type=sec_type,
-    )
-    rows = await _fetch_similar_rows(conn, sql, dates_param, tag)
-    n_codes = len(set(rec_col(rows, "code")))
-    logger.info(f"{tag} -> {len(rows):,} rows across {n_codes} {sec_type}s "
-          f"across {len(dates_param)} snapshot dates")
-
-    # ---- Step 3: upsert --------------------------------------------
-    logger.info(f"{tag} Upserting into {TABLE}...")
-    if not rows:
-        logger.info(f"{tag} -> no data to insert.")
-        return
-
-    # Whole-column extraction + column-major row emission (no per-row dict walks)
-    df = pd.DataFrame(rec_cols(rows))
-    data = records_from_frame(df, COLUMNS)
-    n_copied, n_upserted = await copy_or_upsert_split_async(
-        conn, TABLE, data,
-        key_columns=["date", "code", "sec_type"],
-    )
-    total = n_copied + n_upserted
-    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
-          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
-          "upsert"
-    logger.info(f"{tag} -> upserted {total:,} rows via {via}")
-
-
-async def build_sec_similars(conn, force: bool = False,
-                             forced_date: Optional[datetime.date] = None) -> None:
-    """Populate stats.sec_similars for both 'index' and 'etf' sec_types.
-
-    Incremental when force=False (missing composition snapshot dates only);
-    full recompute when force=True (truncate per sec_type first). With
-    forced_date (--date mode), only that snapshot date is recomputed — the
-    missing-date skip is bypassed (existing rows are refreshed via the
-    upsert path) and no truncation/deletes happen.
-
-    Skip semantics: when force=False and every composition snapshot date in
-    stats.sec_composition is already present in stats.sec_similars for a given
-    sec_type, that sec_type is a no-op — safe to re-run.
-
-    --date availability gate: the forced date must exist among the UNION of
-    composition snapshot dates of both sec_types (forced_date_scope exits(1)
-    otherwise). A sec_type without a snapshot at the forced date is a logged
-    no-op inside _build_for_sec_type.
-    """
-    if forced_date is not None:
-        union_dates: Set[datetime.date] = set()
-        for st in SEC_TYPES:
-            rows = await conn.fetch(
-                f"SELECT DISTINCT snapshot_date FROM {SOURCE_TABLE} "
-                f"WHERE source_type = $1 AND stock_code IS NOT NULL",
-                st,
+        if forced_date is not None:
+            # --date mode: bypass the missing-date skip — the forced snapshot
+            # date is ALWAYS recomputed (existing rows refreshed via the upsert
+            # path). The union-level availability gate in build_sec_similars
+            # already exited(1) when no sec_type has the date, so a sec_type
+            # without a snapshot at it is a logged no-op.
+            if forced_date not in source_dates:
+                logger.info(f"{tag} [DATE MODE] no '{source_type}' composition snapshot at "
+                      f"{forced_date}; nothing to do for this sec_type")
+                return
+            target_dates: Optional[Set[datetime.date]] = {forced_date}
+        elif force:
+            logger.info(f"\n{tag} Force mode: truncating {TABLE} "
+                  f"WHERE sec_type='{sec_type}'...")
+            await chunked_purge_async(
+                self.conn, TABLE, where_sql="sec_type = $1", params=(sec_type,)
             )
-            union_dates |= {r["snapshot_date"] for r in rows if r["snapshot_date"]}
-        forced_date_scope(
-            union_dates, forced_date,
-            source_label=f"{SOURCE_TABLE} snapshot dates",
+            target_dates = source_dates
+        else:
+            existing_rows = await self.conn.fetch(
+                f"SELECT DISTINCT date FROM {TABLE} WHERE sec_type = $1",
+                sec_type,
+            )
+            existing_dates = {r["date"] for r in existing_rows}
+            target_dates = source_dates - existing_dates
+
+        logger.info(f"{tag} {len(source_dates)} composition snapshot dates "
+              f"in {SOURCE_TABLE} (source_type='{source_type}')")
+        if forced_date is not None:
+            logger.info(f"{tag} [DATE MODE] -> recompute snapshot date {forced_date} "
+                  f"(missing-date skip bypassed)")
+        elif force:
+            logger.info(f"{tag} force mode -> recompute all dates")
+        else:
+            logger.info(f"{tag} {len(target_dates)} dates missing from {TABLE} "
+                  f"(sec_type='{sec_type}')")
+            if not target_dates:
+                logger.info(f"{tag} DB is up to date; nothing to do.")
+                return
+
+        if not source_dates:
+            logger.info(f"{tag} No source data; nothing to do.")
+            return
+
+        # ---- Step 2: compute top-3 similar codes + industries -----------
+        dates_param = sorted(target_dates) if target_dates else sorted(source_dates)
+        logger.info(f"{tag} Computing similar codes + similar/dissimilar industries "
+              f"for {len(dates_param)} snapshot dates...")
+        sql = _SQL_SEC_SIMILARS_TEMPLATE.format(
+            src=SOURCE_TABLE, source_type=source_type, sec_type=sec_type,
         )
-        logger.info(f"[SEC_SIMILARS] [DATE MODE] forcing snapshot date {forced_date}")
-    for sec_type in SEC_TYPES:
-        await _build_for_sec_type(conn, sec_type, force, forced_date=forced_date)
+        rows = await self._fetch_similar_rows(sql, dates_param, tag)
+        n_codes = len(set(rec_col(rows, "code")))
+        logger.info(f"{tag} -> {len(rows):,} rows across {n_codes} {sec_type}s "
+              f"across {len(dates_param)} snapshot dates")
+
+        # ---- Step 3: upsert --------------------------------------------
+        logger.info(f"{tag} Upserting into {TABLE}...")
+        if not rows:
+            logger.info(f"{tag} -> no data to insert.")
+            return
+
+        # Whole-column extraction + column-major row emission (no per-row dict walks)
+        df = pd.DataFrame(rec_cols(rows))
+        data = records_from_frame(df, COLUMNS)
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            self.conn, TABLE, data,
+            key_columns=["date", "code", "sec_type"],
+        )
+        total = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+        logger.info(f"{tag} -> upserted {total:,} rows via {via}")
+
+    async def run(self, force: bool = False,
+                  forced_date: Optional[datetime.date] = None) -> None:
+        """Populate stats.sec_similars for both 'index' and 'etf' sec_types.
+
+        Incremental when force=False (missing composition snapshot dates only);
+        full recompute when force=True (truncate per sec_type first). With
+        forced_date (--date mode), only that snapshot date is recomputed — the
+        missing-date skip is bypassed (existing rows are refreshed via the
+        upsert path) and no truncation/deletes happen.
+
+        Skip semantics: when force=False and every composition snapshot date in
+        stats.sec_composition is already present in stats.sec_similars for a given
+        sec_type, that sec_type is a no-op — safe to re-run.
+
+        --date availability gate: the forced date must exist among the UNION of
+        composition snapshot dates of both sec_types (forced_date_scope exits(1)
+        otherwise). A sec_type without a snapshot at the forced date is a logged
+        no-op inside _build_for_sec_type.
+        """
+        if forced_date is not None:
+            union_dates: Set[datetime.date] = set()
+            for st in SEC_TYPES:
+                rows = await self.conn.fetch(
+                    f"SELECT DISTINCT snapshot_date FROM {SOURCE_TABLE} "
+                    f"WHERE source_type = $1 AND stock_code IS NOT NULL",
+                    st,
+                )
+                union_dates |= {r["snapshot_date"] for r in rows if r["snapshot_date"]}
+            forced_date_scope(
+                union_dates, forced_date,
+                source_label=f"{SOURCE_TABLE} snapshot dates",
+            )
+            logger.info(f"[SEC_SIMILARS] [DATE MODE] forcing snapshot date {forced_date}")
+        for sec_type in SEC_TYPES:
+            await self._build_for_sec_type(sec_type, force, forced_date=forced_date)

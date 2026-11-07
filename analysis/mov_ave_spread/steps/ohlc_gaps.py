@@ -54,8 +54,8 @@ import pandas as pd
 
 from _common.df_utils import grouped_rolling_quantile, host_array
 from analysis.mov_ave_spread._common import (
+    TableStep,
     null_if_overflow_counted,
-    run_table_step,
 )
 from analysis._common import sanitize_for_db_insert
 from analysis.mov_ave_spread.config import (
@@ -279,20 +279,11 @@ def sanitize_ohlc_gaps_rows(df: pd.DataFrame) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
-#  skeleton lives in _common.steps.run_table_step)
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__ via the
+#  TableStep template in _common.steps)
 # ---------------------------------------------------------------------------
 
-async def run_ohlc_gaps(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
+class OhlcGapsStep(TableStep):
     """Run the OHLC-gaps pipeline against the source data already loaded by
     the parent mov_ave_spread.
 
@@ -302,7 +293,7 @@ async def run_ohlc_gaps(
     history (not filtered to target dates) so prev_close is correct for
     the first target date of each code.
 
-    Pipeline (see _common.steps.run_table_step)
+    Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_spreads_detail_ohlc_gaps against source
          identity tables. In force mode, purge the table scope instead
@@ -313,24 +304,20 @@ async def run_ohlc_gaps(
          by date).
       3. Upsert analysis.analysis_identity registry.
     """
-    await run_table_step(
-        conn, df,
-        title="MOV_AVE_SPREADS_DETAIL_OHLC_GAPS "
-              "(internal step of mov_ave_spread)",
-        tag="g",
-        table=OHLC_GAPS_TABLE,
-        analysis_name=OHLC_GAPS_ANALYSIS_NAME,
-        detail_name="mov_ave_spreads_detail_ohlc_gaps",
-        description=OHLC_GAPS_DESCRIPTION,
-        needed_cols=(
-            ["sec_type", "code", "date", "price", "open", "high", "low"]
-            + list(OHLC_GAPS_EXCLUDE_FLAG_COLUMNS)
-        ),
-        compute_fn=compute_ohlc_gaps,
-        sanitize_fn=sanitize_ohlc_gaps_rows,
-        force=force,
-        pool=pool,
-        max_concurrent=max_concurrent,
-        sec_type=sec_type,
-        code_filter=code_filter,
+
+    title = "MOV_AVE_SPREADS_DETAIL_OHLC_GAPS (internal step of mov_ave_spread)"
+    tag = "g"
+    table = OHLC_GAPS_TABLE
+    analysis_name = OHLC_GAPS_ANALYSIS_NAME
+    detail_name = "mov_ave_spreads_detail_ohlc_gaps"
+    description = OHLC_GAPS_DESCRIPTION
+    needed_cols = tuple(
+        ["sec_type", "code", "date", "price", "open", "high", "low"]
+        + list(OHLC_GAPS_EXCLUDE_FLAG_COLUMNS)
     )
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return compute_ohlc_gaps(df)
+
+    def sanitize_rows(self, df: pd.DataFrame) -> list[dict]:
+        return sanitize_ohlc_gaps_rows(df)

@@ -7,6 +7,10 @@
  * Plain fetch throughout (NOT the shared fetchJson cache): these pages
  * MUTATE the underlying files, so every read after a save must hit the
  * server — a 10-min TTL cache would serve the pre-save state.
+ *
+ * The secrets registry (static.secret_config — llm + web_search
+ * credentials) is the one DB-backed WRITABLE tab here — same
+ * plain-fetch rule applies.
  */
 
 // ---------------------------------------------------------------------------
@@ -265,4 +269,280 @@ export function fetchKeywordMaps(): Promise<{
   entries: KeywordMapEntry[];
 }> {
   return fetch("/api/config/keyword-maps").then((r) => r.json());
+}
+
+// ---------------------------------------------------------------------------
+//  Deep agent run limits (deep_agent_config.json)
+// ---------------------------------------------------------------------------
+
+/** The deep agent's RUN LIMITS — how many and how large the LLM
+ *  requests of one run may be. Mirrors the API payload (camelCase);
+ *  the file itself keeps the snake_case mirror of
+ *  llm_agents/deep_agents/limits.py::RunLimits, which re-reads it per
+ *  run — a save applies to the NEXT run, no daemon restart. */
+export interface DeepAgentLimits {
+  maxConversationSteps: number;
+  minConversationSteps: number;
+  maxStepsCap: number;
+  recursionLimit: number;
+  runTimeoutSec: number;
+  llmRequestTimeoutSec: number;
+  maxPlanNodes: number;
+  maxDelegatedSteps: number;
+  planRepairRounds: number;
+  planProposalBatches: number;
+  maxTotalPlanSteps: number;
+  maxForkChildren: number;
+  maxParallelDelegatedSteps: number;
+  maxConcurrentSubagents: number;
+  maxSpawnDepth: number;
+  /** Per spawned child's wall clock in seconds; null = unbounded. */
+  subagentTimeoutSec: number | null;
+  maxOutputTokens: number;
+  maxOutputRepairs: number;
+  findingMaxChars: number;
+  findingsBlockMaxChars: number;
+  promptEagerRows: number;
+  promptEagerChars: number;
+  payloadGuardChars: number;
+  payloadEntryMaxChars: number;
+  payloadPreviewChars: number;
+  payloadPreviewItems: number;
+  toolResultMaxChars: number;
+  /** The supervisor repair lane's knobs. */
+  supervisorPollIntervalSec: number;
+  supervisorRepairGraceSec: number;
+  supervisorMaxNodeRetries: number;
+  supervisorMaxRepairsPerRun: number;
+  supervisorRetryThrottleSec: number;
+  notes: string | null;
+  sourceRef: string | null;
+  updatedAt: string;
+}
+
+export function fetchDeepAgentLimits(): Promise<{
+  success: true;
+  generatedAt: string;
+  limits: DeepAgentLimits;
+}> {
+  return fetch("/api/config/deep-agent").then((r) => r.json());
+}
+
+/** Body of a limits save — updatedAt is stamped server-side. */
+export type DeepAgentLimitsSave = Omit<DeepAgentLimits, "updatedAt">;
+
+export function saveDeepAgentLimits(
+  limits: DeepAgentLimitsSave,
+): Promise<{ success: true; limits: DeepAgentLimits }> {
+  return fetch("/api/config/deep-agent", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(limits),
+  }).then(async (r) => {
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
+    return body;
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Secrets config (static.secret_config — DB-backed, the ONLY writable
+//  DB config tab; Python consumers read it at startup)
+// ---------------------------------------------------------------------------
+
+/** The closed secret_type vocabulary (mirror of
+ *  static.label_dim 'secret_type'; the provider column's label domain
+ *  is SELECTED BY the type — the audit pattern: llm →
+ *  ext_llm_provider, web_search → ext_http_source). */
+export const SECRET_TYPES = ["llm", "web_search"] as const;
+export type SecretType = (typeof SECRET_TYPES)[number];
+
+/** One credential row. NO key material ever crosses to the client:
+ *  `apiKeyHint` is the masked preview (•••••••• + last 4) the server
+ *  stored next to the AES-256-GCM ciphertext. */
+export interface SecretEntry {
+  secretId: number;
+  secretType: SecretType;
+  secretTypeCode: number;
+  /** Decoded provider label (domain selected by secretType: llm →
+   *  zhipu | other; web_search → zhipu | zhihu | other). */
+  provider: string;
+  providerCode: number;
+  /** llm: the model id (required); web_search: the engine or null. */
+  modelName: string | null;
+  /** llm only: max context window in tokens; null = unspecified. */
+  contextLength: number | null;
+  /** The credential's endpoint; null = the consumer's built-in default. */
+  apiUrl: string | null;
+  apiKeyHint: string | null;
+  hasApiKey: boolean;
+  isActive: boolean;
+  notes: string | null;
+  updatedAt: string;
+}
+
+export interface SecretListResponse {
+  success: true;
+  generatedAt: string;
+  count: number;
+  rows: SecretEntry[];
+}
+
+/** Body of a secret save. `apiKey` is the tri-state secret field:
+ *  omitted = keep the stored key (create: no key) · null = clear it ·
+ *  a string = set/replace (the server encrypts at rest; the plaintext
+ *  is never stored in the clear and never returned). */
+export interface SecretSaveBody {
+  secretType: SecretType;
+  provider: string;
+  modelName: string | null;
+  contextLength: number | null;
+  apiUrl: string | null;
+  apiKey?: string | null;
+  isActive: boolean;
+  notes: string | null;
+}
+
+export function fetchSecrets(): Promise<SecretListResponse> {
+  return fetch("/api/config/secrets").then((r) => r.json());
+}
+
+export function createSecret(
+  body: SecretSaveBody,
+): Promise<{ success: true; entry: SecretEntry }> {
+  return fetch("/api/config/secrets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
+    return data;
+  });
+}
+
+export function updateSecret(
+  secretId: number,
+  body: SecretSaveBody,
+): Promise<{ success: true; entry: SecretEntry }> {
+  return fetch(`/api/config/secrets/${secretId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
+    return data;
+  });
+}
+
+/** Remove one credential row entirely — the encrypted key goes with
+ *  it (the row's ✕ action; the UI confirms before calling). */
+export function deleteSecret(secretId: number): Promise<void> {
+  return fetch(`/api/config/secrets/${secretId}`, {
+    method: "DELETE",
+  }).then(async (r) => {
+    if (!r.ok) {
+      const data = await r.json();
+      throw new Error(data.error ?? `HTTP ${r.status}`);
+    }
+  });
+}
+
+/** The connection test's verdict — status/latency/snippet only, never
+ *  key material. `keySource` says which key the server used: the typed
+ *  one (form), the row's decrypted one (stored), the .env fallback
+ *  (env), or none. */
+export interface SecretTestResult {
+  ok: boolean;
+  statusCode: number | null;
+  latencyMs: number | null;
+  endpoint: string | null;
+  keySource: "form" | "stored" | "env" | "none";
+  model: string | null;
+  replySnippet: string | null;
+  error: string | null;
+}
+
+/** Test input — the CURRENT form values; `apiKey` must be a TYPED
+ *  plaintext or omitted (never the field's display mask: omitted means
+ *  "use the stored key"). */
+export interface SecretTestBody {
+  secretId?: number;
+  secretType: SecretType;
+  provider: string;
+  modelName: string | null;
+  apiUrl: string | null;
+  apiKey?: string | null;
+}
+
+export function testSecret(
+  body: SecretTestBody,
+): Promise<{ success: true; result: SecretTestResult }> {
+  return fetch("/api/config/secrets/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
+    return data;
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Knowledge graph (llm.kg_entities / llm.kg_edges — read-only)
+// ---------------------------------------------------------------------------
+
+/** One entity node of a namespace's subgraph — the canonical
+ *  (namespace, entity_type, name) row (DDL
+ *  database/sql/llm/13_kg_hypergraph.sql). */
+export interface KgEntity {
+  entityId: number;
+  name: string;
+  entityType: string;
+  description: string | null;
+  tags: string[];
+}
+
+/** One hyperedge with members RESOLVED to names, head-first
+ *  (members[0] = subject; cardinality 2 degenerates to a plain graph
+ *  edge). A member id that misses the entity map degrades to name null
+ *  — never a failed request. */
+export interface KgEdge {
+  edgeId: number;
+  relation: string;
+  subRelation: string | null;
+  weight: number | null;
+  members: Array<{
+    entityId: number;
+    name: string | null;
+    entityType: string | null;
+  }>;
+}
+
+export interface KgGraphResponse {
+  success: true;
+  generatedAt: string;
+  namespace: number;
+  entities: KgEntity[];
+  edges: KgEdge[];
+}
+
+/** The shipped kg_namespace codes (mirrors kg.service's KG_NAMESPACES
+ *  and the deep-agent kit's — kg_namespace is not a label_dim domain
+ *  yet). */
+export const KG_NAMESPACES = [
+  { code: 0, label: "DB semantics", hint: "tables/views + how they relate" },
+  { code: 1, label: "Prompts", hint: "skills & plan prompts + how they relate" },
+] as const;
+
+export function fetchKgGraph(namespace: number): Promise<KgGraphResponse> {
+  return fetch(`/api/config/kg?namespace=${namespace}`).then(async (r) => {
+    const body = await r.json();
+    if (!r.ok || !body?.success) {
+      throw new Error(body?.error ?? `HTTP ${r.status}`);
+    }
+    return body as KgGraphResponse;
+  });
 }

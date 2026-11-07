@@ -48,12 +48,15 @@ from strategy._common.db import print_wall_time  # noqa: F401
 from strategy._common.strategy_base import StrategyPipeline
 from strategy._common.constants import ALL_SEC_TYPES, DEFAULT_BUY_NOTIONAL
 from strategy.singleton_trading import DEFAULT_ALGO, STRATEGY_PARAMS
-from strategy._risks import compute_and_upsert_risks
+from strategy._risks import RiskRunner
 from strategy.factors_and_algos import (
     AlgoSignalCollector,
     ensure_default_config, load_params,
-    portfolio_name, run_sub_algos, build_algo_portfolio,
+    portfolio_name,
 )
+# PortfolioRunner comes from the module directly — the lazy facade's
+# __getattr__ machinery stays untouched.
+from strategy.factors_and_algos.portfolio import PortfolioRunner
 from strategy.factors_and_algos._algo.fault_tolerance import append_ft_suffix
 from strategy._common.fetch import discover_available_codes
 
@@ -219,20 +222,24 @@ class SingletonTradingStrategy(StrategyPipeline):
                 logger.info(f"    [algo_configs] loaded {strategy_name} params from DB "
                       f"for {primary_st}/{primary_code}")
 
-            from strategy._common.runner import discover_and_run
+            from strategy._common.runner import StrategyRunner
 
-            await discover_and_run(
-                conn=conn, strategy_name=strategy_name,
+            await StrategyRunner(
+                conn, force=args.force, seq_no=args.seq_no,
+                dry_run=args.dry_run, t0=t0,
+            ).discover_and_run(
+                strategy_name=strategy_name,
                 sec_types=list(sec_types), codes_by_st=codes_by_st,
                 params=params, fetch_signal_fn=collector.fetch_signal_data,
                 backtest_fn=collector.run_backtest, daily_fn=collector.compute_daily_rows,
-                force=args.force, seq_no=args.seq_no,
-                dry_run=args.dry_run, discovery=self.discovery,
+                discovery=self.discovery,
             )
             if not args.dry_run:
-                await compute_and_upsert_risks(
-                    conn=conn, sec_types=list(sec_types),
-                    codes_by_st=codes_by_st, force=args.force,
+                await RiskRunner(
+                    conn, force=args.force,
+                ).compute_and_upsert_risks(
+                    sec_types=list(sec_types),
+                    codes_by_st=codes_by_st,
                     strategy_name=strategy_name,
                 )
         else:
@@ -245,6 +252,17 @@ class SingletonTradingStrategy(StrategyPipeline):
                 logger.info(f"  fault_tolerance: {ft}% (strategy names get _ft{int(round(ft))} suffix)")
 
             collector = AlgoSignalCollector(selection)  # mixed-mode collector
+
+            # One conn/pool-scoped portfolio orchestrator for the whole mixed
+            # run: pool drives Phase 1 (sub-algos), conn + collector Phase 2
+            # (blended portfolio). Everything ctor-held here is identical at
+            # both call sites across the per-sec_type loop; dry_run /
+            # sec_type / codes stay per-call.
+            portfolio = PortfolioRunner(
+                conn, self.pool, collector, selection,
+                trading_layer=self.trading_layer, fault_tolerance=ft,
+                force=args.force, seq_no=args.seq_no, t0=t0,
+            )
 
             for st in sec_types:
                 # Resolve codes for this sec_type.
@@ -264,26 +282,18 @@ class SingletonTradingStrategy(StrategyPipeline):
                 # Each sub-algo gets the _ft{N} suffix in its strategy_name
                 # so FT and non-FT runs coexist in the DB.
                 if not args.dry_run:
-                    await run_sub_algos(
-                        self.pool, selection,
+                    await portfolio.run_sub_algos(
                         sec_type=st, codes=codes,
-                        trading_layer=self.trading_layer,
-                        fault_tolerance=ft,
-                        force=args.force, seq_no=args.seq_no,
-                        dry_run=False, t0=t0,
+                        dry_run=False,
                     )
                 else:
                     logger.info(f"\n[Phase 1] --dry-run: skipping sub-algo runs "
                           f"for {st}.")
 
                 # Phase 2: portfolio (blended backtest).
-                await build_algo_portfolio(
-                    conn, collector, selection,
+                await portfolio.build_algo_portfolio(
                     sec_type=st, codes=codes,
-                    trading_layer=self.trading_layer,
-                    fault_tolerance=ft,
-                    force=args.force, seq_no=args.seq_no,
-                    dry_run=args.dry_run, t0=t0,
+                    dry_run=args.dry_run,
                 )
 
                 if not args.dry_run:
@@ -293,9 +303,11 @@ class SingletonTradingStrategy(StrategyPipeline):
                     ] + [pf_name]
                     for sname in all_names:
                         logger.info(f"\n  --- risks for '{sname}' [{st}] ---")
-                        await compute_and_upsert_risks(
-                            conn=conn, sec_types=[st],
-                            codes_by_st={st: codes}, force=args.force,
+                        await RiskRunner(
+                            conn, force=args.force,
+                        ).compute_and_upsert_risks(
+                            sec_types=[st],
+                            codes_by_st={st: codes},
                             strategy_name=sname,
                         )
 

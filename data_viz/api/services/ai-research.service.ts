@@ -1,6 +1,6 @@
 /**
  * AI research service — reads the research-logic Q&A knowledge base
- * (text.llm_qa_by_research, written by llm_agents.llm_qa_by_research's
+ * (llm.llm_qa_by_research, written by llm_agents.llm_qa_by_research's
  * five-request generation flow) with the same SQL design as ai.service
  * (the llm_qa knowledge base):
  *
@@ -18,6 +18,7 @@
  *     refs mapping, so the detail's sources come from that join.
  */
 import { queryRows } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import type {
   AiCalendarResponse,
@@ -42,14 +43,10 @@ interface CatalogRow extends QueryResultRow {
 }
 
 async function listCatalogRows(): Promise<CatalogRow[]> {
+  // The SELECT lives in the sql view
+  // data_viz/api/services/ai-research/catalog_pairs.
   return cachedRows("ai-research:catalog", () =>
-    queryRows<CatalogRow>(
-      `
-      SELECT DISTINCT COALESCE(sector_id, 'OTHER')   AS sector_id,
-             COALESCE(industry_id, 'OTHER')          AS industry_id
-        FROM stats.sec_classification
-      `,
-    ),
+    querySqlView<CatalogRow>("data_viz/api/services/ai-research/catalog_pairs"),
   );
 }
 
@@ -130,20 +127,9 @@ async function buildFilterSql(
 }
 
 // Same trading-day mapping CTE as ai.service (MATERIALIZED td, computed
-// once per query — see the performance note there).
-const baseCte = (where: string): string => `
-  WITH td AS MATERIALIZED (
-    SELECT DISTINCT date FROM stats.industry_basic_stats
-  ), q AS (
-    SELECT q.*, (q.qa_date AT TIME ZONE 'Asia/Shanghai')::date AS qa_day
-      FROM text.llm_qa_by_research q
-     ${where ? "WHERE " + where : ""}
-  ), m AS (
-    SELECT q.*, COALESCE(
-             (SELECT MAX(td.date) FROM td WHERE td.date <= q.qa_day),
-             q.qa_day) AS trade_day
-      FROM q
-  )`;
+// once per query — see the performance note there), kept in the sql views
+// data_viz/api/services/ai-research/{calendar,date_bounds,items_count,
+// items}.
 
 // ---------------------------------------------------------------------------
 // Calendar — per-day research Q&A counts for the date-event strip's dots
@@ -157,21 +143,22 @@ export async function listAiResearchCalendar(
   if (conditions === "1=0") {
     return { days: [], min_date: null, max_date: null };
   }
-  const base = baseCte(conditions);
+  // The SELECTs live in the sql views
+  // data_viz/api/services/ai-research/calendar and
+  // data_viz/api/services/ai-research/date_bounds (where_clause rides a
+  // fragment; its params stay caller-assembled).
   const rows = await queryRows<{ date: string; count: string } & QueryResultRow>(
-    `${base}
-     SELECT trade_day::text AS date, COUNT(*)::text AS count
-       FROM m
-      GROUP BY trade_day
-      ORDER BY trade_day`,
+    renderSqlView("data_viz/api/services/ai-research/calendar", {
+      where_clause: sqlFrag(conditions),
+    }).sql,
     params,
   );
   const bounds = await queryRows<
     { min_date: string | null; max_date: string | null } & QueryResultRow
   >(
-    `${base}
-     SELECT MIN(trade_day)::text AS min_date, MAX(trade_day)::text AS max_date
-       FROM m`,
+    renderSqlView("data_viz/api/services/ai-research/date_bounds", {
+      where_clause: sqlFrag(conditions),
+    }).sql,
     params,
   );
   return {
@@ -184,15 +171,6 @@ export async function listAiResearchCalendar(
 // ---------------------------------------------------------------------------
 // Items — one page of research Q&A rows (the summary is the snippet)
 // ---------------------------------------------------------------------------
-
-const RESEARCH_LIST_SELECT = `
-  SELECT m.qa_id, m.question, m.industry_id, m.sector_id, m.category,
-         ${labelDecodeSql("research_logic", "m.logic_label")} AS logic_label,
-         m.llm_model, m.language, m.trade_day::text AS date,
-         (m.updated_at AT TIME ZONE 'Asia/Shanghai')::text AS updated_at,
-         LEFT(m.answer, 240) AS answer_snippet,
-         (SELECT COUNT(*)::int FROM text.news_group_items gi
-           WHERE gi.news_group_id = m.news_group_id) AS n_sources`;
 
 export async function listAiResearchItems(
   filters: AiResearchFilters & {
@@ -208,7 +186,7 @@ export async function listAiResearchItems(
   if (conditions === "1=0") {
     return { total: 0, items: [] };
   }
-  const base = baseCte(conditions);
+  // Trade-day filter fragment (caller-built — carries its params).
   const dateFilter = filters.date
     ? `WHERE trade_day = $${params.push(filters.date)}::date`
     : filters.dateFrom && filters.dateTo
@@ -216,8 +194,10 @@ export async function listAiResearchItems(
       : "";
 
   const totalRows = await queryRows<{ n: string } & QueryResultRow>(
-    `${base}
-     SELECT COUNT(*)::text AS n FROM m ${dateFilter}`,
+    renderSqlView("data_viz/api/services/ai-research/items_count", {
+      where_clause: sqlFrag(conditions),
+      date_clause: sqlFrag(dateFilter),
+    }).sql,
     params,
   );
   const total = Number(totalRows[0]?.n ?? 0);
@@ -225,12 +205,13 @@ export async function listAiResearchItems(
   const limit = Math.min(Math.max(filters.limit ?? 20, 1), 100);
   const offset = Math.max(filters.offset ?? 0, 0);
   const items = await queryRows<AiQaResearchItem & QueryResultRow>(
-    `${base}
-     ${RESEARCH_LIST_SELECT}
-      FROM m
-      ${dateFilter}
-      ORDER BY trade_day DESC, qa_id DESC
-      LIMIT ${limit} OFFSET ${offset}`,
+    renderSqlView("data_viz/api/services/ai-research/items", {
+      where_clause: sqlFrag(conditions),
+      date_clause: sqlFrag(dateFilter),
+      logic_label_decode: sqlFrag(labelDecodeSql("research_logic", "m.logic_label")),
+      limit: sqlFrag(`${limit}`),
+      offset: sqlFrag(`${offset}`),
+    }).sql,
     params,
   );
   return { total, items };
@@ -241,7 +222,7 @@ export async function listAiResearchItems(
 // dimensions + the per-dimension reference blocks). The dimension texts'
 // inline [来源：ref_N] citations expand per tag (the AiQaRefBox pattern):
 // the row's dim_refs column — persisted at store time by the generation
-// flow, the by-research analog of text.llm_qa_refs (which FKs text.llm_qa
+// flow, the by-research analog of llm.llm_qa_refs (which FKs llm.llm_qa
 // only) — is joined back to text.news into per-dimension AiQaRefItem
 // arrays. Rows stored before dim_refs existed (null) get null refs and the
 // UI renders the texts plain. The merged news group stays as the
@@ -267,50 +248,21 @@ const DIMENSION_KEYS = [
 export async function getAiResearchQa(
   qaId: number,
 ): Promise<AiQaResearchDetail | null> {
-  const rows = await queryRows<Omit<AiQaResearchDetail, "sources" | "dimension_refs"> & QueryResultRow>(
-    `WITH td AS MATERIALIZED (
-       SELECT DISTINCT date FROM stats.industry_basic_stats
-     ), q AS (
-       SELECT q.*, (q.qa_date AT TIME ZONE 'Asia/Shanghai')::date AS qa_day
-         FROM text.llm_qa_by_research q
-        WHERE q.qa_id = $1
-     ), m AS (
-       SELECT q.*, COALESCE(
-                (SELECT MAX(td.date) FROM td WHERE td.date <= q.qa_day),
-                q.qa_day) AS trade_day
-         FROM q
-     )
-    SELECT m.qa_id, m.question, m.answer, m.context, m.intro,
-           m.optimistic_forecast, m.pessimistic_forecast,
-           m.risks, m.capitalization, m.dim_refs,
-           m.industry_id, m.sector_id, m.category,
-           ${labelDecodeSql("research_logic", "m.logic_label")} AS logic_label,
-           m.llm_model, m.language, m.trade_day::text AS date,
-           (m.updated_at AT TIME ZONE 'Asia/Shanghai')::text AS updated_at,
-           (SELECT COUNT(*)::int FROM text.news_group_items gi
-             WHERE gi.news_group_id = m.news_group_id) AS n_sources,
-           (SELECT ROUND(AVG(d.sentiment_level)::numeric, 2)::float
-              FROM text.news_group_items gi
-              JOIN text.news_digestions d ON d.news_id = gi.news_id
-             WHERE gi.news_group_id = m.news_group_id
-               AND d.sentiment_level IS NOT NULL)
-             AS avg_ref_sentiment
-      FROM m`,
-    [qaId],
+  // The SELECTs live in the sql views
+  // data_viz/api/services/ai-research/qa_detail,
+  // .../qa_sources and .../dimension_ref_news.
+  const rows = await querySqlView<Omit<AiQaResearchDetail, "sources" | "dimension_refs"> & QueryResultRow>(
+    "data_viz/api/services/ai-research/qa_detail",
+    {
+      qa_id: qaId,
+      logic_label_decode: sqlFrag(labelDecodeSql("research_logic", "m.logic_label")),
+    },
   );
   if (rows.length === 0) return null;
   const { dim_refs, ...row } = rows[0];
-  const sources = await queryRows<AiQaResearchSource & QueryResultRow>(
-    `SELECT n.news_id, n.title, n.source, n.url,
-           LEFT(n.content, 4000) AS content,
-           (n.date)::text AS date
-      FROM text.news_group_items gi
-      JOIN text.news n ON n.news_id = gi.news_id
-     WHERE gi.news_group_id = (
-             SELECT news_group_id FROM text.llm_qa_by_research
-              WHERE qa_id = $1)
-     ORDER BY gi.news_id`,
-    [qaId],
+  const sources = await querySqlView<AiQaResearchSource & QueryResultRow>(
+    "data_viz/api/services/ai-research/qa_sources",
+    { qa_id: qaId },
   );
   // Expand dim_refs into per-dimension AiQaRefItem arrays (one join over
   // every referenced article).
@@ -321,13 +273,11 @@ export async function getAiResearchQa(
       ...new Set(DIMENSION_KEYS.flatMap((k) => (dimRefs[k] ?? []).map((d) => d.news_id))),
     ];
     const news = ids.length
-      ? await queryRows<
+      ? await querySqlView<
           { news_id: number; title: string; source: string | null; url: string | null; content: string | null; date: string | null } & QueryResultRow
         >(
-          `SELECT news_id, title, source, url, LEFT(content, 4000) AS content,
-                  (date)::text AS date
-             FROM text.news WHERE news_id = ANY($1::bigint[])`,
-          [ids],
+          "data_viz/api/services/ai-research/dimension_ref_news",
+          { news_ids: ids },
         )
       : [];
     const byId = new Map(news.map((n) => [Number(n.news_id), n]));

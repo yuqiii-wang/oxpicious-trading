@@ -1,15 +1,15 @@
 /**
  * AI thread routes — the deep-agent Thread Graph view's read endpoints.
- * Mounted under /api/ai alongside routes/ai.ts (app.ts registers both
+ * Mounted under /api/ai alongside routes/ai/ (app.ts registers both
  * routers on the prefix; a request falls through to this router when
  * ai.ts has no match). The thread LIST is the existing summary-runs
  * endpoint (GET /api/ai/summary-runs — one row per planned thread);
  * this router adds the per-thread detail the graph polls:
  *
  *   GET /api/ai/threads/:threadId
- *     The thread's full node graph — every text.deep_agent_states row
+ *     The thread's full node graph — every llm.deep_agent_states row
  *     (top-level plan steps + spawned-subagent child states) and every
- *     text.deep_agent_contexts payload (plan JSON, step input/result
+ *     llm.deep_agent_contexts payload (plan JSON, step input/result
  *     notes, subagent answers). 404 for an unknown/malformed id (no
  *     states). See services/ai-thread.service.ts for the shape.
  *

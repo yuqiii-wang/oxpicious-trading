@@ -17,6 +17,7 @@ import pandas as pd
 
 from _common.labels import SEC_TYPE_CODE
 from _common.build_commons import rec_cols
+from _common.sql_views import frag, render_sql_view
 
 from analysis.analysis_signals.config import RSI_WINDOWS
 from analysis.mov_ave_spread.config import OHL_EST_FILTER, PRICE_SOURCE
@@ -101,42 +102,29 @@ async def fetch_rsi_inputs(
         for w in RSI_WINDOWS
     )
     amt_select, amt_joins = amt_ratio_fragments(sec_type)
-    sql = f"""
-        WITH r AS (
-            SELECT * FROM {RSI_TABLE}
-            WHERE sec_type = $3
-        )
-        SELECT b.code,
-               extract(epoch from b.date)::float8 AS date,
-               {price_expr}::float8 AS price,
-               {rsi_cols},
-               {flag_cols},
-               {size_cols},
-               g.pattern,
-               p.vol_state::float8 AS vol_state,
-               p.px_speed::float8 AS px_speed,
-               {amt_select}
-        FROM {base}
-        LEFT JOIN {RSI_TABLE} r
-               ON r.sec_type = {st_code}
-              AND r.code = b.code AND r.date = b.date
-        LEFT JOIN analysis.trend_episode_days ted
-               ON ted.sec_type = {st_code}
-              AND ted.code = b.code AND ted.date = b.date
-        LEFT JOIN {PATTERN_TABLE} g
-               ON g.sec_type = {st_code}
-              AND g.code = b.code AND g.date = b.date
-        LEFT JOIN {PX_VOL_TABLE} p
-               ON p.sec_type = {st_code}
-              AND p.code = b.code AND p.date = b.date
-        {amt_joins}
-        WHERE b.code = ANY($1::text[])
-          AND b.close IS NOT NULL
-          AND b.date >= $2
-          {ohl_est_filter}
-        ORDER BY b.code, b.date ASC
-    """
-    rows = await conn.fetch(sql, sorted(codes), since, st_code)
+    # analysis/analysis_signals/fetch/inputs/_mov_rsi/rsi_inputs — the
+    # r CTE's sec_type filter is the "$3" positional reference (the
+    # original text binds codes as $1 / since as $2 while the CTE stands
+    # first), so it rides verbatim and st_code is bound last
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_mov_rsi/rsi_inputs",
+        codes=sorted(codes),
+        since=since,
+        r_sec_type=frag("$3"),
+        rsi_table=frag(RSI_TABLE),
+        price_expr=frag(price_expr),
+        rsi_cols=frag(rsi_cols),
+        flag_cols=frag(flag_cols),
+        size_cols=frag(size_cols),
+        amt_select=frag(amt_select),
+        base_table=frag(base),
+        sec_type_code=frag(str(st_code)),
+        pattern_table=frag(PATTERN_TABLE),
+        px_vol_table=frag(PX_VOL_TABLE),
+        amt_joins=frag(amt_joins),
+        ohl_est_filter=frag(ohl_est_filter),
+    )
+    rows = await conn.fetch(view.sql, *view.params, st_code)
     if not rows:
         return pd.DataFrame(columns=_INPUT_COLUMNS)
     # Column-materialized ctor; the shared finalize step does the
@@ -152,8 +140,11 @@ async def fetch_rsi_codes(conn, sec_type: str) -> Set[str]:
     """Codes carrying at least one RSI row for the sec_type — the
     universe pre-filter's RSI leg (a code without RSI data can never
     enter a percentile bucket)."""
-    rows = await conn.fetch(
-        f"SELECT DISTINCT code FROM {RSI_TABLE} WHERE sec_type = $1",
-        SEC_TYPE_CODE[sec_type],
+    # analysis/analysis_signals/fetch/inputs/_mov_rsi/rsi_codes
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_mov_rsi/rsi_codes",
+        rsi_table=frag(RSI_TABLE),
+        sec_type=SEC_TYPE_CODE[sec_type],
     )
+    rows = await conn.fetch(view.sql, *view.params)
     return {r["code"] for r in rows}

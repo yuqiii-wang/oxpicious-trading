@@ -57,6 +57,12 @@ Hard rules from the same refactor:
 - Reference implementations: `analysis/mov_ave_spread/steps/roof_floor_bands.py`
   (whole-frame phases A–C + host event grid D) and
   `analysis/mov_ave_spread/_common/ohlc_vector.py` (host core + rank bounds).
+- Compute is organized class-first (see `oxpicious-dev-conventions`):
+  a step/derivation is a class holding its params + frames behind a
+  `run()`-style method (the `BoostDerivationBase` pattern above);
+  pydantic models may carry params/results/config across module
+  boundaries but NEVER ride inside frame compute (no per-row model
+  objects — row materialization stays at the write boundary).
 
 ## Scenario → dtype table
 

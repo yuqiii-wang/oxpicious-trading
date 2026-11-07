@@ -21,9 +21,17 @@ Usage::
 """
 from __future__ import annotations
 
+# Runtime bootstrap — pre-check → silence warnings → cudf.pandas hook →
+# UTF-8 stdout. MUST precede the builds.text.__main__ import below: that
+# parent module imports big_market_mv (pandas) at module level without
+# bootstrapping itself. Idempotent — execute()'s own bootstrap is a no-op.
+from _common.data_pipeline import bootstrap_runtime
+
+bootstrap_runtime()
+
 import datetime
 
-from _common.data_build import DataBuild
+from builds.text.__main__ import TextBuild
 from _common.log_setup import setup_logging
 
 logger = setup_logging("text")
@@ -31,7 +39,7 @@ logger = setup_logging("text")
 TODAY_STR = datetime.date.today().isoformat()
 
 
-class BackfillCommentsBuild(DataBuild):
+class BackfillCommentsBuild(TextBuild):
     title = "BACKFILL COMMENTS  ·  zhihu comments -> text.news_comments"
     component = "text"
 

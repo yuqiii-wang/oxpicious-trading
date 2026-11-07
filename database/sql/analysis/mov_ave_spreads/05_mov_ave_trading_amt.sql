@@ -47,8 +47,6 @@
 
 DROP TABLE IF EXISTS analysis.mov_ave_trading_amt CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_trading_amt_ratios CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_trading_amt';
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_trading_amt_ratios';
 
 CREATE TABLE analysis.mov_ave_trading_amt (
     sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry

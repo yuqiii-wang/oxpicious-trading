@@ -211,9 +211,9 @@ class IndexBuild(DataBuild):
             build_szse_index_composition_rows,
             available_snapshot_dates,
         )
-        from builds.index._index_exts import build_index_exts
-        from builds.index._exchange_trading_amt import build_exchange_trading_amt
-        from builds.index._sec_similars import build_sec_similars
+        from builds.index._index_exts import IndexExtsBuilder
+        from builds.index._exchange_trading_amt import ExchangeTradingAmtBuilder
+        from builds.index._sec_similars import SecSimilarsBuilder
 
         args = self.args
         code_filter = self.code_filter
@@ -263,17 +263,17 @@ class IndexBuild(DataBuild):
             # Step A: per-(date, index) + per-(date, industry) ETF metrics.
             # Driven by etf_liquidity_margin. --date mode recomputes the forced
             # date even when already present (upsert refresh, no truncation).
-            await build_index_exts(conn, force=args.force, forced_date=forced)
+            await IndexExtsBuilder(conn).run(force=args.force, forced_date=forced)
 
             # Step B: per-(date, exchange) trading amount proxied by a
             # representative broad-market index per exchange (SZ->399001,
             # SS->000001). Driven by index_basic_stats (phase 2 output).
-            await build_exchange_trading_amt(conn, force=args.force, forced_date=forced)
+            await ExchangeTradingAmtBuilder(conn).run(force=args.force, forced_date=forced)
 
             # Step C: per-(composition-date, code) top-5 similar codes +
             # similar/dissimilar industries. Driven by sec_composition
             # snapshot dates (phase 1 output).
-            await build_sec_similars(conn, force=args.force, forced_date=forced)
+            await SecSimilarsBuilder(conn).run(force=args.force, forced_date=forced)
         finally:
             await self.close_conn(conn)
 

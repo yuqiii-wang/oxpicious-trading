@@ -23,6 +23,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from downloads.macro.pboc.stats.data_definitions import (
+    CffiAntiBotConfig,
+    HostBlockTracker,
+)
 try:
     from curl_cffi import requests as cffi_requests
 except ImportError as _e:  # pragma: no cover
@@ -59,43 +63,6 @@ _IMPERSONATE_PROFILES: List[str] = [
 ]
 
 
-@dataclass
-class CffiAntiBotConfig:
-    """Configuration for the curl_cffi anti-bot session.
-
-    Every value is resolved from the service's external_request_config JSON
-    row (request_type ``curl_cffi``) in :func:`build_session` — there is no
-    code-side default; a row that omits a pacing field is a config error.
-    """
-    base_sleep_sec: float
-    sleep_jitter: float  # 0..1, multiplied with base_sleep_sec
-    max_retries: int
-    retry_backoff_sec: float
-    timeout: int
-    host_block_cooldown_sec: float
-    enable_sleep: bool = True
-    enable_host_tracking: bool = True
-    rotate_profile: bool = True
-
-
-@dataclass
-class HostBlockTracker:
-    """Track hosts that return 4xx to avoid hammering blocked endpoints."""
-    _blocked: Dict[str, float] = field(default_factory=dict)  # host -> block_time
-    _block_duration: float = 3600.0  # 1 hour cooldown
-
-    def record_error(self, url: str, status_code: int) -> None:
-        host = urlparse(url).netloc
-        self._blocked[host] = time.time()
-
-    def is_blocked(self, url: str) -> bool:
-        host = urlparse(url).netloc
-        if host not in self._blocked:
-            return False
-        if time.time() - self._blocked[host] > self._block_duration:
-            del self._blocked[host]
-            return False
-        return True
 
 
 class CffiAntiBotSession:
@@ -295,35 +262,39 @@ class CffiAntiBotSession:
             return resp
         return None
 
+    # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
+    @classmethod
+    def build(
+        cls,
+        logger: Optional[logging.Logger] = None,
+        *,
+        sleep_sec: Optional[float] = None,
+    ) -> CffiAntiBotSession:
+        """Build a CffiAntiBotSession configured for PBoC stats downloads.
 
-def build_session(
-    logger: Optional[logging.Logger] = None,
-    *,
-    sleep_sec: Optional[float] = None,
-) -> CffiAntiBotSession:
-    """Build a CffiAntiBotSession configured for PBoC stats downloads.
-
-    Pacing (sleep, retries/backoff, request timeout, blocked-host cooldown)
-    resolves from the service's external_request_config JSON row (request_type
-    ``curl_cffi``); the explicit *sleep_sec* CLI override wins for the base
-    sleep only, and the former inline constants are the fallback when the row
-    omits a value.
-    """
-    row = request_config_for(SERVICE, REQUEST_TYPE)
-    max_retries, retry_backoff_sec = retry_policy_for(SERVICE, REQUEST_TYPE)
-    cooldown = host_block_cooldown_for(SERVICE, REQUEST_TYPE)
-    config = CffiAntiBotConfig(
-        base_sleep_sec=(
-            sleep_sec if sleep_sec is not None
-            else sleep_sec_for(SERVICE, REQUEST_TYPE)
-        ),
-        sleep_jitter=row.sleep_jitter,
-        max_retries=max_retries,
-        retry_backoff_sec=retry_backoff_sec,
-        # The row's timeout_connect_sec is None (no connect timeout) and
-        # timeout_read_sec carries the cap — curl_cffi takes one scalar
-        # bound here, so the read timeout applies as the whole-request cap.
-        timeout=int(row.timeout_read_sec),
-        host_block_cooldown_sec=cooldown,
-    )
-    return CffiAntiBotSession(config=config, logger=logger)
+        Pacing (sleep, retries/backoff, request timeout, blocked-host cooldown)
+        resolves from the service's external_request_config JSON row (request_type
+        ``curl_cffi``); the explicit *sleep_sec* CLI override wins for the base
+        sleep only, and the former inline constants are the fallback when the row
+        omits a value. (Former module-level ``build_session``.)
+        """
+        row = request_config_for(SERVICE, REQUEST_TYPE)
+        max_retries, retry_backoff_sec = retry_policy_for(SERVICE, REQUEST_TYPE)
+        cooldown = host_block_cooldown_for(SERVICE, REQUEST_TYPE)
+        config = CffiAntiBotConfig(
+            base_sleep_sec=(
+                sleep_sec if sleep_sec is not None
+                else sleep_sec_for(SERVICE, REQUEST_TYPE)
+            ),
+            sleep_jitter=row.sleep_jitter,
+            max_retries=max_retries,
+            retry_backoff_sec=retry_backoff_sec,
+            # The row's timeout_connect_sec is None (no connect timeout) and
+            # timeout_read_sec carries the cap — curl_cffi takes one scalar
+            # bound here, so the read timeout applies as the whole-request cap.
+            timeout=int(row.timeout_read_sec),
+            host_block_cooldown_sec=cooldown,
+        )
+        return cls(config=config, logger=logger)

@@ -1,5 +1,10 @@
 """Merge: from2020 export + 1m export + PE -> history CSV, plus incremental
 xlsx -> csv append (append missing dates, never overwrite).
+
+Code motion only (2026-11-07): the former ``build_history_csv`` /
+``csv_has_date`` / ``append_missing_dates_to_csv`` functions are now the
+methods of the same names on :class:`CsindexQuoteHistory` (bodies
+verbatim); the pure column/date helpers below stay module-level.
 """
 from __future__ import annotations
 
@@ -102,157 +107,6 @@ def _to_iso_date_str(s: str) -> str:
     return s
 
 
-def build_history_csv(
-    index_code: str,
-    index_name: str,
-    out_dir: Path,
-    pe_records: List[Dict[str, Any]],
-) -> Optional[Path]:
-    """Merge from2020 export + 1m export + PE into a single daily history CSV.
-
-    The 1m data overrides the from2020 data for overlapping dates (update/insert).
-    PE (peg) is merged by date as a left join.
-    """
-    from2020_xlsx = out_dir / f"{index_code}_from2020.xlsx"
-    onem_xlsx = out_dir / f"{index_code}_1m.xlsx"
-
-    # Read with dtype=object to preserve original cell values
-    df_from2020 = read_csv_preferred(from2020_xlsx, dtype=object, logger=logger, log_tag=f"[from2020 {index_code}]")
-    df_1m = read_csv_preferred(onem_xlsx, dtype=object, logger=logger, log_tag=f"[1m {index_code}]")
-
-    frames: List[pd.DataFrame] = []
-    for df_raw in (df_from2020, df_1m):
-        if df_raw is None or df_raw.empty:
-            continue
-        df = _normalize_export_columns(df_raw)
-        if "date" in df.columns:
-            df["date"] = df["date"].apply(clean_date)
-            df = df[df["date"].str.len() == 8]
-        frames.append(df)
-
-    if not frames:
-        logger.warning("  [history] %s: no export data to build history", index_code)
-        return None
-
-    # Concatenate; 1m (last) overrides from2020 for overlapping dates
-    df = pd.concat(frames, ignore_index=True)
-    if "date" in df.columns:
-        df = df.drop_duplicates(subset=["date"], keep="last")
-        df = df.sort_values("date").reset_index(drop=True)
-
-    # Zero-pad numeric indexCode to 6 digits (Excel stores it as number, stripping leading zeros)
-    # Non-numeric codes like H30007 are kept as-is
-    if "indexCode" in df.columns:
-        def _fix_code(v: Any) -> str:
-            s = str(v).strip().split(".")[0]
-            if not s:
-                return ""
-            if s.isdigit():
-                return s.zfill(6)
-            return s
-        df["indexCode"] = df["indexCode"].apply(_fix_code)
-
-    # Merge PE (peg) by date
-    if pe_records:
-        df_pe = pd.DataFrame(pe_records)
-        if "tradeDate" in df_pe.columns and "peg" in df_pe.columns:
-            df_pe = df_pe[["tradeDate", "peg"]].copy()
-            df_pe["tradeDate"] = df_pe["tradeDate"].astype(str).str.strip().replace("-", "", regex=False)
-            df_pe = df_pe.rename(columns={"tradeDate": "date", "peg": "pe"})
-            df_pe = df_pe.drop_duplicates(subset=["date"], keep="last")
-            df = df.merge(df_pe, on="date", how="left")
-        else:
-            logger.warning("  [history] %s: PE records missing expected fields", index_code)
-
-    # Ensure pe column exists even if PE fetch failed
-    if "pe" not in df.columns:
-        df["pe"] = None
-
-    # Add index name
-    df["indexName"] = index_name
-
-    # Select and order final columns
-    preferred_cols = [
-        "date", "indexCode", "indexName",
-        "open", "high", "low", "close",
-        "volume", "amount", "change", "changePct",
-        "pe", "consNumber",
-    ]
-    final_cols = [c for c in preferred_cols if c in df.columns]
-    df = df[final_cols]
-
-    # Canonical CSV contract: date column is ISO YYYY-MM-DD in the output
-    # (compact keys were only for the PE join above)
-    if "date" in df.columns:
-        df["date"] = df["date"].map(_to_iso_date_str)
-
-    out_file = out_dir / f"{index_code}_history.csv"
-    df.to_csv(out_file, index=False, encoding="utf-8-sig")
-    logger.info(
-        "  [history] saved %s (%d rows, %s~%s, pe_coverage=%d/%d)",
-        out_file.name,
-        len(df),
-        df["date"].iloc[0] if len(df) else "?",
-        df["date"].iloc[-1] if len(df) else "?",
-        df["pe"].notna().sum() if "pe" in df.columns else 0,
-        len(df),
-    )
-    return out_file
-
-
-# ---------------------------------------------------------------------------
-# Content-freshness: does the local daily-record CSV cover a session?
-# ---------------------------------------------------------------------------
-
-def csv_has_date(out_dir: Path, index_code: str, yyyymmdd: str) -> bool:
-    """True iff the code's local 1m or history CSV contains a row for *yyyymmdd*.
-
-    The completeness gate for the daily-record download steps — a download
-    timestamp says nothing about what the source published after the last
-    fetch (rows land at arbitrary times of day, and laggard indices
-    publish hours behind peers), so skip decisions must read the data
-    itself, never the file mtime.
-
-    Optimized: header + last ~500KB of each CSV — CSVs are append-only in
-    chronological order, so the target date is always near the end.
-    Pure local check; missing/unreadable files count as NOT having the date.
-    """
-    import io
-
-    for fname in (f"{index_code}_1m.csv", f"{index_code}_history.csv"):
-        f = out_dir / fname
-        if not f.is_file():
-            continue
-        try:
-            fsize = f.stat().st_size
-            if fsize == 0:
-                continue
-
-            with open(f, "r", encoding="utf-8") as fh:
-                header = fh.readline().strip()
-
-            tail_size = min(fsize, 500_000)
-            with open(f, "rb") as fh:
-                fh.seek(-tail_size, 2)
-                if fsize > tail_size:
-                    fh.readline()  # skip the first partial line to align to a row boundary
-                tail_data = fh.read().decode("utf-8")
-
-            df = pd.read_csv(io.StringIO(header + "\n" + tail_data))
-            col = _find_date_column(df)
-            if not col:
-                continue
-            if (df[col].apply(clean_date) == yyyymmdd).any():
-                return True
-        except Exception:
-            continue
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Incremental xlsx -> csv merge (append missing dates, never overwrite)
-# ---------------------------------------------------------------------------
-
 def _find_date_column(df: pd.DataFrame) -> Optional[str]:
     """Return the date column name (bilingual 日期Date or standardized date)."""
     for col in df.columns:
@@ -262,78 +116,235 @@ def _find_date_column(df: pd.DataFrame) -> Optional[str]:
     return None
 
 
-def append_missing_dates_to_csv(
-    xlsx_path: Path,
-    csv_path: Path,
-    index_code: str,
-) -> Optional[int]:
-    """Append xlsx rows whose dates are missing from the existing csv.
+class CsindexQuoteHistory:
+    """CSIndex history-CSV scope — the former ``build_history_csv`` /
+    ``csv_has_date`` / ``append_missing_dates_to_csv`` functions are the
+    methods of the same names (same signatures and bodies verbatim); the
+    class holds no state and the pure helpers above stay module-level."""
 
-    Reads the xlsx directly (bilingual headers, raw values) and the existing
-    csv, finds dates present in the xlsx but absent from the csv, appends only
-    those rows, sorts by date, and writes the combined csv back. Existing rows
-    are never modified or dropped.
+    def build_history_csv(
+        self,
+        index_code: str,
+        index_name: str,
+        out_dir: Path,
+        pe_records: List[Dict[str, Any]],
+    ) -> Optional[Path]:
+        """Merge from2020 export + 1m export + PE into a single daily history CSV.
 
-    Returns the number of newly appended rows (0 if the csv already has every
-    date in the xlsx), or None if the xlsx is missing/unreadable.
-    """
-    if not is_valid_file(xlsx_path, min_bytes=MIN_VALID_BYTES):
-        return None
-    try:
-        df_new = pd.read_excel(xlsx_path, dtype=object)
-    except Exception as e:
-        logger.warning("  [1m-append] %s: xlsx read failed (%s): %s", index_code, xlsx_path.name, e)
-        return None
-    if df_new is None or df_new.empty:
-        return None
+        The 1m data overrides the from2020 data for overlapping dates (update/insert).
+        PE (peg) is merged by date as a left join.
+        """
+        from2020_xlsx = out_dir / f"{index_code}_from2020.xlsx"
+        onem_xlsx = out_dir / f"{index_code}_1m.xlsx"
 
-    date_col = _find_date_column(df_new)
-    if not date_col:
-        logger.warning("  [1m-append] %s: no date column found in xlsx", index_code)
-        return None
+        # Read with dtype=object to preserve original cell values
+        df_from2020 = read_csv_preferred(from2020_xlsx, dtype=object, logger=logger, log_tag=f"[from2020 {index_code}]")
+        df_1m = read_csv_preferred(onem_xlsx, dtype=object, logger=logger, log_tag=f"[1m {index_code}]")
 
-    new_dates = df_new[date_col].apply(clean_date)
-    valid = new_dates.str.len() == 8
-    df_new = df_new[valid].copy()
-    new_dates = new_dates[valid]
-    if df_new.empty:
-        return None
+        frames: List[pd.DataFrame] = []
+        for df_raw in (df_from2020, df_1m):
+            if df_raw is None or df_raw.empty:
+                continue
+            df = _normalize_export_columns(df_raw)
+            if "date" in df.columns:
+                df["date"] = df["date"].apply(clean_date)
+                df = df[df["date"].str.len() == 8]
+            frames.append(df)
 
-    # Read existing csv (if any) and collect its dates
-    existing_dates: set = set()
-    df_existing: Optional[pd.DataFrame] = None
-    if is_valid_file(csv_path, min_bytes=MIN_VALID_BYTES):
+        if not frames:
+            logger.warning("  [history] %s: no export data to build history", index_code)
+            return None
+
+        # Concatenate; 1m (last) overrides from2020 for overlapping dates
+        df = pd.concat(frames, ignore_index=True)
+        if "date" in df.columns:
+            df = df.drop_duplicates(subset=["date"], keep="last")
+            df = df.sort_values("date").reset_index(drop=True)
+
+        # Zero-pad numeric indexCode to 6 digits (Excel stores it as number, stripping leading zeros)
+        # Non-numeric codes like H30007 are kept as-is
+        if "indexCode" in df.columns:
+            def _fix_code(v: Any) -> str:
+                s = str(v).strip().split(".")[0]
+                if not s:
+                    return ""
+                if s.isdigit():
+                    return s.zfill(6)
+                return s
+            df["indexCode"] = df["indexCode"].apply(_fix_code)
+
+        # Merge PE (peg) by date
+        if pe_records:
+            df_pe = pd.DataFrame(pe_records)
+            if "tradeDate" in df_pe.columns and "peg" in df_pe.columns:
+                df_pe = df_pe[["tradeDate", "peg"]].copy()
+                df_pe["tradeDate"] = df_pe["tradeDate"].astype(str).str.strip().replace("-", "", regex=False)
+                df_pe = df_pe.rename(columns={"tradeDate": "date", "peg": "pe"})
+                df_pe = df_pe.drop_duplicates(subset=["date"], keep="last")
+                df = df.merge(df_pe, on="date", how="left")
+            else:
+                logger.warning("  [history] %s: PE records missing expected fields", index_code)
+
+        # Ensure pe column exists even if PE fetch failed
+        if "pe" not in df.columns:
+            df["pe"] = None
+
+        # Add index name
+        df["indexName"] = index_name
+
+        # Select and order final columns
+        preferred_cols = [
+            "date", "indexCode", "indexName",
+            "open", "high", "low", "close",
+            "volume", "amount", "change", "changePct",
+            "pe", "consNumber",
+        ]
+        final_cols = [c for c in preferred_cols if c in df.columns]
+        df = df[final_cols]
+
+        # Canonical CSV contract: date column is ISO YYYY-MM-DD in the output
+        # (compact keys were only for the PE join above)
+        if "date" in df.columns:
+            df["date"] = df["date"].map(_to_iso_date_str)
+
+        out_file = out_dir / f"{index_code}_history.csv"
+        df.to_csv(out_file, index=False, encoding="utf-8-sig")
+        logger.info(
+            "  [history] saved %s (%d rows, %s~%s, pe_coverage=%d/%d)",
+            out_file.name,
+            len(df),
+            df["date"].iloc[0] if len(df) else "?",
+            df["date"].iloc[-1] if len(df) else "?",
+            df["pe"].notna().sum() if "pe" in df.columns else 0,
+            len(df),
+        )
+        return out_file
+
+    # ------------------------------------------------------------------
+    # Content-freshness: does the local daily-record CSV cover a session?
+    # ------------------------------------------------------------------
+
+    def csv_has_date(self, out_dir: Path, index_code: str, yyyymmdd: str) -> bool:
+        """True iff the code's local 1m or history CSV contains a row for *yyyymmdd*.
+
+        The completeness gate for the daily-record download steps — a download
+        timestamp says nothing about what the source published after the last
+        fetch (rows land at arbitrary times of day, and laggard indices
+        publish hours behind peers), so skip decisions must read the data
+        itself, never the file mtime.
+
+        Optimized: header + last ~500KB of each CSV — CSVs are append-only in
+        chronological order, so the target date is always near the end.
+        Pure local check; missing/unreadable files count as NOT having the date.
+        """
+        import io
+
+        for fname in (f"{index_code}_1m.csv", f"{index_code}_history.csv"):
+            f = out_dir / fname
+            if not f.is_file():
+                continue
+            try:
+                fsize = f.stat().st_size
+                if fsize == 0:
+                    continue
+
+                with open(f, "r", encoding="utf-8") as fh:
+                    header = fh.readline().strip()
+
+                tail_size = min(fsize, 500_000)
+                with open(f, "rb") as fh:
+                    fh.seek(-tail_size, 2)
+                    if fsize > tail_size:
+                        fh.readline()  # skip the first partial line to align to a row boundary
+                    tail_data = fh.read().decode("utf-8")
+
+                df = pd.read_csv(io.StringIO(header + "\n" + tail_data))
+                col = _find_date_column(df)
+                if not col:
+                    continue
+                if (df[col].apply(clean_date) == yyyymmdd).any():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # ------------------------------------------------------------------
+    # Incremental xlsx -> csv merge (append missing dates, never overwrite)
+    # ------------------------------------------------------------------
+
+    def append_missing_dates_to_csv(
+        self,
+        xlsx_path: Path,
+        csv_path: Path,
+        index_code: str,
+    ) -> Optional[int]:
+        """Append xlsx rows whose dates are missing from the existing csv.
+
+        Reads the xlsx directly (bilingual headers, raw values) and the existing
+        csv, finds dates present in the xlsx but absent from the csv, appends only
+        those rows, sorts by date, and writes the combined csv back. Existing rows
+        are never modified or dropped.
+
+        Returns the number of newly appended rows (0 if the csv already has every
+        date in the xlsx), or None if the xlsx is missing/unreadable.
+        """
+        if not is_valid_file(xlsx_path, min_bytes=MIN_VALID_BYTES):
+            return None
         try:
-            df_existing = pd.read_csv(csv_path, dtype=object, encoding="utf-8-sig")
+            df_new = pd.read_excel(xlsx_path, dtype=object)
         except Exception as e:
-            logger.warning("  [1m-append] %s: csv read failed (%s), rebuilding from xlsx", index_code, e)
-            df_existing = None
+            logger.warning("  [1m-append] %s: xlsx read failed (%s): %s", index_code, xlsx_path.name, e)
+            return None
+        if df_new is None or df_new.empty:
+            return None
+
+        date_col = _find_date_column(df_new)
+        if not date_col:
+            logger.warning("  [1m-append] %s: no date column found in xlsx", index_code)
+            return None
+
+        new_dates = df_new[date_col].apply(clean_date)
+        valid = new_dates.str.len() == 8
+        df_new = df_new[valid].copy()
+        new_dates = new_dates[valid]
+        if df_new.empty:
+            return None
+
+        # Read existing csv (if any) and collect its dates
+        existing_dates: set = set()
+        df_existing: Optional[pd.DataFrame] = None
+        if is_valid_file(csv_path, min_bytes=MIN_VALID_BYTES):
+            try:
+                df_existing = pd.read_csv(csv_path, dtype=object, encoding="utf-8-sig")
+            except Exception as e:
+                logger.warning("  [1m-append] %s: csv read failed (%s), rebuilding from xlsx", index_code, e)
+                df_existing = None
+            if df_existing is not None and not df_existing.empty:
+                ex_date_col = _find_date_column(df_existing) or date_col
+                if ex_date_col in df_existing.columns:
+                    existing_dates = set(df_existing[ex_date_col].apply(clean_date))
+
+        # Only keep xlsx rows whose date is not already in the csv
+        missing_mask = ~new_dates.isin(existing_dates)
+        n_missing = int(missing_mask.sum())
+        if n_missing == 0:
+            return 0
+
+        df_missing = df_new[missing_mask]
         if df_existing is not None and not df_existing.empty:
-            ex_date_col = _find_date_column(df_existing) or date_col
-            if ex_date_col in df_existing.columns:
-                existing_dates = set(df_existing[ex_date_col].apply(clean_date))
+            df_combined = pd.concat([df_existing, df_missing], ignore_index=True, sort=False)
+        else:
+            df_combined = df_missing.copy()
 
-    # Only keep xlsx rows whose date is not already in the csv
-    missing_mask = ~new_dates.isin(existing_dates)
-    n_missing = int(missing_mask.sum())
-    if n_missing == 0:
-        return 0
+        # Sort by cleaned date so the csv stays chronological
+        comb_date_col = _find_date_column(df_combined) or date_col
+        sort_key = df_combined[comb_date_col].apply(clean_date)
+        df_combined = df_combined.assign(_sort_key=sort_key)
+        df_combined = df_combined.sort_values("_sort_key").drop(columns=["_sort_key"]).reset_index(drop=True)
 
-    df_missing = df_new[missing_mask]
-    if df_existing is not None and not df_existing.empty:
-        df_combined = pd.concat([df_existing, df_missing], ignore_index=True, sort=False)
-    else:
-        df_combined = df_missing.copy()
+        # Canonical CSV contract: ISO date in the output (normalize BOTH the
+        # appended rows and any legacy compact rows already in the csv)
+        df_combined[comb_date_col] = df_combined[comb_date_col].map(_to_iso_date_str)
 
-    # Sort by cleaned date so the csv stays chronological
-    comb_date_col = _find_date_column(df_combined) or date_col
-    sort_key = df_combined[comb_date_col].apply(clean_date)
-    df_combined = df_combined.assign(_sort_key=sort_key)
-    df_combined = df_combined.sort_values("_sort_key").drop(columns=["_sort_key"]).reset_index(drop=True)
-
-    # Canonical CSV contract: ISO date in the output (normalize BOTH the
-    # appended rows and any legacy compact rows already in the csv)
-    df_combined[comb_date_col] = df_combined[comb_date_col].map(_to_iso_date_str)
-
-    df_combined.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    return n_missing
+        df_combined.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        return n_missing

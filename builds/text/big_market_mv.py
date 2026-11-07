@@ -1,7 +1,7 @@
 """builds.text.big_market_mv — the is_big_fluctuation flag pass.
 
 Maintains the ``is_big_fluctuation`` column on ``text.news`` and
-``text.llm_qa``: true when the row's mapped industry had a BIG market
+``llm.llm_qa``: true when the row's mapped industry had a BIG market
 move on the row's date. Both tables take the SAME per-industry event
 series, computed from ``stats.industry_basic_stats`` (``pool_size =
 'all'`` mean_close composite — the identical series the
@@ -37,7 +37,7 @@ series, computed from ``stats.industry_basic_stats`` (``pool_size =
              ``is_big_fluctuation`` to the (industry_id, date) membership
              test against the surviving pairs (false otherwise), so a
              re-run converges and late ``llm_agents`` stores are healed
-             by the next ``builds.text`` run. ``text.llm_qa`` rows match
+             by the next ``builds.text`` run. ``llm.llm_qa`` rows match
              on the Shanghai calendar date of ``qa_date`` (the same
              cast the movers cooldown uses).
 
@@ -57,7 +57,7 @@ from _common._holidays_and_weekdays import recent_trading_day_cutoff
 logger = logging.getLogger(__name__)
 
 NEWS_TABLE = "text.news"
-QA_TABLE = "text.llm_qa"
+QA_TABLE = "llm.llm_qa"
 
 # Trigger thresholds. Change is in PERCENT (matching
 # today_industry_change's stored scale); rsi3 is the 0..100 Wilder RSI(3),
@@ -186,26 +186,39 @@ def compute_big_mv_days(
 # ----------------------------------------------------------------------------
 # DB apply
 # ----------------------------------------------------------------------------
-async def apply_big_market_mv(conn) -> Dict[str, int]:
-    """Recompute and write is_big_fluctuation on text.news + text.llm_qa.
+class BigMarketMv:
+    """Conn-scoped is_big_fluctuation pass (the module's single conn unit).
 
-    Full recompute (idempotent — see the module docstring). Returns the
-    surviving-day count and the per-table UPDATE row counts (rows
-    TOUCHED, i.e. every industry-tagged row, not just set-true ones).
+    Code motion of the former module function ``apply_big_market_mv``:
+    :meth:`BigMarketMv.apply` — same SQL, sequencing, and log lines, with
+    ``conn`` read from ``self.conn``. The pure compute helpers above
+    (``_grouped_ewm`` / ``_wilder_rsi`` / ``compute_big_mv_days``) stay
+    module-level.
     """
-    kept = compute_big_mv_days(await conn.fetch(INDUSTRY_CLOSE_SQL))
-    industries = [k[0] for k in kept]
-    days = [k[1] for k in kept]
-    news_status = await conn.execute(NEWS_FLAG_SQL, industries, days)
-    qa_status = await conn.execute(QA_FLAG_SQL, industries, days)
-    logger.info("    [DB] is_big_fluctuation: %d surviving day(s) across %d "
-                "industry(ies) (|chg| >= %g%% AND rsi3 <= %g or >= %g, "
-                "%dd cooldown)", len(kept), len(set(industries)),
-                BIG_MV_CHANGE_PCT, BIG_MV_RSI3_RAIL,
-                100.0 - BIG_MV_RSI3_RAIL, BIG_MV_COOLDOWN_BD)
-    return {
-        "surviving_days": len(kept),
-        "industries": len(set(industries)),
-        "news_touched": int(news_status.split()[-1]),
-        "qa_touched": int(qa_status.split()[-1]),
-    }
+
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    async def apply(self) -> Dict[str, int]:
+        """Recompute and write is_big_fluctuation on text.news + llm.llm_qa.
+
+        Full recompute (idempotent — see the module docstring). Returns the
+        surviving-day count and the per-table UPDATE row counts (rows
+        TOUCHED, i.e. every industry-tagged row, not just set-true ones).
+        """
+        kept = compute_big_mv_days(await self.conn.fetch(INDUSTRY_CLOSE_SQL))
+        industries = [k[0] for k in kept]
+        days = [k[1] for k in kept]
+        news_status = await self.conn.execute(NEWS_FLAG_SQL, industries, days)
+        qa_status = await self.conn.execute(QA_FLAG_SQL, industries, days)
+        logger.info("    [DB] is_big_fluctuation: %d surviving day(s) across %d "
+                    "industry(ies) (|chg| >= %g%% AND rsi3 <= %g or >= %g, "
+                    "%dd cooldown)", len(kept), len(set(industries)),
+                    BIG_MV_CHANGE_PCT, BIG_MV_RSI3_RAIL,
+                    100.0 - BIG_MV_RSI3_RAIL, BIG_MV_COOLDOWN_BD)
+        return {
+            "surviving_days": len(kept),
+            "industries": len(set(industries)),
+            "news_touched": int(news_status.split()[-1]),
+            "qa_touched": int(qa_status.split()[-1]),
+        }

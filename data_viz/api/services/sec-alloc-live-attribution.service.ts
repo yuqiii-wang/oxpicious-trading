@@ -40,7 +40,8 @@
  * GET /api/live-data/sec-alloc-live/attribution
  *   ?benchmark_code=000300&date=YYYY-MM-DD&time=HH:MM:SS
  */
-import { queryRows, formatDate, toNum } from "../lib/db.js";
+import { formatDate, toNum } from "../lib/db.js";
+import { querySqlView } from "../lib/sql-views.js";
 import { runPythonModule } from "./py-runner.service.js";
 import type { QueryResultRow } from "pg";
 import type {
@@ -69,160 +70,11 @@ interface DbAggregateRow extends QueryResultRow {
 }
 
 // ----------------------------------------------------------------------------
-//  SQL: aggregates per industry at one tick.
-//
-//  Weight semantics (computed ONCE per request in the CTEs — the same
-//  once-per-(benchmark, date) normalization the pipeline's former ref build
-//  performed, now at read time):
-//    • prev_d          — ONE resolved prev date: latest close-bearing
-//                        stats.index_basic_stats date strictly before the
-//                        tick date; every prev-value join is an exact-date
-//                        equality on it.
-//    • member_prev_amt — member's REAL prev-day trading_amount (literal NaN
-//                        numerics excluded via ::text <> 'NaN'). Members
-//                        without one keep weight NULL → excluded from the
-//                        weighted aggregate (renormalized denominator),
-//                        still counted by AVG (equal).
-//    • weights         — amount / Σ amounts (Σ over members with a real
-//                        amount; 0..1, Σ = 1). Only tick-eligible members
-//                        (index/etf) need weights: stocks never carry tick
-//                        rows, so the per-tick renormalized aggregate is
-//                        identical to normalizing over the full universe.
-//    • cs_weight       — composition overlap from the
-//                        stats.cross_stats_benchmark_weight_summary rollup
-//                        (builds.cross_stats refreshes it at the same hooks
-//                        as the code summary): latest row per member pair,
-//                        snapshot-constant per pair — a PK-prefix lookup.
-//                        The former live DISTINCT ON over the 100M-row
-//                        hash-partitioned main table (no index leads with
-//                        benchmark_code; code is the HASH key) seq-scanned
-//                        all 8 partitions and cost ~28s PER REQUEST
-//                        (measured 2026-10-30) — this endpoint fires per
-//                        page load, tick click, and 5-min refresh. Fallback
-//                        (no rollup rows for the benchmark — a fresh DB
-//                        before the first builds.cross_stats run): the
-//                        former live aggregate. NaN → 0, NULL → 0
-//                        (zero-overlap).
-//
-//  $1 = benchmark_code, $2 = date, $3 = time
+//  SQL: aggregates per industry at one tick — the SELECT lives in the sql
+//  view data_viz/api/services/sec-alloc-live-attribution/aggregates (the
+//  weight semantics — prev_d / member_prev_amt / weights / cs_weight CTEs —
+//  are documented in its header).
 // ----------------------------------------------------------------------------
-const AGGREGATES_SQL = `
-WITH cls AS (
-    SELECT DISTINCT ON (code)
-        code,
-        industry_id,
-        is_industry_not_strategy
-    FROM stats.sec_classification
-    WHERE is_active = TRUE
-      AND industry_id IS NOT NULL AND industry_id <> ''
-    ORDER BY code
-),
-universe AS (
-    SELECT code FROM stats.sec_classification
-    WHERE is_active = TRUE
-      AND type IN ('index', 'etf')
-      AND industry_id IS NOT NULL AND industry_id <> ''
-      AND industry_id NOT LIKE 'BROAD_%'
-      AND code <> $1::text
-),
-prev_d AS (
-    SELECT MAX(date) AS d
-    FROM stats.index_basic_stats
-    WHERE date < $2::date
-      AND close IS NOT NULL
-),
-member_prev_amt AS (
-    SELECT b.code, b.trading_amount AS amt
-    FROM stats.index_basic_stats b
-    WHERE b.date = (SELECT d FROM prev_d)
-      AND b.trading_amount IS NOT NULL AND b.trading_amount::text <> 'NaN'
-      AND b.code IN (SELECT code FROM universe)
-),
-weights AS (
-    SELECT m.code, m.amt / t.total AS w
-    FROM member_prev_amt m
-    CROSS JOIN (SELECT SUM(amt) AS total FROM member_prev_amt) t
-    WHERE t.total > 0
-),
-cs_weight_rollup AS (
-    SELECT ws.code, ws.code_sec_shared_weight
-    FROM stats.cross_stats_benchmark_weight_summary ws
-    WHERE ws.sec_type = 'index'
-      AND ws.benchmark_code = $1::text
-),
-cs_weight AS (
-    SELECT r.code, r.code_sec_shared_weight
-    FROM cs_weight_rollup r
-    WHERE EXISTS (SELECT 1 FROM cs_weight_rollup)
-    UNION ALL
-    SELECT DISTINCT ON (cs.code) cs.code, cs.code_sec_shared_weight
-    FROM stats.cross_stats cs
-    WHERE cs.sec_type = 'index'
-      AND cs.benchmark_code = $1::text
-      AND NOT EXISTS (SELECT 1 FROM cs_weight_rollup)
-),
-base AS (
-    SELECT
-        cls.industry_id,
-        COALESCE(cls.is_industry_not_strategy, TRUE)    AS is_industry_not_strategy,
-        w.w,
-        CASE WHEN csw.code_sec_shared_weight::text = 'NaN' THEN 0
-             ELSE COALESCE(csw.code_sec_shared_weight, 0) END AS sw,
-        a.code_price_pct_relative_prev_date_close       AS pct
-    FROM live.sec_alloc_live_attribution a
-    JOIN cls ON cls.code = a.code
-    LEFT JOIN weights w ON w.code = a.code
-    LEFT JOIN cs_weight csw ON csw.code = a.code
-    WHERE a.benchmark_code = $1::text
-      AND a.date = $2::date
-      AND a.time = $3::time
-)
-SELECT
-    industry_id,
-    BOOL_OR(is_industry_not_strategy)                     AS is_industry_not_strategy,
-    COALESCE(
-        (SUM(w * sw * pct)
-            / NULLIF(SUM(w * sw) FILTER (WHERE pct IS NOT NULL AND w IS NOT NULL AND sw IS NOT NULL), 0)
-        )::float8,
-        0
-    )                                                      AS weighted_pct,
-    AVG(pct)::float8                                      AS equal_pct,
-    COUNT(*)                                              AS member_count
-FROM base
-WHERE industry_id IS NOT NULL
-GROUP BY industry_id
-ORDER BY weighted_pct DESC
-`;
-
-/** Latest tick date for one benchmark.
- *  $1 = benchmark_code */
-const LATEST_DATE_SQL = `
-SELECT MAX(date) AS max_date
-FROM live.sec_alloc_live_attribution
-WHERE benchmark_code = $1::text
-`;
-
-/** Latest RAW intraday date for one benchmark — the date-resolution fallback
- *  when the tick cache has no rows at all for the benchmark (the on-demand
- *  compute below then backfills it).
- *  $1 = benchmark_code */
-const RAW_LATEST_DATE_SQL = `
-SELECT MAX(date) AS max_date
-FROM stats.index_intraday_5min
-WHERE code = $1::text AND close IS NOT NULL
-`;
-
-/** Existence probe: does the (benchmark, date) have ANY tick rows? A plain
- *  indexed lookup (idx_sec_alloc_live_attr_bench_dt) — runs on every request,
- *  so it must stay O(1)-ish. $1 = benchmark_code, $2 = date */
-const HAS_TICK_ROWS_SQL = `
-SELECT EXISTS (
-    SELECT 1
-    FROM live.sec_alloc_live_attribution
-    WHERE benchmark_code = $1::text
-      AND date = $2::date
-) AS has_tick_rows
-`;
 
 // ----------------------------------------------------------------------------
 //  On-demand backfill — invoked when the requested (benchmark, date) has no
@@ -256,32 +108,9 @@ async function backfillDateOnDemand(
 // ----------------------------------------------------------------------------
 //  weighted_available — the trading-amount weights are computable for the
 //  (benchmark, date): a resolved prev date exists AND at least one eligible
-//  member carries a REAL prev-day amount.
-//  $1 = benchmark_code, $2 = date
+//  member carries a REAL prev-day amount. The SELECT lives in the sql view
+//  data_viz/api/services/sec-alloc-live-attribution/weighted_available.
 // ----------------------------------------------------------------------------
-const WEIGHTED_AVAILABLE_SQL = `
-WITH universe AS (
-    SELECT code FROM stats.sec_classification
-    WHERE is_active = TRUE
-      AND type IN ('index', 'etf')
-      AND industry_id IS NOT NULL AND industry_id <> ''
-      AND industry_id NOT LIKE 'BROAD_%'
-      AND code <> $1::text
-),
-prev_d AS (
-    SELECT MAX(date) AS d
-    FROM stats.index_basic_stats
-    WHERE date < $2::date
-      AND close IS NOT NULL
-)
-SELECT EXISTS (
-    SELECT 1
-    FROM stats.index_basic_stats b
-    WHERE b.date = (SELECT d FROM prev_d)
-      AND b.trading_amount IS NOT NULL AND b.trading_amount::text <> 'NaN'
-      AND b.code IN (SELECT code FROM universe)
-) AS weighted_available
-`;
 
 export async function getSecAllocLiveAttribution(
   benchmarkCode: string,
@@ -290,12 +119,18 @@ export async function getSecAllocLiveAttribution(
 ): Promise<SecAllocLiveAttributionResponse> {
   let targetDate = date;
   if (!targetDate) {
-    let dateRows = await queryRows<DbDateRow>(LATEST_DATE_SQL, [benchmarkCode]);
+    let dateRows = await querySqlView<DbDateRow>(
+      "data_viz/api/services/sec-alloc-live-attribution/latest_tick_date",
+      { benchmark_code: benchmarkCode },
+    );
     targetDate = formatDate(dateRows[0]?.max_date ?? null);
     if (!targetDate) {
       // No cached ticks for the benchmark at all — fall back to the raw
       // intraday latest and let the on-demand compute below backfill it.
-      dateRows = await queryRows<DbDateRow>(RAW_LATEST_DATE_SQL, [benchmarkCode]);
+      dateRows = await querySqlView<DbDateRow>(
+        "data_viz/api/services/sec-alloc-live-attribution/raw_latest_date",
+        { code: benchmarkCode },
+      );
       targetDate = formatDate(dateRows[0]?.max_date ?? null);
     }
     if (!targetDate) {
@@ -313,17 +148,23 @@ export async function getSecAllocLiveAttribution(
   // (or one the 5-min keeper never reached) has no tick rows — recompute it
   // from the base tables before serving. The probe is an indexed point
   // lookup, so the normal cached path pays ~nothing for this check.
-  const hasRows = await queryRows<DbHasRowsRow>(HAS_TICK_ROWS_SQL, [
-    benchmarkCode,
-    targetDate,
-  ]);
+  const hasRows = await querySqlView<DbHasRowsRow>(
+    "data_viz/api/services/sec-alloc-live-attribution/has_tick_rows",
+    { benchmark_code: benchmarkCode, date: targetDate },
+  );
   if (hasRows[0]?.has_tick_rows !== true) {
     await backfillDateOnDemand(benchmarkCode, targetDate);
   }
 
   const [availRows, aggRows] = await Promise.all([
-    queryRows<DbAvailabilityRow>(WEIGHTED_AVAILABLE_SQL, [benchmarkCode, targetDate]),
-    queryRows<DbAggregateRow>(AGGREGATES_SQL, [benchmarkCode, targetDate, time]),
+    querySqlView<DbAvailabilityRow>(
+      "data_viz/api/services/sec-alloc-live-attribution/weighted_available",
+      { benchmark_code: benchmarkCode, date: targetDate },
+    ),
+    querySqlView<DbAggregateRow>(
+      "data_viz/api/services/sec-alloc-live-attribution/aggregates",
+      { benchmark_code: benchmarkCode, date: targetDate, time },
+    ),
   ]);
 
   const industries: SecAllocLiveAttributionIndustry[] = aggRows.map((r) => ({

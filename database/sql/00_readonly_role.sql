@@ -1,5 +1,5 @@
 -- Read-only analytics user: can SELECT the stats / analysis / signals /
--- strategy / static / live / text data schemas only. No write, no DDL,
+-- strategy / static / live / text / llm data schemas only. No write, no DDL,
 -- no role admin, no access to monitor / multi_media.
 --
 -- The password placeholder __READONLY_PASSWORD__ is substituted by the
@@ -29,7 +29,8 @@ GRANT USAGE ON SCHEMA
     strategy,
     static,
     live,
-    text
+    text,
+    llm
 TO readonly_analytics;
 
 GRANT SELECT ON ALL TABLES IN SCHEMA
@@ -41,7 +42,8 @@ GRANT SELECT ON ALL TABLES IN SCHEMA
     strategy,
     static,
     live,
-    text
+    text,
+    llm
 TO readonly_analytics;
 
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA
@@ -53,7 +55,8 @@ GRANT SELECT ON ALL SEQUENCES IN SCHEMA
     strategy,
     static,
     live,
-    text
+    text,
+    llm
 TO readonly_analytics;
 
 -- Future tables created in these schemas are readable too.
@@ -66,7 +69,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA
     strategy,
     static,
     live,
-    text
+    text,
+    llm
 GRANT SELECT ON TABLES TO readonly_analytics;
 
 -- Deliberately NO grants to PUBLIC-facing roles and NO membership in any

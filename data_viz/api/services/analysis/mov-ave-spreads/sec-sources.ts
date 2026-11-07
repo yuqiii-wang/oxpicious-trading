@@ -175,26 +175,11 @@ export const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
   },
 };
 
-export function buildNameSql(secType: MaSpreadSecType): string {
-  const src = SEC_SOURCES[secType];
-  // DISTINCT ON (code) + ORDER BY code, date DESC walks the (code, date) PK
-  // backwards PER CODE — one index probe per variant. The naive
-  // `ORDER BY date DESC LIMIT 1` form drove a date-index backward scan that
-  // filtered EVERY row of every touched partition before finding a match
-  // (~470k rows/partition, 4.4s measured 2026-09-29); the subselect wrapper
-  // then picks the overall-latest variant's row.
-  return `
-    SELECT name
-    FROM (
-      SELECT DISTINCT ON (code) code, name, date
-      FROM ${src.identityTable}
-      WHERE code = ANY($1::text[])
-      ORDER BY code, date DESC
-    ) latest
-    ORDER BY date DESC
-    LIMIT 1
-  `;
-}
+/** The display-name lookup for one code's variants — DISTINCT ON (code)
+ *  over the sec_type's identity table, subselect-wrapped to pick the
+ *  overall-latest variant's row. The SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/sec-sources/latest_name
+ *  (identity_table passed as a fragment arg). */
 
 /** WITH-CTE list prefetching every source table for the requested codes —
  *  the MATERIALIZED keyword fences the planner (the OFFSET 0 anti-flatten

@@ -14,13 +14,13 @@ packages used to duplicate between ``online_search_summary`` and
     project-root ``.env`` loader behind API-key resolution.
   * ``base``      — BaseLlmProvider: API-key resolution, retry policy,
     and the _post_json helpers every provider base inherits.
-  * ``request_log`` — the text.llm_requests source recorder: every
+  * ``request_log`` — the llm.llm_requests source recorder: every
     request's payload + response logged fire-and-forget from the
     transport, context/reference source articles linkable by ref ids
     (bind_ref_ids / load_request_sources).
   * ``text_caps``  — store-time length caps for generated text
     (truncate_summary / truncate_context; mirrors
-    database/sql/text/10_llm_summary_caps.sql).
+    database/sql/text/llm/08_llm_summary_caps.sql).
 
 NOT a CLI / agent: nothing here parses args or defines a domain
 contract — those stay in the per-agent packages. (``request_log``'s DB

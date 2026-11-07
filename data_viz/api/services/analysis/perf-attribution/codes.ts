@@ -3,7 +3,8 @@
  * subject code with first/last date, n_dates and the benchmark list.
  * Split out of the former monolithic perf-attribution.ts.
  */
-import { queryRows, formatDate } from "@api/lib/db";
+import { formatDate } from "@api/lib/db";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
@@ -18,7 +19,7 @@ import {
   PERF_ATTR_META_TABLE,
   PERF_ATTR_META_TYPE,
   resolvePerfAttrCodeSource,
-  buildPerfAttrMetaSql,
+  fetchPerfAttrMetaRows,
   type DbPerfAttrMetaRow,
 } from "./_shared.js";
 
@@ -50,74 +51,26 @@ export async function listPerfAttrCodes(
   }
   // Summary variant: one PK-grain read of the rollup (first/last/n_dates/
   // benchmarks precomputed by builds.cross_stats). Live variant: the
-  // historical two-CTE full-table aggregate (fallback only).
-  const statsSql =
-    codeSource === "summary"
-      ? `
-    SELECT
-      cs.code,
-      cs.first_date,
-      cs.last_date,
-      cs.n_dates,
-      cs.benchmarks
-    FROM stats.cross_stats_code_summary cs
-    WHERE cs.sec_type = $1::text`
-      : `
-    WITH code_stats AS (
-      SELECT
-        code,
-        MIN(date) AS first_date,
-        MAX(date) AS last_date,
-        COUNT(DISTINCT date) AS n_dates
-      FROM stats.cross_stats
-      WHERE sec_type = $1::text
-      GROUP BY code
-    ),
-    bench_list AS (
-      SELECT code, ARRAY_AGG(DISTINCT benchmark_code ORDER BY benchmark_code) AS benchmarks
-      FROM stats.cross_stats
-      WHERE sec_type = $1::text
-      GROUP BY code
-    )
-    SELECT
-      cs.code,
-      cs.first_date,
-      cs.last_date,
-      cs.n_dates,
-      COALESCE(bl.benchmarks, '{}') AS benchmarks
-    FROM code_stats cs
-    LEFT JOIN bench_list bl ON bl.code = cs.code`;
-  const sql = `
-    WITH latest_name AS (
-      SELECT DISTINCT ON (code) code, name
-      FROM ${nameTable}
-      ORDER BY code, date DESC
-    )
-    SELECT
-      s.code,
-      COALESCE(n.name, '') AS name,
-      s.first_date,
-      s.last_date,
-      s.n_dates,
-      s.benchmarks
-    FROM (${statsSql}) s
-    LEFT JOIN latest_name n ON n.code = s.code
-    ORDER BY s.n_dates DESC NULLS LAST, s.code
-  `;
-  const rows = await queryRows<DbPerfAttrCodeRow>(sql, [secType]);
+  // historical two-CTE full-table aggregate (fallback only). The two SELECT
+  // shapes live in the sql views data_viz/api/services/analysis/
+  // perf-attribution/codes/codes_summary and .../codes/codes_live.
+  const codesView = codeSource === "summary"
+    ? "data_viz/api/services/analysis/perf-attribution/codes/codes_summary"
+    : "data_viz/api/services/analysis/perf-attribution/codes/codes_live";
+  const rows = await querySqlView<DbPerfAttrCodeRow>(codesView, {
+    sec_type: secType,
+    name_table: sqlFrag(nameTable),
+  });
 
-  // When a classification filter is active, fetch the meta rows (same query as
-  // listPerfAttrThemes) and build a code → classification map so
+  // When a classification filter is active, fetch the meta rows (same query
+  // as listPerfAttrThemes) and build a code → classification map so
   // matchesClassification() can decide which codes to include. Industry and
   // strategy filters are mutually exclusive (handled by matchesClassification).
   let classMap: Map<string, DbPerfAttrMetaRow> | null = null;
   if (hasClassFilter) {
     const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
     const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
-    const metaRows = await queryRows<DbPerfAttrMetaRow>(
-      buildPerfAttrMetaSql(metaTable, codeSource),
-      [secType, metaType],
-    );
+    const metaRows = await fetchPerfAttrMetaRows(metaTable, codeSource, secType, metaType);
     classMap = new Map<string, DbPerfAttrMetaRow>();
     for (const m of metaRows) {
       const code = stripExchangeSuffix(m.code);

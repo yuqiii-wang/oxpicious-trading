@@ -1,9 +1,9 @@
 """llm_agents._core.text_caps — store-time length caps for generated text.
 
 LLM output and the context passages it was grounded in are bounded at
-store time so the text.* tables (and the API payloads that read them)
+store time so the llm.* tables (and the API payloads that read them)
 cannot grow without limit. The caps mirror the one-time cleanup in
-database/sql/text/10_llm_summary_caps.sql:
+database/sql/text/llm/08_llm_summary_caps.sql:
 
   * MAX_SUMMARY_CHARS — answer-like columns the UI renders (llm_qa.answer,
     llm_qa_by_ask.answer, the five research dimension texts, error tails).

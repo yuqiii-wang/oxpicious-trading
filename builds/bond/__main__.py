@@ -37,9 +37,9 @@ class BondBuild(DataBuild):
     allow_unknown_args = True  # pipeline parses sys.argv itself
 
     async def run(self) -> None:
-        from builds.bond.pipeline import main
+        from builds.bond.pipeline import BondPipeline
 
-        await main()
+        await BondPipeline().run()
 
 
 if __name__ == "__main__":

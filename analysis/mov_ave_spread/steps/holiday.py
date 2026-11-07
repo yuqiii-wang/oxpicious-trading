@@ -45,7 +45,7 @@ from _common._holidays_and_weekdays import (
 )
 from _common.df_utils import host_array
 from analysis._common import sanitize_for_db_insert
-from analysis.mov_ave_spread._common import run_table_step
+from analysis.mov_ave_spread._common import TableStep
 from analysis.mov_ave_spread.config import (
     HOLIDAY_ANALYSIS_NAME,
     HOLIDAY_COLUMNS,
@@ -296,20 +296,11 @@ def sanitize_holiday_rows(df: pd.DataFrame) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
-#  skeleton lives in _common.steps.run_table_step)
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__ via the
+#  TableStep template in _common.steps)
 # ---------------------------------------------------------------------------
 
-async def run_holiday(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
+class HolidayStep(TableStep):
     """Run the holiday / non-trading-day risk pipeline.
 
     Reuses the caller's DB connection and source DataFrame (the ``price``,
@@ -318,7 +309,7 @@ async def run_holiday(
     previous-day classification (the calendar is built once for the full
     date range).
 
-    Pipeline (see _common.steps.run_table_step)
+    Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_rsi_holiday against source identity tables.
          In force mode, purge the table scope instead.
@@ -327,21 +318,18 @@ async def run_holiday(
       2. Upsert into analysis.mov_ave_rsi_holiday (chunked by date).
       3. Upsert analysis.analysis_identity registry.
     """
-    await run_table_step(
-        conn, df,
-        title="MOV_AVE_RSI_HOLIDAY (internal step of mov_ave_spread)",
-        tag="h",
-        table=HOLIDAY_TABLE,
-        analysis_name=HOLIDAY_ANALYSIS_NAME,
-        detail_name="mov_ave_rsi_holiday",
-        description=HOLIDAY_DESCRIPTION,
-        needed_cols=["sec_type", "code", "date", "price", "open", "high",
-                     "low"],
-        compute_fn=compute_holiday_metrics,
-        sanitize_fn=sanitize_holiday_rows,
-        force=force,
-        pool=pool,
-        max_concurrent=max_concurrent,
-        sec_type=sec_type,
-        code_filter=code_filter,
-    )
+
+    title = "MOV_AVE_RSI_HOLIDAY (internal step of mov_ave_spread)"
+    tag = "h"
+    table = HOLIDAY_TABLE
+    analysis_name = HOLIDAY_ANALYSIS_NAME
+    detail_name = "mov_ave_rsi_holiday"
+    description = HOLIDAY_DESCRIPTION
+    needed_cols = ("sec_type", "code", "date", "price", "open", "high",
+                   "low")
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return compute_holiday_metrics(df)
+
+    def sanitize_rows(self, df: pd.DataFrame) -> list[dict]:
+        return sanitize_holiday_rows(df)

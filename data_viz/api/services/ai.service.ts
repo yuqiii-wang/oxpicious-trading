@@ -1,6 +1,6 @@
 /**
  * AI service — reads the LLM Q&A knowledge base in the text schema
- * (text.llm_qa + text.llm_qa_refs, written by llm_agents) with the SAME
+ * (llm.llm_qa + llm.llm_qa_refs, written by llm_agents) with the SAME
  * SQL design as the news service:
  *
  *   • industry scope — industry_id when an L2 chip is active; else, for an
@@ -29,6 +29,7 @@
  * mapping is then a MAX lookup over that small in-memory set.
  */
 import { queryRows } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import type {
   AiCalendarResponse,
@@ -51,14 +52,10 @@ interface CatalogRow extends QueryResultRow {
 }
 
 async function listCatalogRows(): Promise<CatalogRow[]> {
+  // The SELECT lives in the sql view
+  // data_viz/api/services/ai/catalog_pairs.
   return cachedRows("ai:catalog", () =>
-    queryRows<CatalogRow>(
-      `
-      SELECT DISTINCT COALESCE(sector_id, 'OTHER')   AS sector_id,
-             COALESCE(industry_id, 'OTHER')          AS industry_id
-        FROM stats.sec_classification
-      `,
-    ),
+    querySqlView<CatalogRow>("data_viz/api/services/ai/catalog_pairs"),
   );
 }
 
@@ -82,7 +79,7 @@ interface AiFilters {
   industryIds?: string[] | null;
   search?: string | null;
   /** true = only Q&A rows whose mapped industry had a big market move on the
-   *  row's Shanghai qa_date day (text.llm_qa.is_big_fluctuation — the
+   *  row's Shanghai qa_date day (llm.llm_qa.is_big_fluctuation — the
    *  builds.text big_market_mv pass: |day change| >= 3% AND RSI(3) pinned,
    *  5-td cooldown per industry). */
   bigFluctuationOnly?: boolean;
@@ -151,30 +148,15 @@ async function buildFilterSql(
 // ---------------------------------------------------------------------------
 // Trading-day mapping — computed once per query.
 //
-// `td` holds the DISTINCT trading dates of stats.industry_basic_stats
-// (MATERIALIZED: computed once, not per correlated reference); `q` applies
-// the caller's scope/search filters; `m` maps each row to the latest
-// trading day on or before its Asia/Shanghai day (weekends/holidays roll
-// back), so the calendar strip, the day filter and the per-card dates all
-// sit on the same dates as the trend charts.
-// ---------------------------------------------------------------------------
-
-const baseCte = (where: string): string => `
-  WITH td AS MATERIALIZED (
-    SELECT DISTINCT date FROM stats.industry_basic_stats
-  ), q AS (
-    SELECT q.*, (q.qa_date AT TIME ZONE 'Asia/Shanghai')::date AS qa_day
-      FROM text.llm_qa q
-     ${where ? "WHERE " + where : ""}
-  ), m AS (
-    SELECT q.*, COALESCE(
-             (SELECT MAX(td.date) FROM td WHERE td.date <= q.qa_day),
-             q.qa_day) AS trade_day
-      FROM q
-  )`;
-
-// ---------------------------------------------------------------------------
-// Calendar — per-day QA counts for the date-event strip's dots
+// The scoped queries (calendar / items) share one CTE shape, kept in the
+// sql views data_viz/api/services/ai/{calendar,date_bounds,items_count,
+// items}: `td` holds the DISTINCT trading dates of
+// stats.industry_basic_stats (MATERIALIZED: computed once, not per
+// correlated reference); `q` applies the caller's scope/search filters;
+// `m` maps each row to the latest trading day on or before its
+// Asia/Shanghai day (weekends/holidays roll back), so the calendar strip,
+// the day filter and the per-card dates all sit on the same dates as the
+// trend charts.
 // ---------------------------------------------------------------------------
 
 export async function listAiCalendar(
@@ -185,21 +167,22 @@ export async function listAiCalendar(
   if (conditions === "1=0") {
     return { days: [], min_date: null, max_date: null };
   }
-  const base = baseCte(conditions);
+  // The SELECTs live in the sql views
+  // data_viz/api/services/ai/calendar and
+  // data_viz/api/services/ai/date_bounds (where_clause rides a fragment;
+  // its params stay caller-assembled).
   const rows = await queryRows<{ date: string; count: string } & QueryResultRow>(
-    `${base}
-     SELECT trade_day::text AS date, COUNT(*)::text AS count
-       FROM m
-      GROUP BY trade_day
-      ORDER BY trade_day`,
+    renderSqlView("data_viz/api/services/ai/calendar", {
+      where_clause: sqlFrag(conditions),
+    }).sql,
     params,
   );
   const bounds = await queryRows<
     { min_date: string | null; max_date: string | null } & QueryResultRow
   >(
-    `${base}
-     SELECT MIN(trade_day)::text AS min_date, MAX(trade_day)::text AS max_date
-       FROM m`,
+    renderSqlView("data_viz/api/services/ai/date_bounds", {
+      where_clause: sqlFrag(conditions),
+    }).sql,
     params,
   );
   return {
@@ -212,14 +195,6 @@ export async function listAiCalendar(
 // ---------------------------------------------------------------------------
 // Items — one page of Q&A rows
 // ---------------------------------------------------------------------------
-
-const QA_LIST_SELECT = `
-  SELECT m.qa_id, m.question, m.industry_id, m.sector_id, m.category,
-         m.llm_model, m.language, m.is_big_fluctuation, m.trade_day::text AS date,
-         (m.updated_at AT TIME ZONE 'Asia/Shanghai')::text AS updated_at,
-         LEFT(m.answer, 240) AS answer_snippet,
-         (SELECT COUNT(*)::int FROM text.news_group_items gi
-           WHERE gi.news_group_id = m.news_group_id) AS n_sources`;
 
 export async function listAiItems(
   filters: AiFilters & {
@@ -238,7 +213,7 @@ export async function listAiItems(
   if (conditions === "1=0") {
     return { total: 0, items: [] };
   }
-  const base = baseCte(conditions);
+  // Trade-day filter fragment (caller-built — carries its params).
   const dateFilter = filters.date
     ? `WHERE trade_day = $${params.push(filters.date)}::date`
     : filters.dateFrom && filters.dateTo
@@ -246,8 +221,10 @@ export async function listAiItems(
       : "";
 
   const totalRows = await queryRows<{ n: string } & QueryResultRow>(
-    `${base}
-     SELECT COUNT(*)::text AS n FROM m ${dateFilter}`,
+    renderSqlView("data_viz/api/services/ai/items_count", {
+      where_clause: sqlFrag(conditions),
+      date_clause: sqlFrag(dateFilter),
+    }).sql,
     params,
   );
   const total = Number(totalRows[0]?.n ?? 0);
@@ -255,12 +232,12 @@ export async function listAiItems(
   const limit = Math.min(Math.max(filters.limit ?? 20, 1), 100);
   const offset = Math.max(filters.offset ?? 0, 0);
   const items = await queryRows<AiQaItem & QueryResultRow>(
-    `${base}
-     ${QA_LIST_SELECT}
-      FROM m
-      ${dateFilter}
-      ORDER BY trade_day DESC, qa_id DESC
-      LIMIT ${limit} OFFSET ${offset}`,
+    renderSqlView("data_viz/api/services/ai/items", {
+      where_clause: sqlFrag(conditions),
+      date_clause: sqlFrag(dateFilter),
+      limit: sqlFrag(`${limit}`),
+      offset: sqlFrag(`${offset}`),
+    }).sql,
     params,
   );
   return { total, items };
@@ -273,7 +250,7 @@ export async function listAiItems(
 // fetched page text, too much for one detail payload times every ref.
 //
 // REF DATES — the DB carries the truth, populated by the Python writers
-// (llm_agents / builds.text): text.llm_qa_refs.ref_time is the ref's
+// (llm_agents / builds.text): llm.llm_qa_refs.ref_time is the ref's
 // ACTUAL publish time (the search response's date, else the URL-embedded
 // date) and NULL means unknown — a now()/qa-date fallback used to be
 // written there and displayed as the article's date. `date` below is
@@ -284,45 +261,17 @@ export async function listAiItems(
 // ---------------------------------------------------------------------------
 
 export async function getAiQa(qaId: number): Promise<AiQaDetail | null> {
-  const rows = await queryRows<Omit<AiQaDetail, "refs"> & QueryResultRow>(
-    `WITH td AS MATERIALIZED (
-       SELECT DISTINCT date FROM stats.industry_basic_stats
-     ), q AS (
-       SELECT q.*, (q.qa_date AT TIME ZONE 'Asia/Shanghai')::date AS qa_day
-         FROM text.llm_qa q
-        WHERE q.qa_id = $1
-     ), m AS (
-       SELECT q.*, COALESCE(
-                (SELECT MAX(td.date) FROM td WHERE td.date <= q.qa_day),
-                q.qa_day) AS trade_day
-         FROM q
-     )
-    SELECT m.qa_id, m.question, m.answer, m.context, m.industry_id,
-           m.sector_id, m.category, m.llm_model, m.language,
-           m.is_big_fluctuation, m.trade_day::text AS date,
-           (m.updated_at AT TIME ZONE 'Asia/Shanghai')::text AS updated_at,
-           (SELECT COUNT(*)::int FROM text.news_group_items gi
-             WHERE gi.news_group_id = m.news_group_id) AS n_sources,
-           (SELECT ROUND(AVG(d.sentiment_level)::numeric, 2)::float
-              FROM text.llm_qa_refs r
-              JOIN text.news_digestions d ON d.news_id = r.news_id
-             WHERE r.qa_id = m.qa_id AND d.sentiment_level IS NOT NULL)
-             AS avg_ref_sentiment
-      FROM m`,
-    [qaId],
+  // The SELECTs live in the sql views
+  // data_viz/api/services/ai/qa_detail and
+  // data_viz/api/services/ai/qa_refs.
+  const rows = await querySqlView<Omit<AiQaDetail, "refs"> & QueryResultRow>(
+    "data_viz/api/services/ai/qa_detail",
+    { qa_id: qaId },
   );
   if (rows.length === 0) return null;
-  const refs = await queryRows<AiQaRefItem & QueryResultRow>(
-    `SELECT r.ref, r.ref_type, r.resolved_via, r.resolved_url, r.is_used,
-           (r.ref_time AT TIME ZONE 'Asia/Shanghai')::text AS ref_time,
-           n.news_id, n.title, n.source, n.url,
-           LEFT(n.content, 4000) AS content,
-           (r.ref_time AT TIME ZONE 'Asia/Shanghai')::date::text AS date
-      FROM text.llm_qa_refs r
-      JOIN text.news n ON n.news_id = r.news_id
-     WHERE r.qa_id = $1
-     ORDER BY r.ref`,
-    [qaId],
+  const refs = await querySqlView<AiQaRefItem & QueryResultRow>(
+    "data_viz/api/services/ai/qa_refs",
+    { qa_id: qaId },
   );
   return { ...rows[0], refs };
 }

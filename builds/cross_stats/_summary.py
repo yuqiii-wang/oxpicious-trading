@@ -92,101 +92,110 @@ _WEIGHT_REFRESH_SQL = f"""
 """
 
 
-async def summary_is_stale(conn) -> bool:
-    """True when the summary needs a refresh on the no-op path.
+class CrossStatsSummary:
+    """Conn-scoped summary-rollup maintenance (one asyncpg connection).
 
-    Stale = no summary rows for the pair grain while the main table has
-    pair rows, or the summary's latest covered date lags the dates map
-    (a newly written date is never registered before its pair rows land,
-    so map MAX(date) == latest pair-grain date — see runner step 5).
-
-    All probes are cheap: the summary check is a PK-grain count, the
-    main-table existence probe short-circuits via the (sec_type, date)
-    index, and the map max touches the ~1.7K-row map. A count(*) over
-    the 70M+ row main table would defeat the no-op fast path.
+    Code motion of the former module-level conn-first functions: each keeps
+    its name, SQL, sequencing, and log lines — the ``conn`` parameter
+    became ``self.conn``. The SQL constants and the hosted-grain tuple stay
+    module-level above.
     """
-    n_summary = await conn.fetchval(
-        f"SELECT count(*) FROM {SUMMARY_TABLE} WHERE sec_type = 'index'"
-    )
-    if n_summary:
-        summary_max = await conn.fetchval(
-            f"SELECT MAX(last_date) FROM {SUMMARY_TABLE} "
+
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    async def summary_is_stale(self) -> bool:
+        """True when the summary needs a refresh on the no-op path.
+
+        Stale = no summary rows for the pair grain while the main table has
+        pair rows, or the summary's latest covered date lags the dates map
+        (a newly written date is never registered before its pair rows land,
+        so map MAX(date) == latest pair-grain date — see runner step 5).
+
+        All probes are cheap: the summary check is a PK-grain count, the
+        main-table existence probe short-circuits via the (sec_type, date)
+        index, and the map max touches the ~1.7K-row map. A count(*) over
+        the 70M+ row main table would defeat the no-op fast path.
+        """
+        n_summary = await self.conn.fetchval(
+            f"SELECT count(*) FROM {SUMMARY_TABLE} WHERE sec_type = 'index'"
+        )
+        if n_summary:
+            summary_max = await self.conn.fetchval(
+                f"SELECT MAX(last_date) FROM {SUMMARY_TABLE} "
+                f"WHERE sec_type = 'index'"
+            )
+            map_max = await self.conn.fetchval(f"SELECT MAX(date) FROM {DATES_MAP_TABLE}")
+            return bool(
+                summary_max is None
+                or (map_max is not None and summary_max < map_max)
+            )
+        # Summary empty: stale only when the pair grain actually has rows.
+        has_pair_rows = await self.conn.fetchval(
+            f"SELECT 1 FROM {TABLE} WHERE sec_type = 'index' LIMIT 1"
+        )
+        return bool(has_pair_rows)
+
+    async def refresh_code_summary(self) -> None:
+        """Fully rebuild the summary rows for all hosted grains (one scan)."""
+        with timed("code-summary"):
+            # The aggregate scans the full pair grain (70M+ rows) — the same
+            # session tuning as the industry INSERT...SELECT.
+            await self.conn.execute(SET_WORK_MEM_SQL)
+            async with self.conn.transaction():
+                await self.conn.execute(
+                    f"DELETE FROM {SUMMARY_TABLE} WHERE sec_type = ANY($1::text[])",
+                    list(_SUMMARY_SEC_TYPES),
+                )
+                await self.conn.execute(_REFRESH_SQL, list(_SUMMARY_SEC_TYPES))
+        n = await self.conn.fetchval(f"SELECT count(*) FROM {SUMMARY_TABLE}")
+        logger.info(f"    -> code summary refreshed: {n:,} rows in {SUMMARY_TABLE}")
+
+    async def benchmark_weight_summary_is_stale(self) -> bool:
+        """True when the benchmark-weight rollup needs a refresh on the no-op
+        path.
+
+        Same cheap probes as summary_is_stale (tiny rollup PK + dates map,
+        plus one indexed pair-grain existence probe):
+          - rollup empty + pair grain has rows → stale (first deployment).
+          - pair grain EMPTY while the rollup holds rows → stale (a force
+            truncate without a rewrite — the refresh re-empties it).
+          - rollup MAX(last_date) < map MAX(date) → a new date was written
+            (never registered before its pair rows land).
+        """
+        n_rollup = await self.conn.fetchval(
+            f"SELECT count(*) FROM {WEIGHT_SUMMARY_TABLE} "
             f"WHERE sec_type = 'index'"
         )
-        map_max = await conn.fetchval(f"SELECT MAX(date) FROM {DATES_MAP_TABLE}")
-        return bool(
-            summary_max is None
-            or (map_max is not None and summary_max < map_max)
+        has_pair_rows = await self.conn.fetchval(
+            f"SELECT 1 FROM {TABLE} WHERE sec_type = 'index' LIMIT 1"
         )
-    # Summary empty: stale only when the pair grain actually has rows.
-    has_pair_rows = await conn.fetchval(
-        f"SELECT 1 FROM {TABLE} WHERE sec_type = 'index' LIMIT 1"
-    )
-    return bool(has_pair_rows)
-
-
-async def refresh_code_summary(conn) -> None:
-    """Fully rebuild the summary rows for all hosted grains (one scan)."""
-    with timed("code-summary"):
-        # The aggregate scans the full pair grain (70M+ rows) — the same
-        # session tuning as the industry INSERT...SELECT.
-        await conn.execute(SET_WORK_MEM_SQL)
-        async with conn.transaction():
-            await conn.execute(
-                f"DELETE FROM {SUMMARY_TABLE} WHERE sec_type = ANY($1::text[])",
-                list(_SUMMARY_SEC_TYPES),
+        if n_rollup:
+            if not has_pair_rows:
+                return True
+            rollup_max = await self.conn.fetchval(
+                f"SELECT MAX(last_date) FROM {WEIGHT_SUMMARY_TABLE} "
+                f"WHERE sec_type = 'index'"
             )
-            await conn.execute(_REFRESH_SQL, list(_SUMMARY_SEC_TYPES))
-    n = await conn.fetchval(f"SELECT count(*) FROM {SUMMARY_TABLE}")
-    logger.info(f"    -> code summary refreshed: {n:,} rows in {SUMMARY_TABLE}")
-
-
-async def benchmark_weight_summary_is_stale(conn) -> bool:
-    """True when the benchmark-weight rollup needs a refresh on the no-op
-    path.
-
-    Same cheap probes as summary_is_stale (tiny rollup PK + dates map,
-    plus one indexed pair-grain existence probe):
-      - rollup empty + pair grain has rows → stale (first deployment).
-      - pair grain EMPTY while the rollup holds rows → stale (a force
-        truncate without a rewrite — the refresh re-empties it).
-      - rollup MAX(last_date) < map MAX(date) → a new date was written
-        (never registered before its pair rows land).
-    """
-    n_rollup = await conn.fetchval(
-        f"SELECT count(*) FROM {WEIGHT_SUMMARY_TABLE} "
-        f"WHERE sec_type = 'index'"
-    )
-    has_pair_rows = await conn.fetchval(
-        f"SELECT 1 FROM {TABLE} WHERE sec_type = 'index' LIMIT 1"
-    )
-    if n_rollup:
-        if not has_pair_rows:
-            return True
-        rollup_max = await conn.fetchval(
-            f"SELECT MAX(last_date) FROM {WEIGHT_SUMMARY_TABLE} "
-            f"WHERE sec_type = 'index'"
-        )
-        map_max = await conn.fetchval(f"SELECT MAX(date) FROM {DATES_MAP_TABLE}")
-        return bool(
-            rollup_max is None
-            or (map_max is not None and rollup_max < map_max)
-        )
-    return bool(has_pair_rows)
-
-
-async def refresh_benchmark_weight_summary(conn) -> None:
-    """Fully rebuild the latest-weight rollup for all hosted grains (one
-    scan — same transaction shape as refresh_code_summary)."""
-    with timed("benchmark-weight-summary"):
-        await conn.execute(SET_WORK_MEM_SQL)
-        async with conn.transaction():
-            await conn.execute(
-                f"DELETE FROM {WEIGHT_SUMMARY_TABLE} "
-                f"WHERE sec_type = ANY($1::text[])",
-                list(_SUMMARY_SEC_TYPES),
+            map_max = await self.conn.fetchval(f"SELECT MAX(date) FROM {DATES_MAP_TABLE}")
+            return bool(
+                rollup_max is None
+                or (map_max is not None and rollup_max < map_max)
             )
-            await conn.execute(_WEIGHT_REFRESH_SQL, list(_SUMMARY_SEC_TYPES))
-    n = await conn.fetchval(f"SELECT count(*) FROM {WEIGHT_SUMMARY_TABLE}")
-    logger.info(f"    -> benchmark weight summary refreshed: {n:,} rows in "
-                f"{WEIGHT_SUMMARY_TABLE}")
+        return bool(has_pair_rows)
+
+    async def refresh_benchmark_weight_summary(self) -> None:
+        """Fully rebuild the latest-weight rollup for all hosted grains (one
+        scan — same transaction shape as refresh_code_summary)."""
+        with timed("benchmark-weight-summary"):
+            await self.conn.execute(SET_WORK_MEM_SQL)
+            async with self.conn.transaction():
+                await self.conn.execute(
+                    f"DELETE FROM {WEIGHT_SUMMARY_TABLE} "
+                    f"WHERE sec_type = ANY($1::text[])",
+                    list(_SUMMARY_SEC_TYPES),
+                )
+                await self.conn.execute(_WEIGHT_REFRESH_SQL, list(_SUMMARY_SEC_TYPES))
+        n = await self.conn.fetchval(f"SELECT count(*) FROM {WEIGHT_SUMMARY_TABLE}")
+        logger.info(f"    -> benchmark weight summary refreshed: {n:,} rows in "
+                    f"{WEIGHT_SUMMARY_TABLE}")

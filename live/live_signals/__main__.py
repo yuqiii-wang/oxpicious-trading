@@ -69,43 +69,27 @@ from __future__ import annotations
 import os as _os
 
 _os.environ.setdefault("ANALYZE_MIN_SYS_GB", "8")
-from _common.pre_check import pre_check
-
-pre_check(require_gpu=False)
-import argparse
-import asyncio
-import datetime
-import os
-import sys
-import time
-
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# via ``python -m live.live_signals``.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
 
 # cudf.pandas activation — must run before pandas first import (the
-# repo-wide entry-point convention; this pipeline itself is asyncpg-only)
-from _common.df_utils._activate import activate  # noqa: E402
+# repo-wide entry-point convention; this pipeline itself is asyncpg-only).
+# Bootstrap-first layout: the hook is installed before the module-level
+# imports below (LivePipeline.execute()'s own bootstrap is a no-op —
+# flag-guarded).
+from _common.data_pipeline import bootstrap_runtime
 
-activate()
+bootstrap_runtime(require_gpu=False)
+
+import datetime  # noqa: E402
+import sys  # noqa: E402
 
 from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
     print_build_header,
     print_wall_time,
 )
-from _common.db_commons import (  # noqa: E402
-    bulk_upsert_async,
-)
+from _common.db_commons import bulk_upsert_async  # noqa: E402
+from _common.sql_views import frag, render_sql_view  # noqa: E402
 
-setup_utf8_stdout()
-
+from live._base import LivePipeline  # noqa: E402
 from live.live_signals.analysis import AnalysisEvaluator  # noqa: E402
 from live.live_signals.config import (  # noqa: E402
     DAILY_TABLES,
@@ -118,221 +102,194 @@ from live.live_signals.config import (  # noqa: E402
     SIGNAL_SCHEMES,
 )
 
-from _common.log_setup import setup_logging  # noqa: E402
-logger = setup_logging("live_signals")
-
 EXIT_NOT_FOUND = 404
-EXIT_USAGE = 2
 
 
-# ---------------------------------------------------------------------------
-#  Helpers
-# ---------------------------------------------------------------------------
+class LiveSignalsCheck(LivePipeline):
+    """The live.live_signals breach check (live / as-of / range replay)."""
 
-async def _upsert_live_identity(conn) -> None:
-    """Upsert the pipeline registration into live.live_identity."""
-    await conn.execute(
-        """
-        INSERT INTO live.live_identity
-            (name, detail_name, summary_name, last_run_datetime, description)
-        VALUES ($1, $2, NULL, NOW(), $3)
-        ON CONFLICT (name) DO UPDATE SET
-            detail_name       = EXCLUDED.detail_name,
-            summary_name      = EXCLUDED.summary_name,
-            last_run_datetime = NOW(),
-            description       = EXCLUDED.description
-        """,
-        PIPELINE_NAME,
-        "live_signals",
-        PIPELINE_DESCRIPTION,
-    )
+    # The header prints inside run() (after usage validation, per mode);
+    # an empty title keeps the base header/wall-time out of the way.
+    title = ""
+    component = "live_signals"
 
-
-async def _replay_dates(
-    conn, sec_types: list[str], date_from: datetime.date,
-    date_to: datetime.date, code: str | None,
-) -> list[datetime.date]:
-    """The trading dates of [date_from, date_to] that have SOURCE data
-    for the replay — the union of the intraday tables' and the daily
-    baseline's distinct dates (per sec_type; ``code`` narrows to one
-    ticker in single-code mode). Dates without any bar/close are
-    skipped: the as-of evaluation would produce nothing for them."""
-    scopes = sec_types or list(SEC_TYPE_PROBE_ORDER)
-    dates: set[datetime.date] = set()
-    for st in scopes:
-        intraday = INTRADAY_TABLES[st]
-        daily = DAILY_TABLES[st]
-        rows = await conn.fetch(
-            f"""
-            SELECT DISTINCT date FROM (
-                SELECT date FROM {intraday}
-                WHERE date BETWEEN $1 AND $2
-                  AND ($3::text IS NULL OR code = $3)
-                UNION
-                SELECT date FROM {daily}
-                WHERE date BETWEEN $1 AND $2
-                  AND close IS NOT NULL
-                  AND ($3::text IS NULL OR code = $3)
-            ) d
-            """,
-            date_from, date_to, code,
+    def add_arguments(self, parser) -> None:
+        parser.description = (
+            "Live breach check of the analysis_signals threshold "
+            "set (the LIVE signal tier): every active signal "
+            "config's current value (per the declarative "
+            "value-source map) vs the row's OWN threshold, "
+            "direction by the row's OWN action — the generic "
+            "rule, no per-family logic; triggered breaches are "
+            "recorded in live.live_signals with the row's "
+            "action and confidence. Either --code (one code, "
+            "sec_type probed, 404 exit when no intraday price) "
+            "or --sec-type (ALL codes with active signal "
+            "configs of the given sec_types; codes without "
+            "intraday price are skipped)."
         )
-        dates.update(r["date"] for r in rows)
-    return sorted(dates)
+        parser.add_argument(
+            "--signal-scheme", choices=SIGNAL_SCHEMES, default="analysis",
+            help="Threshold source scheme (default: analysis).",
+        )
+        parser.add_argument(
+            "--code", default=None,
+            help="Single ticker to check (sec_type probed; exits 404 when "
+                 "it has no intraday price).",
+        )
+        parser.add_argument(
+            "--sec-type", default=None,
+            help="Comma-separated sec_types (e.g. 'index' or 'index,etf'): "
+                 "check EVERY code with active signal configs of these "
+                 "sec_types. Mutually exclusive with --code.",
+        )
+        parser.add_argument(
+            "--date", default=None,
+            help="ON-DEMAND as-of date YYYY-MM-DD: evaluate at the last "
+                 "intraday bar of that date, falling back to the official "
+                 "daily close (15:00, is_day_close_trigger = TRUE) when the "
+                 "date has no intraday bar. Value sources are bounded to "
+                 "rows at-or-before the date (no peeking at later data).",
+        )
+        parser.add_argument(
+            "--date-from", default=None,
+            help="RANGE REPLAY start YYYY-MM-DD (with --date-to): iterate "
+                 "the as-of evaluation over every trading date of the range "
+                 "with source data — the breach-history rebuild after a "
+                 "purge. Mutually exclusive with --date.",
+        )
+        parser.add_argument(
+            "--date-to", default=None,
+            help="RANGE REPLAY end YYYY-MM-DD (inclusive; requires "
+                 "--date-from).",
+        )
 
-
-# ---------------------------------------------------------------------------
-#  Main
-# ---------------------------------------------------------------------------
-
-async def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="Live breach check of the analysis_signals threshold "
-                    "set (the LIVE signal tier): every active signal "
-                    "config's current value (per the declarative "
-                    "value-source map) vs the row's OWN threshold, "
-                    "direction by the row's OWN action — the generic "
-                    "rule, no per-family logic; triggered breaches are "
-                    "recorded in live.live_signals with the row's "
-                    "action and confidence. Either --code (one code, "
-                    "sec_type probed, 404 exit when no intraday price) "
-                    "or --sec-type (ALL codes with active signal "
-                    "configs of the given sec_types; codes without "
-                    "intraday price are skipped)."
-    )
-    ap.add_argument(
-        "--signal-scheme", choices=SIGNAL_SCHEMES, default="analysis",
-        help="Threshold source scheme (default: analysis).",
-    )
-    ap.add_argument(
-        "--code", default=None,
-        help="Single ticker to check (sec_type probed; exits 404 when "
-             "it has no intraday price).",
-    )
-    ap.add_argument(
-        "--sec-type", default=None,
-        help="Comma-separated sec_types (e.g. 'index' or 'index,etf'): "
-             "check EVERY code with active signal configs of these "
-             "sec_types. Mutually exclusive with --code.",
-    )
-    ap.add_argument(
-        "--date", default=None,
-        help="ON-DEMAND as-of date YYYY-MM-DD: evaluate at the last "
-             "intraday bar of that date, falling back to the official "
-             "daily close (15:00, is_day_close_trigger = TRUE) when the "
-             "date has no intraday bar. Value sources are bounded to "
-             "rows at-or-before the date (no peeking at later data).",
-    )
-    ap.add_argument(
-        "--date-from", default=None,
-        help="RANGE REPLAY start YYYY-MM-DD (with --date-to): iterate "
-             "the as-of evaluation over every trading date of the range "
-             "with source data — the breach-history rebuild after a "
-             "purge. Mutually exclusive with --date.",
-    )
-    ap.add_argument(
-        "--date-to", default=None,
-        help="RANGE REPLAY end YYYY-MM-DD (inclusive; requires "
-             "--date-from).",
-    )
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    as_of: datetime.date | None = None
-    if args.date is not None:
-        try:
-            as_of = datetime.date.fromisoformat(args.date)
-        except ValueError:
-            logger.error(f"  [ERROR] --date must be YYYY-MM-DD, got "
-                  f"'{args.date}'.")
-            return EXIT_USAGE
-
-    date_range: tuple[datetime.date, datetime.date] | None = None
-    if args.date_from is not None or args.date_to is not None:
+    def apply_args(self) -> None:
+        args = self.args
+        self.as_of: datetime.date | None = None
         if args.date is not None:
-            logger.error("  [ERROR] --date and --date-from/--date-to are "
-                  "mutually exclusive.")
-            return EXIT_USAGE
-        if args.date_from is None or args.date_to is None:
-            logger.error("  [ERROR] --date-from and --date-to are required "
-                  "together.")
-            return EXIT_USAGE
-        try:
-            date_range = (
-                datetime.date.fromisoformat(args.date_from),
-                datetime.date.fromisoformat(args.date_to),
+            try:
+                self.as_of = datetime.date.fromisoformat(args.date)
+            except ValueError:
+                self.parser.error("--date must be YYYY-MM-DD, got "
+                                  f"'{args.date}'.")
+
+        self.date_range: tuple[datetime.date, datetime.date] | None = None
+        if args.date_from is not None or args.date_to is not None:
+            if args.date is not None:
+                self.parser.error("--date and --date-from/--date-to are "
+                                  "mutually exclusive.")
+            if args.date_from is None or args.date_to is None:
+                self.parser.error("--date-from and --date-to are required "
+                                  "together.")
+            try:
+                self.date_range = (
+                    datetime.date.fromisoformat(args.date_from),
+                    datetime.date.fromisoformat(args.date_to),
+                )
+            except ValueError:
+                self.parser.error("--date-from/--date-to must be "
+                                  f"YYYY-MM-DD, got '{args.date_from}' / "
+                                  f"'{args.date_to}'.")
+            if self.date_range[0] > self.date_range[1]:
+                self.parser.error(f"--date-from {self.date_range[0]} is "
+                                  f"after --date-to {self.date_range[1]}.")
+
+        if args.code and args.sec_type:
+            self.parser.error("--code and --sec-type are mutually exclusive.")
+        if not args.code and not args.sec_type:
+            self.parser.error("one of --code / --sec-type is required.")
+        if args.signal_scheme == "strategy":
+            self.parser.error("--signal-scheme strategy is not implemented "
+                              "yet; only 'analysis' is available.")
+
+        self.sec_types: list[str] = []
+        if args.sec_type:
+            self.sec_types = [
+                s.strip() for s in args.sec_type.split(",") if s.strip()
+            ]
+            bad = [s for s in self.sec_types if s not in INTRADAY_TABLES]
+            if bad:
+                self.parser.error(f"unknown sec_type(s): {bad} — valid: "
+                                  f"{list(INTRADAY_TABLES)}")
+
+    # ------------------------------------------------------------------
+    # Range replay: the source-data dates of [date_from, date_to]
+    # ------------------------------------------------------------------
+    async def _replay_dates(
+        self, sec_types: list[str], date_from: datetime.date,
+        date_to: datetime.date, code: str | None,
+    ) -> list[datetime.date]:
+        """The trading dates of [date_from, date_to] that have SOURCE data
+        for the replay — the union of the intraday tables' and the daily
+        baseline's distinct dates (per sec_type; ``code`` narrows to one
+        ticker in single-code mode). Dates without any bar/close are
+        skipped: the as-of evaluation would produce nothing for them."""
+        scopes = sec_types or list(SEC_TYPE_PROBE_ORDER)
+        dates: set[datetime.date] = set()
+        for st in scopes:
+            intraday = INTRADAY_TABLES[st]
+            daily = DAILY_TABLES[st]
+            # live/live_signals/__main__/replay_dates — the range's source-data
+            # dates (the sec_type's intraday bars ∪ daily closes, code-narrowed)
+            view = render_sql_view(
+                "live/live_signals/__main__/replay_dates",
+                intraday_table=frag(intraday),
+                daily_table=frag(daily),
+                date_from=date_from,
+                date_to=date_to,
+                code=code,
             )
-        except ValueError:
-            logger.error(f"  [ERROR] --date-from/--date-to must be "
-                  f"YYYY-MM-DD, got '{args.date_from}' / '{args.date_to}'.")
-            return EXIT_USAGE
-        if date_range[0] > date_range[1]:
-            logger.error(f"  [ERROR] --date-from {date_range[0]} is after "
-                  f"--date-to {date_range[1]}.")
-            return EXIT_USAGE
+            rows = await self.conn.fetch(view.sql, *view.params)
+            dates.update(r["date"] for r in rows)
+        return sorted(dates)
 
-    if args.code and args.sec_type:
-        logger.error("  [ERROR] --code and --sec-type are mutually exclusive.")
-        return EXIT_USAGE
-    if not args.code and not args.sec_type:
-        logger.error("  [ERROR] one of --code / --sec-type is required.")
-        return EXIT_USAGE
-    if args.signal_scheme == "strategy":
-        logger.error("  [ERROR] --signal-scheme strategy is not implemented yet; "
-              "only 'analysis' is available.")
-        return EXIT_USAGE
+    # ------------------------------------------------------------------
+    # Main
+    # ------------------------------------------------------------------
+    async def run(self) -> None:
+        args = self.args
+        t0 = self.t0
+        if self.date_range is not None:
+            mode = (f"range replay {self.date_range[0]} .. "
+                    f"{self.date_range[1]} "
+                    "(per-date as-of, daily-close fallback)")
+        elif self.as_of is not None:
+            mode = f"as-of {self.as_of} (on-demand, daily-close fallback)"
+        else:
+            mode = "live (latest bar)"
+        print_build_header(
+            "LIVE SIGNALS (analysis_signals threshold breach check)",
+            tables=f"live.live_signals, {SIGNALS_TABLE} (read)",
+            code=args.code or f"sec_types={self.sec_types}",
+            scheme=args.signal_scheme,
+            mode=mode,
+        )
 
-    sec_types: list[str] = []
-    if args.sec_type:
-        sec_types = [
-            s.strip() for s in args.sec_type.split(",") if s.strip()
-        ]
-        bad = [s for s in sec_types if s not in INTRADAY_TABLES]
-        if bad:
-            logger.error(f"  [ERROR] unknown sec_type(s): {bad} — valid: "
-                  f"{list(INTRADAY_TABLES)}")
-            return EXIT_USAGE
-
-    t0 = time.time()
-    if date_range is not None:
-        mode = (f"range replay {date_range[0]} .. {date_range[1]} "
-                "(per-date as-of, daily-close fallback)")
-    elif as_of is not None:
-        mode = f"as-of {as_of} (on-demand, daily-close fallback)"
-    else:
-        mode = "live (latest bar)"
-    print_build_header(
-        "LIVE SIGNALS (analysis_signals threshold breach check)",
-        tables=f"live.live_signals, {SIGNALS_TABLE} (read)",
-        code=args.code or f"sec_types={sec_types}",
-        scheme=args.signal_scheme,
-        mode=mode,
-    )
-
-    conn = await get_db_connection_async()
-    try:
+        conn = self.conn
         evaluator = AnalysisEvaluator(conn)
 
-        if date_range is not None:
+        if self.date_range is not None:
             # ---- Range replay: the as-of evaluation iterated over the
             # range's source-data dates, each date committed immediately
             # (per-date upsert — resumable; one daily row per breach by
             # design).
-            dates = await _replay_dates(
-                conn, sec_types, date_range[0], date_range[1], args.code,
+            dates = await self._replay_dates(
+                self.sec_types, self.date_range[0], self.date_range[1],
+                args.code,
             )
             if dates:
-                logger.info(
+                self.logger.info(
                     f"  replay: {len(dates)} dates with source data "
                     f"({dates[0]} .. {dates[-1]})"
                 )
             else:
-                logger.info("  replay: no dates with source data in range")
-            total_records: list[dict] = []
+                self.logger.info(
+                    "  replay: no dates with source data in range")
+            total_records = []
             for d in dates:
                 if args.code:
-                    day_records: list[dict] = []
+                    day_records = []
                     for st in SEC_TYPE_PROBE_ORDER:
                         recs, _has_price = await evaluator.process_code(
                             st, args.code, verbose=False, as_of=d,
@@ -340,18 +297,19 @@ async def main() -> int:
                         day_records.extend(recs)
                 else:
                     day_records = await evaluator.process_sec_types(
-                        sec_types, verbose=False, as_of=d,
+                        self.sec_types, verbose=False, as_of=d,
                     )
                 if day_records:
                     await bulk_upsert_async(
-                        conn, "live.live_signals", day_records,
+                        conn, "live.live_signals",
+                        [r.model_dump() for r in day_records],
                         LIVE_SIGNAL_PK,
                     )
                 total_records.extend(day_records)
-                logger.info(f"  {d}: {len(day_records)} breaches")
+                self.logger.info(f"  {d}: {len(day_records)} breaches")
         elif args.code:
             # ---- Single-code mode: probe all sec_types, 404 when none ----
-            if as_of is None:
+            if self.as_of is None:
                 hits: list[tuple[str, object, object, float]] = []
                 for st in SEC_TYPE_PROBE_ORDER:
                     bar = await evaluator.fetch_latest_intraday(st, args.code)
@@ -359,16 +317,19 @@ async def main() -> int:
                         d, tm, close = bar
                         hits.append((st, d, tm, close))
                 if not hits:
-                    logger.info(f"  404: code {args.code} has no intraday "
-                          f"price in any of {list(SEC_TYPE_PROBE_ORDER)} — "
-                          f"nothing to check.")
+                    self.logger.info(
+                        f"  404: code {args.code} has no intraday "
+                        f"price in any of {list(SEC_TYPE_PROBE_ORDER)} — "
+                        f"nothing to check.")
                     print_wall_time(t0)
-                    return EXIT_NOT_FOUND
+                    self.exit_code = EXIT_NOT_FOUND
+                    return
                 for st, d, tm, close in hits:
-                    logger.info(f"  [{st}] latest intraday bar: {d} {tm} "
-                          f"close={close}")
+                    self.logger.info(
+                        f"  [{st}] latest intraday bar: {d} {tm} "
+                        f"close={close}")
 
-                total_records: list[dict] = []
+                total_records = []
                 for st, _d, _tm, _close in hits:
                     recs, _ = await evaluator.process_code(
                         st, args.code, verbose=True,
@@ -382,45 +343,46 @@ async def main() -> int:
                 n_price = 0
                 for st in SEC_TYPE_PROBE_ORDER:
                     recs, has_price = await evaluator.process_code(
-                        st, args.code, verbose=True, as_of=as_of,
+                        st, args.code, verbose=True, as_of=self.as_of,
                     )
                     if has_price:
                         n_price += 1
                     total_records.extend(recs)
                 if n_price == 0:
-                    logger.info(f"  404: code {args.code} has no intraday "
-                          f"bar and no daily close on {as_of} in any of "
-                          f"{list(SEC_TYPE_PROBE_ORDER)} — nothing to "
-                          f"check.")
+                    self.logger.info(
+                        f"  404: code {args.code} has no intraday "
+                        f"bar and no daily close on {self.as_of} in "
+                        f"any of {list(SEC_TYPE_PROBE_ORDER)} — "
+                        f"nothing to check.")
                     print_wall_time(t0)
-                    return EXIT_NOT_FOUND
+                    self.exit_code = EXIT_NOT_FOUND
+                    return
         else:
             # ---- Batch mode: every active code of the given sec_types ----
             total_records = await evaluator.process_sec_types(
-                sec_types, verbose=True, as_of=as_of,
+                self.sec_types, verbose=True, as_of=self.as_of,
             )
 
         # ---- Record the breaches (PK upsert — idempotent) ---------------
         if total_records:
             await bulk_upsert_async(
-                conn, "live.live_signals", total_records, LIVE_SIGNAL_PK,
+                conn, "live.live_signals",
+                [r.model_dump() for r in total_records],
+                LIVE_SIGNAL_PK,
             )
 
-        await _upsert_live_identity(conn)
-        logger.info(f"\n  breaches recorded: {len(total_records)}")
+        await self.upsert_live_identity(
+            name=PIPELINE_NAME,
+            detail_name="live_signals",
+            summary_name=None,
+            description=PIPELINE_DESCRIPTION,
+        )
+        self.logger.info(f"\n  breaches recorded: {len(total_records)}")
         print_wall_time(t0)
-        return 0
-    finally:
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        self.exit_code = 0
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        rc = asyncio.run(main())
-    finally:
-        post_check()
-    sys.exit(rc)
+    job = LiveSignalsCheck()
+    job.execute()
+    sys.exit(job.exit_code)

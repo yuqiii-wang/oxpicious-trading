@@ -15,7 +15,7 @@
  * the UI run selector re-fetches when the user picks an older run via
  * ?run_id=).
  */
-import { queryRows } from "../db.service.js";
+import { querySqlView } from "@api/lib/sql-views";
 import type { MaSpreadSecType } from "../../../shared/types.js";
 import { DEFAULT_STRATEGY_NAME } from "./_shared.js";
 
@@ -72,44 +72,9 @@ export interface TrainInfoResponse {
 }
 
 // ---------------------------------------------------------------------------
-//  SQL
-// ---------------------------------------------------------------------------
-const DEFAULT_SQL = `
-  SELECT start_date, end_date, params, updated_at
-  FROM strategy.algo_configs
-  WHERE sec_type = $1 AND sec_code = $2 AND strategy_name = $3
-    AND is_default
-  ORDER BY start_date
-  LIMIT 1
-`;
-
-const TRAINED_SQL = `
-  SELECT start_date, end_date, params, updated_at
-  FROM strategy.algo_configs
-  WHERE sec_type = $1 AND sec_code = $2 AND strategy_name = $3
-    AND NOT is_default
-  ORDER BY start_date DESC, updated_at DESC
-  LIMIT 10
-`;
-
-const RUNS_SQL = `
-  SELECT run_id, status, trials, top_k, seed, oos_frac,
-         started_at, finished_at, winner_trial_no, n_candidates, grid_size,
-         best_params, best_a_metrics, best_b_metrics, kelly, error_text
-  FROM strategy.training_runs
-  WHERE sec_type = $1 AND sec_code = $2 AND strategy_name = $3
-  ORDER BY started_at DESC
-  LIMIT 10
-`;
-
-const TRIALS_SQL = `
-  SELECT run_id, loss_type, trial_no, grid_idx, params, metrics, loss,
-         constraint_ok, no_trades
-  FROM strategy.training_trials
-  WHERE run_id = $1
-  ORDER BY loss_type DESC, trial_no, grid_idx
-`;
-
+//  SQL — the SELECTs live in the sql views
+//  data_viz/api/services/strategy/train-history/{default_config,
+//  trained_configs, runs, trials}
 // ---------------------------------------------------------------------------
 //  Helpers
 // ---------------------------------------------------------------------------
@@ -168,12 +133,25 @@ export async function fetchTrainInfo(
 ): Promise<TrainInfoResponse> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
   const code = rawCode.trim();
-  const args = [secType, code, strategyName];
+  const configArgs = {
+    sec_type: secType,
+    sec_code: code,
+    strategy_name: strategyName,
+  };
 
   const [defaultRows, trainedRows, runRows] = await Promise.all([
-    queryRows<RawConfigRow>(DEFAULT_SQL, args),
-    queryRows<RawConfigRow>(TRAINED_SQL, args),
-    queryRows<Record<string, unknown>>(RUNS_SQL, args),
+    querySqlView<RawConfigRow>(
+      "data_viz/api/services/strategy/train-history/default_config",
+      configArgs,
+    ),
+    querySqlView<RawConfigRow>(
+      "data_viz/api/services/strategy/train-history/trained_configs",
+      configArgs,
+    ),
+    querySqlView<Record<string, unknown>>(
+      "data_viz/api/services/strategy/train-history/runs",
+      configArgs,
+    ),
   ]);
 
   const runs: TrainRunRow[] = runRows.map((r) => ({
@@ -205,7 +183,10 @@ export async function fetchTrainInfo(
     : (runs.length > 0 ? runs[0].run_id : null);
 
   const trialRows = targetRunId !== null
-    ? await queryRows<Record<string, unknown>>(TRIALS_SQL, [targetRunId])
+    ? await querySqlView<Record<string, unknown>>(
+        "data_viz/api/services/strategy/train-history/trials",
+        { run_id: targetRunId },
+      )
     : [];
 
   const trials: TrainTrialRow[] = trialRows.map((r) => ({

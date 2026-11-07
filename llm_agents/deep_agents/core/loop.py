@@ -21,8 +21,9 @@ step graph uses for delegated plan steps) is a method-level part of
 this loop: delegation records, schemas and hooks live in
 ``core.delegation``, the policy (timeout, fan-out cap, answer-gating on
 uncollected forks, no-orphan-task cleanup) is enforced HERE. Children
-carry the spawner themselves below ``MAX_SPAWN_DEPTH`` — a subagent may
-fork sub-sub agents, and the whole supervision policy (timeout,
+carry the spawner themselves below the configured spawn depth
+(``limits.run_limits().max_spawn_depth``) — a subagent may fork
+sub-sub agents, and the whole supervision policy (timeout,
 concurrency, hooks) propagates one level down with them.
 
 A ``sandbox`` (``core.sandbox``) rides along when passed on the ctor:
@@ -54,17 +55,17 @@ import datetime
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING, Any, Dict, List, Optional, Tuple,
 )
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from llm_agents._core.models import SHANGHAI_TZ
 from llm_agents.deep_agents.core.delegation import (
     COLLECT_SUBAGENTS_SCHEMA,
     COLLECT_TOOL_NAME,
     DELEGATION_GUIDANCE,
-    MAX_SPAWN_DEPTH,
     SUBAGENT_SYSTEM_PROMPT,
     SUBAGENT_TOOL_NAME,
     SUBAGENT_TOOL_SCHEMA,
@@ -80,6 +81,9 @@ from llm_agents.deep_agents.core.output_validation import (
 )
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 from llm_agents.deep_agents.core.tools import user_content
+from llm_agents.deep_agents.limits import run_limits
+from llm_agents.deep_agents.payload_guard import guard_text
+from llm_agents.deep_agents.tools.sandbox_tools import SandboxToolSet
 
 if TYPE_CHECKING:
     from llm_agents.deep_agents.core.sandbox import Sandbox
@@ -88,27 +92,26 @@ logger = logging.getLogger(__name__)
 
 # The root's default prompt: the focused base plus the delegation
 # guidance shared by EVERY agent that carries the spawn tool (root step
-# conversations and, below MAX_SPAWN_DEPTH, spawned children — a child
-# at the cap gets the focused base alone, no spawn mention).
+# conversations and, below the configured spawn depth, spawned
+# children — a child at the cap gets the focused base alone, no spawn
+# mention).
 _BASE_SYSTEM_PROMPT = SUBAGENT_SYSTEM_PROMPT
 DEFAULT_SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT + DELEGATION_GUIDANCE
 
-# The final answer's structural-validation repair rounds (see
-# core.output_validation): one bounded correction turn per conversation —
-# the answer-gate nudge's sibling, and the loop-level twin of the
-# planner session's propose → validate → correct. An answer still
-# invalid after the round ships anyway (format never fails a run).
-MAX_OUTPUT_REPAIRS = 1
 
+class AgentResult(BaseModel):
+    """The final answer plus how the agent got there (the core loop's
+    result payload crossing into the graph layer). ``subagent_runs``
+    holds the loop's runtime records (``core.delegation.SubagentRun`` —
+    tasks and hooks, not serializable), hence the arbitrary-type
+    allowance; everything else is plain."""
 
-@dataclass
-class AgentResult:
-    """The final answer plus how the agent got there."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     answer: str
     steps: int
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
-    subagent_runs: List[SubagentRun] = field(default_factory=list)
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
+    subagent_runs: List[SubagentRun] = Field(default_factory=list)
 
 
 
@@ -125,6 +128,7 @@ class DeepAgent:
         spawn_depth: int = 0,
         builtin_tools: Optional[Dict[str, BuiltinTool]] = None,
         sandbox: Optional["Sandbox"] = None,
+        tool_prompts: Optional[Dict[str, str]] = None,
         subagent_timeout: Optional[float] = None,
         max_concurrent_subagents: int = 4,
         subagent_input_hook: Optional[SubagentInputHook] = None,
@@ -139,21 +143,28 @@ class DeepAgent:
         self._temperature = temperature
         self._allow_subagents = allow_subagents
         # This agent's rung on the spawn chain (0 = a root step
-        # conversation). The spawn/collect tools ride only below
-        # MAX_SPAWN_DEPTH — the cap gates recursion structurally.
+        # conversation). The spawn/collect tools ride only below the
+        # configured spawn depth — the cap gates recursion structurally.
         self._spawn_depth = max(0, int(spawn_depth))
         self._sandbox = sandbox
+        # The run-start resolution of the tool-description rows
+        # (llm.ai_prompts prompt_type 4 — tools.base's override
+        # contract): applied to the sandbox tools mounted HERE and
+        # inherited by spawned children (caller-supplied builtin_tools
+        # apply their own at kit construction).
+        self._tool_prompts = tool_prompts or None
         self._builtin_tools = dict(builtin_tools) if builtin_tools else {}
         if sandbox is not None:
-            # The sandbox_* tools fill the unset slots; a caller-supplied
-            # builtin keeps its name.
-            for name, tool in sandbox.builtin_tools().items():
+            # The sandbox_* tools fill the unset slots via the tool
+            # layer's kit (DB-description overrides applied); a
+            # caller-supplied builtin keeps its name.
+            kit = SandboxToolSet(sandbox, descriptions=self._tool_prompts)
+            for name, tool in kit.builtin_tools().items():
                 self._builtin_tools.setdefault(name, tool)
             # The tools exist → the prompt must teach them; appended to
             # the caller's system text too (the runner renders its
             # templates into that text before this ctor runs).
-            from llm_agents.deep_agents.core.sandbox import SANDBOX_PROMPT_ADDENDUM
-            self._system = f"{self._system}\n\n{SANDBOX_PROMPT_ADDENDUM}"
+            self._system = f"{self._system}\n\n{kit.prompt_addendum()}"
         # Parent-side supervision policy for delegations (never
         # model-controlled): wall-clock bound per child, how many may
         # run at once, and the input/output interception hooks. The
@@ -172,15 +183,16 @@ class DeepAgent:
         # answer gate reads them (an uncollected fork blocks finishing).
         self._background_results: Dict[str, str] = {}
         self._background_collected: set = set()
-        # Output-validation repair rounds spent (see MAX_OUTPUT_REPAIRS;
-        # reset per run()).
+        # Output-validation repair rounds spent (see
+        # limits.max_output_repairs; reset per run()).
         self._output_repairs = 0
 
     @property
     def _can_spawn(self) -> bool:
         """Whether this agent carries the spawn/collect tools: the
         master switch on AND below the depth cap."""
-        return self._allow_subagents and self._spawn_depth < MAX_SPAWN_DEPTH
+        return (self._allow_subagents
+                and self._spawn_depth < run_limits().max_spawn_depth)
 
     # ------------------------------------------------------------------
     # Parent-side subagent lifecycle control
@@ -262,7 +274,8 @@ class DeepAgent:
                     # still-invalid answer after the round (or on the
                     # last step) ships as-is, logged.
                     issues = validate_output(answer)
-                    if issues and self._output_repairs < MAX_OUTPUT_REPAIRS \
+                    if issues and self._output_repairs < \
+                            run_limits().max_output_repairs \
                             and step < self._max_steps:
                         self._output_repairs += 1
                         logger.info("step %d/%d: output validation "
@@ -307,6 +320,12 @@ class DeepAgent:
                                   f"{name}: {outcome}")
                     else:
                         _name, output = outcome
+                    # The tool-result pre-check (payload_guard): one
+                    # result's text is head+tail capped before it
+                    # enters the transcript — a wide db_run_query dump
+                    # (500 rows is a row cap, not a byte cap) would
+                    # otherwise ride every later turn of this hop.
+                    output = guard_text(output)
                     tool_calls_log.append(
                         {"step": step, "name": name, "output": output})
                     messages.append({
@@ -476,7 +495,8 @@ class DeepAgent:
                     model=self._model, max_steps=run.request.max_steps,
                     system=(run.request.system + DELEGATION_GUIDANCE
                             if (self._allow_subagents
-                                and run.request.depth < MAX_SPAWN_DEPTH)
+                                and run.request.depth
+                                < run_limits().max_spawn_depth)
                             else run.request.system),
                     temperature=self._temperature,
                     allow_subagents=self._allow_subagents,
@@ -488,6 +508,10 @@ class DeepAgent:
                 # Scratch space is shared with the parent: files
                 # the parent wrote are readable here and vice versa.
                 sandbox=self._sandbox,
+                # The DB-resolved tool descriptions propagate so the
+                # child's inherited sandbox tools carry the same
+                # overrides (its fork kit applied its own at build).
+                tool_prompts=self._tool_prompts,
                 # The WHOLE supervision policy propagates: the same
                 # timeout and concurrency cap, plus the child's OWN
                 # hooks (stamped by the parent-side input hook) so the

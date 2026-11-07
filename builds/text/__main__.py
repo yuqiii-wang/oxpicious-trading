@@ -10,11 +10,11 @@ Pipeline (all steps reuse one DB connection):
   4. Upsert text.news, refresh text.news_keywords for new/changed articles,
      recompute doc_freq/idf corpus-wide, fill today_industry_change from
      stats.industry_basic_stats, recompute the is_big_fluctuation flag
-     on text.news + text.llm_qa (builds.text.big_market_mv), and rewrite
-     text.llm_qa_keywords — the QA corpus's keyword audit (same vocabulary
+     on text.news + llm.llm_qa (builds.text.big_market_mv), and rewrite
+     llm.llm_qa_keywords — the QA corpus's keyword audit (same vocabulary
      and negation rules), full-recompute over the ACTIVE llm_qa rows.
   5. ai_daily source: store the downloaded Q&A envelopes into
-     text.llm_qa (+ text.llm_qa_refs / news-group provenance) via
+     llm.llm_qa (+ llm.llm_qa_refs / news-group provenance) via
      builds.text.ai_daily_qa — idempotent per (question, qa_date), the
      DB half of downloads.macro.ai_daily since its --store removal.
 
@@ -48,7 +48,7 @@ from _common.data_build import DataBuild
 from _common.log_setup import setup_logging
 
 from builds.text import big_market_mv, upsert
-from builds.text.ai_daily_qa import sync_ai_daily_qa
+from builds.text.ai_daily_qa import AiDailyQaSync
 from builds.text.keywords import extract_for_articles
 from builds.text.loaders import ALL_SOURCES, load_news, load_zhihu_comments
 
@@ -148,11 +148,16 @@ class TextBuild(DataBuild):
         # --- 3. Connect + upsert text.news ----------------------------------
         logger.info("\n[3/4] Connecting to database …")
         conn = await self.connect_db()
+        # Conn-scoped step instances — every DB call below routes through
+        # them (upsert module-level names remain the pure helpers/constants).
+        upserter = upsert.TextUpsert(conn)
+        qa = AiDailyQaSync(conn)
+        big_mv = big_market_mv.BigMarketMv(conn)
         try:
             tables = ["text.news", "text.news_keywords"]
             if self.sources is None or "ai_daily" in self.sources:
-                tables += ["text.llm_qa", "text.news_groups",
-                           "text.news_group_items", "text.llm_qa_refs"]
+                tables += ["llm.llm_qa", "text.news_groups",
+                           "text.news_group_items", "llm.llm_qa_refs"]
             missing = await _tables_exist(conn, tables)
             if missing:
                 logger.error("    [FATAL] missing tables %s — run "
@@ -161,7 +166,7 @@ class TextBuild(DataBuild):
 
             # Pre-upsert state decides which articles need keyword work.
             needing = upsert.select_articles_needing_keywords(
-                rows, await upsert.fetch_existing_news(conn), force=self.args.force)
+                rows, await upserter.fetch_existing_news(), force=self.args.force)
             logger.info("    [DB] upserting %d rows into text.news "
                         "(%d new/changed) …", len(rows), len(needing))
             # KEEP UPSERT (not COPY): rows include EXISTING articles whose
@@ -174,7 +179,7 @@ class TextBuild(DataBuild):
             from _common.tokenization import SearchIndexer
             await SearchIndexer.get().set_search_tsv_async(
                 conn, upsert.NEWS_TABLE, news_rows, only_missing=True)
-            post_existing = await upsert.fetch_existing_news(conn)
+            post_existing = await upserter.fetch_existing_news()
             articles = upsert.map_news_ids(needing, post_existing)
 
             # --- text.news_comments (zhihu only for now) ---------------------
@@ -186,28 +191,28 @@ class TextBuild(DataBuild):
                 news_id_by_key = {
                     key: entry["news_id"] for key, entry in post_existing.items()}
                 comments = upsert.build_comment_rows(comment_rows, news_id_by_key)
-                existing_pks = await upsert.fetch_existing_comment_pks(conn)
+                existing_pks = await upserter.fetch_existing_comment_pks()
                 new_comments = upsert.filter_new_comments(comments, existing_pks)
                 logger.info("    [DB] comments: %d parsed, %d resolved to news, "
                             "%d new", len(comment_rows), len(comments), len(new_comments))
-                await upsert.insert_comments(conn, new_comments)
+                await upserter.insert_comments(new_comments)
 
-            # --- text.llm_qa (ai_daily envelopes) --------------------------
+            # --- llm.llm_qa (ai_daily envelopes) --------------------------
             # The DB half of downloads.macro.ai_daily (artifact-only since
-            # its --store removal): answers -> text.llm_qa, references ->
+            # its --store removal): answers -> llm.llm_qa, references ->
             # provenance, deduped on (question, qa_date). Runs AFTER the
             # news upsert — refs resolve to the news_ids just written.
             if self.sources is None or "ai_daily" in self.sources:
-                n_qa, n_skip = await sync_ai_daily_qa(conn)
+                n_qa, n_skip = await qa.sync()
                 logger.info("    [DB] ai_daily Q&A: %d stored, %d already "
                             "present", n_qa, n_skip)
 
-            # --- is_big_fluctuation (text.news + text.llm_qa) -----------------
+            # --- is_big_fluctuation (text.news + llm.llm_qa) -----------------
             # Full-recompute flag pass: big-move trigger days from the
             # industry composite closes + the 5-trading-day cooldown, one
             # UPDATE per table (idempotent — also heals rows stored
             # directly by llm_agents since the last run).
-            mv = await big_market_mv.apply_big_market_mv(conn)
+            mv = await big_mv.apply()
             logger.info("    [DB] is_big_fluctuation: %d news / %d llm_qa "
                         "rows touched", mv["news_touched"], mv["qa_touched"])
 
@@ -217,7 +222,7 @@ class TextBuild(DataBuild):
             # reads (news / news_comments / llm_qa here; the llm_agents
             # storages refresh their own tables at write time).
             for tbl in (upsert.NEWS_TABLE, "text.news_comments",
-                        "text.llm_qa"):
+                        "llm.llm_qa"):
                 n_lex = await SearchIndexer.get().refresh_lexicon_df_async(
                     conn, tbl)
                 logger.info("    [DB] lexicon DF stats: %s — %d lexemes",
@@ -228,8 +233,8 @@ class TextBuild(DataBuild):
                 logger.info("\n[4/4] text.news_keywords skipped (--no-keywords)")
                 return
             logger.info("\n[4/4] Writing text.news_keywords …")
-            await upsert.refresh_keyword_rows(conn, articles)
-            await upsert.recompute_keyword_stats(conn)
+            await upserter.refresh_keyword_rows(articles)
+            await upserter.recompute_keyword_stats()
             # The keyword-audit rollup (text.news_keyword_audit — the
             # Market Sentiments page's Ask AI insight metrics read it)
             # only changes when keyword rows change: refresh it in step.
@@ -245,19 +250,19 @@ class TextBuild(DataBuild):
                     "    [DB] news_keyword_audit refresh skipped "
                     "(run database/sql/text/13_news_keyword_audit.sql): %s",
                     exc)
-            # --- 4b. text.llm_qa_keywords — the QA corpus's keyword audit
+            # --- 4b. llm.llm_qa_keywords — the QA corpus's keyword audit
             #     (the ai-market-qa insight metrics read its rollup view;
             #     missing-table fresh installs warn like the matview above).
             try:
-                n_qa_kw = await upsert.rewrite_qa_keyword_rows(conn)
+                n_qa_kw = await upserter.rewrite_qa_keyword_rows()
                 logger.info("    [DB] llm_qa_keywords: %d rows", n_qa_kw)
             except Exception as exc:
                 logger.warning(
                     "    [DB] llm_qa_keywords rewrite skipped "
-                    "(run database/sql/text/16_llm_qa_keywords.sql): %s",
+                    "(run database/sql/text/llm/12_llm_qa_keywords.sql): %s",
                     exc)
             if not self.args.no_industry_change:
-                n = await upsert.apply_today_industry_change(conn, articles)
+                n = await upserter.apply_today_industry_change(articles)
                 logger.info("    [DB] today_industry_change set for %d "
                             "(industry, date) pairs", n)
         finally:

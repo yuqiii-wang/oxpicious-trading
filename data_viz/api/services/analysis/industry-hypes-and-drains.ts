@@ -21,7 +21,8 @@
  *             side of benchmark → very light transparent
  *   HIDDEN  — curve crossed the benchmark, or never ranked → not rendered
  */
-import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { formatDate, toNum } from "../../lib/db.js";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { encodeLabelParam, labelDecodeSql } from "../label-codes.js";
 import type {
@@ -68,90 +69,32 @@ interface DbIndustrySeriesRow extends QueryResultRow {
 }
 
 // ----------------------------------------------------------------------------
-//  SQL templates
-// ----------------------------------------------------------------------------
-
-// All seasonal rankings for the given (benchmark_code, period, weighting).
-// weighting filters by its static.label_dim SMALLINT code ($3); rank_side
-// decodes to its TEXT label in the SELECT (the response stays strings).
-const SEASONAL_RANKINGS_SQL = `
-    SELECT season_qkey,
-           ${labelDecodeSql("rank_side", "rank_side")} AS rank_side,
-           rank, industry_id, industry_label,
-           peak_metric_value
-    FROM analysis.industry_hypes_seasonal
-    WHERE benchmark_code = $1::text
-      AND period_days = $2::int
-      AND weighting = $3::smallint
-    ORDER BY season_qkey, rank_side, rank
-`;
-
-// Distinct seasons with their date boundaries.
-const SEASONS_SQL = `
-    SELECT DISTINCT season_qkey, season_start, season_end
-    FROM analysis.industry_hypes_seasonal
-    WHERE benchmark_code = $1::text
-      AND period_days = $2::int
-      AND weighting = $3::smallint
-    ORDER BY season_qkey
-`;
-
-// Benchmark price series — daily close + fractional daily return + trading
-// amount. Same data as BenchmarkPriceChart's source (stats.index_basic_stats).
-const BENCHMARK_SERIES_SQL = `
-    SELECT
-        ib.date,
-        ib.close,
-        CASE
-            WHEN ib.close IS NOT NULL AND LAG(ib.close) OVER w IS NOT NULL
-                 AND LAG(ib.close) OVER w != 0
-            THEN (ib.close - LAG(ib.close) OVER w) / LAG(ib.close) OVER w
-            ELSE NULL
-        END AS daily_return,
-        ib.trading_amount
-    FROM stats.index_basic_stats ib
-    WHERE ib.code = $1::text
-    WINDOW w AS (ORDER BY ib.date)
-    ORDER BY ib.date
-`;
-
-// Benchmark display name (from stats.index_identity).
-const BENCHMARK_NAME_SQL = `
-    SELECT DISTINCT ON (code) name
-    FROM stats.index_identity
-    WHERE code = $1::text
-    ORDER BY code, date DESC
-    LIMIT 1
-`;
-
-// Industry DAILY series for ALL ranked industries — the raw material for
-// the shared-portfolio curve. Returns the DAILY non-this-industry price
-// level + benchmark_shared_weight per date; the SERVICE compounds the
-// daily decomposition identity into the trailing-N-day shared return
-// (same math as analysis.market_beta.hypes_and_drains) and outputs
-// it as `rolling`. Reading the pre-materialized rolling_{N}days_price
-// column instead would force the chart to invert it (1/swf amplification
-// of its clamping/compounding artifacts — +-hundreds-of-percent noise for
-// narrow industries).
+//  SQL — the SELECTs live in sql views under
+//  database/sql_views/data_viz/api/services/analysis/industry-hypes-and-drains/
+//  (loaded via querySqlView at request time):
 //
-// $1 = industry_ids (text[])
-// $2 = benchmark_code
-// $3 = attribution_type ('equal' | 'trading_amt' — matching the requested
-//      weighting; each (industry, benchmark, date) has TWO rows, one per
-//      type, and mixing them would corrupt the consecutive-day returns)
-const INDUSTRY_SERIES_SQL = `
-    SELECT
-        ia.date,
-        ia.industry_id,
-        ia.benchmark_non_this_industry_price AS non_ind_price,
-        ia.benchmark_shared_weight
-    FROM analysis.industry_attributions ia
-    WHERE ia.industry_id = ANY($1::text[])
-      AND ia.benchmark_code = $2::text
-      AND ia.attribution_type = $3::text
-      AND ia.benchmark_non_this_industry_price IS NOT NULL
-    ORDER BY ia.industry_id, ia.date
-`;
+//  seasonal_rankings — all seasonal rankings for the given
+//    (benchmark_code, period_days, weighting). weighting filters by its
+//    static.label_dim SMALLINT code; rank_side decodes to its TEXT label
+//    in the SELECT (the response stays strings).
+//  seasons — distinct seasons with their date boundaries.
+//  benchmark_series — benchmark price series: daily close + fractional
+//    daily return + trading amount. Same data as BenchmarkPriceChart's
+//    source (stats.index_basic_stats).
+//  benchmark_name — benchmark display name (from stats.index_identity).
+//  industry_series — industry DAILY series for ALL ranked industries: the
+//    DAILY non-this-industry price level + benchmark_shared_weight per
+//    date; the SERVICE compounds the daily decomposition identity into
+//    the trailing-N-day shared return (same math as
+//    analysis.market_beta.hypes_and_drains) and outputs it as `rolling`.
+//    Reading the pre-materialized rolling_{N}days_price column instead
+//    would force the chart to invert it (1/swf amplification of its
+//    clamping/compounding artifacts — +-hundreds-of-percent noise for
+//    narrow industries). industry_ids = the ranked industries (text[]),
+//    attribution_type = 'equal' | 'trading_amt' (matching the requested
+//    weighting; each (industry, benchmark, date) has TWO rows, one per
+//    type, and mixing them would corrupt the consecutive-day returns).
+// ----------------------------------------------------------------------------
 
 // Compound the daily shared-return series into the trailing-N-day
 // 100-based factor (the chart's industry curve). Mirrors the build SQL:
@@ -253,10 +196,27 @@ export async function getIndustryHypesAndDrains(
   // Step 1: fetch all seasonal rankings + season boundaries + benchmark
   // name — all in parallel. weighting crosses as its label-dim code.
   const weightingCode = encodeLabelParam("weighting", weighting);
+  const hypesViewArgs = {
+    benchmark_code: benchmarkCode,
+    period_days: periodDays,
+    weighting_code: weightingCode,
+  };
   const [seasonalRows, seasonRows, nameRows] = await Promise.all([
-    queryRows<DbSeasonalRow>(SEASONAL_RANKINGS_SQL, [benchmarkCode, periodDays, weightingCode]),
-    queryRows<DbSeasonInfoRow>(SEASONS_SQL, [benchmarkCode, periodDays, weightingCode]),
-    queryRows<{ name: string | null }>(BENCHMARK_NAME_SQL, [benchmarkCode]),
+    querySqlView<DbSeasonalRow>(
+      "data_viz/api/services/analysis/industry-hypes-and-drains/seasonal_rankings",
+      {
+        ...hypesViewArgs,
+        rank_side_decode: sqlFrag(labelDecodeSql("rank_side", "rank_side")),
+      },
+    ),
+    querySqlView<DbSeasonInfoRow>(
+      "data_viz/api/services/analysis/industry-hypes-and-drains/seasons",
+      hypesViewArgs,
+    ),
+    querySqlView<{ name: string | null }>(
+      "data_viz/api/services/analysis/industry-hypes-and-drains/benchmark_name",
+      { code: benchmarkCode },
+    ),
   ]);
 
   // Empty response when no seasonal data exists yet.
@@ -275,9 +235,9 @@ export async function getIndustryHypesAndDrains(
 
   // Step 2: fetch the benchmark's full daily price series and derive the
   // daily close-to-close return map (the bench leg of the daily identity).
-  const benchmarkRows = await queryRows<DbBenchmarkRow>(
-    BENCHMARK_SERIES_SQL,
-    [benchmarkCode],
+  const benchmarkRows = await querySqlView<DbBenchmarkRow>(
+    "data_viz/api/services/analysis/industry-hypes-and-drains/benchmark_series",
+    { code: benchmarkCode },
   );
   const benchRet1dByDate = new Map<string, number>();
   const benchPrevCloseByDate = new Map<string, number>();
@@ -303,9 +263,13 @@ export async function getIndustryHypesAndDrains(
   const attributionType = weighting === "amt" ? "trading_amt" : "equal";
   let industrySeriesRows: DbIndustrySeriesRow[] = [];
   if (industryIds.length > 0) {
-    industrySeriesRows = await queryRows<DbIndustrySeriesRow>(
-      INDUSTRY_SERIES_SQL,
-      [industryIds, benchmarkCode, attributionType],
+    industrySeriesRows = await querySqlView<DbIndustrySeriesRow>(
+      "data_viz/api/services/analysis/industry-hypes-and-drains/industry_series",
+      {
+        industry_ids: industryIds,
+        benchmark_code: benchmarkCode,
+        attribution_type: attributionType,
+      },
     );
   }
 

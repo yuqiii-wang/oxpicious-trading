@@ -123,6 +123,15 @@ ADVISORY_LOCK_KEY: Final[int] = 482311001  # arbitrary stable constant
 REF_ADVISORY_LOCK_KEY: Final[int] = 482311002  # arbitrary stable constant
 COMPUTE_ADVISORY_LOCK_KEY: Final[int] = 482311003  # arbitrary stable constant
 
+# How long --mode ref waits for its advisory lock before aborting (another
+# ref run is still running; its work is idempotent so aborting is safe).
+REF_LOCK_WAIT_S: Final[int] = 300
+
+# How long --mode compute waits for its advisory lock before aborting
+# (another backfill of the same scope is still running; the API-side
+# process-id-tag dedupe usually prevents the race entirely).
+COMPUTE_LOCK_WAIT_S: Final[int] = 120
+
 # Broad-market industry_ids excluded from the member universe (they are
 # benchmarks, not industries).
 BROAD_EXCLUDED: Final[tuple[str, ...]] = (

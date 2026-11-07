@@ -1,6 +1,6 @@
 /**
  * StatusChip — the deep-agent state/runner status chip shared by the
- * Thread Graph view's context panel and summaries: the text.deep_agent_states
+ * Thread Graph view's context panel and summaries: the llm.deep_agent_states
  * lifecycle vocabulary (pending | in_progress | completed | failed |
  * skipped) plus the derived runner "neutral". Compact mode renders the
  * dot only (the step lists' status column).
@@ -9,7 +9,9 @@ import { Box, Chip, Tooltip } from "@mui/material";
 import type { ThreadNodeStatus } from "./graphModel";
 
 /** Chart-palette CSS-var tokens — same mapping as the graph nodes
- *  (threadGraphOption.statusColor), so panel and canvas never diverge. */
+ *  (threadGraphOption.statusColor), so panel and canvas never diverge.
+ *  pending AND skipped share the grey: neither ran — pending waits,
+ *  skipped was settled not-run (a failed path's remaining nodes). */
 function statusHex(status: ThreadNodeStatus): string {
   switch (status) {
     case "completed":
@@ -19,7 +21,6 @@ function statusHex(status: ThreadNodeStatus): string {
     case "in_progress":
       return "var(--chart-hi, #2980b9)";
     case "skipped":
-      return "var(--chart-subtitle, #7A8190)";
     case "pending":
       return "var(--chart-neutral-fill, #95a5a6)";
     default:
@@ -32,7 +33,7 @@ const LABEL: Record<ThreadNodeStatus, string> = {
   in_progress: "in progress",
   completed: "completed",
   failed: "failed",
-  skipped: "skipped",
+  skipped: "not run",
   neutral: "graph node",
 };
 

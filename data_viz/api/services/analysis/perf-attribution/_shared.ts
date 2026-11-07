@@ -1,11 +1,11 @@
 /**
  * Performance Attribution shared config — the whitelisted name/meta tables,
  * the per-code source resolution (summary rollup vs live aggregate vs
- * empty), and the classification meta SQL shared by the codes list and both
- * themes trees.
+ * empty), and the classification meta fetch shared by the codes list and
+ * both themes trees.
  * Split out of the former monolithic perf-attribution.ts.
  */
-import { queryRows } from "@api/lib/db";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import type { PerfAttrSecType } from "@shared/types";
 
@@ -30,14 +30,14 @@ export type PerfAttrCodeSource = "summary" | "live" | "empty";
 export async function resolvePerfAttrCodeSource(
   secType: PerfAttrSecType,
 ): Promise<PerfAttrCodeSource> {
-  const summary = await queryRows(
-    `SELECT 1 AS ok FROM stats.cross_stats_code_summary WHERE sec_type = $1::text LIMIT 1`,
-    [secType],
+  const summary = await querySqlView(
+    "data_viz/api/services/analysis/perf-attribution/_shared/has_summary_rows",
+    { sec_type: secType },
   );
   if (summary.length) return "summary";
-  const source = await queryRows(
-    `SELECT 1 AS ok FROM stats.cross_stats WHERE sec_type = $1::text LIMIT 1`,
-    [secType],
+  const source = await querySqlView(
+    "data_viz/api/services/analysis/perf-attribution/_shared/has_cross_stats_rows",
+    { sec_type: secType },
   );
   return source.length ? "live" : "empty";
 }
@@ -70,39 +70,28 @@ export interface DbPerfAttrMetaRow extends QueryResultRow {
   is_industry_not_strategy: boolean;
 }
 
-/** Meta SQL shared by listPerfAttrThemes() and listPerfAttrStrategyThemes().
- *  Returns one row per code in stats.cross_stats (filtered
- *  by sec_type) with its precomputed L1/L2 classification from
- *  stats.sec_classification. is_industry_not_strategy distinguishes
- *  industry-primary (TRUE) from strategy-primary (FALSE) rows.
- *  `codeSource` picks the membership source: the summary rollup's PK
- *  scan ('summary') or the historical DISTINCT full-table scan ('live'). */
-export function buildPerfAttrMetaSql(
+/** Meta row fetch shared by listPerfAttrThemes(), listPerfAttrStrategyThemes()
+ *  and the codes list's classification filter. Returns one row per code in
+ *  stats.cross_stats (filtered by sec_type) with its precomputed L1/L2
+ *  classification from stats.sec_classification.
+ *  is_industry_not_strategy distinguishes industry-primary (TRUE) from
+ *  strategy-primary (FALSE) rows. `codeSource` picks the membership source:
+ *  the summary rollup's PK scan ('summary') or the historical DISTINCT
+ *  full-table scan ('live') — rendered from the sql views
+ *  data_viz/api/services/analysis/perf-attribution/_shared/meta_rows_summary
+ *  and .../_shared/meta_rows_live. */
+export function fetchPerfAttrMetaRows(
   metaTable: string,
   codeSource: PerfAttrCodeSource,
-): string {
-  const perfCodes =
-    codeSource === "summary"
-      ? `
-      SELECT code
-      FROM stats.cross_stats_code_summary
-      WHERE sec_type = $1::text`
-      : `
-      SELECT DISTINCT code
-      FROM stats.cross_stats
-      WHERE sec_type = $1::text`;
-  return `
-    WITH perf_codes AS (${perfCodes})
-    SELECT
-      pc.code,
-      COALESCE(m.name, '')             AS name,
-      COALESCE(m.sector_id,       'OTHER')  AS sector_id,
-      COALESCE(m.sector_label,    '其他')   AS sector_label,
-      COALESCE(m.industry_id,     'OTHER')  AS industry_id,
-      COALESCE(m.industry_label,  '未分类') AS industry_label,
-      COALESCE(m.industry_slug,   'other')  AS industry_slug,
-      COALESCE(m.is_industry_not_strategy, TRUE) AS is_industry_not_strategy
-    FROM perf_codes pc
-    LEFT JOIN ${metaTable} m ON m.code = pc.code AND m.type = $2::text
-  `;
+  secType: PerfAttrSecType,
+  metaType: string,
+): Promise<DbPerfAttrMetaRow[]> {
+  const view = codeSource === "summary"
+    ? "data_viz/api/services/analysis/perf-attribution/_shared/meta_rows_summary"
+    : "data_viz/api/services/analysis/perf-attribution/_shared/meta_rows_live";
+  return querySqlView<DbPerfAttrMetaRow>(view, {
+    sec_type: secType,
+    meta_type: metaType,
+    meta_table: sqlFrag(metaTable),
+  });
 }

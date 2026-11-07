@@ -122,6 +122,7 @@ from typing import Set
 import numpy as np
 import pandas as pd
 
+from _common.build_commons import find_missing_analysis_dates
 from _common.db_commons import chunked_purge_async
 from _common.df_utils import (
     grouped_shift,
@@ -129,8 +130,8 @@ from _common.df_utils import (
     safe_columns,
 )
 from analysis.mov_ave_spread._common import (
+    TableStep,
     null_if_overflow_counted,
-    run_table_step,
     sec_type_code,
 )
 from analysis.mov_ave_spread.config import (
@@ -641,8 +642,9 @@ def build_ohlc_long_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
-#  skeleton lives in _common.steps.run_table_step)
+#  Backfill repair detection (module-level — find_ohlc_repair_dates is
+#  READ-ONLY and also imported by __main__ / the skip-gate consult below;
+#  _detect_ohlc_repairs additionally purges the stale rows it finds)
 # ---------------------------------------------------------------------------
 
 async def find_ohlc_repair_dates(
@@ -731,16 +733,12 @@ async def _detect_ohlc_repairs(conn, st: str) -> Set[datetime.date]:
     return repair_st
 
 
-async def run_ohlc(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
+# ---------------------------------------------------------------------------
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__ via the
+#  TableStep template in _common.steps)
+# ---------------------------------------------------------------------------
+
+class OhlcStep(TableStep):
     """Run the OHLC-detail pipeline against the source data already
     loaded by the parent mov_ave_spread.
 
@@ -752,35 +750,48 @@ async def run_ohlc(
     to target_dates) so rolling computations have enough lookback rows
     (up to 1275 trading days ≈ 5 years).
 
-    Pipeline (see _common.steps.run_table_step)
+    Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_spreads_roof_and_floor_lines against source
          identity tables, PLUS repair dates whose rows predate the DATE /
-         second-extrema columns (purged up-front via the detect_fn hook).
+         second-extrema columns (purged up-front via the detect hook).
       1. Compute today_close + rolling OHLC columns over the FULL
          per-code history, then filter to target_dates.
-      2. Melt each chunk to the long schema (build_ohlc_long_frame) and
-         CSV-COPY it into the table.
+      2. Melt each chunk to the long schema (build_frame ->
+         build_ohlc_long_frame) and CSV-COPY it into the table.
       3. Upsert analysis.analysis_identity registry.
     """
-    await run_table_step(
-        conn, df,
-        title="ROOF_AND_FLOOR_LINES (internal step of mov_ave_spread)",
-        tag="o",
-        table=OHLC_TABLE,
-        analysis_name=OHLC_ANALYSIS_NAME,
-        detail_name="mov_ave_spreads_roof_and_floor_lines",
-        description=OHLC_DESCRIPTION,
-        needed_cols=[
-            "sec_type", "code", "date", "price", "open", "high", "low",
-        ],
-        compute_fn=compute_ohlc_columns,
-        build_df_fn=build_ohlc_long_frame,
-        detect_fn=_detect_ohlc_repairs,
-        force=force,
-        pool=pool,
-        max_concurrent=max_concurrent,
-        sec_type=sec_type,
-        code_filter=code_filter,
-        label="mov_ave_spreads_roof_and_floor_lines",
-    )
+
+    title = "ROOF_AND_FLOOR_LINES (internal step of mov_ave_spread)"
+    tag = "o"
+    table = OHLC_TABLE
+    analysis_name = OHLC_ANALYSIS_NAME
+    detail_name = "mov_ave_spreads_roof_and_floor_lines"
+    description = OHLC_DESCRIPTION
+    needed_cols = ("sec_type", "code", "date", "price", "open", "high", "low")
+    write_flavor = "frame"
+    in_skip_gate = True
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return compute_ohlc_columns(df)
+
+    def build_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        return build_ohlc_long_frame(df)
+
+    async def detect_extra_dates(self, conn, sec_type: str) -> set:
+        return await _detect_ohlc_repairs(conn, sec_type)
+
+    async def has_pending_work(
+        self, conn, sec_type: str, src_identity_table: str,
+    ) -> bool:
+        # READ-ONLY phase-0 consult (the parent's skip gate): missing
+        # dates + repair dates. Only the repair DETECTION query runs
+        # here — _detect_ohlc_repairs also purges the stale rows, which
+        # belongs to execute()'s detect_extra_dates hook, not to this
+        # check.
+        td = await find_missing_analysis_dates(
+            conn, self.table, [src_identity_table],
+            sec_type=sec_type_code(sec_type),
+        )
+        td = td | await find_ohlc_repair_dates(conn, sec_type)
+        return bool(td)

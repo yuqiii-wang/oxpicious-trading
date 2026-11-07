@@ -24,8 +24,8 @@ removes the tool. ``--show-transcript`` also prints the subagent
 registry (id / status / steps / goal).
 
 The agent also carries a CODE SANDBOX by default
-(``llm_agents.deep_agents.core.sandbox``): four ``sandbox_*`` built-in
-tools giving the model a private session directory inside the
+(``llm_agents.deep_agents.tools.sandbox_tools``): four ``sandbox_*``
+built-in tools giving the model a private session directory inside the
 DOCKERIZED py sandbox (the ``sagacient/cutepandas`` py3.12 stack),
 reached through the ``llm_agents.sandbox`` MCP middleware — write
 files, run .py scripts inside the container (killed at timeout, capped
@@ -67,9 +67,13 @@ from llm_agents.deep_agents.core.delegation import (  # noqa: E402
 )
 from llm_agents.deep_agents.core.mcp import DEFAULT_MCP_URL, McpToolClient  # noqa: E402
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider  # noqa: E402
-from llm_agents.deep_agents.core.sandbox import (  # noqa: E402
-    SANDBOX_TOOL_SCHEMAS, Sandbox,
+from llm_agents.deep_agents.core.sandbox import Sandbox  # noqa: E402
+from llm_agents.deep_agents.llm_config import (  # noqa: E402
+    build_chat_provider, load_llm_config,
 )
+from llm_agents.deep_agents.tools.sandbox_tools import SandboxToolSet  # noqa: E402
+from llm_agents.deep_agents.tools.kg_tools import KgToolSet  # noqa: E402
+from llm_agents.deep_agents.tools.stats_tools import StatsToolSet  # noqa: E402
 
 logger = setup_logging("deep_agents")
 
@@ -120,6 +124,19 @@ async def main() -> None:
                                 "stdin/stdout instead of HTTP.")
     ap.add_argument("--model", default=None,
                     help="Chat model (provider default glm-5.3-flash).")
+    ap.add_argument("--provider", default=None, choices=["zhipu", "dummy"],
+                    help="Chat provider override (default: the active "
+                         "static.secret_config llm row, else zhipu). "
+                         "'dummy' runs the offline canned-reply test "
+                         "double — zero API spend, deterministic "
+                         "replies keyed by the query text.")
+    ap.add_argument("--dummy-url", default=None,
+                    help="With --provider dummy: a running dummy llm "
+                         "server's chat endpoint (HTTP-sim — the REAL "
+                         "transport/retry layer against the "
+                         "simulation; start one with python -m "
+                         "llm_agents.test.dummy_llm.server). Omit for "
+                         "the in-process dummy (no server needed).")
     ap.add_argument("--max-steps", type=int, default=20,
                     help="Tool-calling steps before giving up "
                          "(default: %(default)s; generous since every "
@@ -165,6 +182,8 @@ async def main() -> None:
     if not args.list_tools and not args.question:
         ap.error("a question is required unless --list-tools is given")
     data = load_data(args)
+    from llm_agents.deep_agents.run_input import RunInput
+    data = RunInput.validate_boundary(data)
 
     if args.stdio:
         mcp = McpToolClient(
@@ -189,18 +208,44 @@ async def main() -> None:
                 logger.info("tool %s (built-in): %s", function["name"],
                             function["description"].splitlines()[0])
             if not args.no_sandbox:
-                for schema in SANDBOX_TOOL_SCHEMAS:
+                for schema in SandboxToolSet.schemas():
                     function = schema["function"]
                     logger.info("tool %s (built-in): %s", function["name"],
                                 function["description"].splitlines()[0])
+            for schema in StatsToolSet.schemas():
+                function = schema["function"]
+                logger.info("tool %s (built-in): %s", function["name"],
+                            function["description"].splitlines()[0])
+            for schema in KgToolSet.schemas():
+                function = schema["function"]
+                logger.info("tool %s (built-in): %s", function["name"],
+                            function["description"].splitlines()[0])
             return
         # Imported here (not module-top) so --list-tools works without
         # an API key — the provider resolves one at construction.
         from llm_agents.deep_agents.core.loop import DeepAgent
 
+        # Agent start = the config read: static.llm_config's active row
+        # (fail-soft, one DB read) names the provider and picks
+        # key/endpoint/model; --provider/--model still win over the
+        # row — a request naming a DIFFERENT provider than the row
+        # runs that provider on its own defaults.
+        cfg = await load_llm_config()
+        row_applies = cfg is not None and (
+            not args.provider
+            or args.provider.strip().lower() == cfg.provider)
+        provider = build_chat_provider(
+            args.provider or (cfg.provider if cfg is not None
+                              else "zhipu"),
+            api_key=cfg.api_key if row_applies else None,
+            api_url=args.dummy_url
+            or (cfg.api_url if row_applies else None),
+            max_output_tokens=args.max_tokens)
+        model = args.model or (cfg.model_name if row_applies else None)
+
         agent = DeepAgent(
-            ZhipuChatProvider(max_output_tokens=args.max_tokens), mcp,
-            model=args.model,
+            provider, mcp,
+            model=model,
             max_steps=args.max_steps, system=args.system,
             temperature=args.temperature,
             allow_subagents=not args.no_subagents,

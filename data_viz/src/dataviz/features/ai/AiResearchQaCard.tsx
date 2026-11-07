@@ -1,6 +1,6 @@
 /**
  * AiResearchQaCard — one research-logic Q&A post in the DataViz > AI feed's
- * "Research" source (text.llm_qa_by_research, written by
+ * "Research" source (llm.llm_qa_by_research, written by
  * llm_agents.llm_qa_by_research's five-request generation flow).
  *
  * Same PostCard chrome as AiQaCard (expand-on-click, lazy detail fetch),

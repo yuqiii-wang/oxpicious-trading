@@ -1,8 +1,8 @@
-"""Search-index tokenization + weighted tsvector writes for the text schema.
+"""Search-index tokenization + weighted tsvector writes for the text/llm schemas.
 
-The `text` schema's large-text tables (news articles, comments, digestions,
+The `text` and `llm` schemas' large-text tables (news articles, comments, digestions,
 the three Q&A tables) carry a ``search_tsv tsvector`` column with a GIN
-index (DDL: the ``CREATE TABLE`` files under ``database/sql/text/``).  Because
+index (DDL: the ``CREATE TABLE`` files under ``database/sql/text/`` and ``database/sql/text/llm/``).  Because
 Postgres' ``simple`` text-search config does not segment Chinese (a raw
 Chinese sentence becomes one giant lexeme), the tsvector is NOT a GENERATED
 column: the writing pipeline pre-segmentates the text with the local
@@ -65,6 +65,9 @@ from typing import Any, ClassVar
 
 from .chinese_word_segmenter import ChineseWordSegmenter, _CJK
 
+from _common.tokenization.data_definitions import (
+    TsvSpec,
+)
 logger = logging.getLogger(__name__)
 
 TSCONFIG = "simple"
@@ -130,23 +133,6 @@ def _skip_words() -> frozenset:
     return _SKIP_WORDS
 
 
-# --------------------------------------------------------------------------- #
-#  Per-table tsvector specs (mirror of the DDL comments in the text schema's
-#  CREATE TABLE files — keep the two in sync)
-# --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class TsvSpec:
-    """One table's search_tsv contract: PK columns + (column, weight) map."""
-
-    table: str
-    pk: tuple[str, ...]
-    weighted: tuple[tuple[str, str], ...]
-
-    @property
-    def select_cols(self) -> tuple[str, ...]:
-        cols = list(self.pk)
-        cols += [c for c, _ in self.weighted if c not in cols]
-        return tuple(cols)
 
 
 TSV_SPECS: dict[str, TsvSpec] = {
@@ -162,16 +148,16 @@ TSV_SPECS: dict[str, TsvSpec] = {
         "text.news_digestions", ("news_id",),
         (("summary", "B"),),
     ),
-    "text.llm_qa": TsvSpec(
-        "text.llm_qa", ("qa_id",),
+    "llm.llm_qa": TsvSpec(
+        "llm.llm_qa", ("qa_id",),
         (("question", "A"), ("answer", "B"), ("context", "D")),
     ),
-    "text.llm_qa_by_ask": TsvSpec(
-        "text.llm_qa_by_ask", ("ask_id",),
+    "llm.llm_qa_by_ask": TsvSpec(
+        "llm.llm_qa_by_ask", ("ask_id",),
         (("question", "A"), ("answer", "B")),
     ),
-    "text.llm_qa_by_research": TsvSpec(
-        "text.llm_qa_by_research", ("qa_id",),
+    "llm.llm_qa_by_research": TsvSpec(
+        "llm.llm_qa_by_research", ("qa_id",),
         (("question", "A"), ("answer", "B"),
          ("intro", "C"), ("optimistic_forecast", "C"),
          ("pessimistic_forecast", "C"), ("risks", "C"),
@@ -181,7 +167,7 @@ TSV_SPECS: dict[str, TsvSpec] = {
 
 
 class SearchIndexer:
-    """Tokenize-for-search + weighted search_tsv writes for the text schema.
+    """Tokenize-for-search + weighted search_tsv writes for the text/llm schemas.
 
     Owns the segmenter (injectable; default the process singleton) and the
     per-table :class:`TsvSpec` map (default :data:`TSV_SPECS`).  Obtain via

@@ -4,9 +4,9 @@
  * trees and the chart's classification filtering.
  * Split out of the former monolithic industry-sentiments.ts.
  */
-import { queryRows } from "@api/lib/db";
 import type { QueryResultRow } from "pg";
 import { cachedRows } from "@api/services/classification-cache";
+import { querySqlView } from "@api/lib/sql-views";
 
 export interface DbMarketBetaMetaRow extends QueryResultRow {
   code: string;
@@ -28,28 +28,9 @@ export interface DbMarketBetaMetaRow extends QueryResultRow {
 //  is_industry_not_strategy distinguishes industry-primary (TRUE) from
 //  strategy-primary (FALSE) rows; for strategy-primary rows sector_id/
 //  industry_id carry the STRATEGY/theme classification.
+//  The SELECT lives in the sql view
+//  data_viz/api/services/analysis/market-beta/meta/classified_index_rows.
 // ----------------------------------------------------------------------------
-const MARKET_BETA_META_SQL = `
-  SELECT sc.code,
-         COALESCE(sc.name, '')             AS name,
-         sc.exchange                       AS exchange,
-         COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
-         COALESCE(sc.sector_label,    '其他')   AS sector_label,
-         COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
-         COALESCE(sc.industry_label,  '未分类')  AS industry_label,
-         COALESCE(sc.industry_slug,   'other')  AS industry_slug,
-         COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy
-    FROM stats.sec_classification sc
-   WHERE sc.type = 'index'
-     AND sc.is_active = TRUE
-     AND sc.industry_id IS NOT NULL
-     AND sc.industry_id <> ''
-     AND COALESCE(sc.sector_id, '') <> 'DEBT'
-     AND EXISTS (
-         SELECT 1 FROM stats.sec_composition sc2
-         WHERE sc2.code = sc.code AND sc2.source_type = 'index'
-     )
-`;
 
 /** The meta rows behind both themes trees, cached in-process for the shared
  *  10-min TTL (the EXISTS-over-sec_composition join costs ~0.4s; both the
@@ -58,5 +39,7 @@ const MARKET_BETA_META_SQL = `
  *  rows are safely cacheable under one key. */
 export async function listMarketBetaMetaRows(): Promise<DbMarketBetaMetaRow[]> {
   return cachedRows("market_beta:meta", () =>
-    queryRows<DbMarketBetaMetaRow>(MARKET_BETA_META_SQL, []));
+    querySqlView<DbMarketBetaMetaRow>(
+      "data_viz/api/services/analysis/market-beta/meta/classified_index_rows",
+    ));
 }

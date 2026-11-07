@@ -55,6 +55,7 @@ from _common.df_utils import (
     grouped_rolling_quantile,
     grouped_shift,
 )
+from _common.sql_views import frag, render_sql_view
 
 from analysis.analysis_signals import config as cfg
 from analysis.trends.trend_state import _wilder_rsi
@@ -101,21 +102,16 @@ async def resolve_hedge_pair_universe(conn) -> list[dict]:
     score/rho None where the offsets carry no reading (the showcase
     pair's common case) — sorted by score desc with the showcase
     first."""
-    rows = await conn.fetch(
-        f"""
-        SELECT DISTINCT ON (industry_id, benchmark_industry_id)
-               industry_id, benchmark_industry_id,
-               opposite_score_ma255_255d::float8 AS score,
-               offset_sub_corr_ma255_255d::float8 AS rho
-        FROM {cfg.HP_OFFSETS_TABLE}
-        WHERE pool_size = $1
-          AND "interval" = $2
-          AND opposite_score_ma255_255d > $3
-        ORDER BY industry_id, benchmark_industry_id, start_date DESC
-        """,
-        cfg.HP_OFFSETS_POOL, cfg.HP_OFFSETS_INTERVAL,
-        cfg.HP_MIN_PAIR_SCORE,
+    # analysis/analysis_signals/fetch/inputs/_hedge_pairs/pair_universe
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_hedge_pairs/"
+        "pair_universe",
+        offsets_table=frag(cfg.HP_OFFSETS_TABLE),
+        pool_size=cfg.HP_OFFSETS_POOL,
+        interval=cfg.HP_OFFSETS_INTERVAL,
+        min_score=cfg.HP_MIN_PAIR_SCORE,
     )
+    rows = await conn.fetch(view.sql, *view.params)
     # (A,B) and (B,A) ride as separate DISTINCT-ON groups — dedup the
     # UNORDERED pair on its best reading
     best: dict[frozenset, dict] = {}
@@ -183,19 +179,14 @@ def _attach_component_rsi(comp: pd.DataFrame) -> pd.DataFrame:
 async def _fetch_leg_closes(conn, legs: list[str]) -> pd.DataFrame:
     """The legs' composite closes (stats.industry_basic_stats.
     mean_close, pool 'all') — one row per (industry, date)."""
-    rows = await conn.fetch(
-        f"""
-        SELECT industry_id AS code,
-               extract(epoch from date)::float8 AS date,
-               mean_close::float8 AS price
-        FROM {INDUSTRY_STATS_TABLE}
-        WHERE pool_size = $1
-          AND industry_id = ANY($2)
-          AND mean_close IS NOT NULL
-        ORDER BY industry_id, date ASC
-        """,
-        cfg.HP_OFFSETS_POOL, sorted(legs),
+    # analysis/analysis_signals/fetch/inputs/_hedge_pairs/leg_closes
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_hedge_pairs/leg_closes",
+        industry_stats_table=frag(INDUSTRY_STATS_TABLE),
+        pool_size=cfg.HP_OFFSETS_POOL,
+        codes=sorted(legs),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["code", "date", "price"])
     df = pd.DataFrame(rec_cols(rows),
@@ -207,19 +198,14 @@ async def _fetch_leg_closes(conn, legs: list[str]) -> pd.DataFrame:
 async def _fetch_market_closes(conn) -> pd.DataFrame:
     """The broad-market curve's closes (stats.index_basic_stats, clean
     rows only) — one row per date."""
-    rows = await conn.fetch(
-        f"""
-        SELECT code,
-               extract(epoch from date)::float8 AS date,
-               close::float8 AS price
-        FROM {INDEX_STATS_TABLE}
-        WHERE code = $1
-          AND close IS NOT NULL
-          AND COALESCE(is_ohl_estimated, FALSE) = FALSE
-        ORDER BY date ASC
-        """,
-        cfg.HP_MARKET_CODE,
+    # analysis/analysis_signals/fetch/inputs/_hedge_pairs/market_closes
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_hedge_pairs/"
+        "market_closes",
+        index_stats_table=frag(INDEX_STATS_TABLE),
+        market_code=cfg.HP_MARKET_CODE,
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=["code", "date", "price"])
     df = pd.DataFrame(rec_cols(rows),

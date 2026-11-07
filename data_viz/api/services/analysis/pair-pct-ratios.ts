@@ -27,7 +27,8 @@
  * Source: analysis.pair_pct_change_ratios (built by
  * `python -m analysis.pair_pct_change_ratios`).
  */
-import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { formatDate, toNum } from "../../lib/db.js";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import type {
   PairPctRatioGrain,
@@ -43,7 +44,9 @@ const DEFAULT_GRAIN: PairPctRatioGrain = "industry";
 const DEFAULT_MARKET = "000300";
 
 // Industry_id label: the classification's industry_label over that
-// industry's member rows, falling back to the id.
+// industry's member rows, falling back to the id. (Fragment builder —
+// passed into the universe sql views as {{subject_label}} /
+// {{benchmark_label}}.)
 const INDUSTRY_LABEL_SQL = (
   codeExpr: string,
 ) => `(
@@ -84,46 +87,23 @@ export async function listPairPctRatioUniverse(
 
   // Inner GROUP BYs aggregate the ratio table once per side; the UNION
   // ALL stitches the result shapes — no pairwise fan-out (empty filter →
-  // no scope fragments, full industry universe).
-  const params: unknown[] = [stride];
-  let subjectScope = "";
-  let benchmarkScope = "";
-  if (industryIds.length > 0) {
-    params.push(industryIds);
-    subjectScope = `AND t.code = ANY($${params.length}::text[])`;
-    benchmarkScope = `AND t.benchmark_code = ANY($${params.length}::text[])`;
-  }
-
-  const sql = `
-    WITH subjects AS (
-      SELECT t.code AS code,
-             COUNT(DISTINCT t.benchmark_code) AS n_counterparts,
-             MIN(t.date) AS first_date,
-             MAX(t.date) AS last_date
-      FROM analysis.pair_pct_change_ratios t
-      WHERE t."interval" = $1 AND t.grain = 1 ${subjectScope}
-      GROUP BY t.code
-    ),
-    benchmarks AS (
-      SELECT t.benchmark_code AS code,
-             COUNT(DISTINCT t.code) AS n_counterparts,
-             MIN(t.date) AS first_date,
-             MAX(t.date) AS last_date
-      FROM analysis.pair_pct_change_ratios t
-      WHERE t."interval" = $1 AND t.grain = 1 ${benchmarkScope}
-      GROUP BY t.benchmark_code
-    )
-    SELECT s.code, ${INDUSTRY_LABEL_SQL("s.code")}, s.n_counterparts,
-           s.first_date, s.last_date, 'subject' AS kind
-    FROM subjects s
-    UNION ALL
-    SELECT b.code, ${INDUSTRY_LABEL_SQL("b.code")}, b.n_counterparts,
-           b.first_date, b.last_date, 'benchmark' AS kind
-    FROM benchmarks b
-  `;
-  const rows = await queryRows<
-    DbUniverseRow & { kind: "subject" | "benchmark" }
-  >(sql, params as never[]);
+  // no scope fragments, full industry universe). The SELECT lives in the
+  // sql views data_viz/api/services/analysis/pair-pct-ratios/universe
+  // (unscoped) and .../universe_scoped (an industry_ids filter present).
+  const strideArg = { stride };
+  const labelArgs = {
+    subject_label: sqlFrag(INDUSTRY_LABEL_SQL("s.code")),
+    benchmark_label: sqlFrag(INDUSTRY_LABEL_SQL("b.code")),
+  };
+  const rows = await (industryIds.length > 0
+    ? querySqlView<DbUniverseRow & { kind: "subject" | "benchmark" }>(
+        "data_viz/api/services/analysis/pair-pct-ratios/universe_scoped",
+        { ...strideArg, industry_ids: industryIds, ...labelArgs },
+      )
+    : querySqlView<DbUniverseRow & { kind: "subject" | "benchmark" }>(
+        "data_viz/api/services/analysis/pair-pct-ratios/universe",
+        { ...strideArg, ...labelArgs },
+      ));
 
   const toEntry = (r: DbUniverseRow): PairPctRatioUniverseEntry => ({
     code: r.code,
@@ -184,19 +164,15 @@ export async function getPairPctRatios(
   const grainCode = encodeLabelParam("pair_grain", grain);
   const market = (rawMarket ?? "").trim() || DEFAULT_MARKET;
 
-  const rows = await queryRows<DbRatioRow>(
-    `
-    SELECT date,
-           hedge_raw_ma5d, hedge_raw_ma20d, hedge_raw_ma60d,
-           hedge_raw_ma255d,
-           hedge_offset_ma5d, hedge_offset_ma20d, hedge_offset_ma60d,
-           hedge_offset_ma255d
-    FROM analysis.pair_pct_change_ratios
-    WHERE code = $1 AND benchmark_code = $2
-      AND benchmark_market = $3 AND "interval" = $4 AND grain = $5
-    ORDER BY date ASC
-  `,
-    [code, benchmark, market, stride, grainCode],
+  const rows = await querySqlView<DbRatioRow>(
+    "data_viz/api/services/analysis/pair-pct-ratios/pair_rows",
+    {
+      code,
+      benchmark,
+      market,
+      stride,
+      grain: grainCode,
+    },
   );
 
   const out: PairPctRatioRow[] = rows.map((r) => ({

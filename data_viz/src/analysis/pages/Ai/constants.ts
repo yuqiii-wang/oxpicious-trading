@@ -4,7 +4,7 @@
  * slug/title entries of the category index pages so new analyses added
  * there flow through) and the placeholder markdown shown in the summary
  * panel before the first generation. The Skills catalog is NOT static —
- * it is the skills-type rows of the text.ai_prompts registry
+ * it is the skills-type rows of the llm.ai_prompts registry
  * (GET /api/ai/prompts).
  */
 import { COMMONS_ANALYSES } from "@/analysis/pages/CommonsPage";
@@ -23,6 +23,7 @@ import {
 } from "@/lib/api-client";
 import type { SecNavSecType, SecNavThemesSource } from "@/shared/components/sec-nav";
 import { INSIGHT_PAGES, type InsightPageIdentity } from "@/shared/ai-ask";
+import type { AiPrompt } from "@/lib/api-client/aiSummary";
 
 /** One selectable analysis item — the card projection of an index page's
  *  entry: the tree shows the title, the Ask AI button uses the description
@@ -143,6 +144,30 @@ export const SUMMARY_SEC_TYPES: SecNavSecType[] = [
   "etf",
   "stock",
 ];
+
+/** The study-scope plan-goal keys that apply only to a run NAMING codes
+ *  ({{code}} carries the pick) — the complement family (study-market-*)
+ *  applies only to an EMPTY pick (= all codes → the whole market).
+ *  Mirrors the runner's mutually-exclusive family contract
+ *  (llm_agents/deep_agents/planning/planner.py STUDY_SCOPE_PLAN_PROMPTS
+ *  + default_scope_plan_key). */
+const GOAL_CODES_ONLY_KEYS = new Set(["study-codes", "study-codes-related"]);
+const GOAL_MARKET_ONLY_KEYS = new Set(["study-market-codes", "study-market-whole"]);
+
+/** Whether a prompt row is selectable under the current scope pick:
+ *  the codes-family goal rows need named codes, the market-family rows
+ *  need the empty pick (all codes → whole market), and every non-goal
+ *  row (and any future goal key outside the two families) applies
+ *  regardless. Drives the Plan-goal radios' reactive enable/disable and
+ *  the page's deselect-on-scope-change fallback to Auto. */
+export function goalAppliesToScope(prompt: AiPrompt, scopeHasCodes: boolean): boolean {
+  if (prompt.prompt_type_label !== "plan" || prompt.prompt_sub_type !== "goal") {
+    return true;
+  }
+  if (GOAL_CODES_ONLY_KEYS.has(prompt.prompt_key)) return scopeHasCodes;
+  if (GOAL_MARKET_ONLY_KEYS.has(prompt.prompt_key)) return !scopeHasCodes;
+  return true;
+}
 
 /** Placeholder document shown in the summary markdown panel (before the
  *  first generation). */

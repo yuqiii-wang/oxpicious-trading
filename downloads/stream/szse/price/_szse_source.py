@@ -11,6 +11,10 @@ vs stocks:
 Index picupdata has NO separate open field — field[1] is the current price.
 The index_intraday_5min table also has NO volume/trading_shares column, so
 volume is discarded during aggregation.
+
+Class shape: the two fetch orchestrations are methods of :class:`SzseSource`
+(stateless — the shared session / host tracker stay explicit call arguments);
+the pure ``picupdata`` parsers stay module-level.
 """
 from __future__ import annotations
 
@@ -43,47 +47,92 @@ SZSE_TIMEDATA_URL = URLS["timedata_url"]
 SZSE_REFERER = URLS["referer"]
 
 
-def fetch_szse_minute(
-    session: requests.Session,
-    bare_code: str,
-    host_tracker: HostStatusTracker,
-) -> Optional[List[MinuteSample]]:
-    """Fetch intraday minute samples for one SZSE stock from the SZSE trend API.
+class SzseSource:
+    """Source B (SZSE ssjjhq getTimeData) fetch scope — stock fallback and
+    index fetches. Stateless: the shared requests session and the
+    HostStatusTracker stay explicit per-call arguments."""
 
-    Returns a list of (datetime, price, volume), or None on failure / block.
+    def fetch_szse_minute(
+        self,
+        session: requests.Session,
+        bare_code: str,
+        host_tracker: HostStatusTracker,
+    ) -> Optional[List[MinuteSample]]:
+        """Fetch intraday minute samples for one SZSE stock from the SZSE trend API.
 
-    The SZSE ssjjhq endpoint returns JSON describing the "分时" chart for one
-    code. Response shape is handled defensively: a ``data`` list (or numeric-
-    keyed dict) of points, each exposing a time/price/volume field under one
-    of several common key names.
-    """
-    headers = build_headers_with_referer(SZSE_REFERER)
-    params = {"marketId": "1", "code": bare_code}
-    resp = safe_get(
-        session,
-        SZSE_TIMEDATA_URL,
-        params=params,
-        headers=headers,
-        host_tracker=host_tracker,
-        logger=logger,
-        log_tag=f"[szse {bare_code}] ",
-    )
-    if resp is None:
-        return None
-    try:
-        payload = resp.json()
-    except ValueError:
-        logger.warning("[szse %s] non-JSON response", bare_code)
-        return None
+        Returns a list of (datetime, price, volume), or None on failure / block.
 
-    # SZSE API uses code="0" for success, "-1" for error.
-    if isinstance(payload, dict):
-        api_code = payload.get("code")
-        if str(api_code) != "0":
-            logger.warning("[szse %s] API code=%s msg=%s",
-                           bare_code, api_code, payload.get("message"))
+        The SZSE ssjjhq endpoint returns JSON describing the "分时" chart for one
+        code. Response shape is handled defensively: a ``data`` list (or numeric-
+        keyed dict) of points, each exposing a time/price/volume field under one
+        of several common key names.
+        """
+        headers = build_headers_with_referer(SZSE_REFERER)
+        params = {"marketId": "1", "code": bare_code}
+        resp = safe_get(
+            session,
+            SZSE_TIMEDATA_URL,
+            params=params,
+            headers=headers,
+            host_tracker=host_tracker,
+            logger=logger,
+            log_tag=f"[szse {bare_code}] ",
+        )
+        if resp is None:
             return None
-    return _parse_szse_picupdata(payload, bare_code)
+        try:
+            payload = resp.json()
+        except ValueError:
+            logger.warning("[szse %s] non-JSON response", bare_code)
+            return None
+
+        # SZSE API uses code="0" for success, "-1" for error.
+        if isinstance(payload, dict):
+            api_code = payload.get("code")
+            if str(api_code) != "0":
+                logger.warning("[szse %s] API code=%s msg=%s",
+                               bare_code, api_code, payload.get("message"))
+                return None
+        return _parse_szse_picupdata(payload, bare_code)
+
+    def fetch_szse_index_minute(
+        self,
+        session: requests.Session,
+        bare_code: str,
+        host_tracker: HostStatusTracker,
+    ) -> Optional[List[MinuteSample]]:
+        """Fetch intraday minute samples for one SZSE index via the SZSE trend API.
+
+        Same endpoint as ``fetch_szse_minute`` but the picupdata layout for
+        indices has 6 fields (no separate open). Returns (datetime, price, 0.0)
+        samples — volume is set to 0 because index_intraday_5min has no volume
+        column.
+        """
+        headers = build_headers_with_referer(SZSE_REFERER)
+        params = {"marketId": "1", "code": bare_code}
+        resp = safe_get(
+            session,
+            SZSE_TIMEDATA_URL,
+            params=params,
+            headers=headers,
+            host_tracker=host_tracker,
+            logger=logger,
+            log_tag=f"[szse-idx {bare_code}] ",
+        )
+        if resp is None:
+            return None
+        try:
+            payload = resp.json()
+        except ValueError:
+            logger.warning("[szse-idx %s] non-JSON response", bare_code)
+            return None
+        if isinstance(payload, dict):
+            api_code = payload.get("code")
+            if str(api_code) != "0":
+                logger.warning("[szse-idx %s] API code=%s msg=%s",
+                               bare_code, api_code, payload.get("message"))
+                return None
+        return _parse_szse_index_picupdata(payload, bare_code)
 
 
 def _parse_szse_picupdata(payload, bare_code: str) -> Optional[List[MinuteSample]]:
@@ -132,45 +181,6 @@ def _parse_szse_picupdata(payload, bare_code: str) -> Optional[List[MinuteSample
         logger.warning("[szse %s] no samples parsed from %d picupdata entries",
                        bare_code, len(picupdata))
     return samples or None
-
-
-def fetch_szse_index_minute(
-    session: requests.Session,
-    bare_code: str,
-    host_tracker: HostStatusTracker,
-) -> Optional[List[MinuteSample]]:
-    """Fetch intraday minute samples for one SZSE index via the SZSE trend API.
-
-    Same endpoint as ``fetch_szse_minute`` but the picupdata layout for
-    indices has 6 fields (no separate open). Returns (datetime, price, 0.0)
-    samples — volume is set to 0 because index_intraday_5min has no volume
-    column.
-    """
-    headers = build_headers_with_referer(SZSE_REFERER)
-    params = {"marketId": "1", "code": bare_code}
-    resp = safe_get(
-        session,
-        SZSE_TIMEDATA_URL,
-        params=params,
-        headers=headers,
-        host_tracker=host_tracker,
-        logger=logger,
-        log_tag=f"[szse-idx {bare_code}] ",
-    )
-    if resp is None:
-        return None
-    try:
-        payload = resp.json()
-    except ValueError:
-        logger.warning("[szse-idx %s] non-JSON response", bare_code)
-        return None
-    if isinstance(payload, dict):
-        api_code = payload.get("code")
-        if str(api_code) != "0":
-            logger.warning("[szse-idx %s] API code=%s msg=%s",
-                           bare_code, api_code, payload.get("message"))
-            return None
-    return _parse_szse_index_picupdata(payload, bare_code)
 
 
 def _parse_szse_index_picupdata(payload, bare_code: str) -> Optional[List[MinuteSample]]:

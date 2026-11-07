@@ -4,11 +4,10 @@
  * Extracted from the former analysis.service.ts.
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { renderSqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import type {
-  AllIndustriesAttributionRow,
   AllIndustriesAttributionResponse,
-  MemberIndexAttributionRow,
   MemberIndexAttributionResponse,
 } from "../../../shared/types.js";
 
@@ -43,61 +42,15 @@ export async function getAllIndustriesAttribution(
   const benchmarkCode = (rawBenchmarkCode ?? "").trim();
   if (!benchmarkCode) throw new Error("Missing 'benchmark_code' parameter");
 
-  const sql = `
-    WITH target_date AS (
-      SELECT COALESCE(
-        $2::date,
-        (SELECT MAX(date) FROM analysis.industry_attributions
-         WHERE benchmark_code = $1::text)
-      ) AS max_date
-    )
-    SELECT
-      ia.industry_id,
-      sc.industry_label,
-      sc.sector_label,
-      ia.benchmark_shared_weight,
-      ia.industry_shared_weight,
-      ii.name AS benchmark_name,
-      sit.is_broad_market,
-      ld.max_date AS date,
-      CASE
-        WHEN ib.close IS NOT NULL AND pb.close IS NOT NULL AND pb.close != 0
-        THEN (ib.close - pb.close) / pb.close
-        ELSE NULL
-      END AS benchmark_return
-    FROM analysis.industry_attributions ia
-    CROSS JOIN target_date ld
-    LEFT JOIN LATERAL (
-      SELECT industry_label, sector_label
-      FROM stats.sec_classification
-      WHERE industry_id = ia.industry_id AND type = 'index'
-        AND industry_label IS NOT NULL
-      LIMIT 1
-    ) sc ON true
-    LEFT JOIN LATERAL (
-      SELECT DISTINCT ON (code) name
-      FROM stats.index_identity
-      WHERE code = ia.benchmark_code
-      ORDER BY code, date DESC
-    ) ii ON true
-    LEFT JOIN LATERAL (
-      SELECT BOOL_OR(is_broad_market) AS is_broad_market
-      FROM stats.sec_index_tags
-      WHERE code = ia.benchmark_code
-    ) sit ON true
-    LEFT JOIN LATERAL (
-      SELECT close FROM stats.index_basic_stats
-      WHERE code = ia.benchmark_code AND date = ld.max_date
-    ) ib ON true
-    LEFT JOIN LATERAL (
-      SELECT close FROM stats.index_basic_stats
-      WHERE code = ia.benchmark_code AND date < ld.max_date
-      ORDER BY date DESC LIMIT 1
-    ) pb ON true
-    WHERE ia.benchmark_code = $1::text
-      AND ia.date = ld.max_date
-    ORDER BY ia.benchmark_shared_weight DESC NULLS LAST
-  `;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-attribution-bars/all_industries.
+  // The date placeholder is a fragment because the original SQL numbered
+  // it as the LAST pg param while it appears FIRST in the text; the
+  // params array is bound here ([benchmark_code, target_date]).
+  const { sql } = renderSqlView(
+    "data_viz/api/services/analysis/industry-attribution-bars/all_industries",
+    { benchmark_code: benchmarkCode, target_date_param: sqlFrag("$2::date") },
+  );
   const rows = await queryRows<DbAllIndustriesAttributionRow>(
     sql, [benchmarkCode, rawDate ?? null],
   );
@@ -152,52 +105,20 @@ export async function getMemberIndexAttribution(
   if (!industryId) throw new Error("Missing 'industry_id' parameter");
   if (!benchmarkCode) throw new Error("Missing 'benchmark_code' parameter");
 
-  const sql = `
-    WITH target_date AS (
-      SELECT COALESCE(
-        $3::date,
-        (SELECT MAX(date) FROM stats.cross_stats
-         WHERE benchmark_code = $2::text
-           AND sec_type = 'index')
-      ) AS max_date
-    )
-    SELECT
-      sa.code,
-      ii.name AS name,
-      sa.code_sec_shared_weight,
-      sa.benchmark_sec_shared_weight,
-      sc.industry_label,
-      bi.name AS benchmark_name,
-      sit.is_broad_market,
-      ld.max_date AS date
-    FROM stats.cross_stats sa
-    JOIN stats.sec_classification sc
-      ON sc.code = sa.code AND sc.type = 'index'
-      AND sc.is_active = TRUE
-      AND sc.industry_id = $1::text
-    CROSS JOIN target_date ld
-    LEFT JOIN LATERAL (
-      SELECT DISTINCT ON (code) name
-      FROM stats.index_identity
-      WHERE code = sa.code
-      ORDER BY code, date DESC
-    ) ii ON true
-    LEFT JOIN LATERAL (
-      SELECT DISTINCT ON (code) name
-      FROM stats.index_identity
-      WHERE code = sa.benchmark_code
-      ORDER BY code, date DESC
-    ) bi ON true
-    LEFT JOIN LATERAL (
-      SELECT BOOL_OR(is_broad_market) AS is_broad_market
-      FROM stats.sec_index_tags
-      WHERE code = sa.benchmark_code
-    ) sit ON true
-    WHERE sa.benchmark_code = $2::text
-      AND sa.sec_type = 'index'
-      AND sa.date = ld.max_date
-    ORDER BY sa.code_sec_shared_weight DESC NULLS LAST
-  `;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-attribution-bars/member_indices.
+  // The benchmark_code/date placeholders are fragments because the
+  // original SQL numbered params by array order (industry $1, benchmark
+  // $2, date $3), which differs from their first-use text order; the
+  // params array is bound here ([industry_id, benchmark_code, target_date]).
+  const { sql } = renderSqlView(
+    "data_viz/api/services/analysis/industry-attribution-bars/member_indices",
+    {
+      industry_id: industryId,
+      benchmark_code_param: sqlFrag("$2::text"),
+      target_date_param: sqlFrag("$3::date"),
+    },
+  );
   const rows = await queryRows<DbMemberIndexAttributionRow>(
     sql, [industryId, benchmarkCode, rawDate ?? null],
   );

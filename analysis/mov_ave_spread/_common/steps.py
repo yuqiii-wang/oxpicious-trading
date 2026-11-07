@@ -1,8 +1,8 @@
 """Shared internal-step plumbing for analysis.mov_ave_spread.
 
 Every internal step (rsi / holiday / ema / ohlc lines / ohlc gaps /
-trading_amt / trading_amt_ratios) repeats the SAME
-pipeline skeleton around its step-specific compute + sanitize:
+trading_amt / trading_amt_ratios) repeats the SAME pipeline skeleton
+around its step-specific compute + sanitize:
 
   0. column-select the needed source columns, resolve sec_types,
      then determine the target dates:
@@ -16,18 +16,27 @@ pipeline skeleton around its step-specific compute + sanitize:
      set), build rows, chunked insert (dict-sanitize or CSV-COPY path)
   3. upsert analysis.analysis_identity
 
-run_table_step() is that skeleton, parameterized. Steps with custom
-detection (repair dates) pass an async
-``detect_fn`` hook; steps with wholly custom flows (wholesale registries,
-pair-keyed bands, streaks) keep their own run_* and reuse the smaller
-helpers (infer_sec_types, filter_target_dates).
+:class:`TableStep` is that skeleton as a template-method base class:
+each step module declares one subclass carrying its identity
+(``table`` / ``detail_name`` / ``needed_cols`` …) as class attributes
+and its compute / sanitize / detect logic as hook methods; the
+per-call plumbing (conn / pool / force / code_filter / backfill) rides
+in a :class:`StepRun` value built by the parent pipeline instead of the
+keyword soup the old ``run_table_step`` function threaded through every
+call. Steps with wholly custom flows (wholesale registries, pair-keyed
+bands, streaks) override ``execute`` itself and reuse the smaller
+helpers (infer_sec_types, filter_target_dates, purge_step_scope,
+diff_write_scope_async).
 """
 from __future__ import annotations
 
+import abc
 import datetime as dt
 import time
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional, Set
 
+import asyncpg
 import pandas as pd
 
 from _common.build_commons import (
@@ -53,6 +62,9 @@ from analysis.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
 
 import logging
 logger = logging.getLogger(__name__)
+from analysis.mov_ave_spread._common.data_definitions import (
+    StepRun,
+)
 
 # ---------------------------------------------------------------------------
 #  Default increment bound — the nightly run covers only the LATEST
@@ -65,11 +77,11 @@ logger = logging.getLogger(__name__)
 # The default therefore BOUNDS the increment to the newest
 # INCREMENTAL_RECENT_DATES identity dates; deeper backlog dates are
 # deferred and converge only via the explicit --backfill flag (or a
-# wholesale --force). Set backfill_missing = True (from __main__'s
-# --backfill) to lift the bound.
+# wholesale --force). StepRun.backfill = True (from __main__'s --backfill)
+# lifts the bound.
 INCREMENTAL_RECENT_DATES: int = 10
 
-backfill_missing: bool = False
+
 
 
 async def _recent_date_floor(
@@ -273,13 +285,15 @@ async def resolve_target_dates(
     *,
     force: bool,
     code_filter: str | None,
+    backfill: bool,
     detect_fn: Optional[Callable[[object, str], Awaitable[Set]]] = None,
 ) -> Optional[Set]:
     """Determine the step's target dates; ``None`` means compute ALL
     (single-code / force mode), a (possibly empty) set is the incremental
     union. ``detect_fn(conn, st)`` adds per-sec_type extra target dates
     (repair dates, bounce-confirmation recompute) and may purge stale
-    rows first."""
+    rows first. ``backfill`` (the --backfill flag) lifts the default
+    increment bound."""
     if code_filter is not None:
         # Single-code mode (--code): the caller already DELETEd this
         # code's rows from the table, so compute ALL dates for this code
@@ -313,7 +327,7 @@ async def resolve_target_dates(
     # Default increment bound: only the LATEST missing dates are built —
     # detect_fn repair dates stay exempt (deliberate recomputes), while
     # deep-history backlog dates are deferred to --backfill.
-    if not backfill_missing and target_dates_union:
+    if not backfill and target_dates_union:
         floor = await _recent_date_floor(conn, sec_types)
         if floor is not None:
             bounded = {d for d in target_dates_union if d >= floor}
@@ -327,140 +341,235 @@ async def resolve_target_dates(
     return target_dates_union
 
 
-async def run_table_step(
-    conn,
-    df: pd.DataFrame,
-    *,
-    title: str,
-    tag: str,
-    table: str,
-    analysis_name: str,
-    detail_name: str,
-    description: str,
-    needed_cols: list[str],
-    compute_fn: Callable[[pd.DataFrame], pd.DataFrame],
-    force: bool,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-    sanitize_fn: Optional[Callable[[pd.DataFrame], list[dict]]] = None,
-    build_df_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
-    detect_fn: Optional[Callable[[object, str], Awaitable[Set]]] = None,
-    log_note: Optional[Callable[[pd.DataFrame], None]] = None,
-    post_compute_fn: Optional[Callable[[pd.DataFrame], Awaitable[None]]] = None,
-    label: str | None = None,
-) -> None:
-    """Run one internal step end-to-end on the parent's source DataFrame.
 
-    Exactly one of ``sanitize_fn`` (per-row dict path →
-    build_and_insert_chunked) or ``build_df_fn`` (wide→long frame path →
-    CSV COPY via build_and_insert_chunked_df) must be provided.
 
-    Args:
-      conn: asyncpg connection (reused from parent).
-      df: source DataFrame with at least ``needed_cols``. Must be the
-          FULL per-code history (not filtered to target dates) so rolling
-          computations are correct for the first target date of each code.
-      title / tag: the step banner + the log-line prefix (e.g. "r" for
-          the RSI step's [r0]/[r1]... phase lines).
-      detect_fn: async (conn, sec_type) -> set of EXTRA target dates for
-          the sec_type; may purge stale rows (repair dates, bounce
-          confirmation) before the recompute.
-      log_note: optional hook on the selected step frame (step-specific
-          pre-compute logging, e.g. the RSI step's null-price note).
-      post_compute_fn: async hook on the FULL computed frame, fired right
-          after compute_fn and BEFORE the incremental filter — for derived
-          tables that need the whole history (the RSI step's wholesale
-          ranks rebuild). Not fired on the early returns (no source data /
-          nothing to do), so derived rebuilds track actual computes.
+class TableStep(abc.ABC):
+    """One internal table-filling step of the mov_ave_spread pipeline.
+
+    Template-method base: :meth:`execute` owns the shared phases 0-3
+    (target dates → compute → incremental filter → chunked insert →
+    identity upsert — the former ``run_table_step`` function); the
+    subclass declares its identity as class attributes and implements
+    the step-specific hooks.
+
+    Class attributes (subclass overrides):
+      title          step banner (the "=" bar header in the log).
+      tag            log phase prefix, e.g. "r" for the RSI step's
+                     [r0]/[r1]/… lines.
+      table          target table (full ``analysis.*`` name).
+      analysis_name  analysis_identity registry name.
+      detail_name    registry detail_name + log noun.
+      description    analysis_identity registry description.
+      needed_cols    source columns the step's compute needs (the parent
+                     frame carries many more; execute column-subsets).
+      write_flavor   "rows" (default) → :meth:`sanitize_rows` dicts →
+                     build_and_insert_chunked; "frame" → :meth:`build_frame`
+                     wide→long frame → CSV COPY via
+                     build_and_insert_chunked_df.
+      in_skip_gate   whether the parent's incremental phase-0 consults
+                     :meth:`has_pending_work` for this step when deciding
+                     to skip an up-to-date sec_type (True only for the
+                     steps the nightly skip decision has always polled).
+
+    Hooks (default no-op unless noted):
+      compute              abstract — add the step columns to the frame.
+      sanitize_rows        "rows" flavor row builder (dicts for upsert).
+      build_frame          "frame" flavor wide→long frame builder.
+      log_note(df)         sync note on the selected step frame before
+                           detection (e.g. RSI's null-price note).
+      detect_extra_dates   async (conn, sec_type) -> set of EXTRA target
+                           dates (repair dates, bounce confirmation); may
+                           purge stale rows first.
+      post_compute(df)     async hook on the FULL computed frame, fired
+                           right after compute and BEFORE the incremental
+                           filter — for derived tables that need the
+                           whole history (RSI's wholesale ranks rebuild).
+                           Receives (run, df, sec_type) so derived
+                           rebuilds can scope themselves. Not fired on
+                           the early returns (no source data / nothing
+                           to do), so derived rebuilds track actual
+                           computes.
+      post_write(run, st)  async hook AFTER the step's own rows are
+                           written (RSI's trend-episode-days rebuild —
+                           reads the ranks table post-write).
     """
-    t0 = time.time()
-    logger.info("\n" + "=" * 78)
-    logger.info(f"  {title}")
-    logger.info("=" * 78)
 
-    # Select only the columns the step needs — the parent DataFrame
-    # carries many extra columns that are irrelevant here. column_subset
-    # is host-pure (proxied Index membership falls back under cudf.pandas).
-    available = column_subset(df, needed_cols)
-    step_df = df[available].copy()
+    title: str = ""
+    tag: str = ""
+    table: str = ""
+    analysis_name: str = ""
+    detail_name: str = ""
+    description: str = ""
+    needed_cols: tuple[str, ...] = ()
+    write_flavor: str = "rows"
+    in_skip_gate: bool = False
 
-    if step_df.empty:
-        logger.info(f"    -> no source data; skipping {detail_name} step.")
-        return
+    # ------------------------------------------------------------------
+    # Step-specific hooks
+    # ------------------------------------------------------------------
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add the step's columns to the (full-history) frame."""
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement compute()")
 
-    if log_note is not None:
-        log_note(step_df)
+    def sanitize_rows(self, df: pd.DataFrame) -> list[dict]:
+        """Per-row dict builder for the "rows" write flavor."""
+        raise NotImplementedError(
+            f"{type(self).__name__} sets write_flavor='rows' and must "
+            f"implement sanitize_rows()")
 
-    sec_types = infer_sec_types(step_df, sec_type)
+    def build_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Wide→long frame builder for the "frame" write flavor."""
+        raise NotImplementedError(
+            f"{type(self).__name__} sets write_flavor='frame' and must "
+            f"implement build_frame()")
 
-    # ---- Phase 0: determine target dates --------------------------------
-    target_dates_union = await resolve_target_dates(
-        conn, table, sec_types,
-        force=force, code_filter=code_filter, detect_fn=detect_fn,
-    )
-    if target_dates_union is not None and not target_dates_union:
-        logger.info("    -> DB is up to date; nothing to do.")
-        return
+    def log_note(self, df: pd.DataFrame) -> None:
+        """Sync pre-detection note on the selected step frame."""
 
-    # ---- Phase 1: compute the step columns over the full history --------
-    logger.info(f"\n[{tag}1] Computing {detail_name} columns per "
-          f"(sec_type, code, date) over full history...")
-    step_df = compute_fn(step_df)
+    async def detect_extra_dates(
+        self, conn, sec_type: str,
+    ) -> set:
+        """Extra target dates for ``sec_type`` (repair recomputes)."""
+        return set()
 
-    # ---- Post-compute hook (full-history derived tables) -----------------
-    if post_compute_fn is not None:
-        await post_compute_fn(step_df)
+    async def post_compute(
+        self, run: StepRun, df: pd.DataFrame, sec_type: str | None,
+    ) -> None:
+        """Async hook on the full computed frame (pre-filter)."""
 
-    # ---- Incremental filter ---------------------------------------------
-    if target_dates_union is not None:
-        step_df = filter_target_dates(step_df, target_dates_union)
+    async def post_write(self, run: StepRun, sec_type: str | None) -> None:
+        """Async hook after the step's rows are written."""
 
-    if step_df.empty:
-        logger.info(f"    -> no rows to upsert; skipping {detail_name} "
-              f"upsert.")
-        return
-
-    # ---- Phase 2: build + insert (chunked by date) ----------------------
-    # sec_type rides as its stored SMALLINT code end-to-end (the
-    # label-code contract) — row builders / CSV writers / DB all take
-    # the code; labels stay the loop/log vocabulary.
-    logger.info(f"\n[{tag}2] Building + inserting {len(step_df):,} "
-          f"{detail_name} rows in date-bounded chunks "
-          f"({'COPY' if force else 'upsert'} per chunk)...")
-    st_codes = tuple(sec_type_code(s) for s in sec_types)
-    if build_df_fn is not None:
-        n = await build_and_insert_chunked_df(
-            conn, pool, step_df,
-            build_df_fn,
-            table_name=table,
-            force=force,
-            sec_types=() if code_filter is not None else st_codes,
-            max_concurrent=max_concurrent,
-            label=label or detail_name,
+    # ------------------------------------------------------------------
+    # Parent phase-0 consult: does this step have work for a sec_type?
+    # ------------------------------------------------------------------
+    async def has_pending_work(
+        self, conn, sec_type: str, src_identity_table: str,
+    ) -> bool:
+        """Default detection: dates present in the source identity table
+        but missing from the step's target table. Steps with custom
+        granularity (repair dates, pair-keyed bands, wholesale empty
+        checks) override this."""
+        td = await find_missing_analysis_dates(
+            conn, self.table, [src_identity_table],
+            sec_type=sec_type_code(sec_type),
         )
-    else:
-        n = await build_and_insert_chunked(
-            conn, pool, step_df,
-            sanitize_fn,
-            table_name=table,
-            key_columns=["sec_type", "code", "date"],
-            force=force,
-            sec_types=() if code_filter is not None else st_codes,
-            max_concurrent=max_concurrent,
-            label=label or detail_name,
+        return bool(td)
+
+    # ------------------------------------------------------------------
+    # Template method — phases 0-3 (the former run_table_step)
+    # ------------------------------------------------------------------
+    async def execute(
+        self,
+        run: StepRun,
+        df: pd.DataFrame,
+        *,
+        sec_type: str | None = None,
+    ) -> None:
+        """Run the step end-to-end on the parent's source DataFrame.
+
+        Args:
+          run: the parent-built execution context (conn/pool/force/
+              code_filter/backfill/max_concurrent).
+          df: source DataFrame with at least ``needed_cols``. Must be the
+              FULL per-code history (not filtered to target dates) so
+              rolling computations are correct for the first target date
+              of each code.
+          sec_type: the parent loop's scope; None decodes every sec_type
+              present in the frame (standalone callers).
+        """
+        t0 = time.time()
+        logger.info("\n" + "=" * 78)
+        logger.info(f"  {self.title}")
+        logger.info("=" * 78)
+
+        # Select only the columns the step needs — the parent DataFrame
+        # carries many extra columns that are irrelevant here.
+        # column_subset is host-pure (proxied Index membership falls back
+        # under cudf.pandas).
+        available = column_subset(df, list(self.needed_cols))
+        step_df = df[available].copy()
+
+        if step_df.empty:
+            logger.info(
+                f"    -> no source data; skipping {self.detail_name} step.")
+            return
+
+        self.log_note(step_df)
+
+        sec_types = infer_sec_types(step_df, sec_type)
+
+        # ---- Phase 0: determine target dates --------------------------------
+        target_dates_union = await resolve_target_dates(
+            run.conn, self.table, sec_types,
+            force=run.force, code_filter=run.code_filter,
+            backfill=run.backfill,
+            detect_fn=self.detect_extra_dates,
         )
-    del step_df
-    logger.info(f"    -> inserted {n:,} rows")
+        if target_dates_union is not None and not target_dates_union:
+            logger.info("    -> DB is up to date; nothing to do.")
+            return
 
-    # ---- Phase 3: register in analysis_identity -------------------------
-    logger.info(f"\n[{tag}3] Upserting analysis.analysis_identity registry...")
-    await upsert_analysis_identity(
-        conn,
-        name=analysis_name,
-        detail_name=detail_name,
-        description=description,
-    )
+        # ---- Phase 1: compute the step columns over the full history --------
+        logger.info(f"\n[{self.tag}1] Computing {self.detail_name} columns per "
+              f"(sec_type, code, date) over full history...")
+        step_df = self.compute(step_df)
 
-    logger.info(f"\n  {detail_name} wall time: {time.time() - t0:.1f}s")
+        # ---- Post-compute hook (full-history derived tables) -----------------
+        await self.post_compute(run, step_df, sec_type)
+
+        # ---- Incremental filter ---------------------------------------------
+        if target_dates_union is not None:
+            step_df = filter_target_dates(step_df, target_dates_union)
+
+        if step_df.empty:
+            logger.info(f"    -> no rows to upsert; skipping "
+                  f"{self.detail_name} upsert.")
+            return
+
+        # ---- Phase 2: build + insert (chunked by date) ----------------------
+        # sec_type rides as its stored SMALLINT code end-to-end (the
+        # label-code contract) — row builders / CSV writers / DB all take
+        # the code; labels stay the loop/log vocabulary.
+        logger.info(f"\n[{self.tag}2] Building + inserting {len(step_df):,} "
+              f"{self.detail_name} rows in date-bounded chunks "
+              f"({'COPY' if run.force else 'upsert'} per chunk)...")
+        st_codes = tuple(sec_type_code(s) for s in sec_types)
+        if self.write_flavor == "frame":
+            n = await build_and_insert_chunked_df(
+                run.conn, run.pool, step_df,
+                self.build_frame,
+                table_name=self.table,
+                force=run.force,
+                sec_types=() if run.code_filter is not None else st_codes,
+                max_concurrent=run.max_concurrent,
+                label=self.detail_name,
+            )
+        else:
+            n = await build_and_insert_chunked(
+                run.conn, run.pool, step_df,
+                self.sanitize_rows,
+                table_name=self.table,
+                key_columns=["sec_type", "code", "date"],
+                force=run.force,
+                sec_types=() if run.code_filter is not None else st_codes,
+                max_concurrent=run.max_concurrent,
+                label=self.detail_name,
+            )
+        del step_df
+        logger.info(f"    -> inserted {n:,} rows")
+
+        # ---- Phase 3: register in analysis_identity -------------------------
+        logger.info(f"\n[{self.tag}3] Upserting analysis.analysis_identity registry...")
+        await upsert_analysis_identity(
+            run.conn,
+            name=self.analysis_name,
+            detail_name=self.detail_name,
+            description=self.description,
+        )
+
+        await self.post_write(run, sec_type)
+
+        logger.info(
+            f"\n  {self.detail_name} wall time: {time.time() - t0:.1f}s")

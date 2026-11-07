@@ -17,6 +17,7 @@ import pandas as pd
 
 from _common.labels import SEC_TYPE_CODE
 from _common.build_commons import rec_cols
+from _common.sql_views import frag, render_sql_view
 
 from analysis.mov_ave_spread.config import PRICE_SOURCE
 
@@ -74,32 +75,21 @@ async def fetch_ma_inputs(
     amt_select, amt_joins = amt_ratio_fragments(
         sec_type, base_alias="d", ma_alias="d",
     )
-    sql = f"""
-        SELECT d.code,
-               extract(epoch from d.date)::float8 AS date,
-               {price_expr}::float8 AS price,
-               d.price_slope::float8 AS price_slope,
-               {gap_cols},
-               g.pattern,
-               p.vol_state::float8 AS vol_state,
-               p.px_speed::float8 AS px_speed,
-               {amt_select}
-        FROM {MA_GAP_TABLE} d
-        LEFT JOIN {base}
-               ON b.code = d.code AND b.date = d.date
-        LEFT JOIN {PATTERN_TABLE} g
-               ON g.sec_type = {st_code}
-              AND g.code = d.code AND g.date = d.date
-        LEFT JOIN {PX_VOL_TABLE} p
-               ON p.sec_type = {st_code}
-              AND p.code = d.code AND p.date = d.date
-        {amt_joins}
-        WHERE d.sec_type = {st_code}
-          AND d.code = ANY($1::text[])
-          AND {price_expr} IS NOT NULL
-        ORDER BY d.code, d.date ASC
-    """
-    rows = await conn.fetch(sql, sorted(codes))
+    # analysis/analysis_signals/fetch/inputs/_ma_cross/ma_inputs
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_ma_cross/ma_inputs",
+        codes=sorted(codes),
+        ma_gap_table=frag(MA_GAP_TABLE),
+        price_expr=frag(price_expr),
+        gap_cols=frag(gap_cols),
+        base_table=frag(base),
+        sec_type_code=frag(str(st_code)),
+        pattern_table=frag(PATTERN_TABLE),
+        px_vol_table=frag(PX_VOL_TABLE),
+        amt_select=frag(amt_select),
+        amt_joins=frag(amt_joins),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=_MA_FETCH_COLUMNS)
     df = pd.DataFrame(

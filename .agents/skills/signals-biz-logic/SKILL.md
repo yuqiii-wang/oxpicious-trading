@@ -40,6 +40,12 @@ skill `signals-live-vs-history`; load that one for tier/pipeline work,
 this one before touching trigger logic, parameters, sides, or
 populations.
 
+Implementation shape follows the repo's class-first preference
+(`oxpicious-dev-conventions`): each family's semantics live in its
+`rule_base` engine subclass, and new evidence/config carriers are
+pydantic models — the biz rules below are never re-expressed as loose
+module-level static functions.
+
 ## The one principle everything descends from: equity asymmetry
 
 Measured repeatedly on the 10 study indices: **sharp falls revert;

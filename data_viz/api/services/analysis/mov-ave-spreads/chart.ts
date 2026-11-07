@@ -4,11 +4,11 @@
  * pair-series mappers, and the monolithic getMovAveSpreadChart composition.
  * Split out of the former monolithic mov-ave-spreads.ts.
  */
-import { queryRows, formatDate, toNum } from "@api/lib/db";
+import { formatDate, toNum } from "@api/lib/db";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import { codeVariants } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
 import type {
-  MaSpreadSecType,
   MovAveSpreadChartResponse,
   MovAveSpreadChartPairsResponse,
   MovAveSpreadChartEmaResponse,
@@ -23,7 +23,6 @@ import {
   CHART_ANALYSIS_TABLES,
   chartCtesSql,
   chartJoinSql,
-  buildNameSql,
   normalizeSecType,
   secTypeParam,
 } from "./sec-sources.js";
@@ -49,114 +48,17 @@ import {
 } from "./ohlc-pivot.js";
 
 // ----------------------------------------------------------------------------
-//  Chart BLOCK SQL builders — the same CTE-prefetch pattern as the old
+//  Chart BLOCK queries — the same CTE-prefetch pattern as the old
 //  monolithic chart query, but scoped to ONE block's tables each, so a block
 //  request never reads, transfers, or serializes the columns the other
 //  blocks own (the monolithic /chart joined ~6 tables into ~90 columns; for
 //  a full stock history the Node-side fan-out + JSON of that single response
-//  dominated the latency).
+//  dominated the latency). The SELECTs live in the sql views
+//  data_viz/api/services/analysis/mov-ave-spreads/chart/pairs_block,
+//  chart/ema_block and chart/shared_block — the per-sec_type CTE list,
+//  price column expressions and FROM joins (SEC_SOURCES config + the
+//  ohlc-pivot builders) are passed as fragment args at the call sites.
 // ----------------------------------------------------------------------------
-
-/** REQUIRED pairs block: the stats price/MA tables joined to the detail
- *  gaps/derivatives — everything the default Price/MA5 chart + the 9
- *  Simple-MA chips need. No EMA detail, no RSI, no OHLC pivot. */
-function buildChartPairsSql(secType: MaSpreadSecType): string {
-  const src = SEC_SOURCES[secType];
-  const tables = src.chartTables;
-  return `
-    WITH d AS MATERIALIZED (
-      SELECT * FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-        AND code = ANY($2::text[])
-    ),
-    ${chartCtesSql(tables)}
-    SELECT
-      d.date,
-      ${src.priceExpr} AS price,
-      ${src.openExpr} AS open,
-      ${src.highExpr} AS high,
-      ${src.lowExpr} AS low,
-      ${src.tradingAmtExpr} AS trading_amount,
-      t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
-      d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
-      d.price_vs_ma120, d.price_vs_ma255,
-      d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255,
-      d.price_slope, d.ma5_slope, d.ma20_slope,
-      d.price_curvature, d.ma5_curvature, d.ma20_curvature,
-      d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days
-    FROM d
-    ${chartJoinSql(tables)}
-    ORDER BY d.date ASC
-  `;
-}
-
-/** Best-effort EMA block: the EMA detail table (gaps/derivatives/σ) plus
- *  the price columns the EMA pair rows carry. No RSI, no OHLC pivot. */
-function buildChartEmaSql(secType: MaSpreadSecType): string {
-  const src = SEC_SOURCES[secType];
-  const tables = [...src.chartTables, ...CHART_ANALYSIS_TABLES.filter((t) => t.alias === "ema")];
-  return `
-    WITH d AS MATERIALIZED (
-      SELECT * FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-        AND code = ANY($2::text[])
-    ),
-    ${chartCtesSql(tables)}
-    SELECT
-      d.date,
-      ${src.priceExpr} AS price,
-      ${src.openExpr} AS open,
-      ${src.highExpr} AS high,
-      ${src.lowExpr} AS low,
-      ${src.tradingAmtExpr} AS trading_amount,
-      t.ema6, t.ema12, t.ema26,
-      d.price_slope, d.price_curvature,
-      ema.ema6_slope, ema.ema12_slope,
-      ema.ema6_curvature, ema.ema12_curvature,
-      ema.price_vs_ema6, ema.price_vs_ema12, ema.price_vs_ema26,
-      ema.ema6_vs_ema12, ema.ema6_vs_ema26, ema.ema12_vs_ema26,
-      ema.std_5days AS ema_std_5days,
-      ema.std_12days AS ema_std_12days,
-      ema.std_26days AS ema_std_26days
-    FROM d
-    ${chartJoinSql(tables)}
-    ORDER BY d.date ASC
-  `;
-}
-
-/** Best-effort shared block: the tooltip metrics — RSI table + OHLC pivot +
- *  the detail table's amt slopes / market shares. No stats price tables
- *  (sec_type binds through the $1 parameter at call time). */
-function buildChartSharedSql(): string {
-  const tables = CHART_ANALYSIS_TABLES.filter((t) => t.alias === "rsi");
-  return `
-    WITH d AS MATERIALIZED (
-      SELECT * FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-        AND code = ANY($2::text[])
-    ),
-    ${chartCtesSql(tables)},
-    ${ohlcPivotCteSql(OHLC_SHARED_PERIODS, OHLC_SHARED_STEMS)}
-    SELECT
-      d.date,
-      d.trading_amt_ma5_slope, d.trading_amt_ma20_slope, d.trading_amt_ma60_slope,
-      d.trading_amt_ma120_slope, d.trading_amt_ma255_slope,
-      d.trading_amt_market_share_ma5, d.trading_amt_market_share_ma20,
-      d.trading_amt_market_share_ma60, d.trading_amt_market_share_ma120,
-      d.trading_amt_market_share_ma255,
-      rsi.rsi_3days, rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days,
-      rsi.rsi_60days,
-      ted.is_typical_3days, ted.is_typical_6days, ted.is_typical_10days,
-      ted.is_typical_14days, ted.is_typical_20days, ted.is_typical_60days,
-      ${ohlcPivotSelectSql(OHLC_SHARED_PERIODS, "sh_", OHLC_SHARED_STEMS)}
-    FROM d
-    ${chartJoinSql(tables)}
-    LEFT JOIN analysis.trend_episode_days ted
-      ON ted.sec_type = d.sec_type AND ted.code = d.code AND ted.date = d.date
-    LEFT JOIN ohlc ON ohlc.code = d.code AND ohlc.date = d.date
-    ORDER BY d.date ASC
-  `;
-}
 
 /** Initialize the 9 pair series of one family (Simple MA or EMA) in
  *  canonical order — shared by the pairs/ema block mappers below. */
@@ -327,10 +229,26 @@ export async function getMovAveSpreadChartPairs(
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
   const variants = codeVariants(target);
+  const src = SEC_SOURCES[secType];
   const [chartRows, nameRows] = await Promise.all([
-    queryRows<DbChartRow>(buildChartPairsSql(secType),
-      [secTypeParam(secType), variants]),
-    queryRows<{ name: string | null }>(buildNameSql(secType), [variants]),
+    querySqlView<DbChartRow>(
+      "data_viz/api/services/analysis/mov-ave-spreads/chart/pairs_block",
+      {
+        sec_type: secTypeParam(secType),
+        codes: variants,
+        chart_ctes: sqlFrag(chartCtesSql(src.chartTables)),
+        price_expr: sqlFrag(src.priceExpr),
+        open_expr: sqlFrag(src.openExpr),
+        high_expr: sqlFrag(src.highExpr),
+        low_expr: sqlFrag(src.lowExpr),
+        trading_amt_expr: sqlFrag(src.tradingAmtExpr),
+        chart_joins: sqlFrag(chartJoinSql(src.chartTables)),
+      },
+    ),
+    querySqlView<{ name: string | null }>(
+      "data_viz/api/services/analysis/mov-ave-spreads/sec-sources/latest_name",
+      { codes: variants, identity_table: sqlFrag(src.identityTable) },
+    ),
   ]);
   return {
     code: target,
@@ -349,8 +267,22 @@ export async function getMovAveSpreadChartEma(
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
   const variants = codeVariants(target);
-  const chartRows = await queryRows<DbChartRow>(buildChartEmaSql(secType),
-      [secTypeParam(secType), variants]);
+  const src = SEC_SOURCES[secType];
+  const tables = [...src.chartTables, ...CHART_ANALYSIS_TABLES.filter((t) => t.alias === "ema")];
+  const chartRows = await querySqlView<DbChartRow>(
+    "data_viz/api/services/analysis/mov-ave-spreads/chart/ema_block",
+    {
+      sec_type: secTypeParam(secType),
+      codes: variants,
+      chart_ctes: sqlFrag(chartCtesSql(tables)),
+      price_expr: sqlFrag(src.priceExpr),
+      open_expr: sqlFrag(src.openExpr),
+      high_expr: sqlFrag(src.highExpr),
+      low_expr: sqlFrag(src.lowExpr),
+      trading_amt_expr: sqlFrag(src.tradingAmtExpr),
+      chart_joins: sqlFrag(chartJoinSql(tables)),
+    },
+  );
   // Industry has no stats tech_stats source — the chart subquery returns
   // NULL ema columns. Recompute them here from the returned price series
   // with the SAME recursion the pipeline's compute_emas uses
@@ -384,8 +316,18 @@ export async function getMovAveSpreadChartShared(
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
   const variants = codeVariants(target);
-  const chartRows = await queryRows<DbChartRow>(buildChartSharedSql(),
-      [secTypeParam(secType), variants]);
+  const tables = CHART_ANALYSIS_TABLES.filter((t) => t.alias === "rsi");
+  const chartRows = await querySqlView<DbChartRow>(
+    "data_viz/api/services/analysis/mov-ave-spreads/chart/shared_block",
+    {
+      sec_type: secTypeParam(secType),
+      codes: variants,
+      chart_ctes: sqlFrag(chartCtesSql(tables)),
+      ohlc_ctes: sqlFrag(ohlcPivotCteSql(OHLC_SHARED_PERIODS, OHLC_SHARED_STEMS)),
+      ohlc_select: sqlFrag(ohlcPivotSelectSql(OHLC_SHARED_PERIODS, "sh_", OHLC_SHARED_STEMS)),
+      chart_joins: sqlFrag(chartJoinSql(tables)),
+    },
+  );
   return { code: target, shared: mapSharedRows(chartRows) };
 }
 

@@ -3,7 +3,8 @@
  * code)'s contiguous same-regime runs from stats.market_regime_spans.
  * Split out of the former monolithic mov-ave-spreads.ts.
  */
-import { queryRows, formatDate } from "@api/lib/db";
+import { formatDate } from "@api/lib/db";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import { codeVariants } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
 import { labelDecodeSql } from "@api/services/label-codes";
@@ -13,29 +14,17 @@ import type {
 } from "@shared/types";
 import { normalizeSecType, secTypeParam } from "./sec-sources.js";
 
-/** SQL for the market-regime SPANS of one (sec_type, code): one row
- *  per CONTIGUOUS same-regime run, straight from the
- *  stats.market_regime_spans TABLE (the contiguous runs builds.market_regimes
- *  materializes over the daily stats.market_regimes registry — formerly
- *  a per-query gaps-and-islands VIEW). Replaces the retired
- *  mov_ave_market_hypes episode query; the UI shades the spans per
- *  regime (hot keeps the retired purple). */
-function buildMarketRegimeSpansSql(): string {
-  return `
-    SELECT
-      ${labelDecodeSql("regime", "s.regime")} AS regime,
-      s.start_date,
-      s.end_date,
-      s.span_days::int AS span_days
-    FROM stats.market_regime_spans s
-    WHERE s.sec_type = $1
-      AND s.code = ANY($2::text[])
-    ORDER BY s.regime, s.start_date
-  `;
-}
+/** The market-regime SPANS of one (sec_type, code): one row per
+ *  CONTIGUOUS same-regime run, straight from the stats.market_regime_spans
+ *  TABLE (the contiguous runs builds.market_regimes materializes over the
+ *  daily stats.market_regimes registry — formerly a per-query
+ *  gaps-and-islands VIEW). Replaces the retired mov_ave_market_hypes
+ *  episode query; the UI shades the spans per regime (hot keeps the
+ *  retired purple). The SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/regimes/market_regime_spans. */
 
-/** One span row from stats.market_regime_spans (see
- *  buildMarketRegimeSpansSql). */
+/** One span row from stats.market_regime_spans (see the
+ *  regimes/market_regime_spans sql view). */
 interface DbMarketRegimeSpanRow {
   regime: string;
   start_date: Date | string;
@@ -80,9 +69,13 @@ export async function getMarketRegimeSpans(
   const variants = codeVariants(target);
   // stats.market_regime_spans.sec_type stores its static.label_dim
   // SMALLINT code (the label-code contract) — bind the code.
-  const rows = await queryRows<DbMarketRegimeSpanRow>(
-    buildMarketRegimeSpansSql(),
-    [secTypeParam(secType), variants],
+  const rows = await querySqlView<DbMarketRegimeSpanRow>(
+    "data_viz/api/services/analysis/mov-ave-spreads/regimes/market_regime_spans",
+    {
+      sec_type: secTypeParam(secType),
+      codes: variants,
+      regime_decode: sqlFrag(labelDecodeSql("regime", "s.regime")),
+    },
   );
   return { secType, code: target, spans: toMarketRegimeSpans(rows) };
 }

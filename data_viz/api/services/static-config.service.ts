@@ -71,6 +71,15 @@
  *     substitutes it (repo-wide 60s anti-bot cooldown) whenever a
  *     service file is missing.
  *
+ *   deep_agent_config — a SINGLE file (deep_agent_config.json), the
+ *     deep agent's RUN LIMITS: the LLM-request budget knobs (conversation
+ *     step caps, recursion bound, plan-tree caps, subagent fan-out,
+ *     per-request output ceiling, findings-bridge and eager-prompt
+ *     budgets) the harness hardcoded before 2026-11-03. Read per run by
+ *     llm_agents/deep_agents/limits.py (fail-soft, mtime-cached — edits
+ *     take effect on the next run, no daemon restart); the AI page's
+ *     Run Limits panel edits it through the Config route.
+ *
  * Reads are cached per file mtime (the files are tiny; the cache only
  * exists so a burst of requests in one poll tick doesn't re-read the
  * disk). Writes stamp updated_at, keep the files' canonical shape
@@ -562,6 +571,162 @@ function pruneEmptyDirs(dir: string, root: string): void {
     }
     cur = path.dirname(cur);
   }
+}
+
+// ---------------------------------------------------------------------------
+//  deep_agent_config — the deep agent's run limits (ONE file)
+// ---------------------------------------------------------------------------
+
+/** The deep-agent RUN LIMITS file — llm_agents/deep_agents/limits.py is
+ *  the Python reader (fail-soft, per-run) and the authoritative default
+ *  mirror; this section is the Config UI's read/write face over the same
+ *  file. The keys mirror the RunLimits dataclass fields snake_case. */
+const DEEP_AGENT_CONFIG_PATH = path.join(STATIC_CONFIG_DIR, "deep_agent_config.json");
+
+export interface DeepAgentLimitsEntry {
+  max_conversation_steps: number;
+  min_conversation_steps: number;
+  max_steps_cap: number;
+  recursion_limit: number;
+  run_timeout_sec: number;
+  llm_request_timeout_sec: number;
+  max_plan_nodes: number;
+  max_delegated_steps: number;
+  plan_repair_rounds: number;
+  plan_proposal_batches: number;
+  max_total_plan_steps: number;
+  max_fork_children: number;
+  max_parallel_delegated_steps: number;
+  max_concurrent_subagents: number;
+  max_spawn_depth: number;
+  /** Per spawned child's wall clock in seconds; null = unbounded. */
+  subagent_timeout_sec: number | null;
+  max_output_tokens: number;
+  max_output_repairs: number;
+  finding_max_chars: number;
+  findings_block_max_chars: number;
+  prompt_eager_rows: number;
+  prompt_eager_chars: number;
+  payload_guard_chars: number;
+  payload_entry_max_chars: number;
+  payload_preview_chars: number;
+  payload_preview_items: number;
+  tool_result_max_chars: number;
+  /** The SUPERVISOR REPAIR LANE's knobs (supervisor/repair.py +
+   *  poller.py — poll cadence, pause window, retry budgets, the
+   *  rate-limit retry cooldown). */
+  supervisor_poll_interval_sec: number;
+  supervisor_repair_grace_sec: number;
+  supervisor_max_node_retries: number;
+  supervisor_max_repairs_per_run: number;
+  supervisor_retry_throttle_sec: number;
+  notes: string | null;
+  source_ref: string | null;
+  updated_at: string;
+}
+
+/** The per-field (default, min, max) specs — MIRROR of
+ *  limits.py::RunLimits.from_doc's bounds; keep the two in sync. */
+const DEEP_AGENT_LIMITS_FIELDS: Array<{
+  key: keyof Omit<DeepAgentLimitsEntry, "notes" | "source_ref" | "updated_at">;
+  default: number | null;
+  min: number;
+  max: number | null;
+}> = [
+  { key: "max_conversation_steps", default: 40, min: 1, max: 1000 },
+  { key: "min_conversation_steps", default: 4, min: 1, max: 64 },
+  { key: "max_steps_cap", default: 32, min: 1, max: 1000 },
+  { key: "recursion_limit", default: 160, min: 25, max: 100000 },
+  { key: "run_timeout_sec", default: 18000, min: 60, max: null },
+  { key: "llm_request_timeout_sec", default: 300, min: 5, max: null },
+  { key: "max_plan_nodes", default: 12, min: 1, max: 200 },
+  { key: "max_delegated_steps", default: 6, min: 0, max: 200 },
+  { key: "plan_repair_rounds", default: 2, min: 0, max: 10 },
+  { key: "plan_proposal_batches", default: 6, min: 1, max: 24 },
+  { key: "max_total_plan_steps", default: 24, min: 1, max: 1000 },
+  { key: "max_fork_children", default: 8, min: 0, max: 200 },
+  { key: "max_parallel_delegated_steps", default: 4, min: 1, max: 64 },
+  { key: "max_concurrent_subagents", default: 4, min: 1, max: 64 },
+  { key: "max_spawn_depth", default: 2, min: 0, max: 8 },
+  { key: "subagent_timeout_sec", default: null, min: 1, max: null },
+  { key: "max_output_tokens", default: 8192, min: 256, max: null },
+  { key: "max_output_repairs", default: 1, min: 0, max: 5 },
+  { key: "finding_max_chars", default: 1200, min: 50, max: null },
+  { key: "findings_block_max_chars", default: 12000, min: 100, max: null },
+  { key: "prompt_eager_rows", default: 4, min: 0, max: 100 },
+  { key: "prompt_eager_chars", default: 4000, min: 0, max: null },
+  { key: "payload_guard_chars", default: 16000, min: 0, max: null },
+  { key: "payload_entry_max_chars", default: 4000, min: 200, max: null },
+  { key: "payload_preview_chars", default: 800, min: 100, max: null },
+  { key: "payload_preview_items", default: 3, min: 1, max: 50 },
+  { key: "tool_result_max_chars", default: 20000, min: 500, max: null },
+  { key: "supervisor_poll_interval_sec", default: 10, min: 2, max: 60 },
+  { key: "supervisor_repair_grace_sec", default: 120, min: 0, max: 600 },
+  { key: "supervisor_max_node_retries", default: 1, min: 0, max: 3 },
+  { key: "supervisor_max_repairs_per_run", default: 2, min: 0, max: 6 },
+  { key: "supervisor_retry_throttle_sec", default: 45, min: 0, max: 300 },
+];
+
+/** JSON doc → sanitized limits entry: every numeric field must be a
+ *  finite number inside its spec range, else that field falls back to
+ *  its default (per-field, mirroring the Python reader — one bad key
+ *  never discards the rest); subagent_timeout_sec accepts null
+ *  (unbounded) or a positive number. Cross-field fixups hold: the step
+ *  cap never sits under the floor, the findings block never under one
+ *  finding. */
+export function normalizeDeepAgentLimits(doc: unknown): DeepAgentLimitsEntry {
+  const raw = (typeof doc === "object" && doc !== null ? doc : {}) as Record<string, unknown>;
+  const entry = {} as DeepAgentLimitsEntry;
+  for (const spec of DEEP_AGENT_LIMITS_FIELDS) {
+    const value = raw[spec.key];
+    if (spec.key === "subagent_timeout_sec") {
+      entry.subagent_timeout_sec =
+        value === null || value === undefined || value === ""
+          ? null
+          : typeof value === "number" && Number.isFinite(value) && value >= 1
+            ? value
+            : null;
+      continue;
+    }
+    const fallback = spec.default as number;
+    entry[spec.key] =
+      typeof value === "number" && Number.isFinite(value)
+        && value >= spec.min && (spec.max === null || value <= spec.max)
+        ? value
+        : fallback;
+  }
+  if (entry.max_steps_cap < entry.min_conversation_steps) {
+    entry.max_steps_cap = entry.min_conversation_steps;
+  }
+  if (entry.findings_block_max_chars < entry.finding_max_chars) {
+    entry.findings_block_max_chars = entry.finding_max_chars;
+  }
+  entry.notes = typeof raw.notes === "string" ? raw.notes : null;
+  entry.source_ref = typeof raw.source_ref === "string" ? raw.source_ref : null;
+  entry.updated_at = typeof raw.updated_at === "string" ? raw.updated_at : "";
+  return entry;
+}
+
+/** The current deep-agent run limits (mtime-cached; defaults for a
+ *  missing/unparseable file). The bridge's max_steps default reads
+ *  this — the UI's Run Limits panel edits the same file. */
+export function readDeepAgentLimits(): DeepAgentLimitsEntry {
+  return normalizeDeepAgentLimits(
+    readJsonCached<unknown>(DEEP_AGENT_CONFIG_PATH, {}),
+  );
+}
+
+/** Write the deep-agent run limits — the ONE config file, canonical
+ *  shape, updated_at stamped; returns the entry as written. */
+export function writeDeepAgentLimits(
+  entry: DeepAgentLimitsEntry,
+): DeepAgentLimitsEntry {
+  const stamped: DeepAgentLimitsEntry = {
+    ...normalizeDeepAgentLimits(entry),
+    updated_at: new Date().toISOString(),
+  };
+  writeJsonFile(DEEP_AGENT_CONFIG_PATH, stamped);
+  return stamped;
 }
 
 // ---------------------------------------------------------------------------

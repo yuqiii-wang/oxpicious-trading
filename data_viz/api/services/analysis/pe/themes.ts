@@ -6,7 +6,7 @@
  * pages.
  * Split out of the former monolithic pe.ts.
  */
-import { queryRows } from "@api/lib/db";
+import { querySqlView } from "@api/lib/sql-views";
 import { stripExchangeSuffix, matchesExchange } from "@api/lib/classify-etf";
 import {
   buildIndustryClassifiedThemes,
@@ -21,7 +21,7 @@ import type {
   StrategyNode,
 } from "@shared/types";
 import { normalizeSecType, listPeMetaRows } from "./_shared.js";
-import { buildCodesSql, type DbCodeRow } from "./codes.js";
+import type { DbCodeRow } from "./codes.js";
 
 // ----------------------------------------------------------------------------
 //  listValuationThemes — L1 sector → L2 industry → items tree, restricted
@@ -39,8 +39,9 @@ export async function listValuationThemes(
   // summary universe. Exchange is not applicable to an industry entity and
   // is ignored (as before).
   if (secType === "industry") {
-    const rows = await queryRows<DbCodeRow>(buildCodesSql(),
-      [LABEL_CODE.sec_type[secType]]);
+    const rows = await querySqlView<DbCodeRow>(
+      "data_viz/api/services/analysis/pe/codes/codes_list",
+      { sec_type: LABEL_CODE.sec_type[secType] });
     const classRows = await listIndustryEntityClassRows(rows.map((r) => r.code));
     return buildIndustryClassifiedThemes(rows, classRows);
   }
@@ -112,8 +113,9 @@ export async function listValuationStrategyThemes(
   // their strategy → theme classification — the same grouped-by-industry_id
   // read as the LEFT column, just the other is_industry_not_strategy side.
   if (secType === "industry") {
-    const rows = await queryRows<DbCodeRow>(buildCodesSql(),
-      [LABEL_CODE.sec_type[secType]]);
+    const rows = await querySqlView<DbCodeRow>(
+      "data_viz/api/services/analysis/pe/codes/codes_list",
+      { sec_type: LABEL_CODE.sec_type[secType] });
     const classRows = await listIndustryEntityClassRows(rows.map((r) => r.code));
     return buildIndustryStrategyThemes(rows, classRows);
   }

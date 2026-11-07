@@ -6,7 +6,8 @@
  * A single round-trip fetches MAX(date) for all 6 sources:
  *   debt, etf_margin, index_daily, options, sec_composition, stock_daily
  */
-import { queryRows, formatDate } from "../lib/db.js";
+import { formatDate } from "../lib/db.js";
+import { querySqlView } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import type { LatestDatesResponse } from "../../shared/types.js";
 
@@ -30,17 +31,11 @@ export async function getLatestDates(): Promise<LatestDatesResponse> {
   // fan-out whose date column comes from the identity table anyway, so
   // this is row-for-row the same MAX at a fraction of the cost (the view
   // variant joined+sorted ~30M rows across families, ~1.8s per probe).
-  const sql = `
-    SELECT
-      (SELECT MAX(date)          FROM stats.debt_identity)    AS debt,
-      (SELECT MAX(date)          FROM stats.etf_identity)     AS etf_margin,
-      (SELECT MAX(date)          FROM stats.index_identity)   AS index_daily,
-      (SELECT MAX(date)          FROM stats.options_identity) AS options,
-      (SELECT MAX(snapshot_date) FROM stats.sec_composition)  AS sec_composition,
-      (SELECT MAX(date)          FROM stats.stock_identity)   AS stock_daily,
-      (SELECT MAX(date) FROM stats.index_intraday_5min WHERE close IS NOT NULL) AS intraday_movements
-  `;
-  const rows = await queryRows<DbLatestDatesRow>(sql);
+  // The SELECT lives in the sql view
+  // data_viz/api/services/cache/latest_dates.
+  const rows = await querySqlView<DbLatestDatesRow>(
+    "data_viz/api/services/cache/latest_dates",
+  );
   const r = rows[0];
   return {
     debt:           formatDate(r?.debt),

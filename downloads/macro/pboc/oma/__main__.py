@@ -33,6 +33,12 @@ Usage:
     python download_pboc_oma.py
     python download_pboc_oma.py --start-date 2024-01-01
     python download_pboc_oma.py --reparse   # re-parse existing .md files
+
+The entry point is the :class:`PbocOmaDownload` DownloadJob — the former
+inline-``__main__`` body is its ``run()`` (argparse moved to
+``add_arguments``) and the fetch/pagination/download/reparse/CSV-cycle
+functions became methods with unchanged bodies; the pure parsers, the
+keyword catalogue and helpers stay module-level.
 """
 from __future__ import annotations
 
@@ -51,6 +57,7 @@ from bs4 import BeautifulSoup
 from downloads._common import (
     COMMON_BASE_HEADERS,
     AntiBotProxy,
+    DownloadJob,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
@@ -71,6 +78,11 @@ from downloads.macro.pboc._common.parsing import (
     _clean_text,
 )
 
+from downloads.macro.pboc.oma.data_definitions import (
+    OmaAnnouncementItem,
+    OMA_CATEGORY,
+    OMA_FILE_PREFIX,
+)
 
 PBOC_MIN_VALID_BYTES = 200
 # Anti-bot pacing source — the service's external_request_config JSON row
@@ -84,8 +96,8 @@ PBOC_BASE = URLS["site"]
 
 # PBoC Open Market Announcements list page (货币政策司 → 公开市场业务 → 业务公告)
 OMA_LIST_BASE = URLS["oma_list_base"]
-OMA_FILE_PREFIX = "pboc_oma"
-OMA_CATEGORY = "oma"
+
+
 
 SLEEP_SEC = sleep_sec_for(SERVICE)
 EMPTY_PLACEHOLDER_SUFFIX = "_empty.md"
@@ -179,62 +191,6 @@ def classify_announcement(text: str) -> Tuple[str, List[str]]:
 logger = setup_logger("pboc_oma_news")
 
 
-# ============================================================================
-# Data class
-# ============================================================================
-@dataclass
-class OmaAnnouncementItem:
-    title: str
-    detail_url: str
-    list_page: int = 0
-    pub_date: Optional[str] = None
-    detail_slug: Optional[str] = None
-    serial_year: Optional[str] = None
-    serial_no: Optional[str] = None
-    type: str = "other"
-    keywords: List[str] = field(default_factory=list)
-    raw_body: str = ""
-    parse_warnings: List[str] = field(default_factory=list)
-
-    def md_filename(self) -> str:
-        d = self.pub_date or "00000000"
-        slug = self.detail_slug or "x"
-        return f"{OMA_FILE_PREFIX}_{d}_{slug}.md"
-
-    def to_markdown(self) -> str:
-        lines = [
-            "---",
-            f"category: {OMA_CATEGORY}",
-            f"title: {self.title}",
-            f"detail_url: {self.detail_url}",
-            f"pub_date: {self.pub_date or ''}",
-            f"type: {self.type}",
-            f"keywords: {'|'.join(self.keywords)}",
-        ]
-        if self.serial_year:
-            lines.append(f"serial_year: {self.serial_year}")
-        if self.serial_no:
-            lines.append(f"serial_no: {self.serial_no}")
-        if self.parse_warnings:
-            lines.append(f"parse_warnings: {self.parse_warnings!r}")
-        lines += [
-            "---",
-            "",
-            f"# {self.title}",
-            "",
-            f"- Pub date: **{self.pub_date or 'n/a'}**",
-            f"- Type: **{self.type}**",
-            f"- Keywords: {', '.join(self.keywords) if self.keywords else '(none)'}",
-            f"- Detail: {self.detail_url}",
-            "",
-            "## Raw body",
-            "",
-            "```",
-            self.raw_body.strip(),
-            "```",
-            "",
-        ]
-        return "\n".join(lines)
 
 
 # ============================================================================
@@ -262,8 +218,12 @@ PBOC_OMA_KEYWORDS_CSV_COLUMNS = [
 
 
 # ============================================================================
-# Date estimation from title / URL
+# Date estimation from title / URL (pure)
 # ============================================================================
+
+
+
+
 def estimate_item_date(item: OmaAnnouncementItem) -> Optional[date]:
     if item.pub_date:
         try:
@@ -296,7 +256,7 @@ def create_empty_placeholder(out_dir: Path, d: date) -> None:
 
 
 # ============================================================================
-# Body parsing
+# Body parsing (pure)
 # ============================================================================
 def parse_oma_body(item: OmaAnnouncementItem, html: str) -> None:
     soup = BeautifulSoup(html, "html.parser")
@@ -374,14 +334,8 @@ def parse_oma_body(item: OmaAnnouncementItem, html: str) -> None:
 
 
 # ============================================================================
-# List-page fetching & pagination (adapted from LPR / repo news)
+# List-page URL helpers (pure)
 # ============================================================================
-def build_session() -> requests.Session:
-    s = build_default_session()
-    s.headers.update(COMMON_BASE_HEADERS)
-    return s
-
-
 def detect_page_prefix(html: str) -> Optional[str]:
     matches = list(RE_PAGING_TAG.finditer(html))
     if not matches:
@@ -453,202 +407,6 @@ def _extract_date_from_sibling(a_tag) -> Optional[str]:
     return None
 
 
-def fetch_list_page(
-    session: requests.Session,
-    page: int,
-    page_prefix_fmt: Optional[str] = None,
-    proxy: Optional[AntiBotProxy] = None,
-) -> Tuple[List[OmaAnnouncementItem], Optional[str]]:
-    if proxy is None:
-        proxy = AntiBotProxy(service=SERVICE)
-
-    url = list_page_url(page, page_prefix_fmt)
-    logger.info("Fetching OMA list page %d (%s)", page, url)
-
-    resp = proxy.get(
-        session,
-        url,
-        logger=logger,
-        log_tag=f"[list oma p{page}]",
-    )
-    if resp is None:
-        logger.error("List page fetch failed page=%d: request returned None", page)
-        return [], None
-
-    resp.encoding = resp.apparent_encoding or "utf-8"
-    html = resp.text
-    detected_prefix = None
-    if page == 1:
-        detected_prefix = detect_page_prefix(html)
-        if detected_prefix:
-            logger.info("  Detected pagination format: %s", detected_prefix)
-
-    # The list page URL itself (e.g. .../125469/index.html) matches
-    # RE_DETAIL_SLUG because the directory "125469" is 7 digits. Exclude it
-    # so we don't fetch the list page as an announcement.
-    list_page_full_url = OMA_LIST_BASE + "index.html"
-
-    soup = BeautifulSoup(html, "html.parser")
-    items: List[OmaAnnouncementItem] = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not href:
-            continue
-        if href.startswith("./"):
-            href = href[2:]
-        if not href.startswith("http"):
-            if not href.startswith("/"):
-                href = OMA_LIST_BASE + href
-            else:
-                href = PBOC_BASE + href
-        text = a.get_text(strip=True).strip('"“”').strip()
-        if not text:
-            continue
-        # Skip obvious navigation / boilerplate
-        if text in {"公告信息", "中国人民银行", "货币政策司", "首页", "上一页", "下一页", "尾页"}:
-            continue
-        if href == list_page_full_url or href.rstrip("/").endswith(OMA_LIST_BASE.rstrip("/")):
-            continue
-        if not RE_DETAIL_SLUG.search(href):
-            continue
-        if not _looks_like_oma_link(text):
-            continue
-
-        pub_date = _extract_date_from_sibling(a)
-        if pub_date is None:
-            # Try URL-embedded date for newer announcements
-            m = RE_URL_DATE.search(href)
-            if m:
-                try:
-                    d = datetime.strptime(m.group(1), "%Y%m%d").date()
-                    pub_date = d.strftime("%Y-%m-%d")
-                except ValueError:
-                    pass
-
-        items.append(
-            OmaAnnouncementItem(
-                title=text,
-                detail_url=href,
-                list_page=page,
-                pub_date=pub_date,
-            )
-        )
-
-    # Dedup by detail_url (links can appear twice on the page)
-    dedup: Dict[str, OmaAnnouncementItem] = {}
-    for it in items:
-        dedup[it.detail_url] = it
-    return list(dedup.values()), detected_prefix
-
-
-def smart_pagination_pages(
-    session: requests.Session,
-    target_start: date,
-    max_pages: int = 20,
-    jump_interval: int = 2,
-    proxy: Optional[AntiBotProxy] = None,
-) -> Tuple[List[int], Optional[str]]:
-    """Walk OMA list pages until the oldest entry on a page predates target_start.
-
-    OMA announcements are infrequent (~89 records, 5 pages from 2020-2026).
-    We use a small jump+incremental search.
-    """
-    if proxy is None:
-        proxy = AntiBotProxy(service=SERVICE)
-
-    page_prefix_fmt: Optional[str] = None
-    items, detected_fmt = fetch_list_page(session, 1, page_prefix_fmt, proxy)
-    if detected_fmt:
-        page_prefix_fmt = detected_fmt
-    if not items:
-        logger.info("[smart-pagination] page 1 returned no items")
-        return [], page_prefix_fmt
-
-    page_dates_1 = [d for d in (estimate_item_date(it) for it in items) if d is not None]
-    if not page_dates_1:
-        logger.warning("[smart-pagination] no dates found on page 1")
-        return [1], page_prefix_fmt
-
-    oldest_on_page_1 = min(page_dates_1)
-    logger.info(
-        "[smart-pagination] page 1: oldest=%s, target=%s",
-        oldest_on_page_1, target_start,
-    )
-    if oldest_on_page_1 < target_start:
-        logger.info("[smart-pagination] page 1 already spans target boundary")
-        return [1], page_prefix_fmt
-
-    current_page = 1
-    last_in_range_page = 1
-    while current_page < max_pages:
-        if proxy.is_blocked(PBOC_BASE):
-            logger.warning("[smart-pagination] host blocked, stopping")
-            break
-
-        next_jump = min(current_page + jump_interval, max_pages)
-        logger.info(
-            "[smart-pagination] jumping from page %d to page %d",
-            current_page, next_jump,
-        )
-        jump_items, _ = fetch_list_page(session, next_jump, page_prefix_fmt, proxy)
-        jump_dates = [d for d in (estimate_item_date(it) for it in jump_items) if d is not None]
-
-        if not jump_items:
-            logger.info("[smart-pagination] page %d empty, boundary at page %d",
-                        next_jump, last_in_range_page)
-            break
-        if not jump_dates:
-            current_page = next_jump
-            continue
-
-        if max(jump_dates) >= target_start:
-            last_in_range_page = next_jump
-            current_page = next_jump
-            continue
-
-        for p in range(last_in_range_page + 1, next_jump + 1):
-            inc_items, _ = fetch_list_page(session, p, page_prefix_fmt, proxy)
-            if not inc_items:
-                break
-            inc_dates = [d for d in (estimate_item_date(it) for it in inc_items) if d is not None]
-            if not inc_dates:
-                continue
-            if max(inc_dates) >= target_start:
-                last_in_range_page = p
-            else:
-                break
-        break
-
-    return list(range(1, last_in_range_page + 1)), page_prefix_fmt
-
-
-def fetch_detail(
-    session: requests.Session, item: OmaAnnouncementItem,
-    proxy: Optional[AntiBotProxy] = None,
-) -> bool:
-    if proxy is None:
-        proxy = AntiBotProxy(service=SERVICE)
-    resp = proxy.get(
-        session,
-        item.detail_url,
-        logger=logger,
-        log_tag=f"[detail {item.title[:30]}]",
-    )
-    if resp is None:
-        logger.error("Detail fetch failed %s: None", item.title[:40])
-        return False
-    resp.encoding = resp.apparent_encoding or "utf-8"
-    if len(resp.content) < PBOC_MIN_VALID_BYTES:
-        logger.warning("Detail too small (%d bytes) for %s",
-                       len(resp.content), item.title[:40])
-        return False
-    parse_oma_body(item, resp.text)
-    return True
-
-
-# ============================================================================
-# CSV conversion
-# ============================================================================
 def _parse_oma_fm_simple(text: str) -> Dict[str, str]:
     """Parse YAML front-matter of an OMA .md file into a flat dict (stdlib)."""
     fm: Dict[str, str] = {}
@@ -666,469 +424,670 @@ def _parse_oma_fm_simple(text: str) -> Dict[str, str]:
     return fm
 
 
-def convert_md_to_csv(md_path: Path, csv_path: Optional[Path] = None) -> bool:
-    """Parse a single OMA .md file → per-file CSV. Returns True if a row was written."""
-    if csv_path is None:
-        csv_path = md_path.with_suffix(".csv")
-    try:
-        text = md_path.read_text(encoding="utf-8")
-    except Exception as e:
-        logger.warning("[conv %s] cannot read: %s", md_path.name, e)
-        return False
+class PbocOmaDownload(DownloadJob):
+    """DownloadJob for the PBoC Open Market Announcements downloader — the
+    former inline-``__main__`` body is ``run()`` verbatim (argparse moved to
+    ``add_arguments``) and the session/list/detail/pagination/download/
+    reparse/CSV-cycle functions became methods with unchanged bodies; the
+    pure parsers, the keyword catalogue and helpers stay module-level."""
 
-    fm = _parse_oma_fm_simple(text)
-    pub_date = fm.get("pub_date", "")
-    if not pub_date or fm.get("status") == "empty":
-        return False
+    description = "Download and parse PBoC OMA news"
+    component = "pboc_oma_news"
 
-    # Extract raw body from ``` ... ``` block to use as content
-    body_section = text[text.find("\n---", 3) + 4:]
-    raw_start = body_section.find("```")
-    raw_end = body_section.find("```", raw_start + 3) if raw_start >= 0 else -1
-    if raw_start >= 0 and raw_end > raw_start:
-        content = body_section[raw_start + 3:raw_end].strip()
-    else:
-        content = ""
+    # ============================================================================
+    # List-page fetching & pagination (adapted from LPR / repo news)
+    # ============================================================================
+    def build_session(self) -> requests.Session:
+        s = build_default_session()
+        s.headers.update(COMMON_BASE_HEADERS)
+        return s
 
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = _csv.DictWriter(f, fieldnames=PBOC_OMA_CSV_COLUMNS)
-        writer.writeheader()
-        writer.writerow({
-            "pub_date":       pub_date,
-            "title":          fm.get("title", ""),
-            "type":           fm.get("type", "other"),
-            "keywords":       fm.get("keywords", ""),
-            "detail_url":     fm.get("detail_url", ""),
-            "serial_year":    fm.get("serial_year", ""),
-            "serial_no":      fm.get("serial_no", ""),
-            "detail_slug":    fm.get("detail_slug", ""),
-            "content":        content,
-            "source_file":    md_path.name,
-        })
-    return True
+    def fetch_list_page(
+        self,
+        session: requests.Session,
+        page: int,
+        page_prefix_fmt: Optional[str] = None,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Tuple[List[OmaAnnouncementItem], Optional[str]]:
+        if proxy is None:
+            proxy = AntiBotProxy(service=SERVICE)
 
+        url = list_page_url(page, page_prefix_fmt)
+        logger.info("Fetching OMA list page %d (%s)", page, url)
 
-def build_oma_combined_csv(md_dir: Path, output_dir: Optional[Path] = None) -> Dict[str, int]:
-    """Aggregate all pboc_oma_*.md (non-empty) files into oma_combined.csv.
+        resp = proxy.get(
+            session,
+            url,
+            logger=logger,
+            log_tag=f"[list oma p{page}]",
+        )
+        if resp is None:
+            logger.error("List page fetch failed page=%d: request returned None", page)
+            return [], None
 
-    Prefers reading existing per-file CSVs (fast); falls back to parsing .md
-    files when a per-file CSV is missing.
+        resp.encoding = resp.apparent_encoding or "utf-8"
+        html = resp.text
+        detected_prefix = None
+        if page == 1:
+            detected_prefix = detect_page_prefix(html)
+            if detected_prefix:
+                logger.info("  Detected pagination format: %s", detected_prefix)
 
-    Also writes oma_keywords.csv (one row per (date, title, keyword) match).
-    """
-    if output_dir is None:
-        output_dir = md_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-    combined_path = output_dir / "oma_combined.csv"
-    keywords_path = output_dir / "oma_keywords.csv"
+        # The list page URL itself (e.g. .../125469/index.html) matches
+        # RE_DETAIL_SLUG because the directory "125469" is 7 digits. Exclude it
+        # so we don't fetch the list page as an announcement.
+        list_page_full_url = OMA_LIST_BASE + "index.html"
 
-    md_files = sorted(md_dir.glob(f"{OMA_FILE_PREFIX}_*.md"))
-    md_files = [f for f in md_files if not f.name.endswith(EMPTY_PLACEHOLDER_SUFFIX)]
-    csv_files = sorted(md_dir.glob(f"{OMA_FILE_PREFIX}_*.csv"))
-
-    logger.info("[build-csv] scanning %s: %d .md files, %d per-file CSVs",
-                md_dir, len(md_files), len(csv_files))
-
-    counts = {"rows": 0, "files_ok": 0, "files_empty": 0, "files_failed": 0,
-              "keyword_rows": 0}
-
-    # Collect all rows in memory so we can write both combined + keywords CSVs
-    all_rows: List[Dict[str, str]] = []
-
-    md_stems = {f.stem: f for f in md_files}
-    csv_stems = {f.stem: f for f in csv_files}
-    processed_stems = set()
-
-    # 1. Read existing per-file CSVs
-    for stem, csv_path in csv_stems.items():
-        if stem.endswith("_empty"):
-            continue
-        try:
-            with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-                reader = _csv.DictReader(f)
-                rows = list(reader)
-        except Exception as e:
-            counts["files_failed"] += 1
-            logger.warning("[build-csv] failed to read %s: %s", csv_path.name, e)
-            continue
-        if not rows:
-            counts["files_empty"] += 1
-            continue
-        for row in rows:
-            all_rows.append({col: row.get(col, "") for col in PBOC_OMA_CSV_COLUMNS})
-            counts["rows"] += 1
-        counts["files_ok"] += 1
-        processed_stems.add(stem)
-
-    # 2. For .md files without a per-file CSV, parse on-the-fly
-    for stem, md_path in md_stems.items():
-        if stem in processed_stems or stem.endswith("_empty"):
-            continue
-        per_file_csv = md_path.with_suffix(".csv")
-        try:
-            ok = convert_md_to_csv(md_path, per_file_csv)
-        except Exception as e:
-            counts["files_failed"] += 1
-            logger.warning("[build-csv] failed to parse %s: %s", md_path.name, e)
-            continue
-        if not ok:
-            counts["files_empty"] += 1
-            continue
-        try:
-            with open(per_file_csv, "r", encoding="utf-8-sig", newline="") as f:
-                reader = _csv.DictReader(f)
-                rows = list(reader)
-        except Exception as e:
-            counts["files_failed"] += 1
-            logger.warning("[build-csv] failed to re-read %s: %s", per_file_csv.name, e)
-            continue
-        for row in rows:
-            all_rows.append({col: row.get(col, "") for col in PBOC_OMA_CSV_COLUMNS})
-            counts["rows"] += 1
-        counts["files_ok"] += 1
-
-    # Sort by pub_date then title for stable output
-    all_rows.sort(key=lambda r: (r.get("pub_date", ""), r.get("title", "")))
-
-    # Write combined CSV
-    with open(combined_path, "w", encoding="utf-8-sig", newline="") as fout:
-        writer = _csv.DictWriter(fout, fieldnames=PBOC_OMA_CSV_COLUMNS)
-        writer.writeheader()
-        for row in all_rows:
-            writer.writerow(row)
-
-    # Write keywords CSV (long format — one row per (date, title, keyword))
-    with open(keywords_path, "w", encoding="utf-8-sig", newline="") as fout:
-        writer = _csv.DictWriter(fout, fieldnames=PBOC_OMA_KEYWORDS_CSV_COLUMNS)
-        writer.writeheader()
-        for row in all_rows:
-            kws_str = row.get("keywords", "")
-            if not kws_str:
+        soup = BeautifulSoup(html, "html.parser")
+        items: List[OmaAnnouncementItem] = []
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if not href:
                 continue
-            for kw in kws_str.split("|"):
-                kw = kw.strip()
-                if not kw:
-                    continue
-                writer.writerow({
-                    "pub_date":  row.get("pub_date", ""),
-                    "title":     row.get("title", ""),
-                    "keyword":   kw,
-                    "type":      row.get("type", "other"),
-                })
-                counts["keyword_rows"] += 1
+            if href.startswith("./"):
+                href = href[2:]
+            if not href.startswith("http"):
+                if not href.startswith("/"):
+                    href = OMA_LIST_BASE + href
+                else:
+                    href = PBOC_BASE + href
+            text = a.get_text(strip=True).strip('"“”').strip()
+            if not text:
+                continue
+            # Skip obvious navigation / boilerplate
+            if text in {"公告信息", "中国人民银行", "货币政策司", "首页", "上一页", "下一页", "尾页"}:
+                continue
+            if href == list_page_full_url or href.rstrip("/").endswith(OMA_LIST_BASE.rstrip("/")):
+                continue
+            if not RE_DETAIL_SLUG.search(href):
+                continue
+            if not _looks_like_oma_link(text):
+                continue
 
-    logger.info("[build-csv] saved %s (%d rows, %d ok, %d empty, %d failed)",
-                combined_path, counts["rows"], counts["files_ok"],
-                counts["files_empty"], counts["files_failed"])
-    logger.info("[build-csv] saved %s (%d keyword-match rows)",
-                keywords_path, counts["keyword_rows"])
-    return counts
-
-
-# ============================================================================
-# Main download entry point
-# ============================================================================
-def download_pboc_oma_news(
-    *,
-    out_root: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    years: Optional[int] = None,
-    max_pages: int = 10,
-    sleep_sec: float = SLEEP_SEC,
-    convert_csv: bool = True,
-    build_csv: bool = True,
-) -> dict:
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "pboc_oma_news", out_root)
-
-    # OMA announcements go back to 2020; default to that start
-    if start_date is None and years is not None:
-        _start, _end = parse_date_window(
-            end_date=end_date, start_date=None, lookback_years=years,
-        )
-    else:
-        if start_date is None:
-            start_date = "2020-01-01"
-        _start, _end = parse_date_window(
-            end_date=end_date, start_date=start_date, lookback_years=None,
-        )
-
-    session = build_session()
-    stats = RunStats()
-    # Pacing + anti-bot toggles from the service's external_request_config
-    # JSON row (enable_host_tracking=false there — see the row's notes).
-    proxy = AntiBotProxy(service=SERVICE)
-
-    cached_dates = scan_present_dates_with_pattern(
-        out_dir, prefixes=[OMA_FILE_PREFIX], min_bytes=100, ext_glob="*.md",
-    ).get(OMA_FILE_PREFIX, set())
-    stats.skipped_cached = len(cached_dates)
-    if cached_dates:
-        logger.info("[oma] %d dates already cached, latest=%s",
-                    len(cached_dates), max(cached_dates))
-    else:
-        logger.info("[oma] no prior cached files")
-
-    # Build a set of existing file stems (slug-based) so announcements that
-    # share a pub_date (e.g. [2026]第2号 and [2026]第3号 both on 2026-06-17)
-    # are tracked independently — `cached_dates` alone would skip the second
-    # one as a false cache hit.
-    existing_file_stems: set = {f.stem for f in out_dir.glob(f"{OMA_FILE_PREFIX}_*.md")}
-
-    logger.info("Starting PBoC OMA download: %s -> %s", _start, _end)
-
-    skipped_oob = 0
-    try:
-        target_start = _start
-        pages_to_process, page_prefix_fmt = smart_pagination_pages(
-            session, target_start, max_pages=max_pages, jump_interval=1, proxy=proxy,
-        )
-        if not pages_to_process:
-            logger.info("  no pages to process")
-            return {}
-
-        found_dates = set()
-        reached_boundary = False
-
-        for page in pages_to_process:
-            if proxy.is_blocked(PBOC_BASE):
-                logger.warning("  [host-blocked] stopping")
-                break
-
-            items, detected = fetch_list_page(session, page, page_prefix_fmt, proxy)
-            if detected and not page_prefix_fmt:
-                page_prefix_fmt = detected
-            if not items:
-                logger.info("  page %d returned no items, stopping", page)
-                break
-            logger.info("  page %d: %d candidate items", page, len(items))
-
-            page_in_range_count = 0
-            for item in items:
-                if proxy.is_blocked(PBOC_BASE):
-                    logger.warning("  [host-blocked] skipping remaining items")
-                    reached_boundary = True
-                    break
-
-                mslug = RE_DETAIL_SLUG.search(item.detail_url)
-                if mslug:
-                    item.detail_slug = mslug.group(1)
-
-                ok = fetch_detail(session, item, proxy)
-                if not ok:
-                    stats.failed += 1
-                    # Auto-sleep handled by proxy.get()/post()
-                    continue
-
-                if not item.pub_date:
-                    stats.failed += 1
-                    # Auto-sleep handled by proxy.get()/post()
-                    continue
-
-                try:
-                    d = datetime.strptime(item.pub_date, "%Y-%m-%d").date()
-                except ValueError:
-                    stats.failed += 1
-                    # Auto-sleep handled by proxy.get()/post()
-                    continue
-
-                found_dates.add(d)
-
-                fname = item.md_filename()
-                fpath = out_dir / fname
-                if fname[:-3] in existing_file_stems:
-                    stats.skipped_cached += 1
-                    page_in_range_count += 1
-                    proxy.sleep(max(0.1, sleep_sec * 0.3))
-                    continue
-
-                if d < _start:
-                    skipped_oob += 1
-                    logger.info("  [boundary %s < %s] stop: %s",
-                                d, _start, item.title[:50])
-                    reached_boundary = True
-                    break
-                if d > _end:
-                    skipped_oob += 1
-                    proxy.sleep(max(0.1, sleep_sec * 0.3))
-                    continue
-
-                page_in_range_count += 1
-                with open(fpath, "w", encoding="utf-8") as f:
-                    f.write(item.to_markdown())
-                stats.downloaded += 1
-                stats.files.append(str(fpath))
-                existing_file_stems.add(fname[:-3])
-                logger.info(
-                    "  [saved] %s pub=%s type=%s kws=%s (%s)",
-                    item.title[:45],
-                    item.pub_date,
-                    item.type,
-                    "|".join(item.keywords) or "(none)",
-                    fname,
-                )
-                if convert_csv:
+            pub_date = _extract_date_from_sibling(a)
+            if pub_date is None:
+                # Try URL-embedded date for newer announcements
+                m = RE_URL_DATE.search(href)
+                if m:
                     try:
-                        convert_md_to_csv(fpath)
-                    except Exception as e:
-                        logger.warning("  [conv %s] per-file CSV failed: %s", fname, e)
-                # Auto-sleep handled by proxy.get()/post()
+                        d = datetime.strptime(m.group(1), "%Y%m%d").date()
+                        pub_date = d.strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass
 
-            if reached_boundary:
-                logger.info("  reached boundary at page %d", page)
-                break
-            if page_in_range_count == 0 and page > 3:
-                logger.info("  no in-range items on page %d, stopping", page)
-                break
+            items.append(
+                OmaAnnouncementItem(
+                    title=text,
+                    detail_url=href,
+                    list_page=page,
+                    pub_date=pub_date,
+                )
+            )
 
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+        # Dedup by detail_url (links can appear twice on the page)
+        dedup: Dict[str, OmaAnnouncementItem] = {}
+        for it in items:
+            dedup[it.detail_url] = it
+        return list(dedup.values()), detected_prefix
 
-    summary = stats.to_dict(
-        skipped_out_of_range=skipped_oob,
-        out_dir=str(out_dir),
-        start_date=str(_start),
-        end_date=str(_end),
-    )
-    logger.info(
-        "Done PBoC OMA. downloaded=%d skipped_cached=%d skipped_oob=%d failed=%d out=%s",
-        stats.downloaded, stats.skipped_cached, skipped_oob, stats.failed, out_dir,
-    )
+    def smart_pagination_pages(
+        self,
+        session: requests.Session,
+        target_start: date,
+        max_pages: int = 20,
+        jump_interval: int = 2,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Tuple[List[int], Optional[str]]:
+        """Walk OMA list pages until the oldest entry on a page predates target_start.
 
-    if build_csv:
-        try:
-            csv_counts = build_oma_combined_csv(out_dir)
-            summary["csv"] = csv_counts
-        except Exception as e:
-            logger.error("build_oma_combined_csv failed: %s", e)
+        OMA announcements are infrequent (~89 records, 5 pages from 2020-2026).
+        We use a small jump+incremental search.
+        """
+        if proxy is None:
+            proxy = AntiBotProxy(service=SERVICE)
 
-    return summary
+        page_prefix_fmt: Optional[str] = None
+        items, detected_fmt = self.fetch_list_page(session, 1, page_prefix_fmt, proxy)
+        if detected_fmt:
+            page_prefix_fmt = detected_fmt
+        if not items:
+            logger.info("[smart-pagination] page 1 returned no items")
+            return [], page_prefix_fmt
 
+        page_dates_1 = [d for d in (estimate_item_date(it) for it in items) if d is not None]
+        if not page_dates_1:
+            logger.warning("[smart-pagination] no dates found on page 1")
+            return [1], page_prefix_fmt
 
-def reparse_existing_files(
-    out_dir: Path,
-    convert_csv: bool = True,
-    build_csv: bool = True,
-) -> dict:
-    """Re-parse raw body from existing .md files without re-downloading."""
-    files = sorted(out_dir.glob(f"{OMA_FILE_PREFIX}_*.md"))
-    n_total = len(files)
-    n_ok = n_skip = n_fail = n_csv_ok = 0
-    logger.info(f"[REPARSE] scanning {n_total} .md files in {out_dir}")
-
-    for fpath in files:
-        try:
-            text = fpath.read_text(encoding="utf-8")
-        except Exception as e:
-            logger.error(f"  [ERROR] cannot read {fpath.name}: {e}")
-            n_fail += 1
-            continue
-        if not text.startswith("---"):
-            n_skip += 1
-            continue
-        fm_end = text.find("\n---", 3)
-        if fm_end < 0:
-            n_skip += 1
-            continue
-        fm_text = text[3:fm_end].strip()
-        body_section = text[fm_end + 4:]
-
-        fm: Dict[str, str] = {}
-        for line in fm_text.splitlines():
-            if ":" in line:
-                key, _, val = line.partition(":")
-                fm[key.strip()] = val.strip().strip("'\"")
-
-        if fm.get("status") == "empty":
-            n_skip += 1
-            continue
-
-        # Extract raw body from ``` ... ``` block
-        raw_start = body_section.find("```")
-        if raw_start < 0:
-            n_skip += 1
-            continue
-        raw_end = body_section.find("```", raw_start + 3)
-        if raw_end < 0:
-            n_skip += 1
-            continue
-        raw_body = body_section[raw_start + 3:raw_end].strip()
-
-        pub_date = fm.get("pub_date", "")
-        if not pub_date:
-            n_skip += 1
-            continue
-
-        item = OmaAnnouncementItem(
-            title=fm.get("title", ""),
-            detail_url=fm.get("detail_url", ""),
-            pub_date=pub_date,
-            serial_year=fm.get("serial_year") or None,
-            serial_no=fm.get("serial_no") or None,
+        oldest_on_page_1 = min(page_dates_1)
+        logger.info(
+            "[smart-pagination] page 1: oldest=%s, target=%s",
+            oldest_on_page_1, target_start,
         )
-        # Re-classify type + keywords from the raw body
-        classification_text = f"{item.title}\n{raw_body}"
-        item.type, item.keywords = classify_announcement(classification_text)
-        item.raw_body = raw_body
-        if not item.keywords:
-            item.parse_warnings.append("no keywords matched")
+        if oldest_on_page_1 < target_start:
+            logger.info("[smart-pagination] page 1 already spans target boundary")
+            return [1], page_prefix_fmt
 
-        mslug = RE_DETAIL_SLUG.search(item.detail_url)
-        if mslug:
-            item.detail_slug = mslug.group(1)
+        current_page = 1
+        last_in_range_page = 1
+        while current_page < max_pages:
+            if proxy.is_blocked(PBOC_BASE):
+                logger.warning("[smart-pagination] host blocked, stopping")
+                break
 
-        fpath.write_text(item.to_markdown(), encoding="utf-8")
-        n_ok += 1
-        if convert_csv:
-            try:
-                if convert_md_to_csv(fpath):
-                    n_csv_ok += 1
-            except Exception as e:
-                logger.warning(f"  [WARN] CSV failed for {fpath.name}: {e}")
+            next_jump = min(current_page + jump_interval, max_pages)
+            logger.info(
+                "[smart-pagination] jumping from page %d to page %d",
+                current_page, next_jump,
+            )
+            jump_items, _ = self.fetch_list_page(session, next_jump, page_prefix_fmt, proxy)
+            jump_dates = [d for d in (estimate_item_date(it) for it in jump_items) if d is not None]
 
-    logger.error(f"[REPARSE] done: {n_ok} re-parsed, {n_skip} skipped, {n_fail} failed "
-          f"({n_csv_ok} per-file CSVs written)")
+            if not jump_items:
+                logger.info("[smart-pagination] page %d empty, boundary at page %d",
+                            next_jump, last_in_range_page)
+                break
+            if not jump_dates:
+                current_page = next_jump
+                continue
 
-    result = {"total": n_total, "ok": n_ok, "skipped": n_skip,
-              "failed": n_fail, "csv_files": n_csv_ok}
-    if build_csv:
+            if max(jump_dates) >= target_start:
+                last_in_range_page = next_jump
+                current_page = next_jump
+                continue
+
+            for p in range(last_in_range_page + 1, next_jump + 1):
+                inc_items, _ = self.fetch_list_page(session, p, page_prefix_fmt, proxy)
+                if not inc_items:
+                    break
+                inc_dates = [d for d in (estimate_item_date(it) for it in inc_items) if d is not None]
+                if not inc_dates:
+                    continue
+                if max(inc_dates) >= target_start:
+                    last_in_range_page = p
+                else:
+                    break
+            break
+
+        return list(range(1, last_in_range_page + 1)), page_prefix_fmt
+
+    def fetch_detail(
+        self,
+        session: requests.Session, item: OmaAnnouncementItem,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> bool:
+        if proxy is None:
+            proxy = AntiBotProxy(service=SERVICE)
+        resp = proxy.get(
+            session,
+            item.detail_url,
+            logger=logger,
+            log_tag=f"[detail {item.title[:30]}]",
+        )
+        if resp is None:
+            logger.error("Detail fetch failed %s: None", item.title[:40])
+            return False
+        resp.encoding = resp.apparent_encoding or "utf-8"
+        if len(resp.content) < PBOC_MIN_VALID_BYTES:
+            logger.warning("Detail too small (%d bytes) for %s",
+                           item.title[:40])
+            return False
+        parse_oma_body(item, resp.text)
+        return True
+
+    # ============================================================================
+    # CSV conversion
+    # ============================================================================
+    def convert_md_to_csv(self, md_path: Path, csv_path: Optional[Path] = None) -> bool:
+        """Parse a single OMA .md file → per-file CSV. Returns True if a row was written."""
+        if csv_path is None:
+            csv_path = md_path.with_suffix(".csv")
         try:
-            result["combined_csv"] = build_oma_combined_csv(out_dir)
+            text = md_path.read_text(encoding="utf-8")
         except Exception as e:
-            logger.error(f"  [ERROR] build_oma_combined_csv failed: {e}")
-    return result
+            logger.warning("[conv %s] cannot read: %s", md_path.name, e)
+            return False
+
+        fm = _parse_oma_fm_simple(text)
+        pub_date = fm.get("pub_date", "")
+        if not pub_date or fm.get("status") == "empty":
+            return False
+
+        # Extract raw body from ``` ... ``` block to use as content
+        body_section = text[text.find("\n---", 3) + 4:]
+        raw_start = body_section.find("```")
+        raw_end = body_section.find("```", raw_start + 3) if raw_start >= 0 else -1
+        if raw_start >= 0 and raw_end > raw_start:
+            content = body_section[raw_start + 3:raw_end].strip()
+        else:
+            content = ""
+
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=PBOC_OMA_CSV_COLUMNS)
+            writer.writeheader()
+            writer.writerow({
+                "pub_date":       pub_date,
+                "title":          fm.get("title", ""),
+                "type":           fm.get("type", "other"),
+                "keywords":       fm.get("keywords", ""),
+                "detail_url":     fm.get("detail_url", ""),
+                "serial_year":    fm.get("serial_year", ""),
+                "serial_no":      fm.get("serial_no", ""),
+                "detail_slug":    fm.get("detail_slug", ""),
+                "content":        content,
+                "source_file":    md_path.name,
+            })
+        return True
+
+    def build_oma_combined_csv(self, md_dir: Path, output_dir: Optional[Path] = None) -> Dict[str, int]:
+        """Aggregate all pboc_oma_*.md (non-empty) files into oma_combined.csv.
+
+        Prefers reading existing per-file CSVs (fast); falls back to parsing .md
+        files when a per-file CSV is missing.
+
+        Also writes oma_keywords.csv (one row per (date, title, keyword) match).
+        """
+        if output_dir is None:
+            output_dir = md_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        combined_path = output_dir / "oma_combined.csv"
+        keywords_path = output_dir / "oma_keywords.csv"
+
+        md_files = sorted(md_dir.glob(f"{OMA_FILE_PREFIX}_*.md"))
+        md_files = [f for f in md_files if not f.name.endswith(EMPTY_PLACEHOLDER_SUFFIX)]
+        csv_files = sorted(md_dir.glob(f"{OMA_FILE_PREFIX}_*.csv"))
+
+        logger.info("[build-csv] scanning %s: %d .md files, %d per-file CSVs",
+                    md_dir, len(md_files), len(csv_files))
+
+        counts = {"rows": 0, "files_ok": 0, "files_empty": 0, "files_failed": 0,
+                  "keyword_rows": 0}
+
+        # Collect all rows in memory so we can write both combined + keywords CSVs
+        all_rows: List[Dict[str, str]] = []
+
+        md_stems = {f.stem: f for f in md_files}
+        csv_stems = {f.stem: f for f in csv_files}
+        processed_stems = set()
+
+        # 1. Read existing per-file CSVs
+        for stem, csv_path in csv_stems.items():
+            if stem.endswith("_empty"):
+                continue
+            try:
+                with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+                    reader = _csv.DictReader(f)
+                    rows = list(reader)
+            except Exception as e:
+                counts["files_failed"] += 1
+                logger.warning("[build-csv] failed to read %s: %s", csv_path.name, e)
+                continue
+            if not rows:
+                counts["files_empty"] += 1
+                continue
+            for row in rows:
+                all_rows.append({col: row.get(col, "") for col in PBOC_OMA_CSV_COLUMNS})
+                counts["rows"] += 1
+            counts["files_ok"] += 1
+            processed_stems.add(stem)
+
+        # 2. For .md files without a per-file CSV, parse on-the-fly
+        for stem, md_path in md_stems.items():
+            if stem in processed_stems or stem.endswith("_empty"):
+                continue
+            per_file_csv = md_path.with_suffix(".csv")
+            try:
+                ok = self.convert_md_to_csv(md_path, per_file_csv)
+            except Exception as e:
+                counts["files_failed"] += 1
+                logger.warning("[build-csv] failed to parse %s: %s", md_path.name, e)
+                continue
+            if not ok:
+                counts["files_empty"] += 1
+                continue
+            try:
+                with open(per_file_csv, "r", encoding="utf-8-sig", newline="") as f:
+                    reader = _csv.DictReader(f)
+                    rows = list(reader)
+            except Exception as e:
+                counts["files_failed"] += 1
+                logger.warning("[build-csv] failed to re-read %s: %s", per_file_csv.name, e)
+                continue
+            for row in rows:
+                all_rows.append({col: row.get(col, "") for col in PBOC_OMA_CSV_COLUMNS})
+                counts["rows"] += 1
+            counts["files_ok"] += 1
+
+        # Sort by pub_date then title for stable output
+        all_rows.sort(key=lambda r: (r.get("pub_date", ""), r.get("title", "")))
+
+        # Write combined CSV
+        with open(combined_path, "w", encoding="utf-8-sig", newline="") as fout:
+            writer = _csv.DictWriter(fout, fieldnames=PBOC_OMA_CSV_COLUMNS)
+            writer.writeheader()
+            for row in all_rows:
+                writer.writerow(row)
+
+        # Write keywords CSV (long format — one row per (date, title, keyword))
+        with open(keywords_path, "w", encoding="utf-8-sig", newline="") as fout:
+            writer = _csv.DictWriter(fout, fieldnames=PBOC_OMA_KEYWORDS_CSV_COLUMNS)
+            writer.writeheader()
+            for row in all_rows:
+                kws_str = row.get("keywords", "")
+                if not kws_str:
+                    continue
+                for kw in kws_str.split("|"):
+                    kw = kw.strip()
+                    if not kw:
+                        continue
+                    writer.writerow({
+                        "pub_date":  row.get("pub_date", ""),
+                        "title":     row.get("title", ""),
+                        "keyword":   kw,
+                        "type":      row.get("type", "other"),
+                    })
+                    counts["keyword_rows"] += 1
+
+        logger.info("[build-csv] saved %s (%d rows, %d ok, %d empty, %d failed)",
+                    combined_path, counts["rows"], counts["files_ok"],
+                    counts["files_empty"], counts["files_failed"])
+        logger.info("[build-csv] saved %s (%d keyword-match rows)",
+                    keywords_path, counts["keyword_rows"])
+        return counts
+
+    # ============================================================================
+    # Main download entry point
+    # ============================================================================
+    def download_pboc_oma_news(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        years: Optional[int] = None,
+        max_pages: int = 10,
+        sleep_sec: float = SLEEP_SEC,
+        convert_csv: bool = True,
+        build_csv: bool = True,
+    ) -> dict:
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "pboc_oma_news", out_root)
+
+        # OMA announcements go back to 2020; default to that start
+        if start_date is None and years is not None:
+            _start, _end = parse_date_window(
+                end_date=end_date, start_date=None, lookback_years=years,
+            )
+        else:
+            if start_date is None:
+                start_date = "2020-01-01"
+            _start, _end = parse_date_window(
+                end_date=end_date, start_date=start_date, lookback_years=None,
+            )
+
+        session = self.build_session()
+        stats = RunStats()
+        # Pacing + anti-bot toggles from the service's external_request_config
+        # JSON row (enable_host_tracking=false there — see the row's notes).
+        proxy = AntiBotProxy(service=SERVICE)
+
+        cached_dates = scan_present_dates_with_pattern(
+            out_dir, prefixes=[OMA_FILE_PREFIX], min_bytes=100, ext_glob="*.md",
+        ).get(OMA_FILE_PREFIX, set())
+        stats.skipped_cached = len(cached_dates)
+        if cached_dates:
+            logger.info("[oma] %d dates already cached, latest=%s",
+                        len(cached_dates), max(cached_dates))
+        else:
+            logger.info("[oma] no prior cached files")
+
+        # Build a set of existing file stems (slug-based) so announcements that
+        # share a pub_date (e.g. [2026]第2号 and [2026]第3号 both on 2026-06-17)
+        # are tracked independently — `cached_dates` alone would skip the second
+        # one as a false cache hit.
+        existing_file_stems: set = {f.stem for f in out_dir.glob(f"{OMA_FILE_PREFIX}_*.md")}
+
+        logger.info("Starting PBoC OMA download: %s -> %s", _start, _end)
+
+        skipped_oob = 0
+        try:
+            target_start = _start
+            pages_to_process, page_prefix_fmt = self.smart_pagination_pages(
+                session, target_start, max_pages=max_pages, jump_interval=1, proxy=proxy,
+            )
+            if not pages_to_process:
+                logger.info("  no pages to process")
+                return {}
+
+            found_dates = set()
+            reached_boundary = False
+
+            for page in pages_to_process:
+                if proxy.is_blocked(PBOC_BASE):
+                    logger.warning("  [host-blocked] stopping")
+                    break
+
+                items, detected = self.fetch_list_page(session, page, page_prefix_fmt, proxy)
+                if detected and not page_prefix_fmt:
+                    page_prefix_fmt = detected
+                if not items:
+                    logger.info("  page %d returned no items, stopping", page)
+                    break
+                logger.info("  page %d: %d candidate items", page, len(items))
+
+                page_in_range_count = 0
+                for item in items:
+                    if proxy.is_blocked(PBOC_BASE):
+                        logger.warning("  [host-blocked] skipping remaining items")
+                        reached_boundary = True
+                        break
+
+                    mslug = RE_DETAIL_SLUG.search(item.detail_url)
+                    if mslug:
+                        item.detail_slug = mslug.group(1)
+
+                    ok = self.fetch_detail(session, item, proxy)
+                    if not ok:
+                        stats.failed += 1
+                        # Auto-sleep handled by proxy.get()/post()
+                        continue
+
+                    if not item.pub_date:
+                        stats.failed += 1
+                        # Auto-sleep handled by proxy.get()/post()
+                        continue
+
+                    try:
+                        d = datetime.strptime(item.pub_date, "%Y-%m-%d").date()
+                    except ValueError:
+                        stats.failed += 1
+                        # Auto-sleep handled by proxy.get()/post()
+                        continue
+
+                    found_dates.add(d)
+
+                    fname = item.md_filename()
+                    fpath = out_dir / fname
+                    if fname[:-3] in existing_file_stems:
+                        stats.skipped_cached += 1
+                        page_in_range_count += 1
+                        proxy.sleep(max(0.1, sleep_sec * 0.3))
+                        continue
+
+                    if d < _start:
+                        skipped_oob += 1
+                        logger.info("  [boundary %s < %s] stop: %s",
+                                    d, _start, item.title[:50])
+                        reached_boundary = True
+                        break
+                    if d > _end:
+                        skipped_oob += 1
+                        proxy.sleep(max(0.1, sleep_sec * 0.3))
+                        continue
+
+                    page_in_range_count += 1
+                    with open(fpath, "w", encoding="utf-8") as f:
+                        f.write(item.to_markdown())
+                    stats.downloaded += 1
+                    stats.files.append(str(fpath))
+                    existing_file_stems.add(fname[:-3])
+                    logger.info(
+                        "  [saved] %s pub=%s type=%s kws=%s (%s)",
+                        item.title[:45],
+                        item.pub_date,
+                        item.type,
+                        "|".join(item.keywords) or "(none)",
+                        fname,
+                    )
+                    if convert_csv:
+                        try:
+                            self.convert_md_to_csv(fpath)
+                        except Exception as e:
+                            logger.warning("  [conv %s] per-file CSV failed: %s", fname, e)
+                    # Auto-sleep handled by proxy.get()/post()
+
+                if reached_boundary:
+                    logger.info("  reached boundary at page %d", page)
+                    break
+                if page_in_range_count == 0 and page > 3:
+                    logger.info("  no in-range items on page %d, stopping", page)
+                    break
+
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
+
+        summary = stats.to_dict(
+            skipped_out_of_range=skipped_oob,
+            out_dir=str(out_dir),
+            start_date=str(_start),
+            end_date=str(_end),
+        )
+        logger.info(
+            "Done PBoC OMA. downloaded=%d skipped_cached=%d skipped_oob=%d failed=%d out=%s",
+            stats.downloaded, stats.skipped_cached, skipped_oob, stats.failed, out_dir,
+        )
+
+        if build_csv:
+            try:
+                csv_counts = self.build_oma_combined_csv(out_dir)
+                summary["csv"] = csv_counts
+            except Exception as e:
+                logger.error("build_oma_combined_csv failed: %s", e)
+
+        return summary
+
+    def reparse_existing_files(
+        self,
+        out_dir: Path,
+        convert_csv: bool = True,
+        build_csv: bool = True,
+    ) -> dict:
+        """Re-parse raw body from existing .md files without re-downloading."""
+        files = sorted(out_dir.glob(f"{OMA_FILE_PREFIX}_*.md"))
+        n_total = len(files)
+        n_ok = n_skip = n_fail = n_csv_ok = 0
+        logger.info(f"[REPARSE] scanning {n_total} .md files in {out_dir}")
+
+        for fpath in files:
+            try:
+                text = fpath.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.error(f"  [ERROR] cannot read {fpath.name}: {e}")
+                n_fail += 1
+                continue
+            if not text.startswith("---"):
+                n_skip += 1
+                continue
+            fm_end = text.find("\n---", 3)
+            if fm_end < 0:
+                n_skip += 1
+                continue
+            fm_text = text[3:fm_end].strip()
+            body_section = text[fm_end + 4:]
+
+            fm: Dict[str, str] = {}
+            for line in fm_text.splitlines():
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    fm[key.strip()] = val.strip().strip("'\"")
+
+            if fm.get("status") == "empty":
+                n_skip += 1
+                continue
+
+            # Extract raw body from ``` ... ``` block
+            raw_start = body_section.find("```")
+            if raw_start < 0:
+                n_skip += 1
+                continue
+            raw_end = body_section.find("```", raw_start + 3)
+            if raw_end < 0:
+                n_skip += 1
+                continue
+            raw_body = body_section[raw_start + 3:raw_end].strip()
+
+            pub_date = fm.get("pub_date", "")
+            if not pub_date:
+                n_skip += 1
+                continue
+
+            item = OmaAnnouncementItem(
+                title=fm.get("title", ""),
+                detail_url=fm.get("detail_url", ""),
+                pub_date=pub_date,
+                serial_year=fm.get("serial_year") or None,
+                serial_no=fm.get("serial_no") or None,
+            )
+            # Re-classify type + keywords from the raw body
+            classification_text = f"{item.title}\n{raw_body}"
+            item.type, item.keywords = classify_announcement(classification_text)
+            item.raw_body = raw_body
+            if not item.keywords:
+                item.parse_warnings.append("no keywords matched")
+
+            mslug = RE_DETAIL_SLUG.search(item.detail_url)
+            if mslug:
+                item.detail_slug = mslug.group(1)
+
+            fpath.write_text(item.to_markdown(), encoding="utf-8")
+            n_ok += 1
+            if convert_csv:
+                try:
+                    if self.convert_md_to_csv(fpath):
+                        n_csv_ok += 1
+                except Exception as e:
+                    logger.warning(f"  [WARN] CSV failed for {fpath.name}: {e}")
+
+        logger.error(f"[REPARSE] done: {n_ok} re-parsed, {n_skip} skipped, {n_fail} failed "
+              f"({n_csv_ok} per-file CSVs written)")
+
+        result = {"total": n_total, "ok": n_ok, "skipped": n_skip,
+                  "failed": n_fail, "csv_files": n_csv_ok}
+        if build_csv:
+            try:
+                result["combined_csv"] = self.build_oma_combined_csv(out_dir)
+            except Exception as e:
+                logger.error(f"  [ERROR] build_oma_combined_csv failed: {e}")
+        return result
+
+    def run(self) -> None:
+        """One download/reparse cycle — the former inline-``__main__`` body
+        (argparse parsing is owned by the base template methods)."""
+        convert_csv = not self.args.no_convert_csv
+        build_csv = not self.args.no_build_csv
+
+        if self.args.reparse:
+            out_dir = resolve_out_dir(str(Path(__file__).resolve()), "pboc_oma_news", None)
+            logger.info(self.reparse_existing_files(out_dir, convert_csv=convert_csv, build_csv=build_csv))
+        else:
+            logger.info(self.download_pboc_oma_news(
+                start_date=self.args.start_date,
+                end_date=self.args.end_date,
+                years=self.args.years,
+                convert_csv=convert_csv,
+                build_csv=build_csv,
+            ))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download and parse PBoC OMA news")
-    parser.add_argument("--start-date", type=str, default=None,
-                        help="Start date (YYYY-MM-DD). Default: 2020-01-01")
-    parser.add_argument("--end-date", type=str, default=None,
-                        help="End date (YYYY-MM-DD)")
-    parser.add_argument("--years", type=int, default=None,
-                        help="Lookback years (alternative to --start-date)")
-    parser.add_argument("--reparse", action="store_true",
-                        help="Re-parse existing .md files from raw body (no download)")
-    parser.add_argument("--no-convert-csv", action="store_true", default=False,
-                        help="Skip per-file CSV conversion")
-    parser.add_argument("--no-build-csv", action="store_true", default=False,
-                        help="Skip building combined oma_combined.csv / oma_keywords.csv")
-    args = parser.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    convert_csv = not args.no_convert_csv
-    build_csv = not args.no_build_csv
-
-    if args.reparse:
-        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "pboc_oma_news", None)
-        logger.info(reparse_existing_files(out_dir, convert_csv=convert_csv, build_csv=build_csv))
-    else:
-        logger.info(download_pboc_oma_news(
-            start_date=args.start_date,
-            end_date=args.end_date,
-            years=args.years,
-            convert_csv=convert_csv,
-            build_csv=build_csv,
-        ))
+    PbocOmaDownload().execute()

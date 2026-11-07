@@ -21,14 +21,20 @@ without calibrated greeks (CFFEX) still get a series.
 The mean row (sentinel expiry) blends ALL active groups: E[M] over every
 valid contract of the underlying, not a weighted average of group E[M]s
 — identical to the browser chart's aggregate curve.
+
+Compute layout (cudf-dtypes): whole-frame pandas end-to-end (cross
+merge, grouped ffill, groupby aggregations, elementwise where-chains) —
+no per-group loops, no host-numpy boundary; row materialization
+(plain-scalar dicts) happens ONLY in the terminal scrub
+(_to_plain_records / SkewRecord), the write boundary.
 """
 from __future__ import annotations
 
 import datetime as _dt
-from typing import Optional
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel
 
 from _common.labels import OPTION_TYPE_CODE
 from live.options_intraday_skewness.config import (
@@ -40,9 +46,10 @@ from live.options_intraday_skewness.config import (
 
 # Column layout of the upsert records — the FIRST record's key order is
 # what bulk_upsert_async builds the INSERT from; every record carries the
-# same keys in the same order. The identity columns (underlying_code /
-# date / skew_type) are constant per run and added in _to_plain_records;
-# the frames carry only the DATA_COLUMNS.
+# same keys in the same order (SkewRecord's field order mirrors this
+# tuple). The identity columns (underlying_code / date / skew_type) are
+# constant per run and added in _to_plain_records; the frames carry only
+# the DATA_COLUMNS.
 RECORD_COLUMNS = (
     "underlying_code",
     "date",
@@ -62,156 +69,194 @@ DATA_COLUMNS = tuple(
 )
 
 
-def compute_skewness_frame(
-    contracts: pd.DataFrame,
-    bars: pd.DataFrame,
-    cum_vols: pd.DataFrame,
-    underlying: str,
-    trade_date: _dt.date,
-    strike_scale: float = PRICE_SCALE,
-) -> list[dict]:
-    """Compute the day's series records for ONE underlying.
+class SkewRecord(BaseModel):
+    """One live.options_intraday_skewness series row (the compute layer's
+    output payload). The typed contract of the write boundary —
+    ``model_dump()`` at the ``bulk_upsert_async`` call site produces
+    exactly the dict layout the upsert has always received
+    (RECORD_COLUMNS order)."""
 
-    Args:
-        contracts: prev-day snapshot frame from fetch.fetch_contracts —
-            [contract_code, underlying_code, option_type, expiry_date,
-             strike_price, implied_vol, oi_base].
-        bars: the day's spot bars — [time, close].
-        cum_vols: day-cumulative per-contract volume —
-            [contract_code, time, cum_vol] (empty frame when the day has
-            no streamed option bars — OI then stays at the flat base).
-        underlying: the 6-digit option underlying to scope to.
-        trade_date: the target trading day.
-        strike_scale: divisor bringing strike_price into the spot's unit.
-            ETF-target strikes are stored in 厘 (1/1000 yuan, the repo's
-            PRICE_SCALE); INDEX-target (CFFEX) strikes are raw index
-            points — scale 1.0.
+    underlying_code: str
+    date: _dt.date
+    time: _dt.time
+    expiry_date: _dt.date
+    skew_type: str
+    spot: float | None
+    skew_price: float | None
+    skew_pct: float | None
+    oi_total: float | None
+    otm_call_share: float | None
+    otm_put_share: float | None
 
-    Returns:
-        list of plain-scalar dicts (RECORD_COLUMNS layout, numpy/NaN
-        scrubbed) ready for bulk_upsert_async; [] when nothing qualifies.
+
+class SkewnessComputer:
+    """The vectorized skew computation, configured (strike_scale,
+    min_group_rows) at construction behind a run()-style method.
+
+    Stateless per run — the frames are method arguments, never held:
+    one SkewnessComputer per (underlying-day) call site, constructed
+    with the venue's strike scale (ETF-target strikes are 厘 →
+    PRICE_SCALE; INDEX-target CFFEX strikes are raw index points → 1.0).
     """
-    if bars.empty or contracts.empty:
-        return []
 
-    c = contracts[contracts["underlying_code"] == underlying].copy()
-    if c.empty:
-        return []
-    # Strikes arrive in venue units (厘 for ETF targets, index points for
-    # INDEX targets) — yuan/points like the spot series from here on.
-    c["strike"] = c["strike_price"] / strike_scale
+    def __init__(
+        self,
+        strike_scale: float = PRICE_SCALE,
+        min_group_rows: int = MIN_GROUP_ROWS,
+    ) -> None:
+        self.strike_scale = strike_scale
+        self.min_group_rows = min_group_rows
 
-    # ---- Contract × bar grid, OI(t) and vote validity -------------------
-    grid = bars.merge(c, how="cross")
-    if not cum_vols.empty:
-        grid = grid.merge(cum_vols, on=["contract_code", "time"], how="left")
-    else:
-        grid["cum_vol"] = 0.0
-    # The option streamer can skip a spot-bar window (partial sweep): a
-    # missing sample means "not sampled", not "no volume" — an upper-bound
-    # OI estimate may never decrease, so carry each contract's last known
-    # day-cumulative forward on the (contract, time)-sorted grid.
-    grid = grid.sort_values(["contract_code", "time"], kind="stable")
-    grid["cum_vol"] = grid.groupby("contract_code", sort=False)["cum_vol"].ffill()
-    grid["cum_vol"] = grid["cum_vol"].fillna(0.0)
-    grid["oi_t"] = grid["oi_base"] + grid["cum_vol"]
-    grid["w"] = grid["oi_t"].clip(lower=1.0)
-    grid["m"] = grid["strike"] / grid["close"]
-    grid["wm"] = grid["w"] * grid["m"]
+    def run(
+        self,
+        contracts: pd.DataFrame,
+        bars: pd.DataFrame,
+        cum_vols: pd.DataFrame,
+        underlying: str,
+        trade_date: _dt.date,
+    ) -> list[SkewRecord]:
+        """Compute the day's series records for ONE underlying.
 
-    active = grid["expiry_date"] >= trade_date
-    # NO IV filter here: oi_moneyness never consumes IV (the metric is
-    # pure OI × strike geometry), and analysis.options/compute/skewness.py
-    # — the metric's canonical implementation — filters nothing but the
-    # OI floor. (The browser chart's extra IV-validity gate would zero
-    # out whole venues — CFFEX rows carry no calibrated IV at all.)
+        Args:
+            contracts: prev-day snapshot frame from
+                SkewnessStore.fetch_contracts — [contract_code,
+                underlying_code, option_type, expiry_date, strike_price,
+                implied_vol, oi_base].
+            bars: the day's spot bars — [time, close].
+            cum_vols: day-cumulative per-contract volume —
+                [contract_code, time, cum_vol] (empty frame when the day
+                has no streamed option bars — OI then stays at the flat
+                base).
+            underlying: the 6-digit option underlying to scope to.
+            trade_date: the target trading day.
 
-    # ---- Per-(time, expiry) OI-weighted mean moneyness ------------------
-    v = grid[active]
-    agg = (
-        v.groupby(["time", "expiry_date"], sort=False)
-        .agg(n=("contract_code", "count"), w_sum=("w", "sum"), wm_sum=("wm", "sum"))
-        .reset_index()
-    )
-    agg = agg[agg["n"] >= MIN_GROUP_ROWS]
-    if agg.empty:
-        return []
-    agg["em"] = agg["wm_sum"] / agg["w_sum"]
+        Returns:
+            list of SkewRecord (the plain-scalar RECORD_COLUMNS layout,
+            numpy/NaN scrubbed) ready for model_dump() + bulk_upsert_async;
+            [] when nothing qualifies.
+        """
+        if bars.empty or contracts.empty:
+            return []
 
-    # ---- OTM shares from ALL active rows (valid or not, raw OI > 0) -----
-    # option_type rides as its static.label_dim SMALLINT code
-    # (0 CALL / 1 PUT) — compare codes, never strings.
-    act = grid[active & (grid["oi_t"] > 0)].copy()
-    is_call = act["option_type"] == OPTION_TYPE_CODE["CALL"]
-    act["c_oi"] = act["oi_t"].where(is_call, 0.0)
-    act["c_oi_otm"] = act["oi_t"].where(is_call & (act["strike"] >= act["close"]), 0.0)
-    act["p_oi"] = act["oi_t"].where(~is_call, 0.0)
-    act["p_oi_otm"] = act["oi_t"].where(~is_call & (act["strike"] <= act["close"]), 0.0)
-    otm = (
-        act.groupby(["time", "expiry_date"], sort=False)
-        .agg(c_tot=("c_oi", "sum"), c_otm=("c_oi_otm", "sum"),
-             p_tot=("p_oi", "sum"), p_otm=("p_oi_otm", "sum"))
-        .reset_index()
-    )
-    agg = agg.merge(otm, on=["time", "expiry_date"], how="left")
+        c = contracts[contracts["underlying_code"] == underlying].copy()
+        if c.empty:
+            return []
+        # Strikes arrive in venue units (厘 for ETF targets, index points
+        # for INDEX targets) — yuan/points like the spot series from here.
+        c["strike"] = c["strike_price"] / self.strike_scale
 
-    # ---- Spot join + skew levels ----------------------------------------
-    agg = agg.merge(bars.rename(columns={"close": "spot"}), on="time", how="left")
-    agg["skew_price"] = agg["spot"] * agg["em"]
-    agg["skew_pct"] = (agg["em"] - 1.0) * 100.0
-    agg["otm_call_share"] = agg["c_otm"] / agg["c_tot"].where(agg["c_tot"] > 0)
-    agg["otm_put_share"] = agg["p_otm"] / agg["p_tot"].where(agg["p_tot"] > 0)
+        # ---- Contract × bar grid, OI(t) and vote validity -------------------
+        grid = bars.merge(c, how="cross")
+        if not cum_vols.empty:
+            grid = grid.merge(cum_vols, on=["contract_code", "time"], how="left")
+        else:
+            grid["cum_vol"] = 0.0
+        # The option streamer can skip a spot-bar window (partial sweep): a
+        # missing sample means "not sampled", not "no volume" — an upper-bound
+        # OI estimate may never decrease, so carry each contract's last known
+        # day-cumulative forward on the (contract, time)-sorted grid.
+        grid = grid.sort_values(["contract_code", "time"], kind="stable")
+        grid["cum_vol"] = grid.groupby("contract_code", sort=False)["cum_vol"].ffill()
+        grid["cum_vol"] = grid["cum_vol"].fillna(0.0)
+        grid["oi_t"] = grid["oi_base"] + grid["cum_vol"]
+        grid["w"] = grid["oi_t"].clip(lower=1.0)
+        grid["m"] = grid["strike"] / grid["close"]
+        grid["wm"] = grid["w"] * grid["m"]
 
-    # ---- MEAN row per time: every valid contract blended ----------------
-    mean = (
-        v.groupby("time", sort=False)
-        .agg(w_sum=("w", "sum"), wm_sum=("wm", "sum"))
-        .reset_index()
-    )
-    mean = mean.merge(bars.rename(columns={"close": "spot"}), on="time", how="left")
-    mean["em"] = mean["wm_sum"] / mean["w_sum"]
-    mean["skew_price"] = mean["spot"] * mean["em"]
-    mean["skew_pct"] = (mean["em"] - 1.0) * 100.0
-    # The mean row carries no single-group OI level / OTM share.
-    mean["expiry_date"] = MEAN_EXPIRY
-    mean["oi_total"] = np.nan
-    mean["otm_call_share"] = np.nan
-    mean["otm_put_share"] = np.nan
+        active = grid["expiry_date"] >= trade_date
+        # NO IV filter here: oi_moneyness never consumes IV (the metric is
+        # pure OI × strike geometry), and analysis.options/compute/skewness.py
+        # — the metric's canonical implementation — filters nothing but the
+        # OI floor. (The browser chart's extra IV-validity gate would zero
+        # out whole venues — CFFEX rows carry no calibrated IV at all.)
 
-    # Per-expiry rows keep the group's total OI weight (the UI's
-    # line-width encoding).
-    per_expiry = agg.rename(columns={"w_sum": "oi_total"})
+        # ---- Per-(time, expiry) OI-weighted mean moneyness ------------------
+        v = grid[active]
+        agg = (
+            v.groupby(["time", "expiry_date"], sort=False)
+            .agg(n=("contract_code", "count"), w_sum=("w", "sum"), wm_sum=("wm", "sum"))
+            .reset_index()
+        )
+        agg = agg[agg["n"] >= self.min_group_rows]
+        if agg.empty:
+            return []
+        agg["em"] = agg["wm_sum"] / agg["w_sum"]
 
-    out = pd.concat(
-        [
-            per_expiry[list(DATA_COLUMNS)],
-            mean[list(DATA_COLUMNS)],
-        ],
-        ignore_index=True,
-    )
-    return _to_plain_records(out, underlying, trade_date)
+        # ---- OTM shares from ALL active rows (valid or not, raw OI > 0) -----
+        # option_type rides as its static.label_dim SMALLINT code
+        # (0 CALL / 1 PUT) — compare codes, never strings.
+        act = grid[active & (grid["oi_t"] > 0)].copy()
+        is_call = act["option_type"] == OPTION_TYPE_CODE["CALL"]
+        act["c_oi"] = act["oi_t"].where(is_call, 0.0)
+        act["c_oi_otm"] = act["oi_t"].where(is_call & (act["strike"] >= act["close"]), 0.0)
+        act["p_oi"] = act["oi_t"].where(~is_call, 0.0)
+        act["p_oi_otm"] = act["oi_t"].where(~is_call & (act["strike"] <= act["close"]), 0.0)
+        otm = (
+            act.groupby(["time", "expiry_date"], sort=False)
+            .agg(c_tot=("c_oi", "sum"), c_otm=("c_oi_otm", "sum"),
+                 p_tot=("p_oi", "sum"), p_otm=("p_oi_otm", "sum"))
+            .reset_index()
+        )
+        agg = agg.merge(otm, on=["time", "expiry_date"], how="left")
 
+        # ---- Spot join + skew levels ----------------------------------------
+        agg = agg.merge(bars.rename(columns={"close": "spot"}), on="time", how="left")
+        agg["skew_price"] = agg["spot"] * agg["em"]
+        agg["skew_pct"] = (agg["em"] - 1.0) * 100.0
+        agg["otm_call_share"] = agg["c_otm"] / agg["c_tot"].where(agg["c_tot"] > 0)
+        agg["otm_put_share"] = agg["p_otm"] / agg["p_tot"].where(agg["p_tot"] > 0)
 
-def _to_plain_records(
-    df: pd.DataFrame, underlying: str, trade_date: _dt.date
-) -> list[dict]:
-    """Scrub the frame into bulk_upsert_async-ready dicts: python scalars
-    only (asyncpg rejects numpy types) and NaN → None (SQL NULL)."""
-    df = df.astype(object)
-    df = df.where(df.notna(), None)
-    records: list[dict] = []
-    for row in df.to_dict("records"):
-        rec: dict = {
-            "underlying_code": underlying,
-            "date": trade_date,
-            "skew_type": SKEW_TYPE,
-        }
-        for k in DATA_COLUMNS:
-            v = row[k]
-            if isinstance(v, np.generic):
-                v = v.item()
-            if isinstance(v, float) and np.isnan(v):
-                v = None
-            rec[k] = v
-        records.append(rec)
-    return records
+        # ---- MEAN row per time: every valid contract blended ----------------
+        mean = (
+            v.groupby("time", sort=False)
+            .agg(w_sum=("w", "sum"), wm_sum=("wm", "sum"))
+            .reset_index()
+        )
+        mean = mean.merge(bars.rename(columns={"close": "spot"}), on="time", how="left")
+        mean["em"] = mean["wm_sum"] / mean["w_sum"]
+        mean["skew_price"] = mean["spot"] * mean["em"]
+        mean["skew_pct"] = (mean["em"] - 1.0) * 100.0
+        # The mean row carries no single-group OI level / OTM share.
+        mean["expiry_date"] = MEAN_EXPIRY
+        mean["oi_total"] = np.nan
+        mean["otm_call_share"] = np.nan
+        mean["otm_put_share"] = np.nan
+
+        # Per-expiry rows keep the group's total OI weight (the UI's
+        # line-width encoding).
+        per_expiry = agg.rename(columns={"w_sum": "oi_total"})
+
+        out = pd.concat(
+            [
+                per_expiry[list(DATA_COLUMNS)],
+                mean[list(DATA_COLUMNS)],
+            ],
+            ignore_index=True,
+        )
+        return self._to_plain_records(out, underlying, trade_date)
+
+    @staticmethod
+    def _to_plain_records(
+        df: pd.DataFrame, underlying: str, trade_date: _dt.date
+    ) -> list[SkewRecord]:
+        """Scrub the frame into the write boundary's records: python scalars
+        only (asyncpg rejects numpy types) and NaN → None (SQL NULL), typed
+        as SkewRecord (model_dump() at the upsert call site)."""
+        df = df.astype(object)
+        df = df.where(df.notna(), None)
+        records: list[SkewRecord] = []
+        for row in df.to_dict("records"):
+            rec: dict = {
+                "underlying_code": underlying,
+                "date": trade_date,
+                "skew_type": SKEW_TYPE,
+            }
+            for k in DATA_COLUMNS:
+                v = row[k]
+                if isinstance(v, np.generic):
+                    v = v.item()
+                if isinstance(v, float) and np.isnan(v):
+                    v = None
+                rec[k] = v
+            records.append(SkewRecord.model_validate(rec))
+        return records

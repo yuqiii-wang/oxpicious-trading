@@ -21,6 +21,7 @@ from _common.db_commons import (
     chunked_purge_async,
 )
 from analysis._common import sanitize_for_db_insert
+from _common.sql_views import frag, render_sql_view
 from analysis.margins.config import (
     TABLE_TECH_STATS,
     TABLE_INDUSTRY_STATS,
@@ -75,7 +76,13 @@ async def fetch_latest_source_date(conn, sec_types: list[str]) -> datetime.date:
     union = " UNION ALL ".join(
         f"SELECT MAX(date) AS d FROM {t}" for t in tables
     )
-    row = await conn.fetchrow(f"SELECT MAX(d) AS latest FROM ({union}) sub")
+    # latest_source_date view (source_union = the composed UNION ALL
+    # fragment).
+    view = render_sql_view(
+        "analysis/margins/pipeline/latest_source_date",
+        source_union=frag(union),
+    )
+    row = await conn.fetchrow(view.sql, *view.params)
     latest = row["latest"] if row else None
     return latest if latest is not None else datetime.date.today()
 

@@ -3,7 +3,8 @@
  * code's pe series (side derived at query time from the end month's band).
  * Split out of the former monolithic pe.ts.
  */
-import { queryRows, formatDate, toNum } from "@api/lib/db";
+import { formatDate, toNum } from "@api/lib/db";
+import { querySqlView } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { codeVariants } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
@@ -12,7 +13,7 @@ import type {
   PeStreak,
   PeStreaksResponse,
 } from "@shared/types";
-import { normalizeSecType, buildNameSql } from "./_shared.js";
+import { normalizeSecType, queryLatestName } from "./_shared.js";
 
 // ----------------------------------------------------------------------------
 //  listPeStreaks — band-BREAK excursion streaks of one code's pe series,
@@ -22,51 +23,20 @@ import { normalizeSecType, buildNameSql } from "./_shared.js";
 //  analysis.dividends_pct_streaks, was dropped with its unused consumer
 //  path.)
 //
-//  The streak SIDE (high leg vs low leg) is not stored — it is derived here
-//  by joining the band row of the streak's END month
+//  The streak SIDE (high leg vs low leg) is not stored — it is derived by
+//  joining the band row of the streak's END month
 //  (date_trunc('month', s.end_date)) and comparing the streak's end_value
 //  against that band: each streak day is tested against its OWN month's
 //  band (so the end-month band row is guaranteed to exist) and a streak
 //  never switches sides, so the end day's own-month band decides exactly.
 //  Shipped flat for ALL (period, pct_type) combos — the client filters by
-//  its nested period→pct selection.
+//  its nested period→pct selection. The SELECT lives in the sql view
+//  data_viz/api/services/analysis/pe/streaks/streaks.
 // ----------------------------------------------------------------------------
-function buildStreaksSql(): string {
-  return `
-    SELECT
-      'pe' AS metric,
-      s.period,
-      s.pct_type,
-      s.start_date,
-      s.end_date,
-      s.start_value,
-      s.end_value,
-      s.max_value,
-      s.min_value,
-      b.high_val AS band_high,
-      b.low_val  AS band_low,
-      s.day_count,
-      s.std_dev,
-      CASE
-        WHEN s.end_value > b.high_val THEN 'high'
-        WHEN s.end_value < b.low_val  THEN 'low'
-      END AS side
-    FROM analysis.pe_pct_streaks s
-    JOIN analysis.pe_pct b
-      ON b.sec_type = s.sec_type
-      AND b.code = s.code
-      AND b.date_year_month = date_trunc('month', s.end_date)::date
-      AND b.period = s.period
-      AND b.pct_type = s.pct_type
-    WHERE s.sec_type = $1
-      AND s.code = ANY($2::text[])
-    ORDER BY period, pct_type, start_date
-  `;
-}
 
 /** One streak row from analysis.pe_pct_streaks joined with its end-month
- *  band (see buildStreaksSql). side is NULL only if the end value fell
- *  exactly on a band boundary — never expected. */
+ *  band (see the pe/streaks/streaks sql view). side is NULL only if the end
+ *  value fell exactly on a band boundary — never expected. */
 interface DbStreakRow extends QueryResultRow {
   metric: string;
   period: number;
@@ -120,9 +90,11 @@ export async function listPeStreaks(
   const target = stripped(rawCode);
 
   const [streakRows, nameRows] = await Promise.all([
-    queryRows<DbStreakRow>(buildStreaksSql(),
-      [LABEL_CODE.sec_type[secType], codeVariants(target)]),
-    queryRows<{ name: string | null }>(buildNameSql(secType), [codeVariants(target)]),
+    querySqlView<DbStreakRow>(
+      "data_viz/api/services/analysis/pe/streaks/streaks",
+      { sec_type: LABEL_CODE.sec_type[secType], codes: codeVariants(target) },
+    ),
+    queryLatestName(secType, codeVariants(target)),
   ]);
 
   const name = nameRows[0]?.name ?? "";

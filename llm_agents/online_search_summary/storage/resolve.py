@@ -1,7 +1,7 @@
 """llm_agents.online_search_summary.storage.resolve — Per-reference resolution.
 
 Classifies every citation tag of a stored summary as ``exact`` or
-``relevant`` (text.llm_qa_refs.ref_type) and links it to a text.news row;
+``relevant`` (llm.llm_qa_refs.ref_type) and links it to a text.news row;
 the typing vocabulary and match helpers live in ``storage.matching``, the
 verification network calls in ``storage.fetching``. Per-reference
 resolution is sequential (network-friendly, and later hits dedupe against
@@ -45,34 +45,14 @@ from llm_agents.online_search_summary.storage.matching import (
     normalize_text, source_from_url,
 )
 
+from llm_agents.online_search_summary.storage.data_definitions import (
+    ResolvedRef,
+)
 logger = logging.getLogger(__name__)
 
 NEWS_TABLE = "text.news"
 
 
-# ----------------------------------------------------------------------------
-# Resolution result
-# ----------------------------------------------------------------------------
-@dataclass
-class ResolvedRef:
-    """Outcome of resolving one citation tag to a text.news article."""
-    ref: str                          # citation tag (ref_N)
-    ref_type: str                     # exact (from summary) | relevant (post-hoc title match)
-    news_id: int
-    resolved_url: Optional[str] = None  # candidate URL the check ran against
-    ref_time: Optional[datetime.datetime] = None  # actual publish time (None -> stored NULL)
-    via: str = VIA_SUMMARY            # provenance: summary | corpus | ddgs
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "ref": self.ref,
-            "ref_type": self.ref_type,
-            "news_id": self.news_id,
-            "resolved_url": self.resolved_url,
-            "ref_time": (self.ref_time.isoformat() if self.ref_time
-                         else None),
-            "via": self.via,
-        }
 
 
 def build_ref_rows(
@@ -81,7 +61,7 @@ def build_ref_rows(
     *,
     cited: Sequence[str],
 ) -> List[Dict[str, Any]]:
-    """text.llm_qa_refs rows for one stored Q&A — one per resolved article.
+    """llm.llm_qa_refs rows for one stored Q&A — one per resolved article.
 
     The table's PK is (qa_id, news_id): refs resolving to the same article
     (two tags, one page) collapse onto a single row keyed by a

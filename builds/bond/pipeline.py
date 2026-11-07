@@ -121,7 +121,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Source-file discovery helpers
+# Source-file discovery helpers (pure — stay module-level)
 # ============================================================================
 def filter_files_by_missing_years(files, missing_dates):
     """Filter yearly files to those overlapping with missing dates' years.
@@ -216,281 +216,292 @@ def discover_dates_from_latest_files(shibor_files, chinabond_files, verbose=Fals
 
 
 # ============================================================================
-# Insert helper
-# ============================================================================
-async def insert_rows(conn, table: str, rows, pk_cols: list, suffix: str = "") -> None:
-    """COPY/upsert rows into table and print the outcome line."""
-    n_copied, n_upserted = await copy_or_upsert_split_async(conn, table, rows, pk_cols)
-    total = n_copied + n_upserted
-    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
-          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
-          "upsert"
-    logger.info(f"    [DB] Inserted {total:,} rows into {table} via {via}{suffix}")
-
-
-# ============================================================================
 # Main pipeline
 # ============================================================================
-async def main():
-    ap = argparse.ArgumentParser()
-    add_common_build_args(ap)
-    args = ap.parse_args()
+class BondPipeline:
+    """Argv-scoped debt-market build (the former module-level ``main()``).
 
-    # --date / --force are mutually exclusive; parse the forced date early.
-    enforce_date_force_exclusion(args)
-    forced = parse_date_arg(args.date)
-    # Single-date scope: every date-driven reader below is restricted to the
-    # forced date. PBoC OMA (step 2b) is exempt — it always truncates+
-    # reloads the whole table, so scoping it to one date would wipe all
-    # other OMA rows.
-    oma_start, oma_end = args.start_date, args.end_date
-    if forced is not None:
-        # Single-date scope overrides any explicit --start-date/--end-date.
-        args.start_date = args.end_date = forced.isoformat()
+    ``__init__`` parses sys.argv exactly as the former ``main()`` did (the
+    BondBuild delegate passes no namespace — ``allow_unknown_args`` keeps
+    the pipeline the sys.argv owner); ``run`` holds the former ``main()``
+    body unchanged (``args`` → ``self.args``). The pure file-discovery
+    helpers stay module-level above. ``insert_rows`` keeps its ``conn``
+    parameter — the pipeline's connection is a ``run()`` local
+    (get_db_or_exit), not an ``__init__`` input.
+    """
 
-    t0 = time.time()
-    print_build_header(
-        "BUILD DEBT MARKET BASELINE  ·  missing-dates-only → DATABASE",
-        **{
-            "PBoC instr CSV": PBOC_INSTRUMENTS_CSV,
-            "PBoC LPR CSV":   PBOC_LPR_CSV,
-            "PBoC OMA CSV":   PBOC_OMA_CSV,
-            "SHIBOR dir":     SHIBOR_DIR,
-            "China bond dir": CHINABOND_DIR,
-            "Date range":     f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
-            "Today":          TODAY_STR,
-        }
-    )
-    if forced is not None:
-        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
+    def __init__(self, args: argparse.Namespace | None = None) -> None:
+        if args is None:
+            ap = argparse.ArgumentParser()
+            add_common_build_args(ap)
+            args = ap.parse_args()
+        self.args: argparse.Namespace = args
 
-    if not os.path.exists(PBOC_INSTRUMENTS_CSV):
-        # Non-fatal: OMA reload can still proceed. The debt_* tables just
-        # won't get new dates from the instruments CSV.
-        logger.warning(f"\n  [WARN] {PBOC_INSTRUMENTS_CSV} not found — debt_* tables will "
-              f"not be updated. Run `python download_pboc_repo_news.py --reparse` "
-              f"to enable debt loading. Continuing with OMA-only reload.")
+    async def insert_rows(self, conn, table: str, rows, pk_cols: list, suffix: str = "") -> None:
+        """COPY/upsert rows into table and print the outcome line."""
+        n_copied, n_upserted = await copy_or_upsert_split_async(conn, table, rows, pk_cols)
+        total = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+        logger.info(f"    [DB] Inserted {total:,} rows into {table} via {via}{suffix}")
 
-    # ------------------------------------------------------------------
-    # (1) Discover source files (fast — filenames only, no reading)
-    # ------------------------------------------------------------------
-    logger.info("\n[1/5] Discovering source files …")
-    shibor_files_all = glob_source_files(SHIBOR_DIR, "shibor_his_*.csv")
-    chinabond_files_all = glob_source_files(CHINABOND_DIR, "chinabond_bzqx_treasury_bond_*.csv")
-    # CSV ONLY — an xlsx whose canonical CSV was never converted is a
-    # downloads bug: fail loudly here instead of silently skipping dates.
-    assert_shibor_converted()
-    assert_chinabond_converted()
-    logger.info(f"    → SHIBOR: {len(shibor_files_all)} yearly files")
-    logger.info(f"    → China bond: {len(chinabond_files_all)} yearly files")
-
-    # ------------------------------------------------------------------
-    # (2) Connect to DB and find missing dates
-    # ------------------------------------------------------------------
-    logger.info("\n[2/5] Connecting to database and detecting missing dates …")
-    conn = await get_db_or_exit()
-
-    try:
-        if args.force:
-            logger.info("    [DB] Force mode: truncating existing tables")
-            for tbl in ("stats.pboc_oma",
-                        "stats.debt_lpr", "stats.debt_treasury", "stats.debt_shibor",
-                        "stats.debt_mlf", "stats.debt_outright_repo", "stats.debt_repo",
-                        "stats.debt_omo", "stats.debt_identity"):
-                await truncate_table_async(conn, tbl)
-
-        # ------------------------------------------------------------------
-        # (2b) Always reload PBoC OMA (small dataset, no FK to debt_identity)
-        # ------------------------------------------------------------------
-        logger.info("\n[2b/5] Reloading PBoC OMA announcements (always truncate+insert) …")
-        # --date mode keeps the CLI range here (full reload by default) so
-        # the truncate below never shrinks the table to a single date.
-        oma_df = build_oma_df(oma_start, oma_end, verbose=True)
-        # Always truncate so the table matches the latest CSV exactly. The
-        # dataset is small (~15 rows) and announcements may occur on non-
-        # trading days, so the missing-dates-only logic does not apply.
-        await truncate_table_async(conn, "stats.pboc_oma")
-        if oma_df is not None and len(oma_df) > 0:
-            # Host unwrap + records_from_frame: datetime64 dates emit as
-            # datetime.date (M-branch), NaN→None swept — no object-date
-            # column, no to_dict("records") per-row proxy extraction
-            oma_rows = _host(oma_df)
-            oma_cols = np.asarray(oma_rows.columns).tolist()
-            await insert_rows(conn, "stats.pboc_oma",
-                              records_from_frame(oma_rows, oma_cols),
-                              ["date", "title"])
-        else:
-            logger.info(f"    [DB] No OMA rows to insert into stats.pboc_oma")
-
-        # ------------------------------------------------------------------
-        # Discover available dates & find missing dates for debt_* tables
-        # ------------------------------------------------------------------
-        # Discover available dates from the instruments CSV + LPR CSV (fast)
-        inst_df = load_pboc_instruments_df(verbose=True)
-        all_available_dates = set()
-        if inst_df is not None and len(inst_df) > 0:
-            all_available_dates.update(dates_as_date_list(_host(inst_df)["pub_date"]))
-
-        # LPR announcements are monthly — their dates must also be present
-        # in debt_identity for the FK to hold.
-        lpr_dates_only_df = build_lpr_df(verbose=False)
-        if lpr_dates_only_df is not None and len(lpr_dates_only_df) > 0:
-            all_available_dates.update(
-                dates_as_date_list(_host(lpr_dates_only_df)["date"]))
-
-        # Augment available dates with the latest SHIBOR + China bond file
-        # dates. Without this, the early-exit below would fire whenever the
-        # instruments/LPR CSVs are caught up — even if SHIBOR/China bond
-        # source files have newer dates — and the freshest debt data would
-        # never be loaded (the extra-dates merge at step 5 is unreachable
-        # once the early-exit fires).
-        file_dates = discover_dates_from_latest_files(
-            shibor_files_all, chinabond_files_all, verbose=True)
-        if file_dates:
-            all_available_dates |= file_dates
-
+    async def run(self) -> None:
+        # --date / --force are mutually exclusive; parse the forced date early.
+        enforce_date_force_exclusion(self.args)
+        forced = parse_date_arg(self.args.date)
+        # Single-date scope: every date-driven reader below is restricted to the
+        # forced date. PBoC OMA (step 2b) is exempt — it always truncates+
+        # reloads the whole table, so scoping it to one date would wipe all
+        # other OMA rows.
+        oma_start, oma_end = self.args.start_date, self.args.end_date
         if forced is not None:
-            # --date mode: bypass the DB missing-date skip — the forced date
-            # is ALWAYS processed (existing rows refresh via the upsert path
-            # below; no truncation, no deletes). The default discovery only
-            # reads the LATEST SHIBOR/China bond yearly file, so augment the
-            # discovered dates with the forced year's files first — otherwise
-            # a historical date would be reported as having no source data.
-            all_available_dates |= discover_dates_from_latest_files(
-                filter_files_by_missing_years(shibor_files_all, {forced}),
-                filter_files_by_missing_years(chinabond_files_all, {forced}),
-            )
-            missing_dates = forced_date_scope(all_available_dates, forced)
-            existing_dates_set = set()
-        elif args.force:
-            existing_dates_set = set()
-            missing_dates = all_available_dates
-        else:
-            existing_rows = await conn.fetch("SELECT DISTINCT date FROM stats.debt_identity")
-            existing_dates_set = {r["date"] for r in existing_rows}
-            missing_dates = all_available_dates - existing_dates_set
-        logger.info(f"    [DB] {len(missing_dates)} dates missing from stats.debt_identity")
+            # Single-date scope overrides any explicit --start-date/--end-date.
+            self.args.start_date = self.args.end_date = forced.isoformat()
 
-        if not missing_dates:
-            logger.info("    [INFO] Database is up to date — no new debt dates to insert "
-                  "(OMA already reloaded above)")
-            print_wall_time(t0)
-            return
+        t0 = time.time()
+        print_build_header(
+            "BUILD DEBT MARKET BASELINE  ·  missing-dates-only → DATABASE",
+            **{
+                "PBoC instr CSV": PBOC_INSTRUMENTS_CSV,
+                "PBoC LPR CSV":   PBOC_LPR_CSV,
+                "PBoC OMA CSV":   PBOC_OMA_CSV,
+                "SHIBOR dir":     SHIBOR_DIR,
+                "China bond dir": CHINABOND_DIR,
+                "Date range":     f"{self.args.start_date or '(all)'} → {self.args.end_date or '(all)'}",
+                "Today":          TODAY_STR,
+            }
+        )
+        if forced is not None:
+            logger.info(f"[DATE MODE] Forced single-date build: {forced}")
 
-        # ------------------------------------------------------------------
-        # (3) Read OMO (full history for repo cumulative) + build outright/MLF/LPR
-        # ------------------------------------------------------------------
-        logger.info("\n[3/5] Building PBoC OMO + outright + MLF + LPR (full history for repo cumulative) …")
-        # NOTE: OMO is read WITHOUT date filtering so the repo lifecycle
-        # cumulative balance is computed over the full history. Only the
-        # INSERT step filters to missing dates.
-        omo_df = build_pboc_omo_df(verbose=True)
-        outright_df = build_pboc_outright_repo_df(args.start_date, args.end_date, verbose=True)
-        mlf_df = build_pboc_mlf_df(args.start_date, args.end_date, verbose=True)
-        lpr_df = build_lpr_df(args.start_date, args.end_date, verbose=True)
+        if not os.path.exists(PBOC_INSTRUMENTS_CSV):
+            # Non-fatal: OMA reload can still proceed. The debt_* tables just
+            # won't get new dates from the instruments CSV.
+            logger.warning(f"\n  [WARN] {PBOC_INSTRUMENTS_CSV} not found — debt_* tables will "
+                  f"not be updated. Run `python download_pboc_repo_news.py --reparse` "
+                  f"to enable debt loading. Continuing with OMA-only reload.")
 
         # ------------------------------------------------------------------
-        # (4) Read SHIBOR + China bond (filtered to missing years) + repo lifecycle
+        # (1) Discover source files (fast — filenames only, no reading)
         # ------------------------------------------------------------------
-        logger.info("\n[4/5] Building SHIBOR + repo lifecycle + China bond (missing years only) …")
-
-        # Filter yearly files to only those overlapping with missing dates
-        missing_shibor_files = filter_files_by_missing_years(shibor_files_all, missing_dates)
-        missing_chinabond_files = filter_files_by_missing_years(chinabond_files_all, missing_dates)
-        logger.info(f"    → SHIBOR: {len(missing_shibor_files)} files to read "
-              f"(out of {len(shibor_files_all)} total)")
-        logger.info(f"    → China bond: {len(missing_chinabond_files)} files to read "
-              f"(out of {len(chinabond_files_all)} total)")
-
-        shibor_df = build_shibor_df(args.start_date, args.end_date, verbose=True,
-                                     files=missing_shibor_files)
-        repo_lifecycle_df = build_repo_lifecycle_df(omo_df)
-        if len(repo_lifecycle_df):
-            logger.info(f"    [REPO-LIFECYCLE] {len(repo_lifecycle_df)} daily records, "
-                  f"peak cumulative: {repo_lifecycle_df['repo_cumulative'].max():,.0f} 亿元")
-        chinabond_df = build_chinabond_df(args.start_date, args.end_date, verbose=True,
-                                           files=missing_chinabond_files)
-
-        # After reading SHIBOR/China bond, check for additional dates not in
-        # the instruments CSV (e.g., trading days with SHIBOR data but no OMO).
-        # --date mode pins the scope to the forced date — no extra dates.
-        if forced is None:
-            for df in [shibor_df, chinabond_df]:
-                if df is not None and len(df) > 0:
-                    extra_dates = set(
-                        dates_as_date_list(_host(df)["date"])) - existing_dates_set
-                    if extra_dates:
-                        missing_dates = missing_dates | extra_dates
-                        logger.info(f"    → Found {len(extra_dates)} additional missing dates "
-                              f"from SHIBOR/China bond (not in instruments CSV)")
+        logger.info("\n[1/5] Discovering source files …")
+        shibor_files_all = glob_source_files(SHIBOR_DIR, "shibor_his_*.csv")
+        chinabond_files_all = glob_source_files(CHINABOND_DIR, "chinabond_bzqx_treasury_bond_*.csv")
+        # CSV ONLY — an xlsx whose canonical CSV was never converted is a
+        # downloads bug: fail loudly here instead of silently skipping dates.
+        assert_shibor_converted()
+        assert_chinabond_converted()
+        logger.info(f"    → SHIBOR: {len(shibor_files_all)} yearly files")
+        logger.info(f"    → China bond: {len(chinabond_files_all)} yearly files")
 
         # ------------------------------------------------------------------
-        # (5) Filter to missing dates and insert
+        # (2) Connect to DB and find missing dates
         # ------------------------------------------------------------------
-        logger.info("\n[5/5] Inserting data to database (missing dates only) …")
+        logger.info("\n[2/5] Connecting to database and detecting missing dates …")
+        conn = await get_db_or_exit()
 
-        # Insert new identities for missing dates only
-        identity_rows = [{"date": d} for d in sorted(missing_dates)]
-        await insert_rows(conn, "stats.debt_identity", identity_rows, ["date"])
+        try:
+            if self.args.force:
+                logger.info("    [DB] Force mode: truncating existing tables")
+                for tbl in ("stats.pboc_oma",
+                            "stats.debt_lpr", "stats.debt_treasury", "stats.debt_shibor",
+                            "stats.debt_mlf", "stats.debt_outright_repo", "stats.debt_repo",
+                            "stats.debt_omo", "stats.debt_identity"):
+                    await truncate_table_async(conn, tbl)
 
-        # Helper: filter a frame to missing dates, convert to rows for insert.
-        # Frames stay cudf-dispatched through processing; the host unwrap
-        # happens ONCE here before numpy filtering, and records_from_frame
-        # emits datetime.date + NaN→None at the DB boundary (no .dt.date
-        # object-date column, no to_dict("records") per-row extraction).
-        def df_to_missing_rows(df, date_col="date"):
-            if df is None or len(df) == 0:
-                return []
-            df = _host(df)
-            missing_d64 = np.asarray(sorted(missing_dates), dtype="datetime64[D]")
-            d = np.asarray(df[date_col]).astype("datetime64[D]")
-            df = df.loc[np.isin(d, missing_d64)]
-            if len(df) == 0:
-                return []
-            return records_from_frame(df, np.asarray(df.columns).tolist())
-
-        # Insert each source table, filtered to missing dates
-        table_source_pairs = [
-            ("stats.debt_omo",            omo_df),
-            ("stats.debt_repo",           repo_lifecycle_df),
-            ("stats.debt_outright_repo",  outright_df),
-            ("stats.debt_mlf",            mlf_df),
-            ("stats.debt_lpr",            lpr_df),
-            ("stats.debt_shibor",         shibor_df),
-            ("stats.debt_treasury",       chinabond_df),
-        ]
-        for tbl, df in table_source_pairs:
-            rows = df_to_missing_rows(df)
-            if rows:
-                await insert_rows(conn, tbl, rows, ["date"],
-                                  suffix=f" (filtered to {len(missing_dates)} missing dates)")
+            # ------------------------------------------------------------------
+            # (2b) Always reload PBoC OMA (small dataset, no FK to debt_identity)
+            # ------------------------------------------------------------------
+            logger.info("\n[2b/5] Reloading PBoC OMA announcements (always truncate+insert) …")
+            # --date mode keeps the CLI range here (full reload by default) so
+            # the truncate below never shrinks the table to a single date.
+            oma_df = build_oma_df(oma_start, oma_end, verbose=True)
+            # Always truncate so the table matches the latest CSV exactly. The
+            # dataset is small (~15 rows) and announcements may occur on non-
+            # trading days, so the missing-dates-only logic does not apply.
+            await truncate_table_async(conn, "stats.pboc_oma")
+            if oma_df is not None and len(oma_df) > 0:
+                # Host unwrap + records_from_frame: datetime64 dates emit as
+                # datetime.date (M-branch), NaN→None swept — no object-date
+                # column, no to_dict("records") per-row proxy extraction
+                oma_rows = _host(oma_df)
+                oma_cols = np.asarray(oma_rows.columns).tolist()
+                await self.insert_rows(conn, "stats.pboc_oma",
+                                  records_from_frame(oma_rows, oma_cols),
+                                  ["date", "title"])
             else:
-                logger.info(f"    [DB] No new rows to insert into {tbl}")
+                logger.info(f"    [DB] No OMA rows to insert into stats.pboc_oma")
 
-    finally:
-        await conn.close()
+            # ------------------------------------------------------------------
+            # Discover available dates & find missing dates for debt_* tables
+            # ------------------------------------------------------------------
+            # Discover available dates from the instruments CSV + LPR CSV (fast)
+            inst_df = load_pboc_instruments_df(verbose=True)
+            all_available_dates = set()
+            if inst_df is not None and len(inst_df) > 0:
+                all_available_dates.update(dates_as_date_list(_host(inst_df)["pub_date"]))
 
-    # Coverage summary (over full source range, not just missing)
-    logger.info(f"\n  Coverage by source (full range):")
-    if oma_df is not None and len(oma_df) > 0:
-        logger.info(f"    · PBoC OMA            : {len(oma_df):>5d} announcements")
-    if omo_df is not None and len(omo_df) > 0:
-        n = int(omo_df["omo_rate"].notna().sum())
-        logger.info(f"    · PBoC OMO rate       : {n:>5d} days")
-    if outright_df is not None and len(outright_df) > 0:
-        n = int((outright_df["outright_repo_marker"] == 1).sum())
-        logger.info(f"    · PBoC outright-repo  : {n:>5d} announcements")
-    if mlf_df is not None and len(mlf_df) > 0:
-        n = int((mlf_df["mlf_marker"] == 1).sum())
-        logger.info(f"    · PBoC MLF            : {n:>5d} announcements")
-    if lpr_df is not None and len(lpr_df) > 0:
-        n = int(lpr_df["lpr_1y"].notna().sum())
-        logger.info(f"    · PBoC LPR (1Y)       : {n:>5d} announcements")
-    if shibor_df is not None and len(shibor_df) > 0:
-        n = int(shibor_df["shibor_o_n"].notna().sum())
-        logger.info(f"    · SHIBOR O/N          : {n:>5d} days")
-    if chinabond_df is not None and len(chinabond_df) > 0:
-        n = int(chinabond_df["cb_1y"].notna().sum())
-        logger.info(f"    · China bond 1Y yield  : {n:>5d} days")
+            # LPR announcements are monthly — their dates must also be present
+            # in debt_identity for the FK to hold.
+            lpr_dates_only_df = build_lpr_df(verbose=False)
+            if lpr_dates_only_df is not None and len(lpr_dates_only_df) > 0:
+                all_available_dates.update(
+                    dates_as_date_list(_host(lpr_dates_only_df)["date"]))
 
-    print_wall_time(t0)
+            # Augment available dates with the latest SHIBOR + China bond file
+            # dates. Without this, the early-exit below would fire whenever the
+            # instruments/LPR CSVs are caught up — even if SHIBOR/China bond
+            # source files have newer dates — and the freshest debt data would
+            # never be loaded (the extra-dates merge at step 5 is unreachable
+            # once the early-exit fires).
+            file_dates = discover_dates_from_latest_files(
+                shibor_files_all, chinabond_files_all, verbose=True)
+            if file_dates:
+                all_available_dates |= file_dates
+
+            if forced is not None:
+                # --date mode: bypass the DB missing-date skip — the forced date
+                # is ALWAYS processed (existing rows refresh via the upsert path
+                # below; no truncation, no deletes). The default discovery only
+                # reads the LATEST SHIBOR/China bond yearly file, so augment the
+                # discovered dates with the forced year's files first — otherwise
+                # a historical date would be reported as having no source data.
+                all_available_dates |= discover_dates_from_latest_files(
+                    filter_files_by_missing_years(shibor_files_all, {forced}),
+                    filter_files_by_missing_years(chinabond_files_all, {forced}),
+                )
+                missing_dates = forced_date_scope(all_available_dates, forced)
+                existing_dates_set = set()
+            elif self.args.force:
+                existing_dates_set = set()
+                missing_dates = all_available_dates
+            else:
+                existing_rows = await conn.fetch("SELECT DISTINCT date FROM stats.debt_identity")
+                existing_dates_set = {r["date"] for r in existing_rows}
+                missing_dates = all_available_dates - existing_dates_set
+            logger.info(f"    [DB] {len(missing_dates)} dates missing from stats.debt_identity")
+
+            if not missing_dates:
+                logger.info("    [INFO] Database is up to date — no new debt dates to insert "
+                      "(OMA already reloaded above)")
+                print_wall_time(t0)
+                return
+
+            # ------------------------------------------------------------------
+            # (3) Read OMO (full history for repo cumulative) + build outright/MLF/LPR
+            # ------------------------------------------------------------------
+            logger.info("\n[3/5] Building PBoC OMO + outright + MLF + LPR (full history for repo cumulative) …")
+            # NOTE: OMO is read WITHOUT date filtering so the repo lifecycle
+            # cumulative balance is computed over the full history. Only the
+            # INSERT step filters to missing dates.
+            omo_df = build_pboc_omo_df(verbose=True)
+            outright_df = build_pboc_outright_repo_df(self.args.start_date, self.args.end_date, verbose=True)
+            mlf_df = build_pboc_mlf_df(self.args.start_date, self.args.end_date, verbose=True)
+            lpr_df = build_lpr_df(self.args.start_date, self.args.end_date, verbose=True)
+
+            # ------------------------------------------------------------------
+            # (4) Read SHIBOR + China bond (filtered to missing years) + repo lifecycle
+            # ------------------------------------------------------------------
+            logger.info("\n[4/5] Building SHIBOR + repo lifecycle + China bond (missing years only) …")
+
+            # Filter yearly files to only those overlapping with missing dates
+            missing_shibor_files = filter_files_by_missing_years(shibor_files_all, missing_dates)
+            missing_chinabond_files = filter_files_by_missing_years(chinabond_files_all, missing_dates)
+            logger.info(f"    → SHIBOR: {len(missing_shibor_files)} files to read "
+                  f"(out of {len(shibor_files_all)} total)")
+            logger.info(f"    → China bond: {len(missing_chinabond_files)} files to read "
+                  f"(out of {len(chinabond_files_all)} total)")
+
+            shibor_df = build_shibor_df(self.args.start_date, self.args.end_date, verbose=True,
+                                             files=missing_shibor_files)
+            repo_lifecycle_df = build_repo_lifecycle_df(omo_df)
+            if len(repo_lifecycle_df):
+                logger.info(f"    [REPO-LIFECYCLE] {len(repo_lifecycle_df)} daily records, "
+                      f"peak cumulative: {repo_lifecycle_df['repo_cumulative'].max():,.0f} 亿元")
+            chinabond_df = build_chinabond_df(self.args.start_date, self.args.end_date, verbose=True,
+                                               files=missing_chinabond_files)
+
+            # After reading SHIBOR/China bond, check for additional dates not in
+            # the instruments CSV (e.g., trading days with SHIBOR data but no OMO).
+            # --date mode pins the scope to the forced date — no extra dates.
+            if forced is None:
+                for df in [shibor_df, chinabond_df]:
+                    if df is not None and len(df) > 0:
+                        extra_dates = set(
+                            dates_as_date_list(_host(df)["date"])) - existing_dates_set
+                        if extra_dates:
+                            missing_dates = missing_dates | extra_dates
+                            logger.info(f"    → Found {len(extra_dates)} additional missing dates "
+                                  f"from SHIBOR/China bond (not in instruments CSV)")
+
+            # ------------------------------------------------------------------
+            # (5) Filter to missing dates and insert
+            # ------------------------------------------------------------------
+            logger.info("\n[5/5] Inserting data to database (missing dates only) …")
+
+            # Insert new identities for missing dates only
+            identity_rows = [{"date": d} for d in sorted(missing_dates)]
+            await self.insert_rows(conn, "stats.debt_identity", identity_rows, ["date"])
+
+            # Helper: filter a frame to missing dates, convert to rows for insert.
+            # Frames stay cudf-dispatched through processing; the host unwrap
+            # happens ONCE here before numpy filtering, and records_from_frame
+            # emits datetime.date + NaN→None at the DB boundary (no .dt.date
+            # object-date column, no to_dict("records") per-row extraction).
+            def df_to_missing_rows(df, date_col="date"):
+                if df is None or len(df) == 0:
+                    return []
+                df = _host(df)
+                missing_d64 = np.asarray(sorted(missing_dates), dtype="datetime64[D]")
+                d = np.asarray(df[date_col]).astype("datetime64[D]")
+                df = df.loc[np.isin(d, missing_d64)]
+                if len(df) == 0:
+                    return []
+                return records_from_frame(df, np.asarray(df.columns).tolist())
+
+            # Insert each source table, filtered to missing dates
+            table_source_pairs = [
+                ("stats.debt_omo",            omo_df),
+                ("stats.debt_repo",           repo_lifecycle_df),
+                ("stats.debt_outright_repo",  outright_df),
+                ("stats.debt_mlf",            mlf_df),
+                ("stats.debt_lpr",            lpr_df),
+                ("stats.debt_shibor",         shibor_df),
+                ("stats.debt_treasury",       chinabond_df),
+            ]
+            for tbl, df in table_source_pairs:
+                rows = df_to_missing_rows(df)
+                if rows:
+                    await self.insert_rows(conn, tbl, rows, ["date"],
+                                      suffix=f" (filtered to {len(missing_dates)} missing dates)")
+                else:
+                    logger.info(f"    [DB] No new rows to insert into {tbl}")
+
+        finally:
+            await conn.close()
+
+        # Coverage summary (over full source range, not just missing)
+        logger.info(f"\n  Coverage by source (full range):")
+        if oma_df is not None and len(oma_df) > 0:
+            logger.info(f"    · PBoC OMA            : {len(oma_df):>5d} announcements")
+        if omo_df is not None and len(omo_df) > 0:
+            n = int(omo_df["omo_rate"].notna().sum())
+            logger.info(f"    · PBoC OMO rate       : {n:>5d} days")
+        if outright_df is not None and len(outright_df) > 0:
+            n = int((outright_df["outright_repo_marker"] == 1).sum())
+            logger.info(f"    · PBoC outright-repo  : {n:>5d} announcements")
+        if mlf_df is not None and len(mlf_df) > 0:
+            n = int((mlf_df["mlf_marker"] == 1).sum())
+            logger.info(f"    · PBoC MLF            : {n:>5d} announcements")
+        if lpr_df is not None and len(lpr_df) > 0:
+            n = int(lpr_df["lpr_1y"].notna().sum())
+            logger.info(f"    · PBoC LPR (1Y)       : {n:>5d} announcements")
+        if shibor_df is not None and len(shibor_df) > 0:
+            n = int(shibor_df["shibor_o_n"].notna().sum())
+            logger.info(f"    · SHIBOR O/N          : {n:>5d} days")
+        if chinabond_df is not None and len(chinabond_df) > 0:
+            n = int(chinabond_df["cb_1y"].notna().sum())
+            logger.info(f"    · China bond 1Y yield  : {n:>5d} days")
+
+        print_wall_time(t0)

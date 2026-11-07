@@ -1,0 +1,12 @@
+-- The code's latest RSI columns (analysis.mov_ave_rsi), one per requested
+-- window — the mov_rsi family's current value source (stored column
+-- rsi_{W}days aliased to the bare window key; as_of bounds to the latest
+-- row at-or-before D).
+-- args:
+--   rsi_columns: fragment — the "rsi_{W}days::float8 AS rsi_{W}" projection
+--     built from RSI_WINDOWS
+--   rsi_table: fragment — the RSI source table (RSI_TABLE)
+--   sec_type: value smallint — the sec_type's SEC_TYPE_CODE
+--   code: value text — the ticker
+--   as_of: value date or None — bound the latest row at-or-before this day
+SELECT {{rsi_columns}} FROM {{rsi_table}} WHERE sec_type = {{sec_type}} AND code = {{code}}   AND ({{as_of}}::date IS NULL OR date <= {{as_of}}::date) ORDER BY date DESC LIMIT 1

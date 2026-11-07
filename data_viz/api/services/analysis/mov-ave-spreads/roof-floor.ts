@@ -17,17 +17,22 @@ import type {
   RfReboundOutcome,
   RoofFloorSide,
 } from "@shared/types";
-import { labelDecodeSql, LABEL_CODE } from "@api/services/label-codes";
+import { LABEL_CODE } from "@api/services/label-codes";
 
-/** SQL for the "rfest" extras group: the roof/floor LEVEL-ESTIMATE pivot —
+/** The "rfest" group's query — the roof/floor LEVEL-ESTIMATE pivot —
  *  analysis.mov_ave_spreads_roof_floor_estimates is LONG (one row per
- *  (code, date, period, method)); this pivots it back to one row per date
- *  with roof_{method}_{W}d / floor_{method}_{W}d fields (method bound via
- *  its label_dim code in LABEL_CODE.roof_floor_method), driven off the
- *  detail rows' dates so the response is index-aligned with the chart
- *  (sec_type binds through $1 at call time). */
-export function buildRfEstimateExtrasSql(): string {
-  const pivot = ROOF_FLOOR_ESTIMATE_WINDOWS.flatMap((p) =>
+ *  (code, date, period, method)); pivoted back to one row per date with
+ *  roof_{method}_{W}d / floor_{method}_{W}d / breached_{method}_{W}d
+ *  fields (method bound via its label_dim code in
+ *  LABEL_CODE.roof_floor_method), driven off the detail rows' dates so the
+ *  response is index-aligned with the chart. The SELECT lives in the sql
+ *  view
+ *  data_viz/api/services/analysis/mov-ave-spreads/roof-floor/estimates_pivot
+ *  — the two fragments below are passed to it as fragment args. */
+
+/** Fragment: the est CTE's per-(method, window) FILTER aggregates. */
+export function rfEstimatePivotSql(): string {
+  return ROOF_FLOOR_ESTIMATE_WINDOWS.flatMap((p) =>
     ROOF_FLOOR_ESTIMATE_METHODS.flatMap((m) => {
       const code = LABEL_CODE.roof_floor_method[m];
       return [
@@ -37,36 +42,17 @@ export function buildRfEstimateExtrasSql(): string {
       ];
     }),
   ).join(",\n        ");
-  const selectFields = ROOF_FLOOR_ESTIMATE_WINDOWS.flatMap((p) =>
+}
+
+/** Fragment: the final SELECT's est.<field> list (same order as the pivot). */
+export function rfEstimateSelectSql(): string {
+  return ROOF_FLOOR_ESTIMATE_WINDOWS.flatMap((p) =>
     ROOF_FLOOR_ESTIMATE_METHODS.flatMap((m) => [
       `est.roof_${m}_${p}d`,
       `est.floor_${m}_${p}d`,
       `est.breached_${m}_${p}d`,
     ]),
   ).join(",\n      ");
-  return `
-    WITH d AS MATERIALIZED (
-      SELECT * FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-        AND code = ANY($2::text[])
-    ),
-    est AS MATERIALIZED (
-      SELECT
-        e.code,
-        e.date,
-        ${pivot}
-      FROM analysis.mov_ave_spreads_roof_floor_estimates e
-      WHERE e.sec_type = $1
-        AND e.code = ANY($2::text[])
-      GROUP BY e.code, e.date
-    )
-    SELECT
-      d.date,
-      ${selectFields}
-    FROM d
-    LEFT JOIN est ON est.code = d.code AND est.date = d.date
-    ORDER BY d.date ASC
-  `;
 }
 
 /** One pivoted estimate row as pg hands it over (float8 casts in the SQL;
@@ -95,33 +81,13 @@ export function toRfEstimateRow(r: DbRfEstimateRow): MovAveSpreadRoofFloorEstima
   } as MovAveSpreadRoofFloorEstimateRow;
 }
 
-/** SQL for the "rfaudit" extras group: one code's rebound-audit events
- *  (analysis.mov_ave_spreads_roof_floor_rebounds), side + outcome
- *  decoded via label_dim at this boundary (labels never ride frames). */
-export function buildRfReboundsSql(): string {
-  return `
-    SELECT
-      r.event_date,
-      ${labelDecodeSql("side", "r.side")} AS side,
-      r.period::int AS period,
-      r.level::float8,
-      ${labelDecodeSql("rf_rebound_outcome", "r.outcome")} AS outcome,
-      r.rebound_date,
-      r.retest_date,
-      r.days_to_retest::int AS days_to_retest,
-      r.rebound_pct::float8,
-      r.bounce_pct::float8,
-      r.break_depth_pct::float8,
-      r.days_to_break::int AS days_to_break,
-      r.clean_break,
-      r.later_break,
-      r.retest_episodes::int AS retest_episodes
-    FROM analysis.mov_ave_spreads_roof_floor_rebounds r
-    WHERE r.sec_type = $1
-      AND r.code = ANY($2::text[])
-    ORDER BY r.event_date
-  `;
-}
+/** The "rfaudit" group's query: one code's rebound-audit events
+ *  (analysis.mov_ave_spreads_roof_floor_rebounds), side + outcome decoded
+ *  via label_dim at this boundary (labels never ride frames). The SELECT
+ *  lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/roof-floor/rebounds
+ *  (the side/outcome decode fragments passed as fragment args by
+ *  extras.ts). */
 
 /** One rebound-audit event row as pg hands it over (side/outcome arrive
  *  decoded to labels; NUMERICs cast float8; booleans real bools). */

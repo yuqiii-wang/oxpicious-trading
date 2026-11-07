@@ -104,7 +104,11 @@ from _common.db_commons import (
 )
 from _common.df_utils import column_subset, host_array, host_unique
 from _common.labels import SEC_TYPE_LABEL
-from analysis.mov_ave_spread._common import sec_type_code
+from analysis.mov_ave_spread._common import (
+    StepRun,
+    TableStep,
+    sec_type_code,
+)
 from analysis._common import upsert_analysis_identity
 
 from analysis.mov_ave_spread.config import (
@@ -444,19 +448,11 @@ async def _copy_bands_chunked(conn, bands: pd.DataFrame) -> int:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__)
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
+#  pair-keyed flow overrides TableStep.execute itself)
 # ---------------------------------------------------------------------------
 
-async def run_high_low_pct(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
+class HighLowPctStep(TableStep):
     """Run the high-low percentile band pipeline against the source data
     already loaded by the parent mov_ave_spread.
 
@@ -477,156 +473,188 @@ async def run_high_low_pct(
       2. Filter to the missing pairs, CSV-COPY insert in chunks.
       3. Upsert analysis.analysis_identity registry.
 
-    Args:
-      conn: asyncpg connection (reused from parent).
+    Args (now run fields / the execute sec_type argument):
+      run.conn: asyncpg connection (reused from parent).
       df: source DataFrame with at least columns [sec_type, code, date,
           high, low] — the FULL per-code history.
-      force: the parent's --force truncated / deleted the scope upfront
-          (step 0 of __main__), so every month is (re)computed and
-          inserted; detection is bypassed.
-      pool: accepted for API compatibility with the sibling steps
+      run.force: the parent's --force truncated / deleted the scope
+          upfront (step 0 of __main__), so every month is (re)computed
+          and inserted; detection is bypassed.
+      run.pool: accepted for API compatibility with the sibling steps
           (unused — the COPY is sequential; see _copy_bands_chunked).
-      max_concurrent: accepted for API compatibility (unused).
+      run.max_concurrent: accepted for API compatibility (unused).
       sec_type: when provided, process only this sec_type (parent loop
                 passes one sec_type at a time to bound memory). When
                 None, infers sec_types from the DataFrame.
-      code_filter: single-code mode (--code): recompute ALL of this
+      run.code_filter: single-code mode (--code): recompute ALL of this
                    code's months (the caller already deleted its rows).
     """
-    t0 = time.time()
-    logger.info("\n" + "=" * 78)
-    logger.info("  MOV_AVE_HIGH_LOW_PCT (internal step of mov_ave_spread)")
-    logger.info("=" * 78)
 
-    if code_filter is not None:
-        logger.info(f"    mode: SINGLE-CODE (full band rebuild for "
-              f"{code_filter})")
-    elif force:
-        logger.info("    mode: FORCE (full band rebuild; the parent wiped the "
-              "scope upfront)")
-    else:
-        logger.info("    mode: incremental (missing (code, month) pairs only)")
+    title = "MOV_AVE_HIGH_LOW_PCT (internal step of mov_ave_spread)"
+    tag = "h"
+    table = HIGH_LOW_PCT_TABLE
+    analysis_name = HIGH_LOW_PCT_ANALYSIS_NAME
+    detail_name = "mov_ave_high_low_pct"
+    description = HIGH_LOW_PCT_DESCRIPTION
+    needed_cols = ("sec_type", "code", "date", "high", "low")
+    in_skip_gate = True
 
-    needed_cols = ["sec_type", "code", "date", "high", "low"]
-    available = column_subset(df, needed_cols)
-    hlp_df = df[available].copy()
-
-    if hlp_df.empty:
-        logger.info("    -> no source data; skipping high-low-pct step.")
-        return
-
-    if sec_type is not None:
-        sec_types = (sec_type,)
-    else:
-        sec_types = tuple(
-            SEC_TYPE_LABEL[c] for c in host_unique(hlp_df["sec_type"])
+    async def has_pending_work(
+        self, conn, sec_type: str, src_identity_table: str,
+    ) -> bool:
+        """The parent phase-0 pair check: (code, month) pairs of
+        ``sec_type`` whose band rows are missing or INCOMPLETE in the
+        bands table (active universe; >= 255 cumulative identity rows
+        through the month's end; the in-progress month excluded). The
+        old phase-0 call passed the SOURCE identity table — the
+        ``src_identity_table`` argument the caller supplies here.
+        Read-only."""
+        hl_pairs = await find_missing_high_low_pct_pairs(
+            conn, src_identity_table, sec_type,
         )
+        return bool(hl_pairs)
 
-    # ---- Step 0: missing-pair detection (skip compute when current) --
-    if code_filter is not None or force:
-        # Single-code: rows pre-deleted by the caller. Force: the
-        # parent truncated (full-universe) or deleted the scoped rows
-        # (--sec-type) in its step 0 — recompute everything.
-        missing_by_st: dict[str, set] | None = None
-    else:
-        missing_by_st = {}
-        for st in sec_types:
-            # The frame's sec_type rides as its int16 label CODE (the
-            # label-code contract) — compare against the code, never the
-            # label string (a string comparison silently matched NOTHING
-            # and no-op'd the incremental bands step for every sec_type,
-            # found 2026-10-18 via the industry backfill).
-            st_codes = sorted(set(host_array(
-                hlp_df.loc[
-                    hlp_df["sec_type"] == sec_type_code(st), "code"
-                ].to_numpy()
-            )))
-            pairs = await find_missing_high_low_pct_pairs(
-                conn, SEC_TYPE_IDENTITY_TABLE[st], st, codes=st_codes,
-            )
-            missing_by_st[st] = pairs
-            logger.info(f"    -> {st}: {len(pairs):,} missing (code, month) "
-                  f"pairs across {len(st_codes):,} codes")
-        if not any(missing_by_st.values()):
-            logger.info("    -> DB is up to date; nothing to do.")
+    async def execute(
+        self, run: StepRun, df: pd.DataFrame,
+        *, sec_type: str | None = None,
+    ) -> None:
+        t0 = time.time()
+        logger.info("\n" + "=" * 78)
+        logger.info("  MOV_AVE_HIGH_LOW_PCT (internal step of mov_ave_spread)")
+        logger.info("=" * 78)
+
+        if run.code_filter is not None:
+            logger.info(f"    mode: SINGLE-CODE (full band rebuild for "
+                  f"{run.code_filter})")
+        elif run.force:
+            logger.info("    mode: FORCE (full band rebuild; the parent wiped "
+                  "the scope upfront)")
+        else:
+            logger.info("    mode: incremental (missing (code, month) pairs "
+                  "only)")
+
+        needed_cols = ["sec_type", "code", "date", "high", "low"]
+        available = column_subset(df, needed_cols)
+        hlp_df = df[available].copy()
+
+        if hlp_df.empty:
+            logger.info("    -> no source data; skipping high-low-pct step.")
             return
 
-    # ---- Step 1: compute bands over the full history -----------------
-    logger.info(f"\n[h1/3] Computing month-end trailing high/low percentile "
-          f"bands for periods "
-          f"{', '.join(str(p) for p in HIGH_LOW_PCT_PERIODS)} rows at "
-          f"pct_type {', '.join(str(p) for p in HIGH_LOW_PCT_TYPES)} "
-          f"(min {HIGH_LOW_PCT_MIN_PERIODS} window rows)...")
-    hlp_df = hlp_df.sort_values(
-        ["sec_type", "code", "date"]
-    ).reset_index(drop=True)
-    bands = compute_high_low_pct_bands(hlp_df)
-    del hlp_df
-    n_codes = (
-        bands[["sec_type", "code"]].drop_duplicates().shape[0]
-        if not bands.empty else 0
-    )
-    logger.info(f"    -> {len(bands):,} band rows across {n_codes:,} "
-          f"(sec_type, code) groups")
+        if sec_type is not None:
+            sec_types = (sec_type,)
+        else:
+            sec_types = tuple(
+                SEC_TYPE_LABEL[c] for c in host_unique(hlp_df["sec_type"])
+            )
 
-    # ---- Step 2: filter to missing pairs + COPY insert ---------------
-    if missing_by_st is not None:
-        n_expected = sum(len(p) for p in missing_by_st.values())
-        n_before = len(bands)
-        bands = _filter_to_missing_pairs(bands, missing_by_st)
-        logger.info(f"    -> missing-pair filter: {len(bands):,} of "
-              f"{n_before:,} band rows kept ({n_expected:,} expected "
-              f"pairs x {HIGH_LOW_PCT_ROWS_PER_PAIR} rows)")
-        n_band_pairs = (
-            bands[["sec_type", "code", "date_year_month"]]
-            .drop_duplicates().shape[0]
+        # ---- Step 0: missing-pair detection (skip compute when current) --
+        if run.code_filter is not None or run.force:
+            # Single-code: rows pre-deleted by the caller. Force: the
+            # parent truncated (full-universe) or deleted the scoped rows
+            # (--sec-type) in its step 0 — recompute everything.
+            missing_by_st: dict[str, set] | None = None
+        else:
+            missing_by_st = {}
+            for st in sec_types:
+                # The frame's sec_type rides as its int16 label CODE (the
+                # label-code contract) — compare against the code, never the
+                # label string (a string comparison silently matched NOTHING
+                # and no-op'd the incremental bands step for every sec_type,
+                # found 2026-10-18 via the industry backfill).
+                st_codes = sorted(set(host_array(
+                    hlp_df.loc[
+                        hlp_df["sec_type"] == sec_type_code(st), "code"
+                    ].to_numpy()
+                )))
+                pairs = await find_missing_high_low_pct_pairs(
+                    run.conn, SEC_TYPE_IDENTITY_TABLE[st], st,
+                    codes=st_codes,
+                )
+                missing_by_st[st] = pairs
+                logger.info(f"    -> {st}: {len(pairs):,} missing (code, "
+                      f"month) pairs across {len(st_codes):,} codes")
+            if not any(missing_by_st.values()):
+                logger.info("    -> DB is up to date; nothing to do.")
+                return
+
+        # ---- Step 1: compute bands over the full history -----------------
+        logger.info(f"\n[h1/3] Computing month-end trailing high/low "
+              f"percentile bands for periods "
+              f"{', '.join(str(p) for p in HIGH_LOW_PCT_PERIODS)} rows at "
+              f"pct_type {', '.join(str(p) for p in HIGH_LOW_PCT_TYPES)} "
+              f"(min {HIGH_LOW_PCT_MIN_PERIODS} window rows)...")
+        hlp_df = hlp_df.sort_values(
+            ["sec_type", "code", "date"]
+        ).reset_index(drop=True)
+        bands = compute_high_low_pct_bands(hlp_df)
+        del hlp_df
+        n_codes = (
+            bands[["sec_type", "code"]].drop_duplicates().shape[0]
             if not bands.empty else 0
         )
-        if n_band_pairs < n_expected:
-            logger.warning(f"    WARNING: {n_expected - n_band_pairs:,} expected "
-                  f"pairs produced no band (identity rows exist but the "
-                  f"joined source has < {HIGH_LOW_PCT_MIN_PERIODS} "
-                  f"non-NULL high/low observations, or the month's rows "
-                  f"were dropped by the source INNER JOINs); they will "
-                  f"be re-flagged on the next run.")
+        logger.info(f"    -> {len(bands):,} band rows across {n_codes:,} "
+              f"(sec_type, code) groups")
 
-    if bands.empty:
-        logger.info("    -> no band rows to insert; skipping COPY.")
-        return
-
-    # ---- Wipe incomplete pairs' stale rows (incremental mode) --------
-    # Detection flagged both fully-missing and present-but-incomplete
-    # pairs; deleting the detected pairs' rows (a no-op for the fully
-    # missing ones) makes the re-insert PK-conflict-free. Must run
-    # AFTER the bands computed cleanly — a compute failure then leaves
-    # the pairs merely incomplete (re-flagged next run), never empty.
-    if missing_by_st is not None:
-        for st in sec_types:
-            n_del = await _delete_incomplete_pairs(
-                conn, st, missing_by_st.get(st, set()),
+        # ---- Step 2: filter to missing pairs + COPY insert ---------------
+        if missing_by_st is not None:
+            n_expected = sum(len(p) for p in missing_by_st.values())
+            n_before = len(bands)
+            bands = _filter_to_missing_pairs(bands, missing_by_st)
+            logger.info(f"    -> missing-pair filter: {len(bands):,} of "
+                  f"{n_before:,} band rows kept ({n_expected:,} expected "
+                  f"pairs x {HIGH_LOW_PCT_ROWS_PER_PAIR} rows)")
+            n_band_pairs = (
+                bands[["sec_type", "code", "date_year_month"]]
+                .drop_duplicates().shape[0]
+                if not bands.empty else 0
             )
-            if n_del:
-                logger.info(f"    -> deleted {n_del:,} stale rows of "
-                      f"incomplete pairs ({st})")
+            if n_band_pairs < n_expected:
+                logger.warning(
+                    f"    WARNING: {n_expected - n_band_pairs:,} expected "
+                    f"pairs produced no band (identity rows exist but the "
+                    f"joined source has < {HIGH_LOW_PCT_MIN_PERIODS} "
+                    f"non-NULL high/low observations, or the month's rows "
+                    f"were dropped by the source INNER JOINs); they will "
+                    f"be re-flagged on the next run.")
 
-    logger.info(f"\n[h2/3] COPY-inserting {len(bands):,} band rows "
-          f"({len(bands) // HIGH_LOW_PCT_ROWS_PER_PAIR:,} code-months x "
-          f"{len(HIGH_LOW_PCT_PERIODS)} periods x "
-          f"{len(HIGH_LOW_PCT_TYPES)} pct_types)...")
-    # sec_type rides as its stored SMALLINT code end-to-end (the
-    # label-code contract) — the COPY frame takes the code as-is.
-    n = await _copy_bands_chunked(conn, bands)
-    del bands
-    logger.info(f"    -> inserted {n:,} band rows")
+        if bands.empty:
+            logger.info("    -> no band rows to insert; skipping COPY.")
+            return
 
-    # ---- Step 3: register in analysis_identity ----------------------
-    logger.info(f"\n[h3/3] Upserting analysis.analysis_identity registry...")
-    await upsert_analysis_identity(
-        conn,
-        name=HIGH_LOW_PCT_ANALYSIS_NAME,
-        detail_name="mov_ave_high_low_pct",
-        description=HIGH_LOW_PCT_DESCRIPTION,
-    )
+        # ---- Wipe incomplete pairs' stale rows (incremental mode) --------
+        # Detection flagged both fully-missing and present-but-incomplete
+        # pairs; deleting the detected pairs' rows (a no-op for the fully
+        # missing ones) makes the re-insert PK-conflict-free. Must run
+        # AFTER the bands computed cleanly — a compute failure then leaves
+        # the pairs merely incomplete (re-flagged next run), never empty.
+        if missing_by_st is not None:
+            for st in sec_types:
+                n_del = await _delete_incomplete_pairs(
+                    run.conn, st, missing_by_st.get(st, set()),
+                )
+                if n_del:
+                    logger.info(f"    -> deleted {n_del:,} stale rows of "
+                          f"incomplete pairs ({st})")
 
-    logger.info(f"\n  mov_ave_high_low_pct wall time: "
-          f"{time.time() - t0:.1f}s")
+        logger.info(f"\n[h2/3] COPY-inserting {len(bands):,} band rows "
+              f"({len(bands) // HIGH_LOW_PCT_ROWS_PER_PAIR:,} code-months x "
+              f"{len(HIGH_LOW_PCT_PERIODS)} periods x "
+              f"{len(HIGH_LOW_PCT_TYPES)} pct_types)...")
+        # sec_type rides as its stored SMALLINT code end-to-end (the
+        # label-code contract) — the COPY frame takes the code as-is.
+        n = await _copy_bands_chunked(run.conn, bands)
+        del bands
+        logger.info(f"    -> inserted {n:,} band rows")
+
+        # ---- Step 3: register in analysis_identity ----------------------
+        logger.info(f"\n[h3/3] Upserting analysis.analysis_identity registry...")
+        await upsert_analysis_identity(
+            run.conn,
+            name=HIGH_LOW_PCT_ANALYSIS_NAME,
+            detail_name="mov_ave_high_low_pct",
+            description=HIGH_LOW_PCT_DESCRIPTION,
+        )
+
+        logger.info(f"\n  mov_ave_high_low_pct wall time: "
+              f"{time.time() - t0:.1f}s")

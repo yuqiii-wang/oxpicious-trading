@@ -7,12 +7,11 @@
 -- ============================================================================
 
 -- Drop any prior version so a re-run rebuilds the table from the CREATE
--- below; also remove the stale analysis_identity row so the registration
--- starts clean. The table is derived data — fully recomputed by the next
+-- below. The table is derived data — fully recomputed by the next
 -- analysis.mov_ave_spread run (the incremental missing-date check sees
--- every date missing after the DROP).
+-- every date missing after the DROP; the registry row re-registers via
+-- the runtime upsert_analysis_identity).
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_roof_floor_estimates CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_roof_floor_estimates';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_roof_floor_estimates  (LONG format)

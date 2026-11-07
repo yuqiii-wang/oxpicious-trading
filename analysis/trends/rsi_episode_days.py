@@ -54,6 +54,7 @@ import pandas as pd
 
 from _common.db_commons import chunked_purge_async, csv_copy_frame_chunked_async
 from _common.df_utils import host_array
+from _common.sql_views import frag, render_sql_view
 from analysis._common import upsert_analysis_identity
 from analysis.mov_ave_spread._common.steps import sec_type_code
 from analysis.mov_ave_spread.steps.rsi import RSI_WINDOWS
@@ -198,17 +199,23 @@ async def rebuild_trend_episode_days(
     logger.info("\n[ted] Rebuilding trend episode days (wholesale: band "
           "membership shifts with the full-history ranks)...")
     st_code = sec_type_code(sec_type)
-    where = "WHERE sec_type = $1"
-    args: list = [st_code]
+    # ranks_by_{sec_type,code} views: the rank_rsi_{W}days columns of
+    # analysis.mov_ave_rsi_ranks for the rebuild scope (column list stays
+    # the RSI_WINDOWS-derived fragment).
+    rank_columns = ", ".join(f"rank_rsi_{w}days" for w in RSI_WINDOWS)
     if code_filter is not None:
-        where += " AND code = $2"
-        args.append(code_filter)
-    rows = await conn.fetch(
-        f"SELECT sec_type, code, date, "
-        + ", ".join(f"rank_rsi_{w}days" for w in RSI_WINDOWS)
-        + f" FROM analysis.mov_ave_rsi_ranks {where}",
-        *args,
-    )
+        view = render_sql_view(
+            "analysis/trends/rsi_episode_days/ranks_by_code",
+            rank_columns=frag(rank_columns),
+            sec_type=st_code, code=code_filter,
+        )
+    else:
+        view = render_sql_view(
+            "analysis/trends/rsi_episode_days/ranks_by_sec_type",
+            rank_columns=frag(rank_columns),
+            sec_type=st_code,
+        )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         logger.info("    -> no ranks rows; skipping trend-episode-days "
               "write.")

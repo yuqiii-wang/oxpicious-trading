@@ -1,5 +1,7 @@
 """Internal step pipelines for analysis.mov_ave_spread — one table one
-module, one row per entry:
+module, one row per entry (each entry is a :class:`TableStep` subclass
+whose ``execute`` carries the pipeline; the shared skeleton lives in
+``_common.steps.TableStep``):
 
   detail                 — build_detail_frame (the parent detail-table
                            step's wide build; inserted via __main__)
@@ -36,66 +38,67 @@ module, one row per entry:
   high_low_pct_streaks   — analysis.mov_ave_high_low_pct_streaks
   codes_summary          — analysis.mov_ave_spreads_codes refresh
 
-Standard steps delegate the pipeline skeleton (target-date detection /
-force purge / incremental filter / chunked insert / identity upsert) to
-``_common.steps.run_table_step``; wholesale-rebuild steps (price_vs_amt,
-high_low_pct, high_low_pct_streaks) keep their own run_* flows.
+Standard steps inherit the template ``execute`` (target-date detection /
+force purge / incremental filter / chunked insert / identity upsert);
+wholesale-rebuild steps (price_vs_amt, momentum, roof_floor_rebound,
+high_low_pct, high_low_pct_streaks) override ``execute`` with their own
+flows.
 """
 from analysis.mov_ave_spread.steps.detail import build_detail_frame
-from analysis.mov_ave_spread.steps.rsi import run_rsi, RSI_TABLE
+from analysis.mov_ave_spread.steps.rsi import RsiStep, RSI_TABLE
 from analysis.mov_ave_spread.steps.rsi_ranks import (
     RSI_RANKS_TABLE,
     rebuild_rsi_ranks,
 )
-from analysis.mov_ave_spread.steps.holiday import run_holiday
-from analysis.mov_ave_spread.steps.ema import run_ema
+from analysis.mov_ave_spread.steps.holiday import HolidayStep
+from analysis.mov_ave_spread.steps.ema import EmaStep
 from analysis.mov_ave_spread.steps.ohlc import (
+    OhlcStep,
     build_ohlc_long_frame,
     compute_ohlc_columns,
     find_ohlc_repair_dates,
-    run_ohlc,
 )
-from analysis.mov_ave_spread.steps.ohlc_gaps import run_ohlc_gaps
+from analysis.mov_ave_spread.steps.ohlc_gaps import OhlcGapsStep
 from analysis.mov_ave_spread.roof_floor_estimate import (
-    run_roof_floor_estimates,
+    RoofFloorEstimateStep,
 )
 from analysis.mov_ave_spread.roof_floor_rebound import (
-    run_roof_floor_rebounds,
+    RoofFloorReboundStep,
 )
-from analysis.mov_ave_spread.steps.trading_amt import run_trading_amt
+from analysis.mov_ave_spread.steps.trading_amt import TradingAmtStep
 from analysis.mov_ave_spread.steps.trading_amt_ratios import (
-    run_trading_amt_ratios,
+    TradingAmtRatiosStep,
 )
-from analysis.mov_ave_spread.steps.price_vs_amt import run_price_vs_amt
+from analysis.mov_ave_spread.steps.price_vs_amt import PriceVsAmtStep
 from analysis.mov_ave_spread.steps.momentum import (
     MOMENTUM_TABLE,
-    run_momentum,
+    MomentumStep,
 )
 from analysis.mov_ave_spread.steps.high_low_pct import (
+    HighLowPctStep,
     find_missing_high_low_pct_pairs,
-    run_high_low_pct,
 )
 from analysis.mov_ave_spread.steps.high_low_pct_streaks import (
-    run_high_low_pct_streaks,
+    HighLowPctStreaksStep,
 )
 from analysis.mov_ave_spread.steps.codes_summary import refresh_codes_summary
 
 __all__ = [
     "build_detail_frame",
-    "run_rsi", "RSI_TABLE",
+    "RsiStep", "RSI_TABLE",
     "RSI_RANKS_TABLE", "rebuild_rsi_ranks",
-    "run_holiday",
-    "run_ema",
-    "run_ohlc", "find_ohlc_repair_dates", "compute_ohlc_columns",
+    "HolidayStep",
+    "EmaStep",
+    "OhlcStep", "find_ohlc_repair_dates", "compute_ohlc_columns",
     "build_ohlc_long_frame",
-    "run_ohlc_gaps",
-    "run_roof_floor_estimates",
-    "run_roof_floor_rebounds",
-    "run_trading_amt",
-    "run_trading_amt_ratios",
-    "run_price_vs_amt",
-    "MOMENTUM_TABLE", "run_momentum",
-    "run_high_low_pct", "find_missing_high_low_pct_pairs",
-    "run_high_low_pct_streaks",
+    "OhlcGapsStep",
+    "RoofFloorEstimateStep",
+    "RoofFloorReboundStep",
+    "TradingAmtStep",
+    "TradingAmtRatiosStep",
+    "PriceVsAmtStep",
+    "MOMENTUM_TABLE", "MomentumStep",
+    "HighLowPctStep", "find_missing_high_low_pct_pairs",
+    "HighLowPctStreaksStep",
     "refresh_codes_summary",
 ]

@@ -46,8 +46,8 @@ import pandas as pd
 from _common.df_utils import grouped_rolling_agg
 from analysis._common import sanitize_for_db_insert
 from analysis.mov_ave_spread._common import (
+    TableStep,
     null_if_overflow_counted,
-    run_table_step,
 )
 from analysis.mov_ave_spread.config import (
     NUMERIC_WIDE_MAX_ABS,
@@ -62,7 +62,6 @@ from analysis.mov_ave_spread.config import (
     TRADING_AMT_STD_COLUMNS,
     TRADING_AMT_TABLE,
 )
-from analysis.mov_ave_spread._common import null_if_overflow_counted
 
 import logging
 logger = logging.getLogger(__name__)
@@ -174,8 +173,9 @@ def sanitize_trading_amt_rows(df: pd.DataFrame) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
-#  skeleton lives in _common.steps.run_table_step)
+# ---------------------------------------------------------------------------
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__ via the
+#  TableStep template in _common.steps)
 # ---------------------------------------------------------------------------
 
 def _compute_trading_amt_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -185,18 +185,8 @@ def _compute_trading_amt_columns(df: pd.DataFrame) -> pd.DataFrame:
     return compute_trading_amt_slope(df)
 
 
-async def run_trading_amt(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
-    """Run the trading-amount pipeline against the source data already
-    loaded by the parent mov_ave_spread.
+class TradingAmtStep(TableStep):
+    """Trading-amount internal step (analysis.mov_ave_trading_amt).
 
     Reuses the caller's DB connection and source DataFrame (the
     ``trading_amount``, ``trading_amt_ma{*}``,
@@ -205,7 +195,7 @@ async def run_trading_amt(
     DB fetch). The DataFrame must contain the FULL per-code history so
     rolling computations have enough lookback rows (up to 255).
 
-    Pipeline (see _common.steps.run_table_step)
+    Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_trading_amt against source identity tables.
          In force mode, purge the table scope instead.
@@ -215,26 +205,24 @@ async def run_trading_amt(
       2. Upsert into analysis.mov_ave_trading_amt (chunked by date).
       3. Upsert analysis.analysis_identity registry.
     """
-    await run_table_step(
-        conn, df,
-        title="MOV_AVE_TRADING_AMT (internal step of mov_ave_spread)",
-        tag="t",
-        table=TRADING_AMT_TABLE,
-        analysis_name=TRADING_AMT_ANALYSIS_NAME,
-        detail_name="mov_ave_trading_amt",
-        description=TRADING_AMT_DESCRIPTION,
-        needed_cols=list(dict.fromkeys(
-            ["sec_type", "code", "date", "trading_amount"]
-            + list(TRADING_AMT_MA_COLUMNS)
-            + list(TRADING_AMT_MARKET_SHARE_MA_COLUMNS)
-            + list(TRADING_AMT_MA_SLOPE_COLUMNS)
-            + list(TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS)
-        )),
-        compute_fn=_compute_trading_amt_columns,
-        sanitize_fn=sanitize_trading_amt_rows,
-        force=force,
-        pool=pool,
-        max_concurrent=max_concurrent,
-        sec_type=sec_type,
-        code_filter=code_filter,
-    )
+
+    title = "MOV_AVE_TRADING_AMT (internal step of mov_ave_spread)"
+    tag = "t"
+    table = TRADING_AMT_TABLE
+    analysis_name = TRADING_AMT_ANALYSIS_NAME
+    detail_name = "mov_ave_trading_amt"
+    description = TRADING_AMT_DESCRIPTION
+    needed_cols = tuple(dict.fromkeys(
+        ["sec_type", "code", "date", "trading_amount"]
+        + list(TRADING_AMT_MA_COLUMNS)
+        + list(TRADING_AMT_MARKET_SHARE_MA_COLUMNS)
+        + list(TRADING_AMT_MA_SLOPE_COLUMNS)
+        + list(TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS)
+    ))
+    in_skip_gate = True
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return _compute_trading_amt_columns(df)
+
+    def sanitize_rows(self, df: pd.DataFrame) -> list[dict]:
+        return sanitize_trading_amt_rows(df)

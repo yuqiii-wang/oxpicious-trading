@@ -1,14 +1,14 @@
 /**
  * AI page (DataViz > AI tab) — /dataviz/ai.
  *
- * Browses the LLM Q&A knowledge base (text.llm_qa / text.llm_qa_refs /
+ * Browses the LLM Q&A knowledge base (llm.llm_qa / llm.llm_qa_refs /
  * text.news_digestions, written by llm_agents) OR the persisted interactive
- * ask history (text.llm_qa_by_ask family + multi_media.src_images, written
+ * ask history (llm.llm_qa_by_ask family + multi_media.src_images, written
  * by llm_agents.llm_ask.storage for every AI Ask modal submit) through the
  * same nav kit as the other nav pages — it sits next to the News page,
  * whose date-event strip and feed idioms it reuses. The header's source
  * toggle ("LLM QA" / "QA by Ask" / "Research" — the last the research-logic
- * knowledge base text.llm_qa_by_research) switches which feed the strip +
+ * knowledge base llm.llm_qa_by_research) switches which feed the strip +
  * cards read; everything below it (nav scope, code trend, search,
  * pagination) is shared. Layout, top to bottom:
  *
@@ -148,9 +148,9 @@ export default function AiPage() {
 
   // ---- Q&A feed filters ----------------------------------------------------
   /** Feed source — the header toggle: "kb" = the curated knowledge base
-   *  (text.llm_qa), "ask" = the persisted interactive ask history
-   *  (text.llm_qa_by_ask), "research" = the research-logic knowledge base
-   *  (text.llm_qa_by_research — five-request generation: four evaluation
+   *  (llm.llm_qa), "ask" = the persisted interactive ask history
+   *  (llm.llm_qa_by_ask), "research" = the research-logic knowledge base
+   *  (llm.llm_qa_by_research — five-request generation: four evaluation
    *  dimensions + a summary/label request). Everything below (scope,
    *  search, date strip, pagination) is shared. */
   const [source, setSource] = useState<"kb" | "ask" | "research">("kb");
@@ -158,7 +158,7 @@ export default function AiPage() {
    *  term also hits the derived keyword rows (codes, product, items). */
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState<string | null>(null);
-  /** KB-only big-market-move filter (text.llm_qa.is_big_fluctuation): keep
+  /** KB-only big-market-move filter (llm.llm_qa.is_big_fluctuation): keep
    *  only Q&A rows whose mapped industry had a big move on the row's day.
    *  The ask-history table has no such column — the toggle renders only in
    *  kb mode and never reaches the by-ask requests. */
@@ -218,7 +218,7 @@ export default function AiPage() {
     [handleTrendRange, focusReq],
   );
 
-  // Q&A feed scope — text.llm_qa.industry_id carries industry tags (SEMI,
+  // Q&A feed scope — llm.llm_qa.industry_id carries industry tags (SEMI,
   // BANKS, …), so the feed is ALWAYS scoped by industry, resolved from the
   // active nav pick in this order:
   //   1. A picked security (L3 chip / code search / code trend pick): its OWN
@@ -444,10 +444,10 @@ export default function AiPage() {
       subtitle={
         `${scopeLabel}${selectedDate ? ` · ${selectedDate}` : " · 全部日期"} — ` +
         (source === "kb"
-          ? "LLM 问答知识库（text.llm_qa）· 点选日期圆点筛选当日问答"
+          ? "LLM 问答知识库（llm.llm_qa）· 点选日期圆点筛选当日问答"
           : source === "research"
-            ? "研究逻辑问答（text.llm_qa_by_research）· 四维度研究 + 摘要与逻辑标签 · 点选日期圆点筛选当日研究"
-            : "交互问答历史（text.llm_qa_by_ask）· 图表上点 “?” 提问的记录 · 点选日期圆点筛选当日提问")
+            ? "研究逻辑问答（llm.llm_qa_by_research）· 四维度研究 + 摘要与逻辑标签 · 点选日期圆点筛选当日研究"
+            : "交互问答历史（llm.llm_qa_by_ask）· 图表上点 “?” 提问的记录 · 点选日期圆点筛选当日提问")
       }
       secTypes={["index", "stock"]}
       refreshTooltip="Refresh the classification trees (bypass cache)"

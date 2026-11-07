@@ -52,11 +52,11 @@ from analysis.mov_ave_spread.roof_floor_estimate.long_frame import (
     build_estimate_long_frame,
 )
 from analysis.mov_ave_spread.roof_floor_estimate.step import (
-    run_roof_floor_estimates,
+    RoofFloorEstimateStep,
 )
 
 __all__ = [
     "compute_estimate_columns",
     "build_estimate_long_frame",
-    "run_roof_floor_estimates",
+    "RoofFloorEstimateStep",
 ]

@@ -1,0 +1,12 @@
+-- The code's trailing closes for the on-the-fly Bollinger sigma-depth z
+-- (the mov_ave_spread price convention — ETF adjusted close when
+-- available), newest first, bounded at-or-before as_of. The z itself is
+-- computed in Python (population sigma over the trailing W closes).
+-- args:
+--   price_expr: fragment — the PRICE_SOURCE price expression per sec_type
+--   price_base: fragment — the PRICE_SOURCE base table/alias per sec_type
+--   code: value text — the ticker
+--   as_of: value date or None — bound the price history at-or-before this day
+--   boll_max_window: fragment — the largest BOLL_WINDOWS entry inline
+--     literal (the LIMIT)
+SELECT {{price_expr}}::float8 AS price FROM {{price_base}} WHERE b.code = {{code}} AND b.close IS NOT NULL   AND ({{as_of}}::date IS NULL OR b.date <= {{as_of}}::date) ORDER BY b.date DESC LIMIT {{boll_max_window}}

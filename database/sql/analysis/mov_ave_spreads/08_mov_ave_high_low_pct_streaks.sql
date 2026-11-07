@@ -38,7 +38,6 @@
 --  run).
 -- ----------------------------------------------------------------------------
 DROP TABLE IF EXISTS analysis.mov_ave_high_low_pct_streaks CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_high_low_pct_streaks';
 
 CREATE TABLE analysis.mov_ave_high_low_pct_streaks (
     sec_type                        SMALLINT      NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry

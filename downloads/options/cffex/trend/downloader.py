@@ -21,6 +21,11 @@ The CSV format matches the archive downloader:
     持仓量, 持仓变化, 今收盘, 今结算, 前结算, 涨跌1, 涨跌2, Delta
   - Same encoding: UTF-8-sig (with BOM)
   - Only options rows (contract code contains -C- or -P-)
+
+The fetch functions live on the stateless :class:`CffexOptionsTrendDownloader`
+class — methods keep the former module-function names and sequencing, the
+Playwright page stays a per-call argument, and the pure contract predicates
+/ row filter stay module-level functions.
 """
 
 from __future__ import annotations
@@ -144,330 +149,343 @@ def _filter_to_options(raw_rows: List[List[str]]) -> List[List[str]]:
     return options_rows
 
 
-def _write_options_csv(
-    raw_rows: List[List[str]],
-    output_dir: Path,
-    date_str: str,
-) -> Optional[Path]:
-    """Write options-only CSV file from raw table rows.
+class CffexOptionsTrendDownloader:
+    """Playwright download pipeline for the CFFEX options trend page
+    (stateless class).
 
-    Args:
-        raw_rows: List of rows from the table (first row is header).
-        output_dir: Directory to write CSV file.
-        date_str: Date string for filenames (YYYYMMDD).
+    The module holds no mutable state, so the former module functions are
+    methods with the same names and sequencing on a shared instance; the
+    Playwright page stays a per-call argument (NOT instance state) and the
+    pure contract predicates / row filter above stay module-level
+    functions."""
 
-    Returns:
-        Path to the written CSV file, or None if no options data.
-    """
-    options_rows = _filter_to_options(raw_rows)
-    if not options_rows:
-        logger.info("  %s: no options contracts found", date_str)
-        return None
+    # -----------------------------------------------------------------------
+    # Options CSV writing
+    # -----------------------------------------------------------------------
 
-    return _write_filtered_csv(options_rows, output_dir, date_str)
+    def _write_options_csv(
+        self,
+        raw_rows: List[List[str]],
+        output_dir: Path,
+        date_str: str,
+    ) -> Optional[Path]:
+        """Write options-only CSV file from raw table rows.
 
+        Args:
+            raw_rows: List of rows from the table (first row is header).
+            output_dir: Directory to write CSV file.
+            date_str: Date string for filenames (YYYYMMDD).
 
-def _write_filtered_csv(
-    options_rows: List[List[str]],
-    output_dir: Path,
-    date_str: str,
-) -> Optional[Path]:
-    """Write pre-filtered options rows to CSV.
-
-    Args:
-        options_rows: List of option contract rows (already filtered).
-        output_dir: Directory to write CSV file.
-        date_str: Date string for filenames (YYYYMMDD).
-
-    Returns:
-        Path to the written CSV file, or None if empty.
-    """
-    if not options_rows:
-        logger.info("  %s: no options contracts found", date_str)
-        return None
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    options_path = output_dir / f"{date_str}_options.csv"
-
-    with open(options_path, "w", encoding=OUTPUT_CSV_ENCODING, newline="") as f:
-        writer = csv_mod.writer(f)
-        writer.writerow(CSV_HEADERS)
-        writer.writerows(options_rows)
-
-    logger.info(
-        "  Saved %s: %d options rows → %s",
-        date_str, len(options_rows), options_path.name,
-    )
-    return options_path
-
-
-# ---------------------------------------------------------------------------
-# Page interaction (CFFEX-specific)
-# ---------------------------------------------------------------------------
-
-def _navigate_to_trend_page(page: Page) -> None:
-    """Navigate to the CFFEX trend page and wait for it to load."""
-    page.goto(CFFEX_TREND_URL, wait_until="domcontentloaded")
-    page.wait_for_selector("#actualDate", timeout=PAGE_NAVIGATION_TIMEOUT)
-    page.wait_for_selector("button.btn-query", timeout=5000)
-
-
-def _query_date(page: Page, target_date: date) -> bool:
-    """Query options data for a specific date on the trend page.
-
-    Args:
-        page: Playwright page.
-        target_date: Date to query.
-
-    Returns:
-        True if data was loaded successfully, False otherwise.
-    """
-    date_str = _format_date_for_input(target_date)
-
-    try:
-        page.evaluate("""
-            () => {
-                const radios = document.querySelectorAll('input[name="radio"]');
-                for (const r of radios) {
-                    if (r.value === '期权') {
-                        r.checked = true;
-                        r.dispatchEvent(new Event('change', {bubbles: true}));
-                        r.dispatchEvent(new Event('click', {bubbles: true}));
-                    }
-                }
-            }
-        """)
-    except Exception as e:
-        logger.warning("Failed to select options radio: %s", e)
-
-    try:
-        page.evaluate(f"""
-            () => {{
-                const dateInput = document.getElementById('actualDate');
-                if (dateInput) {{
-                    dateInput.value = '{date_str}';
-                    dateInput.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    dateInput.dispatchEvent(new Event('change', {{bubbles: true}}));
-                }}
-            }}
-        """)
-    except Exception as e:
-        logger.warning("Failed to set date %s: %s", date_str, e)
-        return False
-
-    try:
-        page.evaluate("""
-            () => {
-                const btn = document.querySelector('button.btn-query');
-                if (btn) {
-                    btn.click();
-                    return true;
-                }
-                const buttons = document.querySelectorAll('button');
-                for (const b of buttons) {
-                    if (b.textContent.trim() === '查询') {
-                        b.click();
-                        return true;
-                    }
-                }
-                return false;
-            }
-        """)
-    except Exception as e:
-        logger.warning("Failed to click query button: %s", e)
-        return False
-
-    if not wait_for_table_data(
-        page,
-        timeout_ms=DATA_LOAD_TIMEOUT,
-        no_data_text=_NO_DATA_TEXT,
-    ):
-        logger.info("No data found for %s (may be holiday/weekend)", date_str)
-        return False
-
-    return True
-
-
-def _save_options_data(
-    page: Page,
-    output_dir: Path,
-    date_str: str,
-) -> Optional[Path]:
-    """Save options data for a queried date to CSV.
-
-    Strategy 1: download the combined daily CSV via the page's
-    日行情数据 link and filter it to options rows.
-    Strategy 2 (fallback): scrape the HTML table.
-
-    Returns the written options CSV path, or None if no data.
-    """
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        csv_path = download_csv_via_link(
-            page,
-            Path(tmp_dir),
-            base_origin=CFFEX_BASE_ORIGIN,
-            link_texts=_CSV_LINK_TEXTS,
-            relative_prefix="/cn/",
-            log=logger,
-        )
-        if csv_path:
-            csv_rows = parse_csv_rows(
-                csv_path, numeric_col_indices=_NUMERIC_COL_INDICES,
-            )
-            if csv_rows and len(csv_rows) >= 2:
-                written = _write_filtered_csv(
-                    _filter_to_options(csv_rows), output_dir, date_str,
-                )
-                if written:
-                    return written
-                logger.info("  CSV download had no options data, trying HTML...")
-
-    table_data = extract_table_rows(
-        page, numeric_col_indices=_NUMERIC_COL_INDICES,
-    )
-    if not table_data or len(table_data) < 2:
-        logger.warning("  No table data for %s", date_str)
-        return None
-
-    return _write_options_csv(table_data, output_dir, date_str)
-
-
-# ---------------------------------------------------------------------------
-# Main download functions
-# ---------------------------------------------------------------------------
-
-def download_one_day(
-    target_date: date,
-    out_root: Optional[str] = None,
-    page: Optional[Page] = None,
-) -> Optional[Path]:
-    """Download options trend data for a single day.
-
-    Tries CSV download first (more reliable), falls back to HTML scraping.
-
-    Args:
-        target_date: Trading date to download.
-        out_root: Optional override for output directory.
-        page: Optional pre-existing Playwright page (for batch operations).
-
-    Returns:
-        Path to the options CSV file, or None if no data.
-    """
-    date_str = _format_date_for_filename(target_date)
-    output_dir = get_trend_month_dir(date_str[:6], out_root)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    options_path = trend_options_csv_path(target_date, out_root)
-
-    if options_path.exists() and options_path.stat().st_size > 100:
-        logger.info("  %s already exists, skipping", date_str)
-        return options_path
-
-    if page is not None:
-        return _download_with_page(page, target_date, output_dir, date_str)
-
-    with playwright_session(BROWSER_CONFIG) as (_browser, _context, own_page):
-        return _download_with_page(own_page, target_date, output_dir, date_str)
-
-
-def _download_with_page(
-    page: Page,
-    target_date: date,
-    output_dir: Path,
-    date_str: str,
-) -> Optional[Path]:
-    """Navigate, query and save one date using an existing page."""
-    try:
-        _navigate_to_trend_page(page)
-        # Post-navigation settle — the service row's settle_sleep_sec,
-        # jittered by its sleep_jitter fraction.
-        random_sleep(SETTLE_SLEEP_SEC, SETTLE_JITTER)
-
-        if not _query_date(page, target_date):
-            logger.info("  No data for %s", date_str)
+        Returns:
+            Path to the written CSV file, or None if no options data.
+        """
+        options_rows = _filter_to_options(raw_rows)
+        if not options_rows:
+            logger.info("  %s: no options contracts found", date_str)
             return None
 
-        return _save_options_data(page, output_dir, date_str)
-    except Exception as e:
-        logger.error("  Download failed for %s: %s", date_str, e)
-        return None
+        return self._write_filtered_csv(options_rows, output_dir, date_str)
 
+    def _write_filtered_csv(
+        self,
+        options_rows: List[List[str]],
+        output_dir: Path,
+        date_str: str,
+    ) -> Optional[Path]:
+        """Write pre-filtered options rows to CSV.
 
-def download_trend_batch(
-    dates: List[date],
-    out_root: Optional[str] = None,
-    sleep_sec: Optional[float] = None,
-) -> dict:
-    """Download options trend data for a batch of dates using a single browser session.
+        Args:
+            options_rows: List of option contract rows (already filtered).
+            output_dir: Directory to write CSV file.
+            date_str: Date string for filenames (YYYYMMDD).
 
-    Tries CSV download first (more reliable), falls back to HTML scraping.
+        Returns:
+            Path to the written CSV file, or None if empty.
+        """
+        if not options_rows:
+            logger.info("  %s: no options contracts found", date_str)
+            return None
 
-    Args:
-        dates: List of dates to download.
-        out_root: Optional override for output directory.
-        sleep_sec: Base sleep seconds between downloads (default: the
-            service's external_request_config JSON row, request_type
-            "playwright"; the row's sleep_jitter fraction of that base is
-            the ± seconds range passed to the jittered sleep).
+        output_dir.mkdir(parents=True, exist_ok=True)
+        options_path = output_dir / f"{date_str}_options.csv"
 
-    Returns:
-        Summary dict with counts.
-    """
-    # Pacing from the service's external_request_config JSON row
-    # (request_type "playwright"); an explicit sleep_sec argument overrides
-    # the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = sleep_sec_for(SERVICE, "playwright")
-    pacing_row = request_config_for(SERVICE, "playwright")
-    jitter_sec = pacing_row.sleep_jitter * pacing_row.sleep_sec
+        with open(options_path, "w", encoding=OUTPUT_CSV_ENCODING, newline="") as f:
+            writer = csv_mod.writer(f)
+            writer.writerow(CSV_HEADERS)
+            writer.writerows(options_rows)
 
-    result = {
-        "downloaded": 0,
-        "skipped": 0,
-        "failed": 0,
-        "no_data": 0,
-    }
+        logger.info(
+            "  Saved %s: %d options rows → %s",
+            date_str, len(options_rows), options_path.name,
+        )
+        return options_path
 
-    with playwright_session(BROWSER_CONFIG) as (_browser, _context, page):
-        for i, target_date in enumerate(dates):
-            date_str = _format_date_for_filename(target_date)
-            options_path = trend_options_csv_path(target_date, out_root)
+    # -----------------------------------------------------------------------
+    # Page interaction (CFFEX-specific)
+    # -----------------------------------------------------------------------
 
-            if options_path.exists() and options_path.stat().st_size > 100:
-                logger.info(
-                    "[%d/%d] %s already exists, skipping",
-                    i + 1, len(dates), date_str,
+    def _navigate_to_trend_page(self, page: Page) -> None:
+        """Navigate to the CFFEX trend page and wait for it to load."""
+        page.goto(CFFEX_TREND_URL, wait_until="domcontentloaded")
+        page.wait_for_selector("#actualDate", timeout=PAGE_NAVIGATION_TIMEOUT)
+        page.wait_for_selector("button.btn-query", timeout=5000)
+
+    def _query_date(self, page: Page, target_date: date) -> bool:
+        """Query options data for a specific date on the trend page.
+
+        Args:
+            page: Playwright page.
+            target_date: Date to query.
+
+        Returns:
+            True if data was loaded successfully, False otherwise.
+        """
+        date_str = _format_date_for_input(target_date)
+
+        try:
+            page.evaluate("""
+                () => {
+                    const radios = document.querySelectorAll('input[name="radio"]');
+                    for (const r of radios) {
+                        if (r.value === '期权') {
+                            r.checked = true;
+                            r.dispatchEvent(new Event('change', {bubbles: true}));
+                            r.dispatchEvent(new Event('click', {bubbles: true}));
+                        }
+                    }
+                }
+            """)
+        except Exception as e:
+            logger.warning("Failed to select options radio: %s", e)
+
+        try:
+            page.evaluate(f"""
+                () => {{
+                    const dateInput = document.getElementById('actualDate');
+                    if (dateInput) {{
+                        dateInput.value = '{date_str}';
+                        dateInput.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        dateInput.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }}
+                }}
+            """)
+        except Exception as e:
+            logger.warning("Failed to set date %s: %s", date_str, e)
+            return False
+
+        try:
+            page.evaluate("""
+                () => {
+                    const btn = document.querySelector('button.btn-query');
+                    if (btn) {
+                        btn.click();
+                        return true;
+                    }
+                    const buttons = document.querySelectorAll('button');
+                    for (const b of buttons) {
+                        if (b.textContent.trim() === '查询') {
+                            b.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+        except Exception as e:
+            logger.warning("Failed to click query button: %s", e)
+            return False
+
+        if not wait_for_table_data(
+            page,
+            timeout_ms=DATA_LOAD_TIMEOUT,
+            no_data_text=_NO_DATA_TEXT,
+        ):
+            logger.info("No data found for %s (may be holiday/weekend)", date_str)
+            return False
+
+        return True
+
+    def _save_options_data(
+        self,
+        page: Page,
+        output_dir: Path,
+        date_str: str,
+    ) -> Optional[Path]:
+        """Save options data for a queried date to CSV.
+
+        Strategy 1: download the combined daily CSV via the page's
+        日行情数据 link and filter it to options rows.
+        Strategy 2 (fallback): scrape the HTML table.
+
+        Returns the written options CSV path, or None if no data.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            csv_path = download_csv_via_link(
+                page,
+                Path(tmp_dir),
+                base_origin=CFFEX_BASE_ORIGIN,
+                link_texts=_CSV_LINK_TEXTS,
+                relative_prefix="/cn/",
+                log=logger,
+            )
+            if csv_path:
+                csv_rows = parse_csv_rows(
+                    csv_path, numeric_col_indices=_NUMERIC_COL_INDICES,
                 )
-                result["skipped"] += 1
-                continue
+                if csv_rows and len(csv_rows) >= 2:
+                    written = self._write_filtered_csv(
+                        _filter_to_options(csv_rows), output_dir, date_str,
+                    )
+                    if written:
+                        return written
+                    logger.info("  CSV download had no options data, trying HTML...")
 
-            logger.info("[%d/%d] Downloading %s ...", i + 1, len(dates), date_str)
+        table_data = extract_table_rows(
+            page, numeric_col_indices=_NUMERIC_COL_INDICES,
+        )
+        if not table_data or len(table_data) < 2:
+            logger.warning("  No table data for %s", date_str)
+            return None
 
-            try:
-                _navigate_to_trend_page(page)
-                # Post-navigation settle — the service row's settle_sleep_sec,
-                # jittered by its sleep_jitter fraction.
-                random_sleep(SETTLE_SLEEP_SEC, SETTLE_JITTER)
+        return self._write_options_csv(table_data, output_dir, date_str)
 
-                if not _query_date(page, target_date):
-                    logger.info("  No data for %s", date_str)
-                    result["no_data"] += 1
+    # -----------------------------------------------------------------------
+    # Main download functions
+    # -----------------------------------------------------------------------
+
+    def download_one_day(
+        self,
+        target_date: date,
+        out_root: Optional[str] = None,
+        page: Optional[Page] = None,
+    ) -> Optional[Path]:
+        """Download options trend data for a single day.
+
+        Tries CSV download first (more reliable), falls back to HTML scraping.
+
+        Args:
+            target_date: Trading date to download.
+            out_root: Optional override for output directory.
+            page: Optional pre-existing Playwright page (for batch operations).
+
+        Returns:
+            Path to the options CSV file, or None if no data.
+        """
+        date_str = _format_date_for_filename(target_date)
+        output_dir = get_trend_month_dir(date_str[:6], out_root)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        options_path = trend_options_csv_path(target_date, out_root)
+
+        if options_path.exists() and options_path.stat().st_size > 100:
+            logger.info("  %s already exists, skipping", date_str)
+            return options_path
+
+        if page is not None:
+            return self._download_with_page(page, target_date, output_dir, date_str)
+
+        with playwright_session(BROWSER_CONFIG) as (_browser, _context, own_page):
+            return self._download_with_page(own_page, target_date, output_dir, date_str)
+
+    def _download_with_page(
+        self,
+        page: Page,
+        target_date: date,
+        output_dir: Path,
+        date_str: str,
+    ) -> Optional[Path]:
+        """Navigate, query and save one date using an existing page."""
+        try:
+            self._navigate_to_trend_page(page)
+            # Post-navigation settle — the service row's settle_sleep_sec,
+            # jittered by its sleep_jitter fraction.
+            random_sleep(SETTLE_SLEEP_SEC, SETTLE_JITTER)
+
+            if not self._query_date(page, target_date):
+                logger.info("  No data for %s", date_str)
+                return None
+
+            return self._save_options_data(page, output_dir, date_str)
+        except Exception as e:
+            logger.error("  Download failed for %s: %s", date_str, e)
+            return None
+
+    def download_trend_batch(
+        self,
+        dates: List[date],
+        out_root: Optional[str] = None,
+        sleep_sec: Optional[float] = None,
+    ) -> dict:
+        """Download options trend data for a batch of dates using a single browser session.
+
+        Tries CSV download first (more reliable), falls back to HTML scraping.
+
+        Args:
+            dates: List of dates to download.
+            out_root: Optional override for output directory.
+            sleep_sec: Base sleep seconds between downloads (default: the
+                service's external_request_config JSON row, request_type
+                "playwright"; the row's sleep_jitter fraction of that base is
+                the ± seconds range passed to the jittered sleep).
+
+        Returns:
+            Summary dict with counts.
+        """
+        # Pacing from the service's external_request_config JSON row
+        # (request_type "playwright"); an explicit sleep_sec argument overrides
+        # the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = sleep_sec_for(SERVICE, "playwright")
+        pacing_row = request_config_for(SERVICE, "playwright")
+        jitter_sec = pacing_row.sleep_jitter * pacing_row.sleep_sec
+
+        result = {
+            "downloaded": 0,
+            "skipped": 0,
+            "failed": 0,
+            "no_data": 0,
+        }
+
+        with playwright_session(BROWSER_CONFIG) as (_browser, _context, page):
+            for i, target_date in enumerate(dates):
+                date_str = _format_date_for_filename(target_date)
+                options_path = trend_options_csv_path(target_date, out_root)
+
+                if options_path.exists() and options_path.stat().st_size > 100:
+                    logger.info(
+                        "[%d/%d] %s already exists, skipping",
+                        i + 1, len(dates), date_str,
+                    )
+                    result["skipped"] += 1
                     continue
 
-                output_dir = get_trend_month_dir(date_str[:6], out_root)
-                output_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("[%d/%d] Downloading %s ...", i + 1, len(dates), date_str)
 
-                written = _save_options_data(page, output_dir, date_str)
-                if written:
-                    result["downloaded"] += 1
-                else:
-                    result["no_data"] += 1
+                try:
+                    self._navigate_to_trend_page(page)
+                    # Post-navigation settle — the service row's settle_sleep_sec,
+                    # jittered by its sleep_jitter fraction.
+                    random_sleep(SETTLE_SLEEP_SEC, SETTLE_JITTER)
 
-            except Exception as e:
-                logger.error("  Failed for %s: %s", date_str, e)
-                result["failed"] += 1
+                    if not self._query_date(page, target_date):
+                        logger.info("  No data for %s", date_str)
+                        result["no_data"] += 1
+                        continue
 
-            if i < len(dates) - 1:
-                sleep_between_requests(sleep_sec, jitter_sec, log=logger)
+                    output_dir = get_trend_month_dir(date_str[:6], out_root)
+                    output_dir.mkdir(parents=True, exist_ok=True)
 
-    return result
+                    written = self._save_options_data(page, output_dir, date_str)
+                    if written:
+                        result["downloaded"] += 1
+                    else:
+                        result["no_data"] += 1
+
+                except Exception as e:
+                    logger.error("  Failed for %s: %s", date_str, e)
+                    result["failed"] += 1
+
+                if i < len(dates) - 1:
+                    sleep_between_requests(sleep_sec, jitter_sec, log=logger)
+
+        return result

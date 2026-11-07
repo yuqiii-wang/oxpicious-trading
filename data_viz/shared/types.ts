@@ -470,9 +470,7 @@ export interface VolIndexCorrRow {
   date: string;
   underlying_code: string;
   /** Pearson corr of daily spot log-return vs vol-index log-change over
-   *  the trailing 5 sessions (null until 5 joint-valid pairs). */
-  corr_5d: number | null;
-  /** Same over the trailing 20 sessions. */
+   *  the trailing 20 sessions (null until 20 joint-valid pairs). */
   corr_20d: number | null;
   /** Same over the trailing 60 sessions. */
   corr_60d: number | null;
@@ -4039,7 +4037,7 @@ export interface NewsSearchResponse {
 }
 
 // ----------------------------------------------------------------------------
-// AI (text schema — text.llm_qa / text.llm_qa_refs / text.news_digestions,
+// AI (text schema — llm.llm_qa / llm.llm_qa_refs / text.news_digestions,
 // written by llm_agents). The DataViz > AI tab renders the Q&A knowledge
 // base with the same shape conventions as the News endpoints: the QA "date"
 // is qa_date (the question's own data date) bucketed to Asia/Shanghai days,
@@ -4095,7 +4093,7 @@ export interface AiQaRefItem {
   news_id: number;
   title: string;
   source: string | null;
-  /** The ref's ACTUAL publish date (text.llm_qa_refs.ref_time's
+  /** The ref's ACTUAL publish date (llm.llm_qa_refs.ref_time's
    *  Asia/Shanghai day — populated by the Python writers: the search
    *  response's date, else the URL-embedded date). null = unknown —
    *  nothing renders (never a now()/qa-date fallback). Refs whose known
@@ -4134,7 +4132,7 @@ export type AiDayCount = NewsDayCount;
 export type AiCalendarResponse = NewsCalendarResponse;
 
 // ----------------------------------------------------------------------------
-// AI ask history (text.llm_qa_by_ask family + multi_media.src_images, written
+// AI ask history (llm.llm_qa_by_ask family + multi_media.src_images, written
 // by llm_agents.llm_ask.storage — every data_viz "AI Ask" modal submit). The
 // AiPage "QA by Ask" feed renders it with the same shape conventions as the
 // knowledge-base endpoints above; the ask "date" is ask_date mapped to the
@@ -4161,9 +4159,9 @@ export interface AiAskHistoryItem {
   date: string;
   /** updated_at as an Asia/Shanghai timestamp string. */
   updated_at: string;
-  /** Screenshots linked through text.llm_qa_ask_context_images. */
+  /** Screenshots linked through llm.llm_qa_ask_context_images. */
   n_images: number;
-  /** Derived keyword rows (text.llm_qa_keywords_by_ask). */
+  /** Derived keyword rows (llm.llm_qa_keywords_by_ask). */
   n_keywords: number;
 }
 
@@ -4171,7 +4169,7 @@ export interface AiAskHistoryItem {
 export interface AiAskHistoryKeyword {
   keyword: string;
   /** 'code' | 'name' | 'product' | 'item' | 'series' — where the keyword
-   *  came from (see text.llm_qa_keywords_by_ask.kind). */
+   *  came from (see llm.llm_qa_keywords_by_ask.kind). */
   kind: string;
 }
 
@@ -4197,7 +4195,7 @@ export interface AiAskHistoryDetail extends Omit<AiAskHistoryItem, "answer_snipp
   error_tail: string | null;
   search_query: string | null;
   provider: string | null;
-  // Context summary (from text.llm_qa_ask_context; the full plotInfo JSONB
+  // Context summary (from llm.llm_qa_ask_context; the full plotInfo JSONB
   // stays server-side — these are the display/searchable fields).
   chart_kind: string | null;
   chart_title: string | null;
@@ -4218,14 +4216,14 @@ export interface AiAskHistoryItemsResponse {
 }
 
 // ----------------------------------------------------------------------------
-// AI research Q&A (text.llm_qa_by_research, written by
+// AI research Q&A (llm.llm_qa_by_research, written by
 // llm_agents.llm_qa_by_research's SIX-request generation flow: five
 // evaluation-dimension requests — intro / optimistic_forecast /
 // pessimistic_forecast / risks / capitalization — then a 6th
 // summary+label request). The AiPage "Research" feed renders it;
 // answer is the 6th request's SUMMARY (the display content), the five
 // dimensions are the expandable detail, and the row's news group is the
-// refs mapping (no per-ref table — text.llm_qa_refs FKs text.llm_qa only).
+// refs mapping (no per-ref table — llm.llm_qa_refs FKs llm.llm_qa only).
 // ----------------------------------------------------------------------------
 
 /** One research Q&A row (item-list shape — the summary truncated to a

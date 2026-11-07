@@ -1,9 +1,10 @@
 """Entry point for ``python -m builds.cross_stats``.
 
-Thin CLI wrapper around ``run_cross_stats`` / ``run_corr_update``
+Thin CLI wrapper around :class:`CrossStatsRunner` / ``run_offset_backfill``
 (runner.py). The pipeline logic lives in runner.py so it can ALSO be
 called as an internal step of a downstream build (which passes its own
-connection down). Running this module standalone opens its own
+connection down — analysis.market_beta goes through the ``run_cross_stats``
+delegating wrapper). Running this module standalone opens its own
 connection, runs the pipeline, and closes it.
 
 Populates stats.cross_stats (+ stats.cross_stats_dates):
@@ -80,20 +81,18 @@ class CrossStatsBuild(DataBuild):
         }
 
     async def run(self) -> None:
-        from builds.cross_stats.runner import (
-            run_corr_update,
-            run_cross_stats,
-            run_offset_backfill,
-        )
+        from builds.cross_stats.runner import CrossStatsRunner, run_offset_backfill
 
         conn = await self.open_conn()
         try:
             if self.args.backfill_offsets:
                 await run_offset_backfill(conn)
-            elif self.args.corr:
-                await run_corr_update(conn)
             else:
-                await run_cross_stats(conn, force=self.args.force)
+                runner = CrossStatsRunner(conn)
+                if self.args.corr:
+                    await runner.run_corr_update()
+                else:
+                    await runner.run(force=self.args.force)
         finally:
             await self.close_conn(conn)
 

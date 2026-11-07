@@ -95,12 +95,6 @@ COMMENT ON COLUMN analysis.dividend_est.seg_rate       IS 'Daily continuous grow
 -- ----------------------------------------------------------------------------
 --  Register in analysis.analysis_identity
 -- ----------------------------------------------------------------------------
--- The 2026-10-03 rename dividend_tech_stats -> dividend_est also renamed the
--- identity row (PK = name), so the legacy name must go. On a pre-rename DB
--- the TABLE rename itself (parent + _p00.._p15 partitions + constraints +
--- indexes) is applied by temp_scripts/_apply_dividend_est_rename.py — this
--- file's CREATE TABLE IF NOT EXISTS only covers fresh installs.
-DELETE FROM analysis.analysis_identity WHERE name = 'dividend_tech';
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('dividend_est', 'dividend_est', NULL, NOW(),

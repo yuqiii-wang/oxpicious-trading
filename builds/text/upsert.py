@@ -26,7 +26,7 @@ bulk helpers already wrap):
                           the NEXT trading date's move when the article date
                           is a non-trading day (weekend/holiday) — computed
                           data-driven from the stored close series.
-  6. text.llm_qa_keywords — the QA corpus's keyword audit (same vocabulary
+  6. llm.llm_qa_keywords — the QA corpus's keyword audit (same vocabulary
                           and negation rules as news): a full rewrite per
                           run over the ACTIVE llm_qa rows (the corpus is
                           small and answers can be rewritten/soft-deleted
@@ -49,28 +49,207 @@ logger = logging.getLogger(__name__)
 NEWS_TABLE = "text.news"
 KEYWORDS_TABLE = "text.news_keywords"
 COMMENTS_TABLE = "text.news_comments"
-# Aligned with database/sql/text/16_llm_qa_keywords.sql.
-QA_KEYWORDS_TABLE = "text.llm_qa_keywords"
+# Aligned with database/sql/text/llm/12_llm_qa_keywords.sql.
+QA_KEYWORDS_TABLE = "llm.llm_qa_keywords"
 
+
+class TextUpsert:
+    """Conn-scoped DB writers for the text build (one asyncpg connection).
+
+    Code motion of the former module-level conn-first functions: each keeps
+    its name, SQL, sequencing, and log lines — the ``conn`` parameter became
+    ``self.conn``. The pure row-shaping helpers (no conn) stay module-level
+    below, and the table-name constants stay module-level (``NEWS_TABLE``
+    is an external import contract — llm_agents.news_digestions.store).
+    """
+
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    # ----------------------------------------------------------------------------
+    # 1. text.news
+    # ----------------------------------------------------------------------------
+    async def fetch_existing_news(
+        self,
+    ) -> Dict[Tuple[str, str, datetime.date], Dict[str, Any]]:
+        """{(title, source, date): {news_id, word_count, industry_id}} currently stored."""
+        rows = await self.conn.fetch(
+            f'SELECT news_id, title, source, date, word_count, industry_id '
+            f'FROM {NEWS_TABLE}')
+        return {
+            (r["title"], r["source"] or "", r["date"]): {
+                "news_id": r["news_id"],
+                "word_count": r["word_count"],
+                "industry_id": r["industry_id"],
+            }
+            for r in rows
+        }
+
+    # ----------------------------------------------------------------------------
+    # 2. text.news_keywords  (delete + insert per touched article)
+    # ----------------------------------------------------------------------------
+    async def refresh_keyword_rows(
+        self,
+        articles: List[Tuple[int, Dict[str, Any]]],
+    ) -> int:
+        """Replace keyword rows of *articles*: delete per news_id, insert fresh."""
+        if not articles:
+            return 0
+        news_ids = [nid for nid, _ in articles]
+        await self.conn.executemany(
+            f'DELETE FROM {KEYWORDS_TABLE} WHERE news_id = $1',
+            [(nid,) for nid in news_ids])
+        all_rows: List[Dict[str, Any]] = []
+        for nid, row in articles:
+            all_rows.extend(build_keyword_rows(nid, row))
+        if all_rows:
+            # Conflict-free by construction: the DELETE above emptied every
+            # touched news_id's rows and build_keyword_rows emits one row per
+            # distinct keyword per article (dict keys) — no in-batch or stored
+            # PK can collide, so the rows take the COPY fast path.
+            await copy_insert_async(self.conn, KEYWORDS_TABLE, all_rows)
+        logger.info("    [DB] keyword rows rewritten for %d articles "
+                    "(%d rows)", len(articles), len(all_rows))
+        return len(all_rows)
+
+    # ----------------------------------------------------------------------------
+    # 3. doc_freq / idf  (corpus-wide, one UPDATE)
+    # ----------------------------------------------------------------------------
+    async def recompute_keyword_stats(self) -> None:
+        """doc_freq = # articles per keyword; idf = ln(1 + N / doc_freq).
+
+        Full recompute each run: the news corpus is small (10^3–10^4 articles)
+        and IDF is corpus-level — every keyword's stats change whenever the
+        total article count changes, per the DDL contract in 01_news.sql.
+        """
+        # SQL text byte-identical to the pre-refactor literal (8-space WITH).
+        await self.conn.execute("""
+        WITH doc AS (
+            SELECT keyword, COUNT(*) AS doc_freq
+            FROM text.news_keywords
+            GROUP BY keyword
+        ), tot AS (
+            SELECT COUNT(*) AS n FROM text.news
+        )
+        UPDATE text.news_keywords k
+        SET doc_freq = d.doc_freq,
+            idf = ln(1 + (t.n::double precision) / d.doc_freq)
+        FROM doc d, tot t
+        WHERE k.keyword = d.keyword
+    """)
+
+    # ----------------------------------------------------------------------------
+    # 3b. llm.llm_qa_keywords (the QA corpus's keyword audit)
+    # ----------------------------------------------------------------------------
+    async def rewrite_qa_keyword_rows(self) -> int:
+        """Full rewrite of llm.llm_qa_keywords over the ACTIVE llm_qa rows.
+
+        The QA corpus is small (10^2–10^3 posts) and answers are rewritten in
+        place (upsert_qa) or soft-deleted (is_active) — a whole-table rewrite
+        each builds.text run is cheaper than staleness tracking and drops
+        inactive rows naturally (the same full-recompute rationale as
+        :func:`recompute_keyword_stats`). ``date`` is the qa_date Shanghai day,
+        the AI page calendar's convention. Returns the row count written.
+        """
+        from builds.text.keywords import extract_for_qa  # same package, no cycle
+
+        rows = [dict(r) for r in await self.conn.fetch(
+            "SELECT qa_id, question, answer, industry_id, "
+            "(qa_date AT TIME ZONE 'Asia/Shanghai')::date AS date "
+            "FROM llm.llm_qa WHERE is_active")]
+        extract_for_qa(rows)
+        await self.conn.execute(f"DELETE FROM {QA_KEYWORDS_TABLE}")
+        kw_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            for kw, count in sorted(row["keywords"].items()):
+                kw_rows.append({
+                    "qa_id": row["qa_id"],
+                    "keyword": kw,
+                    "date": row["date"],
+                    "industry_id": row["industry_id"],
+                    "count": count,
+                })
+        if kw_rows:
+            # Conflict-free by construction: the DELETE above emptied the table
+            # and each (keyword, qa_id) pair is emitted once — COPY fast path.
+            await copy_insert_async(self.conn, QA_KEYWORDS_TABLE, kw_rows)
+        logger.info("    [DB] llm_qa_keywords rewritten for %d QA posts "
+                    "(%d rows)", len(rows), len(kw_rows))
+        return len(kw_rows)
+
+    # ----------------------------------------------------------------------------
+    # 4. today_industry_change
+    # ----------------------------------------------------------------------------
+    async def fetch_industry_stats_rows(self) -> List[Any]:
+        # pool_size filters by its static.label_dim SMALLINT code (3 = 'all').
+        return await self.conn.fetch(
+            f'SELECT industry_id, date, mean_close '
+            f'FROM stats.industry_basic_stats WHERE pool_size = 3')
+
+    async def apply_today_industry_change(
+        self,
+        articles: List[Tuple[int, Dict[str, Any]]],
+    ) -> int:
+        """Fill today_industry_change for the keyword rows just written."""
+        if not articles:
+            return 0
+        change_map = build_industry_change_map(await self.fetch_industry_stats_rows())
+        # One value per (industry_id, date) across the touched articles.
+        wanted = {
+            (row.get("industry_id"), row["date"])
+            for _, row in articles if row.get("industry_id")
+        }
+        updates = [
+            (chg, industry_id, d)
+            for (industry_id, d) in wanted
+            if (chg := change_map.get((industry_id, d))) is not None
+        ]
+        if not updates:
+            return 0
+        await self.conn.executemany(
+            f'UPDATE {KEYWORDS_TABLE} '
+            f'SET today_industry_change = $1 '
+            f'WHERE industry_id = $2 AND date = $3',
+            updates)
+        return len(updates)
+
+    # ----------------------------------------------------------------------------
+    # 5. text.news_comments (zhihu only for now)
+    # ----------------------------------------------------------------------------
+    async def fetch_existing_comment_pks(self) -> set:
+        """Stored comment PKs {(source, comment_id)} — the pre-load PK check.
+
+        Re-loading an artifact must not re-write comments it already stored
+        (duplicate load), and a batch must never carry a PK twice (bulk_upsert's
+        ON CONFLICT DO UPDATE would raise "cannot affect row a second time").
+        Both are filtered before any write happens.
+        """
+        rows = await self.conn.fetch(
+            f'SELECT source, comment_id FROM {COMMENTS_TABLE}')
+        return {(r["source"], r["comment_id"]) for r in rows}
+
+    async def insert_comments(self, comment_rows: List[Dict[str, Any]]) -> int:
+        """Write PK-checked comment rows (COPY — see the conflict note)."""
+        if not comment_rows:
+            return 0
+        # Conflict-free by construction: filter_new_comments dropped stored PKs
+        # AND in-batch duplicates (first occurrence wins) — COPY fast path.
+        await copy_insert_async(self.conn, COMMENTS_TABLE, comment_rows)
+        # search_tsv (TSV_SPECS): comments are insert-only, so the
+        # IS NULL guard is always live on fresh rows.
+        await SearchIndexer.get().set_search_tsv_async(
+            self.conn, COMMENTS_TABLE, comment_rows, only_missing=True)
+        logger.info("    [DB] %d comment rows written", len(comment_rows))
+        return len(comment_rows)
+
+
+# ----------------------------------------------------------------------------
+# Pure row-shaping helpers (no conn — stay module-level)
+# ----------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------
 # 1. text.news
 # ----------------------------------------------------------------------------
-async def fetch_existing_news(conn) -> Dict[Tuple[str, str, datetime.date], Dict[str, Any]]:
-    """{(title, source, date): {news_id, word_count, industry_id}} currently stored."""
-    rows = await conn.fetch(
-        f'SELECT news_id, title, source, date, word_count, industry_id '
-        f'FROM {NEWS_TABLE}')
-    return {
-        (r["title"], r["source"] or "", r["date"]): {
-            "news_id": r["news_id"],
-            "word_count": r["word_count"],
-            "industry_id": r["industry_id"],
-        }
-        for r in rows
-    }
-
-
 def build_news_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Project parsed rows to the text.news column shape."""
     return [{
@@ -152,94 +331,6 @@ def build_keyword_rows(
     } for kw, count in sorted(row.get("keywords", {}).items())]
 
 
-async def refresh_keyword_rows(conn, articles: List[Tuple[int, Dict[str, Any]]]) -> int:
-    """Replace keyword rows of *articles*: delete per news_id, insert fresh."""
-    if not articles:
-        return 0
-    news_ids = [nid for nid, _ in articles]
-    await conn.executemany(
-        f'DELETE FROM {KEYWORDS_TABLE} WHERE news_id = $1',
-        [(nid,) for nid in news_ids])
-    all_rows: List[Dict[str, Any]] = []
-    for nid, row in articles:
-        all_rows.extend(build_keyword_rows(nid, row))
-    if all_rows:
-        # Conflict-free by construction: the DELETE above emptied every
-        # touched news_id's rows and build_keyword_rows emits one row per
-        # distinct keyword per article (dict keys) — no in-batch or stored
-        # PK can collide, so the rows take the COPY fast path.
-        await copy_insert_async(conn, KEYWORDS_TABLE, all_rows)
-    logger.info("    [DB] keyword rows rewritten for %d articles "
-                "(%d rows)", len(articles), len(all_rows))
-    return len(all_rows)
-
-
-# ----------------------------------------------------------------------------
-# 3. doc_freq / idf  (corpus-wide, one UPDATE)
-# ----------------------------------------------------------------------------
-async def recompute_keyword_stats(conn) -> None:
-    """doc_freq = # articles per keyword; idf = ln(1 + N / doc_freq).
-
-    Full recompute each run: the news corpus is small (10^3–10^4 articles)
-    and IDF is corpus-level — every keyword's stats change whenever the
-    total article count changes, per the DDL contract in 01_news.sql.
-    """
-    await conn.execute("""
-        WITH doc AS (
-            SELECT keyword, COUNT(*) AS doc_freq
-            FROM text.news_keywords
-            GROUP BY keyword
-        ), tot AS (
-            SELECT COUNT(*) AS n FROM text.news
-        )
-        UPDATE text.news_keywords k
-        SET doc_freq = d.doc_freq,
-            idf = ln(1 + (t.n::double precision) / d.doc_freq)
-        FROM doc d, tot t
-        WHERE k.keyword = d.keyword
-    """)
-
-
-# ----------------------------------------------------------------------------
-# 3b. text.llm_qa_keywords (the QA corpus's keyword audit)
-# ----------------------------------------------------------------------------
-async def rewrite_qa_keyword_rows(conn) -> int:
-    """Full rewrite of text.llm_qa_keywords over the ACTIVE llm_qa rows.
-
-    The QA corpus is small (10^2–10^3 posts) and answers are rewritten in
-    place (upsert_qa) or soft-deleted (is_active) — a whole-table rewrite
-    each builds.text run is cheaper than staleness tracking and drops
-    inactive rows naturally (the same full-recompute rationale as
-    :func:`recompute_keyword_stats`). ``date`` is the qa_date Shanghai day,
-    the AI page calendar's convention. Returns the row count written.
-    """
-    from builds.text.keywords import extract_for_qa  # same package, no cycle
-
-    rows = [dict(r) for r in await conn.fetch(
-        "SELECT qa_id, question, answer, industry_id, "
-        "(qa_date AT TIME ZONE 'Asia/Shanghai')::date AS date "
-        "FROM text.llm_qa WHERE is_active")]
-    extract_for_qa(rows)
-    await conn.execute(f"DELETE FROM {QA_KEYWORDS_TABLE}")
-    kw_rows: List[Dict[str, Any]] = []
-    for row in rows:
-        for kw, count in sorted(row["keywords"].items()):
-            kw_rows.append({
-                "qa_id": row["qa_id"],
-                "keyword": kw,
-                "date": row["date"],
-                "industry_id": row["industry_id"],
-                "count": count,
-            })
-    if kw_rows:
-        # Conflict-free by construction: the DELETE above emptied the table
-        # and each (keyword, qa_id) pair is emitted once — COPY fast path.
-        await copy_insert_async(conn, QA_KEYWORDS_TABLE, kw_rows)
-    logger.info("    [DB] llm_qa_keywords rewritten for %d QA posts "
-                "(%d rows)", len(rows), len(kw_rows))
-    return len(kw_rows)
-
-
 # ----------------------------------------------------------------------------
 # 4. today_industry_change
 # ----------------------------------------------------------------------------
@@ -272,57 +363,9 @@ def build_industry_change_map(
     return out
 
 
-async def fetch_industry_stats_rows(conn) -> List[Any]:
-    # pool_size filters by its static.label_dim SMALLINT code (3 = 'all').
-    return await conn.fetch(
-        f'SELECT industry_id, date, mean_close '
-        f'FROM stats.industry_basic_stats WHERE pool_size = 3')
-
-
-async def apply_today_industry_change(
-    conn,
-    articles: List[Tuple[int, Dict[str, Any]]],
-) -> int:
-    """Fill today_industry_change for the keyword rows just written."""
-    if not articles:
-        return 0
-    change_map = build_industry_change_map(await fetch_industry_stats_rows(conn))
-    # One value per (industry_id, date) across the touched articles.
-    wanted = {
-        (row.get("industry_id"), row["date"])
-        for _, row in articles if row.get("industry_id")
-    }
-    updates = [
-        (chg, industry_id, d)
-        for (industry_id, d) in wanted
-        if (chg := change_map.get((industry_id, d))) is not None
-    ]
-    if not updates:
-        return 0
-    await conn.executemany(
-        f'UPDATE {KEYWORDS_TABLE} '
-        f'SET today_industry_change = $1 '
-        f'WHERE industry_id = $2 AND date = $3',
-        updates)
-    return len(updates)
-
-
 # ----------------------------------------------------------------------------
 # 5. text.news_comments (zhihu only for now)
 # ----------------------------------------------------------------------------
-async def fetch_existing_comment_pks(conn) -> set:
-    """Stored comment PKs {(source, comment_id)} — the pre-load PK check.
-
-    Re-loading an artifact must not re-write comments it already stored
-    (duplicate load), and a batch must never carry a PK twice (bulk_upsert's
-    ON CONFLICT DO UPDATE would raise "cannot affect row a second time").
-    Both are filtered before any write happens.
-    """
-    rows = await conn.fetch(
-        f'SELECT source, comment_id FROM {COMMENTS_TABLE}')
-    return {(r["source"], r["comment_id"]) for r in rows}
-
-
 def build_comment_rows(
     comment_rows: List[Dict[str, Any]],
     news_id_by_key: Dict[Tuple[str, str, datetime.date], int],
@@ -366,18 +409,3 @@ def filter_new_comments(
         seen.add(pk)
         out.append(r)
     return out
-
-
-async def insert_comments(conn, comment_rows: List[Dict[str, Any]]) -> int:
-    """Write PK-checked comment rows (COPY — see the conflict note)."""
-    if not comment_rows:
-        return 0
-    # Conflict-free by construction: filter_new_comments dropped stored PKs
-    # AND in-batch duplicates (first occurrence wins) — COPY fast path.
-    await copy_insert_async(conn, COMMENTS_TABLE, comment_rows)
-    # search_tsv (TSV_SPECS): comments are insert-only, so the
-    # IS NULL guard is always live on fresh rows.
-    await SearchIndexer.get().set_search_tsv_async(
-        conn, COMMENTS_TABLE, comment_rows, only_missing=True)
-    logger.info("    [DB] %d comment rows written", len(comment_rows))
-    return len(comment_rows)

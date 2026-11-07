@@ -100,6 +100,7 @@ from _common.df_utils import (
     sanitize_for_db_insert,
 )
 from _common.labels import PAIR_GRAIN_CODE
+from _common.sql_views import render_sql_view
 
 from analysis._common import upsert_analysis_identity
 from analysis.pair_pct_change_ratios.config import (
@@ -162,22 +163,23 @@ async def fetch_grid_dates(conn, stride: int) -> List[datetime.date]:
     Returned as python dates (set math + lookback anchoring); callers cast
     to datetime64[ns] for the frame isin.
     """
-    rows = await conn.fetch(f"""
-        WITH cal AS (
-            SELECT DISTINCT date FROM {SOURCE_TABLE}
-        ), g AS (
-            SELECT date, ROW_NUMBER() OVER (ORDER BY date) - 1 AS idx
-            FROM cal
-        )
-        SELECT date FROM g WHERE idx % $1 = $1 - 1
-    """, stride)
+    # grid_dates view: stride-grid dates on the global index calendar.
+    view = render_sql_view(
+        "analysis/pair_pct_change_ratios/ratios/grid_dates", stride=stride,
+    )
+    rows = await conn.fetch(view.sql, *view.params)
     return [r["date"] for r in rows]
 
 
 async def fetch_calendar_frontier(conn) -> Optional[datetime.date]:
     """Latest date on the global index calendar (closes may still land
     for grid dates near it)."""
-    return await conn.fetchval(f"SELECT MAX(date) FROM {SOURCE_TABLE}")
+    # calendar_frontier view.
+    return await conn.fetchval(
+        render_sql_view(
+            "analysis/pair_pct_change_ratios/ratios/calendar_frontier",
+        ).sql
+    )
 
 
 async def _fetch_closes_pct(
@@ -239,14 +241,11 @@ async def _fetch_industry_universe(conn) -> Set[str]:
     """Industry_ids with at least one active type='index' member carrying
     a close — BOTH the subject and the benchmark universe (any industry
     can be either side; self-industry pairs excluded)."""
-    rows = await conn.fetch(f"""
-        SELECT DISTINCT sc.industry_id
-        FROM {SOURCE_TABLE} b
-        JOIN stats.sec_classification sc
-            ON sc.code = b.code AND sc.type = 'index'
-        WHERE sc.is_active = TRUE AND b.close IS NOT NULL
-          AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
-    """)
+    # industry_universe view: industries with an active member close.
+    view = render_sql_view(
+        "analysis/pair_pct_change_ratios/ratios/industry_universe",
+    )
+    rows = await conn.fetch(view.sql)
     return {r["industry_id"] for r in rows}
 
 

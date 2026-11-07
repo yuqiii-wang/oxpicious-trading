@@ -42,6 +42,14 @@ Output (COMBINED_COLS schema matches the SZSE per-file CSVs so
   ``temp_data/analysis_output/sse_etf_composition/composition_combined.csv``
   ``temp_data/analysis_output/sse_etf_composition/composition_universe.csv``
 
+The entry point is the :class:`SseEtfCompositionDownload` DownloadJob — the
+former ``__main__`` body is its ``run()`` (the --etf-codes comma split moved
+to ``apply_args``) and the fetch orchestration functions
+``fetch_sse_etf_list`` / ``download_composition`` /
+``download_sse_etf_composition`` became methods of the same names (same
+signatures and bodies); the XML parser, the row mappers, the file writers
+and the constants stay module-level.
+
 Usage:
   python download_sse_etf_composition.py
   python download_sse_etf_composition.py --etf-codes 510010,510050 --no-convert-csv
@@ -50,6 +58,7 @@ Usage:
 from __future__ import annotations
 
 
+import argparse
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime
@@ -62,6 +71,7 @@ import requests
 from dataclasses import replace
 
 from downloads._common import (
+    DownloadJob,
     RunStats,
     AntiBotProxy,
     antibot_config_for,
@@ -141,49 +151,6 @@ SSE_HEADERS = build_headers_with_referer(SSE_REFERER, extra={"Accept": "text/htm
 def _is_sse_etf_code(code: str) -> bool:
     s = str(code).strip()
     return len(s) == 6 and s.isdigit() and any(s.startswith(p) for p in SSE_ETF_PREFIXES)
-
-
-def fetch_sse_etf_list(
-    session: requests.Session,
-    proxy: Optional[AntiBotProxy] = None,
-) -> List[Dict[str, str]]:
-    """Fetch the SSE fund suggest-data JS and extract SSE ETF codes + names.
-
-    The fund list page (``/assortment/fund/list/``) is JS-rendered, but the
-    search-autocomplete data at ``/js/common/ssesuggestfunddata.js`` is a
-    static JS file listing every SSE-listed fund as::
-
-        _t.push({val:"510050",val2:"上证50ETF华夏",val3:"sz50ETF hx"});
-
-    Entries are filtered to SSE ETF code prefixes (510/511/512/513/515/516/518/56),
-    excluding LOF/closed-end funds (501xxx etc.). Returns a list of
-    ``{code, etf_name, fund_type}`` dicts (fund_type is "" — not in the source).
-    """
-    if proxy is None:
-        proxy = AntiBotProxy(service=SERVICE)
-
-    resp = proxy.get(
-        session,
-        SSE_SUGGEST_DATA_URL,
-        headers=SSE_HEADERS,
-        logger=logger,
-        log_tag="[etf-list]",
-    )
-    if resp is None:
-        logger.error("[etf-list] failed to fetch SSE suggest fund data JS")
-        return []
-
-    etfs: List[Dict[str, str]] = []
-    seen = set()
-    for m in RE_FUND_SUGGEST.finditer(resp.text):
-        code, name = m.group(1), m.group(2).strip()
-        if code in seen or not _is_sse_etf_code(code):
-            continue
-        seen.add(code)
-        etfs.append({"code": code, "etf_name": name, "fund_type": ""})
-
-    logger.info("[etf-list] parsed %d SSE ETF codes from suggest fund data JS", len(etfs))
-    return etfs
 
 
 def _load_etf_codes_from_universe() -> List[Dict[str, str]]:
@@ -386,110 +353,6 @@ def _latest_cached_date_for_code(out_dir: Path, etf_code: str) -> Optional[date]
     return latest
 
 
-def download_composition(
-    session: requests.Session,
-    etf: Dict[str, str],
-    out_dir: Path,
-    proxy: AntiBotProxy,
-    skip_cached: bool = True,
-    sleep_sec: float = SLEEP_SEC,
-    month_start: bool = False,
-    today_date: Optional[date] = None,
-) -> Tuple[bool, str]:
-    """Download one ETF's PCF XML, save raw + per-file CSV.
-
-    Returns (success, status) where status ∈ {"downloaded", "cached", "empty",
-    "failed", "blocked"}.
-
-    When *month_start* is True, the cache is bypassed and the output files are
-    stamped with *today_date* (overriding the XML's TradingDay) so a fresh
-    monthly snapshot flows to prod under the new month's date.
-    """
-    code = etf["code"]
-    etf_name = etf.get("etf_name", "")
-    fund_type = etf.get("fund_type", "")
-
-    # Cache check (skipped during month-start refresh): skip if we already have
-    # a snapshot from the current month. This mirrors the SZSE hybrid schedule —
-    # one snapshot per ETF per month, with quarterly months (Jan/Apr/Jul/Oct)
-    # accumulating as history.
-    if skip_cached and not month_start:
-        latest_cached = _latest_cached_date_for_code(out_dir, code)
-        today = date.today()
-        if (latest_cached is not None
-                and latest_cached.year == today.year
-                and latest_cached.month == today.month):
-            # Backfill per-file CSV from XML if missing (legacy cache).
-            xml_path = out_dir / f"sse_etf_comp_{latest_cached.strftime('%Y%m%d')}_{code}.xml"
-            csv_path = out_dir / f"sse_etf_comp_{latest_cached.strftime('%Y%m%d')}_{code}.csv"
-            if not is_valid_file(csv_path, min_bytes=64) and is_valid_file(xml_path, min_bytes=XML_MIN_BYTES):
-                convert_xml_to_csv(xml_path, csv_path, etf_name, fund_type)
-            return True, "cached"
-
-    if proxy.is_blocked(PCF_DOWNLOAD_URL):
-        return False, "blocked"
-
-    resp = None
-    for attempt in range(1, 5):
-        resp = proxy.get(
-            session,
-            PCF_DOWNLOAD_URL,
-            params={"fundCode": code},
-            headers=SSE_HEADERS,
-            logger=logger,
-            log_tag=f"[dl {code}]",
-        )
-        if resp is None:
-            if attempt == 4:
-                logger.error("[dl %s] fetch error after %d attempts", code, attempt)
-                return False, "failed"
-            backoff = 2.0 * attempt
-            logger.warning("[dl %s] attempt %d failed; retry in %.1fs", code, attempt, backoff)
-            proxy.sleep_range(backoff, backoff * 1.5)
-            continue
-        break
-
-    content = resp.text.strip()
-    if not content.startswith("<?xml") and "<SSEPortfolioCompositionFile" not in content:
-        logger.warning("[dl %s] non-XML response (len=%d), skipping", code, len(content))
-        return False, "empty"
-
-    parsed = parse_pcf_xml(content)
-    if parsed is None:
-        logger.warning("[dl %s] XML parsed but no components, skipping", code)
-        return False, "empty"
-
-    trading_day = parsed["header"].get("TradingDay", "")
-    if not (trading_day and trading_day.isdigit() and len(trading_day) == 8):
-        logger.warning("[dl %s] invalid TradingDay '%s', skipping", code, trading_day)
-        return False, "empty"
-
-    # On month-start refresh, stamp the output with today's date (overriding
-    # the XML's TradingDay, which is usually the previous business day) so a
-    # fresh monthly snapshot flows to prod under the new month's date.
-    if month_start and today_date is not None:
-        trading_day = today_date.strftime("%Y%m%d")
-        parsed["header"]["TradingDay"] = trading_day  # _pcf_to_combined_rows reads this
-
-    base = f"sse_etf_comp_{trading_day}_{code}"
-    xml_path = out_dir / f"{base}.xml"
-    csv_path = out_dir / f"{base}.csv"
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    xml_path.write_bytes(resp.content)
-
-    rows = _pcf_to_combined_rows(parsed, code, etf_name, fund_type)
-    if not rows:
-        logger.warning("[dl %s] no holdings rows built, skipping CSV", code)
-        return False, "empty"
-
-    _write_per_file_csv(rows, csv_path)
-    logger.info("[dl %s] saved %s + %s (%d holdings, T=%s)",
-                code, xml_path.name, csv_path.name, len(rows), trading_day)
-    # Auto-sleep handled by proxy.get()/post()
-    return True, "downloaded"
-
-
 # ---------------------------------------------------------------------------
 # Aggregation: combine all per-file CSVs into combined + universe CSVs
 # ---------------------------------------------------------------------------
@@ -584,195 +447,354 @@ def build_composition_csv(md_dir: Path, output_dir: Optional[Path] = None) -> Di
 
 
 # ---------------------------------------------------------------------------
-# Main orchestrator
+# SseEtfCompositionDownload — the fetch + main orchestration
 # ---------------------------------------------------------------------------
 
-def download_sse_etf_composition(
-    *,
-    out_root: Optional[str] = None,
-    etf_codes: Optional[List[str]] = None,
-    sleep_sec: Optional[float] = None,
-    max_etfs: Optional[int] = None,
-    skip_cached: bool = True,
-    convert_csv: bool = True,
-    force_month_start: bool = False,
-) -> dict:
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_etf_composition", out_root)
-    today = date.today()
+class SseEtfCompositionDownload(DownloadJob):
+    """DownloadJob for the SSE ETF PCF fetch cycle — the former ``__main__``
+    body is ``run()`` and the fetch orchestration functions
+    (``fetch_sse_etf_list`` / ``download_composition`` /
+    ``download_sse_etf_composition``) are methods of the same names (same
+    signatures and bodies verbatim); the XML parser, row mappers, file
+    writers and constants stay module-level."""
 
-    # Month-start trigger: on the 1st of each month (or when forced), bypass
-    # the cache and stamp output files with today's date so a fresh monthly
-    # snapshot flows to prod even if the XML still reports the previous biz day.
-    month_start = force_month_start or is_month_start(today)
-    if month_start:
-        skip_cached = False
-        logger.info(
-            "Month-start refresh (today=%s, forced=%s): bypassing cache and "
-            "stamping files with today's date (overrides XML TradingDay).",
-            today.isoformat(), force_month_start,
+    description = ("Download SSE ETF creation/redemption composition (PCF) "
+                   "data and convert to CSV.")
+    component = "sse_etf_composition"
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--etf-codes", type=str, default=None,
+                        help="Comma-separated SSE ETF codes to download (default: auto-detect all)")
+        parser.add_argument("--out-root", type=str, default=None,
+                        help="Alternative output root directory")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Sleep seconds between requests "
+                             f"(default: external_request_config JSON for {SERVICE})")
+        parser.add_argument("--max-etfs", type=int, default=None,
+                        help="Limit to N ETFs (dev/testing)")
+        parser.add_argument("--skip-cached", action="store_true", default=True,
+                        help="Skip ETFs whose latest snapshot is already cached (default: enabled)")
+        parser.add_argument("--no-skip-cached", action="store_true", default=False,
+                        help="Re-download even if a cached snapshot exists")
+        parser.add_argument("--force-month-start", action="store_true", default=False,
+                        help="Force month-start behavior: bypass cache and stamp files with "
+                             "today's date (overrides XML TradingDay). For testing the "
+                             "monthly refresh flow on any day.")
+        parser.add_argument("--convert-csv", action="store_true", default=True,
+                        help="Aggregate per-file CSVs into combined + universe CSVs (default: enabled)")
+        parser.add_argument("--no-convert-csv", action="store_true", default=False,
+                        help="Skip CSV aggregation")
+
+    def apply_args(self) -> None:
+        # Former --etf-codes comma split (post-parse derivation).
+        etf_codes_arg = None
+        if self.args.etf_codes:
+            etf_codes_arg = [c.strip() for c in self.args.etf_codes.split(",") if c.strip()]
+        self.args.etf_codes = etf_codes_arg
+
+    def fetch_sse_etf_list(
+        self,
+        session: requests.Session,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> List[Dict[str, str]]:
+        """Fetch the SSE fund suggest-data JS and extract SSE ETF codes + names.
+
+        The fund list page (``/assortment/fund/list/``) is JS-rendered, but the
+        search-autocomplete data at ``/js/common/ssesuggestfunddata.js`` is a
+        static JS file listing every SSE-listed fund as::
+
+            _t.push({val:"510050",val2:"上证50ETF华夏",val3:"sz50ETF hx"});
+
+        Entries are filtered to SSE ETF code prefixes (510/511/512/513/515/516/518/56),
+        excluding LOF/closed-end funds (501xxx etc.). Returns a list of
+        ``{code, etf_name, fund_type}`` dicts (fund_type is "" — not in the source).
+        """
+        if proxy is None:
+            proxy = AntiBotProxy(service=SERVICE)
+
+        resp = proxy.get(
+            session,
+            SSE_SUGGEST_DATA_URL,
+            headers=SSE_HEADERS,
+            logger=logger,
+            log_tag="[etf-list]",
         )
+        if resp is None:
+            logger.error("[etf-list] failed to fetch SSE suggest fund data JS")
+            return []
 
-    session = build_default_session()
+        etfs: List[Dict[str, str]] = []
+        seen = set()
+        for m in RE_FUND_SUGGEST.finditer(resp.text):
+            code, name = m.group(1), m.group(2).strip()
+            if code in seen or not _is_sse_etf_code(code):
+                continue
+            seen.add(code)
+            etfs.append({"code": code, "etf_name": name, "fund_type": ""})
 
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
-    # overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
+        logger.info("[etf-list] parsed %d SSE ETF codes from suggest fund data JS", len(etfs))
+        return etfs
 
-    stats = RunStats()
+    def download_composition(
+        self,
+        session: requests.Session,
+        etf: Dict[str, str],
+        out_dir: Path,
+        proxy: AntiBotProxy,
+        skip_cached: bool = True,
+        sleep_sec: float = SLEEP_SEC,
+        month_start: bool = False,
+        today_date: Optional[date] = None,
+    ) -> Tuple[bool, str]:
+        """Download one ETF's PCF XML, save raw + per-file CSV.
 
-    # --- Enumerate SSE ETFs ---
-    etfs: List[Dict[str, str]] = []
-    if etf_codes:
-        for c in etf_codes:
-            c = str(c).strip()
-            if _is_sse_etf_code(c):
-                etfs.append({"code": c, "etf_name": "", "fund_type": ""})
-        logger.info("[main] using %d ETF codes from CLI override", len(etfs))
-    else:
-        etfs = fetch_sse_etf_list(session, proxy)
-        if not etfs:
-            logger.warning("[main] fund list page yielded no ETFs; trying etf_universe.csv fallback")
-            etfs = _load_etf_codes_from_universe()
-        if not etfs:
-            logger.error("[main] no SSE ETF codes available; pass --etf-codes to specify manually")
-            return {"out_dir": str(out_dir), "etfs": 0, "downloaded": 0}
+        Returns (success, status) where status ∈ {"downloaded", "cached", "empty",
+        "failed", "blocked"}.
 
-    if max_etfs is not None and max_etfs > 0:
-        etfs = etfs[:max_etfs]
+        When *month_start* is True, the cache is bypassed and the output files are
+        stamped with *today_date* (overriding the XML's TradingDay) so a fresh
+        monthly snapshot flows to prod under the new month's date.
+        """
+        code = etf["code"]
+        etf_name = etf.get("etf_name", "")
+        fund_type = etf.get("fund_type", "")
 
-    # --- Auto-cooldown: count how many ETFs actually need downloading ---
-    if month_start:
-        need_download = len(etfs)
-    elif skip_cached:
-        need_download = 0
-        for etf in etfs:
-            latest = _latest_cached_date_for_code(out_dir, etf["code"])
-            if latest is None or latest.year != today.year or latest.month != today.month:
-                need_download += 1
-    else:
-        need_download = len(etfs)
+        # Cache check (skipped during month-start refresh): skip if we already have
+        # a snapshot from the current month. This mirrors the SZSE hybrid schedule —
+        # one snapshot per ETF per month, with quarterly months (Jan/Apr/Jul/Oct)
+        # accumulating as history.
+        if skip_cached and not month_start:
+            latest_cached = _latest_cached_date_for_code(out_dir, code)
+            today = date.today()
+            if (latest_cached is not None
+                    and latest_cached.year == today.year
+                    and latest_cached.month == today.month):
+                # Backfill per-file CSV from XML if missing (legacy cache).
+                xml_path = out_dir / f"sse_etf_comp_{latest_cached.strftime('%Y%m%d')}_{code}.xml"
+                csv_path = out_dir / f"sse_etf_comp_{latest_cached.strftime('%Y%m%d')}_{code}.csv"
+                if not is_valid_file(csv_path, min_bytes=64) and is_valid_file(xml_path, min_bytes=XML_MIN_BYTES):
+                    convert_xml_to_csv(xml_path, csv_path, etf_name, fund_type)
+                return True, "cached"
 
-    auto_sleep = sleep_sec
-    if need_download > 50:
-        auto_sleep = sleep_sec * 1.5
-        logger.info(
-            "Auto-cooldown: %d ETFs to download, increasing per-item sleep from %.1fs to %.1fs",
-            need_download, sleep_sec, auto_sleep,
-        )
+        if proxy.is_blocked(PCF_DOWNLOAD_URL):
+            return False, "blocked"
 
-    logger.info(
-        "Starting SSE ETF composition download: %d ETFs (skip_cached=%s, sleep=%.1fs, "
-        "need_download=%d)",
-        len(etfs), skip_cached, auto_sleep, need_download,
-    )
-
-    # --- Download each ETF's PCF ---
-    downloaded = 0
-    cached = 0
-    empty = 0
-    failed = 0
-    processed = 0
-
-    try:
-        try:
-            from tqdm import tqdm
-            etfs_iter = tqdm(etfs, desc="SSE ETFs", unit="etf", leave=True)
-        except ImportError:
-            etfs_iter = etfs
-
-        for etf in etfs_iter:
-            if proxy.is_blocked(PCF_DOWNLOAD_URL):
-                logger.warning("[host-blocked] query.sse.com.cn blocked, stopping")
-                break
-
-            _, status = download_composition(
-                session, etf, out_dir, proxy,
-                skip_cached=skip_cached, sleep_sec=auto_sleep,
-                month_start=month_start, today_date=today,
+        resp = None
+        for attempt in range(1, 5):
+            resp = proxy.get(
+                session,
+                PCF_DOWNLOAD_URL,
+                params={"fundCode": code},
+                headers=SSE_HEADERS,
+                logger=logger,
+                log_tag=f"[dl {code}]",
             )
-            if status == "downloaded":
-                downloaded += 1
-                stats.downloaded += 1
-            elif status == "cached":
-                cached += 1
-                stats.skipped_cached += 1
-            elif status == "empty":
-                empty += 1
-                stats.empty += 1
-            else:
-                failed += 1
-                stats.failed += 1
-            processed += 1
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+            if resp is None:
+                if attempt == 4:
+                    logger.error("[dl %s] fetch error after %d attempts", code, attempt)
+                    return False, "failed"
+                backoff = 2.0 * attempt
+                logger.warning("[dl %s] attempt %d failed; retry in %.1fs", code, attempt, backoff)
+                proxy.sleep_range(backoff, backoff * 1.5)
+                continue
+            break
 
-    summary = stats.to_dict(
-        out_dir=str(out_dir),
-        etfs_total=len(etfs),
-        etfs_processed=processed,
-        cached=cached,
-        empty=empty,
-    )
+        content = resp.text.strip()
+        if not content.startswith("<?xml") and "<SSEPortfolioCompositionFile" not in content:
+            logger.warning("[dl %s] non-XML response (len=%d), skipping", code, len(content))
+            return False, "empty"
 
-    # --- Aggregate per-file CSVs ---
-    if convert_csv:
-        csv_result = build_composition_csv(out_dir)
-        summary["csv"] = csv_result
+        parsed = parse_pcf_xml(content)
+        if parsed is None:
+            logger.warning("[dl %s] XML parsed but no components, skipping", code)
+            return False, "empty"
 
-    logger.info(
-        "Done SSE ETF composition. downloaded=%d cached=%d empty=%d failed=%d out=%s (%d/%d processed)",
-        downloaded, cached, empty, failed, out_dir, processed, len(etfs),
-    )
-    return summary
+        trading_day = parsed["header"].get("TradingDay", "")
+        if not (trading_day and trading_day.isdigit() and len(trading_day) == 8):
+            logger.warning("[dl %s] invalid TradingDay '%s', skipping", code, trading_day)
+            return False, "empty"
+
+        # On month-start refresh, stamp the output with today's date (overriding
+        # the XML's TradingDay, which is usually the previous business day) so a
+        # fresh monthly snapshot flows to prod under the new month's date.
+        if month_start and today_date is not None:
+            trading_day = today_date.strftime("%Y%m%d")
+            parsed["header"]["TradingDay"] = trading_day  # _pcf_to_combined_rows reads this
+
+        base = f"sse_etf_comp_{trading_day}_{code}"
+        xml_path = out_dir / f"{base}.xml"
+        csv_path = out_dir / f"{base}.csv"
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        xml_path.write_bytes(resp.content)
+
+        rows = _pcf_to_combined_rows(parsed, code, etf_name, fund_type)
+        if not rows:
+            logger.warning("[dl %s] no holdings rows built, skipping CSV", code)
+            return False, "empty"
+
+        _write_per_file_csv(rows, csv_path)
+        logger.info("[dl %s] saved %s + %s (%d holdings, T=%s)",
+                    code, xml_path.name, csv_path.name, len(rows), trading_day)
+        # Auto-sleep handled by proxy.get()/post()
+        return True, "downloaded"
+
+    def download_sse_etf_composition(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        etf_codes: Optional[List[str]] = None,
+        sleep_sec: Optional[float] = None,
+        max_etfs: Optional[int] = None,
+        skip_cached: bool = True,
+        convert_csv: bool = True,
+        force_month_start: bool = False,
+    ) -> dict:
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_etf_composition", out_root)
+        today = date.today()
+
+        # Month-start trigger: on the 1st of each month (or when forced), bypass
+        # the cache and stamp output files with today's date so a fresh monthly
+        # snapshot flows to prod even if the XML still reports the previous biz day.
+        month_start = force_month_start or is_month_start(today)
+        if month_start:
+            skip_cached = False
+            logger.info(
+                "Month-start refresh (today=%s, forced=%s): bypassing cache and "
+                "stamping files with today's date (overrides XML TradingDay).",
+                today.isoformat(), force_month_start,
+            )
+
+        session = build_default_session()
+
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+        # overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
+
+        stats = RunStats()
+
+        # --- Enumerate SSE ETFs ---
+        etfs: List[Dict[str, str]] = []
+        if etf_codes:
+            for c in etf_codes:
+                c = str(c).strip()
+                if _is_sse_etf_code(c):
+                    etfs.append({"code": c, "etf_name": "", "fund_type": ""})
+            logger.info("[main] using %d ETF codes from CLI override", len(etfs))
+        else:
+            etfs = self.fetch_sse_etf_list(session, proxy)
+            if not etfs:
+                logger.warning("[main] fund list page yielded no ETFs; trying etf_universe.csv fallback")
+                etfs = _load_etf_codes_from_universe()
+            if not etfs:
+                logger.error("[main] no SSE ETF codes available; pass --etf-codes to specify manually")
+                return {"out_dir": str(out_dir), "etfs": 0, "downloaded": 0}
+
+        if max_etfs is not None and max_etfs > 0:
+            etfs = etfs[:max_etfs]
+
+        # --- Auto-cooldown: count how many ETFs actually need downloading ---
+        if month_start:
+            need_download = len(etfs)
+        elif skip_cached:
+            need_download = 0
+            for etf in etfs:
+                latest = _latest_cached_date_for_code(out_dir, etf["code"])
+                if latest is None or latest.year != today.year or latest.month != today.month:
+                    need_download += 1
+        else:
+            need_download = len(etfs)
+
+        auto_sleep = sleep_sec
+        if need_download > 50:
+            auto_sleep = sleep_sec * 1.5
+            logger.info(
+                "Auto-cooldown: %d ETFs to download, increasing per-item sleep from %.1fs to %.1fs",
+                need_download, sleep_sec, auto_sleep,
+            )
+
+        logger.info(
+            "Starting SSE ETF composition download: %d ETFs (skip_cached=%s, sleep=%.1fs, "
+            "need_download=%d)",
+            len(etfs), skip_cached, auto_sleep, need_download,
+        )
+
+        # --- Download each ETF's PCF ---
+        downloaded = 0
+        cached = 0
+        empty = 0
+        failed = 0
+        processed = 0
+
+        try:
+            try:
+                from tqdm import tqdm
+                etfs_iter = tqdm(etfs, desc="SSE ETFs", unit="etf", leave=True)
+            except ImportError:
+                etfs_iter = etfs
+
+            for etf in etfs_iter:
+                if proxy.is_blocked(PCF_DOWNLOAD_URL):
+                    logger.warning("[host-blocked] query.sse.com.cn blocked, stopping")
+                    break
+
+                _, status = self.download_composition(
+                    session, etf, out_dir, proxy,
+                    skip_cached=skip_cached, sleep_sec=auto_sleep,
+                    month_start=month_start, today_date=today,
+                )
+                if status == "downloaded":
+                    downloaded += 1
+                    stats.downloaded += 1
+                elif status == "cached":
+                    cached += 1
+                    stats.skipped_cached += 1
+                elif status == "empty":
+                    empty += 1
+                    stats.empty += 1
+                else:
+                    failed += 1
+                    stats.failed += 1
+                processed += 1
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
+
+        summary = stats.to_dict(
+            out_dir=str(out_dir),
+            etfs_total=len(etfs),
+            etfs_processed=processed,
+            cached=cached,
+            empty=empty,
+        )
+
+        # --- Aggregate per-file CSVs ---
+        if convert_csv:
+            csv_result = build_composition_csv(out_dir)
+            summary["csv"] = csv_result
+
+        logger.info(
+            "Done SSE ETF composition. downloaded=%d cached=%d empty=%d failed=%d out=%s (%d/%d processed)",
+            downloaded, cached, empty, failed, out_dir, processed, len(etfs),
+        )
+        return summary
+
+    def run(self) -> None:
+        result = self.download_sse_etf_composition(
+            out_root=self.args.out_root,
+            etf_codes=self.args.etf_codes,
+            sleep_sec=self.args.sleep_sec,
+            max_etfs=self.args.max_etfs,
+            skip_cached=self.args.skip_cached and not self.args.no_skip_cached,
+            convert_csv=self.args.convert_csv and not self.args.no_convert_csv,
+            force_month_start=self.args.force_month_start,
+        )
+        logger.info(result)
 
 
 if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(
-        description="Download SSE ETF creation/redemption composition (PCF) data and convert to CSV.",
-    )
-    ap.add_argument("--etf-codes", type=str, default=None,
-                    help="Comma-separated SSE ETF codes to download (default: auto-detect all)")
-    ap.add_argument("--out-root", type=str, default=None,
-                    help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=None,
-                    help="Sleep seconds between requests "
-                         f"(default: external_request_config JSON for {SERVICE})")
-    ap.add_argument("--max-etfs", type=int, default=None,
-                    help="Limit to N ETFs (dev/testing)")
-    ap.add_argument("--skip-cached", action="store_true", default=True,
-                    help="Skip ETFs whose latest snapshot is already cached (default: enabled)")
-    ap.add_argument("--no-skip-cached", action="store_true", default=False,
-                    help="Re-download even if a cached snapshot exists")
-    ap.add_argument("--force-month-start", action="store_true", default=False,
-                    help="Force month-start behavior: bypass cache and stamp files with "
-                         "today's date (overrides XML TradingDay). For testing the "
-                         "monthly refresh flow on any day.")
-    ap.add_argument("--convert-csv", action="store_true", default=True,
-                    help="Aggregate per-file CSVs into combined + universe CSVs (default: enabled)")
-    ap.add_argument("--no-convert-csv", action="store_true", default=False,
-                    help="Skip CSV aggregation")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    etf_codes_arg = None
-    if args.etf_codes:
-        etf_codes_arg = [c.strip() for c in args.etf_codes.split(",") if c.strip()]
-
-    result = download_sse_etf_composition(
-        out_root=args.out_root,
-        etf_codes=etf_codes_arg,
-        sleep_sec=args.sleep_sec,
-        max_etfs=args.max_etfs,
-        skip_cached=args.skip_cached and not args.no_skip_cached,
-        convert_csv=args.convert_csv and not args.no_convert_csv,
-        force_month_start=args.force_month_start,
-    )
-    logger.info(result)
+    SseEtfCompositionDownload().execute()

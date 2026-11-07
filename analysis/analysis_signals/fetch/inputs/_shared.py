@@ -22,6 +22,7 @@ from _common.build_commons import (
     recent_trading_day_cutoff,
 )
 from _common.df_utils import compute_emas, epoch_col_to_dt64, safe_columns
+from _common.sql_views import frag, render_sql_view
 import pandas as pd
 
 from analysis.analysis_signals.config import (
@@ -86,14 +87,12 @@ async def fetch_options_universe(
     target = _OW_TARGET_TYPE.get(sec_type)
     if target is None:
         return set()
-    rows = await conn.fetch(
-        """
-        SELECT DISTINCT underlying_code
-        FROM stats.options_terms
-        WHERE underlying_target_type = $1
-        """,
-        target,
+    # analysis/analysis_signals/fetch/inputs/_shared/options_universe
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_shared/options_universe",
+        target_type=target,
     )
+    rows = await conn.fetch(view.sql, *view.params)
     return {r["underlying_code"] for r in rows}
 
 
@@ -194,16 +193,13 @@ async def fetch_first_dates(
     own first-data date)."""
     if not codes:
         return {}
-    rows = await conn.fetch(
-        f"""
-        SELECT b.code, min(b.date) AS first_date
-        FROM {_FIRST_DATE_SOURCE[sec_type]} b
-        WHERE b.code = ANY($1::text[])
-          AND b.close IS NOT NULL
-        GROUP BY b.code
-        """,
-        sorted(codes),
+    # analysis/analysis_signals/fetch/inputs/_shared/first_dates
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_shared/first_dates",
+        base_table=frag(_FIRST_DATE_SOURCE[sec_type]),
+        codes=sorted(codes),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     return {r["code"]: r["first_date"] for r in rows}
 
 
@@ -223,18 +219,13 @@ async def fetch_index_classes(
     stands or falls on its own significance)."""
     if not codes:
         return {}
-    rows = await conn.fetch(
-        """
-        SELECT code, min(industry_id) AS industry_id
-        FROM stats.sec_classification
-        WHERE type = $1
-          AND code = ANY($2::text[])
-          AND industry_id IS NOT NULL AND industry_id <> ''
-        GROUP BY code
-        """,
-        sec_type,
-        sorted(codes),
+    # analysis/analysis_signals/fetch/inputs/_shared/index_classes
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_shared/index_classes",
+        sec_type=sec_type,
+        codes=sorted(codes),
     )
+    rows = await conn.fetch(view.sql, *view.params)
     found = {r["code"]: r["industry_id"] for r in rows}
     return {c: found.get(c, UNCLASSIFIED_CLASS) for c in codes}
 
@@ -273,27 +264,13 @@ async def fetch_market_breadth(conn, sec_type: str) -> pd.DataFrame:
     ohl = {"index": "AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
            "etf": "AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE",
            "stock": "AND COALESCE(b.is_ohl_estimated, FALSE) = FALSE"}
-    rows = await conn.fetch(
-        f"""
-        WITH lagged AS (
-            SELECT b.date,
-                   b.close,
-                   lag(b.close) OVER (
-                       PARTITION BY b.code ORDER BY b.date
-                   ) AS prev_close
-            FROM {base} b
-            WHERE b.close IS NOT NULL
-              {ohl[sec_type]}
-        )
-        SELECT extract(epoch from date)::float8 AS date,
-               count(*) FILTER (WHERE close > prev_close) AS adv,
-               count(*) FILTER (WHERE close < prev_close) AS dec
-        FROM lagged
-        WHERE prev_close IS NOT NULL
-        GROUP BY date
-        ORDER BY date
-        """
+    # analysis/analysis_signals/fetch/inputs/_shared/market_breadth
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_shared/market_breadth",
+        base_table=frag(base),
+        ohl_filter=frag(ohl[sec_type]),
     )
+    rows = await conn.fetch(view.sql)
     if not rows:
         return pd.DataFrame(columns=_BREADTH_COLUMNS)
     df = pd.DataFrame(

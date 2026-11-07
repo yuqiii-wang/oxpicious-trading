@@ -55,9 +55,9 @@
 -- ============================================================================
 
 -- Drop prior version for clean reinstall. CASCADE handles dependent objects
--- (views, triggers) if any exist.
+-- (views, triggers) if any exist; the registry row re-registers via the
+-- runtime upsert_analysis_identity.
 DROP TABLE IF EXISTS analysis.mov_ave_rsi_holiday CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi_holiday';
 
 CREATE TABLE analysis.mov_ave_rsi_holiday (
     sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
@@ -114,9 +114,3 @@ COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.today_high_low_gap IS
     '(high - low) / close on date D. Intraday volatility ratio (e.g. 0.0150 = 1.50%). NUMERIC(18,4). DEFAULT 0.0 when OHLC is missing.';
 COMMENT ON COLUMN analysis.mov_ave_rsi_holiday.today_open_close_gap IS
     '(close - open) / open on date D. Intraday direction/impulse ratio. NUMERIC(18,4). DEFAULT 0.0 when OHLC is missing.';
-
--- Migrate: add columns to pre-existing installs (CREATE TABLE includes them
--- for fresh installs, but ADD COLUMN IF NOT EXISTS retro-fits them to an
--- already-existing table without dropping data). Future columns added should
--- follow this pattern.
--- (No migration columns yet — placeholder for future additions.)

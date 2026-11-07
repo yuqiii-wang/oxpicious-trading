@@ -10,10 +10,6 @@ DELETE FROM static.docs WHERE doc_id LIKE 'ui.market-beta.%';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.composites.%';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.perf-attr.%';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.composition-pie.%';
-DELETE FROM static.docs WHERE doc_id LIKE 'ui.market-beta.page';
--- legacy prefix cleanup (page renamed industry-sentiments → market-beta 2026-10-29)
-DELETE FROM static.docs WHERE doc_id LIKE 'ui.industry-sentiments.%';
-DELETE FROM static.docs WHERE doc_id LIKE 'ui.etf-holdings.page';
 DELETE FROM static.docs WHERE doc_id LIKE 'ui.dividends.%';
 
 INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
@@ -171,7 +167,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
 (
   'ui.composites.ai-market-qa.feed',
   NULL,
-  'The AI 市场情绪问答 feed (AI Market Sentiments QA), scoped to {{scope}} ({{mode}} mode{{#keyword}} · keyword “{{keyword}}”{{/keyword}}{{#date}} · day {{date}} ±120d{{/date}}). The cards are the LLM Q&A knowledge base (text.llm_qa, written daily by llm_agents): one ask-and-answer per post — the question, the answer, and its per-ref citations; click a card to expand. The metrics table audits the corpus through the SAME keyword vocabulary as the news side: per day, how many TIMES each market-description keyword family occurs across the questions+answers (下跌, 大跌… vs 上涨, 大涨…; 放量… vs 缩量…; 利空… vs 利好… — every hit counts, negated 并未下跌 never does), each with its 10y rarity rank. What the AI layer is SAYING — read it against the news audit (the Market Sentiments News page) for tone divergence: AI echoing news = the corpus explaining the tape; AI spiking while news is flat = amplification beyond the sources, discount that framing.',
+  'The AI 市场情绪问答 feed (AI Market Sentiments QA), scoped to {{scope}} ({{mode}} mode{{#keyword}} · keyword “{{keyword}}”{{/keyword}}{{#date}} · day {{date}} ±120d{{/date}}). The cards are the LLM Q&A knowledge base (llm.llm_qa, written daily by llm_agents): one ask-and-answer per post — the question, the answer, and its per-ref citations; click a card to expand. The metrics table audits the corpus through the SAME keyword vocabulary as the news side: per day, how many TIMES each market-description keyword family occurs across the questions+answers (下跌, 大跌… vs 上涨, 大涨…; 放量… vs 缩量…; 利空… vs 利好… — every hit counts, negated 并未下跌 never does), each with its 10y rarity rank. What the AI layer is SAYING — read it against the news audit (the Market Sentiments News page) for tone divergence: AI echoing news = the corpus explaining the tape; AI spiking while news is flat = amplification beyond the sources, discount that framing.',
   NULL,
   '[
     {"key": "scope", "text": "The ask rides the CURRENT scope — the classification pick (Industry mode) or the latest month''s top-N HYPE + DRAIN industries plus the broad-market daily QA (Market mode); the keyword-audit metrics resolve at market level."},

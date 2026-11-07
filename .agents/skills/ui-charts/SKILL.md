@@ -80,6 +80,31 @@ layer below already owns.
   `data_viz/src/lib/react-tooltip-renderer.ts`, styled with
   `TOOLTIP_CARD_STYLE` tokens — not ad-hoc HTML strings.
 
+### Data access — no inline SQL in TS
+
+ALL DB SQL lives in SQL files, never inline in service/route/component
+code. Charts fetch through `data_viz/api` services, and those services:
+
+- render reads from `database/sql_views/` SELECT templates via
+  `renderSqlView` / `querySqlView` (`data_viz/api/lib/sql-views.ts`);
+  a new or changed query means a new `.sql` template (its directory
+  mirrors the service file's path), not a longer inline string;
+- run parameterized writes through `sql-writes.service.ts` from
+  `database/sql_writes/` action files
+  (`<app>/<layer>/<table>/<action>.sql`);
+- never map or decode values with `CASE` / `CASE WHEN` in a SELECT —
+  decoding comes from the label index: pass
+  `sqlFrag(labelDecodeSql(domain, col))` (from
+  `data_viz/api/services/label-codes.ts`) as the template's
+  decode-slot fragment arg. A missing label is fixed in SQL — add the
+  row to its domain's INSERT file under
+  `database/sql/static/label_dim/` (plus the Python/TS mirrors per
+  `db-smallint-type-codes`), never a CASE map in the query.
+
+Layout and slot conventions: `database/sql_views/README.md`. The
+component side keeps only arg names and row mapping — same SQL-first
+rule as the Python pipelines (`oxpicious-dev-conventions`).
+
 ### Option builders
 
 - Pure `.ts` files returning COMPLETE options. `EChart` applies

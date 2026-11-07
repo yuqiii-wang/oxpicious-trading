@@ -105,8 +105,8 @@ import pandas as pd
 from _common.df_utils import grouped_rolling_agg
 from analysis._common import sanitize_for_db_insert
 from analysis.mov_ave_spread._common import (
+    TableStep,
     null_if_overflow_counted,
-    run_table_step,
 )
 from analysis.mov_ave_spread.config import (
     TRADING_AMT_HIGH_LOW_RATIO_COLUMN,
@@ -122,7 +122,6 @@ from analysis.mov_ave_spread.config import (
     TRADING_AMT_RATIOS_TABLE,
     TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS,
 )
-from analysis.mov_ave_spread._common import null_if_overflow_counted
 
 import logging
 logger = logging.getLogger(__name__)
@@ -349,8 +348,9 @@ def sanitize_trading_amt_ratios_rows(df: pd.DataFrame) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__; the
-#  skeleton lives in _common.steps.run_table_step)
+# ---------------------------------------------------------------------------
+#  Pipeline (internal step — invoked from mov_ave_spread.__main__ via the
+#  TableStep template in _common.steps)
 # ---------------------------------------------------------------------------
 
 def _compute_ratio_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -361,18 +361,9 @@ def _compute_ratio_columns(df: pd.DataFrame) -> pd.DataFrame:
     return compute_trading_amt_high_low_and_gap_ratios(df)
 
 
-async def run_trading_amt_ratios(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
-    """Run the trading-amount-ratios pipeline against the source data
-    already loaded by the parent mov_ave_spread.
+class TradingAmtRatiosStep(TableStep):
+    """Trading-amount-ratios internal step
+    (analysis.mov_ave_trading_amt_ratios).
 
     Reuses the caller's DB connection and source DataFrame (the
     ``trading_amount``, ``trading_amt_ma{*}``, ``price_slope``, and
@@ -380,7 +371,7 @@ async def run_trading_amt_ratios(
     DataFrame must contain the FULL per-code history so the MA5 range /
     gap rolling computations have enough lookback rows.
 
-    Pipeline (see _common.steps.run_table_step)
+    Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_trading_amt_ratios against source identity
          tables. In force mode, purge the table scope instead.
@@ -391,25 +382,23 @@ async def run_trading_amt_ratios(
          date).
       3. Upsert analysis.analysis_identity registry.
     """
-    await run_table_step(
-        conn, df,
-        title="MOV_AVE_TRADING_AMT_RATIOS (internal step of mov_ave_spread)",
-        tag="t",
-        table=TRADING_AMT_RATIOS_TABLE,
-        analysis_name=TRADING_AMT_RATIOS_ANALYSIS_NAME,
-        detail_name="mov_ave_trading_amt_ratios",
-        description=TRADING_AMT_RATIOS_DESCRIPTION,
-        needed_cols=list(dict.fromkeys(
-            ["sec_type", "code", "date", "price", "open", "high", "low",
-             "trading_amount"]
-            + list(TRADING_AMT_MA_COLUMNS)
-            + list(TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS)
-        )),
-        compute_fn=_compute_ratio_columns,
-        sanitize_fn=sanitize_trading_amt_ratios_rows,
-        force=force,
-        pool=pool,
-        max_concurrent=max_concurrent,
-        sec_type=sec_type,
-        code_filter=code_filter,
-    )
+
+    title = "MOV_AVE_TRADING_AMT_RATIOS (internal step of mov_ave_spread)"
+    tag = "t"
+    table = TRADING_AMT_RATIOS_TABLE
+    analysis_name = TRADING_AMT_RATIOS_ANALYSIS_NAME
+    detail_name = "mov_ave_trading_amt_ratios"
+    description = TRADING_AMT_RATIOS_DESCRIPTION
+    needed_cols = tuple(dict.fromkeys(
+        ["sec_type", "code", "date", "price", "open", "high", "low",
+         "trading_amount"]
+        + list(TRADING_AMT_MA_COLUMNS)
+        + list(TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS)
+    ))
+    in_skip_gate = True
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return _compute_ratio_columns(df)
+
+    def sanitize_rows(self, df: pd.DataFrame) -> list[dict]:
+        return sanitize_trading_amt_ratios_rows(df)

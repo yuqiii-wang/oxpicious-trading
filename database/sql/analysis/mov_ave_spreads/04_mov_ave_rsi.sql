@@ -5,10 +5,8 @@
 -- ============================================================================
 
 -- Drop any prior version so a re-run rebuilds the table from the CREATE
--- below; also remove the stale analysis_identity row so the registration
--- starts clean.
+-- below (the registry row re-registers via the runtime upsert_analysis_identity).
 DROP TABLE IF EXISTS analysis.mov_ave_rsi CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_rsi  (per-asset+date Wilder RSI)
@@ -121,7 +119,6 @@ COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_60days  IS 'Wilder RSI over 60 tradin
 --  01_mov_ave_spreads_detail.sql.
 -- ----------------------------------------------------------------------------
 DROP TABLE IF EXISTS analysis.mov_ave_rsi_ranks CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi_ranks';
 
 CREATE TABLE analysis.mov_ave_rsi_ranks (
     sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry

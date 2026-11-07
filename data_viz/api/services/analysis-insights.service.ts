@@ -16,6 +16,7 @@
  * merge its result. Keep the two implementations in sync.
  */
 import { queryRows } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import { cachedRows } from "./classification-cache.js";
 import { runPythonModule } from "./py-runner.service.js";
 import { LABEL_CODE } from "./label-codes.js";
@@ -124,22 +125,22 @@ export interface InsightPageDoc extends QueryResultRow {
 
 /** All page docs (10-min TTL — they change only on a seed run). */
 export function listInsightPageDocs(): Promise<InsightPageDoc[]> {
-  return cachedRows("analysis-insights:page-docs", async () =>
-    queryRows<InsightPageDoc>(
-      `SELECT tab, page, title, doc, keywords
-         FROM analysis_insight_metrics.insight_page_docs
-        ORDER BY tab, page`,
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis-insights/page_docs.
+  return cachedRows("analysis-insights:page-docs", () =>
+    querySqlView<InsightPageDoc>(
+      "data_viz/api/services/analysis-insights/page_docs",
     ),
   );
 }
 
 /** All registry rows (10-min TTL — they change only on a seed run). */
 export function listInsightTemplates(): Promise<InsightTemplateRow[]> {
-  return cachedRows("analysis-insights:templates", async () =>
-    queryRows<InsightTemplateRow>(
-      `SELECT template_id, tab, page, metric, label, unit, description, spec, db_keywords, ordinal
-         FROM analysis_insight_metrics.insight_templates
-        ORDER BY tab, page, ordinal`,
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis-insights/templates.
+  return cachedRows("analysis-insights:templates", () =>
+    querySqlView<InsightTemplateRow>(
+      "data_viz/api/services/analysis-insights/templates",
     ),
   );
 }
@@ -219,10 +220,15 @@ async function resolveTableMetric(
     ...extra,
   ];
   for (const key of latestDims) {
-    let sql = `SELECT MAX(${q(key)}) AS m FROM ${table}`;
     const maxWhere = whereFor();
-    if (maxWhere.length) sql += ` WHERE ${maxWhere.join(" AND ")}`;
-    const rows = await queryRows<{ m: string | number | null }>(sql, args);
+    const rows = await queryRows<{ m: string | number | null }>(
+      renderSqlView("data_viz/api/services/analysis-insights/metric_max", {
+        table: sqlFrag(table),
+        metric_key: sqlFrag(q(key)),
+        where_clause: sqlFrag(maxWhere.length ? `WHERE ${maxWhere.join(" AND ")}` : ""),
+      }).sql,
+      args,
+    );
     if (rows.length === 0 || rows[0].m === null) {
       return { unresolved: `no rows to pick $latest ${key}` };
     }
@@ -232,16 +238,21 @@ async function resolveTableMetric(
   const orderAlias = order.by === "value" ? "v" : "d";
   const dir = order.dir === "asc" ? "ASC" : "DESC";
   const valueWhere = whereFor();
-  const sql =
-    `SELECT d, v FROM (` +
-    `  SELECT ${dateCol} AS d, ${valueCol} AS v,` +
-    `         ROW_NUMBER() OVER (PARTITION BY ${dateCol}` +
-    `                            ORDER BY ${valueCol} DESC NULLS LAST) AS rn` +
-    `  FROM ${table}` +
-    (valueWhere.length ? ` WHERE ${valueWhere.join(" AND ")}` : "") +
-    `) t WHERE rn = 1 AND v IS NOT NULL` +
-    ` ORDER BY ${orderAlias} ${dir} NULLS LAST, d DESC LIMIT 2`;
-  const rows = await queryRows<{ d: string; v: string | number | null }>(sql, args);
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis-insights/metric_value — the registry
+  // identifiers and the scope predicates ride fragments (no fixed table
+  // shape exists; params stay caller-assembled in the shared args pool).
+  const rows = await queryRows<{ d: string; v: string | number | null }>(
+    renderSqlView("data_viz/api/services/analysis-insights/metric_value", {
+      table: sqlFrag(table),
+      date_col: sqlFrag(dateCol),
+      value_col: sqlFrag(valueCol),
+      order_alias: sqlFrag(orderAlias),
+      order_dir: sqlFrag(dir),
+      where_clause: sqlFrag(valueWhere.length ? `WHERE ${valueWhere.join(" AND ")}` : ""),
+    }).sql,
+    args,
+  );
   if (rows.length === 0) return { unresolved: "no row at/before the as-of date" };
   const value = Number(rows[0].v);
   const out: Partial<InsightMetricValue> = {
@@ -267,18 +278,23 @@ async function resolveTableMetric(
       pred(`${dateCol} < ?`, out.value_date),
       pred(`${dateCol} >= ?`, shiftYears(out.value_date, -RANK_WINDOW_YEARS)),
     ]);
-    const rankSql =
-      `SELECT AVG(CASE WHEN ${lePred} THEN 1.0 ELSE 0.0 END) AS pct_rank,` +
-      ` COUNT(*)::int AS n FROM (` +
-      `  SELECT ${dateCol} AS d, ${valueCol} AS v,` +
-      `         ROW_NUMBER() OVER (PARTITION BY ${dateCol}` +
-      `                            ORDER BY ${valueCol} DESC NULLS LAST) AS rn` +
-      `  FROM ${table} WHERE ${rankPreds.join(" AND ")}` +
-      `) t WHERE rn = 1 AND v IS NOT NULL`;
+    // The SELECT lives in the sql view
+    // data_viz/api/services/analysis-insights/metric_rarity (the value's
+    // less-equal weight rides the le_pred fragment — the boolean cast
+    // replaces the retired AVG(CASE WHEN ...)).
     const rankRows = await queryRows<{
       pct_rank: string | number | null;
       n: number;
-    }>(rankSql, args);
+    }>(
+      renderSqlView("data_viz/api/services/analysis-insights/metric_rarity", {
+        table: sqlFrag(table),
+        date_col: sqlFrag(dateCol),
+        value_col: sqlFrag(valueCol),
+        le_pred: sqlFrag(lePred),
+        rank_where: sqlFrag(`WHERE ${rankPreds.join(" AND ")}`),
+      }).sql,
+      args,
+    );
     const n = rankRows.length ? Number(rankRows[0].n) : 0;
     if (n >= RANK_MIN_N) {
       const r = Number(rankRows[0].pct_rank);

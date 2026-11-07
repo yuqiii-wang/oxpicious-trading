@@ -25,6 +25,12 @@ Usage:
   python -m downloads.stream.cnindex.price              # scheduled stream
   python -m downloads.stream.cnindex.price --once       # one immediate fetch then exit
   python -m downloads.stream.cnindex.price --code 399303 # fetch one code then exit
+
+The entry point is the :class:`CnindexStreamDaemon` DownloadJob — the former
+``stream()`` poll-loop body is its ``stream()`` method, the fetch/upsert
+orchestration (``fetch_and_upsert_one`` / ``_fetch_codes``) and the conn-first
+DB helpers are methods (StreamDb scope), and the pure aggregation / sleep
+helpers stay module-level.
 """
 from __future__ import annotations
 
@@ -44,6 +50,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from downloads._common import (
     AntiBotProxy,
+    DownloadJob,
     HostStatusTracker,
     build_default_session,
     merge_browser_profile,
@@ -55,7 +62,7 @@ from downloads.stream.cnindex.price._cnindex_api import (
     CNINDEX_CODES,
     CNINDEX_HEADERS,
     CNINDEX_HQ_BASE,
-    fetch_intraday_data,
+    CnindexApi,
     _ms_to_date,
     _to_float,
     COL_TIMESTAMP,
@@ -92,7 +99,7 @@ SLEEP_CHUNK_SEC = 5.0
 
 
 # ---------------------------------------------------------------------------
-# Aggregation: 1-min bars -> 5-min OHLC bars
+# Aggregation: 1-min bars -> 5-min OHLC bars (pure helpers — module-level)
 # ---------------------------------------------------------------------------
 
 def _ms_to_time(ms: Any) -> Optional[time]:
@@ -218,161 +225,7 @@ def aggregate_1min_to_5min(
 
 
 # ---------------------------------------------------------------------------
-# DB: upsert bars
-# ---------------------------------------------------------------------------
-
-def upsert_index_bars(
-    conn,
-    identity_rows: List[dict],
-    bar_rows: List[dict],
-) -> None:
-    """Upsert index identity rows (FK parent) then intraday bars."""
-    if identity_rows:
-        # Deduplicate by (date, code)
-        seen = set()
-        uniq: List[dict] = []
-        for r in identity_rows:
-            k = (r["date"], r["code"])
-            if k in seen:
-                continue
-            seen.add(k)
-            uniq.append(r)
-        bulk_upsert(conn, "stats.index_identity", uniq, ["date", "code"])
-    if bar_rows:
-        bulk_upsert(conn, "stats.index_intraday_5min", bar_rows, ["date", "code", "time"])
-
-
-def has_data_for_today(conn, today: date, code: str) -> bool:
-    """Check if ``stats.index_intraday_5min`` already has bars for (today, code)."""
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM stats.index_intraday_5min WHERE date = %s AND code = %s LIMIT 1",
-                (today, code),
-            )
-            return cur.fetchone() is not None
-    except Exception as e:  # noqa: BLE001
-        logger.warning("DB check failed for (%s, %s): %s", today, code, e)
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Fetch + process one index code
-# ---------------------------------------------------------------------------
-
-def fetch_and_upsert_one(
-    session,
-    code: str,
-    name: str,
-    proxy: AntiBotProxy,
-    host_tracker: HostStatusTracker,
-    conn,
-) -> Tuple[int, Optional[time]]:
-    """Fetch intraday 1-min bars for one index code from cnindex.com.cn,
-    aggregate into 5-min bars, and upsert to DB.
-
-    Returns (n_bars_upserted, latest_bar_time).
-    """
-    if proxy.is_blocked(CNINDEX_HQ_BASE):
-        logger.warning("  [cnindex-stream] %s: cnindex.com.cn is blocked, skipping", code)
-        return 0, None
-
-    t0 = _time.time()
-    data = fetch_intraday_data(session, code, proxy)
-    elapsed = _time.time() - t0
-
-    if data is None:
-        logger.info("  [cnindex-stream] %s: NO DATA in %.1fs", code, elapsed)
-        return 0, None
-
-    bars = data.get("data") or []
-    if not bars:
-        logger.info("  [cnindex-stream] %s: no bars available in %.1fs", code, elapsed)
-        return 0, None
-
-    # Extract index name from API response
-    api_name = data.get("indexName") or name
-
-    # Extract preClose from first row (12th element, index 11)
-    pre_close = None
-    first_bar = bars[0] if bars else None
-    if first_bar and len(first_bar) > COL_PRECLOSE:
-        pre_close = _to_float(first_bar[COL_PRECLOSE])
-
-    # Determine trade date from first bar's timestamp
-    trade_date = None
-    if first_bar and first_bar[COL_TIMESTAMP]:
-        trade_date = _ms_to_date(first_bar[COL_TIMESTAMP])
-    if trade_date is None:
-        trade_date = datetime.now().date()
-
-    identity_rows, bar_rows, latest_time = aggregate_1min_to_5min(
-        code, api_name, bars, trade_date, pre_close,
-    )
-
-    n_bars = 0
-    if bar_rows:
-        try:
-            upsert_index_bars(conn, identity_rows, bar_rows)
-            n_bars = len(bar_rows)
-            logger.info(
-                "  [cnindex-stream] %s (%s): %d 1min-bars -> %d 5min-bars (latest=%s, preClose=%s) in %.1fs; upserted",
-                code, api_name, len(bars), n_bars, latest_time, pre_close, elapsed,
-            )
-        except Exception as e:
-            logger.error("  [cnindex-stream] %s: DB upsert failed: %s", code, e)
-    else:
-        logger.info(
-            "  [cnindex-stream] %s (%s): %d 1min-bars -> 0 5min-bars in %.1fs",
-            code, api_name, len(bars), elapsed,
-        )
-
-    return n_bars, latest_time
-
-
-def _fetch_codes(
-    session,
-    codes: List[str],
-    proxy: AntiBotProxy,
-    host_tracker: HostStatusTracker,
-    conn,
-) -> Tuple[int, int, int]:
-    """Fetch and upsert intraday data for a list of codes.
-
-    Returns (n_ok, n_fail, n_total_bars).
-    """
-    n_total_bars = 0
-    n_ok = 0
-    n_fail = 0
-    for i, code in enumerate(codes):
-        # Get name from index_identity or use code
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT name FROM stats.index_identity WHERE code = %s ORDER BY date DESC LIMIT 1",
-                (code,),
-            )
-            row = cur.fetchone()
-            name = row[0] if row else code
-
-        n_bars, _ = fetch_and_upsert_one(
-            session, code, name, proxy, host_tracker, conn,
-        )
-        n_total_bars += n_bars
-        if n_bars > 0:
-            n_ok += 1
-        else:
-            n_fail += 1
-
-        # Anti-bot sleep after EVERY fetch (every index must wait, including
-        # the last one and even on failure — the proxy's internal sleep is
-        # only applied on successful requests, so this guarantees cadence).
-        random_sleep(SLEEP_SEC)
-
-    return n_ok, n_fail, n_total_bars
-
-
-# ---------------------------------------------------------------------------
-# Sleep helpers
+# Sleep helpers (pure — module-level)
 # ---------------------------------------------------------------------------
 
 def _sleep_chunked(seconds: float) -> None:
@@ -404,178 +257,364 @@ def _sleep_until_next_day() -> None:
     _sleep_chunked(wait_sec)
 
 
-# ---------------------------------------------------------------------------
-# Main stream loop
-# ---------------------------------------------------------------------------
+class StreamDb:
+    """Conn-scoped DB scope for the CNINDEX streamer — the former
+    module-level conn-first upsert / existence-check helpers grouped as one
+    stateless object. The live ``conn`` stays an explicit per-call argument."""
 
-def stream(
-    once: bool = False,
-    single_code: Optional[str] = None,
-    index_codes: Optional[List[str]] = None,
-) -> None:
-    """Main streaming loop with two-time-point scheduling.
+    def upsert_index_bars(
+        self,
+        conn,
+        identity_rows: List[dict],
+        bar_rows: List[dict],
+    ) -> None:
+        """Upsert index identity rows (FK parent) then intraday bars."""
+        if identity_rows:
+            # Deduplicate by (date, code)
+            seen = set()
+            uniq: List[dict] = []
+            for r in identity_rows:
+                k = (r["date"], r["code"])
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append(r)
+            bulk_upsert(conn, "stats.index_identity", uniq, ["date", "code"])
+        if bar_rows:
+            bulk_upsert(conn, "stats.index_intraday_5min", bar_rows, ["date", "code", "time"])
 
-    Per trading day:
-      - Before 16:00: sleep and wait.
-      - 16:00–16:30 (1st window): check DB for existing data per code; if
-        no data, fetch once per index. Then sleep until 16:30.
-      - After 16:30 (2nd window): fetch once per index. Then sleep until
-        next day.
+    def has_data_for_today(self, conn, today: date, code: str) -> bool:
+        """Check if ``stats.index_intraday_5min`` already has bars for (today, code)."""
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM stats.index_intraday_5min WHERE date = %s AND code = %s LIMIT 1",
+                    (today, code),
+                )
+                return cur.fetchone() is not None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("DB check failed for (%s, %s): %s", today, code, e)
+            return False
 
-    ``--once`` bypasses scheduling and does an immediate fetch of all codes.
+
+class CnindexStreamDaemon(DownloadJob):
+    """DownloadJob for the CNINDEX price streamer — the former ``stream()``
+    poll-loop body is the ``stream()`` method, the fetch/upsert orchestration
+    (``_fetch_and_upsert_one`` / ``_fetch_codes``) and the conn-first DB
+    helpers are methods on the daemon and its StreamDb scope, and the pure
+    aggregation / sleep helpers stay module-level.
+
+    execute() override: the base DownloadJob.execute() would call the lazy
+    ``autoregister()`` unconditionally; the former main() registered the
+    heartbeat ONLY for the long-running mode (--once / --code are one-shot
+    dev modes that exit before a beat would matter — a beat from a dying
+    one-shot would make the watchdog think the real service is alive).
+    autoregister derives the same "downloads.stream.cnindex.price" name
+    (register_service itself is idempotent per process), but one-shot runs
+    would GAIN a registration they never had, so the base hook is skipped
+    and the former conditional ``register_service`` call is kept verbatim.
+    No single-instance lock existed before — ``service`` stays "".
     """
-    if index_codes is None:
-        index_codes = list(CNINDEX_CODES)
 
-    logger.info(
-        "[startup] cnindex streamer starting "
-        "(windows: %s-%s & after %s, sleep=%.0fs, codes=%s)",
-        FIRST_WINDOW_START, SECOND_WINDOW_START, SECOND_WINDOW_START,
-        SLEEP_SEC, index_codes,
-    )
+    description = "Stream CNINDEX intraday data for CNINDEX-published indices."
+    component = "cnindex_stream"
+    service = ""  # long-lived daemon with no single-instance lock (as before)
 
-    conn = get_db_connection()
-    session = build_default_session(merge_browser_profile(CNINDEX_HEADERS))
-    host_tracker = HostStatusTracker()
-    # Pacing resolves once at construction from the service's
-    # external_request_config JSON row (request_type "page").
-    proxy = AntiBotProxy(service=SERVICE, request_type="page")
+    def __init__(self) -> None:
+        super().__init__()
+        self.api = CnindexApi()
+        self.db = StreamDb()
 
-    # Per-day state: reset at the start of each new day.
-    current_biz_day: Optional[date] = None
-    first_fetch_done = False   # 1st window (16:00–16:30) fetch completed
-    second_fetch_done = False  # 2nd window (after 16:30) fetch completed
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--once", action="store_true",
+            help="Bypass scheduling: do one immediate fetch of all codes then exit.",
+        )
+        parser.add_argument(
+            "--code", type=str, default=None,
+            help="Fetch a single index code then exit (e.g. --code 399303).",
+        )
 
-    try:
-        while True:
-            today = datetime.now().date()
-            now_time = datetime.now().time()
-            trading_today = is_trading_day(today)
+    def execute(self, argv: Optional[list] = None) -> None:
+        """parse → conditional register_service (verbatim former main()) → run()."""
+        if self.args is None:
+            self.parse_argv(argv)
+        else:
+            self.apply_args()
+        # Liveness heartbeat for database/stream_watchdog.py — long-running
+        # mode only; the one-shot dev modes exit before a beat would matter.
+        if not self.args.once and not self.args.code:
+            register_service(SERVICE)
+        self.run()
 
-            # --- Single-code mode (--code) ---
-            if single_code:
-                logger.info("=== single-code mode: %s ===", single_code)
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT name FROM stats.index_identity WHERE code = %s ORDER BY date DESC LIMIT 1",
-                        (single_code,),
-                    )
-                    row = cur.fetchone()
-                    name = row[0] if row else single_code
-                fetch_and_upsert_one(session, single_code, name, proxy, host_tracker, conn)
-                break
+    # -----------------------------------------------------------------------
+    # Fetch + process one index code
+    # -----------------------------------------------------------------------
 
-            # --- --once mode: immediate fetch of all codes, then exit ---
-            if once:
-                logger.info("=== --once mode: immediate fetch of all codes ===")
-                n_ok, n_fail, n_bars = _fetch_codes(
-                    session, index_codes, proxy, host_tracker, conn,
-                )
+    def _fetch_and_upsert_one(
+        self,
+        session,
+        code: str,
+        name: str,
+        proxy: AntiBotProxy,
+        host_tracker: HostStatusTracker,
+        conn,
+    ) -> Tuple[int, Optional[time]]:
+        """Fetch intraday 1-min bars for one index code from cnindex.com.cn,
+        aggregate into 5-min bars, and upsert to DB.
+
+        Returns (n_bars_upserted, latest_bar_time).
+        """
+        if proxy.is_blocked(CNINDEX_HQ_BASE):
+            logger.warning("  [cnindex-stream] %s: cnindex.com.cn is blocked, skipping", code)
+            return 0, None
+
+        t0 = _time.time()
+        data = self.api.fetch_intraday_data(session, code, proxy)
+        elapsed = _time.time() - t0
+
+        if data is None:
+            logger.info("  [cnindex-stream] %s: NO DATA in %.1fs", code, elapsed)
+            return 0, None
+
+        bars = data.get("data") or []
+        if not bars:
+            logger.info("  [cnindex-stream] %s: no bars available in %.1fs", code, elapsed)
+            return 0, None
+
+        # Extract index name from API response
+        api_name = data.get("indexName") or name
+
+        # Extract preClose from first row (12th element, index 11)
+        pre_close = None
+        first_bar = bars[0] if bars else None
+        if first_bar and len(first_bar) > COL_PRECLOSE:
+            pre_close = _to_float(first_bar[COL_PRECLOSE])
+
+        # Determine trade date from first bar's timestamp
+        trade_date = None
+        if first_bar and first_bar[COL_TIMESTAMP]:
+            trade_date = _ms_to_date(first_bar[COL_TIMESTAMP])
+        if trade_date is None:
+            trade_date = datetime.now().date()
+
+        identity_rows, bar_rows, latest_time = aggregate_1min_to_5min(
+            code, api_name, bars, trade_date, pre_close,
+        )
+
+        n_bars = 0
+        if bar_rows:
+            try:
+                self.db.upsert_index_bars(conn, identity_rows, bar_rows)
+                n_bars = len(bar_rows)
                 logger.info(
-                    "=== --once done: %d/%d ok, %d failed, %d bars ===",
-                    n_ok, len(index_codes), n_fail, n_bars,
+                    "  [cnindex-stream] %s (%s): %d 1min-bars -> %d 5min-bars (latest=%s, preClose=%s) in %.1fs; upserted",
+                    code, api_name, len(bars), n_bars, latest_time, pre_close, elapsed,
                 )
-                break
+            except Exception as e:
+                logger.error("  [cnindex-stream] %s: DB upsert failed: %s", code, e)
+        else:
+            logger.info(
+                "  [cnindex-stream] %s (%s): %d 1min-bars -> 0 5min-bars in %.1fs",
+                code, api_name, len(bars), elapsed,
+            )
 
-            # --- Reset per-day state on a new day ---
-            if current_biz_day != today:
-                current_biz_day = today
-                first_fetch_done = False
-                second_fetch_done = False
-                logger.info("New biz day %s; state reset.", today)
+        return n_bars, latest_time
 
-            # --- Not a trading day: sleep and wait ---
-            if not trading_today:
-                logger.info("Today (%s) is not a trading day; sleeping %ds.",
-                            today, NON_TRADING_SLEEP_SEC)
-                _sleep_chunked(NON_TRADING_SLEEP_SEC)
-                continue
+    def _fetch_codes(
+        self,
+        session,
+        codes: List[str],
+        proxy: AntiBotProxy,
+        host_tracker: HostStatusTracker,
+        conn,
+    ) -> Tuple[int, int, int]:
+        """Fetch and upsert intraday data for a list of codes.
 
-            # --- Before 16:00: sleep until 1st window ---
-            if now_time < FIRST_WINDOW_START:
-                _sleep_until(FIRST_WINDOW_START, "(1st fetch window)")
-                continue
-
-            # --- 1st window (16:00 – 16:30): check DB, fetch missing ---
-            if now_time < SECOND_WINDOW_START:
-                if not first_fetch_done:
-                    logger.info("=== 1st window @ %s: checking DB for existing data ===",
-                                datetime.now().strftime("%H:%M:%S"))
-                    codes_to_fetch = [
-                        c for c in index_codes
-                        if not has_data_for_today(conn, today, c)
-                    ]
-                    if codes_to_fetch:
-                        logger.info(
-                            "1st window: %d/%d codes missing data, fetching: %s",
-                            len(codes_to_fetch), len(index_codes), codes_to_fetch,
-                        )
-                        n_ok, n_fail, n_bars = _fetch_codes(
-                            session, codes_to_fetch, proxy, host_tracker, conn,
-                        )
-                        logger.info(
-                            "=== 1st window done: %d/%d ok, %d failed, %d bars ===",
-                            n_ok, len(codes_to_fetch), n_fail, n_bars,
-                        )
-                    else:
-                        logger.info("1st window: all codes already have data for today; skipping fetch.")
-                    first_fetch_done = True
-                else:
-                    logger.info("1st window already done; waiting until %s.", SECOND_WINDOW_START)
-
-                # Sleep until 2nd window
-                _sleep_until(SECOND_WINDOW_START, "(2nd fetch window)")
-                continue
-
-            # --- 2nd window (after 16:30): fetch all codes ---
-            if not second_fetch_done:
-                logger.info("=== 2nd window @ %s: fetching all codes (final) ===",
-                            datetime.now().strftime("%H:%M:%S"))
-                n_ok, n_fail, n_bars = _fetch_codes(
-                    session, index_codes, proxy, host_tracker, conn,
+        Returns (n_ok, n_fail, n_total_bars).
+        """
+        n_total_bars = 0
+        n_ok = 0
+        n_fail = 0
+        for i, code in enumerate(codes):
+            # Get name from index_identity or use code
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT name FROM stats.index_identity WHERE code = %s ORDER BY date DESC LIMIT 1",
+                    (code,),
                 )
-                logger.info(
-                    "=== 2nd window done: %d/%d ok, %d failed, %d bars ===",
-                    n_ok, len(index_codes), n_fail, n_bars,
-                )
-                second_fetch_done = True
+                row = cur.fetchone()
+                name = row[0] if row else code
+
+            n_bars, _ = self._fetch_and_upsert_one(
+                session, code, name, proxy, host_tracker, conn,
+            )
+            n_total_bars += n_bars
+            if n_bars > 0:
+                n_ok += 1
             else:
-                logger.info("2nd window already done; waiting until next day.")
+                n_fail += 1
 
-            # Sleep until next day (loop will re-enter on new day and reset state)
-            _sleep_until_next_day()
+            # Anti-bot sleep after EVERY fetch (every index must wait, including
+            # the last one and even on failure — the proxy's internal sleep is
+            # only applied on successful requests, so this guarantees cadence).
+            random_sleep(SLEEP_SEC)
 
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user; exiting.")
-    finally:
-        conn.close()
-        session.close()
-        logger.info("Cleanup done.")
+        return n_ok, n_fail, n_total_bars
 
+    def run(self) -> None:
+        """One daemon entry — the former main() tail (verbatim dispatch)."""
+        self.stream(once=self.args.once, single_code=self.args.code)
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Main stream loop (the former module-level stream(), verbatim)
+    # -----------------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Stream CNINDEX intraday data for CNINDEX-published indices.",
-    )
-    parser.add_argument(
-        "--once", action="store_true",
-        help="Bypass scheduling: do one immediate fetch of all codes then exit.",
-    )
-    parser.add_argument(
-        "--code", type=str, default=None,
-        help="Fetch a single index code then exit (e.g. --code 399303).",
-    )
-    args = parser.parse_args()
-    # Liveness heartbeat for database/stream_watchdog.py — long-running
-    # mode only; the one-shot dev modes exit before a beat would matter.
-    if not args.once and not args.code:
-        register_service("downloads.stream.cnindex.price")
-    stream(once=args.once, single_code=args.code)
+    def stream(
+        self,
+        once: bool = False,
+        single_code: Optional[str] = None,
+        index_codes: Optional[List[str]] = None,
+    ) -> None:
+        """Main streaming loop with two-time-point scheduling.
+
+        Per trading day:
+          - Before 16:00: sleep and wait.
+          - 16:00–16:30 (1st window): check DB for existing data per code; if
+            no data, fetch once per index. Then sleep until 16:30.
+          - After 16:30 (2nd window): fetch once per index. Then sleep until
+            next day.
+
+        ``--once`` bypasses scheduling and does an immediate fetch of all codes.
+        """
+        if index_codes is None:
+            index_codes = list(CNINDEX_CODES)
+
+        logger.info(
+            "[startup] cnindex streamer starting "
+            "(windows: %s-%s & after %s, sleep=%.0fs, codes=%s)",
+            FIRST_WINDOW_START, SECOND_WINDOW_START, SECOND_WINDOW_START,
+            SLEEP_SEC, index_codes,
+        )
+
+        conn = get_db_connection()
+        session = build_default_session(merge_browser_profile(CNINDEX_HEADERS))
+        host_tracker = HostStatusTracker()
+        # Pacing resolves once at construction from the service's
+        # external_request_config JSON row (request_type "page").
+        proxy = AntiBotProxy(service=SERVICE, request_type="page")
+
+        # Per-day state: reset at the start of each new day.
+        current_biz_day: Optional[date] = None
+        first_fetch_done = False   # 1st window (16:00–16:30) fetch completed
+        second_fetch_done = False  # 2nd window (after 16:30) fetch completed
+
+        try:
+            while True:
+                today = datetime.now().date()
+                now_time = datetime.now().time()
+                trading_today = is_trading_day(today)
+
+                # --- Single-code mode (--code) ---
+                if single_code:
+                    logger.info("=== single-code mode: %s ===", single_code)
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT name FROM stats.index_identity WHERE code = %s ORDER BY date DESC LIMIT 1",
+                            (single_code,),
+                        )
+                        row = cur.fetchone()
+                        name = row[0] if row else single_code
+                    self._fetch_and_upsert_one(session, single_code, name, proxy, host_tracker, conn)
+                    break
+
+                # --- --once mode: immediate fetch of all codes, then exit ---
+                if once:
+                    logger.info("=== --once mode: immediate fetch of all codes ===")
+                    n_ok, n_fail, n_bars = self._fetch_codes(
+                        session, index_codes, proxy, host_tracker, conn,
+                    )
+                    logger.info(
+                        "=== --once done: %d/%d ok, %d failed, %d bars ===",
+                        n_ok, len(index_codes), n_fail, n_bars,
+                    )
+                    break
+
+                # --- Reset per-day state on a new day ---
+                if current_biz_day != today:
+                    current_biz_day = today
+                    first_fetch_done = False
+                    second_fetch_done = False
+                    logger.info("New biz day %s; state reset.", today)
+
+                # --- Not a trading day: sleep and wait ---
+                if not trading_today:
+                    logger.info("Today (%s) is not a trading day; sleeping %ds.",
+                                today, NON_TRADING_SLEEP_SEC)
+                    _sleep_chunked(NON_TRADING_SLEEP_SEC)
+                    continue
+
+                # --- Before 16:00: sleep until 1st window ---
+                if now_time < FIRST_WINDOW_START:
+                    _sleep_until(FIRST_WINDOW_START, "(1st fetch window)")
+                    continue
+
+                # --- 1st window (16:00 – 16:30): check DB, fetch missing ---
+                if now_time < SECOND_WINDOW_START:
+                    if not first_fetch_done:
+                        logger.info("=== 1st window @ %s: checking DB for existing data ===",
+                                    datetime.now().strftime("%H:%M:%S"))
+                        codes_to_fetch = [
+                            c for c in index_codes
+                            if not self.db.has_data_for_today(conn, today, c)
+                        ]
+                        if codes_to_fetch:
+                            logger.info(
+                                "1st window: %d/%d codes missing data, fetching: %s",
+                                len(codes_to_fetch), len(index_codes), codes_to_fetch,
+                            )
+                            n_ok, n_fail, n_bars = self._fetch_codes(
+                                session, codes_to_fetch, proxy, host_tracker, conn,
+                            )
+                            logger.info(
+                                "=== 1st window done: %d/%d ok, %d failed, %d bars ===",
+                                n_ok, len(codes_to_fetch), n_fail, n_bars,
+                            )
+                        else:
+                            logger.info("1st window: all codes already have data for today; skipping fetch.")
+                        first_fetch_done = True
+                    else:
+                        logger.info("1st window already done; waiting until %s.", SECOND_WINDOW_START)
+
+                    # Sleep until 2nd window
+                    _sleep_until(SECOND_WINDOW_START, "(2nd fetch window)")
+                    continue
+
+                # --- 2nd window (after 16:30): fetch all codes ---
+                if not second_fetch_done:
+                    logger.info("=== 2nd window @ %s: fetching all codes (final) ===",
+                                datetime.now().strftime("%H:%M:%S"))
+                    n_ok, n_fail, n_bars = self._fetch_codes(
+                        session, index_codes, proxy, host_tracker, conn,
+                    )
+                    logger.info(
+                        "=== 2nd window done: %d/%d ok, %d failed, %d bars ===",
+                        n_ok, len(index_codes), n_fail, n_bars,
+                    )
+                    second_fetch_done = True
+                else:
+                    logger.info("2nd window already done; waiting until next day.")
+
+                # Sleep until next day (loop will re-enter on new day and reset state)
+                _sleep_until_next_day()
+
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user; exiting.")
+        finally:
+            conn.close()
+            session.close()
+            logger.info("Cleanup done.")
 
 
 if __name__ == "__main__":
-    main()
+    CnindexStreamDaemon().execute()

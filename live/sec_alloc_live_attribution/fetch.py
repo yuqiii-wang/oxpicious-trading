@@ -21,6 +21,8 @@ from typing import Sequence
 
 import asyncpg
 
+from _common.sql_views import frag, render_sql_view
+
 from .config import BROAD_EXCLUDED, CURATED_BENCHMARK_FILTER, TICK_CLASS_TYPES
 
 
@@ -36,37 +38,21 @@ def _f(value) -> float | None:
 #  The heavy ref is (re)built only for the LATEST date — "today" during
 #  market hours. On weekends/holidays this is simply the last trading day.
 # ----------------------------------------------------------------------------
-_LATEST_DATES_SQL = """
-SELECT DISTINCT date
-FROM stats.index_intraday_5min
-WHERE close IS NOT NULL
-ORDER BY date DESC
-LIMIT $1::int
-"""
-
-
-async def fetch_latest_intraday_dates(
-    conn: asyncpg.Connection,
-    n_dates: int = 1,
-) -> list[datetime.date]:
-    """Return the latest N distinct intraday 5-min dates (default: today only)."""
-    rows = await conn.fetch(_LATEST_DATES_SQL, n_dates)
-    return [r["date"] for r in rows]
 
 
 # ----------------------------------------------------------------------------
-#  Find ALL tick-eligible (benchmark, date) pairs for the LIVE process
-#  (--mode live — the 5-min equal-weight path). Eligibility rules:
-#    • the benchmark has intraday bars on the target (latest) date AND is in
-#      the CURATED broad-market tag set (the UI's benchmark universe —
-#      see config.CURATED_BENCHMARK_FILTER), AND
-#    • it has an ELIGIBLE member universe — ALL classified indices with a
-#      non-BROAD industry_id are members, with at least one TICK-ELIGIBLE
-#      member (type IN ('index','etf')) having intraday bars on that date.
-#  The loader's anti-join skips (code, time) rows that already exist with
-#  ANY flag, so pairs fully covered by weighted rows are natural no-ops and
-#  brand-new bars get equal-weight rows until the next yday-ref run
-#  upgrades them.
+#  Tick-eligible (benchmark, date) pairs — LIVE mode (latest intraday date)
+#  and COMPUTE mode (arbitrary target date). NOT migrated to sql_views
+#  templates: the originals bind benchmarks as $1 although $2/$3 (and $4 in
+#  compute mode) appear EARLIER in the SQL text — the loader numbers slots
+#  by first-use order, so the rendered text could never byte-match.
+#  Eligibility: the benchmark has intraday bars on the target date AND is
+#  in the CURATED broad-market tag set (the UI's benchmark universe), and
+#  at least one tick-eligible member (type IN ('index','etf'), non-BROAD
+#  industry_id) has bars on that date. The loader's anti-join skips
+#  (code, time) rows that already exist with ANY flag, so pairs fully
+#  covered by weighted rows are natural no-ops and brand-new bars get
+#  equal-weight rows until the next yday-ref run upgrades them.
 # ----------------------------------------------------------------------------
 _LIVE_TICK_PAIRS_SQL = """
 WITH target AS MATERIALIZED (
@@ -109,31 +95,10 @@ ORDER BY tb.code
 """.format(curated_filter=CURATED_BENCHMARK_FILTER)
 
 
-async def find_live_tick_pairs(
-    conn: asyncpg.Connection,
-    benchmarks: Sequence[str] | None = None,
-) -> list[tuple[str, datetime.date]]:
-    """Return ALL tick-eligible (benchmark, latest_date) pairs (live mode)."""
-    bench_param = list(benchmarks) if benchmarks else None
-    rows = await conn.fetch(
-        _LIVE_TICK_PAIRS_SQL,
-        bench_param,
-        list(BROAD_EXCLUDED),
-        list(TICK_CLASS_TYPES),
-    )
-    return [(r["benchmark_code"], r["tick_date"]) for r in rows]
-
-
 # ----------------------------------------------------------------------------
-#  Find tick-eligible (benchmark, date) pairs for an ARBITRARY target date
-#  (--mode compute — the on-demand backfill path, invoked by the API service
-#  when a selected date has no tick rows). Same eligibility rules as the LIVE
-#  finder above, but the target date is the $2 parameter instead of the
-#  latest raw intraday date: the benchmark must have bars ON the target date
-#  AND be in the curated broad-market tag set, and at least one tick-eligible
-#  member must have bars on that date. The loaders' anti-joins make pairs
-#  whose rows already exist natural no-ops (idempotent re-runs), and
-#  fallback-only rows get upgraded to daily-close-basis rows.
+#  COMPUTE-mode pair finder (on-demand backfill of a SELECTED date) —
+#  same NOT-migrated reason as the LIVE finder above ($2 = target date
+#  appears first in the text, ahead of $1/$3/$4).
 # ----------------------------------------------------------------------------
 _COMPUTE_TICK_PAIRS_SQL = """
 WITH target AS MATERIALIZED (
@@ -168,41 +133,20 @@ SELECT tb.code AS benchmark_code, (SELECT d FROM target) AS tick_date
 FROM today_bench tb
 WHERE EXISTS (
       SELECT 1 FROM today_member tm
-)
+  )
   AND ($1::text[] IS NULL OR tb.code = ANY($1::text[]))
 ORDER BY tb.code
 """.format(curated_filter=CURATED_BENCHMARK_FILTER)
 
 
-async def find_compute_tick_pairs(
-    conn: asyncpg.Connection,
-    benchmarks: Sequence[str] | None,
-    target_date: datetime.date,
-) -> list[tuple[str, datetime.date]]:
-    """Return ALL tick-eligible (benchmark, target_date) pairs (compute mode).
-
-    ``benchmarks`` = None means every curated benchmark with bars on the
-    target date. An empty result means the date has no raw intraday data
-    (outside the raw table's retention, a non-trading day, or the future).
-    """
-    bench_param = list(benchmarks) if benchmarks else None
-    rows = await conn.fetch(
-        _COMPUTE_TICK_PAIRS_SQL,
-        bench_param,
-        target_date,
-        list(BROAD_EXCLUDED),
-        list(TICK_CLASS_TYPES),
-    )
-    return [(r["benchmark_code"], r["tick_date"]) for r in rows]
-
-
 # ----------------------------------------------------------------------------
-#  Find (benchmark, date) pairs with at least one pending WEIGHTED
-#  tick row: either a genuinely missing (code, time) row, or an existing
-#  FALLBACK row (is_without_trading_amt = TRUE) that can now be UPGRADED to
-#  a daily-close-basis weighted row. Drives the yday-ref mode's incremental
-#  pass.
-#
+#  (benchmark, date) pairs with at least one pending WEIGHTED tick row —
+#  either a genuinely missing (code, time) row, or an existing FALLBACK row
+#  (is_without_trading_amt = TRUE) that can now be UPGRADED to a
+#  daily-close-basis weighted row. Drives the yday-ref mode's incremental
+#  pass. NOT migrated to a sql_views template: $1 = benchmarks appears
+#  AFTER $2/$3 in the SQL text — the loader numbers slots by first-use
+#  order, so the rendered text could never byte-match.
 #  Scoped to the single LATEST intraday date (target CTE first, same
 #  pattern as the live pair finder above) — without the date constant the
 #  planner seq-scans the whole multi-million-row tick table per
@@ -265,152 +209,25 @@ ORDER BY 1, 2
 """.format(curated_filter=CURATED_BENCHMARK_FILTER)
 
 
-async def find_pairs_with_missing_ticks(
-    conn: asyncpg.Connection,
-    benchmarks: Sequence[str] | None = None,
-) -> list[tuple[str, datetime.date]]:
-    """Return (benchmark, date) pairs with missing OR upgrade-eligible ticks."""
-    bench_param = list(benchmarks) if benchmarks else None
-    rows = await conn.fetch(
-        _PAIRS_WITH_MISSING_TICKS_SQL,
-        bench_param,
-        list(BROAD_EXCLUDED),
-        list(TICK_CLASS_TYPES),
-    )
-    return [(r["benchmark_code"], r["date"]) for r in rows]
-
-
 # ----------------------------------------------------------------------------
 #  LIGHT fetch: ONLY the pending WEIGHTED member-tick rows for one
-#  (benchmark, date).
-#
-#  Prev closes are computed AT TICK TIME from stats.index_basic_stats (the
-#  former live.sec_alloc_live_prev_ref materialization was consolidated
-#  away — same values, same basis):
-#    • prev_d: ONE resolved prev date — the latest close-bearing date
-#      strictly before the live date, resolved ONCE so every join is an
-#      exact-date equality (one-day scans only, never a history sweep).
-#    • member prev close: the member's DAILY close on prev_d (NaN-filtered;
-#      members without a row on prev_d are skipped — they keep their
-#      fallback rows).
-#    • benchmark prev close: same date (one row, shared by all members).
-#
-#  Anti-joins the tick table per (code, time) on is_without_trading_amt =
-#  FALSE: rows missing entirely OR present only as FALLBACK (TRUE) are
-#  (re)fetched — the upsert then upgrades fallback rows in place.
-#
-#  Zero closes anywhere (tick bar, prev closes, benchmark bar) are the
-#  sources' no-quote placeholders — filtered like NULL so no tick is
-#  computed against a zero price (which would read as a -100% move).
+#  (benchmark, date) — template fetch_missing_ticks. Prev closes are
+#  computed AT TICK TIME from stats.index_basic_stats (prev_d resolved ONCE
+#  so every join is an exact-date one-day scan); the anti-join on
+#  is_without_trading_amt = FALSE (re)fetches rows missing entirely OR
+#  present only as FALLBACK, so the upsert upgrades fallback rows in place.
+#  Zero closes (tick bar, prev closes, benchmark bar) are the sources'
+#  no-quote placeholders — filtered like NULL so no tick is computed
+#  against a zero price (which would read as a -100% move).
 # ----------------------------------------------------------------------------
-_MISSING_TICKS_SQL = """
-WITH bench_bars AS (
-    SELECT i5.time, i5.close
-    FROM stats.index_intraday_5min i5
-    WHERE i5.code = $1::text
-      AND i5.date = $2::date
-      AND i5.close IS NOT NULL
-      AND i5.close <> 0
-),
-members AS MATERIALIZED (
-    SELECT sc.code, sc.type
-    FROM stats.sec_classification sc
-    WHERE sc.is_active = TRUE
-      AND sc.type = ANY($3::text[])
-      AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
-      AND sc.industry_id <> ALL($4::text[])
-      AND sc.code <> $1::text
-),
-prev_d AS (
-    SELECT MAX(date) AS d
-    FROM stats.index_basic_stats
-    WHERE date < $2::date
-      AND close IS NOT NULL
-),
-member_prev_close AS (
-    SELECT b.code, b.close AS prev_close
-    FROM stats.index_basic_stats b
-    WHERE b.date = (SELECT d FROM prev_d)
-      AND b.close IS NOT NULL AND b.close::text <> 'NaN' AND b.close <> 0
-      AND b.code IN (SELECT code FROM members)
-),
-bench_prev_close AS (
-    SELECT close AS prev_close
-    FROM stats.index_basic_stats
-    WHERE code = $1::text
-      AND date = (SELECT d FROM prev_d)
-      AND close IS NOT NULL
-      AND close::text <> 'NaN'
-      AND close <> 0
-    LIMIT 1
-)
-SELECT
-    i5.code,
-    m.type                          AS sec_type,
-    i5.date,
-    i5.time,
-    i5.close                        AS tick_close,
-    mp.prev_close                   AS code_prev_date_close,
-    bp.prev_close                   AS benchmark_prev_date_close,
-    bb.close                        AS bench_tick_close
-FROM stats.index_intraday_5min i5
-JOIN members m ON m.code = i5.code
-JOIN member_prev_close mp ON mp.code = i5.code
-CROSS JOIN bench_prev_close bp
-LEFT JOIN bench_bars bb ON bb.time = i5.time
-WHERE i5.date = $2::date
-  AND i5.close IS NOT NULL
-  AND i5.close <> 0
-  AND NOT EXISTS (
-      SELECT 1
-      FROM live.sec_alloc_live_attribution t
-      WHERE t.benchmark_code = $1::text
-        AND t.date = i5.date
-        AND t.code = i5.code
-        AND t.sec_type = m.type
-        AND t.time = i5.time
-        AND t.is_without_trading_amt = FALSE
-  )
-ORDER BY i5.code, i5.time
-"""
-
-
-async def fetch_missing_ticks(
-    conn: asyncpg.Connection,
-    benchmark_code: str,
-    live_date: datetime.date,
-) -> list[dict]:
-    """Fetch pending weighted (code, time) tick rows for one pair.
-
-    Returns rows with: code, sec_type, date, time, tick_close,
-    code_prev_date_close, benchmark_prev_date_close, bench_tick_close.
-    """
-    rows = await conn.fetch(
-        _MISSING_TICKS_SQL,
-        benchmark_code,
-        live_date,
-        list(TICK_CLASS_TYPES),
-        list(BROAD_EXCLUDED),
-    )
-    return [
-        {
-            "code": r["code"],
-            "sec_type": r["sec_type"],
-            "date": r["date"],
-            "time": r["time"],
-            "tick_close": _f(r["tick_close"]),
-            "code_prev_date_close": _f(r["code_prev_date_close"]),
-            "benchmark_prev_date_close": _f(r["benchmark_prev_date_close"]),
-            "bench_tick_close": _f(r["bench_tick_close"]),
-        }
-        for r in rows
-    ]
 
 
 # ----------------------------------------------------------------------------
 #  FALLBACK fetch (self-contained): tick rows for one (benchmark, date)
 #  written by the 5-min LIVE pass so equal-weighted data flows immediately.
-#
+#  NOT migrated to a sql_views template: $1 = benchmark_code appears
+#  AFTER $3/$4 in the SQL text — the loader numbers slots by first-use
+#  order, so the rendered text could never byte-match.
 #  Prev-close basis = the member's LAST 5-min bar close ON the resolved
 #  prev intraday date (single latest close-bearing date strictly before
 #  the live date, resolved ONCE via the prev_d CTE — one-day scans only,
@@ -508,32 +325,140 @@ ORDER BY i5.code, i5.time
 """
 
 
-async def fetch_fallback_ticks(
-    conn: asyncpg.Connection,
-    benchmark_code: str,
-    live_date: datetime.date,
-) -> list[dict]:
-    """Fetch fallback (ref-less) pending tick rows for one pair.
+class AttributionStore:
+    """Read-only SELECT layer of the attribution pipeline (conn-scoped
+    store).
 
-    Returns rows with the same shape as fetch_missing_ticks.
-    """
-    rows = await conn.fetch(
-        _FALLBACK_TICKS_SQL,
-        benchmark_code,
-        live_date,
-        list(TICK_CLASS_TYPES),
-        list(BROAD_EXCLUDED),
-    )
-    return [
-        {
-            "code": r["code"],
-            "sec_type": r["sec_type"],
-            "date": r["date"],
-            "time": r["time"],
-            "tick_close": _f(r["tick_close"]),
-            "code_prev_date_close": _f(r["code_prev_date_close"]),
-            "benchmark_prev_date_close": _f(r["benchmark_prev_date_close"]),
-            "bench_tick_close": _f(r["bench_tick_close"]),
-        }
-        for r in rows
-    ]
+    Constructed once per run connection: ``AttributionStore(conn)`` —
+    every former conn-first module function of this file is a method with
+    the same name, SQL and sequencing (``conn`` became ``self._conn``);
+    the raw SQL constants above are the deliberately-not-migrated-to-
+    sql_views templates (their param slots are numbered by first-use
+    order and could never byte-match the loader's rendering)."""
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    async def fetch_latest_intraday_dates(
+        self, n_dates: int = 1,
+    ) -> list[datetime.date]:
+        """Return the latest N distinct intraday 5-min dates (default: today only)."""
+        # live/sec_alloc_live_attribution/fetch/fetch_latest_intraday_dates
+        view = render_sql_view(
+            "live/sec_alloc_live_attribution/fetch/fetch_latest_intraday_dates",
+            n_dates=n_dates,
+        )
+        rows = await self._conn.fetch(view.sql, *view.params)
+        return [r["date"] for r in rows]
+
+    async def find_live_tick_pairs(
+        self,
+        benchmarks: Sequence[str] | None = None,
+    ) -> list[tuple[str, datetime.date]]:
+        """Return ALL tick-eligible (benchmark, latest_date) pairs (live mode)."""
+        bench_param = list(benchmarks) if benchmarks else None
+        rows = await self._conn.fetch(
+            _LIVE_TICK_PAIRS_SQL,
+            bench_param,
+            list(BROAD_EXCLUDED),
+            list(TICK_CLASS_TYPES),
+        )
+        return [(r["benchmark_code"], r["tick_date"]) for r in rows]
+
+    async def find_compute_tick_pairs(
+        self,
+        benchmarks: Sequence[str] | None,
+        target_date: datetime.date,
+    ) -> list[tuple[str, datetime.date]]:
+        """Return ALL tick-eligible (benchmark, target_date) pairs (compute mode).
+
+        ``benchmarks`` = None means every curated benchmark with bars on the
+        target date. An empty result means the date has no raw intraday data
+        (outside the raw table's retention, a non-trading day, or the future).
+        """
+        bench_param = list(benchmarks) if benchmarks else None
+        rows = await self._conn.fetch(
+            _COMPUTE_TICK_PAIRS_SQL,
+            bench_param,
+            target_date,
+            list(BROAD_EXCLUDED),
+            list(TICK_CLASS_TYPES),
+        )
+        return [(r["benchmark_code"], r["tick_date"]) for r in rows]
+
+    async def find_pairs_with_missing_ticks(
+        self,
+        benchmarks: Sequence[str] | None = None,
+    ) -> list[tuple[str, datetime.date]]:
+        """Return (benchmark, date) pairs with missing OR upgrade-eligible ticks."""
+        bench_param = list(benchmarks) if benchmarks else None
+        rows = await self._conn.fetch(
+            _PAIRS_WITH_MISSING_TICKS_SQL,
+            bench_param,
+            list(BROAD_EXCLUDED),
+            list(TICK_CLASS_TYPES),
+        )
+        return [(r["benchmark_code"], r["date"]) for r in rows]
+
+    async def fetch_missing_ticks(
+        self,
+        benchmark_code: str,
+        live_date: datetime.date,
+    ) -> list[dict]:
+        """Fetch pending weighted (code, time) tick rows for one pair.
+
+        Returns rows with: code, sec_type, date, time, tick_close,
+        code_prev_date_close, benchmark_prev_date_close, bench_tick_close.
+        """
+        # live/sec_alloc_live_attribution/fetch/fetch_missing_ticks
+        view = render_sql_view(
+            "live/sec_alloc_live_attribution/fetch/fetch_missing_ticks",
+            benchmark_code=benchmark_code,
+            live_date=live_date,
+            tick_class_types=list(TICK_CLASS_TYPES),
+            broad_excluded=list(BROAD_EXCLUDED),
+        )
+        rows = await self._conn.fetch(view.sql, *view.params)
+        return [
+            {
+                "code": r["code"],
+                "sec_type": r["sec_type"],
+                "date": r["date"],
+                "time": r["time"],
+                "tick_close": _f(r["tick_close"]),
+                "code_prev_date_close": _f(r["code_prev_date_close"]),
+                "benchmark_prev_date_close": _f(r["benchmark_prev_date_close"]),
+                "bench_tick_close": _f(r["bench_tick_close"]),
+            }
+            for r in rows
+        ]
+
+    async def fetch_fallback_ticks(
+        self,
+        benchmark_code: str,
+        live_date: datetime.date,
+    ) -> list[dict]:
+        """Fetch fallback (ref-less) pending tick rows for one pair.
+
+        Returns rows with the same shape as fetch_missing_ticks.
+        """
+        rows = await self._conn.fetch(
+            _FALLBACK_TICKS_SQL,
+            benchmark_code,
+            live_date,
+            list(TICK_CLASS_TYPES),
+            list(BROAD_EXCLUDED),
+        )
+        return [
+            {
+                "code": r["code"],
+                "sec_type": r["sec_type"],
+                "date": r["date"],
+                "time": r["time"],
+                "tick_close": _f(r["tick_close"]),
+                "code_prev_date_close": _f(r["code_prev_date_close"]),
+                "benchmark_prev_date_close": _f(r["benchmark_prev_date_close"]),
+                "bench_tick_close": _f(r["bench_tick_close"]),
+            }
+            for r in rows
+        ]

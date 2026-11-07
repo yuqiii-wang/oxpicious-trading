@@ -5,7 +5,7 @@
  * Collapsed it shows the question (post headline), chips (industry · model
  * · language · n_sources) and the 2-line answer snippet. Clicking the
  * card expands it: the full row is lazily fetched (GET /api/ai/qa) — the
- * untruncated answer and the per-ref citation list (text.llm_qa_refs
+ * untruncated answer and the per-ref citation list (llm.llm_qa_refs
  * joined back to text.news, each typed exact/relevant and linked to its
  * source). The answer renders through AiQaRefBox: its inline
  * [来源：ref_N …] citation brackets become toggle buttons that expand the

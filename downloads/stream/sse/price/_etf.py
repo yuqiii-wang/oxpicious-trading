@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from downloads._common import service_urls
 
-from ._io import _prepopulate_finished_codes
+from ._io import StreamIo
 from ._model import AssetStream
 
 SERVICE = "downloads.stream.sse.price"
@@ -45,7 +45,7 @@ def build_etf_asset() -> AssetStream:
 
 def prepopulate_etf_finished_codes(conn, trade_date, finished_codes: set) -> None:
     """Pre-populate finished_codes with SSE ETFs that already have a 15:00 bar."""
-    _prepopulate_finished_codes(
+    StreamIo._prepopulate_finished_codes(
         conn, trade_date, finished_codes,
         table="stats.etf_intraday_5min", exchange_filter="SS",
     )

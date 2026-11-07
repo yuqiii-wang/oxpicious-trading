@@ -1,6 +1,6 @@
 /**
  * AskQaCard — one persisted interactive AI ask in the DataViz > AI feed's
- * "QA by Ask" mode (text.llm_qa_by_ask, written by llm_agents.llm_ask.storage
+ * "QA by Ask" mode (llm.llm_qa_by_ask, written by llm_agents.llm_ask.storage
  * for every AI Ask modal submit).
  *
  * Built on the shared PostCard base (expand-on-click, lazy detail fetch):

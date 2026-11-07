@@ -78,7 +78,7 @@
  "20": {
   "script": "downloads.macro.ai_daily",
   "can_be_parallel": false,
-  "note": "artifact-only (temps/ai_daily/*.json); builds.text loads them into text.news / text.llm_qa"
+  "note": "artifact-only (temps/ai_daily/*.json); builds.text loads them into text.news / llm.llm_qa"
  },
  "21": {
   "script": "downloads.stream.sse.price",

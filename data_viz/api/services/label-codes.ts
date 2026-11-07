@@ -41,6 +41,7 @@ export type LabelDomain =
   | 'ext_resource'
   | 'ext_http_source'
   | 'ext_llm_provider'
+  | 'secret_type'
   | 'db_instance'
   | 'db_replication_state'
   | 'analysis_cache_kind'
@@ -51,6 +52,7 @@ export type LabelDomain =
   | 'research_logic'
   | 'prompt_type'
   | 'agent_context_kind'
+  | 'langgraph_type'
   | 'search_table'
   | 'kw_category_type'
   | 'kw_market'
@@ -506,9 +508,19 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     pboc: 12,
     zhihu: 13,
     sina: 14,
+    // zhipu joins as an HTTP source for static.secret_config's
+    // web_search rows (the BigModel web_search endpoint) — the audit
+    // itself records zhipu traffic as ext_llm_provider.
+    zhipu: 15,
     other: 99,
   },
-  ext_llm_provider: { zhipu: 0, other: 99 },
+  // dummy = the offline test double (llm_agents.test.dummy_llm —
+  // the always-present inactive llm secret_config row)
+  ext_llm_provider: { zhipu: 0, dummy: 1, other: 99 },
+  // static.secret_config.secret_type — the credential family (the row's
+  // provider domain is selected by it: llm -> ext_llm_provider,
+  // web_search -> ext_http_source)
+  secret_type: { llm: 0, web_search: 1 },
   // monitor.db_health (replication_state is the WAL shipping state as seen
   // from the SAMPLED instance; none = no standby attached / receiver absent)
   db_instance: { primary: 0, replica: 1 },
@@ -543,9 +555,9 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
   // rebound-audit outcome of a recorded extreme
   // (analysis.mov_ave_spreads_roof_floor_rebounds.outcome)
   rf_rebound_outcome: { no_rebound: 0, never_retested: 1, held: 2, broken: 3, unresolved: 4 },
-  // text.llm_qa_by_research.logic_label — the dominant investing logic a
+  // llm.llm_qa_by_research.logic_label — the dominant investing logic a
   // research-logic Q&A row classifies; 99 other = the fallback (did not
-  // fit / unclassifiable). First text.* LLM-layer enum converted
+  // fit / unclassifiable). First llm.* LLM-layer enum converted
   // (2026-10-27)
   research_logic: {
     growth: 0,
@@ -558,26 +570,45 @@ export const LABEL_CODE: Record<LabelDomain, Record<string, number>> = {
     theme: 7,
     other: 99,
   },
-  // text.ai_prompts.prompt_type — the prompt row's role in a deep-agent
+  // llm.ai_prompts.prompt_type — the prompt row's role in a deep-agent
   // run: 0 system = the run's standing prompt, 1 skills = an approach
   // instruction (the UI Skills picker's rows), 2 plan = a
   // generation-plan prompt, 3 internal = the agent's own machinery
-  // prompt (seeded from the Python constants, hidden from the picker).
-  // Second text.* LLM-layer enum converted (2026-10-29)
-  prompt_type: { system: 0, skills: 1, plan: 2, internal: 3 },
-  // text.deep_agent_contexts.kind — which payload a context row carries.
+  // prompt (seeded from the Python constants, hidden from the picker),
+  // 4 tool = a tool description (one row per model-callable tool,
+  // seeded from the deep-agent tool classes' DEFAULT_DESCRIPTION
+  // constants by static/ai_prompts/10_tool_prompts.sql, overriding the
+  // built-in schema text fail-soft at run start; hidden from the
+  // picker). Second llm.* LLM-layer enum converted (2026-10-29), tool
+  // added 2026-11-02
+  prompt_type: { system: 0, skills: 1, plan: 2, internal: 3, tool: 4 },
+  // llm.deep_agent_contexts.kind — which payload a context row carries.
   // Code order = the run's data flow: the plan node's plan JSON, each
   // step's input notes and tick result note, a spawned subagent's final
-  // answer, and the runner's HARDCODED result node's fixed output (the
-  // run's final answer document — the UI Result view's display source).
-  // Third text.* LLM-layer enum converted (2026-10-31)
+  // answer, the runner's HARDCODED result node's fixed output (the
+  // run's final answer document — the UI Result view's display source),
+  // the supervisor node's main-path review (2026-11-02), and a MIDDLE
+  // graph's final output node payload (the CUSTOM graph's synthesis —
+  // what the next graph in the three-graph chain reads as its input,
+  // 2026-11-06). Third llm.* LLM-layer enum converted (2026-10-31)
   agent_context_kind: {
     plan: 0,
     'step-input': 1,
     'step-result': 2,
     'subagent-result': 3,
     'final-result': 4,
+    'supervisor-review': 5,
+    'graph-output': 6,
   },
+  // llm.deep_agent_langgraph_templates.type — which of a run's three
+  // chained LangGraphs a template drives (the three-graph refactor,
+  // 2026-11-06): 0 plan = a saved plan template (reuse skips the
+  // planning session), 1 custom = a saved custom-graph step set
+  // (reserved — the on-demand graph the planner builds is type custom
+  // at runtime), 2 result = the result graph's fixed four-review-wave
+  // definition (the seeded default-result-wave row). Fifth llm.*
+  // vocabulary converted (2026-11-06)
+  langgraph_type: { plan: 0, custom: 1, result: 2 },
   // text.search_lexicon_df.search_table — which searchable table a
   // high-DF lexeme row's document frequency counts (the >= 25%-DF set
   // MCP text_search reads to pick its ranking strategy). Code order =

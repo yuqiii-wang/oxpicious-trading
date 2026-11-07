@@ -3,7 +3,8 @@
  * + strategy.strategy_risk_period + strategy.strategy_risk_factors
  * (computed by `python -m strategy._risks`).
  */
-import { queryRows, formatDate, toNum } from "../db.service.js";
+import { formatDate, toNum } from "../db.service.js";
+import { querySqlView } from "@api/lib/sql-views";
 import type {
   MaSpreadSecType,
   StrategyRiskSeq,
@@ -88,70 +89,8 @@ interface RiskFactorRow {
   ratio: string | number | null;
 }
 
-const RISK_SEQ_SQL = `
-  SELECT r.seq_id, r.code,
-         i.total_realized_pnl, i.total_abs_pnl, i.n_sells, i.n_buys,
-         r.pnl_gain_1st_decision_no, r.pnl_gain_2nd_decision_no, r.pnl_gain_3rd_decision_no,
-         r.pnl_loss_1st_decision_no, r.pnl_loss_2nd_decision_no, r.pnl_loss_3rd_decision_no,
-         r.confidence_buy_1st_decision_no, r.confidence_buy_2nd_decision_no, r.confidence_buy_3rd_decision_no,
-         g1.realized_pnl  AS top_gain_pnl,
-         g1.exec_date     AS top_gain_exec_date,
-         g1.signal_reason AS top_gain_signal_reason,
-         l1.realized_pnl  AS top_loss_pnl,
-         l1.exec_date     AS top_loss_exec_date,
-         l1.signal_reason AS top_loss_signal_reason,
-         r.max_30d_abs_pnl, r.concentration_ratio,
-         r.concentration_window_start, r.concentration_window_end,
-         r.drawdown_1st_date, r.drawdown_2nd_date, r.drawdown_3rd_date,
-         r.drawdown_1st_val, r.drawdown_2nd_val, r.drawdown_3rd_val,
-         r.risk_score, r.risk_grade,
-         r.ft_amplified_total_pnl,
-         r.deepest_drop_since_unzero_pos,
-         r.deepest_drop_since_unzero_pos_peak_date,
-         r.deepest_drop_since_unzero_pos_trough_date,
-         r.deepest_drop_since_last_buy,
-         r.deepest_drop_since_last_buy_peak_date,
-         r.deepest_drop_since_last_buy_trough_date
-  FROM strategy.strategy_risks r
-  JOIN strategy.strategy_identity s ON s.seq_id = r.seq_id
-  JOIN strategy.strategy_results i ON i.seq_id = r.seq_id
-  LEFT JOIN strategy.trade_decision g1
-    ON g1.seq_id = r.seq_id AND g1.decision_no = r.pnl_gain_1st_decision_no
-  LEFT JOIN strategy.trade_decision l1
-    ON l1.seq_id = r.seq_id AND l1.decision_no = r.pnl_loss_1st_decision_no
-  WHERE s.sec_type = $1 AND r.code = $2 AND s.strategy_name = $3
-  ORDER BY CASE WHEN s.is_active THEN 0 ELSE 1 END, s.seq_no DESC
-  LIMIT 1
-`;
-
-const RISK_PERIODS_SQL = `
-  SELECT p.seq_id, p.code, p.period_type, p.period_value,
-         p.n_sells, p.n_buys, p.realized_pnl, p.ft_amplified_pnl, p.unrealized_pnl,
-         p.max_loss_unrealized_pnl, p.max_gain_unrealized_pnl, p.end_unrealized_pnl,
-         p.abs_pnl, p.period_share,
-         p.is_concentration_hotspot, p.is_counter_trend
-  FROM strategy.strategy_risk_period p
-  JOIN strategy.strategy_identity s ON s.seq_id = p.seq_id
-  WHERE s.sec_type = $1 AND p.code = $2 AND s.seq_id = $3
-  ORDER BY p.period_type, p.period_value
-`;
-
-const RISK_FACTORS_SQL = `
-  SELECT f.seq_id, f.code, f.component, f.label, f.sub_key,
-         f.contribution, f.raw_value, f.threshold, f.ratio
-  FROM strategy.strategy_risk_factors f
-  WHERE f.seq_id = $1 AND f.code = $2
-  ORDER BY
-    CASE f.component
-      WHEN 'realized' THEN 1
-      WHEN 'unrealized' THEN 2
-      WHEN 'streak' THEN 3
-      WHEN 'period_asymmetry' THEN 4
-      WHEN 'period_tail' THEN 5
-      ELSE 9
-    END,
-    f.sub_key
-`;
+// The three SELECTs live in the sql views
+// data_viz/api/services/strategy/risks/{risk_seq, risk_periods, risk_factors}.
 
 function mapRiskSeq(r: RiskSeqRow): StrategyRiskSeq {
   return {
@@ -242,7 +181,10 @@ export async function fetchStrategyRisks(
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
 
   // 1. Fetch the latest risk_seq row for this (sec_type, code).
-  const seqRows = await queryRows<RiskSeqRow>(RISK_SEQ_SQL, [secType, rawCode, strategyName]);
+  const seqRows = await querySqlView<RiskSeqRow>(
+    "data_viz/api/services/strategy/risks/risk_seq",
+    { sec_type: secType, code: rawCode, strategy_name: strategyName },
+  );
 
   if (seqRows.length === 0) {
     return { code: rawCode, sec_type: secType, risk_seq: null, periods: [], risk_factors: [] };
@@ -251,14 +193,16 @@ export async function fetchStrategyRisks(
   const riskSeq = mapRiskSeq(seqRows[0]);
 
   // 2. Fetch all period rows for the same seq_id.
-  const periodRows = await queryRows<RiskPeriodRow>(
-    RISK_PERIODS_SQL, [secType, rawCode, riskSeq.seq_id],
+  const periodRows = await querySqlView<RiskPeriodRow>(
+    "data_viz/api/services/strategy/risks/risk_periods",
+    { sec_type: secType, code: rawCode, seq_id: riskSeq.seq_id },
   );
   const periods = periodRows.map(mapRiskPeriod);
 
   // 3. Fetch risk score contribution factors for the same seq_id.
-  const factorRows = await queryRows<RiskFactorRow>(
-    RISK_FACTORS_SQL, [riskSeq.seq_id, rawCode],
+  const factorRows = await querySqlView<RiskFactorRow>(
+    "data_viz/api/services/strategy/risks/risk_factors",
+    { seq_id: riskSeq.seq_id, code: rawCode },
   );
   const riskFactors = factorRows.map(mapRiskFactor);
 

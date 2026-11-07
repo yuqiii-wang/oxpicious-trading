@@ -15,7 +15,8 @@
  * offshore families (CN/MCA) publish no turnover, so trading_shares is the
  * fallback measure there.
  */
-import { queryRows, toNum } from "../lib/db.js";
+import { toNum } from "../lib/db.js";
+import { querySqlView, sqlFrag } from "../lib/sql-views.js";
 import { labelDecodeSql } from "./label-codes.js";
 import type { QueryResultRow } from "pg";
 import type {
@@ -42,16 +43,10 @@ interface DbFuturesDailyRow extends QueryResultRow {
 //  Products list
 // ----------------------------------------------------------------------------
 export async function listProducts(): Promise<FuturesProduct[]> {
-  const rows = await queryRows(`
-    SELECT DISTINCT
-      product_code,
-      name,
-      ${labelDecodeSql("contract_type", "contract_type")} AS contract_type,
-      underlying_code,
-      underlying_name
-    FROM stats.futures_identity
-    ORDER BY product_code
-  `);
+  const rows = await querySqlView(
+    "data_viz/api/services/futures/products",
+    { contract_type_decode: sqlFrag(labelDecodeSql("contract_type", "contract_type")) },
+  );
   return rows.map((r) => ({
     product_code: r.product_code as string,
     name: r.name as string,
@@ -68,14 +63,13 @@ export async function getCombined(
   product: string,
 ): Promise<FuturesCombinedResponse> {
   // Validate product + fetch header info
-  const productRow = await queryRows(`
-    SELECT product_code, name,
-           ${labelDecodeSql("contract_type", "contract_type")} AS contract_type,
-           underlying_code, underlying_name
-    FROM stats.futures_identity
-    WHERE product_code = $1
-    LIMIT 1
-  `, [product]);
+  const productRow = await querySqlView(
+    "data_viz/api/services/futures/product_row",
+    {
+      product_code: product,
+      contract_type_decode: sqlFrag(labelDecodeSql("contract_type", "contract_type")),
+    },
+  );
 
   if (productRow.length === 0) {
     throw new Error(`Unknown futures product: ${product}`);
@@ -86,23 +80,12 @@ export async function getCombined(
   const ymdMap = await getYearMonthMap(product);
 
   // Fetch all rows and coerce once into the FuturesRow payload shape
-  // (numeric-ish columns → number | null).
-  const dbRows = await queryRows<DbFuturesDailyRow>(`
-    SELECT
-      i.date,
-      i.code,
-      i.days_to_expiry,
-      b.settlement_price,
-      b.close,
-      b.trading_amount,
-      b.trading_shares,
-      b.open_interest
-    FROM stats.futures_identity i
-    LEFT JOIN stats.futures_basic_stats b
-      ON i.date = b.date AND i.code = b.code
-    WHERE i.product_code = $1
-    ORDER BY i.date, i.code
-  `, [product]);
+  // (numeric-ish columns → number | null). The SELECT lives in the sql view
+  // data_viz/api/services/futures/daily_rows.
+  const dbRows = await querySqlView<DbFuturesDailyRow>(
+    "data_viz/api/services/futures/daily_rows",
+    { product_code: product },
+  );
   const rows: FuturesRow[] = dbRows.map((r) => ({
     date: String(r.date),
     code: String(r.code),
@@ -194,11 +177,10 @@ export async function getCombined(
 //  Helpers
 // ----------------------------------------------------------------------------
 async function getYearMonthMap(product: string): Promise<Map<string, string>> {
-  const rows = await queryRows(`
-    SELECT DISTINCT code, contract_year_month
-    FROM stats.futures_identity
-    WHERE product_code = $1
-  `, [product]);
+  const rows = await querySqlView(
+    "data_viz/api/services/futures/year_month_map",
+    { product_code: product },
+  );
   const map = new Map<string, string>();
   for (const r of rows) {
     map.set(String(r.code), String(r.contract_year_month));
@@ -218,14 +200,10 @@ async function getUnderlyingSpotPrice(
   const minDate = dates[0];
   const maxDate = dates[dates.length - 1];
 
-  const rows = await queryRows(`
-    SELECT date, close
-    FROM stats.index_basic_stats
-    WHERE code = $1
-      AND date >= $2
-      AND date <= $3
-    ORDER BY date
-  `, [underlyingCode, minDate, maxDate]);
+  const rows = await querySqlView(
+    "data_viz/api/services/futures/underlying_spot",
+    { code: underlyingCode, min_date: minDate, max_date: maxDate },
+  );
 
   // Build date → close map
   const priceMap = new Map<string, number | null>();

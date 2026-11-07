@@ -33,8 +33,9 @@ Usage:
   python -m builds.index.composition --force
   python -m builds.index.composition --date 2026-08-14   (force one snapshot date)
 
-The :class:`IndexCompositionBuild` entry class (a :class:`DataBuild`
-subclass) owns the runtime lifecycle + common argparse. Bootstrap-first
+The :class:`IndexCompositionBuild` entry class (an :class:`IndexBuild`
+subclass — inheritance mirrors the directory layout) owns the runtime
+lifecycle + common argparse. Bootstrap-first
 layout: the runtime setup runs before this module's imports.
 """
 
@@ -50,12 +51,12 @@ from _common.build_commons import (
 from builds._commons.paths import INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR
 from _common.log_setup import setup_logging
 
-from _common.data_build import DataBuild
+from builds.index.__main__ import IndexBuild
 
 logger = setup_logging("composition")
 
 
-class IndexCompositionBuild(DataBuild):
+class IndexCompositionBuild(IndexBuild):
     """``python -m builds.index.composition`` — CSI+SZSE snapshots → DB."""
 
     title = ("BUILD INDEX COMPOSITION (CSI + SZSE)  ·  "

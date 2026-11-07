@@ -7,6 +7,12 @@ The highest-ranked stocks (list head) are seeded onto B's queue
 so the official SZSE source fetches them with priority (split_rank_priority);
 cancellation (Ctrl-C) propagates up to the caller after reaping the worker
 tasks.
+
+Class shape: the round-dispatch orchestration (``run_stock_round`` — queue /
+state / task construction + shutdown protocol) is the ``run_stock_round``
+async method of :class:`StockRoundRunner`, which holds the
+:class:`~._workers.SourceWorkers` scope. The date / split helpers and the
+CSV archiving of a finished round stay module-level.
 """
 from __future__ import annotations
 
@@ -24,11 +30,7 @@ from ._constants import (
 )
 from ._io import write_cycle_csv
 from ._startup import StreamConns
-from ._workers import (
-    _parallel_source_worker,
-    _szse_worker,
-    split_groups,
-)
+from ._workers import SourceWorkers, split_groups
 
 logger = setup_logger("stream_szse")
 
@@ -71,82 +73,6 @@ def split_rank_priority(
     return b_groups, split_groups(rest, n_groups)
 
 
-async def run_stock_round(
-    unfinished: List[Tuple[str, str]],
-    n_groups: int,
-    session,
-    host_tracker: HostStatusTracker,
-    emitted_map: Dict[str, set],
-    trade_date,
-    latest_bar_time: Dict[str, Optional[object]],
-    conns: StreamConns,
-    poll_interval_b: float,
-    b_top_n: int = B_PRIORITY_TOP_N,
-) -> RoundState:
-    """Run ONE round of the parallel source workers over ``unfinished``.
-
-    Rank-priority: the highest-ranked ``b_top_n`` unfinished stocks (list
-    head) are seeded onto q_fallback so B (szse) fetches them first and
-    exclusively — A never sees them; A's circuit-breaker remainder
-    handed to q_fallback later queues behind that slice (FIFO). The rest is
-    split onto q_primary; A pulls groups and hands failures back through
-    q_fallback for B to resume, and B helps on the primary queue once the
-    priority slice is done. Bars are upserted per-stock inside the workers;
-    returns the round state dict with accumulated "identity" / "bars" lists
-    for CSV archiving + summaries.
-
-    On Ctrl-C/cancellation: sets state["stop"], cancels all tasks, waits up to
-    SHUTDOWN_TIMEOUT_SEC for them to finish, then re-raises.
-    """
-    b_priority_groups, round_groups = split_rank_priority(unfinished, b_top_n, n_groups)
-    logger.info(
-        "rank-priority: top %d codes -> B (szse) exclusive slice; %d stocks -> %d primary groups (A)",
-        sum(len(g) for g in b_priority_groups), len(unfinished) - sum(len(g) for g in b_priority_groups),
-        len(round_groups),
-    )
-    q_primary: asyncio.Queue = asyncio.Queue()
-    q_fallback: asyncio.Queue = asyncio.Queue()
-    for g in b_priority_groups:
-        q_fallback.put_nowait(g)
-    for g in round_groups:
-        q_primary.put_nowait(g)
-    state: RoundState = {
-        "identity": [],
-        "bars": [],
-        "latest_bar_time": latest_bar_time,
-        "n_outstanding": len(round_groups) + len(b_priority_groups),
-        "stop": False,
-    }
-
-    workers = [
-        asyncio.create_task(_parallel_source_worker(
-            "sina", "A", q_primary, q_fallback, state, session,
-            host_tracker, emitted_map, trade_date, COOLDOWN_A_SEC, conns.conn_a)),
-        asyncio.create_task(_szse_worker(
-            q_primary, q_fallback, state, session, host_tracker,
-            emitted_map, trade_date, poll_interval_b, conns.conn_b)),
-    ]
-    try:
-        await asyncio.gather(*workers)
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        state["stop"] = True
-        for w in workers:
-            if not w.done():
-                w.cancel()
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*workers, return_exceptions=True),
-                timeout=SHUTDOWN_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Workers did not shut down within %.0fs; forcing exit.",
-                SHUTDOWN_TIMEOUT_SEC,
-            )
-        raise
-    return state
-
-
 def archive_round_bars(bars: List[dict]):
     """Archive a finished round's bars to CSV (DB already upserted per-stock).
 
@@ -155,3 +81,90 @@ def archive_round_bars(bars: List[dict]):
     if bars:
         return write_cycle_csv(datetime.now(), bars)
     return None
+
+
+class StockRoundRunner:
+    """Round-dispatch scope for the SZSE streamer — owns the
+    :class:`SourceWorkers` fetch/worker scope and dispatches one round of the
+    parallel source workers over the unfinished stock list. Stateless beyond
+    that collaborator: the queues, state dict and connections are built
+    per round exactly as before."""
+
+    def __init__(self) -> None:
+        self.workers = SourceWorkers()
+
+    async def run_stock_round(
+        self,
+        unfinished: List[Tuple[str, str]],
+        n_groups: int,
+        session,
+        host_tracker: HostStatusTracker,
+        emitted_map: Dict[str, set],
+        trade_date,
+        latest_bar_time: Dict[str, Optional[object]],
+        conns: StreamConns,
+        poll_interval_b: float,
+        b_top_n: int = B_PRIORITY_TOP_N,
+    ) -> RoundState:
+        """Run ONE round of the parallel source workers over ``unfinished``.
+
+        Rank-priority: the highest-ranked ``b_top_n`` unfinished stocks (list
+        head) are seeded onto q_fallback so B (szse) fetches them first and
+        exclusively — A never sees them; A's circuit-breaker remainder
+        handed to q_fallback later queues behind that slice (FIFO). The rest is
+        split onto q_primary; A pulls groups and hands failures back through
+        q_fallback for B to resume, and B helps on the primary queue once the
+        priority slice is done. Bars are upserted per-stock inside the workers;
+        returns the round state dict with accumulated "identity" / "bars" lists
+        for CSV archiving + summaries.
+
+        On Ctrl-C/cancellation: sets state["stop"], cancels all tasks, waits up to
+        SHUTDOWN_TIMEOUT_SEC for them to finish, then re-raises.
+        """
+        b_priority_groups, round_groups = split_rank_priority(unfinished, b_top_n, n_groups)
+        logger.info(
+            "rank-priority: top %d codes -> B (szse) exclusive slice; %d stocks -> %d primary groups (A)",
+            sum(len(g) for g in b_priority_groups), len(unfinished) - sum(len(g) for g in b_priority_groups),
+            len(round_groups),
+        )
+        q_primary: asyncio.Queue = asyncio.Queue()
+        q_fallback: asyncio.Queue = asyncio.Queue()
+        for g in b_priority_groups:
+            q_fallback.put_nowait(g)
+        for g in round_groups:
+            q_primary.put_nowait(g)
+        state: RoundState = {
+            "identity": [],
+            "bars": [],
+            "latest_bar_time": latest_bar_time,
+            "n_outstanding": len(round_groups) + len(b_priority_groups),
+            "stop": False,
+        }
+
+        workers = [
+            asyncio.create_task(self.workers._parallel_source_worker(
+                "sina", "A", q_primary, q_fallback, state, session,
+                host_tracker, emitted_map, trade_date, COOLDOWN_A_SEC, conns.conn_a)),
+            asyncio.create_task(self.workers._szse_worker(
+                q_primary, q_fallback, state, session, host_tracker,
+                emitted_map, trade_date, poll_interval_b, conns.conn_b)),
+        ]
+        try:
+            await asyncio.gather(*workers)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            state["stop"] = True
+            for w in workers:
+                if not w.done():
+                    w.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*workers, return_exceptions=True),
+                    timeout=SHUTDOWN_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Workers did not shut down within %.0fs; forcing exit.",
+                    SHUTDOWN_TIMEOUT_SEC,
+                )
+            raise
+        return state

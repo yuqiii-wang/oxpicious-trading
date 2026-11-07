@@ -5,7 +5,7 @@ Contains:
 - build_stock_margin_df: aggregate stock margin data
 
 Margin columns are written by the INDEPENDENT margin pass in
-pipeline/writer.py (upsert_margin_only_conn, column-scoped); there is no
+pipeline/writer.py (StockWriter.upsert_margin_only, column-scoped); there is no
 OHLCV join here anymore.
 """
 from __future__ import annotations

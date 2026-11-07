@@ -7,6 +7,7 @@
  * returns a single row per trading day with all metrics.
  */
 import { query, queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import type {
   DebtDailyRow,
@@ -129,13 +130,14 @@ export async function getDebtDaily(
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
 
-  // Fetch sorted rows
-  const sql = `
-    SELECT ${SELECT_COLUMNS}
-    FROM stats.v_debt_daily
-    ${whereClause}
-    ORDER BY date ASC
-  `;
+  // Fetch sorted rows — the SELECT lives in the sql view
+  // data_viz/api/services/debt/daily (select_columns + where_clause are
+  // fragment args; the date params stay positional $1/$2 inside the
+  // where_clause fragment).
+  const { sql } = renderSqlView("data_viz/api/services/debt/daily", {
+    select_columns: sqlFrag(SELECT_COLUMNS),
+    where_clause: sqlFrag(whereClause),
+  });
   const rows = await queryRows<DbDebtRow>(sql, params);
 
   if (rows.length === 0) {
@@ -145,7 +147,7 @@ export async function getDebtDaily(
   // Also fetch global min/max dates for the full table (not just filtered)
   // so the frontend can show the complete date range.
   const minMax = await query<{ min_date: Date; max_date: Date }>(
-    `SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM stats.v_debt_daily`,
+    renderSqlView("data_viz/api/services/debt/date_range").sql,
   );
   const minDate = formatDate(minMax.rows[0]?.min_date);
   const maxDate = formatDate(minMax.rows[0]?.max_date);
@@ -188,12 +190,8 @@ function transformOmaRow(r: DbPbocOmaRow): PbocOmaRow {
 }
 
 export async function getPbocOmaAnnouncements(): Promise<PbocOmaResponse> {
-  const sql = `
-    SELECT date, title, type, content, detail_url, keywords,
-           serial_year, serial_no, detail_slug
-    FROM stats.pboc_oma
-    ORDER BY date ASC, title ASC
-  `;
-  const rows = await queryRows<DbPbocOmaRow>(sql);
+  const rows = await querySqlView<DbPbocOmaRow>(
+    "data_viz/api/services/debt/pboc_oma",
+  );
   return { rows: rows.map(transformOmaRow) };
 }

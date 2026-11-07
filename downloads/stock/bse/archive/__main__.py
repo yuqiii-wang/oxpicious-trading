@@ -33,6 +33,10 @@ external_request_config JSON rows: request_type ``kline`` drives the
 per-stock sweep (one endpoint hit per individual item, ~350 requests —
 a full backfill takes ~9h) and request_type ``list`` the quotation-list
 pagination (~18 requests).
+
+The entry point is the :class:`BseStockArchiveDownload` DownloadJob — the
+former ``download_bse_archive`` body is its method (verbatim) and pure
+helpers/constants stay module-level.
 """
 from __future__ import annotations
 
@@ -49,6 +53,7 @@ from downloads._common import (
     DEFAULT_START_DATE,
     MIN_VALID_BYTES,
     AntiBotProxy,
+    DownloadJob,
     ensure_canonical_csv,
     is_valid_file,
     last_business_day,
@@ -114,141 +119,156 @@ def _archive_file_covers(trend_file: Path, threshold: str) -> bool:
     return bool(dates) and max(dates) >= threshold
 
 
-def download_bse_archive(
-    out_root: Optional[str] = None,
-    *,
-    force: bool = False,
-    limit: Optional[int] = None,
-    session: Optional[requests.Session] = None,
-) -> dict:
-    """Download the BSE per-stock historical daily archive.
+class BseStockArchiveDownload(DownloadJob):
+    """DownloadJob for the BSE per-stock historical kline archive cycle.
 
-    Walks the quotation list, then "clicks into" every individual item by
-    calling the company detail page's kline endpoint once per stock and
-    writing ``temps/bse_archive/{code}_trend.csv`` (full history since
-    listing, rows filtered to >= DEFAULT_START_DATE).
-
-    ``limit`` caps the number of stocks fetched (testing only); ``force``
-    re-fetches stocks whose archive file already covers the threshold.
+    The former module-level ``download_bse_archive`` orchestrator became a
+    method; the pure trend-dir scan / archive-coverage helpers and constants
+    above stay module-level.
     """
-    archive_dir = resolve_out_dir(__file__, ARCHIVE_DIRNAME, out_root)
-    trend_dir = resolve_out_dir(__file__, TREND_DIRNAME, out_root)
-    sess = session or requests.Session()
 
-    threshold = _find_earliest_trend_date(trend_dir) or last_business_day(date.today())
-    threshold_str = threshold.isoformat()
-    logger.info(
-        "Archive skip threshold: %s (covers %s .. %s; daily bse_trend covers the rest)",
-        threshold_str, DEFAULT_START_DATE, threshold_str,
-    )
+    description = ("Download BSE HISTORICAL per-stock daily price archive "
+                   "(kline endpoint behind the company detail page, one "
+                   "request per stock at the service's ``kline`` pacing "
+                   "cadence). For TODAY's snapshot, use "
+                   "downloads.stock.bse.price.")
+    component = "bse_archive"
 
-    # Quotation-list pagination — the service's "list" external_request_config
-    # row (stable UA, no rotation; pacing/timeouts resolve from the JSON).
-    list_proxy = AntiBotProxy(service=SERVICE, request_type="list")
-    stocks = fetch_bse_stock_list(sess, proxy=list_proxy, service=SERVICE)
-    if not stocks:
-        logger.error("No BSE stocks found")
-        return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--force", action="store_true",
+                            help="Re-fetch stocks whose archive file already covers "
+                                 "the skip threshold.")
+        parser.add_argument("--limit", type=int, default=None,
+                            help="Fetch at most N stocks (testing only).")
 
-    # Pre-scan: skip stocks whose archive file already covers the threshold.
-    skip_codes: set = set()
-    if not force:
-        for code, _name in stocks:
-            trend_file = archive_dir / f"{code}_trend.csv"
-            if _archive_file_covers(trend_file, threshold_str):
-                skip_codes.add(code)
-        if skip_codes:
-            logger.info(
-                "Pre-scanned archive: %d/%d stocks already cover %s, skipping",
-                len(skip_codes), len(stocks), threshold_str,
-            )
+    def download_bse_archive(
+        self,
+        out_root: Optional[str] = None,
+        *,
+        force: bool = False,
+        limit: Optional[int] = None,
+        session: Optional[requests.Session] = None,
+    ) -> dict:
+        """Download the BSE per-stock historical daily archive.
 
-    # Per-stock kline sweep — one endpoint hit per individual item, so it
-    # runs on the service's aggressive "kline" external_request_config row
-    # (90s base sleep, rotation off — the BSE endpoints need specific
-    # headers (Content-Type / X-Requested-With) that fingerprint overlay
-    # would clobber; the bjs adapters enforce the same invariant).
-    kline_proxy = AntiBotProxy(service=SERVICE, request_type="kline")
+        Walks the quotation list, then "clicks into" every individual item by
+        calling the company detail page's kline endpoint once per stock and
+        writing ``temps/bse_archive/{code}_trend.csv`` (full history since
+        listing, rows filtered to >= DEFAULT_START_DATE).
 
-    downloaded = 0
-    skipped = 0
-    failed = 0
-    fetched = 0
-    rows_written = 0
-    for code, name in stocks:
-        if code in skip_codes:
-            skipped += 1
-            continue
-        if limit is not None and fetched >= limit:
-            break
-        if kline_proxy.is_blocked(URLS["kline"].format(code=code)):
-            logger.warning("[host-blocked] bse.cn blocked, stopping kline sweep")
-            break
+        ``limit`` caps the number of stocks fetched (testing only); ``force``
+        re-fetches stocks whose archive file already covers the threshold.
 
-        # Auto-sleep handled by proxy.get() inside fetch_bse_kline.
-        records = fetch_bse_kline(sess, code, proxy=kline_proxy, service=SERVICE)
-        fetched += 1
-        if records is None:
-            logger.error("kline fetch failed for %s, skipping", code)
-            failed += 1
-            continue
+        Former module-level orchestrator — moved verbatim into the job class;
+        ``run()`` calls it and logs the returned summary dict.
+        """
+        archive_dir = resolve_out_dir(__file__, ARCHIVE_DIRNAME, out_root)
+        trend_dir = resolve_out_dir(__file__, TREND_DIRNAME, out_root)
+        sess = session or requests.Session()
 
-        canonical = f"{code}.BJ"
-        rows = [
-            row
-            for row in (
-                parse_bse_kline_row(rec, canonical, name) for rec in records
-            )
-            if row is not None and row["交易日期"] >= DEFAULT_START_DATE
-        ]
-        if not rows:
-            logger.info("-> %s %s: no kline rows", code, name)
-            failed += 1
-            continue
-
-        trend_file = archive_dir / f"{code}_trend.csv"
-        _write_page(trend_file, rows, write_header=True)
-        # canonicalize 证券代码 -> "NNNNNN.BJ" + exchange/board/sec_type columns
-        # so build loaders can filter by plain column equality (no regex)
-        ensure_canonical_csv(trend_file, "BJ", sec_type="stock", logger=logger)
-        downloaded += 1
-        rows_written += len(rows)
+        threshold = _find_earliest_trend_date(trend_dir) or last_business_day(date.today())
+        threshold_str = threshold.isoformat()
         logger.info(
-            "-> %s %s: %d rows (%s .. %s) -> %s",
-            code, name, len(rows), rows[0]["交易日期"], rows[-1]["交易日期"],
-            trend_file.name,
+            "Archive skip threshold: %s (covers %s .. %s; daily bse_trend covers the rest)",
+            threshold_str, DEFAULT_START_DATE, threshold_str,
         )
 
-    logger.info(
-        "Done BSE archive. downloaded=%d failed=%d skipped=%d fetched=%d "
-        "rows=%d archive_dir=%s",
-        downloaded, failed, skipped, fetched, rows_written, archive_dir,
-    )
-    return {
-        "downloaded": downloaded,
-        "failed": failed,
-        "skipped": skipped,
-        "fetched": fetched,
-        "rows_written": rows_written,
-        "total_stocks": len(stocks),
-        "archive_dir": str(archive_dir),
-    }
+        # Quotation-list pagination — the service's "list" external_request_config
+        # row (stable UA, no rotation; pacing/timeouts resolve from the JSON).
+        list_proxy = AntiBotProxy(service=SERVICE, request_type="list")
+        stocks = fetch_bse_stock_list(sess, proxy=list_proxy, service=SERVICE)
+        if not stocks:
+            logger.error("No BSE stocks found")
+            return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
+
+        # Pre-scan: skip stocks whose archive file already covers the threshold.
+        skip_codes: set = set()
+        if not force:
+            for code, _name in stocks:
+                trend_file = archive_dir / f"{code}_trend.csv"
+                if _archive_file_covers(trend_file, threshold_str):
+                    skip_codes.add(code)
+            if skip_codes:
+                logger.info(
+                    "Pre-scanned archive: %d/%d stocks already cover %s, skipping",
+                    len(skip_codes), len(stocks), threshold_str,
+                )
+
+        # Per-stock kline sweep — one endpoint hit per individual item, so it
+        # runs on the service's aggressive "kline" external_request_config row
+        # (90s base sleep, rotation off — the BSE endpoints need specific
+        # headers (Content-Type / X-Requested-With) that fingerprint overlay
+        # would clobber; the bjs adapters enforce the same invariant).
+        kline_proxy = AntiBotProxy(service=SERVICE, request_type="kline")
+
+        downloaded = 0
+        skipped = 0
+        failed = 0
+        fetched = 0
+        rows_written = 0
+        for code, name in stocks:
+            if code in skip_codes:
+                skipped += 1
+                continue
+            if limit is not None and fetched >= limit:
+                break
+            if kline_proxy.is_blocked(URLS["kline"].format(code=code)):
+                logger.warning("[host-blocked] bse.cn blocked, stopping kline sweep")
+                break
+
+            # Auto-sleep handled by proxy.get() inside fetch_bse_kline.
+            records = fetch_bse_kline(sess, code, proxy=kline_proxy, service=SERVICE)
+            fetched += 1
+            if records is None:
+                logger.error("kline fetch failed for %s, skipping", code)
+                failed += 1
+                continue
+
+            canonical = f"{code}.BJ"
+            rows = [
+                row
+                for row in (
+                    parse_bse_kline_row(rec, canonical, name) for rec in records
+                )
+                if row is not None and row["交易日期"] >= DEFAULT_START_DATE
+            ]
+            if not rows:
+                logger.info("-> %s %s: no kline rows", code, name)
+                failed += 1
+                continue
+
+            trend_file = archive_dir / f"{code}_trend.csv"
+            _write_page(trend_file, rows, write_header=True)
+            # canonicalize 证券代码 -> "NNNNNN.BJ" + exchange/board/sec_type columns
+            # so build loaders can filter by plain column equality (no regex)
+            ensure_canonical_csv(trend_file, "BJ", sec_type="stock", logger=logger)
+            downloaded += 1
+            rows_written += len(rows)
+            logger.info(
+                "-> %s %s: %d rows (%s .. %s) -> %s",
+                code, name, len(rows), rows[0]["交易日期"], rows[-1]["交易日期"],
+                trend_file.name,
+            )
+
+        logger.info(
+            "Done BSE archive. downloaded=%d failed=%d skipped=%d fetched=%d "
+            "rows=%d archive_dir=%s",
+            downloaded, failed, skipped, fetched, rows_written, archive_dir,
+        )
+        return {
+            "downloaded": downloaded,
+            "failed": failed,
+            "skipped": skipped,
+            "fetched": fetched,
+            "rows_written": rows_written,
+            "total_stocks": len(stocks),
+            "archive_dir": str(archive_dir),
+        }
+
+    def run(self) -> None:
+        """One fetch cycle (the former __main__ body verbatim)."""
+        logger.info(self.download_bse_archive(force=self.args.force, limit=self.args.limit))
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download BSE HISTORICAL per-stock daily price archive "
-                    "(kline endpoint behind the company detail page, one "
-                    "request per stock at the service's ``kline`` pacing "
-                    "cadence). For TODAY's snapshot, use "
-                    "downloads.stock.bse.price."
-    )
-    ap.add_argument("--force", action="store_true",
-                    help="Re-fetch stocks whose archive file already covers "
-                         "the skip threshold.")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="Fetch at most N stocks (testing only).")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    logger.info(download_bse_archive(force=args.force, limit=args.limit))
+    BseStockArchiveDownload().execute()

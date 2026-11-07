@@ -38,8 +38,3 @@ COMMENT ON COLUMN analysis.analysis_identity.detail_name        IS 'Optional suf
 COMMENT ON COLUMN analysis.analysis_identity.summary_name       IS 'Optional suffix of the aggregated summary result table (e.g. mov_ave_spreads_summary). NULL when the analysis has no summary table.';
 COMMENT ON COLUMN analysis.analysis_identity.last_run_datetime  IS 'Timestamp of the most recent run that recomputed this analysis (UTC).';
 COMMENT ON COLUMN analysis.analysis_identity.description        IS 'Free-form description of what the analysis computes.';
-
--- 2026-09 index hygiene: idx_analysis_identity_name duplicated the PK
--- (name) — dropped here so existing installations lose it; fresh installs
--- never create it.
-DROP INDEX IF EXISTS analysis.idx_analysis_identity_name;

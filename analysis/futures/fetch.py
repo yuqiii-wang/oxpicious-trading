@@ -10,6 +10,7 @@ import pandas as pd
 
 from _common.df_utils import epoch_col_to_dt64, safe_columns
 from _common.labels import CONTRACT_TYPE_CODE
+from _common.sql_views import frag, render_sql_view
 from analysis.futures.config import (
     BOND_PRODUCT_TENOR,
     INDEX_PRODUCT_UNDERLYING,
@@ -36,26 +37,12 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
         "index_close", "bond_theoretical_price", "is_index_future",
     ]
 
-    # Step 1: fetch futures identity + basic stats
+    # Step 1: fetch futures identity + basic stats (futures_basic view)
     # ::float8 casts — the DB-read convention: numerics land as NATIVE
     # float64 columns (NULL -> NaN) instead of Decimal object columns,
     # which would poison every downstream op with cudf fallbacks.
-    futures_sql = """
-        SELECT
-            extract(epoch from i.date)::float8 AS date,
-            i.code,
-            i.product_code,
-            i.contract_type,
-            i.underlying_code,
-            i.days_to_expiry,
-            b.close::float8 AS futures_close
-        FROM stats.futures_identity i
-        JOIN stats.futures_basic_stats b
-          ON b.date = i.date AND b.code = i.code
-        WHERE b.close IS NOT NULL
-        ORDER BY i.code, i.date
-    """
-    fut_rows = await conn.fetch(futures_sql)
+    view = render_sql_view("analysis/futures/fetch/futures_basic")
+    fut_rows = await conn.fetch(view.sql, *view.params)
     if not fut_rows:
         return pd.DataFrame(columns=_empty_cols)
 
@@ -74,14 +61,11 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
     index_underlyings = sorted(set(
         INDEX_PRODUCT_UNDERLYING.values()
     ))
-    index_close_sql = """
-        SELECT extract(epoch from date)::float8 AS date,
-               code, close::float8 AS close
-        FROM stats.index_basic_stats
-        WHERE code = ANY($1::text[]) AND close IS NOT NULL
-        ORDER BY code, date
-    """
-    idx_rows = await conn.fetch(index_close_sql, index_underlyings)
+    # index_closes view: underlying index close series.
+    view = render_sql_view(
+        "analysis/futures/fetch/index_closes", codes=index_underlyings,
+    )
+    idx_rows = await conn.fetch(view.sql, *view.params)
     if idx_rows:
         index_close_df = pd.DataFrame([dict(r) for r in idx_rows])
         index_close_df["date"] = epoch_col_to_dt64(
@@ -100,16 +84,17 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
             df = df.drop(columns=["index_close_x"])
             df = df.rename(columns={"index_close_y": "index_close"})
 
-    # Step 3: fetch treasury yields for bond futures
+    # Step 3: fetch treasury yields for bond futures (treasury_yields
+    # view; the tenor column list stays the BOND_PRODUCT_TENOR-derived
+    # fragment).
     yield_cols = [v[0] for v in BOND_PRODUCT_TENOR.values()]
-    treasury_sql = f"""
-        SELECT extract(epoch from date)::float8 AS date,
-               {", ".join(f"{c}::float8 AS {c}" for c in yield_cols)}
-        FROM stats.debt_treasury
-        WHERE date IS NOT NULL
-        ORDER BY date
-    """
-    tr_rows = await conn.fetch(treasury_sql)
+    view = render_sql_view(
+        "analysis/futures/fetch/treasury_yields",
+        yield_columns=frag(
+            ", ".join(f"{c}::float8 AS {c}" for c in yield_cols)
+        ),
+    )
+    tr_rows = await conn.fetch(view.sql, *view.params)
     if tr_rows:
         treasury_df = pd.DataFrame([dict(r) for r in tr_rows])
         treasury_df["date"] = epoch_col_to_dt64(

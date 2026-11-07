@@ -1,0 +1,16 @@
+-- SQL write action — llm.deep_agent_states DELETE (one thread's rows).
+-- Executed by llm_agents/deep_agents/planning/store.py
+-- (PlanStore.purge_thread — the Python twin of the UI's thread delete,
+-- data_viz/api/deep_agent_states/delete_for_thread.sql): the self-FK
+-- cascades the spawned-subagent children, and
+-- llm.deep_agent_contexts.state_id CASCADE removes the task-linked
+-- context rows with them.
+--
+-- Params (asyncpg $n, in order):
+--   $1 thread_id  TEXT — ONE chain member's thread id
+--
+-- Order matters at the caller: llm_requests chains delete FIRST (a
+-- request's chain_id is the node's llm_context_id, resolvable only
+-- while the linking rows exist), then this, then the remaining
+-- contexts, then the identity link.
+DELETE FROM llm.deep_agent_states WHERE thread_id = $1

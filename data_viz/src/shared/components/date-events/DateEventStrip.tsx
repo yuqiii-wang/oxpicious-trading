@@ -114,10 +114,15 @@ export default function DateEventStrip({
 
   // Slider-mode axis: a too-short events range (even a SINGLE day — e.g. a
   // fresh Q&A corpus) would give the time axis min==max and the dataZoom
-  // slider a degenerate, unusable track. Pad the domain by
-  // `defaultWindowDays` on each side, so the axis is at least twice the
-  // window and the initial (right-anchored) window is a proper draggable
-  // half instead of the full track.
+  // slider a degenerate, unusable track. Extend the axis LEFT to two full
+  // windows (plus a 1-day tail so the newest dot doesn't clip at the grid
+  // edge) — never into the future: events can only be past-dated. The
+  // initial right-anchored window (the slider's most-recent-
+  // `defaultWindowDays` view) then covers EVERY event, with the empty left
+  // half as slider travel. The old symmetric padding around the range
+  // midpoint put that window at [mid .. mid+window]: half of it empty
+  // future, and events older than the range midpoint fell OUTSIDE the
+  // initial view (a 3-day corpus showed only its newest day or two).
   const zoomAxis = useMemo(() => {
     if (!enableZoom) return null;
     const lo = minDate ?? fullMin;
@@ -128,10 +133,14 @@ export default function DateEventStrip({
     if (Number.isNaN(loMs) || Number.isNaN(hiMs)) return null;
     const padMs = defaultWindowDays * 86_400_000;
     if (hiMs - loMs >= padMs) return { min: lo, max: hi };
-    const mid = (loMs + hiMs) / 2;
-    const fmt = (ms: number) =>
-      new Date(ms).toISOString().slice(0, 10);
-    return { min: fmt(mid - padMs), max: fmt(mid + padMs) };
+    const fmtLocal = (ms: number) => {
+      const d = new Date(ms);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
+    return {
+      min: fmtLocal(hiMs - 2 * padMs),
+      max: fmtLocal(hiMs + 86_400_000),
+    };
   }, [enableZoom, minDate, maxDate, fullMin, fullMax, defaultWindowDays]);
 
   const zoomStartPct = useMemo(() => {

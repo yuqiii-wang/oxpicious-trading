@@ -1,0 +1,11 @@
+-- Codes with rule cells of the LIVE-WIRED families for the sec_type (the
+-- batch mode's universe): wait rows excluded (observational records never
+-- define the live universe) and is_in_portfolio tier rows excluded (the
+-- hedge family's mov_rsi SOURCE layer fires only inside portfolio
+-- coordination, never standalone).
+-- args:
+--   signals_table: fragment — the rule-cells table (SIGNALS_TABLE)
+--   wait_action_code: fragment — the wait ACTION_CODE inline literal
+--   sec_type: value smallint — the sec_type's SEC_TYPE_CODE
+--   signal_type_codes: value int[] — the live-wired families' SIGNAL_TYPE_CODEs
+SELECT DISTINCT code FROM {{signals_table}} WHERE sec_type = {{sec_type}} AND signal_type = ANY({{signal_type_codes}})   AND action <> {{wait_action_code}}   AND NOT is_in_portfolio ORDER BY code

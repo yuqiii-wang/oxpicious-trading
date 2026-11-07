@@ -36,6 +36,7 @@
  * they don't override the real stock name in MAX(name) resolution).
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import { matchesExchange, stripExchangeSuffix, codeVariants } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
@@ -148,12 +149,9 @@ interface DbStockDividendRow extends QueryResultRow {
   open_price: number | null;
 }
 
-const DIVIDEND_SELECT_SQL = `
-  SELECT code, ex_dividend_date, record_date,
-         dividend_per_share_pre_tax, dividend_per_share_post_tax,
-         total_dividend_wan, pre_close_price, open_price
-    FROM stats.stock_dividends
-`;
+// Dividend SELECTs live in the sql views
+// data_viz/api/services/stock/dividends_by_code and
+// data_viz/api/services/stock/dividends_batch.
 
 function mapDividendRow(r: DbStockDividendRow): StockDividend {
   return {
@@ -176,8 +174,10 @@ export async function getStockDividends(codeParam: string): Promise<StockDividen
   // code = ANY(variants) keeps idx_stock_dividends_code_exdate usable for
   // both suffixed and bare inputs (bare 6-digit codes would otherwise fall
   // back to a REGEXP_REPLACE full scan).
-  const sql = `${DIVIDEND_SELECT_SQL} WHERE code = ANY($1::text[]) ORDER BY ex_dividend_date ASC`;
-  const rows = await queryRows<DbStockDividendRow>(sql, [codeVariants(code)]);
+  const rows = await querySqlView<DbStockDividendRow>(
+    "data_viz/api/services/stock/dividends_by_code",
+    { codes: codeVariants(code) },
+  );
   return rows.map(mapDividendRow);
 }
 
@@ -187,8 +187,10 @@ export async function getStockDividends(codeParam: string): Promise<StockDividen
 export async function getStockDividendsBatch(codes: string[]): Promise<Map<string, StockDividend[]>> {
   const out = new Map<string, StockDividend[]>();
   if (codes.length === 0) return out;
-  const sql = `${DIVIDEND_SELECT_SQL} WHERE code = ANY($1::text[]) ORDER BY code, ex_dividend_date ASC`;
-  const rows = await queryRows<DbStockDividendRow>(sql, [codes]);
+  const rows = await querySqlView<DbStockDividendRow>(
+    "data_viz/api/services/stock/dividends_batch",
+    { codes },
+  );
   for (const r of rows) {
     const code = r.code;
     if (!out.has(code)) out.set(code, []);
@@ -214,38 +216,29 @@ export async function getStockDaily(
   // ~35s per read, 2026-09-29). Repeating the predicate on EACH table's
   // join clause gives the planner a restriction qual everywhere → PK
   // bitmap/nested-loop scans with hash-partition pruning (~16ms measured).
-  const params: unknown[] = [codeVariants(code)];
-  let paramIdx = 2;
-  const whereParts: string[] = ["i.code = ANY($1::text[])"];
+  // The SELECT lives in the sql view data_viz/api/services/stock/daily_rows
+  // (codes = $1 via the repeated value slot; the optional date bounds ride
+  // the date_where fragment with continuing $n numbering).
+  const dateWhere: string[] = [];
+  let paramIdx = 2; // date bounds start at $2 (codes = $1)
   // Skip rows with NULL OHLC (identity-only rows like the historical
   // "test"/"test2" entries — they have no matching stock_basic_stats row).
   // Makes the basic_stats join INNER — equivalent to the view's LEFT JOIN
-  // + this filter.
-  whereParts.push("b.close IS NOT NULL");
+  // + this filter. Fixed in the view template.
   const sd = toDateParam(startDate);
   const ed = toDateParam(endDate);
   if (sd) {
-    whereParts.push(`i.date >= $${paramIdx++}::date`);
-    params.push(sd);
+    dateWhere.push(` AND i.date >= $${paramIdx++}::date`);
   }
   if (ed) {
-    whereParts.push(`i.date <= $${paramIdx++}::date`);
-    params.push(ed);
+    dateWhere.push(` AND i.date <= $${paramIdx++}::date`);
   }
-
-  const sql = `
-    SELECT i.date, i.code, i.name, b.prev_close, b.open, b.high, b.low, b.close,
-           b.pct_change, b.pe, b.eps, b.is_pe_estimated, b.has_intraday_5mins,
-           lm.trading_shares, lm.trading_amount,
-           lm.rz_balance, lm.rz_buy, lm.rq_balance_qty, lm.rq_balance_amt, lm.total_balance
-      FROM stats.stock_identity i
-      JOIN stats.stock_basic_stats b
-        ON b.date = i.date AND b.code = i.code AND b.code = ANY($1::text[])
-      LEFT JOIN stats.stock_liquidity_margin lm
-        ON lm.date = i.date AND lm.code = i.code AND lm.code = ANY($1::text[])
-     WHERE ${whereParts.join(" AND ")}
-     ORDER BY i.date ASC
-  `;
+  const { sql, params } = renderSqlView("data_viz/api/services/stock/daily_rows", {
+    codes: codeVariants(code),
+    date_where: sqlFrag(dateWhere.join("")),
+  });
+  if (sd) params.push(sd);
+  if (ed) params.push(ed);
   const rows = await queryRows<DbStockRow>(sql, params);
 
   // Resolve the display name via mode (most frequent non-empty name) —
@@ -319,30 +312,23 @@ export async function getStockCore(
   const code = codeParam.trim();
   if (!code) return { code: codeParam, name: "", rows: [] };
 
-  const params: unknown[] = [codeVariants(code)];
+  // The SELECT lives in the sql view data_viz/api/services/stock/core_rows.
+  const dateWhere: string[] = [];
   let paramIdx = 2;
-  const whereParts: string[] = ["i.code = ANY($1::text[])"];
-  whereParts.push("b.close IS NOT NULL");
   const sd = toDateParam(startDate);
   const ed = toDateParam(endDate);
   if (sd) {
-    whereParts.push(`i.date >= $${paramIdx++}::date`);
-    params.push(sd);
+    dateWhere.push(` AND i.date >= $${paramIdx++}::date`);
   }
   if (ed) {
-    whereParts.push(`i.date <= $${paramIdx++}::date`);
-    params.push(ed);
+    dateWhere.push(` AND i.date <= $${paramIdx++}::date`);
   }
-
-  const sql = `
-    SELECT i.date, i.code, i.name, b.prev_close, b.open, b.high, b.low, b.close,
-           b.pct_change, b.pe, b.eps, b.is_pe_estimated
-      FROM stats.stock_identity i
-      JOIN stats.stock_basic_stats b
-        ON b.date = i.date AND b.code = i.code AND b.code = ANY($1::text[])
-     WHERE ${whereParts.join(" AND ")}
-     ORDER BY i.date ASC
-  `;
+  const { sql, params } = renderSqlView("data_viz/api/services/stock/core_rows", {
+    codes: codeVariants(code),
+    date_where: sqlFrag(dateWhere.join("")),
+  });
+  if (sd) params.push(sd);
+  if (ed) params.push(ed);
   const rows = await queryRows<DbStockCoreRow>(sql, params);
 
   const nameTally = new Map<string, number>();
@@ -387,27 +373,23 @@ export async function getStockMargin(
   const code = codeParam.trim();
   if (!code) return { code: codeParam, rows: [] };
 
-  const params: unknown[] = [codeVariants(code)];
+  // The SELECT lives in the sql view data_viz/api/services/stock/margin_rows.
+  const dateWhere: string[] = [];
   let paramIdx = 2;
-  const whereParts: string[] = ["code = ANY($1::text[])"];
   const sd = toDateParam(startDate);
   const ed = toDateParam(endDate);
   if (sd) {
-    whereParts.push(`date >= $${paramIdx++}::date`);
-    params.push(sd);
+    dateWhere.push(` AND date >= $${paramIdx++}::date`);
   }
   if (ed) {
-    whereParts.push(`date <= $${paramIdx++}::date`);
-    params.push(ed);
+    dateWhere.push(` AND date <= $${paramIdx++}::date`);
   }
-
-  const sql = `
-    SELECT date, code, trading_shares, trading_amount,
-           rz_balance, rz_buy, rq_balance_qty, rq_balance_amt, total_balance
-      FROM stats.stock_liquidity_margin
-     WHERE ${whereParts.join(" AND ")}
-     ORDER BY date ASC
-  `;
+  const { sql, params } = renderSqlView("data_viz/api/services/stock/margin_rows", {
+    codes: codeVariants(code),
+    date_where: sqlFrag(dateWhere.join("")),
+  });
+  if (sd) params.push(sd);
+  if (ed) params.push(ed);
   const rows = await queryRows<DbStockMarginRow>(sql, params);
   return {
     code: rows.length > 0 ? rows[0].code : code,
@@ -673,37 +655,27 @@ export async function getStocksCombined(
   //    only entries like "test"/"test2").  Base tables + per-table code
   //    predicates — same rationale as getStockDaily (the view's LEFT JOINs
   //    defeat ANY-array pushdown and seq-scan/sort the full sub-tables).
-  const params: unknown[] = [];
-  let paramIdx = 1;
-  params.push(pageCodes);
-  const whereParts: string[] = [
-    `i.code = ANY($${paramIdx++}::text[])`,
-    "b.close IS NOT NULL",
-  ];
+  //    The SELECT lives in the sql view
+  //    data_viz/api/services/stock/combined_rows.
+  const dateWhere: string[] = [];
+  let paramIdx = 1; // codes = $1 (the template's repeated value slot)
   const startDate = toDateParam(q.start_date);
   const endDate = toDateParam(q.end_date);
   if (startDate) {
-    whereParts.push(`i.date >= $${paramIdx++}::date`);
-    params.push(startDate);
+    dateWhere.push(` AND i.date >= $${++paramIdx}::date`);
   }
   if (endDate) {
-    whereParts.push(`i.date <= $${paramIdx++}::date`);
-    params.push(endDate);
+    dateWhere.push(` AND i.date <= $${++paramIdx}::date`);
   }
-
-  const sql = `
-    SELECT i.code, i.date, i.name, b.prev_close, b.open, b.high, b.low, b.close,
-           b.pct_change, b.pe, b.eps, b.is_pe_estimated, b.has_intraday_5mins,
-           lm.trading_shares, lm.trading_amount,
-           lm.rz_balance, lm.rz_buy, lm.rq_balance_qty, lm.rq_balance_amt, lm.total_balance
-      FROM stats.stock_identity i
-      JOIN stats.stock_basic_stats b
-        ON b.date = i.date AND b.code = i.code AND b.code = ANY($1::text[])
-      LEFT JOIN stats.stock_liquidity_margin lm
-        ON lm.date = i.date AND lm.code = i.code AND lm.code = ANY($1::text[])
-     WHERE ${whereParts.join(" AND ")}
-     ORDER BY i.code, i.date ASC
-  `;
+  const { sql, params } = renderSqlView(
+    "data_viz/api/services/stock/combined_rows",
+    {
+      codes: pageCodes,
+      date_where: sqlFrag(dateWhere.join("")),
+    },
+  );
+  if (startDate) params.push(startDate);
+  if (endDate) params.push(endDate);
   const dbRows = await queryRows<DbStockRow>(sql, params);
 
   // Group rows by suffixed code (no stripping — code is the canonical key)

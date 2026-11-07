@@ -25,7 +25,10 @@
 --  sibling directory) are the SOURCE OF TRUTH — each is its prefix's
 --  full re-sync (DELETE the prefix's rows, INSERT the file's rows;
 --  removed docs must not linger). NEVER hand-INSERT rows here — edit
---  the matching seed file and re-apply.
+--  the matching seed file and re-apply. The label arrays (bound_labels /
+--  optional_labels) default to '{}' on rows whose INSERT omits them —
+--  once a doc's labels are authored they ride the seed file's INSERT
+--  list like every other column, so a re-sync never drops them.
 -- ----------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS static;
 
@@ -35,6 +38,8 @@ CREATE TABLE IF NOT EXISTS static.docs (
     intro      TEXT,                     -- the main description template
     series     JSONB,                    -- AI-Ask series catalog: [{"key","name","unit"?,"description"}] (templated)
     notes      JSONB,                    -- caveats: [{"key","text"}] (templated)
+    bound_labels    TEXT[] NOT NULL DEFAULT '{}',  -- force-load vocabulary (exact prompt-label join)
+    optional_labels TEXT[] NOT NULL DEFAULT '{}',  -- loose search vocabulary (budget-gated load)
     ordinal    SMALLINT    NOT NULL DEFAULT 0,  -- display order within the area
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -45,11 +50,8 @@ CREATE TABLE IF NOT EXISTS static.docs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_docs_prefix ON static.docs (doc_id text_pattern_ops);
-
--- Re-appliable constraint (the id-shape pattern may widen with new doc ids).
-ALTER TABLE static.docs DROP CONSTRAINT IF EXISTS ck_docs_id_shape;
-ALTER TABLE static.docs
-    ADD CONSTRAINT ck_docs_id_shape CHECK (doc_id ~ '^ui\.[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*$');
+CREATE INDEX IF NOT EXISTS idx_docs_bound_labels    ON static.docs USING GIN (bound_labels);
+CREATE INDEX IF NOT EXISTS idx_docs_optional_labels ON static.docs USING GIN (optional_labels);
 
 COMMENT ON SCHEMA static IS 'Seeded reference data — static vocabularies and knowledge documents whose rows land ONLY via the SQL seed files under database/sql/static/ (never via a pipeline writer); re-apply a seed file to refresh its rows.';
 COMMENT ON TABLE  static.docs IS 'Authored UI description texts — one row per described element (chart AI-Ask spec, info popover, column info). Seeded (and re-seeded) from database/sql/static/docs/static/ — the seed files are the source of record; never hand-UPDATE the rows. Served whole by GET /api/docs; the UI resolves the {{param}} templates at render.';
@@ -57,3 +59,5 @@ COMMENT ON COLUMN static.docs.doc_id IS 'Stable identity ui.<area>.<element>[.<p
 COMMENT ON COLUMN static.docs.intro IS 'The main description TEMPLATE: {{param}} substitutes a runtime value; {{#param}}..{{/param}} / {{^param}}..{{/param}} are truthy/falsy flat sections. Chart specs: this is the Ask-AI intro (also rendered by the modal''s description view).';
 COMMENT ON COLUMN static.docs.series IS 'AI-Ask series catalog: [{"key": "rsi", "name": "RSI{{w}}", "unit": null, "description": "..."}] — the code picks the entries matching the ACTIVE overlays and resolves name/description with the same params the option builder used (names must match the plotted series verbatim).';
 COMMENT ON COLUMN static.docs.notes IS 'Caveat templates: [{"key": "streakBridge", "text": "..."}] — the code includes the keys its current view needs, in ordinal order.';
+COMMENT ON COLUMN static.docs.bound_labels IS 'Force-load keywords, ONE distinctive phrase per element, sharing the llm.ai_prompts bound_labels vocabulary. A summary run MUST LOAD the doc when the run''s effective prompt set (picked + question-force-loaded skills rows) carries any EXACT (case-insensitive equal) phrase from this array — the bridge folds the doc''s full content into the agent data (contract: ai-summary.service). ''{}'' = unbound. GIN-indexed (idx_docs_bound_labels).';
+COMMENT ON COLUMN static.docs.optional_labels IS 'Optional labels in the insight_page_docs.keywords style (lowercase English/alias phrases). LOOSELY matched — a case-insensitive substring hit against the run''s question or the effective prompts'' label vocabulary — and loaded ONLY while the run stays within the bridge''s prompt budget (ai-summary.service DOC_OPTIONAL_PROMPT_CAP): too many prompts already selected, the loose docs skip. Bound docs always ride. ''{}'' = unlabeled. GIN-indexed (idx_docs_optional_labels).';

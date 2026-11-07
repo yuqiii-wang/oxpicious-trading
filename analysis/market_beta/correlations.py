@@ -82,6 +82,7 @@ from _common.build_commons import (
     rec_cols,
 )
 from _common.db_commons import batched_copy_by_key_async
+from _common.sql_views import render_sql_view
 from _common.df_utils import epoch_col_to_dt64
 from analysis._common import upsert_analysis_identity
 from _common.df_utils.rolling_corr import release_cupy_pool
@@ -442,22 +443,20 @@ async def run_correlations(
     logger.info("\n[c1/4] Loading (date, industry_id, pool_size, mean_close) "
           "from stats.industry_basic_stats (non-NULL mean only)...")
     if filtered:
-        rows = await conn.fetch(f"""
-            SELECT extract(epoch from date)::float8 AS date,
-                   industry_id, pool_size, mean_close
-            FROM {BASELINE_TABLE}
-            WHERE mean_close IS NOT NULL
-              AND industry_id = ANY($1)
-            ORDER BY industry_id, pool_size, date
-        """, sorted(industry_ids))
+        # SELECT lives in the sql view
+        # analysis/market_beta/correlations/load_mean_close_filtered.
+        view = render_sql_view(
+            "analysis/market_beta/correlations/load_mean_close_filtered",
+            industry_ids=sorted(industry_ids),
+        )
+        rows = await conn.fetch(view.sql, *view.params)
     else:
-        rows = await conn.fetch(f"""
-            SELECT extract(epoch from date)::float8 AS date,
-                   industry_id, pool_size, mean_close
-            FROM {BASELINE_TABLE}
-            WHERE mean_close IS NOT NULL
-            ORDER BY industry_id, pool_size, date
-        """)
+        # SELECT lives in the sql view
+        # analysis/market_beta/correlations/load_mean_close.
+        view = render_sql_view(
+            "analysis/market_beta/correlations/load_mean_close",
+        )
+        rows = await conn.fetch(view.sql)
     n_series = len(set(zip(rec_col(rows, "industry_id"),
                            rec_col(rows, "pool_size"))))
     logger.info(f"      -> {len(rows):,} rows across "
@@ -681,18 +680,12 @@ async def run_correlations(
         description=ANALYSIS_DESCRIPTION,
     )
 
-    # Sanity summary: row count by pool_size.
-    summary = await conn.fetch(f"""
-        SELECT pool_size AS pool,
-               COUNT(*) AS n_rows,
-               COUNT(DISTINCT (industry_id, benchmark_industry_id))
-                   AS n_pairs,
-               MIN(start_date) AS first_date,
-               MAX(start_date) AS last_date
-        FROM {TABLE}
-        GROUP BY pool_size
-        ORDER BY pool_size
-    """)
+    # Sanity summary: row count by pool_size. The SELECT lives in the sql
+    # view analysis/market_beta/correlations/summary_by_pool.
+    view = render_sql_view(
+        "analysis/market_beta/correlations/summary_by_pool",
+    )
+    summary = await conn.fetch(view.sql)
     logger.info("\n      Summary by pool_size:")
     for r in summary:
         logger.info(f"        {POOL_SIZE_LABEL[r['pool']]:6s}: "

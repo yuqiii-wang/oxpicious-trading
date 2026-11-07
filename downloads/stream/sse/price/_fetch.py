@@ -14,6 +14,11 @@ The fetcher is generic over the ``list_url`` parameter so it can serve both
 asset flows:
   * equity endpoint → stock snapshot (full OHLCV + last/volume/amount)
   * index  endpoint → index snapshot (same schema, filtered to tracked codes)
+
+Class shape: the pagination orchestration (``fetch_snapshot`` and its
+``_fetch_page`` worker) lives on :class:`StreamFetcher` — stateless, the
+session / proxy stay explicit call arguments. ``build_stream_proxy`` (the
+shared proxy factory) and the pure response converters stay module-level.
 """
 from __future__ import annotations
 
@@ -45,6 +50,120 @@ SERVICE = "downloads.stream.sse.price"
 URLS = service_urls(SERVICE)
 SSE_LIST_URL = URLS["list_equity"]
 SSE_HEADERS = build_headers_with_referer(URLS["referer"], extra={"Accept": "*/*"})
+
+
+class StreamFetcher:
+    """Fetch scope for the SSE list endpoints — the former module-level
+    pagination orchestration (``fetch_snapshot`` + ``_fetch_page``) grouped
+    as one stateless object. The daemon constructs one instance; the
+    requests session and the shared AntiBotProxy stay explicit call
+    arguments so the single shared pacing proxy is preserved."""
+
+    def _fetch_page(
+        self,
+        session: requests.Session,
+        begin: int,
+        end: int,
+        list_url: str = SSE_LIST_URL,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch one page from an SSE list endpoint with full real-time fields.
+
+        Returns the raw parsed JSONP payload (caller drives pagination +
+        update-datetime extraction). ``list_url`` selects the asset type
+        (equity/fund/index); the proxy audits the request, tracks 4xx blocking
+        and sleeps the service row's inter-page sleep (jittered) after each
+        success.
+        """
+        if proxy is None:
+            proxy = build_stream_proxy()
+        params = {
+            "callback": JSONP_CALLBACK,
+            "begin": str(begin),
+            "end": str(end),
+            "select": STREAM_SELECT_FIELDS,
+        }
+        resp = proxy.get(
+            session,
+            list_url,
+            params=params,
+            headers=SSE_HEADERS,
+            logger=logger,
+            log_tag=f"[sse-page {begin}-{end}] ",
+        )
+        if resp is None:
+            logger.warning("SSE list page %d-%d request failed", begin, end)
+            return None
+        try:
+            return _parse_jsonp(resp.text)
+        except ValueError as e:
+            logger.warning("SSE list page %d-%d JSONP parse failed: %s", begin, end, e)
+            return None
+
+    def fetch_snapshot(
+        self,
+        session: requests.Session,
+        list_url: str = SSE_LIST_URL,
+        page_size: int = PAGE_SIZE,
+        proxy: Optional[AntiBotProxy] = None,
+        allowed_codes: Optional[set] = None,
+    ) -> Tuple[Optional[datetime], dict]:
+        """Fetch all SSE securities of one type in a single snapshot.
+
+        Returns (update_dt, {bare_code: full_record}) or (None, {}).
+        The ``update_dt`` comes from the API's date+time fields (the "更新时间" on
+        the webpage), not from local clock.
+
+        ``list_url`` selects the asset type (equity/fund/index). When
+        ``allowed_codes`` is supplied, rows whose bare code is NOT in the set are
+        dropped before entering the snapshot — used for indices to implement
+        "only load to existing index" (skip the ~200 SSE indices we don't track).
+        """
+        if proxy is None:
+            proxy = build_stream_proxy()
+        first = self._fetch_page(session, 0, page_size, list_url=list_url, proxy=proxy)
+        if first is None:
+            return None, {}
+        update_dt = _extract_update_datetime(first)
+        if update_dt is None:
+            return None, {}
+
+        snapshot: dict = {}
+        for row in first.get("list", []) or []:
+            rec = _parse_snapshot_row(row)
+            if rec and (allowed_codes is None or rec["code"] in allowed_codes):
+                snapshot[rec["code"]] = rec
+
+        total = int(first.get("total", 0))
+        written = len(first.get("list", []) or [])
+        page_index = 1
+        while written < total:
+            if proxy.is_blocked(list_url):
+                logger.warning(
+                    "SSE host blocked mid-pagination (%s), using partial snapshot (%d codes)",
+                    list_url, len(snapshot),
+                )
+                break
+            begin = page_index * page_size
+            end = begin + page_size
+            # Inter-page pacing is the proxy's post-success sleep — no inline
+            # sleep here (the proxy-space cadence covers failed pages too, by
+            # ending the sweep).
+            payload = self._fetch_page(session, begin, end, list_url=list_url, proxy=proxy)
+            if payload is None:
+                logger.warning("page %d (begin=%d) failed; using partial snapshot", page_index + 1, begin)
+                break
+            page_rows = payload.get("list", []) or []
+            if not page_rows:
+                break
+            for row in page_rows:
+                rec = _parse_snapshot_row(row)
+                if rec and (allowed_codes is None or rec["code"] in allowed_codes):
+                    snapshot[rec["code"]] = rec
+            written += len(page_rows)
+            page_index += 1
+
+        return update_dt, snapshot
 
 
 def _extract_update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
@@ -91,47 +210,6 @@ def build_stream_proxy() -> AntiBotProxy:
     return AntiBotProxy(service=SERVICE, request_type="page")
 
 
-def _fetch_page(
-    session: requests.Session,
-    begin: int,
-    end: int,
-    list_url: str = SSE_LIST_URL,
-    proxy: Optional[AntiBotProxy] = None,
-) -> Optional[Dict[str, Any]]:
-    """Fetch one page from an SSE list endpoint with full real-time fields.
-
-    Returns the raw parsed JSONP payload (caller drives pagination +
-    update-datetime extraction). ``list_url`` selects the asset type
-    (equity/fund/index); the proxy audits the request, tracks 4xx blocking
-    and sleeps the service row's inter-page sleep (jittered) after each
-    success.
-    """
-    if proxy is None:
-        proxy = build_stream_proxy()
-    params = {
-        "callback": JSONP_CALLBACK,
-        "begin": str(begin),
-        "end": str(end),
-        "select": STREAM_SELECT_FIELDS,
-    }
-    resp = proxy.get(
-        session,
-        list_url,
-        params=params,
-        headers=SSE_HEADERS,
-        logger=logger,
-        log_tag=f"[sse-page {begin}-{end}] ",
-    )
-    if resp is None:
-        logger.warning("SSE list page %d-%d request failed", begin, end)
-        return None
-    try:
-        return _parse_jsonp(resp.text)
-    except ValueError as e:
-        logger.warning("SSE list page %d-%d JSONP parse failed: %s", begin, end, e)
-        return None
-
-
 def _parse_snapshot_row(row: list) -> Optional[Dict[str, object]]:
     """Map one SSE list row to a full record dict.
 
@@ -155,68 +233,3 @@ def _parse_snapshot_row(row: list) -> Optional[Dict[str, object]]:
         "volume": _num(row[8]) if len(row) > 8 else None,
         "amount": _num(row[9]) if len(row) > 9 else None,
     }
-
-
-def fetch_snapshot(
-    session: requests.Session,
-    list_url: str = SSE_LIST_URL,
-    page_size: int = PAGE_SIZE,
-    proxy: Optional[AntiBotProxy] = None,
-    allowed_codes: Optional[set] = None,
-) -> Tuple[Optional[datetime], dict]:
-    """Fetch all SSE securities of one type in a single snapshot.
-
-    Returns (update_dt, {bare_code: full_record}) or (None, {}).
-    The ``update_dt`` comes from the API's date+time fields (the "更新时间" on
-    the webpage), not from local clock.
-
-    ``list_url`` selects the asset type (equity/fund/index). When
-    ``allowed_codes`` is supplied, rows whose bare code is NOT in the set are
-    dropped before entering the snapshot — used for indices to implement
-    "only load to existing index" (skip the ~200 SSE indices we don't track).
-    """
-    if proxy is None:
-        proxy = build_stream_proxy()
-    first = _fetch_page(session, 0, page_size, list_url=list_url, proxy=proxy)
-    if first is None:
-        return None, {}
-    update_dt = _extract_update_datetime(first)
-    if update_dt is None:
-        return None, {}
-
-    snapshot: dict = {}
-    for row in first.get("list", []) or []:
-        rec = _parse_snapshot_row(row)
-        if rec and (allowed_codes is None or rec["code"] in allowed_codes):
-            snapshot[rec["code"]] = rec
-
-    total = int(first.get("total", 0))
-    written = len(first.get("list", []) or [])
-    page_index = 1
-    while written < total:
-        if proxy.is_blocked(list_url):
-            logger.warning(
-                "SSE host blocked mid-pagination (%s), using partial snapshot (%d codes)",
-                list_url, len(snapshot),
-            )
-            break
-        begin = page_index * page_size
-        end = begin + page_size
-        # Inter-page pacing is the proxy's post-success sleep — no inline
-        # sleep here (the proxy-space cadence covers failed pages too, by
-        # ending the sweep).
-        payload = _fetch_page(session, begin, end, list_url=list_url, proxy=proxy)
-        if payload is None:
-            logger.warning("page %d (begin=%d) failed; using partial snapshot", page_index + 1, begin)
-            break
-        page_rows = payload.get("list", []) or []
-        if not page_rows:
-            break
-        for row in page_rows:
-            rec = _parse_snapshot_row(row)
-            if rec and (allowed_codes is None or rec["code"] in allowed_codes):
-                snapshot[rec["code"]] = rec
-        written += len(page_rows)
-        page_index += 1
-
-    return update_dt, snapshot

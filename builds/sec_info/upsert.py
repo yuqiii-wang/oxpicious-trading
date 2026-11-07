@@ -37,43 +37,6 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# sec_owners  (moved from builds.classification.sector_industry.owners)
-# ============================================================================
-async def upsert_owners(
-    conn,
-    owners: List[Dict[str, Any]],
-    verbose: bool = True,
-) -> None:
-    """Rebuild stats.sec_owners from the curated sec_owners.json each run.
-
-    Truncate + rebuild keeps the table in sync with hand edits (stale entries
-    removed when the JSON is edited).  Safe to run independently of
-    builds.classification — sec_classification.owner_id is a logical (non-FK)
-    reference, so the table can be rebuilt at any time.
-    """
-    if not owners:
-        if verbose:
-            logger.info("    [DB] No owners to load — skipping stats.sec_owners")
-        return
-    owner_rows = [{
-        "owner_id": o["owner_id"],
-        "name": o.get("name", ""),
-        # type stores its static.label_dim SMALLINT code (the
-        # label-code contract) — map the JSON's string once here.
-        "type": SEC_OWNER_TYPE_CODE.get(o.get("type")),
-        "aliases": list(o.get("aliases", [])),
-        "full_names": list(o.get("full_names", [])),
-    } for o in owners]
-    await truncate_table_async(conn, "stats.sec_owners")
-    # Conflict-free by construction: the truncate above emptied the table,
-    # so the rebuild takes the COPY fast path.
-    inserted = await copy_insert_async(conn, "stats.sec_owners", owner_rows)
-    if verbose:
-        logger.info(f"    [DB] Inserted {inserted:,} owner rows into "
-              f"stats.sec_owners")
-
-
-# ============================================================================
 # sec_info  (latest-value snapshot per code)
 # ============================================================================
 # Columns written by this upsert (excludes `code` PK + `last_report_date` which
@@ -85,12 +48,144 @@ _SEC_INFO_COLS = [
 ]
 
 
-async def fetch_existing_sec_info(conn) -> Dict[str, datetime.date]:
-    """Return {code: last_report_date} for all rows currently in sec_info."""
-    rows = await conn.fetch("SELECT code, last_report_date FROM stats.sec_info")
-    return dict(zip(rec_col(rows, "code"), rec_col(rows, "last_report_date")))
+class SecInfoUpsert:
+    """Conn-scoped DB writers for builds.sec_info (one asyncpg connection).
+
+    Code motion of the former module-level conn-first functions: each keeps
+    its name, SQL, sequencing, and log lines — the ``conn`` parameter became
+    ``self.conn``. The pure row-shaping helpers (no conn) stay module-level
+    below, and the ``_SEC_INFO_COLS`` constant stays module-level.
+    """
+
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    # ============================================================================
+    # sec_owners  (moved from builds.classification.sector_industry.owners)
+    # ============================================================================
+    async def upsert_owners(
+        self,
+        owners: List[Dict[str, Any]],
+        verbose: bool = True,
+    ) -> None:
+        """Rebuild stats.sec_owners from the curated sec_owners.json each run.
+
+        Truncate + rebuild keeps the table in sync with hand edits (stale entries
+        removed when the JSON is edited).  Safe to run independently of
+        builds.classification — sec_classification.owner_id is a logical (non-FK)
+        reference, so the table can be rebuilt at any time.
+        """
+        if not owners:
+            if verbose:
+                logger.info("    [DB] No owners to load — skipping stats.sec_owners")
+            return
+        owner_rows = [{
+            "owner_id": o["owner_id"],
+            "name": o.get("name", ""),
+            # type stores its static.label_dim SMALLINT code (the
+            # label-code contract) — map the JSON's string once here.
+            "type": SEC_OWNER_TYPE_CODE.get(o.get("type")),
+            "aliases": list(o.get("aliases", [])),
+            "full_names": list(o.get("full_names", [])),
+        } for o in owners]
+        await truncate_table_async(self.conn, "stats.sec_owners")
+        # Conflict-free by construction: the truncate above emptied the table,
+        # so the rebuild takes the COPY fast path.
+        inserted = await copy_insert_async(self.conn, "stats.sec_owners", owner_rows)
+        if verbose:
+            logger.info(f"    [DB] Inserted {inserted:,} owner rows into "
+                  f"stats.sec_owners")
+
+    async def fetch_existing_sec_info(self) -> Dict[str, datetime.date]:
+        """Return {code: last_report_date} for all rows currently in sec_info."""
+        rows = await self.conn.fetch("SELECT code, last_report_date FROM stats.sec_info")
+        return dict(zip(rec_col(rows, "code"), rec_col(rows, "last_report_date")))
+
+    async def upsert_sec_info(self, rows: List[Dict[str, Any]], force: bool,
+                              verbose: bool = True) -> int:
+        """Upsert sec_info rows.  Truncates first when force=True."""
+        if not rows and not force:
+            if verbose:
+                logger.info("    [DB] No new/updated sec_info rows — skipping")
+            return 0
+        if force:
+            await truncate_table_async(self.conn, "stats.sec_info")
+        if not rows:
+            if verbose:
+                logger.info("    [DB] No sec_info rows to insert")
+            return 0
+        # KEEP UPSERT (not COPY): incremental rows intentionally include
+        # EXISTING codes refreshed with a newer last_report_date — real PK
+        # conflicts, and the table has no date column for a MAX(date) split.
+        inserted = await bulk_upsert_async(self.conn, "stats.sec_info", rows, ["code"])
+        if verbose:
+            logger.info(f"    [DB] Upserted {inserted:,} rows into stats.sec_info "
+                  f"({'force' if force else 'incremental'})")
+        return inserted
+
+    # ============================================================================
+    # sec_reports  (one row per code + report quarter)
+    # ============================================================================
+    async def fetch_existing_sec_reports(self) -> set:
+        """Return {(code, report_date)} pairs already in sec_reports."""
+        rows = await self.conn.fetch("SELECT code, report_date FROM stats.sec_reports")
+        return set(zip(rec_col(rows, "code"), rec_col(rows, "report_date")))
+
+    async def upsert_sec_reports(self, rows: List[Dict[str, Any]], force: bool,
+                                 verbose: bool = True) -> int:
+        """Upsert sec_reports rows.  Truncates first when force=True."""
+        if not rows and not force:
+            if verbose:
+                logger.info("    [DB] No new sec_reports rows — skipping")
+            return 0
+        if force:
+            await truncate_table_async(self.conn, "stats.sec_reports")
+        if not rows:
+            if verbose:
+                logger.info("    [DB] No sec_reports rows to insert")
+            return 0
+        # Conflict-free by construction: incremental rows are pre-filtered to
+        # (code, report_date) pairs missing from the table (build_sec_reports_
+        # rows), force mode truncated above — COPY fast path.
+        inserted = await batched_copy_by_key_async(
+            self.conn, "stats.sec_reports", rows, key="code",
+        )
+        if verbose:
+            logger.info(f"    [DB] Upserted {inserted:,} rows into stats.sec_reports "
+                  f"({'force' if force else 'incremental'})")
+        return inserted
+
+    # ============================================================================
+    # sec_composition  (top10_holdings injection — always missing-data)
+    # ============================================================================
+    async def fetch_existing_composition_keys(self) -> set:
+        """Return {(code, snapshot_date)} pairs already in sec_composition."""
+        rows = await self.conn.fetch(
+            "SELECT DISTINCT code, snapshot_date FROM stats.sec_composition")
+        return set(zip(rec_col(rows, "code"), rec_col(rows, "snapshot_date")))
+
+    async def inject_top10_composition(self, rows: List[Dict[str, Any]],
+                                       verbose: bool = True) -> int:
+        """Insert top10-holdings rows into sec_composition (missing snapshots only)."""
+        if not rows:
+            if verbose:
+                logger.info("    [DB] No new sec_composition rows from top10_holdings — skipping")
+            return 0
+        # Conflict-free by construction: build_composition_rows skipped every
+        # (code, snapshot_date) pair already present and assigns fresh ranks —
+        # COPY fast path.
+        inserted = await batched_copy_by_key_async(
+            self.conn, "stats.sec_composition", rows, key="code",
+        )
+        if verbose:
+            logger.info(f"    [DB] Inserted {inserted:,} top10-holdings rows into "
+                  f"stats.sec_composition")
+        return inserted
 
 
+# ----------------------------------------------------------------------------
+# Pure helpers (no conn — stay module-level)
+# ----------------------------------------------------------------------------
 def build_sec_info_rows(
     latest_per_code: Dict[str, Dict[str, Any]],
     existing: Dict[str, datetime.date],
@@ -115,38 +210,6 @@ def build_sec_info_rows(
     return out
 
 
-async def upsert_sec_info(conn, rows: List[Dict[str, Any]], force: bool,
-                          verbose: bool = True) -> int:
-    """Upsert sec_info rows.  Truncates first when force=True."""
-    if not rows and not force:
-        if verbose:
-            logger.info("    [DB] No new/updated sec_info rows — skipping")
-        return 0
-    if force:
-        await truncate_table_async(conn, "stats.sec_info")
-    if not rows:
-        if verbose:
-            logger.info("    [DB] No sec_info rows to insert")
-        return 0
-    # KEEP UPSERT (not COPY): incremental rows intentionally include
-    # EXISTING codes refreshed with a newer last_report_date — real PK
-    # conflicts, and the table has no date column for a MAX(date) split.
-    inserted = await bulk_upsert_async(conn, "stats.sec_info", rows, ["code"])
-    if verbose:
-        logger.info(f"    [DB] Upserted {inserted:,} rows into stats.sec_info "
-              f"({'force' if force else 'incremental'})")
-    return inserted
-
-
-# ============================================================================
-# sec_reports  (one row per code + report quarter)
-# ============================================================================
-async def fetch_existing_sec_reports(conn) -> set:
-    """Return {(code, report_date)} pairs already in sec_reports."""
-    rows = await conn.fetch("SELECT code, report_date FROM stats.sec_reports")
-    return set(zip(rec_col(rows, "code"), rec_col(rows, "report_date")))
-
-
 def build_sec_reports_rows(
     reports: List[Dict[str, Any]],
     existing: set,
@@ -160,41 +223,6 @@ def build_sec_reports_rows(
             continue
         out.append(r)
     return out
-
-
-async def upsert_sec_reports(conn, rows: List[Dict[str, Any]], force: bool,
-                             verbose: bool = True) -> int:
-    """Upsert sec_reports rows.  Truncates first when force=True."""
-    if not rows and not force:
-        if verbose:
-            logger.info("    [DB] No new sec_reports rows — skipping")
-        return 0
-    if force:
-        await truncate_table_async(conn, "stats.sec_reports")
-    if not rows:
-        if verbose:
-            logger.info("    [DB] No sec_reports rows to insert")
-        return 0
-    # Conflict-free by construction: incremental rows are pre-filtered to
-    # (code, report_date) pairs missing from the table (build_sec_reports_
-    # rows), force mode truncated above — COPY fast path.
-    inserted = await batched_copy_by_key_async(
-        conn, "stats.sec_reports", rows, key="code",
-    )
-    if verbose:
-        logger.info(f"    [DB] Upserted {inserted:,} rows into stats.sec_reports "
-              f"({'force' if force else 'incremental'})")
-    return inserted
-
-
-# ============================================================================
-# sec_composition  (top10_holdings injection — always missing-data)
-# ============================================================================
-async def fetch_existing_composition_keys(conn) -> set:
-    """Return {(code, snapshot_date)} pairs already in sec_composition."""
-    rows = await conn.fetch(
-        "SELECT DISTINCT code, snapshot_date FROM stats.sec_composition")
-    return set(zip(rec_col(rows, "code"), rec_col(rows, "snapshot_date")))
 
 
 def build_composition_rows(
@@ -224,22 +252,3 @@ def build_composition_rows(
                 "weight_pct": h["weight_pct"],
             })
     return out
-
-
-async def inject_top10_composition(conn, rows: List[Dict[str, Any]],
-                                   verbose: bool = True) -> int:
-    """Insert top10-holdings rows into sec_composition (missing snapshots only)."""
-    if not rows:
-        if verbose:
-            logger.info("    [DB] No new sec_composition rows from top10_holdings — skipping")
-        return 0
-    # Conflict-free by construction: build_composition_rows skipped every
-    # (code, snapshot_date) pair already present and assigns fresh ranks —
-    # COPY fast path.
-    inserted = await batched_copy_by_key_async(
-        conn, "stats.sec_composition", rows, key="code",
-    )
-    if verbose:
-        logger.info(f"    [DB] Inserted {inserted:,} top10-holdings rows into "
-              f"stats.sec_composition")
-    return inserted

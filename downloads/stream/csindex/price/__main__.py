@@ -43,6 +43,12 @@ Usage:
   python -m downloads.stream.csindex.price              # stream (30-min loops)
   python -m downloads.stream.csindex.price --once       # one loop then exit
   python -m downloads.stream.csindex.price --code 930641 # fetch one code
+
+The entry point is the :class:`CsindexStreamDaemon` DownloadJob — the former
+``stream()`` poll-loop body is its ``stream()`` method, the conn-first DB
+reads are the StreamDb scope and the per-code fetch orchestration the
+StreamFetcher scope (both held in ``__init__``), and the pure sleep /
+scheduling helpers stay module-level.
 """
 from __future__ import annotations
 
@@ -61,6 +67,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from downloads._common import (
     AntiBotProxy,
+    DownloadJob,
     HostStatusTracker,
     build_default_session,
     merge_browser_profile,
@@ -83,12 +90,10 @@ from ._constants import (
     CSINDEX_START_TIME,
 )
 from ._db import (
-    load_index_industry_map,
-    load_missing_or_stale_codes,
-    load_sse_streamed_codes,
+    StreamDb,
     order_codes_by_industry_coverage,
 )
-from ._fetch import fetch_and_upsert_one
+from ._fetch import StreamFetcher
 
 logger = setup_logger("csindex_stream")
 
@@ -134,208 +139,246 @@ def _sleep_chunks(seconds: float, chunk: float = 5.0) -> None:
         _time.sleep(min(chunk, max(0.0, end - _time.time())))
 
 
-def stream(once: bool = False, single_code: Optional[str] = None) -> None:
-    """Main streaming loop.
+class CsindexStreamDaemon(DownloadJob):
+    """DownloadJob for the CSIndex price streamer — the former ``stream()``
+    poll-loop body is the ``stream()`` method, the conn-first DB reads are
+    the StreamDb scope, the per-code fetch orchestration the StreamFetcher
+    scope (both held in ``__init__``), and the pure sleep / scheduling
+    helpers stay module-level.
 
-    Each iteration:
-      1. Find missing/stale index codes from DB (EXCLUDING codes already
-         streamed by SSE — CSIndex only downloads indices SSE does NOT cover),
-         ordered importance-rank first, then industry coverage (one index
-         per industry heads the list).
-      2. Fetch intraday ticks for each via csindex API (with antibot sleep).
-      3. Aggregate to 5-min bars, archive to CSV, upsert to DB.
-      4. Sleep until next 30-min boundary.
-
-    SSE head start: On each new trading day, CSIndex waits until
-    ``CSINDEX_START_TIME`` (16:00, post-close) before its first loop. This
-    gives SSE/SZSE time to produce their bars, so CSIndex can query which
-    codes they are streaming and exclude them.
-
-    CSV backfill: At startup and every 5 minutes outside trading hours,
-    archived CSVs are loaded to DB to recover data lost to DB failures.
+    execute() override: the base DownloadJob.execute() would call the lazy
+    ``autoregister()`` unconditionally; the former main() registered the
+    heartbeat ONLY for the long-running mode (--once / --code are one-shot
+    dev modes that exit before a beat would matter — a beat from a dying
+    one-shot would make the watchdog think the real service is alive).
+    autoregister derives the same "downloads.stream.csindex.price" name
+    (register_service itself is idempotent per process), but one-shot runs
+    would GAIN a registration they never had, so the base hook is skipped
+    and the former conditional ``register_service`` call is kept verbatim.
+    No single-instance lock existed before — ``service`` stays "".
     """
-    logger.info(
-        "[startup] csindex streamer starting (loop_interval=%ds, sleep=%.0fs, "
-        "afternoon_only_start=%s)",
-        LOOP_INTERVAL_SEC, SLEEP_SEC, CSINDEX_START_TIME,
-    )
 
-    conn = get_db_connection()
-    session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
-    host_tracker = HostStatusTracker()
-    # Pacing (sleep/jitter/timeouts) resolves once at construction from the
-    # service's external_request_config JSON row (request_type "page").
-    proxy = AntiBotProxy(service=SERVICE, request_type="page")
+    description = "Stream CSIndex intraday data for missing indices."
+    component = "csindex_stream"
+    service = ""  # long-lived daemon with no single-instance lock (as before)
 
-    # Per-biz-day state: refreshed at the start of each new trading day
-    current_biz_day = None
-    sse_streamed_codes: set = set()
-    index_industry_map: Dict[str, str] = {}
+    def __init__(self) -> None:
+        super().__init__()
+        self.db = StreamDb()
+        self.fetcher = StreamFetcher(self.db)
 
-    try:
-        while True:
-            loop_start = _time.time()
-            today = datetime.now().date()
-            now_time = datetime.now().time()
-            trading_today = is_trading_day(today)
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--once", action="store_true",
+            help="Run one loop then exit (default: loop forever).",
+        )
+        parser.add_argument(
+            "--code", type=str, default=None,
+            help="Fetch a single index code then exit (e.g. --code 930641).",
+        )
 
-            # --- Single-code mode (--code) ---
-            if single_code:
-                logger.info("=== single-code mode: %s ===", single_code)
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT COALESCE(name, %s) FROM stats.sec_classification "
-                        "WHERE code=%s AND type='index' LIMIT 1",
-                        (single_code, single_code),
-                    )
-                    row = cur.fetchone()
-                    name = row[0] if row else single_code
-                fetch_and_upsert_one(session, single_code, name, proxy, host_tracker, conn)
-                break
+    def execute(self, argv: Optional[list] = None) -> None:
+        """parse → conditional register_service (verbatim former main()) → run()."""
+        if self.args is None:
+            self.parse_argv(argv)
+        else:
+            self.apply_args()
+        # Liveness heartbeat for database/stream_watchdog.py — long-running
+        # mode only; the one-shot dev modes exit before a beat would matter.
+        if not self.args.once and not self.args.code:
+            register_service(SERVICE)
+        self.run()
 
-            # --- Non-trading day: sleep until next trading moment ---
-            if not trading_today:
-                nxt = _next_trading_moment()
-                wait_sec = (nxt - datetime.now()).total_seconds()
-                logger.info(
-                    "Non-trading day (%s); sleeping until %s (%.0fs).",
-                    today, nxt.strftime("%Y-%m-%d %H:%M"), wait_sec,
-                )
-                if once:
-                    break
-                _sleep_chunks(wait_sec)
-                continue
+    def run(self) -> None:
+        """One daemon entry — the former main() tail (verbatim dispatch)."""
+        self.stream(once=self.args.once, single_code=self.args.code)
 
-            # --- New trading day: wait until CSINDEX_START_TIME (16:00), then gather
-            #     which codes SSE/SZSE is streaming (codes with bars today). ---
-            if current_biz_day != today:
-                now_dt = datetime.now()
-                start_dt = datetime.combine(today, CSINDEX_START_TIME)
-                if now_dt < start_dt:
-                    wait_sec = (start_dt - now_dt).total_seconds()
-                    logger.info(
-                        "New trading day %s; waiting %.0fs until %s "
-                        "(post-close start; intraday data already captured).",
-                        today, wait_sec, CSINDEX_START_TIME,
-                    )
-                    _sleep_chunks(wait_sec)
+    # -----------------------------------------------------------------------
+    # Main stream loop (the former module-level stream(), verbatim)
+    # -----------------------------------------------------------------------
 
-                current_biz_day = today
-                sse_streamed_codes = load_sse_streamed_codes(conn, today)
-                index_industry_map = load_index_industry_map(conn)
-                logger.info(
-                    "Anchored to biz day %s: %d codes already streamed by SSE/SZSE "
-                    "(excluded from CSIndex download); loaded index→industry map "
-                    "(%d codes across %d industries).",
-                    today, len(sse_streamed_codes),
-                    len(index_industry_map),
-                    len(set(index_industry_map.values())),
-                )
+    def stream(self, once: bool = False, single_code: Optional[str] = None) -> None:
+        """Main streaming loop.
 
-            # Find missing/stale codes, EXCLUDING SSE-streamed codes.
-            codes = load_missing_or_stale_codes(
-                conn, today, exclude_codes=sse_streamed_codes,
-            )
-            # Importance rank 0 -> 9 FIRST (stats.sec_importance_ranks via
-            # _common.importance; an empty map falls back to code order),
-            # THEN the industry-coverage pass: each industry's head
-            # representative becomes its most important index and the tail
-            # keeps rank order — a throttled or killed loop has covered the
-            # important indices first.
-            ranked_codes = order_pairs_by_importance(
-                codes, fetch_importance_ranks_or_empty(conn),
-            )
-            ordered_codes = order_codes_by_industry_coverage(
-                ranked_codes, index_industry_map,
-            )
-            n_industries = (
-                len({index_industry_map.get(c, "OTHER") for c, _ in ordered_codes})
-                if ordered_codes else 0
-            )
-            n_head = min(len(ordered_codes), n_industries)
-            logger.info(
-                "=== loop @ %s biz=%s: %d codes to fetch across %d industries "
-                "(trading_hours=%s, excluded=%d sse-streamed); "
-                "industry-first: head=%d + tail=%d ===",
-                datetime.now().strftime("%H:%M:%S"), today, len(ordered_codes),
-                n_industries,
-                CSINDEX_START_TIME <= now_time,  # rough trading-hours flag
-                len(sse_streamed_codes),
-                n_head, len(ordered_codes) - n_head,
-            )
+        Each iteration:
+          1. Find missing/stale index codes from DB (EXCLUDING codes already
+             streamed by SSE — CSIndex only downloads indices SSE does NOT cover),
+             ordered importance-rank first, then industry coverage (one index
+             per industry heads the list).
+          2. Fetch intraday ticks for each via csindex API (with antibot sleep).
+          3. Aggregate to 5-min bars, archive to CSV, upsert to DB.
+          4. Sleep until next 30-min boundary.
 
-            if not ordered_codes:
-                logger.info("No missing/stale codes; all indices up to date.")
-            else:
-                n_total_bars = 0
-                n_ok = 0
-                n_fail = 0
-                for i, (code, name) in enumerate(ordered_codes):
-                    if proxy.is_blocked(CSINDEX_BASE):
-                        logger.warning(
-                            "csindex.com.cn blocked; stopping this loop (%d/%d done)",
-                            i, len(ordered_codes),
+        SSE head start: On each new trading day, CSIndex waits until
+        ``CSINDEX_START_TIME`` (16:00, post-close) before its first loop. This
+        gives SSE/SZSE time to produce their bars, so CSIndex can query which
+        codes they are streaming and exclude them.
+
+        CSV backfill: At startup and every 5 minutes outside trading hours,
+        archived CSVs are loaded to DB to recover data lost to DB failures.
+        """
+        logger.info(
+            "[startup] csindex streamer starting (loop_interval=%ds, sleep=%.0fs, "
+            "afternoon_only_start=%s)",
+            LOOP_INTERVAL_SEC, SLEEP_SEC, CSINDEX_START_TIME,
+        )
+
+        conn = get_db_connection()
+        session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
+        host_tracker = HostStatusTracker()
+        # Pacing (sleep/jitter/timeouts) resolves once at construction from the
+        # service's external_request_config JSON row (request_type "page").
+        proxy = AntiBotProxy(service=SERVICE, request_type="page")
+
+        # Per-biz-day state: refreshed at the start of each new trading day
+        current_biz_day = None
+        sse_streamed_codes: set = set()
+        index_industry_map: Dict[str, str] = {}
+
+        try:
+            while True:
+                loop_start = _time.time()
+                today = datetime.now().date()
+                now_time = datetime.now().time()
+                trading_today = is_trading_day(today)
+
+                # --- Single-code mode (--code) ---
+                if single_code:
+                    logger.info("=== single-code mode: %s ===", single_code)
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT COALESCE(name, %s) FROM stats.sec_classification "
+                            "WHERE code=%s AND type='index' LIMIT 1",
+                            (single_code, single_code),
                         )
-                        break
+                        row = cur.fetchone()
+                        name = row[0] if row else single_code
+                    self.fetcher.fetch_and_upsert_one(session, single_code, name, proxy, host_tracker, conn)
+                    break
 
-                    n_bars, _ = fetch_and_upsert_one(
-                        session, code, name, proxy, host_tracker, conn,
+                # --- Non-trading day: sleep until next trading moment ---
+                if not trading_today:
+                    nxt = _next_trading_moment()
+                    wait_sec = (nxt - datetime.now()).total_seconds()
+                    logger.info(
+                        "Non-trading day (%s); sleeping until %s (%.0fs).",
+                        today, nxt.strftime("%Y-%m-%d %H:%M"), wait_sec,
                     )
-                    n_total_bars += n_bars
-                    if n_bars > 0:
-                        n_ok += 1
-                    else:
-                        n_fail += 1
+                    if once:
+                        break
+                    _sleep_chunks(wait_sec)
+                    continue
 
-                    if i < len(ordered_codes) - 1:
-                        random_sleep(SLEEP_SEC)
+                # --- New trading day: wait until CSINDEX_START_TIME (16:00), then gather
+                #     which codes SSE/SZSE is streaming (codes with bars today). ---
+                if current_biz_day != today:
+                    now_dt = datetime.now()
+                    start_dt = datetime.combine(today, CSINDEX_START_TIME)
+                    if now_dt < start_dt:
+                        wait_sec = (start_dt - now_dt).total_seconds()
+                        logger.info(
+                            "New trading day %s; waiting %.0fs until %s "
+                            "(post-close start; intraday data already captured).",
+                            today, wait_sec, CSINDEX_START_TIME,
+                        )
+                        _sleep_chunks(wait_sec)
 
-                loop_elapsed = _time.time() - loop_start
+                    current_biz_day = today
+                    sse_streamed_codes = self.db.load_sse_streamed_codes(conn, today)
+                    index_industry_map = self.db.load_index_industry_map(conn)
+                    logger.info(
+                        "Anchored to biz day %s: %d codes already streamed by SSE/SZSE "
+                        "(excluded from CSIndex download); loaded index→industry map "
+                        "(%d codes across %d industries).",
+                        today, len(sse_streamed_codes),
+                        len(index_industry_map),
+                        len(set(index_industry_map.values())),
+                    )
+
+                # Find missing/stale codes, EXCLUDING SSE-streamed codes.
+                codes = self.db.load_missing_or_stale_codes(
+                    conn, today, exclude_codes=sse_streamed_codes,
+                )
+                # Importance rank 0 -> 9 FIRST (stats.sec_importance_ranks via
+                # _common.importance; an empty map falls back to code order),
+                # THEN the industry-coverage pass: each industry's head
+                # representative becomes its most important index and the tail
+                # keeps rank order — a throttled or killed loop has covered the
+                # important indices first.
+                ranked_codes = order_pairs_by_importance(
+                    codes, fetch_importance_ranks_or_empty(conn),
+                )
+                ordered_codes = order_codes_by_industry_coverage(
+                    ranked_codes, index_industry_map,
+                )
+                n_industries = (
+                    len({index_industry_map.get(c, "OTHER") for c, _ in ordered_codes})
+                    if ordered_codes else 0
+                )
+                n_head = min(len(ordered_codes), n_industries)
                 logger.info(
-                    "=== loop done: %d/%d codes fetched, %d failed, %d total bars in %.1fs ===",
-                    n_ok, len(ordered_codes), n_fail, n_total_bars, loop_elapsed,
+                    "=== loop @ %s biz=%s: %d codes to fetch across %d industries "
+                    "(trading_hours=%s, excluded=%d sse-streamed); "
+                    "industry-first: head=%d + tail=%d ===",
+                    datetime.now().strftime("%H:%M:%S"), today, len(ordered_codes),
+                    n_industries,
+                    CSINDEX_START_TIME <= now_time,  # rough trading-hours flag
+                    len(sse_streamed_codes),
+                    n_head, len(ordered_codes) - n_head,
                 )
 
-            if once:
-                logger.info("--once set; exiting after one loop.")
-                break
+                if not ordered_codes:
+                    logger.info("No missing/stale codes; all indices up to date.")
+                else:
+                    n_total_bars = 0
+                    n_ok = 0
+                    n_fail = 0
+                    for i, (code, name) in enumerate(ordered_codes):
+                        if proxy.is_blocked(CSINDEX_BASE):
+                            logger.warning(
+                                "csindex.com.cn blocked; stopping this loop (%d/%d done)",
+                                i, len(ordered_codes),
+                            )
+                            break
 
-            # Sleep until next 30-min boundary
-            sleep_sec = _seconds_until_next_loop(loop_start)
-            if sleep_sec > 0:
-                logger.info("Sleeping %.0fs until next loop.", sleep_sec)
-                _sleep_chunks(sleep_sec)
-            else:
-                logger.info("Loop took longer than %ds; starting next loop immediately.",
-                            LOOP_INTERVAL_SEC)
+                        n_bars, _ = self.fetcher.fetch_and_upsert_one(
+                            session, code, name, proxy, host_tracker, conn,
+                        )
+                        n_total_bars += n_bars
+                        if n_bars > 0:
+                            n_ok += 1
+                        else:
+                            n_fail += 1
 
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user; exiting.")
-    finally:
-        conn.close()
-        session.close()
-        logger.info("Cleanup done.")
+                        if i < len(ordered_codes) - 1:
+                            random_sleep(SLEEP_SEC)
 
+                    loop_elapsed = _time.time() - loop_start
+                    logger.info(
+                        "=== loop done: %d/%d codes fetched, %d failed, %d total bars in %.1fs ===",
+                        n_ok, len(ordered_codes), n_fail, n_total_bars, loop_elapsed,
+                    )
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Stream CSIndex intraday data for missing indices.",
-    )
-    parser.add_argument(
-        "--once", action="store_true",
-        help="Run one loop then exit (default: loop forever).",
-    )
-    parser.add_argument(
-        "--code", type=str, default=None,
-        help="Fetch a single index code then exit (e.g. --code 930641).",
-    )
-    args = parser.parse_args()
-    # Liveness heartbeat for database/stream_watchdog.py — long-running
-    # mode only; the one-shot dev modes exit before a beat would matter.
-    if not args.once and not args.code:
-        register_service("downloads.stream.csindex.price")
-    stream(once=args.once, single_code=args.code)
+                if once:
+                    logger.info("--once set; exiting after one loop.")
+                    break
+
+                # Sleep until next 30-min boundary
+                sleep_sec = _seconds_until_next_loop(loop_start)
+                if sleep_sec > 0:
+                    logger.info("Sleeping %.0fs until next loop.", sleep_sec)
+                    _sleep_chunks(sleep_sec)
+                else:
+                    logger.info("Loop took longer than %ds; starting next loop immediately.",
+                                LOOP_INTERVAL_SEC)
+
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user; exiting.")
+        finally:
+            conn.close()
+            session.close()
+            logger.info("Cleanup done.")
 
 
 if __name__ == "__main__":
-    main()
+    CsindexStreamDaemon().execute()

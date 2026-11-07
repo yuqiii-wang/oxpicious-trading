@@ -20,6 +20,11 @@ API: https://hq.cnindex.com.cn/market/market/getIndexRealTimeData
     }
   }
   Null rows = non-trading minutes (lunch break, after close).
+
+Class shape: the fetch orchestration is the ``fetch_intraday_data`` method
+of :class:`CnindexApi` (stateless — the session and pacing proxy stay
+explicit call arguments); the constants, the curated code list and the pure
+converters stay module-level.
 """
 from __future__ import annotations
 
@@ -96,37 +101,43 @@ def _to_float(val: Any) -> Optional[float]:
         return None
 
 
-def fetch_intraday_data(
-    session,
-    code: str,
-    proxy: Optional[AntiBotProxy] = None,
-) -> Optional[Dict[str, Any]]:
-    """Fetch intraday 1-min bars for one index code from cnindex.com.cn.
+class CnindexApi:
+    """Fetch scope for the CNINDEX realtime intraday endpoint — the former
+    module-level ``fetch_intraday_data`` orchestration as a method. Stateless:
+    the session and pacing proxy stay explicit call arguments."""
 
-    Returns the inner ``data`` dict (containing ``data`` = bars array and
-    ``indexName``), or None on failure.
-    """
-    if proxy is None:
-        # Pacing (sleep/jitter/timeouts) comes from the service's
-        # external_request_config JSON row (request_type "page").
-        proxy = AntiBotProxy(service=SERVICE, request_type="page")
-
-    resp = proxy.get(
+    def fetch_intraday_data(
+        self,
         session,
-        CNINDEX_INTRADAY_API,
-        params={"indexCode": code},
-        headers=CNINDEX_HEADERS,
-    )
+        code: str,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch intraday 1-min bars for one index code from cnindex.com.cn.
 
-    if resp is None:
-        return None
+        Returns the inner ``data`` dict (containing ``data`` = bars array and
+        ``indexName``), or None on failure.
+        """
+        if proxy is None:
+            # Pacing (sleep/jitter/timeouts) comes from the service's
+            # external_request_config JSON row (request_type "page").
+            proxy = AntiBotProxy(service=SERVICE, request_type="page")
 
-    try:
-        result = resp.json()
-    except (ValueError, TypeError):
-        return None
+        resp = proxy.get(
+            session,
+            CNINDEX_INTRADAY_API,
+            params={"indexCode": code},
+            headers=CNINDEX_HEADERS,
+        )
 
-    if not result or result.get("code") != 200:
-        return None
+        if resp is None:
+            return None
 
-    return result.get("data")
+        try:
+            result = resp.json()
+        except (ValueError, TypeError):
+            return None
+
+        if not result or result.get("code") != 200:
+            return None
+
+        return result.get("data")

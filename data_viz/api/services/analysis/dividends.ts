@@ -14,7 +14,8 @@
  * via /api/sec-baseline → etf-margin's LEFT JOIN; this service is the
  * page's TABLE-side data source only.
  */
-import { queryRows, formatDate } from "../../lib/db.js";
+import { formatDate } from "../../lib/db.js";
+import { querySqlView } from "@api/lib/sql-views";
 import { LABEL_CODE } from "../label-codes.js";
 import { codeVariants } from "../../lib/classify-etf.js";
 import type {
@@ -62,17 +63,15 @@ export async function listDividendDeliveries(
 ): Promise<DividendDeliveriesResponse> {
   const st = normalizeSecType(secType);
   // codeVariants matches bare ETF codes AND suffixed stock codes
-  // ("600000.SS") regardless of which form the caller sends.
-  const rows = await queryRows<DbDeliveryRow>(
-    `
-    SELECT window_end_date, window_start_date, deliveries, years_with_delivery,
-           avg_yield, annualized_yield, latest_year_yield, avg_eps,
-           stable_events, stability
-      FROM analysis.dividend_deliveries
-     WHERE sec_type = $1 AND code = ANY($2::text[])
-     ORDER BY window_end_date DESC
-    `,
-    [LABEL_CODE.sec_type[st], codeVariants(code)],
+  // ("600000.SS") regardless of which form the caller sends. The SELECT
+  // lives in the sql view
+  // data_viz/api/services/analysis/dividends/delivery_windows.
+  const rows = await querySqlView<DbDeliveryRow>(
+    "data_viz/api/services/analysis/dividends/delivery_windows",
+    {
+      sec_type: LABEL_CODE.sec_type[st],
+      codes: codeVariants(code),
+    },
   );
   return {
     code,

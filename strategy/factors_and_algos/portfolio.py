@@ -2,20 +2,21 @@
 
 This module orchestrates the MIXED mode of :class:`AlgoSignalCollector`:
 
-  1. :func:`run_sub_algos` (Phase 1): async-gather each sub-algo's full
-     backtest. Each sub-algo runs INDEPENDENTLY via the shared runner, writing
-     its own ``strategy_identity`` row (``strategy_name = algo_name``) with
-     skip-if-already-found (idempotent). Sub-algos with weight 0 are skipped.
-     A connection POOL is used so the sub-algos run concurrently — a single
-     asyncpg connection serializes queries.
+  1. :meth:`PortfolioRunner.run_sub_algos` (Phase 1): async-gather each
+     sub-algo's full backtest. Each sub-algo runs INDEPENDENTLY via the shared
+     runner, writing its own ``strategy_identity`` row (``strategy_name =
+     algo_name``) with skip-if-already-found (idempotent). Sub-algos with
+     weight 0 are skipped. A connection POOL is used so the sub-algos run
+     concurrently — a single asyncpg connection serializes queries.
 
-  2. :func:`build_algo_portfolio` (Phase 2): after sub-algos finish, run the
-     PORTFOLIO backtest using the collector's blended fetch+apply+engine.
-     The portfolio is a NEW ``strategy_identity`` (``strategy_name =
-     portfolio_name(selection)``) that combines sub-algo signals by weight
-     into one consolidated ``signal_confidence``, then runs the same
-     signal-agnostic engine. The portfolio's OHLC period (start_date /
-     end_date on strategy_identity) is the union of sub-algo periods.
+  2. :meth:`PortfolioRunner.build_algo_portfolio` (Phase 2): after sub-algos
+     finish, run the PORTFOLIO backtest using the collector's blended
+     fetch+apply+engine. The portfolio is a NEW ``strategy_identity``
+     (``strategy_name = portfolio_name(selection)``) that combines sub-algo
+     signals by weight into one consolidated ``signal_confidence``, then runs
+     the same signal-agnostic engine. The portfolio's OHLC period
+     (start_date / end_date on strategy_identity) is the union of sub-algo
+     periods.
 
 Position-awareness
 ------------------
@@ -127,77 +128,213 @@ def check_position_aware(selection: Dict[str, float]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: run sub-algos independently (async, pooled)
+# Phase 1 + 2 orchestrator (conn/pool-scoped)
 # ---------------------------------------------------------------------------
-async def _run_one_sub_algo(
-    pool,
-    *,
-    algo_name: str,
-    sec_type: str,
-    codes: List[str],
-    trading_layer: dict,
-    fault_tolerance: float = 0,
-    force: bool,
-    seq_no: Optional[int],
-    dry_run: bool,
-    t0: float,
-) -> str:
-    """Run ONE sub-algo's full backtest on its own pooled connection.
+class PortfolioRunner:
+    """Conn/pool-scoped orchestrator for the mixed-mode run (Phase 1
+    sub-algos on pooled connections + Phase 2 blended portfolio).
 
-    Loads the algo's DB-backed params (algo defaults < DB < trading-layer
-    overrides), then calls the shared ``run_one_sec_type``. The strategy_name
-    stored in strategy_identity is the algo_name itself (e.g.
-    "macd"), or ``algo_name_ft{N}`` when fault_tolerance > 0,
-    so each algo's runs are stored and queried under their own name.
-    skip-if-already-found is handled inside ``upsert_strategy_seq``.
-
-    Returns the algo_name (for logging).
+    Code motion of the former module-level conn/pool-first functions: each
+    keeps its name, sequencing, and log lines. ``__init__`` absorbs the
+    state that is identical at BOTH call sites in
+    ``strategy.singleton_trading.__main__`` (mixed branch): conn (Phase 2),
+    pool (Phase 1), collector (Phase 2, mixed-mode), selection,
+    trading_layer, fault_tolerance, force, seq_no, t0. ``dry_run`` stays a
+    method parameter because the two call sites pass different expressions
+    (Phase 1 is invoked with dry_run=False, Phase 2 with args.dry_run);
+    sec_type / codes vary per sec_type-loop iteration and stay method
+    parameters. Pure helpers (portfolio_name, blend_signal_confidence,
+    check_position_aware) remain module-level above.
     """
-    from strategy._common.runner import run_one_sec_type
-    from strategy.factors_and_algos import (
-        AlgoSignalCollector, ensure_default_config, load_params,
-    )
 
-    strategy_name = append_ft_suffix(algo_name, fault_tolerance)
+    def __init__(
+        self,
+        conn,
+        pool,
+        collector,
+        selection: Dict[str, float],
+        *,
+        trading_layer: dict,
+        fault_tolerance: float = 0,
+        force: bool,
+        seq_no: Optional[int],
+        t0: float,
+    ) -> None:
+        self.conn = conn              # Phase 2 (build_algo_portfolio)
+        self.pool = pool              # Phase 1 (run_sub_algos)
+        self.collector = collector    # Phase 2 (mixed-mode collector)
+        self.selection = selection
+        self.trading_layer = trading_layer
+        self.fault_tolerance = fault_tolerance
+        self.force = force
+        self.seq_no = seq_no
+        self.t0 = t0
 
-    async with pool.acquire() as conn:
-        # Ensure a default algo_configs row exists for each code (so
-        # load_params finds something). Idempotent.
-        for code in codes:
-            inserted = await ensure_default_config(
-                conn, algo_name, sec_type, code, algo_name,
-            )
-            if inserted:
-                logger.info(f"    [algo_configs] inserted default {algo_name} "
-                      f"config for {sec_type}/{code}")
-        # Load merged params (algo DEFAULT < DB < trading-layer overrides).
-        # Uses the FIRST code as the config source (params are per-algo, not
-        # per-code — they share the same algo_configs strategy_name).
-        primary_code = codes[0] if codes else ""
-        params = await load_params(
-            conn, algo_name, sec_type, primary_code, algo_name,
-            strategy_overrides=trading_layer,
+    async def _run_one_sub_algo(
+        self,
+        *,
+        algo_name: str,
+        sec_type: str,
+        codes: List[str],
+        dry_run: bool,
+    ) -> str:
+        """Run ONE sub-algo's full backtest on its own pooled connection.
+
+        Loads the algo's DB-backed params (algo defaults < DB < trading-layer
+        overrides), then calls the shared ``run_one_sec_type``. The strategy_name
+        stored in strategy_identity is the algo_name itself (e.g.
+        "macd"), or ``algo_name_ft{N}`` when fault_tolerance > 0,
+        so each algo's runs are stored and queried under their own name.
+        skip-if-already-found is handled inside ``upsert_strategy_seq``.
+
+        Returns the algo_name (for logging).
+        """
+        from strategy._common.runner import StrategyRunner
+        from strategy.factors_and_algos import (
+            AlgoSignalCollector, ensure_default_config, load_params,
         )
 
-        # Binary collector for this one algo.
-        collector = AlgoSignalCollector({algo_name: 1.0})
-        await run_one_sec_type(
-            conn=conn,
-            strategy_name=strategy_name,
+        strategy_name = append_ft_suffix(algo_name, self.fault_tolerance)
+
+        async with self.pool.acquire() as conn:
+            # Ensure a default algo_configs row exists for each code (so
+            # load_params finds something). Idempotent.
+            for code in codes:
+                inserted = await ensure_default_config(
+                    conn, algo_name, sec_type, code, algo_name,
+                )
+                if inserted:
+                    logger.info(f"    [algo_configs] inserted default {algo_name} "
+                          f"config for {sec_type}/{code}")
+            # Load merged params (algo DEFAULT < DB < trading-layer overrides).
+            # Uses the FIRST code as the config source (params are per-algo, not
+            # per-code — they share the same algo_configs strategy_name).
+            primary_code = codes[0] if codes else ""
+            params = await load_params(
+                conn, algo_name, sec_type, primary_code, algo_name,
+                strategy_overrides=self.trading_layer,
+            )
+
+            # Binary collector for this one algo.
+            collector = AlgoSignalCollector({algo_name: 1.0})
+            await StrategyRunner(
+                conn, force=self.force, seq_no=self.seq_no,
+                dry_run=dry_run, t0=self.t0,
+            ).run_one_sec_type(
+                strategy_name=strategy_name,
+                sec_type=sec_type,
+                codes=codes,
+                params=params,
+                fetch_signal_fn=collector.fetch_signal_data,
+                backtest_fn=collector.run_backtest,
+                daily_fn=collector.compute_daily_rows,
+            )
+        return algo_name
+
+    async def run_sub_algos(
+        self,
+        *,
+        sec_type: str,
+        codes: List[str],
+        dry_run: bool,
+    ) -> List[str]:
+        """Phase 1: async-gather each sub-algo's full backtest.
+
+        Each sub-algo (weight != 0) runs independently on its own pooled
+        connection via :func:`_run_one_sub_algo`. ``asyncio.gather`` runs them
+        concurrently. Returns the list of algo_names that ran.
+
+        ``trading_layer`` carries the engine-consumed keys (min_holding_period,
+        buy_notional, skip_final_liquidation) shared across all sub-algos.
+        ``fault_tolerance`` > 0 appends ``_ft{N}`` to each sub-algo's
+        strategy_name (so FT and non-FT runs coexist in the DB).
+        """
+        check_position_aware(self.selection)
+
+        tasks = []
+        ran_names: List[str] = []
+        for algo_name, weight in self.selection.items():
+            if weight == 0:
+                continue
+            ran_names.append(algo_name)
+            tasks.append(
+                self._run_one_sub_algo(
+                    algo_name=algo_name,
+                    sec_type=sec_type,
+                    codes=codes,
+                    dry_run=dry_run,
+                )
+            )
+        if not tasks:
+            logger.info("  [portfolio] no sub-algos with non-zero weight; skipping Phase 1.")
+            return []
+
+        logger.info(f"\n[Phase 1] Running {len(tasks)} sub-algo(s) concurrently: "
+              f"{ran_names}")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for name, res in zip(ran_names, results):
+            if isinstance(res, Exception):
+                logger.error(f"    [Phase 1] {name}: ERROR {type(res).__name__}: {res}")
+            else:
+                logger.info(f"    [Phase 1] {name}: done")
+        return ran_names
+
+    async def build_algo_portfolio(
+        self,
+        *,
+        sec_type: str,
+        codes: List[str],
+        dry_run: bool,
+    ) -> None:
+        """Phase 2: run the portfolio backtest (blended signals).
+
+        The portfolio uses the collector's MIXED-mode fetch (union of per-algo
+        data) + apply (weight-blend) + the same signal-agnostic engine. The
+        strategy_name stored in strategy_identity is
+        ``portfolio_name(selection, fault_tolerance)`` — a stable name derived
+        from the algo->weight map (plus ``_ft{N}`` suffix when FT > 0) so the
+        portfolio is idempotent (skip-if-already-found).
+
+        After the backtest, risks are computed for the portfolio
+        (same as a standalone algo run) — handled by the caller (__main__.py)
+        to keep this module focused on the backtest itself.
+        """
+        from strategy._common.runner import StrategyRunner
+
+        pf_name = portfolio_name(self.selection, fault_tolerance=self.fault_tolerance)
+        logger.info(f"\n[Phase 2] Building portfolio '{pf_name}' "
+              f"(blended backtest over {len(codes)} code(s))...")
+
+        # The collector is in MIXED mode (multiple algos). Its fetch/apply/
+        # backtest handle the blend internally. The params dict carries the
+        # trading-layer keys; per-algo keys are loaded by the collector's
+        # _fetch_mixed (each algo's apply_signals uses its own DEFAULT_PARAMS
+        # merged with any DB config — threaded via the collector's stored algos).
+        #
+        # For simplicity, the portfolio run uses the trading_layer dict as its
+        # params (the collector's _blend_signals loads each algo's params from
+        # the algo modules directly, not from this dict). The engine reads
+        # min_holding_period / buy_notional / skip_final_liquidation from here.
+        params = dict(self.trading_layer)
+
+        await StrategyRunner(
+            self.conn, force=self.force, seq_no=self.seq_no,
+            dry_run=dry_run, t0=self.t0,
+        ).run_one_sec_type(
+            strategy_name=pf_name,
             sec_type=sec_type,
             codes=codes,
             params=params,
-            fetch_signal_fn=collector.fetch_signal_data,
-            backtest_fn=collector.run_backtest,
-            daily_fn=collector.compute_daily_rows,
-            force=force,
-            seq_no=seq_no,
-            dry_run=dry_run,
-            t0=t0,
+            fetch_signal_fn=self.collector.fetch_signal_data,
+            backtest_fn=self.collector.run_backtest,
+            daily_fn=self.collector.compute_daily_rows,
         )
-    return algo_name
+        logger.info(f"    [Phase 2] portfolio '{pf_name}' backtest complete.")
 
 
+# ---------------------------------------------------------------------------
+# Delegating wrappers — lazy-facade import contract
+# ---------------------------------------------------------------------------
 async def run_sub_algos(
     pool,
     selection: Dict[str, float],
@@ -211,57 +348,22 @@ async def run_sub_algos(
     dry_run: bool,
     t0: float,
 ) -> List[str]:
-    """Phase 1: async-gather each sub-algo's full backtest.
+    """Delegating wrapper kept for the lazy-facade import contract —
+    ``strategy.factors_and_algos`` resolves ``run_sub_algos`` via
+    ``getattr(portfolio, name)`` (PEP 562 machinery that must stay
+    untouched), so the module keeps the former pool-first signature.
 
-    Each sub-algo (weight != 0) runs independently on its own pooled
-    connection via :func:`_run_one_sub_algo`. ``asyncio.gather`` runs them
-    concurrently. Returns the list of algo_names that ran.
-
-    ``trading_layer`` carries the engine-consumed keys (min_holding_period,
-    buy_notional, skip_final_liquidation) shared across all sub-algos.
-    ``fault_tolerance`` > 0 appends ``_ft{N}`` to each sub-algo's
-    strategy_name (so FT and non-FT runs coexist in the DB).
+    Constructs a :class:`PortfolioRunner` on the caller-supplied pool and
+    runs Phase 1. ``conn`` / ``collector`` are Phase-2 state — not needed
+    here (passed as None).
     """
-    check_position_aware(selection)
-
-    tasks = []
-    ran_names: List[str] = []
-    for algo_name, weight in selection.items():
-        if weight == 0:
-            continue
-        ran_names.append(algo_name)
-        tasks.append(
-            _run_one_sub_algo(
-                pool,
-                algo_name=algo_name,
-                sec_type=sec_type,
-                codes=codes,
-                trading_layer=trading_layer,
-                fault_tolerance=fault_tolerance,
-                force=force,
-                seq_no=seq_no,
-                dry_run=dry_run,
-                t0=t0,
-            )
-        )
-    if not tasks:
-        logger.info("  [portfolio] no sub-algos with non-zero weight; skipping Phase 1.")
-        return []
-
-    logger.info(f"\n[Phase 1] Running {len(tasks)} sub-algo(s) concurrently: "
-          f"{ran_names}")
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for name, res in zip(ran_names, results):
-        if isinstance(res, Exception):
-            logger.error(f"    [Phase 1] {name}: ERROR {type(res).__name__}: {res}")
-        else:
-            logger.info(f"    [Phase 1] {name}: done")
-    return ran_names
+    return await PortfolioRunner(
+        conn=None, pool=pool, collector=None, selection=selection,
+        trading_layer=trading_layer, fault_tolerance=fault_tolerance,
+        force=force, seq_no=seq_no, t0=t0,
+    ).run_sub_algos(sec_type=sec_type, codes=codes, dry_run=dry_run)
 
 
-# ---------------------------------------------------------------------------
-# Phase 2: build the portfolio (blended backtest)
-# ---------------------------------------------------------------------------
 async def build_algo_portfolio(
     conn,
     collector,
@@ -276,58 +378,25 @@ async def build_algo_portfolio(
     dry_run: bool,
     t0: float,
 ) -> None:
-    """Phase 2: run the portfolio backtest (blended signals).
+    """Delegating wrapper kept for the lazy-facade import contract (see
+    :func:`run_sub_algos`).
 
-    The portfolio uses the collector's MIXED-mode fetch (union of per-algo
-    data) + apply (weight-blend) + the same signal-agnostic engine. The
-    strategy_name stored in strategy_identity is
-    ``portfolio_name(selection, fault_tolerance)`` — a stable name derived
-    from the algo->weight map (plus ``_ft{N}`` suffix when FT > 0) so the
-    portfolio is idempotent (skip-if-already-found).
-
-    After the backtest, risks are computed for the portfolio
-    (same as a standalone algo run) — handled by the caller (__main__.py)
-    to keep this module focused on the backtest itself.
+    Constructs a :class:`PortfolioRunner` on the caller-supplied connection +
+    collector and runs Phase 2. ``pool`` is Phase-1 state — not needed here
+    (passed as None).
     """
-    from strategy._common.runner import run_one_sec_type
-
-    pf_name = portfolio_name(selection, fault_tolerance=fault_tolerance)
-    logger.info(f"\n[Phase 2] Building portfolio '{pf_name}' "
-          f"(blended backtest over {len(codes)} code(s))...")
-
-    # The collector is in MIXED mode (multiple algos). Its fetch/apply/
-    # backtest handle the blend internally. The params dict carries the
-    # trading-layer keys; per-algo keys are loaded by the collector's
-    # _fetch_mixed (each algo's apply_signals uses its own DEFAULT_PARAMS
-    # merged with any DB config — threaded via the collector's stored algos).
-    #
-    # For simplicity, the portfolio run uses the trading_layer dict as its
-    # params (the collector's _blend_signals loads each algo's params from
-    # the algo modules directly, not from this dict). The engine reads
-    # min_holding_period / buy_notional / skip_final_liquidation from here.
-    params = dict(trading_layer)
-
-    await run_one_sec_type(
-        conn=conn,
-        strategy_name=pf_name,
-        sec_type=sec_type,
-        codes=codes,
-        params=params,
-        fetch_signal_fn=collector.fetch_signal_data,
-        backtest_fn=collector.run_backtest,
-        daily_fn=collector.compute_daily_rows,
-        force=force,
-        seq_no=seq_no,
-        dry_run=dry_run,
-        t0=t0,
-    )
-    logger.info(f"    [Phase 2] portfolio '{pf_name}' backtest complete.")
+    await PortfolioRunner(
+        conn=conn, pool=None, collector=collector, selection=selection,
+        trading_layer=trading_layer, fault_tolerance=fault_tolerance,
+        force=force, seq_no=seq_no, t0=t0,
+    ).build_algo_portfolio(sec_type=sec_type, codes=codes, dry_run=dry_run)
 
 
 __all__ = [
     "portfolio_name",
     "blend_signal_confidence",
     "check_position_aware",
+    "PortfolioRunner",
     "run_sub_algos",
     "build_algo_portfolio",
 ]

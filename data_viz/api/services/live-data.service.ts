@@ -12,7 +12,8 @@
  * The available-dates endpoint returns the union of dates present in the
  * intraday table for the requested type (descending — most recent first).
  */
-import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
+import { toDateParam, formatDate, toNum } from "../lib/db.js";
+import { querySqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import { matchesExchange, stripExchangeSuffix } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
@@ -80,76 +81,12 @@ const TABLES: Record<LiveDataSecType, LiveDataTableConfig> = {
 };
 
 // ----------------------------------------------------------------------------
-//  Meta SQL — one row per ACTIVE code of the requested type that has at
+//  Meta query — one row per ACTIVE code of the requested type that has at
 //  least one intraday bar, with the L1/L2 taxonomy from
-//  stats.sec_classification.
-//
-//  Perf: the previous shape aggregated the WHOLE 5-min table
-//  (COUNT(DISTINCT date) GROUP BY code — 3.1M rows for stocks, ~0.5s warm /
-//  ~2.8s cold per fetch). It now drives from the small classification table
-//  and probes the intraday table per code via JOIN LATERAL ... LIMIT 1:
-//  each probe is partition-pruned by code (hash partition key) and stops at
-//  the first PK index hit, so membership ("has >=1 intraday bar") costs one
-//  btree descent per code (~0.09s total for stocks). A correlated EXISTS
-//  was tested but the planner rewrote it into a merge semi-join scanning the
-//  intraday table (0.8s) — LATERAL LIMIT 1 forces the per-code probe shape.
-//
-//  Deduplication: a stock may have MULTIPLE sec_classification rows (one per
-//  qualifying parent index with weight > 2%, see builds/classification/
-//  __main__.py — PK is (code, parent_index_code)). DISTINCT ON (code) picks
-//  exactly ONE row per code: parent_index_is_primary = TRUE first, then the
-//  highest parent_index_weight. Indices (parent_index_code = '') and ETFs
-//  (one-to-one ETF → tracking index) already have a single row per code.
-//
-//  SEMANTICS vs the old GROUP BY shape (accepted trade-off):
-//    • n_dates/first_date/last_date now come from the PRECOMPUTED
-//      sec_classification columns (daily coverage maintained by
-//      build_classification.py) instead of a live COUNT/MIN/MAX over the
-//      intraday table. Consumers only use them for ordering (pagination
-//      order in getLiveDataCombined follows this ORDER BY); n_days is the
-//      same most-data-first proxy.
-//    • Row membership is the same intersection (active classification row
-//      AND >=1 intraday bar) — code sets verified equal on 2026-08-25.
+//  stats.sec_classification. The SELECT lives in the sql view
+//  data_viz/api/services/live-data/meta (the LATERAL-probe perf rationale
+//  and DISTINCT ON dedup rules are documented in its header).
 // ----------------------------------------------------------------------------
-function buildMetaSql(secType: LiveDataSecType): string {
-  const cfg = TABLES[secType];
-  return `
-    SELECT y.code, y.name, y.sector_id, y.sector_label,
-           y.industry_id, y.industry_label, y.industry_slug,
-           y.is_industry_not_strategy, y.exchange,
-           y.n_dates, y.first_date, y.last_date
-      FROM (
-        SELECT DISTINCT ON (sc.code)
-               sc.code,
-               COALESCE(sc.name, '') AS name,
-               COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
-               COALESCE(sc.sector_label,    '其他')   AS sector_label,
-               COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
-               COALESCE(sc.industry_label,  '未分类')  AS industry_label,
-               COALESCE(sc.industry_slug,   'other')  AS industry_slug,
-               COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
-               COALESCE(sc.exchange, '')               AS exchange,
-               COALESCE(sc.n_days, 0)                  AS n_dates,
-               sc.first_date::text                     AS first_date,
-               sc.last_date::text                      AS last_date
-          FROM stats.sec_classification sc
-          JOIN LATERAL (
-            SELECT 1
-              FROM ${cfg.table} t
-             WHERE t.code = sc.code
-             LIMIT 1
-          ) ex ON true
-         WHERE sc.type = $1
-           AND sc.is_active = TRUE
-         ORDER BY sc.code,
-                  sc.parent_index_is_primary DESC NULLS LAST,
-                  sc.parent_index_weight DESC NULLS LAST,
-                  sc.parent_index_code
-      ) y
-     ORDER BY y.n_dates DESC, y.code
-  `;
-}
-
 // ----------------------------------------------------------------------------
 //  Available dates — returns the union of dates with at least one intraday
 //  bar for the requested security type, descending (most recent first).
@@ -158,10 +95,9 @@ export async function listLiveDataDates(
   secType: LiveDataSecType,
 ): Promise<LiveDataDatesResponse> {
   const cfg = TABLES[secType];
-  const rows = await queryRows<{ date: string }>(
-    `SELECT DISTINCT date::text AS date
-       FROM ${cfg.table}
-      ORDER BY date DESC`,
+  const rows = await querySqlView<{ date: string }>(
+    "data_viz/api/services/live-data/dates",
+    { intraday_table: sqlFrag(cfg.table) },
   );
   return {
     type: secType,
@@ -169,13 +105,16 @@ export async function listLiveDataDates(
   };
 }
 
-// Cached meta rows — the per-code intraday probes in buildMetaSql are cheap
+// Cached meta rows — the per-code intraday probes in the meta view are cheap
 // (~0.1s) but their result only changes as new intraday data lands, so rows
 // are read once per 10-min TTL window and shared by listLiveDataThemes(),
 // listStrategyThemes() and getLiveDataCombined().
 async function getLiveMetaRows(secType: LiveDataSecType): Promise<DbLiveMetaRow[]> {
   return cachedRows(`live-data:meta:${secType}`, () =>
-    queryRows<DbLiveMetaRow>(buildMetaSql(secType), [secType]),
+    querySqlView<DbLiveMetaRow>("data_viz/api/services/live-data/meta", {
+      sec_type: secType,
+      intraday_table: sqlFrag(TABLES[secType].table),
+    }),
   );
 }
 
@@ -247,7 +186,8 @@ export async function listLiveDataThemes(
 
 // ----------------------------------------------------------------------------
 //  Strategy themes — parallel L1 strategy → L2 theme → codes tree built from
-//  the same meta SQL (buildMetaSql) but using the strategy-primary rows
+//  the same meta view (data_viz/api/services/live-data/meta) but using the
+//  strategy-primary rows
 //  (is_industry_not_strategy=FALSE).  sector_id/industry_id on those rows
 //  carry the strategy/theme classification.  Tree-building is delegated to
 //  the shared buildStrategyThemesFromRows helper to avoid duplicating the
@@ -324,8 +264,9 @@ export async function getLiveDataCombined(
   //    shows data by default even before the user picks a date).
   let dateParam = toDateParam(q.date);
   if (!dateParam) {
-    const dateRows = await queryRows<{ date: string }>(
-      `SELECT MAX(date)::text AS date FROM ${cfg.table}`,
+    const dateRows = await querySqlView<{ date: string }>(
+      "data_viz/api/services/live-data/latest_date",
+      { intraday_table: sqlFrag(cfg.table) },
     );
     dateParam = dateRows.length > 0 ? dateRows[0].date : null;
   }
@@ -397,14 +338,16 @@ export async function getLiveDataCombined(
   //    The volume column is only present on the stock table — emit NULL
   //    for indices so the bar type stays uniform. `code` is selected so rows
   //    can be grouped by code (the page lists multiple codes per page).
+  //    The SELECT lives in the sql view data_viz/api/services/live-data/bars.
   const volExpr = cfg.hasVolume ? "trading_shares AS volume" : "NULL::numeric AS volume";
-  const dbRows = await queryRows<DbIntradayBarRow & { code: string }>(
-    `SELECT code, to_char(time, 'HH24:MI:SS') AS time,
-            open, high, low, close, ${volExpr}, change, change_pct
-       FROM ${cfg.table}
-      WHERE code = ANY($1::text[]) AND date = $2::date
-      ORDER BY code, time ASC`,
-    [pageCodes, dateParam],
+  const dbRows = await querySqlView<DbIntradayBarRow & { code: string }>(
+    "data_viz/api/services/live-data/bars",
+    {
+      codes: pageCodes,
+      date: dateParam,
+      intraday_table: sqlFrag(cfg.table),
+      volume_expr: sqlFrag(volExpr),
+    },
   );
 
   // Group bars by code (preserving pageCodes order).

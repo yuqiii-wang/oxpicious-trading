@@ -53,8 +53,8 @@ RESULT_MARKER = "@@ONLINE_SEARCH_JSON@@"
 
 
 async def _run_tables_check(conn) -> None:
-    for table in ("text.news", "text.llm_qa", "text.news_groups",
-                  "text.news_group_items", "text.llm_qa_refs"):
+    for table in ("text.news", "llm.llm_qa", "text.news_groups",
+                  "text.news_group_items", "llm.llm_qa_refs"):
         schema, name = table.split(".", 1)
         exists = await conn.fetchval(
             "SELECT EXISTS (SELECT FROM information_schema.tables "
@@ -96,7 +96,7 @@ async def main() -> None:
         prog="python -m llm_agents.online_search_summary",
         description="Online search + LLM summary agent (providers: "
                     f"{sorted(PROVIDERS)}); optionally persists references "
-                    "to text.news and the Q&A to text.llm_qa.")
+                    "to text.news and the Q&A to llm.llm_qa.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_search = sub.add_parser(
@@ -104,7 +104,7 @@ async def main() -> None:
     _add_search_args(p_search)
 
     p_sum = sub.add_parser(
-        "summarize", help="search + LLM summary; --store persists to text.*")
+        "summarize", help="search + LLM summary; --store persists to text/llm")
     _add_search_args(p_sum)
     p_sum.add_argument("--mode", default="compose", choices=["native", "compose"],
                        help="native = provider one-shot search-in-chat; "
@@ -113,7 +113,7 @@ async def main() -> None:
     p_sum.add_argument("--model", default=None,
                        help="Chat model for the summary (provider default).")
     p_sum.add_argument("--store", action="store_true",
-                       help="Persist references + Q&A into the text schema.")
+                       help="Persist references + Q&A into the text/llm schemas.")
     p_sum.add_argument("--no-resolve", action="store_true",
                        help="Skip per-ref resolution (no corpus match / "
                             "ddgs + markitdown): refs stored as snippet rows "
@@ -121,11 +121,11 @@ async def main() -> None:
     p_sum.add_argument("--industry", default=None,
                        help="Pin industry_id on stored rows (BANKS, SEMI, …).")
     p_sum.add_argument("--category", default=None,
-                       help="text.llm_qa.category value.")
+                       help="llm.llm_qa.category value.")
     p_sum.add_argument("--lang", default="zh",
                        help="Summary answer language, default zh (Chinese); "
                             "e.g. --lang en for English. Also stored as "
-                            "text.llm_qa.language.")
+                            "llm.llm_qa.language.")
 
     args = ap.parse_args()
     opts = SearchOptions(
@@ -146,7 +146,7 @@ async def main() -> None:
             _print_json(resp.to_dict())
         return
 
-    # Flow start for the text.llm_requests backlink (the ask requests all
+    # Flow start for the llm.llm_requests backlink (the ask requests all
     # happen inside this summarize call).
     import datetime
     flow_start = datetime.datetime.now(datetime.timezone.utc)

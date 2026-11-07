@@ -14,7 +14,7 @@ trending levels, whose correlation would be spurious):
               after it — groupby diff, never a cross-gap return); NULL
               until the window holds W joint-valid pairs.
 
-Windows 5/20/60/255 sessions (~1w/1m/3m/1y); rows are emitted at two kinds
+Windows 20/60/255 sessions (~1m/3m/1y); rows are emitted at two kinds
 of sample per underlying (append-only — no stored row is ever rewritten):
   • the VOL_SPOT_CORR_STRIDE-session grid (the seed — a pure
     1-based row-ordinal rule, immutable once written) plus the latest
@@ -50,7 +50,6 @@ from analysis.options.config import (
 _EPS = 1e-9
 
 _GROUP_KEY = ["underlying_code"]
-_PAIR_KEY = ["underlying_code", "date"]
 
 
 def _rolling_pearson(
@@ -91,7 +90,6 @@ def _rolling_pearson(
 def compute_options_vol_spot_corr(
     df: pd.DataFrame,
     stored_max: pd.DataFrame | None = None,
-    backfill: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Compute the stride-seeded, append-only rolling vol-vs-spot
     correlations.
@@ -106,11 +104,6 @@ def compute_options_vol_spot_corr(
             growth); underlyings absent from the frame keep the pure
             seed rule (stride grid + latest). None in --force (full
             stride rebuild).
-        backfill: optional DataFrame with the PK columns from
-            fetch.fetch_null_corr5_pairs — stored rows whose corr_5d is
-            still NULL (pre-column rows). They are emitted so the upsert
-            fills the new column (every other value recomputes
-            identically).
 
     Returns:
         DataFrame with VOL_SPOT_CORR_RESULT_COLUMNS (dates datetime64) —
@@ -154,23 +147,16 @@ def compute_options_vol_spot_corr(
     # Samples (append-only): the stride grid + the seed tail — a pure
     # 1-based row ordinal, matched by the candidates SQL — and, for
     # underlyings with stored corr history, every session strictly AFTER
-    # the stored frontier date (the daily tail growth), plus any stored
-    # row whose corr_5d is still NULL (the pre-column backfill). The
-    # merges are the cudf-native hash joins, NOT Series.map(dict) on the
-    # string code column — the numba-state lottery the dtypes skill
-    # bans. The pipeline's target_pairs filter picks exactly the missing
+    # the stored frontier date (the daily tail growth). The merges are
+    # the cudf-native hash joins, NOT Series.map(dict) on the string
+    # code column — the numba-state lottery the dtypes skill bans. The
+    # pipeline's target_pairs filter picks exactly the missing
     # candidates, so emitting an already-stored date here is harmless.
     if stored_max is not None and not stored_max.empty:
         frame = frame.merge(stored_max, on="underlying_code", how="left")
         after_stored = frame["date"] > frame["max_date"]
     else:
         after_stored = None
-    if backfill is not None and not backfill.empty:
-        backfill = backfill.assign(_null5=np.int8(1))
-        frame = frame.merge(backfill, on=_PAIR_KEY, how="left")
-        is_backfill = frame["_null5"].notna()
-    else:
-        is_backfill = None
     frame["rn"] = frame.groupby(_GROUP_KEY, sort=False).cumcount() + 1
     emit = (
         (frame["rn"] % VOL_SPOT_CORR_STRIDE == 0)
@@ -180,7 +166,5 @@ def compute_options_vol_spot_corr(
     )
     if after_stored is not None:
         emit = emit | after_stored
-    if is_backfill is not None:
-        emit = emit | is_backfill
     out = frame.loc[emit, _cols].reset_index(drop=True)
     return out

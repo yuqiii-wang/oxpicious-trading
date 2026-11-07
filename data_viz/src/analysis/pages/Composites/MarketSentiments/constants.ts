@@ -16,7 +16,7 @@ import {
  *   • industry — the industry-ENTITY trees (code = industry_id) under their
  *     stats.sec_classification classification — the same two-column shape the
  *     Analysis Summary page's industry scope and the MA-Spread industry mode
- *     use. Entity ids ARE the feed's industry tags (text.llm_qa /
+ *     use. Entity ids ARE the feed's industry tags (llm.llm_qa /
  *     text.news industry_id), so a pick scopes the feed directly. */
 export const THEMES_SOURCES = {
   index: {

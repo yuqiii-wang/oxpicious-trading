@@ -49,7 +49,7 @@ Pipeline:
      with the former live 5-way-join SQL; both no FK).
   9. Compute the rolling correlation between the 30d model-free vol
      index and the underlying spot close (daily log-return vs
-     log-change, windows 5/20/60/255 sessions) into
+     log-change, windows 20/60/255 sessions) into
      analysis.options_vol_index_vs_spot_price_corr (PK (underlying_code,
      date), no FK — reads the options_vol_index + options_spot_daily
      read models, so it runs after pipelines 6+8). Append-only
@@ -157,7 +157,6 @@ from analysis.options.fetch import (  # noqa: E402
     fetch_missing_spot_dates,
     fetch_vol_spot_corr_rows,
     fetch_stored_max_corr_dates,
-    fetch_null_corr5_pairs,
     fetch_missing_vol_spot_corr_dates,
 )
 from analysis.options.compute import (  # noqa: E402
@@ -971,7 +970,7 @@ async def _run_vol_spot_corr_pipeline(
 ) -> int:
     """Run the options_vol_index_vs_spot_price_corr pipeline.
 
-    Rolling Pearson correlation (5/20/60/255 trading sessions) between the
+    Rolling Pearson correlation (20/60/255 trading sessions) between the
     30d model-free vol index and the underlying spot close — daily
     log-return vs log-change (the CBOE VIX-vs-spot convention; see
     compute/vol_spot_corr.py). Append-only incremental ("existing data is
@@ -986,7 +985,6 @@ async def _run_vol_spot_corr_pipeline(
     """
     target_pairs: set | None = None
     stored_max: pd.DataFrame | None = None
-    backfill: pd.DataFrame | None = None
     if not force:
         logger.info("\n  Detecting missing (underlying, date) pairs for "
               "vol-index vs spot corr...")
@@ -998,7 +996,6 @@ async def _run_vol_spot_corr_pipeline(
             logger.info("    -> DB is up to date; nothing to do.")
             return 0
         stored_max = await fetch_stored_max_corr_dates(conn)
-        backfill = await fetch_null_corr5_pairs(conn)
 
     logger.info("\n  [1/3] Fetching vol index + spot daily rows...")
     df = await fetch_vol_spot_corr_rows(conn, sec_type)
@@ -1008,10 +1005,9 @@ async def _run_vol_spot_corr_pipeline(
         return 0
 
     logger.info("\n  [2/3] Computing rolling vol-vs-spot correlations...")
-    result_df = compute_options_vol_spot_corr(df, stored_max, backfill)
+    result_df = compute_options_vol_spot_corr(df, stored_max)
     logger.info(f"    {len(result_df):,} sampled result rows "
-          f"(stride seed + sessions after the stored frontier + "
-          f"corr_5d backfill)")
+          f"(stride seed + sessions after the stored frontier)")
 
     logger.info("\n  [3/3] Writing vol-index vs spot corr to DB...")
     n = await _write_rows(

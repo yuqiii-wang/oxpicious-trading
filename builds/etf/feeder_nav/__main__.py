@@ -61,8 +61,9 @@ Usage:
   python -m builds.etf.feeder_nav --force
   python -m builds.etf.feeder_nav --date 2026-09-29 (force one NAV date)
 
-The :class:`FeederNavBuild` entry class (a :class:`DataBuild` subclass)
-owns the runtime lifecycle + common argparse. Bootstrap-first layout:
+The :class:`FeederNavBuild` entry class (an :class:`EtfBuild` subclass —
+inheritance mirrors the directory layout) owns the runtime lifecycle +
+common argparse. Bootstrap-first layout:
 the runtime setup runs before this module's imports.
 """
 
@@ -83,7 +84,7 @@ from builds._commons.paths import HUATAI_NAV_DIR
 from builds._commons.row_emission import dates_as_date_list, records_from_frame
 from _common.log_setup import setup_logging
 
-from _common.data_build import DataBuild
+from builds.etf.__main__ import EtfBuild
 from downloads.etf.huatai_pb._endpoints import (
     SSE_ETF_PREFIXES,
     is_listed_etf_code,
@@ -241,7 +242,7 @@ def synthesize_basic_rows(
     })
 
 
-class FeederNavBuild(DataBuild):
+class FeederNavBuild(EtfBuild):
     """``python -m builds.etf.feeder_nav`` — huatai-pb NAV → etf tables
     (OTC feeder full series + listed checkin ETFs' missing-only history
     backfill)."""

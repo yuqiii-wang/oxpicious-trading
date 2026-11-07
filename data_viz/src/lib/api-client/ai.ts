@@ -1,7 +1,7 @@
 /**
  * API client for the DataViz AI page (text-schema LLM Q&A endpoints
- * under /api/ai — text.llm_qa / text.llm_qa_refs / text.news_digestions)
- * and the persisted ask history (text.llm_qa_by_ask family — the
+ * under /api/ai — llm.llm_qa / llm.llm_qa_refs / text.news_digestions)
+ * and the persisted ask history (llm.llm_qa_by_ask family — the
  * "QA by Ask" feed).
  */
 import { fetchJson } from "./_cache";
@@ -29,7 +29,7 @@ export interface AiScopeParams {
   industry_ids?: string[] | null;
   search?: string | null;
   /** true = keep only Q&A rows whose mapped industry had a big market move
-   *  on the row's Shanghai qa_date day (text.llm_qa.is_big_fluctuation).
+   *  on the row's Shanghai qa_date day (llm.llm_qa.is_big_fluctuation).
    *  Pass true or null — the ask-history table has no such column, so the
    *  by-ask endpoints ignore it. */
   is_big_fluctuation?: boolean | null;
@@ -121,7 +121,7 @@ export function aiAskImageUrl(imageId: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Research Q&A (text.llm_qa_by_research — the "Research" feed). Scope as
+// Research Q&A (llm.llm_qa_by_research — the "Research" feed). Scope as
 // the knowledge base, plus a logic_label NAME pick (growth/…) encoded to
 // its research_logic code server-side.
 // ---------------------------------------------------------------------------

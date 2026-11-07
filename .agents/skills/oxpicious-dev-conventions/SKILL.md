@@ -79,6 +79,32 @@ and dtype rules are mandatory, not advisory. Short form:
 - A dataframe refactor must A/B-verify: identical per-code md5 of the
   output tables AND no new `[cudf fallback]` signatures.
 
+### Class-first Python — pydantic classes over static functions
+
+Implement backend Python object-oriented: classes are the preferred
+shape, loose module-level static functions the fallback (tiny pure
+helpers, throwaway `temp_scripts/` study scripts). State and behavior
+live on the class; pydantic (v2, in the conda env) is the preferred
+base for typed structures:
+
+- Pipeline steps / stages / engines: a class with typed fields for its
+  params and a `run()`-style method — the established patterns are the
+  signal family engines (`engines/rule_base.py` ABC), the calibration
+  derivations (`BoostDerivationBase`), and the deep-agent `Tool` /
+  `SkillBook` objects. A new capability is a subclass, never a branch
+  in shared code.
+- Typed payloads crossing module boundaries — configs, rule/label
+  carriers, DB row contracts, API/service request+response bodies — are
+  pydantic `BaseModel`s (validate with `model_validate`, emit with
+  `model_dump()`), not loose dicts.
+- Keep it cudf-compatible: classes CONFIGURE and HOLD frames; pydantic
+  models never ride inside frame compute (no per-row model objects) —
+  row materialization stays at the write boundary
+  (`sanitize_for_db_insert` / `model_dump()`).
+- Existing function-only modules follow the preference when next
+  touched; don't mass-refactor working pipelines for the sake of it
+  (any refactor still passes its skill's A/B bar).
+
 ### Typing and naming
 
 - Give every variable a concrete type — never settle for `Any`. When a type
@@ -95,6 +121,31 @@ and dtype rules are mandatory, not advisory. Short form:
   study), and the <10-sample study budget follow the `db-sql-write` skill.
 - For DB schema/query changes, implement SQL first (files under
   `database/sql/`), then bridge to Python only if needed.
+- ALL DB SQL lives in SQL files, never inline in logic — Python
+  pipelines and the UI API alike. Reads are `database/sql_views/` SELECT
+  templates rendered by `_common.sql_views.render_sql_view` (feed the
+  returned `(sql, params)` pair to the db_commons read path); custom
+  parameterized writes are `database/sql_writes/` action files (Python:
+  `_common.sql_writes.render_sql_write` / `load_sql_write`; the TS API:
+  `loadSqlWrite`). Logic
+  keeps only arg names and row mapping. Layout and slot conventions:
+  `database/sql_views/README.md` and `database/sql_writes/README.md`.
+- No `CASE` / `CASE WHEN` in a SELECT — value mapping and decoding
+  always come from the index: the `static.label_dim` scalar subquery /
+  join on `(domain, code)` (TS renders it with
+  `labelDecodeSql(domain, col)` as a `sqlFrag` fragment arg; Python
+  decodes host-side via `_common.labels.decode_codes`). When a value
+  that needs a label is missing from the index, fix it in SQL — add the
+  row to its domain's INSERT file under
+  `database/sql/static/label_dim/` plus the Python/TS mirrors
+  (`db-smallint-type-codes`), never inline a CASE map in the query.
+- One-time SQL (migration ALTERs, backfills, renames, legacy-row DELETEs,
+  temp-table rewrites) runs ONCE from a `temp_scripts/` script and is
+  never parked in `database/sql/` — fold its effect into the original DDL
+  definitions so the schema files stay canonical and re-appliable. Seed
+  INSERT files are the exception: they are the initial population / source
+  of record, so they stay under `database/sql/` (details in the
+  `db-sql-write` skill).
 - Reads for incremental work filter on the table's primary key
   (typically dates plus codes) so tasks only process missing data.
 
@@ -112,6 +163,12 @@ instead. Skip the scoping only for full data rebuilds.
 
 Throwaway scripts and their outputs (console output, screenshots) go in
 `temp_scripts/`.
+
+LLM-touching tests and probes (deep agents, langgraph) run on the DUMMY
+LLM — `llm_agents/test/dummy_llm` (`DummyLlmProvider` in-process, or
+`python -m llm_agents.test.dummy_llm.server` + `--provider dummy
+--dummy-url ...` for HTTP-sim with rate-limit error injection) — zero
+provider spend, deterministic; details in `deep-agent-blueprint`.
 
 ## Verification
 

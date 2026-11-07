@@ -31,13 +31,10 @@ checked against what the output files already contain:
 
 ``--force`` purges the incremental state and does a full backfill / re-crawl.
 
-Usage::
-
-    python -m downloads.macro.gov.news                          # full pipeline
-    python -m downloads.macro.gov.news --start-date 2024-01-01
-    python -m downloads.macro.gov.news --skip-articles          # titles only
-    python -m downloads.macro.gov.news --max-articles 5         # test crawl
-    python -m downloads.macro.gov.news --force                  # re-fetch all
+The entry point is the :class:`GovNewsDownload` DownloadJob — the former
+``main()`` body is its ``run()`` (argparse moved to ``add_arguments``) and
+the gov.cn JSON fetch moved onto the :class:`GovNewsFetcher` class (body
+unchanged); the pure row parser stays module-level.
 """
 from __future__ import annotations
 
@@ -56,6 +53,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from downloads._common import (  # noqa: E402
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
+    DownloadJob,
     retry_policy_for,
     service_urls,
 )
@@ -67,10 +65,10 @@ from downloads.macro.gov.main_gov import (  # noqa: E402
 )
 from downloads.macro.gov.ndrc import (  # noqa: E402
     CONFIG as NDRC_CONFIG,
-    fetch_ndrc_pages,
+    GovNdrcFetcher,
     parse_ndrc_items,
 )
-from downloads.macro.gov.articles import download_articles  # noqa: E402
+from downloads.macro.gov.articles import GovArticlesFetcher  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Constants
@@ -91,63 +89,6 @@ CONFIG = SourceConfig(
 )
 
 logger = setup_logger("gov_news")
-
-
-# ----------------------------------------------------------------------------
-# Fetcher
-# ----------------------------------------------------------------------------
-def fetch_gov_json(
-    session: Any,
-    proxy: Any,
-    config: SourceConfig,
-    floor: Optional[date] = None,
-) -> Optional[List[Dict[str, Any]]]:
-    """Fetch the ``ZCJD_QZ.json`` title list via the shared anti-bot proxy.
-
-    Returns the parsed list of items, or None on hard failure. Retries on
-    transient network errors with exponential backoff (max_retries / backoff
-    base from the service's external_request_config JSON row, former inline
-    constants as fallback); the proxy handles browser-fingerprint rotation,
-    the ``random`` query param, host-blocking detection, and the
-    inter-request sleep cadence.
-
-    *floor* (last pub_date already in the CSV) is unused here — the list is a
-    single JSON fetch that always returns everything; the orchestrator applies
-    the incremental date floor at parse time.
-    """
-    headers = dict(COMMON_BASE_HEADERS)
-    headers["Referer"] = config.list_url
-
-    # Retry policy from the service's external_request_config JSON row
-    # (max_retries=3, retry_backoff_sec=1); the former inline constants
-    # apply when the row omits them.
-    row_max_retries, row_backoff_sec = retry_policy_for(SERVICE)
-    max_retries: int = row_max_retries if row_max_retries is not None else 3
-    backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
-    for attempt in range(1, max_retries + 1):
-        if proxy.is_blocked(GOV_JIEDU_JSON_URL):
-            logger.error("  host blocked, aborting JSON fetch")
-            return None
-        resp = proxy.get(
-            session, GOV_JIEDU_JSON_URL,
-            headers=headers, logger=logger, log_tag="  ",
-        )
-        if resp is None:
-            logger.warning("  JSON fetch failed (attempt %d/%d)", attempt, max_retries)
-            time.sleep(min(backoff_sec * 2 ** attempt, 30))
-            continue
-        try:
-            data = resp.json()
-        except ValueError as e:
-            logger.error("  JSON parse error: %s (body: %s)", e, resp.text[:200])
-            return None
-        if isinstance(data, list):
-            return data
-        logger.error("  unexpected JSON shape: %s", type(data).__name__)
-        return None
-
-    logger.error("  exhausted retries for JSON fetch")
-    return None
 
 
 # ----------------------------------------------------------------------------
@@ -175,85 +116,162 @@ def parse_gov_items(raw_items: List[Dict[str, Any]], start: date) -> List[Dict[s
 
 
 # ----------------------------------------------------------------------------
+# Fetcher
+# ----------------------------------------------------------------------------
+class GovNewsFetcher:
+    """The gov.cn 政策解读 JSON fetcher — the former ``fetch_gov_json``
+    function as a method with unchanged body. Stateless: session and proxy
+    are built per run by the orchestrator."""
+
+    def fetch_gov_json(
+        self,
+        session: Any,
+        proxy: Any,
+        config: SourceConfig,
+        floor: Optional[date] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch the ``ZCJD_QZ.json`` title list via the shared anti-bot proxy.
+
+        Returns the parsed list of items, or None on hard failure. Retries on
+        transient network errors with exponential backoff (max_retries / backoff
+        base from the service's external_request_config JSON row, former inline
+        constants as fallback); the proxy handles browser-fingerprint rotation,
+        the ``random`` query param, host-blocking detection, and the
+        inter-request sleep cadence.
+
+        *floor* (last pub_date already in the CSV) is unused here — the list is a
+        single JSON fetch that always returns everything; the orchestrator applies
+        the incremental date floor at parse time.
+        """
+        headers = dict(COMMON_BASE_HEADERS)
+        headers["Referer"] = config.list_url
+
+        # Retry policy from the service's external_request_config JSON row
+        # (max_retries=3, retry_backoff_sec=1); the former inline constants
+        # apply when the row omits them.
+        row_max_retries, row_backoff_sec = retry_policy_for(SERVICE)
+        max_retries: int = row_max_retries if row_max_retries is not None else 3
+        backoff_sec: float = row_backoff_sec if row_backoff_sec is not None else 1.0
+        for attempt in range(1, max_retries + 1):
+            if proxy.is_blocked(GOV_JIEDU_JSON_URL):
+                logger.error("  host blocked, aborting JSON fetch")
+                return None
+            resp = proxy.get(
+                session, GOV_JIEDU_JSON_URL,
+                headers=headers, logger=logger, log_tag="  ",
+            )
+            if resp is None:
+                logger.warning("  JSON fetch failed (attempt %d/%d)", attempt, max_retries)
+                time.sleep(min(backoff_sec * 2 ** attempt, 30))
+                continue
+            try:
+                data = resp.json()
+            except ValueError as e:
+                logger.error("  JSON parse error: %s (body: %s)", e, resp.text[:200])
+                return None
+            if isinstance(data, list):
+                return data
+            logger.error("  unexpected JSON shape: %s", type(data).__name__)
+            return None
+
+        logger.error("  exhausted retries for JSON fetch")
+        return None
+
+
+# ----------------------------------------------------------------------------
 # CLI — single entry point orchestrating gov.news -> gov.ndrc -> gov.articles
 # ----------------------------------------------------------------------------
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="gov.cn macro-news pipeline: gov.news + gov.ndrc title lists + gov.articles detail crawl",
-    )
-    parser.add_argument("--start-date", type=str, default=None,
-                        help=f"Floor date YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
-    parser.add_argument("--sleep-sec", type=float, default=None,
-                        help="Anti-bot sleep between requests (s). "
-                             f"Default: external_request_config JSON for {SERVICE}")
-    parser.add_argument("--out-root", type=str, default=None,
-                        help="Output root dir. Default: <project>/temps/<source>")
-    parser.add_argument("--force", action="store_true",
-                        help="Full backfill: re-fetch all pages / re-crawl all article details "
-                             "(default: incremental, only latest missing dates).")
-    parser.add_argument("--skip-news", action="store_true",
-                        help="Skip the gov.cn 政策解读 title-list step.")
-    parser.add_argument("--skip-ndrc", action="store_true",
-                        help="Skip the ndrc.gov.cn 新闻发布 title-list step.")
-    parser.add_argument("--skip-articles", action="store_true",
-                        help="Skip the gov.cn article detail-crawl step.")
-    parser.add_argument("--max-articles", type=int, default=None,
-                        help="Cap article detail fetches (for testing). Default: no cap.")
-    args = parser.parse_args()
+class GovNewsDownload(DownloadJob):
+    """DownloadJob for the gov.cn macro-news pipeline — the former ``main()``
+    body is ``run()`` verbatim (argparse moved to ``add_arguments``); the
+    three steps' fetchers are held in ``__init__``."""
 
-    summaries: Dict[str, Any] = {}
-    gov_news_csv_path: Optional[str] = None
+    description = ("gov.cn macro-news pipeline: gov.news + gov.ndrc title "
+                   "lists + gov.articles detail crawl")
+    component = "gov_news"
 
-    # --- Step 1: gov.cn 政策解读 title list ---
-    if not args.skip_news:
-        logger.info("=== Step 1/3: gov.cn 政策解读 title list ===")
-        s1 = download_source(
-            CONFIG, fetch_gov_json, parse_gov_items,
-            service=SERVICE,
-            out_root=args.out_root,
-            start_date=args.start_date,
-            sleep_sec=args.sleep_sec,
-            force=args.force,
-        )
-        summaries["gov_news"] = s1
-        if not s1.get("failed"):
-            gov_news_csv_path = s1.get("csv_path")
+    def __init__(self) -> None:
+        super().__init__()
+        self.fetcher = GovNewsFetcher()
+        self.ndrc_fetcher = GovNdrcFetcher()
+        self.articles_fetcher = GovArticlesFetcher()
 
-    # --- Step 2: ndrc.gov.cn 新闻发布 title list ---
-    if not args.skip_ndrc:
-        logger.info("=== Step 2/3: ndrc.gov.cn 新闻发布 title list ===")
-        s2 = download_source(
-            NDRC_CONFIG, fetch_ndrc_pages, parse_ndrc_items,
-            service="downloads.macro.gov.ndrc",
-            out_root=args.out_root,
-            start_date=args.start_date,
-            sleep_sec=args.sleep_sec,
-            force=args.force,
-        )
-        summaries["gov_ndrc"] = s2
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--start-date", type=str, default=None,
+                            help=f"Floor date YYYY-MM-DD. Default: {DEFAULT_START_DATE}")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                            help="Anti-bot sleep between requests (s). "
+                                 f"Default: external_request_config JSON for {SERVICE}")
+        parser.add_argument("--out-root", type=str, default=None,
+                            help="Output root dir. Default: <project>/temps/<source>")
+        parser.add_argument("--force", action="store_true",
+                            help="Full backfill: re-fetch all pages / re-crawl all article details "
+                                 "(default: incremental, only latest missing dates).")
+        parser.add_argument("--skip-news", action="store_true",
+                            help="Skip the gov.cn 政策解读 title-list step.")
+        parser.add_argument("--skip-ndrc", action="store_true",
+                            help="Skip the ndrc.gov.cn 新闻发布 title-list step.")
+        parser.add_argument("--skip-articles", action="store_true",
+                            help="Skip the gov.cn article detail-crawl step.")
+        parser.add_argument("--max-articles", type=int, default=None,
+                            help="Cap article detail fetches (for testing). Default: no cap.")
 
-    # --- Step 3: gov.cn article detail crawl (uses gov_news titles CSV) ---
-    if not args.skip_articles:
-        logger.info("=== Step 3/3: gov.cn article detail crawl ===")
-        if gov_news_csv_path is None:
-            # Fallback: derive the default path from out_root (titles CSV may
-            # already exist from a prior run even if step 1 was skipped).
-            from downloads.macro.gov.main_gov import resolve_out_dir as _resolve
-            out_dir = _resolve(str(Path(__file__).resolve()), CONFIG.out_dirname, args.out_root)
-            gov_news_csv_path = str(out_dir / CONFIG.csv_filename)
-            logger.info("  step 1 skipped — using existing titles CSV: %s", gov_news_csv_path)
-        s3 = download_articles(
-            out_root=args.out_root,
-            start_date=args.start_date,
-            sleep_sec=args.sleep_sec,
-            max_articles=args.max_articles,
-            force=args.force,
-            titles_csv=gov_news_csv_path,
-        )
-        summaries["gov_articles"] = s3
+    def run(self) -> None:
+        """One pipeline cycle — the former ``main()`` body (argparse parsing
+        is owned by the base template methods)."""
+        summaries: Dict[str, Any] = {}
+        gov_news_csv_path: Optional[str] = None
 
-    logger.info(summaries)
+        # --- Step 1: gov.cn 政策解读 title list ---
+        if not self.args.skip_news:
+            logger.info("=== Step 1/3: gov.cn 政策解读 title list ===")
+            s1 = download_source(
+                CONFIG, self.fetcher.fetch_gov_json, parse_gov_items,
+                service=SERVICE,
+                out_root=self.args.out_root,
+                start_date=self.args.start_date,
+                sleep_sec=self.args.sleep_sec,
+                force=self.args.force,
+            )
+            summaries["gov_news"] = s1
+            if not s1.get("failed"):
+                gov_news_csv_path = s1.get("csv_path")
+
+        # --- Step 2: ndrc.gov.cn 新闻发布 title list ---
+        if not self.args.skip_ndrc:
+            logger.info("=== Step 2/3: ndrc.gov.cn 新闻发布 title list ===")
+            s2 = download_source(
+                NDRC_CONFIG, self.ndrc_fetcher.fetch_ndrc_pages, parse_ndrc_items,
+                service="downloads.macro.gov.ndrc",
+                out_root=self.args.out_root,
+                start_date=self.args.start_date,
+                sleep_sec=self.args.sleep_sec,
+                force=self.args.force,
+            )
+            summaries["gov_ndrc"] = s2
+
+        # --- Step 3: gov.cn article detail crawl (uses gov_news titles CSV) ---
+        if not self.args.skip_articles:
+            logger.info("=== Step 3/3: gov.cn article detail crawl ===")
+            if gov_news_csv_path is None:
+                # Fallback: derive the default path from out_root (titles CSV may
+                # already exist from a prior run even if step 1 was skipped).
+                from downloads.macro.gov.main_gov import resolve_out_dir as _resolve
+                out_dir = _resolve(str(Path(__file__).resolve()), CONFIG.out_dirname, self.args.out_root)
+                gov_news_csv_path = str(out_dir / CONFIG.csv_filename)
+                logger.info("  step 1 skipped — using existing titles CSV: %s", gov_news_csv_path)
+            s3 = self.articles_fetcher.download_articles(
+                out_root=self.args.out_root,
+                start_date=self.args.start_date,
+                sleep_sec=self.args.sleep_sec,
+                max_articles=self.args.max_articles,
+                force=self.args.force,
+                titles_csv=gov_news_csv_path,
+            )
+            summaries["gov_articles"] = s3
+
+        logger.info(summaries)
 
 
 if __name__ == "__main__":
-    main()
+    GovNewsDownload().execute()

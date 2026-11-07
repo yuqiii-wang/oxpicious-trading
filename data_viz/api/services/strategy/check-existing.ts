@@ -2,7 +2,7 @@
  * Check if a strategy run already exists for the natural key.
  * Used by the UI to prompt the user before forcing a re-run.
  */
-import { queryRows } from "../db.service.js";
+import { querySqlView } from "@api/lib/sql-views";
 import type { MaSpreadSecType } from "../../../shared/types.js";
 import { DEFAULT_STRATEGY_NAME } from "./_shared.js";
 
@@ -16,15 +16,8 @@ interface CheckExistingRow {
   fault_tolerance: string | number | null;
 }
 
-const CHECK_EXISTING_SQL = `
-  SELECT seq_id, seq_no, start_date, end_date, scenario, status, fault_tolerance
-  FROM strategy.strategy_identity
-  WHERE strategy_name = $1
-    AND sec_type = $2
-    AND code = $3
-  ORDER BY CASE WHEN is_active THEN 0 ELSE 1 END, seq_no DESC
-  LIMIT 1
-`;
+// The SELECT lives in the sql view
+// data_viz/api/services/strategy/check-existing/check_existing.
 
 /**
  * Check if a strategy_identity row already exists for the given
@@ -41,8 +34,9 @@ export async function checkExistingStrategy(
 ): Promise<CheckExistingRow | null> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
   const code = rawCode.trim();
-  const rows = await queryRows<CheckExistingRow>(
-    CHECK_EXISTING_SQL, [strategyName, secType, code],
+  const rows = await querySqlView<CheckExistingRow>(
+    "data_viz/api/services/strategy/check-existing/check_existing",
+    { strategy_name: strategyName, sec_type: secType, code },
   );
   return rows.length > 0 ? rows[0] : null;
 }

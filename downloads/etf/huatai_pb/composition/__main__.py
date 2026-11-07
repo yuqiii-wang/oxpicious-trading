@@ -46,6 +46,13 @@ Column mapping (COMBINED_COLS):
                    (0禁止/1允许/2必须/3-8 退补类)
   market         ← gpsc/prefix-resolved market label
 
+The entry point is the :class:`HuataiPbCompositionDownload` DownloadJob —
+the former ``__main__`` body is its ``run()`` (the --fund-codes comma
+split moved to ``apply_args``) and the ``download_composition``
+orchestration function became the method of the same name (same signature
+and body); ``pcf_to_combined_rows`` / ``_save_snapshot`` and the constants
+stay module-level.
+
 Usage:
   python -m downloads.etf.huatai_pb.composition
   python -m downloads.etf.huatai_pb.composition --fund-codes 510880,512890
@@ -62,6 +69,7 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 
 from downloads._common import (
+    DownloadJob,
     RunStats,
     business_days,
     build_default_session,
@@ -176,115 +184,127 @@ def _save_snapshot(
     return True, "downloaded"
 
 
-def download_composition(
-    *,
-    out_root: str | None = None,
-    fund_codes: List[str] | None = None,
-    sleep_sec: float | None = None,
-    backfill_start: str | None = None,
-) -> Dict[str, Any]:
-    out_dir = resolve_out_dir("", "huatai_etf_composition", out_root)
-    codes = [c.strip() for c in (fund_codes or list(CHECKIN_FUND_CODES)) if c.strip()]
-    today = date.today()
+class HuataiPbCompositionDownload(DownloadJob):
+    """DownloadJob for the huatai-pb.com PCF composition fetch cycle — the
+    former ``__main__`` body is ``run()`` and the ``download_composition``
+    function is the method of the same name (same signature and body
+    verbatim); pacing / filter / out_root stay per-call arguments."""
 
-    session = build_default_session()
-    proxy = build_proxy(SERVICE, sleep_sec)
-    stats = RunStats()
+    description = ("Download huatai-pb.com ETF PCF (申购赎回清单) "
+                   "composition CSVs.")
+    component = "huatai_pb_composition"
 
-    if backfill_start:
-        start = datetime.strptime(backfill_start, "%Y-%m-%d").date()
-        days = business_days(start, today, reverse=False)
-        logger.info("[backfill] %s → %s: %d trading days", start, today, len(days))
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--fund-codes", type=str, default=None,
+                        help="Comma-separated fund codes (default: the checkin "
+                             "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
+        parser.add_argument("--out-root", type=str, default=None,
+                        help="Alternative output root directory")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Sleep seconds between requests "
+                             f"(default: external_request_config JSON for {SERVICE})")
+        parser.add_argument("--backfill-start", type=str, default=None,
+                        metavar="YYYY-MM-DD",
+                        help="Backfill trading days from this date to today "
+                             "(skip snapshots already cached on disk).")
+
+    def apply_args(self) -> None:
+        # Former --fund-codes comma split (post-parse derivation).
+        fund_codes_arg = None
+        if self.args.fund_codes:
+            fund_codes_arg = [c.strip() for c in self.args.fund_codes.split(",") if c.strip()]
+        self.args.fund_codes = fund_codes_arg
+
+    def download_composition(
+        self,
+        *,
+        out_root: str | None = None,
+        fund_codes: List[str] | None = None,
+        sleep_sec: float | None = None,
+        backfill_start: str | None = None,
+    ) -> Dict[str, Any]:
+        out_dir = resolve_out_dir("", "huatai_etf_composition", out_root)
+        codes = [c.strip() for c in (fund_codes or list(CHECKIN_FUND_CODES)) if c.strip()]
+        today = date.today()
+
+        session = build_default_session()
+        proxy = build_proxy(SERVICE, sleep_sec)
+        stats = RunStats()
+
+        if backfill_start:
+            start = datetime.strptime(backfill_start, "%Y-%m-%d").date()
+            days = business_days(start, today, reverse=False)
+            logger.info("[backfill] %s → %s: %d trading days", start, today, len(days))
+            for code in codes:
+                for day in days:
+                    if proxy.is_blocked(PCF_URL):
+                        logger.warning("[backfill %s] host blocked, stopping", code)
+                        break
+                    ymd = day.strftime("%Y%m%d")
+                    csv_cached = _snapshot_csv_path(out_dir, ymd, code)
+                    if is_valid_file(csv_cached, min_bytes=64):
+                        stats.skipped_cached += 1
+                        continue
+                    payload = fetch_pcf_payload(
+                        session, proxy, code, day.isoformat(), service=SERVICE,
+                        logger=logger)
+                    if payload is None:
+                        stats.failed += 1
+                        continue
+                    ok, _status = _save_snapshot(out_dir, payload, code)
+                    if ok:
+                        stats.downloaded += 1
+                    else:
+                        stats.empty += 1
+            summary = stats.to_dict(out_dir=str(out_dir), funds=len(codes))
+            logger.info("Done PCF backfill: %s", summary)
+            return summary
+
+        # --- daily mode: latest published PCF per fund ---
+        probe_days = business_days(today - timedelta(days=12), today)[:FALLBACK_DAYS + 1]
         for code in codes:
-            for day in days:
-                if proxy.is_blocked(PCF_URL):
-                    logger.warning("[backfill %s] host blocked, stopping", code)
-                    break
-                ymd = day.strftime("%Y%m%d")
-                csv_cached = _snapshot_csv_path(out_dir, ymd, code)
-                if is_valid_file(csv_cached, min_bytes=64):
-                    stats.skipped_cached += 1
-                    continue
+            got = False
+            for day in probe_days:
                 payload = fetch_pcf_payload(
                     session, proxy, code, day.isoformat(), service=SERVICE,
                     logger=logger)
                 if payload is None:
                     stats.failed += 1
+                    break
+                trade_day, rows = pcf_to_combined_rows(payload)
+                if not rows:
                     continue
+                csv_cached = _snapshot_csv_path(
+                    out_dir, trade_day.replace("-", ""), code)
+                if is_valid_file(csv_cached, min_bytes=64):
+                    stats.skipped_cached += 1
+                    got = True
+                    logger.info("[pcf %s] cached snapshot %s", code, trade_day)
+                    break
                 ok, _status = _save_snapshot(out_dir, payload, code)
                 if ok:
                     stats.downloaded += 1
-                else:
-                    stats.empty += 1
+                    got = True
+                    logger.info("[pcf %s] saved snapshot %s (%d holdings)",
+                                code, trade_day, len(rows))
+                    break
+            if not got:
+                logger.warning("[pcf %s] no published PCF found in last %d business days",
+                               code, len(probe_days))
+                stats.empty += 1
+
         summary = stats.to_dict(out_dir=str(out_dir), funds=len(codes))
-        logger.info("Done PCF backfill: %s", summary)
+        logger.info("Done PCF daily: %s", summary)
         return summary
 
-    # --- daily mode: latest published PCF per fund ---
-    probe_days = business_days(today - timedelta(days=12), today)[:FALLBACK_DAYS + 1]
-    for code in codes:
-        got = False
-        for day in probe_days:
-            payload = fetch_pcf_payload(
-                session, proxy, code, day.isoformat(), service=SERVICE,
-                logger=logger)
-            if payload is None:
-                stats.failed += 1
-                break
-            trade_day, rows = pcf_to_combined_rows(payload)
-            if not rows:
-                continue
-            csv_cached = _snapshot_csv_path(
-                out_dir, trade_day.replace("-", ""), code)
-            if is_valid_file(csv_cached, min_bytes=64):
-                stats.skipped_cached += 1
-                got = True
-                logger.info("[pcf %s] cached snapshot %s", code, trade_day)
-                break
-            ok, _status = _save_snapshot(out_dir, payload, code)
-            if ok:
-                stats.downloaded += 1
-                got = True
-                logger.info("[pcf %s] saved snapshot %s (%d holdings)",
-                            code, trade_day, len(rows))
-                break
-        if not got:
-            logger.warning("[pcf %s] no published PCF found in last %d business days",
-                           code, len(probe_days))
-            stats.empty += 1
-
-    summary = stats.to_dict(out_dir=str(out_dir), funds=len(codes))
-    logger.info("Done PCF daily: %s", summary)
-    return summary
+    def run(self) -> None:
+        self.download_composition(
+            out_root=self.args.out_root,
+            fund_codes=self.args.fund_codes,
+            sleep_sec=self.args.sleep_sec,
+            backfill_start=self.args.backfill_start,
+        )
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download huatai-pb.com ETF PCF (申购赎回清单) composition CSVs."
-    )
-    ap.add_argument("--fund-codes", type=str, default=None,
-                    help="Comma-separated fund codes (default: the checkin "
-                         "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
-    ap.add_argument("--out-root", type=str, default=None,
-                    help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=None,
-                    help="Sleep seconds between requests "
-                         f"(default: external_request_config JSON for {SERVICE})")
-    ap.add_argument("--backfill-start", type=str, default=None,
-                    metavar="YYYY-MM-DD",
-                    help="Backfill trading days from this date to today "
-                         "(skip snapshots already cached on disk).")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    fund_codes_arg = None
-    if args.fund_codes:
-        fund_codes_arg = [c.strip() for c in args.fund_codes.split(",") if c.strip()]
-
-    download_composition(
-        out_root=args.out_root,
-        fund_codes=fund_codes_arg,
-        sleep_sec=args.sleep_sec,
-        backfill_start=args.backfill_start,
-    )
+    HuataiPbCompositionDownload().execute()

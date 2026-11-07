@@ -1,7 +1,7 @@
 """llm_agents._core.request_log — source LLM request/response recorder.
 
-Appends one row per logical LLM API call to ``text.llm_requests``
-(database/sql/text/07_llm_requests.sql): the full request payload and
+Appends one row per logical LLM API call to ``llm.llm_requests``
+(database/sql/text/llm/05_llm_requests.sql): the full request payload and
 the FINAL attempt's response payload as JSONB, the coarse outcome
 (status / is_failed / failure_reason / duration_ms — the same grain as
 ``monitor.external_resource_audit``), the call's usage token counts
@@ -39,13 +39,13 @@ prompt / context blocks are stored once, in the chain's first row).
 full request as sent. One-off requests (no chain binding) store the
 full payload as before.
 
-Search index (``search_tsv``, 07_llm_requests.sql's migration): every
+Search index (``search_tsv``, 05_llm_requests.sql's migration): every
 recorded row also carries a weighted GIN-indexed tsvector over its
 conversation DELTA — A = the incremental input (``request_payload.
 messages`` as stored), B = the output (the response's assistant text +
 tool-call names/arguments) — Chinese pre-segmented by the repo's
 StructBERT segmenter (``_common.tokenization``, the same contract as
-the text schema's news/Q&A tables). Tokenization runs in the WRITER
+the text/llm schemas' news/Q&A tables). Tokenization runs in the WRITER
 thread (never on the request path); a tokenizer failure stores the row
 with a NULL vector — :func:`backfill_search_tsv_async` (optionally
 scoped to a set of chains) heals NULL rows, and the deep agents'
@@ -100,20 +100,165 @@ _refs: ContextVar[Optional[tuple]] = ContextVar(
 _chain: ContextVar[Optional[str]] = ContextVar(
     "llm_request_chain", default=None)
 
-# Last FULL (sanitized) request payload per active chain — the dedupe
-# base for the next chained request's incremental payload. Keyed by
-# chain id, then by payload shape ("messages" in payload or not): a chat
-# completion diffs against the chain's previous chat completion and a
-# web-search POST against the previous search POST (cross-shape payloads
-# share nothing meaningful). Flows are sequential within a chain, so
-# last-write-wins is the predecessor. Best-effort only (a lost entry
-# just stores the next payload in full).
-_chain_last_payload: Dict[str, Dict[bool, Dict[str, Any]]] = {}
+class RequestLog:
+    """The request-log WRITER (2026-11-07 — the former module globals):
+    the bounded enqueue queue, the single daemon writer thread, and the
+    per-chain last-full-payload dedupe cache are the object's fields;
+    the ambient context binding (``_refs`` / ``_chain`` ContextVars) and
+    the pure payload extractors stay module-level."""
 
-_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_QUEUE_MAX)
-_writer_lock = threading.Lock()
-_writer: Optional[threading.Thread] = None
-_last_warn = 0.0
+    def __init__(self) -> None:
+        # chain id -> {payload-shape (has "messages") -> last FULL
+        # sanitized payload}: the dedupe base for the chain's next
+        # incremental payload. Flows are sequential within a chain, so
+        # last-write-wins is the predecessor. Best-effort only (a lost
+        # entry just stores the next payload in full).
+        self._chain_last_payload: Dict[str, Dict[bool, Dict[str, Any]]] = {}
+        self._queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_QUEUE_MAX)
+        self._writer_lock = threading.Lock()
+        self._writer: Optional[threading.Thread] = None
+        self._last_warn = 0.0
+
+    def end_chain(self, chain_id: Optional[str]) -> None:
+        """Drop a finished chain's last-payload cache entry (the runner
+        calls this when a node's context chain closes — one full payload
+        per chain otherwise lives for the process's whole life)."""
+        if chain_id:
+            self._chain_last_payload.pop(chain_id, None)
+
+    def _warn(self, msg: str) -> None:
+        now = time.monotonic()
+        if now - self._last_warn < _WARN_EVERY_S:
+            return
+        self._last_warn = now
+        print(f"[llm_request_log] {msg}", flush=True)
+
+    def record_request(
+        self, provider: str, url: str, payload: Dict[str, Any],
+        *, model: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
+        status_code: Optional[int] = None,
+        is_failed: bool = False,
+        failure_reason: Optional[str] = None,
+        duration_ms: Optional[float] = None,
+    ) -> None:
+        """Enqueue one ``llm.llm_requests`` row. Never raises, never
+        blocks (the transport calls this per attempt)."""
+        news_ids, group_id, qa_id = current_refs()
+        chain_id = _chain.get()
+        input_tokens, output_tokens, total_tokens = _extract_usage(data)
+        full = _sanitize(payload)
+        stored_payload: Dict[str, Any] = full
+        if chain_id:
+            shape = "messages" in full
+            prev = self._chain_last_payload.get(chain_id, {}).get(shape)
+            if prev is not None:
+                try:
+                    stored_payload = _diff_payload(full, prev)
+                except Exception:  # noqa: BLE001 — full payload fallback
+                    stored_payload = full
+            self._chain_last_payload.setdefault(chain_id, {})[shape] = full
+        sanitized_response = _sanitize(data)
+        search_in, search_out = _extract_request_texts(
+            stored_payload, sanitized_response)
+        row = (
+            _resolve_service(), provider,
+            model or (payload.get("model")
+                      if isinstance(payload, dict) else None),
+            _lean_url(url),
+            json.dumps(stored_payload, ensure_ascii=False),
+            (json.dumps(sanitized_response, ensure_ascii=False)
+             if data is not None else None),
+            status_code, is_failed,
+            (failure_reason[:_REASON_MAX] if failure_reason else None),
+            (round(duration_ms) if duration_ms is not None else None),
+            input_tokens, output_tokens, total_tokens,
+            list(news_ids), group_id, qa_id, chain_id,
+            # The row's search_tsv source texts (raw — tokenization
+            # happens in the WRITER thread, off the request path).
+            search_in, search_out,
+        )
+        try:
+            self._queue.put_nowait(row)
+        except queue.Full:
+            self._warn("queue full — dropping request-log rows "
+                       "(writer wedged or DB down?)")
+            return
+        self._ensure_writer()
+
+    def flush(self, timeout_s: float = 5.0) -> bool:
+        """Block until the queue is drained (tests / graceful shutdown).
+        Returns True when the queue emptied within *timeout_s*. The
+        trailing grace covers the writer's in-flight batch."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline and not self._queue.empty():
+            time.sleep(0.05)
+        if not self._queue.empty():
+            return False
+        time.sleep(0.3)
+        return self._queue.empty()
+
+    def _ensure_writer(self) -> None:
+        if self._writer is not None and self._writer.is_alive():
+            return
+        with self._writer_lock:
+            if self._writer is None or not self._writer.is_alive():
+                self._writer = threading.Thread(
+                    name="llm-request-log", target=self._writer_loop,
+                    daemon=True)
+                self._writer.start()
+
+    def _writer_loop(self) -> None:
+        # db_commons (and its transitive pandas import) stays inside the
+        # writer thread — the cudf.pandas activation-order rule.
+        from _common.db_commons import get_db_connection
+
+        conn = None
+        while True:
+            try:
+                row = self._queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            batch = [row]
+            while len(batch) < _BATCH_MAX:
+                try:
+                    batch.append(self._queue.get_nowait())
+                except queue.Empty:
+                    break
+            if conn is None:
+                try:
+                    conn = get_db_connection()
+                except Exception as e:  # noqa: BLE001 — never kill writer
+                    self._warn(f"connect failed, dropping {len(batch)} "
+                               f"row(s): {e}")
+                    continue
+            try:
+                with conn.cursor() as cur:
+                    # search_tsv: tokenize the batch's (input, output)
+                    # texts (writer thread — the model loads lazily on
+                    # the first CJK batch; a failure stores NULL
+                    # vectors, not lost rows), then executemany.
+                    pairs = _tokenize_search_pairs(
+                        [(row[-2], row[-1]) for row in batch])
+                    rows_tsv = [row[:-2] + (in_tok, out_tok)
+                                for row, (in_tok, out_tok)
+                                in zip(batch, pairs)]
+                    cur.executemany(_INSERT_SQL, rows_tsv)
+                    chained = {row[-3] for row in rows_tsv if row[-3]}
+                    for cid in chained:
+                        cur.execute(_BACKFILL_PREV_SQL, (cid,))
+            except Exception as e:  # noqa: BLE001 — drop batch, reconnect
+                self._warn(f"insert failed, dropping {len(batch)} "
+                           f"row(s): {e}")
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                conn = None
+
+
+# The process-wide request log (one queue, one writer per process).
+REQUEST_LOG = RequestLog()
 
 
 @contextlib.contextmanager
@@ -158,7 +303,7 @@ def bind_request_chain(chain_id: Optional[str] = None):
     """Context manager binding a multi-request FLOW into one chain.
 
     Every request recorded inside the block gets the same ``chain_id``
-    in text.llm_requests, and — from the second request on — an
+    in llm.llm_requests, and — from the second request on — an
     INCREMENTAL ``request_payload``: top-level keys and messages already
     present in the chain's previous request are removed (the shared
     system prompt / context blocks are stored once, in the chain's
@@ -186,19 +331,9 @@ def current_chain_id() -> Optional[str]:
 
 
 def end_request_chain(chain_id: Optional[str]) -> None:
-    """Drop a finished chain's last-payload cache entry.
-
-    A chain's last FULL payload stays in ``_chain_last_payload`` as the
-    dedupe base for the chain's next request; once the conversation is
-    over (its last request already recorded) the entry is dead weight —
-    one full payload per chain for the process's whole life. Fine for a
-    short CLI flow, unbounded for a long-lived server that mints one
-    chain per run: the deep-agent runner calls this when a node's
-    context chain closes. Best effort — a chain that records again
-    (should not happen) simply re-seeds its entry and stores in full.
-    """
-    if chain_id:
-        _chain_last_payload.pop(chain_id, None)
+    """Module-level delegate over :meth:`REQUEST_LOG.end_chain` — the
+    export every node-close call site uses."""
+    REQUEST_LOG.end_chain(chain_id)
 
 
 def _diff_payload(full: Dict[str, Any], prev: Dict[str, Any]) -> Dict[str, Any]:
@@ -357,15 +492,6 @@ def _extract_usage(data: Optional[Dict[str, Any]]
             _count("total_tokens"))
 
 
-def _warn(msg: str) -> None:
-    global _last_warn
-    now = time.monotonic()
-    if now - _last_warn < _WARN_EVERY_S:
-        return
-    _last_warn = now
-    print(f"[llm_request_log] {msg}", flush=True)
-
-
 def record_request(provider: str, url: str, payload: Dict[str, Any],
                    *, model: Optional[str] = None,
                    data: Optional[Dict[str, Any]] = None,
@@ -373,52 +499,12 @@ def record_request(provider: str, url: str, payload: Dict[str, Any],
                    is_failed: bool = False,
                    failure_reason: Optional[str] = None,
                    duration_ms: Optional[float] = None) -> None:
-    """Enqueue one ``text.llm_requests`` row. Never raises, never blocks.
-
-    Called from the transport's post_json with the request payload and
-    the final attempt's outcome; *data* is the parsed response body
-    (None on failure) — its usage block yields the row's
-    input/output/total token counts. The ref-id binding of the calling
-    context rides along.
-    """
-    news_ids, group_id, qa_id = current_refs()
-    chain_id = _chain.get()
-    input_tokens, output_tokens, total_tokens = _extract_usage(data)
-    full = _sanitize(payload)
-    stored_payload: Dict[str, Any] = full
-    if chain_id:
-        shape = "messages" in full
-        prev = _chain_last_payload.get(chain_id, {}).get(shape)
-        if prev is not None:
-            try:
-                stored_payload = _diff_payload(full, prev)
-            except Exception:  # noqa: BLE001 — the full payload is the fallback
-                stored_payload = full
-        _chain_last_payload.setdefault(chain_id, {})[shape] = full
-    sanitized_response = _sanitize(data)
-    search_in, search_out = _extract_request_texts(
-        stored_payload, sanitized_response)
-    row = (
-        _resolve_service(), provider,
-        model or (payload.get("model") if isinstance(payload, dict) else None),
-        _lean_url(url),
-        json.dumps(stored_payload, ensure_ascii=False),
-        json.dumps(sanitized_response, ensure_ascii=False) if data is not None else None,
-        status_code, is_failed,
-        (failure_reason[:_REASON_MAX] if failure_reason else None),
-        (round(duration_ms) if duration_ms is not None else None),
-        input_tokens, output_tokens, total_tokens,
-        list(news_ids), group_id, qa_id, chain_id,
-        # The row's search_tsv source texts (raw — tokenization happens
-        # in the WRITER thread, off the request path).
-        search_in, search_out,
-    )
-    try:
-        _queue.put_nowait(row)
-    except queue.Full:
-        _warn("queue full — dropping request-log rows (writer wedged or DB down?)")
-        return
-    _ensure_writer()
+    """Module-level delegate over :meth:`REQUEST_LOG.record_request` —
+    the transport's enqueue entry point."""
+    REQUEST_LOG.record_request(
+        provider, url, payload, model=model, data=data,
+        status_code=status_code, is_failed=is_failed,
+        failure_reason=failure_reason, duration_ms=duration_ms)
 
 
 def _resolve_service() -> str:
@@ -428,7 +514,7 @@ def _resolve_service() -> str:
 
 
 _INSERT_SQL = """
-INSERT INTO text.llm_requests
+INSERT INTO llm.llm_requests
     (service, provider, model, endpoint, request_payload,
      response_payload, status_code, is_failed, failure_reason,
      duration_ms, input_tokens, output_tokens, total_tokens,
@@ -444,9 +530,9 @@ VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s
 # correlated subquery resolves sequentially inside one statement, so a
 # batch of N chained rows links N-1+1 predecessors correctly.
 _BACKFILL_PREV_SQL = """
-UPDATE text.llm_requests r
+UPDATE llm.llm_requests r
    SET prev_request_id = (
-         SELECT q.request_id FROM text.llm_requests q
+         SELECT q.request_id FROM llm.llm_requests q
           WHERE q.chain_id = r.chain_id AND q.request_id < r.request_id
           ORDER BY q.request_id DESC LIMIT 1)
  WHERE r.chain_id = %s AND r.prev_request_id IS NULL
@@ -454,74 +540,8 @@ UPDATE text.llm_requests r
 
 
 def flush(timeout_s: float = 5.0) -> bool:
-    """Block until the queue is drained (tests / graceful shutdown).
-    Returns True when the queue emptied within *timeout_s*. The trailing
-    grace covers the writer's in-flight batch."""
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline and not _queue.empty():
-        time.sleep(0.05)
-    if not _queue.empty():
-        return False
-    time.sleep(0.3)
-    return _queue.empty()
-
-
-def _ensure_writer() -> None:
-    global _writer
-    if _writer is not None and _writer.is_alive():
-        return
-    with _writer_lock:
-        if _writer is None or not _writer.is_alive():
-            _writer = threading.Thread(
-                name="llm-request-log", target=_writer_loop, daemon=True)
-            _writer.start()
-
-
-def _writer_loop() -> None:
-    # db_commons (and its transitive pandas import) stays inside the
-    # writer thread — the cudf.pandas activation-order rule.
-    from _common.db_commons import get_db_connection
-
-    conn = None
-    while True:
-        try:
-            row = _queue.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        batch = [row]
-        while len(batch) < _BATCH_MAX:
-            try:
-                batch.append(_queue.get_nowait())
-            except queue.Empty:
-                break
-        if conn is None:
-            try:
-                conn = get_db_connection()
-            except Exception as e:  # noqa: BLE001 — never kill the writer
-                _warn(f"connect failed, dropping {len(batch)} row(s): {e}")
-                continue
-        try:
-            with conn.cursor() as cur:
-                # search_tsv: tokenize the batch's (input, output) texts
-                # (writer thread — the model loads lazily on the first
-                # CJK batch; a failure stores NULL vectors, not lost
-                # rows), then hand the token strings to executemany.
-                pairs = _tokenize_search_pairs(
-                    [(row[-2], row[-1]) for row in batch])
-                rows_tsv = [row[:-2] + (in_tok, out_tok)
-                            for row, (in_tok, out_tok)
-                            in zip(batch, pairs)]
-                cur.executemany(_INSERT_SQL, rows_tsv)
-                chained = {row[-3] for row in rows_tsv if row[-3]}
-                for cid in chained:
-                    cur.execute(_BACKFILL_PREV_SQL, (cid,))
-        except Exception as e:  # noqa: BLE001 — drop the batch, reconnect
-            _warn(f"insert failed, dropping {len(batch)} row(s): {e}")
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001
-                pass
-            conn = None
+    """Module-level delegate over :meth:`REQUEST_LOG.flush`."""
+    return REQUEST_LOG.flush(timeout_s)
 
 
 async def fetch_recent_request_ids(
@@ -529,7 +549,7 @@ async def fetch_recent_request_ids(
 ) -> List[int]:
     """This process's request-log ids created since *since* (tz-aware),
     oldest first — the linkage a storing agent writes into its row
-    (e.g. text.llm_qa_by_research.request_ids).
+    (e.g. llm.llm_qa_by_research.request_ids).
 
     Matched on service (the resolved process name — concurrent FLOWS in
     one process must therefore collect at distinct times) + the flow's
@@ -538,7 +558,7 @@ async def fetch_recent_request_ids(
     writer is asynchronous.
     """
     rows = await conn.fetch(
-        """SELECT request_id FROM text.llm_requests
+        """SELECT request_id FROM llm.llm_requests
             WHERE service = $1 AND created_at >= $2
               AND endpoint LIKE $3 AND NOT is_failed
             ORDER BY request_id""",
@@ -596,7 +616,7 @@ async def backfill_search_tsv_async(
         while True:
             rows = await conn.fetch(
                 """SELECT request_id, request_payload, response_payload
-                     FROM text.llm_requests
+                     FROM llm.llm_requests
                     WHERE search_tsv IS NULL"""
                 + (" AND chain_id = ANY($2::text[])" if chains else "")
                 + " LIMIT $1",
@@ -615,7 +635,7 @@ async def backfill_search_tsv_async(
                 pairs.append(_extract_request_texts(req, resp))
             tokens = _tokenize_search_pairs(pairs)
             await conn.executemany(
-                """UPDATE text.llm_requests
+                """UPDATE llm.llm_requests
                       SET search_tsv = strip(
                             setweight(to_tsvector('simple', $2::text), 'A')
                             || setweight(to_tsvector('simple', $3::text),
@@ -654,7 +674,7 @@ async def load_request_sources(
                       input_tokens, output_tokens, total_tokens,
                       context_ref_ids, news_group_id, qa_id, chain_id,
                       prev_request_id, created_at
-                 FROM text.llm_requests WHERE request_id = $1""", request_id)
+                 FROM llm.llm_requests WHERE request_id = $1""", request_id)
         if head is None:
             return None
         ref_ids: Sequence[int] = head["context_ref_ids"] or []
@@ -699,7 +719,7 @@ async def reconstruct_request_payload(
         while rid is not None:
             row = await conn.fetchrow(
                 """SELECT request_id, prev_request_id, request_payload
-                     FROM text.llm_requests WHERE request_id = $1""", rid)
+                     FROM llm.llm_requests WHERE request_id = $1""", rid)
             if row is None:
                 break
             chain.append(dict(row))

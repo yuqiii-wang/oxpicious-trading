@@ -12,7 +12,6 @@
 --   nothing else depends on it.
 -- ----------------------------------------------------------------------------
 DROP VIEW IF EXISTS stats.v_debt_daily;
-ALTER VIEW IF EXISTS stats.v_debt_baseline RENAME TO v_debt_daily; -- legacy name migration (2026-09)
 CREATE OR REPLACE VIEW stats.v_debt_daily AS
 SELECT
     i.date,
@@ -227,7 +226,6 @@ COMMENT ON VIEW stats.v_options_quote IS 'Reconstructed options_quote view: JOIN
 --   DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
 DROP VIEW IF EXISTS stats.v_index_daily;
-ALTER VIEW IF EXISTS stats.v_index_baseline RENAME TO v_index_daily; -- legacy name migration (2026-09)
 CREATE OR REPLACE VIEW stats.v_index_daily AS
 SELECT
     i.date,
@@ -276,7 +274,6 @@ COMMENT ON VIEW stats.v_index_daily IS 'Reconstructed index daily view: JOIN of 
 --   liquidity_margin). DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
 DROP VIEW IF EXISTS stats.v_stock_daily;
-ALTER VIEW IF EXISTS stats.v_stock_baseline RENAME TO v_stock_daily; -- legacy name migration (2026-09)
 CREATE OR REPLACE VIEW stats.v_stock_daily AS
 SELECT
     i.date,
@@ -332,7 +329,6 @@ COMMENT ON VIEW stats.v_stock_daily IS 'Reconstructed stock daily view: JOIN of 
 --   DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
 DROP VIEW IF EXISTS stats.v_futures_daily;
-ALTER VIEW IF EXISTS stats.v_futures_baseline RENAME TO v_futures_daily; -- legacy name migration (2026-09)
 CREATE OR REPLACE VIEW stats.v_futures_daily AS
 SELECT
     i.date,

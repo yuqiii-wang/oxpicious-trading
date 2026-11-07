@@ -82,6 +82,12 @@ Usage:
   python -m downloads.stream.szse.price --groups 5   # 5 groups (sequential, dev)
   python -m downloads.stream.szse.price --interval 1 # 1s cooldown between fetches (dev)
   python -m downloads.stream.szse.price --b-top-n 0  # disable the B rank-priority slice
+
+The entry point is the :class:`SzseStreamDaemon` DownloadJob — the former
+``main()`` body after argparse is split across its ``execute()`` override
+(the startup logs + the conditional register_service) and ``run()`` (the
+``asyncio.run`` dispatch); the former ``stream()`` coroutine is the
+``SzseStreamLoop.stream`` method.
 """
 from __future__ import annotations
 
@@ -92,8 +98,9 @@ import asyncio
 import locale as _locale
 import sys
 import time as _time
+from typing import Optional
 
-from downloads._common import setup_logger
+from downloads._common import DownloadJob, setup_logger
 from _common.service_heartbeat import register_service
 
 from ._constants import (
@@ -102,7 +109,7 @@ from ._constants import (
     DEFAULT_GROUPS,
     SERVICE,
 )
-from ._stream import stream
+from ._stream import SzseStreamLoop
 
 # ---------------------------------------------------------------------------
 # stdout encoding (Windows)
@@ -128,43 +135,73 @@ logger.info("[startup] module loaded; top-level imports done @ %.2fs.",
             _time.time() - _MODULE_LOAD_T0)
 
 
-def main() -> None:
-    t_main = _time.time()
-    logger.info("[startup] main() entered @ %.2fs after module load.",
-                _time.time() - _MODULE_LOAD_T0)
-    ap = argparse.ArgumentParser(
-        description="Stream SZSE equity prices into 5-min OHLCV bars "
-                    "(2 parallel procs: A=sina %.0fs, B=szse fallback --interval)."
-                    % (COOLDOWN_A_SEC,)
-    )
-    ap.add_argument("--interval", type=float, default=None,
-                    help="Cooldown between fetches for worker B (szse) in seconds "
-                         f"(default: external_request_config JSON for {SERVICE}).")
-    ap.add_argument("--groups", type=int, default=DEFAULT_GROUPS,
-                    help=f"Number of groups to split stocks into (default {DEFAULT_GROUPS}).")
-    ap.add_argument("--b-top-n", type=int, default=None, dest="b_top_n",
-                    help="Number of highest-ranked stocks (list head; hourly mode = "
-                         "top-traded rank) assigned to worker B (szse) with priority; "
-                         f"0 disables the priority split (default {B_PRIORITY_TOP_N}).")
-    ap.add_argument("--once", action="store_true",
-                    help="Run one round then exit (dev/test).")
-    args = ap.parse_args()
-    logger.info("[startup] args parsed (interval=%s groups=%d once=%s b_top_n=%s) in %.2fs; calling asyncio.run(stream)...",
-                args.interval, args.groups, args.once, args.b_top_n, _time.time() - t_main)
-    # Liveness heartbeat for database/stream_watchdog.py — long-running
-    # mode only; --once exits before a beat would matter.
-    if not args.once:
-        register_service(SERVICE)
-    try:
-        asyncio.run(stream(
-            poll_interval=args.interval,
-            n_groups=max(1, args.groups),
-            once=args.once,
-            b_top_n=args.b_top_n,
-        ))
-    except KeyboardInterrupt:
-        pass
+class SzseStreamDaemon(DownloadJob):
+    """DownloadJob for the SZSE price streamer — the former ``main()`` body
+    after argparse parse, verbatim: the startup timing logs and the
+    conditional register_service live in the ``execute()`` override, the
+    ``asyncio.run(SzseStreamLoop().stream(...))`` dispatch in ``run()``.
+
+    execute() override: the base DownloadJob.execute() would call the lazy
+    ``autoregister()`` unconditionally; the former main() registered the
+    heartbeat ONLY for the long-running mode (--once exits before a beat
+    would matter — a beat from a dying one-shot would make the watchdog
+    think the real service is alive). autoregister derives the same
+    "downloads.stream.szse.price" name (register_service itself is
+    idempotent per process), but --once runs would GAIN a registration they
+    never had, so the base hook is skipped and the former conditional
+    ``register_service`` call is kept verbatim. No single-instance lock
+    existed before — ``service`` stays "".
+    """
+
+    description = ("Stream SZSE equity prices into 5-min OHLCV bars "
+                   "(2 parallel procs: A=sina %.0fs, B=szse fallback --interval)."
+                   % (COOLDOWN_A_SEC,))
+    component = "stream_szse"
+    service = ""  # long-lived daemon with no single-instance lock (as before)
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--interval", type=float, default=None,
+                            help="Cooldown between fetches for worker B (szse) in seconds "
+                                 f"(default: external_request_config JSON for {SERVICE}).")
+        parser.add_argument("--groups", type=int, default=DEFAULT_GROUPS,
+                            help=f"Number of groups to split stocks into (default {DEFAULT_GROUPS}).")
+        parser.add_argument("--b-top-n", type=int, default=None, dest="b_top_n",
+                            help="Number of highest-ranked stocks (list head; hourly mode = "
+                                 "top-traded rank) assigned to worker B (szse) with priority; "
+                                 f"0 disables the priority split (default {B_PRIORITY_TOP_N}).")
+        parser.add_argument("--once", action="store_true",
+                            help="Run one round then exit (dev/test).")
+
+    def execute(self, argv: Optional[list] = None) -> None:
+        """parse → conditional register_service (verbatim former main()) → run()."""
+        t_main = _time.time()
+        logger.info("[startup] main() entered @ %.2fs after module load.",
+                    _time.time() - _MODULE_LOAD_T0)
+        if self.args is None:
+            self.parse_argv(argv)
+        else:
+            self.apply_args()
+        args = self.args
+        logger.info("[startup] args parsed (interval=%s groups=%d once=%s b_top_n=%s) in %.2fs; calling asyncio.run(stream)...",
+                    args.interval, args.groups, args.once, args.b_top_n, _time.time() - t_main)
+        # Liveness heartbeat for database/stream_watchdog.py — long-running
+        # mode only; --once exits before a beat would matter.
+        if not args.once:
+            register_service(SERVICE)
+        self.run()
+
+    def run(self) -> None:
+        """The asyncio.run dispatch (verbatim former main() tail)."""
+        try:
+            asyncio.run(SzseStreamLoop().stream(
+                poll_interval=self.args.interval,
+                n_groups=max(1, self.args.groups),
+                once=self.args.once,
+                b_top_n=self.args.b_top_n,
+            ))
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":
-    main()
+    SzseStreamDaemon().execute()

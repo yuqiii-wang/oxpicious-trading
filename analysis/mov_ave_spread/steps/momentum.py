@@ -105,11 +105,14 @@ from _common.labels import SEC_TYPE_LABEL
 from analysis._common import upsert_analysis_identity
 from analysis.mov_ave_spread._common import null_if_overflow_counted
 from analysis.mov_ave_spread._common.steps import (
+    StepRun,
+    TableStep,
     diff_write_scope_async,
     infer_sec_types,
     sec_type_code,
 )
 from analysis.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
+from _common.sql_views import render_sql_view
 
 import logging
 logger = logging.getLogger(__name__)
@@ -183,6 +186,13 @@ _REGIME_COLUMNS = ["code", "date", "regime", "vol"]
 #  Regime registry fetch
 # ---------------------------------------------------------------------------
 
+# Regime-registry fetch view (database/sql_views/analysis/mov_ave_spread/
+# steps/momentum/market_regimes.sql).
+_MARKET_REGIMES_VIEW = (
+    "analysis/mov_ave_spread/steps/momentum/market_regimes"
+)
+
+
 async def _fetch_market_regimes(conn, sec_type: str) -> pd.DataFrame:
     """Fetch the sec_type's DAILY market-regime states — one row per
     (code, date) from stats.market_regimes, with the `vol` evidence
@@ -191,18 +201,9 @@ async def _fetch_market_regimes(conn, sec_type: str) -> pd.DataFrame:
     registry's sec_type column stores its static.label_dim SMALLINT code
     (the label-code contract) — bind the code, keep the label string as
     the loop/log vocabulary."""
-    rows = await conn.fetch(
-        """
-        SELECT m.code,
-               extract(epoch from m.date)::float8 AS date,
-               m.regime::int AS regime,
-               m.vol::float8 AS vol
-        FROM stats.market_regimes m
-        WHERE m.sec_type = $1
-        ORDER BY m.code, m.date ASC
-        """,
-        sec_type_code(sec_type),
-    )
+    view = render_sql_view(
+        _MARKET_REGIMES_VIEW, sec_type=sec_type_code(sec_type))
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=_REGIME_COLUMNS)
     df = pd.DataFrame(rec_cols(rows), columns=_REGIME_COLUMNS)
@@ -460,18 +461,8 @@ def build_momentum_copy_frame(
 #  Pipeline (internal step — invoked from mov_ave_spread.__main__)
 # ---------------------------------------------------------------------------
 
-async def run_momentum(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
-    """Run the momentum pipeline against the source price data already
-    loaded by the parent mov_ave_spread.
+class MomentumStep(TableStep):
+    """Momentum internal step (analysis.mov_ave_momentum).
 
     Reuses the caller's DB connection and source DataFrame (the ``price``
     column — no second source fetch; only the regime registry is fetched
@@ -490,125 +481,142 @@ async def run_momentum(
       2. Purge the scope (conflict-free COPY), CSV-COPY insert.
       3. Upsert analysis.analysis_identity.
     """
-    t0 = time.time()
-    logger.info("\n" + "=" * 78)
-    logger.info("  MOV_AVE_MOMENTUM (internal step of mov_ave_spread)")
-    logger.info("=" * 78)
 
-    needed_cols = column_subset(df, ["sec_type", "code", "date", "price"])
-    frame = df[needed_cols].copy()
-    if frame.empty:
-        logger.info("    -> no source data; skipping momentum step.")
-        return
+    title = "MOV_AVE_MOMENTUM (internal step of mov_ave_spread)"
+    tag = "m"
+    table = MOMENTUM_TABLE
+    analysis_name = MOMENTUM_ANALYSIS_NAME
+    detail_name = "mov_ave_momentum"
+    description = MOMENTUM_DESCRIPTION
+    needed_cols = ("sec_type", "code", "date", "price")
+    in_skip_gate = True
 
-    sec_types = infer_sec_types(frame, sec_type)
+    async def execute(
+        self,
+        run: StepRun,
+        df: pd.DataFrame,
+        *,
+        sec_type: str | None = None,
+    ) -> None:
+        t0 = time.time()
+        logger.info("\n" + "=" * 78)
+        logger.info("  MOV_AVE_MOMENTUM (internal step of mov_ave_spread)")
+        logger.info("=" * 78)
 
-    # ---- Phase 0: is there anything to do? ------------------------------
-    if code_filter is not None:
-        logger.info("    mode: SINGLE-CODE (wholesale rebuild for "
-              f"{code_filter}; rows pre-deleted)")
-        needs_compute = True
-    elif force:
-        logger.info("    mode: FORCE (wholesale rebuild; the parent "
-              "purged the scope upfront)")
-        needs_compute = True
-    else:
-        missing_union: set = set()
-        for st in sec_types:
-            td_st = await find_missing_analysis_dates(
-                conn, MOMENTUM_TABLE,
-                [SEC_TYPE_IDENTITY_TABLE[st]], sec_type=sec_type_code(st),
-            )
-            missing_union |= td_st
-            logger.info(f"    -> {st}: momentum {len(td_st)} missing dates")
-        needs_compute = bool(missing_union)
-        if not needs_compute:
-            logger.info("    -> DB is up to date; nothing to do.")
+        needed_cols = column_subset(df, ["sec_type", "code", "date", "price"])
+        frame = df[needed_cols].copy()
+        if frame.empty:
+            logger.info("    -> no source data; skipping momentum step.")
             return
 
-    # ---- Phase 1: regimes -> lookbacks -> momentum ----------------------
-    logger.info("\n[m1] Attaching regimes + deriving adaptive lookbacks "
-          "(per (code, regime) median vol, equal-expected-move targets)...")
-    regimes = await _fetch_market_regimes(conn, sec_types[0])
-    logger.info(f"    -> fetched {len(regimes):,} regime registry rows")
-    frame = frame.sort_values(
-        ["sec_type", "code", "date"]).reset_index(drop=True)
-    frame = _attach_regimes(frame, regimes)
-    frame = derive_adaptive_lookbacks(frame)
-    # Re-establish the canonical order after the merges (left joins
-    # preserve it, but the gather boundary's positional contract is
-    # load-bearing — make it explicit).
-    frame = frame.sort_values(
-        ["sec_type", "code", "date"]).reset_index(drop=True)
+        sec_types = infer_sec_types(frame, sec_type)
 
-    logger.info("\n[m2] Computing momentum (fixed 5/20d anchors on the "
-          "grouped-shift GPU path; adaptive short/mid/long via the "
-          "positional-gather host boundary)...")
-    frame = compute_fixed_momentum(frame)
-    adaptive_host = compute_adaptive_momentum_host(frame)
+        # ---- Phase 0: is there anything to do? ------------------------------
+        if run.code_filter is not None:
+            logger.info("    mode: SINGLE-CODE (wholesale rebuild for "
+                  f"{run.code_filter}; rows pre-deleted)")
+            needs_compute = True
+        elif run.force:
+            logger.info("    mode: FORCE (wholesale rebuild; the parent "
+                  "purged the scope upfront)")
+            needs_compute = True
+        else:
+            missing_union: set = set()
+            for st in sec_types:
+                td_st = await find_missing_analysis_dates(
+                    run.conn, MOMENTUM_TABLE,
+                    [SEC_TYPE_IDENTITY_TABLE[st]], sec_type=sec_type_code(st),
+                )
+                missing_union |= td_st
+                logger.info(f"    -> {st}: momentum {len(td_st)} missing dates")
+            needs_compute = bool(missing_union)
+            if not needs_compute:
+                logger.info("    -> DB is up to date; nothing to do.")
+                return
 
-    # Overflow guard on the frame-side fixed columns (the adaptive host
-    # arrays were guarded inside the boundary).
-    nulled = {}
-    for w in FIXED_WINDOWS:
-        c = f"momentum_{w}days"
-        clean, n_n = null_if_overflow_counted(frame[c])
-        frame[c] = clean
-        if n_n > 0:
-            nulled[c] = n_n
-    if nulled:
-        total = sum(nulled.values())
-        per = ", ".join(f"{c}={n}" for c, n in nulled.items())
-        logger.info(f"    -> NUMERIC(10,6) overflow-guard nulled "
-              f"{total:,} value(s): {per}")
+        # ---- Phase 1: regimes -> lookbacks -> momentum ----------------------
+        logger.info("\n[m1] Attaching regimes + deriving adaptive lookbacks "
+              "(per (code, regime) median vol, equal-expected-move targets)...")
+        regimes = await _fetch_market_regimes(run.conn, sec_types[0])
+        logger.info(f"    -> fetched {len(regimes):,} regime registry rows")
+        frame = frame.sort_values(
+            ["sec_type", "code", "date"]).reset_index(drop=True)
+        frame = _attach_regimes(frame, regimes)
+        frame = derive_adaptive_lookbacks(frame)
+        # Re-establish the canonical order after the merges (left joins
+        # preserve it, but the gather boundary's positional contract is
+        # load-bearing — make it explicit).
+        frame = frame.sort_values(
+            ["sec_type", "code", "date"]).reset_index(drop=True)
 
-    emit = build_momentum_copy_frame(frame, adaptive_host)
+        logger.info("\n[m2] Computing momentum (fixed 5/20d anchors on the "
+              "grouped-shift GPU path; adaptive short/mid/long via the "
+              "positional-gather host boundary)...")
+        frame = compute_fixed_momentum(frame)
+        adaptive_host = compute_adaptive_momentum_host(frame)
 
-    # ---- Phase 2: purge scope + CSV-COPY insert -------------------------
-    if code_filter is not None:
-        status = await conn.execute(
-            f"DELETE FROM {MOMENTUM_TABLE} "
-            f"WHERE sec_type = $1 AND code = $2",
-            sec_type_code(sec_types[0]), code_filter,
+        # Overflow guard on the frame-side fixed columns (the adaptive host
+        # arrays were guarded inside the boundary).
+        nulled = {}
+        for w in FIXED_WINDOWS:
+            c = f"momentum_{w}days"
+            clean, n_n = null_if_overflow_counted(frame[c])
+            frame[c] = clean
+            if n_n > 0:
+                nulled[c] = n_n
+        if nulled:
+            total = sum(nulled.values())
+            per = ", ".join(f"{c}={n}" for c, n in nulled.items())
+            logger.info(f"    -> NUMERIC(10,6) overflow-guard nulled "
+                  f"{total:,} value(s): {per}")
+
+        emit = build_momentum_copy_frame(frame, adaptive_host)
+
+        # ---- Phase 2: purge scope + CSV-COPY insert -------------------------
+        if run.code_filter is not None:
+            status = await run.conn.execute(
+                f"DELETE FROM {MOMENTUM_TABLE} "
+                f"WHERE sec_type = $1 AND code = $2",
+                sec_type_code(sec_types[0]), run.code_filter,
+            )
+            n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
+            logger.info(f"    -> single-code mode: deleted {n_del:,} momentum "
+                  f"rows for ({sec_types[0]}, {run.code_filter})")
+        elif not run.force:
+            # Incremental run with missing dates: recompute the FULL history
+            # (the rolling windows need it), then a diff write — only rows
+            # affected by the new dates are upserted and vanished PKs
+            # deleted. History rows freeze once their episodes close, so the
+            # nightly write volume is the tail, not the table.
+            n_ins, _ = await diff_write_scope_async(
+                run.conn, table=MOMENTUM_TABLE, frame=emit,
+                columns=MOMENTUM_COLUMNS,
+                key_cols=("code", "sec_type", "date"),
+                sec_types=sec_types, label="momentum", insert_only=True)
+            logger.info(f"    -> insert-only write: {n_ins:,} new rows "
+                  f"inserted, existing rows frozen")
+            del frame, emit
+            await upsert_analysis_identity(
+                run.conn,
+                name=MOMENTUM_ANALYSIS_NAME,
+                detail_name="mov_ave_momentum",
+                description=MOMENTUM_DESCRIPTION,
+            )
+            return
+        total = await csv_copy_frame_chunked_async(
+            run.conn, MOMENTUM_TABLE, emit,
+            partition_key="code",
+            label="momentum",
         )
-        n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-        logger.info(f"    -> single-code mode: deleted {n_del:,} momentum "
-              f"rows for ({sec_types[0]}, {code_filter})")
-    elif not force:
-        # Incremental run with missing dates: recompute the FULL history
-        # (the rolling windows need it), then a diff write — only rows
-        # affected by the new dates are upserted and vanished PKs
-        # deleted. History rows freeze once their episodes close, so the
-        # nightly write volume is the tail, not the table.
-        n_ins, _ = await diff_write_scope_async(
-            conn, table=MOMENTUM_TABLE, frame=emit,
-            columns=MOMENTUM_COLUMNS,
-            key_cols=("code", "sec_type", "date"),
-            sec_types=sec_types, label="momentum", insert_only=True)
-        logger.info(f"    -> insert-only write: {n_ins:,} new rows "
-              f"inserted, existing rows frozen")
+        logger.info(f"    -> inserted {total:,} momentum rows "
+              f"({time.time() - t0:.1f}s)")
         del frame, emit
+
+        # ---- Phase 3: register in analysis_identity -------------------------
+        logger.info("\n[m3] Upserting analysis.analysis_identity registry...")
         await upsert_analysis_identity(
-            conn,
+            run.conn,
             name=MOMENTUM_ANALYSIS_NAME,
             detail_name="mov_ave_momentum",
             description=MOMENTUM_DESCRIPTION,
         )
-        return
-    total = await csv_copy_frame_chunked_async(
-        conn, MOMENTUM_TABLE, emit,
-        partition_key="code",
-        label="momentum",
-    )
-    logger.info(f"    -> inserted {total:,} momentum rows "
-          f"({time.time() - t0:.1f}s)")
-    del frame, emit
-
-    # ---- Phase 3: register in analysis_identity -------------------------
-    logger.info("\n[m3] Upserting analysis.analysis_identity registry...")
-    await upsert_analysis_identity(
-        conn,
-        name=MOMENTUM_ANALYSIS_NAME,
-        detail_name="mov_ave_momentum",
-        description=MOMENTUM_DESCRIPTION,
-    )

@@ -23,6 +23,9 @@ from builds.stock._helpers import (
     discover_source_files,
 )
 
+from builds.stock.pipeline.data_definitions import (
+    SourceDiscovery,
+)
 
 def file_date_from_path(path: str) -> date | None:
     """Date parsed from a source CSV filename (first matching known
@@ -36,14 +39,6 @@ def file_date_from_path(path: str) -> date | None:
     return None
 
 
-@dataclass
-class SourceDiscovery:
-    """All discovered source files plus their loadable (non-holiday) dates."""
-    all_files: list[tuple[str, str, str]]
-    available_dates: set[date]
-    loadable_dates: set[date]
-    szse_margin_files: list[str]
-    sse_margin_files: list[str]
 
 
 def discover_sources(

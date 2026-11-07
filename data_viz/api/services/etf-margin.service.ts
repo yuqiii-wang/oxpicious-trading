@@ -11,6 +11,7 @@
  * on (code, date).
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
@@ -148,83 +149,23 @@ function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
 
 // ----------------------------------------------------------------------------
 //  Meta query — fetch all ETFs with precomputed L1/L2 classification from
-//  stats.sec_classification (type='etf').
-//
-//  Ordering (high → low priority):
-//    1. has_margin DESC   — ETFs with margin data (融资融券) come first
-//    2. n_days DESC       — longer date range (more trading-day history) first
-//    3. v.code            — stable final tiebreaker
-//
-//  Filter: HAVING COUNT(v.date) >= 40 — ETFs with fewer than 40 trading days
-//  of actual rows in v_etf_margin are suppressed from the data-viz list
-//  (matches the "Insufficient data" alert threshold in EtfMarginPanel).
-//  Uses the live row count from the view (not the precomputed sec_classification
-//  .n_days column, which may be stale).
-//
-//  Labels are DENORMALIZED onto sec_classification by build_classification.py
-//  — no JOIN to a catalog table is needed.
+//  stats.sec_classification (type='etf'). Ordering has_margin DESC →
+//  n_days DESC → code; HAVING COUNT(v.date) >= 40 suppresses low-history
+//  ETFs from the browse list. The SELECT lives in the sql view
+//  data_viz/api/services/etf-margin/meta (details in its header).
 // ----------------------------------------------------------------------------
-const META_SQL = `
-  SELECT v.code,
-         MAX(v.name) AS name,
-         COALESCE(MAX(m.sector_id),       'OTHER')  AS sector_id,
-         COALESCE(MAX(m.sector_label),    '其他')   AS sector_label,
-         COALESCE(MAX(m.industry_id),     'OTHER')  AS industry_id,
-         COALESCE(MAX(m.industry_label),  '未分类')  AS industry_label,
-         COALESCE(MAX(m.industry_slug),   'other')  AS industry_slug,
-         COALESCE(BOOL_OR(m.is_industry_not_strategy), TRUE) AS is_industry_not_strategy,
-         COALESCE(MAX(m.parent_index_code), '')     AS index_code,
-         COALESCE(MAX(mi.name), '')                  AS index_name,
-         COALESCE(MAX(m.exchange), '')               AS exchange,
-         COALESCE(BOOL_OR(m.has_margin), FALSE)      AS has_margin,
-         COUNT(v.date)                               AS n_days
-    FROM stats.v_etf_margin v
-    LEFT JOIN stats.sec_classification m ON v.code = m.code AND m.type = 'etf'
-    LEFT JOIN stats.sec_classification mi ON mi.code = m.parent_index_code AND mi.type = 'index'
-   GROUP BY v.code
-  HAVING COUNT(v.date) >= 40
-     AND COALESCE(BOOL_OR(m.is_active), TRUE)
-   ORDER BY has_margin DESC, n_days DESC, v.code
-`;
+// Exact-code variant (no 40-day threshold, uncached) lives in the sql view
+// data_viz/api/services/etf-margin/meta_for_code.
 
-// ----------------------------------------------------------------------------
-//  Code-lookup query — used for exact-code search (the CodeSearchBar).
-//
-//  Unlike META_SQL, this does NOT apply the `HAVING COUNT(v.date) >= 40`
-//  threshold. Newly-listed ETFs (e.g. 159066 with ~20 trading days) must be
-//  findable by exact code even before they accumulate 40 days of history.
-//  The EtfMarginPanel still shows an "Insufficient data" info alert for < 40
-//  rows, so the browse-list threshold (META_SQL) and the search path are
-//  intentionally decoupled.
-// ----------------------------------------------------------------------------
-const META_SQL_FOR_CODE = `
-  SELECT v.code,
-         MAX(v.name) AS name,
-         COALESCE(MAX(m.sector_id),       'OTHER')  AS sector_id,
-         COALESCE(MAX(m.sector_label),    '其他')   AS sector_label,
-         COALESCE(MAX(m.industry_id),     'OTHER')  AS industry_id,
-         COALESCE(MAX(m.industry_label),  '未分类')  AS industry_label,
-         COALESCE(MAX(m.industry_slug),   'other')  AS industry_slug,
-         COALESCE(BOOL_OR(m.is_industry_not_strategy), TRUE) AS is_industry_not_strategy,
-         COALESCE(MAX(m.parent_index_code), '')     AS index_code,
-         COALESCE(MAX(mi.name), '')                  AS index_name,
-         COALESCE(MAX(m.exchange), '')               AS exchange,
-         COALESCE(BOOL_OR(m.has_margin), FALSE)      AS has_margin,
-         COUNT(v.date)                               AS n_days
-    FROM stats.v_etf_margin v
-    LEFT JOIN stats.sec_classification m ON v.code = m.code AND m.type = 'etf'
-    LEFT JOIN stats.sec_classification mi ON mi.code = m.parent_index_code AND mi.type = 'index'
-   WHERE v.code = ANY($1::text[])
-   GROUP BY v.code
-`;
-
-// Cached meta rows — META_SQL aggregates the v_etf_margin view (expensive);
-// the classification/content only changes on the nightly builds, so the rows
-// are read once per 10-min TTL window and shared by listThemes(),
-// listStrategyThemes() and getEtfsCombined(). META_SQL_FOR_CODE (exact-code
-// search) stays uncached.
+// Cached meta rows — the meta view aggregates the v_etf_margin view
+// (expensive); the classification/content only changes on the nightly
+// builds, so the rows are read once per 10-min TTL window and shared by
+// listThemes(), listStrategyThemes() and getEtfsCombined(). meta_for_code
+// (exact-code search) stays uncached.
 async function getEtfMetaRows(): Promise<DbEtfMetaRow[]> {
-  return cachedRows("etf-margin:meta", () => queryRows<DbEtfMetaRow>(META_SQL));
+  return cachedRows("etf-margin:meta", () =>
+    querySqlView<DbEtfMetaRow>("data_viz/api/services/etf-margin/meta"),
+  );
 }
 
 // ----------------------------------------------------------------------------
@@ -298,7 +239,7 @@ export async function listThemes(exchange?: string | null): Promise<SectorNode[]
 
 // ----------------------------------------------------------------------------
 //  Strategy themes — parallel L1 strategy → L2 theme → ETFs tree built from
-//  the same META_SQL but using the strategy-primary rows
+//  the same meta view (etf-margin/meta) but using the strategy-primary rows
 //  (is_industry_not_strategy=FALSE).  sector_id/industry_id on those rows
 //  carry the strategy/theme classification.  Tree-building is delegated to
 //  the shared buildStrategyThemesFromRows helper to avoid duplicating the
@@ -339,21 +280,25 @@ export async function getEtfMarginCombined(
   const codeFilter = stripExchangeSuffix((q.code ?? "").trim());
 
   // 1. Fetch all distinct (code, name) + classification, ordered by has_margin
-  //    DESC, n_days DESC (see META_SQL).
+  //    DESC, n_days DESC (see the etf-margin/meta sql view).
   //
-  //    For exact-code search, use META_SQL_FOR_CODE instead — it fetches only
+  //    For exact-code search, use the etf-margin/meta_for_code sql view
+  //    instead — it fetches only
   //    the requested code WITHOUT the `HAVING COUNT(v.date) >= 40` threshold
   //    so newly-listed ETFs (< 40 trading days) are still searchable. The
   //    browse-list threshold remains in place for listThemes() to keep the
   //    dropdown free of one-day / delisted entries.
   const metaRows = codeFilter
-    ? await queryRows<DbEtfMetaRow>(META_SQL_FOR_CODE, [[codeFilter]])
+    ? await querySqlView<DbEtfMetaRow>(
+        "data_viz/api/services/etf-margin/meta_for_code",
+        { codes: [codeFilter] },
+      )
     : await getEtfMetaRows();
 
   // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
   //    metaRows are already ordered by has_margin DESC, n_days DESC
-  //    (see META_SQL); preserve that order so pagination returns ETFs with
-  //    margin data + longer history first.
+  //    (see the etf-margin/meta sql view); preserve that order so pagination
+  //    returns ETFs with margin data + longer history first.
   const meta = new Map<string, {
     name: string;
     sector_id: string;
@@ -442,43 +387,31 @@ export async function getEtfMarginCombined(
   // LEFT JOINed for the dividend estimation curve (code predicate on it
   // too, same rule); etf_tech_stats columns are not
   // selected by the row list, so that table needs no join.
-  const params: unknown[] = [pageCodes]; // $1 = the code array
-  let paramIdx = 2; // date bounds start at $2
-  const codePred = `= ANY($1::text[])`;
-  const whereParts: string[] = [`i.code ${codePred}`, "o.close IS NOT NULL"];
+  // The SELECT lives in the sql view
+  // data_viz/api/services/etf-margin/combined_rows (codes = $1 via the
+  // repeated value slot; the optional date bounds ride the date_where
+  // fragment with continuing $n numbering).
+  const dateWhere: string[] = [];
+  let paramIdx = 2; // date bounds start at $2 (codes = $1)
   const startDate = toDateParam(q.start_date);
   const endDate = toDateParam(q.end_date);
   if (startDate) {
-    whereParts.push(`i.date >= $${paramIdx++}::date`);
-    params.push(startDate);
+    dateWhere.push(` AND i.date >= $${paramIdx++}::date`);
   }
   if (endDate) {
-    whereParts.push(`i.date <= $${paramIdx++}::date`);
-    params.push(endDate);
+    dateWhere.push(` AND i.date <= $${paramIdx++}::date`);
   }
 
-  const sql = `
-    SELECT i.code, i.name, i.date,
-           o.prev_close, o.open, o.high, o.low, o.close, o.eps,
-           a.adj_open, a.adj_high, a.adj_low, a.adj_close, a.adj_prev_close,
-           a.is_split_event_day, a.action_type, a.implied_dividend_per_share, a.cum_split_factor,
-           dt.div_est_price, dt.seg_end_date, dt.seg_next_div,
-           lm.trading_shares, lm.trading_amount,
-           lm.rz_balance, lm.rq_balance_qty, lm.rq_balance_amt, lm.total_balance
-      FROM stats.etf_identity i
-      JOIN stats.etf_basic_stats o
-        ON o.date = i.date AND o.code = i.code AND o.code ${codePred}
-      LEFT JOIN stats.etf_adjustment a
-        ON a.date = i.date AND a.code = i.code AND a.code ${codePred}
-      LEFT JOIN analysis.dividend_est dt
-        ON dt.date = i.date AND dt.code = i.code
-        AND dt.sec_type = ${LABEL_CODE.sec_type.etf} -- label_dim code: etf
-       AND dt.code ${codePred}
-      LEFT JOIN stats.etf_liquidity_margin lm
-        ON lm.date = i.date AND lm.code = i.code AND lm.code ${codePred}
-     WHERE ${whereParts.join(" AND ")}
-     ORDER BY i.code, i.date ASC
-  `;
+  const { sql, params } = renderSqlView(
+    "data_viz/api/services/etf-margin/combined_rows",
+    {
+      codes: pageCodes,
+      sec_type_etf: sqlFrag(`${LABEL_CODE.sec_type.etf}`),
+      date_where: sqlFrag(dateWhere.join("")),
+    },
+  );
+  if (startDate) params.push(startDate);
+  if (endDate) params.push(endDate);
   const dbRows = await queryRows<DbEtfMarginRow & { code: string; name: string }>(sql, params);
 
   // Group rows by stripped code

@@ -54,23 +54,11 @@ from _common.df_utils._thresholds import (
     OP_PROFILES,
 )
 
+from _common.df_utils.data_definitions import (
+    GPUDecision,
+)
 
-@dataclass(frozen=True)
-class GPUDecision:
-    """Result of ``should_use_gpu()``.
 
-    Attributes:
-        use_gpu: True iff GPU is available AND data is above breakeven.
-        reason:  human-readable explanation of the decision.
-        gpu_info: the GPUInfo snapshot (always populated).
-        breakeven: the row threshold that was applied.
-        est_vram_bytes: estimated VRAM needed (informational only).
-    """
-    use_gpu: bool
-    reason: str
-    gpu_info: GPUInfo
-    breakeven: int
-    est_vram_bytes: int
 
 
 # Cache of decisions already logged, so we only print each unique
@@ -136,6 +124,8 @@ def should_use_gpu(
                   file=sys.stdout, flush=True)
 
     return decision.use_gpu
+
+
 
 
 def decide_gpu(

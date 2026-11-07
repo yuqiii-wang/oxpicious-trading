@@ -1,5 +1,11 @@
 """Row construction and DB writes for identity / basic_stats /
-liquidity_margin / estimated-PE batches."""
+liquidity_margin / estimated-PE batches.
+
+The conn-first write functions are housed in :class:`StockWriter` (one
+asyncpg connection per instance, conn in the ctor — OOP batch B code
+motion of the former module-level functions); the pure row builders and
+the :class:`InsertRows` dataclass stay module-level.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,6 +26,9 @@ from _common.db_commons import (
 from _common.df_utils import epoch_col_to_dt64, host_array, to_dt64
 from builds._commons.eps import compute_eps_vec
 
+from builds.stock.pipeline.data_definitions import (
+    InsertRows,
+)
 # Rows per COMMIT for the PE upsert (the shared commit-chunk target —
 # each chunk is one code set's rows inside one transaction).
 _PE_COMMIT_CHUNK_ROWS = 100_000
@@ -33,6 +42,343 @@ from builds.stock._helpers import (
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+class StockWriter:
+    """Conn-scoped DB writes for the stock build (one asyncpg connection).
+
+    Code motion of the former module-level conn-first functions: each
+    keeps its SQL, sequencing, and log lines — the ``conn`` parameter
+    became ``self.conn``. Two renames drop the former ``_conn`` suffix
+    (the conn is no longer a parameter): ``write_pe_only_conn`` →
+    :meth:`write_pe_only` and ``upsert_margin_only_conn`` →
+    :meth:`upsert_margin_only`. ``write_basic_stats_ohlcv`` /
+    ``write_liquidity_margin`` still take the write ``pool`` explicitly
+    (they acquire their own connection from it), exactly as before.
+    The pure row builders (no conn) stay module-level below.
+    """
+
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    # ============================================================================
+    # stats.stock_identity
+    # ============================================================================
+    async def write_identity(self, identity_rows: list[dict]) -> None:
+        """Upsert identity rows into stats.stock_identity."""
+        if identity_rows:
+            n_copied, n_upserted = await copy_or_upsert_split_async(
+                self.conn, "stats.stock_identity", identity_rows, ["date", "code"]
+            )
+            total_inserted = n_copied + n_upserted
+            if n_copied > 0 and n_upserted == 0:
+                logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
+                      f"stats.stock_identity via COPY (all new dates)")
+            elif n_copied > 0:
+                logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
+                      f"stats.stock_identity ({n_copied:,} copied + "
+                      f"{n_upserted:,} upserted)")
+            else:
+                logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
+                      f"stats.stock_identity via upsert (all historical)")
+        else:
+            logger.info(f"    [DB] No new rows to insert into stats.stock_identity")
+
+    # ============================================================================
+    # DB writes: OHLCV-scoped basic_stats + liquidity_margin (parallel) then
+    # the independent PE passes (snapshot/file/estimated — all via write_pe_only)
+    # ============================================================================
+    async def write_basic_stats_ohlcv(
+        self,
+        pool,
+        ov_rows: list[dict],
+    ) -> None:
+        """Column-scoped OHLCV upsert into stats.stock_basic_stats.
+
+        Touches ONLY prev_close/open/high/low/close/pct_change
+        on conflict (pe/eps/is_pe_estimated owned by the PE passes are never
+        clobbered). Brand-new (code, date) keys insert cleanly; existing rows get
+        a subset update. Must run AFTER write_identity (FK to stock_identity).
+        """
+        async with pool.acquire() as bs_conn:
+            if not ov_rows:
+                logger.info(f"    [DB] No OHLCV rows to upsert into stats.stock_basic_stats")
+                return
+            cols = ["prev_close", "open", "high", "low", "close", "pct_change"]
+            tmp_cols_sql = ", ".join(f"{c} NUMERIC(18,4)" for c in cols)
+            select_list = ", ".join(
+                f"t.{c}" for c in ["date", "code"] + cols)
+            set_list = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
+            # Temp tables are unlogged — the fill generates no WAL; the
+            # upsert INTO the real table is the WAL writer and is CHUNKED BY
+            # PARTITION KEY (the bulk-write rule): per-code upsert chunks of
+            # ~100K rows, each chunk its own COMMIT (the ON CONFLICT upsert
+            # is idempotent, so a crash mid-write is rerun-safe), with the
+            # replica-lag cap paused between chunks.
+            await bs_conn.execute(
+                f"CREATE TEMP TABLE _bs_ov (date DATE, code TEXT, {tmp_cols_sql})"
+            )
+            async with bs_conn.transaction():
+                ins_q = (
+                    "INSERT INTO _bs_ov (date, code, "
+                    + ", ".join(cols) + ") VALUES ($1, $2, "
+                    + ", ".join(f"${i}" for i in range(3, 3 + len(cols))) + ")"
+                )
+                for i in range(0, len(ov_rows), 1000):
+                    await bs_conn.executemany(
+                        ins_q,
+                        [tuple(r[c] if c != "date" else r["date"] for c in
+                               ["date", "code"] + cols)
+                         for r in ov_rows[i:i + 1000]],
+                    )
+            # SQL text byte-identical to the pre-refactor literal.
+            upsert_sql = f"""
+            INSERT INTO stats.stock_basic_stats
+                (date, code, {", ".join(cols)})
+            SELECT {select_list}
+            FROM _bs_ov t
+            WHERE true {{key_clause}}
+            ON CONFLICT (code, date) DO UPDATE SET {set_list}
+        """
+            weight_rows = await bs_conn.fetch(
+                "SELECT code, count(*) AS n FROM _bs_ov GROUP BY code")
+            try:
+                inserted_count = await chunked_dml_by_key_async(
+                    bs_conn,
+                    statements=[(upsert_sql,
+                                 " AND t.code = ANY(${ph}::text[])")],
+                    weighted_keys=[(r["code"], r["n"]) for r in weight_rows],
+                )
+            finally:
+                await bs_conn.execute("DROP TABLE _bs_ov")
+            logger.info(f"    [DB] Upserted {inserted_count:,} OHLCV rows into "
+                  f"stats.stock_basic_stats (column-scoped: no pe/eps touch)")
+
+    async def write_pe_only(
+        self,
+        pe_rows: list[dict],
+        source_label: str = "PE",
+    ) -> None:
+        """Column-scoped PE upsert into stats.stock_basic_stats — THE single
+        entry point for every PE pass (daily-snapshot pe, SSE PE files,
+        estimated PE).
+
+        Touches ONLY pe / eps / is_pe_estimated on conflict; OHLCV columns are
+        never written here. eps is computed in pandas from the STORED close
+        via the shared builds._commons.eps.compute_eps_vec (close / pe rounded
+        to 6); NULL when close is missing or pe <= 0. Self-seeds key-only
+        identity rows so PE-only dates that no OHLCV batch has touched still
+        satisfy the FK.
+        """
+        if not pe_rows:
+            return
+        # Whole-column extraction from the row dicts (no per-row dict walks)
+        dates_c = list(map(itemgetter("date"), pe_rows))
+        codes_c = list(map(itemgetter("code"), pe_rows))
+        pes_c = list(map(itemgetter("pe"), pe_rows))
+        flags_c = list(map(itemgetter("is_pe_estimated"), pe_rows))
+        rows = list(zip(dates_c, codes_c, pes_c, map(bool, flags_c)))
+        async with self.conn.transaction():
+            await self.conn.execute(
+                "CREATE TEMP TABLE _pe_upsert "
+                "(date DATE, code TEXT, pe NUMERIC(18,4), is_pe_estimated BOOLEAN)"
+            )
+            for i in range(0, len(rows), 1000):
+                await self.conn.executemany(
+                    "INSERT INTO _pe_upsert (date, code, pe, is_pe_estimated) "
+                    "VALUES ($1, $2, $3, $4)",
+                    rows[i:i + 1000],
+                )
+            # FK self-seed: PE-only (date, code) pairs may exist in no other table
+            seed_result = await self.conn.execute(
+                "INSERT INTO stats.stock_identity (date, code) "
+                "SELECT DISTINCT t.date, t.code FROM _pe_upsert t "
+                "ON CONFLICT (date, code) DO NOTHING"
+            )
+            n_seeded = int(seed_result.split()[-1]) if seed_result else 0
+        # The temp-table fill is WAL-free (temp tables are unlogged); the
+        # final upsert INTO stats.stock_basic_stats is the WAL writer and is
+        # CHUNKED BY PARTITION KEY (the bulk-write rule): rows grouped by
+        # code into ~100K-row chunks, each chunk its own COMMIT (the
+        # ON CONFLICT upsert is idempotent — rerun-safe), replica-lag cap
+        # paused between chunks.
+        # Stored close per (date, code) pair — the eps numerator. The
+        # epoch-transport + epoch_col_to_dt64 read convention keeps the
+        # join keys datetime64 (object dates poison cudf frames).
+        close_df = pd.DataFrame(
+            rec_cols(await self.conn.fetch(
+                "SELECT extract(epoch from t.date)::float8 AS date, "
+                "t.code, bs.close::float8 AS close "
+                "FROM _pe_upsert t "
+                "LEFT JOIN stats.stock_basic_stats bs "
+                "  ON bs.date = t.date AND bs.code = t.code"
+            )),
+            columns=["date", "code", "close"],
+        )
+        close_df["date"] = epoch_col_to_dt64(
+            close_df["date"], index=close_df.index)
+        # Dedupe the join side: duplicate (date, code) input rows would
+        # fan the merge out and misalign the positional zip below (the
+        # former INSERT..SELECT joined the temp table against the bs PK,
+        # giving every duplicate row the same close — identical eps).
+        close_df = close_df.drop_duplicates(["date", "code"])
+        pe_df = pd.DataFrame({
+            "date": to_dt64(pd.Series(dates_c)),
+            "code": codes_c,
+            "pe": pes_c,
+        })
+        merged = pe_df.merge(close_df, on=["date", "code"], how="left")
+        eps_arr = host_array(
+            compute_eps_vec(merged["close"], merged["pe"]).to_numpy())
+        upsert_rows = [
+            (d, c, p, None if math.isnan(e) else float(e), bool(f))
+            for d, c, p, e, f in zip(
+                dates_c, codes_c, pes_c, eps_arr, flags_c)
+        ]
+        upsert_sql = (
+            "INSERT INTO stats.stock_basic_stats "
+            "    (date, code, pe, eps, is_pe_estimated) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (code, date) DO UPDATE SET "
+            "  pe = EXCLUDED.pe, "
+            "  eps = EXCLUDED.eps, "
+            "  is_pe_estimated = EXCLUDED.is_pe_estimated"
+        )
+        rows_by_code: dict[str, list[tuple]] = {}
+        for r in upsert_rows:
+            rows_by_code.setdefault(r[1], []).append(r)
+        weighted = [(c, len(v)) for c, v in sorted(rows_by_code.items())]
+        try:
+            for chunk in _chunk_keys_by_weight(weighted, _PE_COMMIT_CHUNK_ROWS):
+                await _wait_for_replica_lag_async(
+                    self.conn, DEFAULT_MAX_REPLICA_LAG_MB)
+                chunk_rows = [r for c in chunk for r in rows_by_code[c]]
+                async with self.conn.transaction():
+                    for i in range(0, len(chunk_rows), 1000):
+                        await self.conn.executemany(
+                            upsert_sql, chunk_rows[i:i + 1000])
+        finally:
+            await self.conn.execute("DROP TABLE _pe_upsert")
+        # Every upserted row is touched exactly once (insert or column-scoped
+        # update) — the former INSERT..SELECT status count, positionally.
+        n_upserted = len(upsert_rows)
+        # Positional whole-column count (flags_c is the 4th extracted column)
+        n_flagged = sum(map(bool, flags_c))
+        msg = (f"    [DB] Upserted {n_upserted:,} PE rows into "
+               f"stats.stock_basic_stats ({source_label}: "
+               f"{n_flagged:,} is_pe_estimated=true)")
+        if n_seeded:
+            msg += f" | seeded {n_seeded:,} key-only identity rows"
+        logger.info(msg + "")
+
+    async def upsert_margin_only(
+        self,
+        margin_only_rows: list[dict],
+    ) -> None:
+        """Column-scoped margin upsert into stats.stock_liquidity_margin.
+
+        The INDEPENDENT margin pass entry point: touches ONLY the 6 margin
+        columns on conflict (trading_shares/amount preserved). Before the
+        insert, seeds any missing (date, code) keys into stats.stock_identity
+        key-only (server defaults fill name=''/is_in_index_or_etf=false) so
+        the FK join cannot drop rows — a later OHLCV batch enriches identity.
+        Shares one connection, creates+drops its own temp table in one txn."""
+        if not margin_only_rows:
+            return
+        logger.info(f"    [DB] Preparing {len(margin_only_rows):,} "
+              f"margin-only rows for upsert (FK filtering via "
+              f"temp table)…")
+        async with self.conn.transaction():
+            await self.conn.execute(
+                "CREATE TEMP TABLE _margin_upsert ("
+                "  date DATE, code TEXT, "
+                "  rz_buy NUMERIC(24,4), rz_balance NUMERIC(24,4), "
+                "  rq_sell_qty NUMERIC(24,4), "
+                "  rq_balance_qty NUMERIC(24,4), "
+                "  rq_balance_amt NUMERIC(24,4), "
+                "  total_balance NUMERIC(24,4)"
+                ") ON COMMIT DROP"
+            )
+            temp_values = [
+                (r["date"], r["code"],
+                 r["rz_buy"], r["rz_balance"],
+                 r["rq_sell_qty"], r["rq_balance_qty"],
+                 r["rq_balance_amt"], r["total_balance"])
+                for r in margin_only_rows
+            ]
+            insert_query = (
+                "INSERT INTO _margin_upsert "
+                "(date, code, rz_buy, rz_balance, rq_sell_qty, "
+                " rq_balance_qty, rq_balance_amt, total_balance) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            )
+            for i in range(0, len(temp_values), 1000):
+                await self.conn.executemany(
+                    insert_query, temp_values[i:i + 1000]
+                )
+            # Self-seed identity keys (server defaults fill the rest) so the
+            # FK INNER JOIN below cannot silently drop margin rows for
+            # (date, code) pairs no OHLCV batch has touched yet.
+            seed_result = await self.conn.execute(
+                "INSERT INTO stats.stock_identity (date, code) "
+                "SELECT DISTINCT t.date, t.code FROM _margin_upsert t "
+                "ON CONFLICT (date, code) DO NOTHING"
+            )
+            n_seeded = int(seed_result.split()[-1]) if seed_result else 0
+            if n_seeded > 0:
+                logger.info(f"    [DB] Seeded {n_seeded:,} key-only identity rows "
+                      f"(name/exchange enriched later by OHLCV batches)")
+            result = await self.conn.execute(
+                "INSERT INTO stats.stock_liquidity_margin "
+                "(date, code, rz_buy, rz_balance, rq_sell_qty, "
+                " rq_balance_qty, rq_balance_amt, total_balance) "
+                "SELECT t.date, t.code, t.rz_buy, t.rz_balance, "
+                "       t.rq_sell_qty, t.rq_balance_qty, "
+                "       t.rq_balance_amt, t.total_balance "
+                "FROM _margin_upsert t "
+                "INNER JOIN stats.stock_identity si "
+                "  ON si.date = t.date AND si.code = t.code "
+                "ON CONFLICT (date, code) DO UPDATE SET "
+                "  rz_buy = EXCLUDED.rz_buy, "
+                "  rz_balance = EXCLUDED.rz_balance, "
+                "  rq_sell_qty = EXCLUDED.rq_sell_qty, "
+                "  rq_balance_qty = EXCLUDED.rq_balance_qty, "
+                "  rq_balance_amt = EXCLUDED.rq_balance_amt, "
+                "  total_balance = EXCLUDED.total_balance"
+            )
+            parts = result.split()
+            inserted_count = int(parts[-1]) if parts else 0
+
+        n_with_margin = sum(
+            1 for r in margin_only_rows
+            if (r.get("rz_balance") or 0) > 0
+        )
+        logger.info(f"    [DB] Upserted {inserted_count:,} margin-only "
+              f"rows into stats.stock_liquidity_margin (6 margin "
+              f"cols, trading_shares/amount preserved; "
+              f"{n_with_margin:,} with non-zero rz_balance)")
+
+    async def write_liquidity_margin(
+        self,
+        pool,
+        liq_rows: list[dict],
+    ) -> None:
+        """Write column-scoped OHLCV liquidity rows (trading_shares/amount
+        only — margin cols are owned by the independent margin pass)."""
+        async with pool.acquire() as lm_conn:
+            if not liq_rows:
+                logger.info(f"    [DB] No OHLCV rows to insert into "
+                      f"stats.stock_liquidity_margin")
+                return
+            n_copied, n_upserted = await copy_or_upsert_split_async(
+                lm_conn, "stats.stock_liquidity_margin", liq_rows, ["date", "code"]
+            )
+            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                  "upsert"
+            logger.info(f"    [DB] Inserted {len(liq_rows):,} liquidity rows into "
+                  f"stats.stock_liquidity_margin "
+                  f"(trading_shares/amount only) via {via}")
 
 
 # ============================================================================
@@ -86,42 +432,6 @@ def build_identity_rows(
     return identity_rows, n_in_etf
 
 
-async def write_identity(conn, identity_rows: list[dict]) -> None:
-    """Upsert identity rows into stats.stock_identity."""
-    if identity_rows:
-        n_copied, n_upserted = await copy_or_upsert_split_async(
-            conn, "stats.stock_identity", identity_rows, ["date", "code"]
-        )
-        total_inserted = n_copied + n_upserted
-        if n_copied > 0 and n_upserted == 0:
-            logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
-                  f"stats.stock_identity via COPY (all new dates)")
-        elif n_copied > 0:
-            logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
-                  f"stats.stock_identity ({n_copied:,} copied + "
-                  f"{n_upserted:,} upserted)")
-        else:
-            logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
-                  f"stats.stock_identity via upsert (all historical)")
-    else:
-        logger.info(f"    [DB] No new rows to insert into stats.stock_identity")
-
-
-# ============================================================================
-# Row-list construction (basic_stats actual-PE + liquidity_margin + margin-only)
-# ============================================================================
-@dataclass
-class InsertRows:
-    """All row lists needed for the decoupled DB writes.
-
-    basic_stats ownership split: OHLCV columns are owned exclusively by the
-    OHLCV pass (write_basic_stats_ohlcv), PE/eps/is_pe_estimated by the PE
-    passes (write_pe_only_conn) — neither can clobber the other."""
-    ov_rows: list[dict]              # OHLCV-scoped basic_stats rows (NO pe/eps)
-    snapshot_pe_rows: list[dict]     # rows whose pe came from daily snapshots
-    liq_rows: list[dict]             # liquidity_margin rows (trading_* only)
-    n_actual: int                    # rows with snapshot-derived pe
-    n_missing: int                   # rows without any pe
 
 
 def build_insert_rows(
@@ -131,7 +441,7 @@ def build_insert_rows(
 
     Liquidity rows are column-scoped (date/code/trading_shares/trading_amount
     only): margin columns are owned exclusively by the independent margin pass
-    (upsert_margin_only_conn), never written here — so a COPY of new OHLCV
+    (upsert_margin_only), never written here — so a COPY of new OHLCV
     rows cannot clobber real margin values with defaults, and the two passes
     stay order-independent. Same principle now applies to PE: the combined
     frame carries snapshot-derived 市盈率 only as SEPARATE pe rows; SSE PE
@@ -186,284 +496,9 @@ def build_insert_rows(
     )
 
 
-# ============================================================================
-# DB writes: OHLCV-scoped basic_stats + liquidity_margin (parallel) then
-# the independent PE passes (snapshot/file/estimated — all via write_pe_only_conn)
-# ============================================================================
-async def write_basic_stats_ohlcv(
-    pool,
-    ov_rows: list[dict],
-) -> None:
-    """Column-scoped OHLCV upsert into stats.stock_basic_stats.
-
-    Touches ONLY prev_close/open/high/low/close/pct_change
-    on conflict (pe/eps/is_pe_estimated owned by the PE passes are never
-    clobbered). Brand-new (code, date) keys insert cleanly; existing rows get
-    a subset update. Must run AFTER write_identity (FK to stock_identity).
-    """
-    async with pool.acquire() as bs_conn:
-        if not ov_rows:
-            logger.info(f"    [DB] No OHLCV rows to upsert into stats.stock_basic_stats")
-            return
-        cols = ["prev_close", "open", "high", "low", "close", "pct_change"]
-        tmp_cols_sql = ", ".join(f"{c} NUMERIC(18,4)" for c in cols)
-        select_list = ", ".join(
-            f"t.{c}" for c in ["date", "code"] + cols)
-        set_list = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
-        # Temp tables are unlogged — the fill generates no WAL; the
-        # upsert INTO the real table is the WAL writer and is CHUNKED BY
-        # PARTITION KEY (the bulk-write rule): per-code upsert chunks of
-        # ~100K rows, each chunk its own COMMIT (the ON CONFLICT upsert
-        # is idempotent, so a crash mid-write is rerun-safe), with the
-        # replica-lag cap paused between chunks.
-        await bs_conn.execute(
-            f"CREATE TEMP TABLE _bs_ov (date DATE, code TEXT, {tmp_cols_sql})"
-        )
-        async with bs_conn.transaction():
-            ins_q = (
-                "INSERT INTO _bs_ov (date, code, "
-                + ", ".join(cols) + ") VALUES ($1, $2, "
-                + ", ".join(f"${i}" for i in range(3, 3 + len(cols))) + ")"
-            )
-            for i in range(0, len(ov_rows), 1000):
-                await bs_conn.executemany(
-                    ins_q,
-                    [tuple(r[c] if c != "date" else r["date"] for c in
-                           ["date", "code"] + cols)
-                     for r in ov_rows[i:i + 1000]],
-                )
-        upsert_sql = f"""
-            INSERT INTO stats.stock_basic_stats
-                (date, code, {", ".join(cols)})
-            SELECT {select_list}
-            FROM _bs_ov t
-            WHERE true {{key_clause}}
-            ON CONFLICT (code, date) DO UPDATE SET {set_list}
-        """
-        weight_rows = await bs_conn.fetch(
-            "SELECT code, count(*) AS n FROM _bs_ov GROUP BY code")
-        try:
-            inserted_count = await chunked_dml_by_key_async(
-                bs_conn,
-                statements=[(upsert_sql,
-                             " AND t.code = ANY(${ph}::text[])")],
-                weighted_keys=[(r["code"], r["n"]) for r in weight_rows],
-            )
-        finally:
-            await bs_conn.execute("DROP TABLE _bs_ov")
-        logger.info(f"    [DB] Upserted {inserted_count:,} OHLCV rows into "
-              f"stats.stock_basic_stats (column-scoped: no pe/eps touch)")
-
-
-async def write_pe_only_conn(
-    conn,
-    pe_rows: list[dict],
-    source_label: str = "PE",
-) -> None:
-    """Column-scoped PE upsert into stats.stock_basic_stats — THE single
-    entry point for every PE pass (daily-snapshot pe, SSE PE files,
-    estimated PE).
-
-    Touches ONLY pe / eps / is_pe_estimated on conflict; OHLCV columns are
-    never written here. eps is computed in pandas from the STORED close
-    via the shared builds._commons.eps.compute_eps_vec (close / pe rounded
-    to 6); NULL when close is missing or pe <= 0. Self-seeds key-only
-    identity rows so PE-only dates that no OHLCV batch has touched still
-    satisfy the FK.
-    """
-    if not pe_rows:
-        return
-    # Whole-column extraction from the row dicts (no per-row dict walks)
-    dates_c = list(map(itemgetter("date"), pe_rows))
-    codes_c = list(map(itemgetter("code"), pe_rows))
-    pes_c = list(map(itemgetter("pe"), pe_rows))
-    flags_c = list(map(itemgetter("is_pe_estimated"), pe_rows))
-    rows = list(zip(dates_c, codes_c, pes_c, map(bool, flags_c)))
-    async with conn.transaction():
-        await conn.execute(
-            "CREATE TEMP TABLE _pe_upsert "
-            "(date DATE, code TEXT, pe NUMERIC(18,4), is_pe_estimated BOOLEAN)"
-        )
-        for i in range(0, len(rows), 1000):
-            await conn.executemany(
-                "INSERT INTO _pe_upsert (date, code, pe, is_pe_estimated) "
-                "VALUES ($1, $2, $3, $4)",
-                rows[i:i + 1000],
-            )
-        # FK self-seed: PE-only (date, code) pairs may exist in no other table
-        seed_result = await conn.execute(
-            "INSERT INTO stats.stock_identity (date, code) "
-            "SELECT DISTINCT t.date, t.code FROM _pe_upsert t "
-            "ON CONFLICT (date, code) DO NOTHING"
-        )
-        n_seeded = int(seed_result.split()[-1]) if seed_result else 0
-    # The temp-table fill is WAL-free (temp tables are unlogged); the
-    # final upsert INTO stats.stock_basic_stats is the WAL writer and is
-    # CHUNKED BY PARTITION KEY (the bulk-write rule): rows grouped by
-    # code into ~100K-row chunks, each chunk its own COMMIT (the
-    # ON CONFLICT upsert is idempotent — rerun-safe), replica-lag cap
-    # paused between chunks.
-    # Stored close per (date, code) pair — the eps numerator. The
-    # epoch-transport + epoch_col_to_dt64 read convention keeps the
-    # join keys datetime64 (object dates poison cudf frames).
-    close_df = pd.DataFrame(
-        rec_cols(await conn.fetch(
-            "SELECT extract(epoch from t.date)::float8 AS date, "
-            "t.code, bs.close::float8 AS close "
-            "FROM _pe_upsert t "
-            "LEFT JOIN stats.stock_basic_stats bs "
-            "  ON bs.date = t.date AND bs.code = t.code"
-        )),
-        columns=["date", "code", "close"],
-    )
-    close_df["date"] = epoch_col_to_dt64(
-        close_df["date"], index=close_df.index)
-    # Dedupe the join side: duplicate (date, code) input rows would
-    # fan the merge out and misalign the positional zip below (the
-    # former INSERT..SELECT joined the temp table against the bs PK,
-    # giving every duplicate row the same close — identical eps).
-    close_df = close_df.drop_duplicates(["date", "code"])
-    pe_df = pd.DataFrame({
-        "date": to_dt64(pd.Series(dates_c)),
-        "code": codes_c,
-        "pe": pes_c,
-    })
-    merged = pe_df.merge(close_df, on=["date", "code"], how="left")
-    eps_arr = host_array(
-        compute_eps_vec(merged["close"], merged["pe"]).to_numpy())
-    upsert_rows = [
-        (d, c, p, None if math.isnan(e) else float(e), bool(f))
-        for d, c, p, e, f in zip(
-            dates_c, codes_c, pes_c, eps_arr, flags_c)
-    ]
-    upsert_sql = (
-        "INSERT INTO stats.stock_basic_stats "
-        "    (date, code, pe, eps, is_pe_estimated) "
-        "VALUES ($1, $2, $3, $4, $5) "
-        "ON CONFLICT (code, date) DO UPDATE SET "
-        "  pe = EXCLUDED.pe, "
-        "  eps = EXCLUDED.eps, "
-        "  is_pe_estimated = EXCLUDED.is_pe_estimated"
-    )
-    rows_by_code: dict[str, list[tuple]] = {}
-    for r in upsert_rows:
-        rows_by_code.setdefault(r[1], []).append(r)
-    weighted = [(c, len(v)) for c, v in sorted(rows_by_code.items())]
-    try:
-        for chunk in _chunk_keys_by_weight(weighted, _PE_COMMIT_CHUNK_ROWS):
-            await _wait_for_replica_lag_async(
-                conn, DEFAULT_MAX_REPLICA_LAG_MB)
-            chunk_rows = [r for c in chunk for r in rows_by_code[c]]
-            async with conn.transaction():
-                for i in range(0, len(chunk_rows), 1000):
-                    await conn.executemany(
-                        upsert_sql, chunk_rows[i:i + 1000])
-    finally:
-        await conn.execute("DROP TABLE _pe_upsert")
-    # Every upserted row is touched exactly once (insert or column-scoped
-    # update) — the former INSERT..SELECT status count, positionally.
-    n_upserted = len(upsert_rows)
-    # Positional whole-column count (flags_c is the 4th extracted column)
-    n_flagged = sum(map(bool, flags_c))
-    msg = (f"    [DB] Upserted {n_upserted:,} PE rows into "
-           f"stats.stock_basic_stats ({source_label}: "
-           f"{n_flagged:,} is_pe_estimated=true)")
-    if n_seeded:
-        msg += f" | seeded {n_seeded:,} key-only identity rows"
-    logger.info(msg + "")
-
-
-async def upsert_margin_only_conn(
-    conn,
-    margin_only_rows: list[dict],
-) -> None:
-    """Column-scoped margin upsert into stats.stock_liquidity_margin.
-
-    The INDEPENDENT margin pass entry point: touches ONLY the 6 margin
-    columns on conflict (trading_shares/amount preserved). Before the
-    insert, seeds any missing (date, code) keys into stats.stock_identity
-    key-only (server defaults fill name=''/is_in_index_or_etf=false) so
-    the FK join cannot drop rows — a later OHLCV batch enriches identity.
-    Shares one connection, creates+drops its own temp table in one txn."""
-    if not margin_only_rows:
-        return
-    logger.info(f"    [DB] Preparing {len(margin_only_rows):,} "
-          f"margin-only rows for upsert (FK filtering via "
-          f"temp table)…")
-    async with conn.transaction():
-        await conn.execute(
-            "CREATE TEMP TABLE _margin_upsert ("
-            "  date DATE, code TEXT, "
-            "  rz_buy NUMERIC(24,4), rz_balance NUMERIC(24,4), "
-            "  rq_sell_qty NUMERIC(24,4), "
-            "  rq_balance_qty NUMERIC(24,4), "
-            "  rq_balance_amt NUMERIC(24,4), "
-            "  total_balance NUMERIC(24,4)"
-            ") ON COMMIT DROP"
-        )
-        temp_values = [
-            (r["date"], r["code"],
-             r["rz_buy"], r["rz_balance"],
-             r["rq_sell_qty"], r["rq_balance_qty"],
-             r["rq_balance_amt"], r["total_balance"])
-            for r in margin_only_rows
-        ]
-        insert_query = (
-            "INSERT INTO _margin_upsert "
-            "(date, code, rz_buy, rz_balance, rq_sell_qty, "
-            " rq_balance_qty, rq_balance_amt, total_balance) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
-        )
-        for i in range(0, len(temp_values), 1000):
-            await conn.executemany(
-                insert_query, temp_values[i:i + 1000]
-            )
-        # Self-seed identity keys (server defaults fill the rest) so the
-        # FK INNER JOIN below cannot silently drop margin rows for
-        # (date, code) pairs no OHLCV batch has touched yet.
-        seed_result = await conn.execute(
-            "INSERT INTO stats.stock_identity (date, code) "
-            "SELECT DISTINCT t.date, t.code FROM _margin_upsert t "
-            "ON CONFLICT (date, code) DO NOTHING"
-        )
-        n_seeded = int(seed_result.split()[-1]) if seed_result else 0
-        if n_seeded > 0:
-            logger.info(f"    [DB] Seeded {n_seeded:,} key-only identity rows "
-                  f"(name/exchange enriched later by OHLCV batches)")
-        result = await conn.execute(
-            "INSERT INTO stats.stock_liquidity_margin "
-            "(date, code, rz_buy, rz_balance, rq_sell_qty, "
-            " rq_balance_qty, rq_balance_amt, total_balance) "
-            "SELECT t.date, t.code, t.rz_buy, t.rz_balance, "
-            "       t.rq_sell_qty, t.rq_balance_qty, "
-            "       t.rq_balance_amt, t.total_balance "
-            "FROM _margin_upsert t "
-            "INNER JOIN stats.stock_identity si "
-            "  ON si.date = t.date AND si.code = t.code "
-            "ON CONFLICT (date, code) DO UPDATE SET "
-            "  rz_buy = EXCLUDED.rz_buy, "
-            "  rz_balance = EXCLUDED.rz_balance, "
-            "  rq_sell_qty = EXCLUDED.rq_sell_qty, "
-            "  rq_balance_qty = EXCLUDED.rq_balance_qty, "
-            "  rq_balance_amt = EXCLUDED.rq_balance_amt, "
-            "  total_balance = EXCLUDED.total_balance"
-        )
-        parts = result.split()
-        inserted_count = int(parts[-1]) if parts else 0
-
-    n_with_margin = sum(
-        1 for r in margin_only_rows
-        if (r.get("rz_balance") or 0) > 0
-    )
-    logger.info(f"    [DB] Upserted {inserted_count:,} margin-only "
-          f"rows into stats.stock_liquidity_margin (6 margin "
-          f"cols, trading_shares/amount preserved; "
-          f"{n_with_margin:,} with non-zero rz_balance)")
-
-
 def build_margin_upsert_rows(margin_df: pd.DataFrame) -> list[dict]:
     """All margin rows as column-scoped upsert dicts for the independent
-    margin pass (upsert_margin_only_conn): 6 margin cols only, never
+    margin pass (upsert_margin_only): 6 margin cols only, never
     touches trading_shares/amount.
 
     Emission goes through records_from_frame (one numpy transfer per
@@ -490,28 +525,6 @@ def build_margin_upsert_rows(margin_df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-async def write_liquidity_margin(
-    pool,
-    liq_rows: list[dict],
-) -> None:
-    """Write column-scoped OHLCV liquidity rows (trading_shares/amount
-    only — margin cols are owned by the independent margin pass)."""
-    async with pool.acquire() as lm_conn:
-        if not liq_rows:
-            logger.info(f"    [DB] No OHLCV rows to insert into "
-                  f"stats.stock_liquidity_margin")
-            return
-        n_copied, n_upserted = await copy_or_upsert_split_async(
-            lm_conn, "stats.stock_liquidity_margin", liq_rows, ["date", "code"]
-        )
-        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
-              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
-              "upsert"
-        logger.info(f"    [DB] Inserted {len(liq_rows):,} liquidity rows into "
-              f"stats.stock_liquidity_margin "
-              f"(trading_shares/amount only) via {via}")
-
-
 # ============================================================================
 # Pass 2: PE passes (snapshot/file payloads + DB-driven estimation)
 # ============================================================================
@@ -519,7 +532,7 @@ def build_pe_upsert_rows(
     pe_df: pd.DataFrame,
     is_pe_estimated: bool = False,
 ) -> list[dict]:
-    """PE DataFrame ({date, code, pe}) → write_pe_only_conn payload.
+    """PE DataFrame ({date, code, pe}) → write_pe_only payload.
 
     Host-side emission via one numpy transfer per column (never
     itertuples/to_dict — under cudf.pandas each element extraction is a

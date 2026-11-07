@@ -49,8 +49,7 @@ from builds.market_regimes.config import (  # noqa: E402
     TABLE,
 )
 from builds.market_regimes.runner import (  # noqa: E402
-    run_build,
-    run_market_regimes,
+    MarketRegimesRunner,
 )
 
 __all__ = [
@@ -60,6 +59,5 @@ __all__ = [
     "REGIMES",
     "SPANS_TABLE",
     "TABLE",
-    "run_build",
-    "run_market_regimes",
+    "MarketRegimesRunner",
 ]

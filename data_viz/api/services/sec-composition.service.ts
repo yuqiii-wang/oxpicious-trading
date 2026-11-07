@@ -27,6 +27,7 @@
  * see getQuarterlyComposition for the per-quarter bar-chart feed).
  */
 import { queryRows, formatDate, toNum } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import { codeVariants } from "../lib/classify-etf.js";
 import type {
@@ -108,9 +109,12 @@ async function fetchHoldings(
   const codePredicate = "h.code = ANY($1::text[])";
   const latestCodePredicate = "code = ANY($1::text[])";
 
-  // Seasonal constraint: latest snapshot WITHIN the quarter containing `date`.
-  // Both the `latest` subquery and the outer WHERE must carry the filter so
-  // the chosen snapshot and the returned rows agree.
+  // Seasonal constraint: latest snapshot WITHIN the quarter containing
+  // `date`. Both the `latest` subquery and the outer WHERE must carry the
+  // filter so the chosen snapshot and the returned rows agree. The SELECT
+  // lives in the sql view data_viz/api/services/sec-composition/holdings
+  // (the per-table code predicates ride fragment args; params stay
+  // positional $1 codes / $2 source_type / $3 date).
   const hasDate = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date);
   const dateFilter = hasDate
     ? "AND snapshot_date >= date_trunc('quarter', $3::date) AND snapshot_date < date_trunc('quarter', $3::date) + interval '3 months'"
@@ -120,36 +124,15 @@ async function fetchHoldings(
     : "";
   const params: unknown[] = hasDate ? [codeVariants(code), sourceType, date] : [codeVariants(code), sourceType];
 
-  const sql = `
-    SELECT h.snapshot_date,
-           h.code,
-           h.stock_code,
-           h.stock_name,
-           h.weight_pct,
-           COALESCE(sc.industry_label, '未分类')  AS industry,
-           COALESCE(sc.sector_id, 'OTHER')        AS sector_id,
-           COALESCE(sc.sector_label, '其他')      AS sector_label
-      FROM stats.sec_composition h
-      CROSS JOIN (
-        SELECT MAX(snapshot_date) AS snap_date
-          FROM stats.sec_composition
-         WHERE source_type = $2
-           AND ${latestCodePredicate}
-           ${dateFilter}
-      ) latest
-      LEFT JOIN LATERAL (
-        SELECT sc.sector_id, sc.industry_id, sc.sector_label, sc.industry_label
-          FROM stats.sec_classification sc
-         WHERE sc.code = h.stock_code AND sc.type = 'stock'
-         ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
-         LIMIT 1
-      ) sc ON true
-     WHERE h.source_type = $2
-       AND ${codePredicate}
-       AND h.snapshot_date = latest.snap_date
-       ${outerDateFilter}
-     ORDER BY h.weight_pct DESC
-  `;
+  const { sql } = renderSqlView(
+    "data_viz/api/services/sec-composition/holdings",
+    {
+      code_pred: sqlFrag(codePredicate),
+      latest_code_pred: sqlFrag(latestCodePredicate),
+      date_filter: sqlFrag(dateFilter),
+      outer_date_filter: sqlFrag(outerDateFilter),
+    },
+  );
   return queryRows<DbCompositionRow>(sql, params);
 }
 
@@ -164,17 +147,9 @@ async function fetchHoldings(
 async function fetchTrackingIndex(
   strippedEtfCode: string,
 ): Promise<{ code: string; name: string } | null> {
-  const rows = await queryRows<IndexMetaRow>(
-    `SELECT sc.parent_index_code AS index_code,
-            si.name               AS index_name
-       FROM stats.sec_classification sc
-       LEFT JOIN stats.sec_classification si
-         ON si.code = sc.parent_index_code AND si.type = 'index'
-      WHERE sc.type = 'etf'
-        AND sc.code = ANY($1::text[])
-        AND sc.parent_index_code <> ''
-      LIMIT 1`,
-    [codeVariants(strippedEtfCode)],
+  const rows = await querySqlView<IndexMetaRow>(
+    "data_viz/api/services/sec-composition/tracking_index",
+    { codes: codeVariants(strippedEtfCode) },
   );
   if (rows.length === 0) return null;
   return { code: rows[0].index_code, name: rows[0].index_name ?? "" };
@@ -296,45 +271,14 @@ async function fetchQuarterlyRows(
   sourceType: "etf" | "index",
 ): Promise<DbQuarterlyRow[]> {
   // code = ANY(variants) keeps the (code, …) PK prefix index-usable (see fetchHoldings).
-  const codePredicate = "h.code = ANY($1::text[])";
-
-  const sql = `
-    WITH snaps AS (
-      SELECT DISTINCT ON (date_trunc('quarter', snapshot_date))
-             date_trunc('quarter', snapshot_date) AS quarter_start,
-             snapshot_date
-        FROM stats.sec_composition
-       WHERE source_type = $2
-         AND code = ANY($1::text[])
-       ORDER BY date_trunc('quarter', snapshot_date), snapshot_date DESC
-    )
-    SELECT s.quarter_start::text AS quarter_start,
-           s.snapshot_date::text AS snapshot_date,
-           COALESCE(sc.industry_id, '')        AS industry_id,
-           COALESCE(sc.sector_id, 'OTHER')   AS sector_id,
-           COALESCE(sc.sector_label, '其他') AS sector_label,
-           COALESCE(sc.industry_label, '未分类') AS industry,
-           SUM(h.weight_pct)                AS weight_pct,
-           COUNT(*)                         AS n_holdings
-      FROM snaps s
-      JOIN stats.sec_composition h
-        ON h.source_type = $2
-       AND h.snapshot_date = s.snapshot_date
-       AND ${codePredicate}
-      LEFT JOIN LATERAL (
-        SELECT sc.sector_id, sc.industry_id, sc.sector_label, sc.industry_label
-          FROM stats.sec_classification sc
-         WHERE sc.code = h.stock_code AND sc.type = 'stock'
-         ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
-         LIMIT 1
-      ) sc ON true
-     GROUP BY s.quarter_start, s.snapshot_date,
-              COALESCE(sc.industry_id, ''),
-              COALESCE(sc.sector_id, 'OTHER'),
-              COALESCE(sc.sector_label, '其他'),
-              COALESCE(sc.industry_label, '未分类')
-     ORDER BY s.quarter_start, SUM(h.weight_pct) DESC
-  `;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/sec-composition/quarterly_rows (the join code
+  // predicate rides a fragment arg; params stay positional
+  // $1 codes / $2 source_type).
+  const { sql } = renderSqlView(
+    "data_viz/api/services/sec-composition/quarterly_rows",
+    { code_pred: sqlFrag("h.code = ANY($1::text[])") },
+  );
   return queryRows<DbQuarterlyRow>(sql, [codeVariants(code), sourceType]);
 }
 
@@ -460,29 +404,18 @@ async function fetchIndustryWeightRows(
   sourceType: "etf" | "index",
 ): Promise<DbIndustryWeightRow[]> {
   // code = ANY(variants) keeps the (code, …) PK prefix index-usable (see fetchHoldings).
-  const codePredicate = "h.code = ANY($1::text[])";
-
   // Per snapshot date: industry-summed weight (incl. snapshots where the
   // industry is absent → 0) via a FILTERED aggregate, plus the snapshot
   // total for client-side normalization. The industry match uses the SAME
   // LATERAL best-row-per-stock classification join as fetchHoldings.
-  const sql = `
-    SELECT h.snapshot_date::text AS snapshot_date,
-           SUM(h.weight_pct) FILTER (WHERE sc.industry_id = $2) AS weight_pct,
-           SUM(h.weight_pct)                                       AS total_weight_pct
-      FROM stats.sec_composition h
-      LEFT JOIN LATERAL (
-        SELECT sc.industry_id
-          FROM stats.sec_classification sc
-         WHERE sc.code = h.stock_code AND sc.type = 'stock'
-         ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
-         LIMIT 1
-      ) sc ON true
-     WHERE h.source_type = $3
-       AND ${codePredicate}
-     GROUP BY h.snapshot_date
-     ORDER BY h.snapshot_date ASC
-  `;
+  // The SELECT lives in the sql view
+  // data_viz/api/services/sec-composition/industry_weight_rows (the WHERE
+  // code predicate rides a fragment arg; params stay positional
+  // $1 codes / $2 industry_id / $3 source_type).
+  const { sql } = renderSqlView(
+    "data_viz/api/services/sec-composition/industry_weight_rows",
+    { code_pred: sqlFrag("h.code = ANY($1::text[])") },
+  );
   return queryRows<DbIndustryWeightRow>(sql, [codeVariants(code), industryId, sourceType]);
 }
 
@@ -514,10 +447,9 @@ export async function getIndustryWeightSeries(
   if (!stripped || !industryId) return empty;
 
   // Resolve the display label from the INDEX classification (same taxonomy).
-  const labelRows = await queryRows<{ industry_label: string | null }>(
-    `SELECT industry_label FROM stats.sec_classification
-      WHERE industry_id = $1::text AND type = 'index' LIMIT 1`,
-    [industryId],
+  const labelRows = await querySqlView<{ industry_label: string | null }>(
+    "data_viz/api/services/sec-composition/industry_label",
+    { industry_id: industryId },
   );
   const industry_label = labelRows[0]?.industry_label ?? "";
 
@@ -602,7 +534,8 @@ export async function getLinkedEtfs(
     };
   }
 
-  // Four CTEs:
+  // Four CTEs (the SELECT lives in the sql view
+  // data_viz/api/services/sec-composition/linked_etfs):
   //   linked_etfs   — ETF sec_classification rows whose parent_index_code = $1.
   //                   Also pulls aum_yi (net asset value in 亿元) which is
   //                   populated from the etf_index_map_all_*.csv by
@@ -615,71 +548,28 @@ export async function getLinkedEtfs(
   //                   sec_etf_links by target_etf_code. Lets the unified
   //                   ETF→feeder table know which rows are expandable
   //                   WITHOUT fetching every ETF's feeder list.
-  const sql = `
-    WITH linked_etfs AS (
-      SELECT sc.code, sc.name, sc.exchange, sc.sector_label, sc.industry_label, sc.aum_yi
-        FROM stats.sec_classification sc
-       WHERE sc.type = 'etf'
-         AND sc.parent_index_code = $1
-    ),
-    latest AS (
-      SELECT DISTINCT ON (code) code, date AS latest_date, close AS latest_close, trading_amount AS latest_trading_amount
-        FROM stats.v_etf_margin
-       WHERE code IN (SELECT code FROM linked_etfs)
-       ORDER BY code, date DESC
-    ),
-    counts AS (
-      SELECT code, COUNT(*) AS n_days
-        FROM stats.v_etf_margin
-       WHERE code IN (SELECT code FROM linked_etfs)
-       GROUP BY code
-    ),
-    feeder_counts AS (
-      SELECT l.target_etf_code, COUNT(*) AS feeder_count
-        FROM stats.sec_etf_links l
-       WHERE l.target_etf_code IN (SELECT code FROM linked_etfs)
-       GROUP BY l.target_etf_code
-    )
-    SELECT le.code,
-           le.name,
-           le.exchange,
-           COALESCE(le.sector_label,    '其他')   AS sector_label,
-           COALESCE(le.industry_label, '未分类')  AS industry_label,
-           COALESCE(la.latest_date::text, '')    AS latest_date,
-           la.latest_close,
-           la.latest_trading_amount,
-           le.aum_yi,
-           COALESCE(co.n_days, 0)                AS n_days,
-           COALESCE(fc.feeder_count, 0)          AS feeder_count
-      FROM linked_etfs le
-      LEFT JOIN latest        la ON la.code = le.code
-      LEFT JOIN counts        co ON co.code = le.code
-      LEFT JOIN feeder_counts fc ON fc.target_etf_code = le.code
-     ORDER BY le.aum_yi DESC NULLS LAST, n_days DESC, le.code
-  `;
   const [rows, extRows, nameRows] = await Promise.all([
-    queryRows<DbLinkedEtfRow>(sql, [indexCode]),
+    querySqlView<DbLinkedEtfRow>(
+      "data_viz/api/services/sec-composition/linked_etfs",
+      { index_code: indexCode },
+    ),
     // Fetch the latest index_exts row for this index — gives the precomputed
     // total_etf_trading_amount (Σ ETF turnover tracking the index, yuan) and its 5-day
     // moving average (total_etf_trading_amount_ma5). Both are NULL when the index has
     // no tracking ETF (no index_exts row).
-    queryRows<{
+    querySqlView<{
       total_etf_trading_amount: number | null;
       total_etf_trading_amount_ma5: number | null;
       date: string | null;
     }>(
-      `SELECT total_etf_trading_amount, total_etf_trading_amount_ma5, date::text AS date
-         FROM stats.index_exts
-        WHERE code = $1
-        ORDER BY date DESC
-        LIMIT 1`,
-      [indexCode],
+      "data_viz/api/services/sec-composition/index_exts_latest",
+      { index_code: indexCode },
     ),
     // Display name of the index itself — the unified ETF→feeder table's
     // Index column shows "index_code index_name".
-    queryRows<{ name: string | null }>(
-      `SELECT name FROM stats.sec_classification WHERE code = $1 AND type = 'index' LIMIT 1`,
-      [indexCode],
+    querySqlView<{ name: string | null }>(
+      "data_viz/api/services/sec-composition/index_name",
+      { index_code: indexCode },
     ),
   ]);
   const ext = extRows[0];
@@ -749,61 +639,20 @@ export async function getSimilarIndices(
   if (!indexCode) return empty;
 
   // --- Fetch the latest sec_similars row (date <= today) -------------
-  const latestSql = `
-    SELECT date::text
-      FROM stats.sec_similars
-     WHERE code = $1
-       AND sec_type = 'index'
-       AND date <= CURRENT_DATE
-     ORDER BY date DESC
-     LIMIT 1
-  `;
-  const latest = await queryRows<DbLatestRow>(latestSql, [indexCode]);
+  const latest = await querySqlView<DbLatestRow>(
+    "data_viz/api/services/sec-composition/similars_latest_date",
+    { code: indexCode },
+  );
   if (!latest.length) return empty;
   const snapshotDate = formatDate(latest[0].date);
 
   // --- Similar codes (unpivot 5 column-pairs into rows) -------------
-  const codesSql = `
-    SELECT u.rank,
-           u.code,
-           sc.name,
-           u.sharing_weight_pct
-      FROM (
-        SELECT 1 AS rank,
-               similar_1st_code_by_sharing_weights AS code,
-               similar_1st_code_sharing_weight_pct AS sharing_weight_pct
-          FROM stats.sec_similars
-         WHERE code = $1 AND sec_type = 'index' AND date = $2
-        UNION ALL
-        SELECT 2, similar_2nd_code_by_sharing_weights,
-               similar_2nd_code_sharing_weight_pct
-          FROM stats.sec_similars
-         WHERE code = $1 AND sec_type = 'index' AND date = $2
-        UNION ALL
-        SELECT 3, similar_3rd_code_by_sharing_weights,
-               similar_3rd_code_sharing_weight_pct
-          FROM stats.sec_similars
-         WHERE code = $1 AND sec_type = 'index' AND date = $2
-        UNION ALL
-        SELECT 4, similar_4th_code_by_sharing_weights,
-               similar_4th_code_sharing_weight_pct
-          FROM stats.sec_similars
-         WHERE code = $1 AND sec_type = 'index' AND date = $2
-        UNION ALL
-        SELECT 5, similar_5th_code_by_sharing_weights,
-               similar_5th_code_sharing_weight_pct
-          FROM stats.sec_similars
-         WHERE code = $1 AND sec_type = 'index' AND date = $2
-      ) u
-      LEFT JOIN LATERAL (
-        SELECT name
-          FROM stats.sec_classification sc
-         WHERE sc.code = u.code AND sc.type = 'index'
-         LIMIT 1
-      ) sc ON true
-     WHERE u.code IS NOT NULL AND u.code <> ''
-     ORDER BY u.rank
-  `;
+  // The unpivot SELECT lives in the sql view
+  // data_viz/api/services/sec-composition/similar_codes.
+  const { sql: codesSql } = renderSqlView(
+    "data_viz/api/services/sec-composition/similar_codes",
+    { code: indexCode, date: latest[0].date },
+  );
   const codeRows = await queryRows<DbSimilarCodeRow>(codesSql, [indexCode, latest[0].date]);
   const similars: SimilarIndexRow[] = codeRows.map((r) => ({
     rank: r.rank as 1 | 2 | 3 | 4 | 5,
@@ -814,8 +663,10 @@ export async function getSimilarIndices(
 
   // --- Similar industry-classified peers (same structure, industry_* cols) ---
   // These columns store SEC CODES (index codes), not industry_ids. The only
-  // difference from the codes query is the column name prefix. We reuse the
-  // same LATERAL JOIN to resolve the index display name.
+  // difference from the codes query is the column name prefix: the same
+  // regex substitution runs over the RENDERED similar_codes view text (the
+  // unpivot shape is identical). We reuse the same LATERAL JOIN to resolve
+  // the index display name.
   const indSql = codesSql
     .replace(/similar_(\d)(st|nd|rd|th)_code_by_sharing_weights/g,
       "similar_$1$2_industry_code_by_sharing_weights")
@@ -868,36 +719,10 @@ export async function getLinkedFeeders(
   // target_etf_code is stored BARE ("510880") — direct equality. latest —
   // most-recent v_etf_margin row per BARE feeder code (the NAV series
   // builds.etf.feeder_nav loads; feeders are close-only, loaded with
-  // is_ohl_estimated=TRUE). Distinct-on mirrors getLinkedEtfs.
-  const sql = `
-    WITH latest AS (
-      SELECT DISTINCT ON (code) code,
-             date AS latest_date, close AS latest_nav, pct_change AS day_pct
-        FROM stats.v_etf_margin
-       WHERE code IN (SELECT feeder_code FROM stats.sec_etf_links
-                      WHERE target_etf_code = $1)
-       ORDER BY code, date DESC
-    )
-    SELECT l.feeder_code,
-           l.feeder_name,
-           l.is_initiator,
-           l.target_etf_code,
-           l.target_etf_name,
-           l.target_etf_type,
-           l.index_code,
-           l.index_name,
-           l.manager,
-           l.aum_yi,
-           l.inception_date::text AS inception_date,
-           COALESCE(n.latest_date::text, '') AS latest_date,
-           n.latest_nav,
-           n.day_pct
-      FROM stats.sec_etf_links l
-      LEFT JOIN latest n ON n.code = l.feeder_code
-     WHERE l.target_etf_code = $1
-     ORDER BY l.feeder_code
-  `;
-  const rows = await queryRows<{
+  // is_ohl_estimated=TRUE). Distinct-on mirrors getLinkedEtfs. The SELECT
+  // lives in the sql view
+  // data_viz/api/services/sec-composition/linked_feeders.
+  const rows = await querySqlView<{
     feeder_code: string;
     feeder_name: string;
     is_initiator: boolean;
@@ -912,7 +737,10 @@ export async function getLinkedFeeders(
     latest_date: string | null;
     latest_nav: string | number | null;
     day_pct: string | number | null;
-  }>(sql, [bare]);
+  }>(
+    "data_viz/api/services/sec-composition/linked_feeders",
+    { target_etf_code: bare },
+  );
 
   const feeders: LinkedFeederRow[] = rows.map((r) => ({
     feeder_code: r.feeder_code,

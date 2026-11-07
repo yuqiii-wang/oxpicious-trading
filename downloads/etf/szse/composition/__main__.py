@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 
+import argparse
 import logging
 import re
 import sys
 import time
 
+from downloads.etf.szse.composition.data_definitions import (
+    EtfCompositionItem,
+)
 try:
     from tqdm import tqdm
 except ImportError:
@@ -24,6 +28,7 @@ import pandas as pd
 from downloads._common import (
     DEFAULT_START_DATE,
     AntiBotProxy,
+    DownloadJob,
     antibot_config_for,
     retry_policy_for,
     service_urls,
@@ -95,14 +100,6 @@ COMBINED_COLS = [
 logger = setup_logger("szse_etf_composition")
 
 
-@dataclass
-class EtfCompositionItem:
-    trade_date: date
-    etf_code: str
-    title: str
-    detail_path: str
-    detail_url: str
-    md_filename: str
 
 
 def first_business_day_of_month(year: int, month: int) -> date:
@@ -198,6 +195,8 @@ def md_filename_for(trade_date: date, etf_code: str) -> str:
     return f"szse_etf_comp_{ymd}_{etf_code}.md"
 
 
+
+
 def parse_list_row(jjdm_html: str, trade_date: date) -> Optional[EtfCompositionItem]:
     m_path = RE_ENCODE_OPEN.search(jjdm_html)
     if not m_path:
@@ -227,126 +226,6 @@ def parse_list_row(jjdm_html: str, trade_date: date) -> Optional[EtfCompositionI
         detail_url=detail_url,
         md_filename=md_filename_for(trade_date, etf_code),
     )
-
-
-def fetch_list_page(
-    session: requests.Session,
-    trade_date: date,
-    page_no: int,
-    base_headers: Dict[str, str],
-    proxy: Optional[AntiBotProxy] = None,
-) -> Tuple[int, int, List[EtfCompositionItem]]:
-    if proxy is None:
-        proxy = AntiBotProxy(service=SERVICE)
-
-    date_str = trade_date.strftime("%Y-%m-%d")
-    params: Dict[str, Any] = {
-        "SHOWTYPE": "JSON",
-        "CATALOGID": CATALOGID,
-        "txtStart": date_str,
-        "txtEnd": date_str,
-        "PAGENO": page_no,
-    }
-    if page_no == 1:
-        params["loading"] = "first"
-
-    payload = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        resp = proxy.get(
-            session,
-            LIST_API_URL,
-            params=params,
-            headers=build_list_headers(base_headers),
-            logger=logger,
-            log_tag=f"[list {date_str} p{page_no}]",
-        )
-        if resp is None:
-            if attempt == MAX_RETRIES:
-                logger.error("[list %s p%d] fetch error after %d attempts: request returned None", date_str, page_no, attempt)
-                return 0, 0, []
-            backoff = RETRY_BACKOFF_SEC * attempt
-            logger.warning("[list %s p%d] attempt %d failed; retry in %.1fs", date_str, page_no, attempt, backoff)
-            proxy.sleep(backoff)
-            continue
-        try:
-            payload = resp.json()
-            break
-        except ValueError as e:
-            if attempt == MAX_RETRIES:
-                logger.error("[list %s p%d] json parse error after %d attempts: %s", date_str, page_no, attempt, e)
-                return 0, 0, []
-            backoff = RETRY_BACKOFF_SEC * attempt
-            logger.warning("[list %s p%d] attempt %d failed (json parse error); retry in %.1fs", date_str, page_no, attempt, backoff)
-            time.sleep(backoff)
-
-    if isinstance(payload, list) and payload:
-        item0 = payload[0]
-    elif isinstance(payload, dict):
-        item0 = payload
-    else:
-        logger.error("[list %s p%d] unexpected payload type %s", date_str, page_no, type(payload).__name__)
-        return 0, 0, []
-
-    md = item0.get("metadata") or {}
-    pagecount = int(md.get("pagecount") or 0)
-    recordcount = int(md.get("recordcount") or 0)
-    data_rows = item0.get("data") or []
-
-    items: List[EtfCompositionItem] = []
-    for row in data_rows:
-        if not isinstance(row, dict):
-            continue
-        jjdm = row.get("jjdm", "")
-        if not jjdm:
-            continue
-        parsed = parse_list_row(jjdm, trade_date)
-        if parsed:
-            items.append(parsed)
-    return pagecount, recordcount, items
-
-
-def fetch_all_etfs_for_date(
-    session: requests.Session,
-    trade_date: date,
-    base_headers: Dict[str, str],
-    proxy: Optional[AntiBotProxy] = None,
-) -> List[EtfCompositionItem]:
-    if proxy is None:
-        proxy = AntiBotProxy(service=SERVICE)
-
-    date_str = trade_date.strftime("%Y-%m-%d")
-    pagecount, recordcount, first_items = fetch_list_page(session, trade_date, 1, base_headers, proxy)
-    if pagecount <= 0 or recordcount <= 0:
-        if first_items:
-            logger.info("[list %s] p%d: got %d items (no metadata pages)", date_str, 1, len(first_items))
-            return first_items
-        logger.info("[list %s] no data (recordcount=0, pagecount=0)", date_str)
-        return []
-
-    all_items: List[EtfCompositionItem] = list(first_items)
-    logger.info(
-        "[list %s] p1/%d: %d items, total_records_expected=%d",
-        date_str, pagecount, len(first_items), recordcount,
-    )
-
-    seen_codes: Set[str] = {it.etf_code for it in all_items}
-
-    for pno in range(2, pagecount + 1):
-        if proxy.is_blocked(LIST_API_URL):
-            logger.warning("[list %s] szse.cn blocked, stopping pagination at page %d", date_str, pno)
-            break
-        _, _, page_items = fetch_list_page(session, trade_date, pno, base_headers, proxy)
-        added = 0
-        for it in page_items:
-            if it.etf_code not in seen_codes:
-                seen_codes.add(it.etf_code)
-                all_items.append(it)
-                added += 1
-        logger.info("[list %s] p%d/%d: page_items=%d new=%d cumulative=%d",
-                    date_str, pno, pagecount, len(page_items), added, len(all_items))
-        proxy.sleep(SLEEP_SEC)
-
-    return all_items
 
 
 def composition_to_markdown(item: EtfCompositionItem, raw_text: str) -> str:
@@ -400,69 +279,6 @@ def composition_to_markdown(item: EtfCompositionItem, raw_text: str) -> str:
     lines.append("```")
     lines.append("")
     return "\n".join(lines)
-
-
-def download_composition(
-    session: requests.Session,
-    item: EtfCompositionItem,
-    out_file: Path,
-    base_headers: Dict[str, str],
-    proxy: Optional[AntiBotProxy] = None,
-) -> bool:
-    if proxy is None:
-        proxy = AntiBotProxy(service=SERVICE)
-
-    if is_valid_file(out_file, min_bytes=MD_MIN_BYTES):
-        # Cached MD: ensure the per-file CSV exists too (backfill legacy MDs)
-        csv_path = out_file.with_suffix(".csv")
-        if not csv_path.exists():
-            try:
-                convert_md_to_csv(out_file, csv_path)
-            except Exception as e:
-                logger.warning("[conv %s %s] per-file CSV conversion failed: %s", item.etf_code, item.trade_date, e)
-        return True
-
-    resp = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        resp = proxy.get(
-            session,
-            item.detail_url,
-            headers=build_detail_headers(base_headers),
-            logger=logger,
-            log_tag=f"[dl {item.etf_code} {item.trade_date}]",
-        )
-        if resp is None:
-            if attempt == MAX_RETRIES:
-                logger.error("[dl %s %s] fetch error after %d attempts: request returned None", item.etf_code, item.trade_date, attempt)
-                return False
-            backoff = RETRY_BACKOFF_SEC * attempt
-            logger.warning("[dl %s %s] attempt %d failed; retry in %.1fs", item.etf_code, item.trade_date, attempt, backoff)
-            time.sleep(backoff)
-            continue
-        break
-
-    if len(resp.content) < MD_MIN_BYTES:
-        logger.warning("[dl %s %s] content too small (%d bytes)", item.etf_code, item.trade_date, len(resp.content))
-        return False
-
-    content = resp.text
-    md_text = composition_to_markdown(item, content)
-
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_file, "w", encoding="utf-8") as f:
-        f.write(md_text)
-
-    # Write the per-file CSV alongside the MD so build scripts can read finished CSVs directly
-    csv_path = out_file.with_suffix(".csv")
-    try:
-        convert_md_to_csv(out_file, csv_path)
-    except Exception as e:
-        logger.warning("[conv %s %s] per-file CSV conversion failed: %s", item.etf_code, item.trade_date, e)
-
-    if is_valid_file(out_file, min_bytes=MD_MIN_BYTES):
-        return True
-    logger.warning("[dl %s %s] saved file too small after write", item.etf_code, item.trade_date)
-    return False
 
 
 def _parse_front_matter(text: str) -> Dict[str, str]:
@@ -718,294 +534,492 @@ def build_composition_csv(md_dir: Path, output_dir: Optional[Path] = None) -> Di
     }
 
 
-def download_szse_etf_composition(
-    *,
-    out_root: Optional[str] = None,
-    start_date: Optional[str] = DEFAULT_START_DATE,
-    end_date: Optional[str] = None,
-    sleep_sec: Optional[float] = None,
-    max_dates: Optional[int] = None,
-    skip_today: bool = True,
-    convert_csv: bool = True,
-    download_mode: str = "hybrid",
-    force_month_start: bool = False,
-) -> dict:
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "szse_etf_composition", out_root)
+class SzseEtfCompositionDownload(DownloadJob):
+    """DownloadJob for the SZSE ETF PCF fetch cycle — the former ``__main__``
+    body is ``run()`` and the fetch orchestration functions
+    (``fetch_list_page`` / ``fetch_all_etfs_for_date`` /
+    ``download_composition`` / ``download_szse_etf_composition``) are
+    methods of the same names (same signatures and bodies verbatim); the
+    date generators, markdown builders, pure parsers, file converters and
+    constants stay module-level."""
 
-    _start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d").date()
-    _end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
+    description = ("Download SZSE ETF creation/redemption composition data "
+                   "and convert to CSV.")
+    component = "szse_etf_composition"
 
-    # Month-start trigger: on the 1st of each month (or when forced), bypass
-    # the cache for the most recent trading day and stamp files with today's
-    # date so a fresh monthly snapshot flows to prod even if the actual data
-    # is from the previous business day.
-    today = date.today()
-    month_start = force_month_start or is_month_start(today)
-    dl_date: Optional[date] = None   # the trading day to download from the API
-    stamp_date: Optional[date] = None  # the date to stamp in filenames/trade_date
-    if month_start:
-        dl_date = most_recent_trading_day(today)
-        stamp_date = today
-        logger.info(
-            "Month-start refresh (today=%s, forced=%s): forcing download for "
-            "trading day %s, stamping files with today's date %s.",
-            today.isoformat(), force_month_start,
-            dl_date.isoformat(), stamp_date.isoformat(),
-        )
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--start-date", type=str, default=DEFAULT_START_DATE,
+                        help=f"Start date for backfill (default: {DEFAULT_START_DATE})")
+        parser.add_argument("--end-date", type=str, default=None,
+                        help="End date for backfill (default: today)")
+        parser.add_argument("--out-root", type=str, default=None,
+                        help="Alternative output root directory")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Base sleep seconds between requests "
+                             f"(default: external_request_config JSON for {SERVICE})")
+        parser.add_argument("--max-dates", type=int, default=None,
+                        help="Limit to N dates (dev/testing)")
+        parser.add_argument("--skip-today", action="store_true", default=True,
+                        help="Skip today's date (default: enabled)")
+        parser.add_argument("--no-skip-today", action="store_true", default=False,
+                        help="Include today's date")
+        parser.add_argument("--convert-csv", action="store_true", default=True,
+                        help="Convert downloaded .md files to CSV (default: enabled)")
+        parser.add_argument("--no-convert-csv", action="store_true", default=False,
+                        help="Skip CSV conversion")
+        parser.add_argument("--download-mode", type=str, default="hybrid",
+                        choices=["hybrid", "monthly", "quarterly"],
+                        help="Download mode: hybrid (quarterly for history + monthly for latest month), monthly, or quarterly (default: hybrid)")
+        parser.add_argument("--force-month-start", action="store_true", default=False,
+                        help="Force month-start behavior: bypass cache for the most recent "
+                             "trading day and stamp files with today's date. For testing the "
+                             "monthly refresh flow on any day.")
 
-    if download_mode == "hybrid":
-        target_dates = generate_hybrid_dates(_start, _end)
-    elif download_mode == "monthly":
-        target_dates = generate_monthly_first_biz_dates(_start, _end)
-    elif download_mode == "quarterly":
-        target_dates = generate_hybrid_dates(_start, _end)
-        target_dates = [d for d in target_dates if d.month in (1, 4, 7, 10)]
-    else:
-        target_dates = generate_monthly_first_biz_dates(_start, _end)
+    def apply_args(self) -> None:
+        # Former post-parse flag resolution (X and not no-X).
+        self.args.skip_today = self.args.skip_today and not self.args.no_skip_today
+        self.args.convert_csv = self.args.convert_csv and not self.args.no_convert_csv
 
-    # On month-start, don't skip today (we need dl_date in the target set).
-    if skip_today and not month_start:
-        target_dates = [d for d in target_dates if d != today]
-    if max_dates is not None and max_dates > 0:
-        target_dates = target_dates[:max_dates]
+    def fetch_list_page(
+        self,
+        session: requests.Session,
+        trade_date: date,
+        page_no: int,
+        base_headers: Dict[str, str],
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Tuple[int, int, List[EtfCompositionItem]]:
+        if proxy is None:
+            proxy = AntiBotProxy(service=SERVICE)
 
-    # On month-start, ensure dl_date is in target_dates (prepend if missing).
-    if month_start and dl_date and dl_date not in target_dates:
-        target_dates.insert(0, dl_date)
+        date_str = trade_date.strftime("%Y-%m-%d")
+        params: Dict[str, Any] = {
+            "SHOWTYPE": "JSON",
+            "CATALOGID": CATALOGID,
+            "txtStart": date_str,
+            "txtEnd": date_str,
+            "PAGENO": page_no,
+        }
+        if page_no == 1:
+            params["loading"] = "first"
 
-    if not target_dates:
-        logger.warning("No target dates generated for %s -> %s (mode=%s)", _start, _end, download_mode)
-        return {"out_dir": str(out_dir), "start_date": str(_start), "end_date": str(_end), "target_dates": 0}
-
-    saved_filenames = scan_present_filenames(
-        out_dir, glob_pattern="*.md", min_bytes=MD_MIN_BYTES,
-    )
-
-    cached_dates = set()
-    for fname in saved_filenames:
-        m = re.search(r"_(\d{8})_", fname)
-        if m:
+        payload = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            resp = proxy.get(
+                session,
+                LIST_API_URL,
+                params=params,
+                headers=build_list_headers(base_headers),
+                logger=logger,
+                log_tag=f"[list {date_str} p{page_no}]",
+            )
+            if resp is None:
+                if attempt == MAX_RETRIES:
+                    logger.error("[list %s p%d] fetch error after %d attempts: request returned None", date_str, page_no, attempt)
+                    return 0, 0, []
+                backoff = RETRY_BACKOFF_SEC * attempt
+                logger.warning("[list %s p%d] attempt %d failed; retry in %.1fs", date_str, page_no, attempt, backoff)
+                proxy.sleep(backoff)
+                continue
             try:
-                d = datetime.strptime(m.group(1), "%Y%m%d").date()
-                cached_dates.add(d)
-            except ValueError:
-                pass
+                payload = resp.json()
+                break
+            except ValueError as e:
+                if attempt == MAX_RETRIES:
+                    logger.error("[list %s p%d] json parse error after %d attempts: %s", date_str, page_no, attempt, e)
+                    return 0, 0, []
+                backoff = RETRY_BACKOFF_SEC * attempt
+                logger.warning("[list %s p%d] attempt %d failed (json parse error); retry in %.1fs", date_str, page_no, attempt, backoff)
+                time.sleep(backoff)
 
-    # On month-start, force re-download of dl_date by removing it from the
-    # cached set (the API is still queried and files are re-downloaded).
-    if month_start and dl_date:
-        cached_dates.discard(dl_date)
+        if isinstance(payload, list) and payload:
+            item0 = payload[0]
+        elif isinstance(payload, dict):
+            item0 = payload
+        else:
+            logger.error("[list %s p%d] unexpected payload type %s", date_str, page_no, type(payload).__name__)
+            return 0, 0, []
 
-    missing_dates = len(target_dates) - len(cached_dates & set(target_dates))
-    cache_ratio = (len(cached_dates & set(target_dates))) / len(target_dates) if target_dates else 1.0
+        md = item0.get("metadata") or {}
+        pagecount = int(md.get("pagecount") or 0)
+        recordcount = int(md.get("recordcount") or 0)
+        data_rows = item0.get("data") or []
 
-    # Base sleep from the service's external_request_config JSON row
-    # (SLEEP_SEC) unless overridden per-run with --sleep-sec.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
+        items: List[EtfCompositionItem] = []
+        for row in data_rows:
+            if not isinstance(row, dict):
+                continue
+            jjdm = row.get("jjdm", "")
+            if not jjdm:
+                continue
+            parsed = parse_list_row(jjdm, trade_date)
+            if parsed:
+                items.append(parsed)
+        return pagecount, recordcount, items
 
-    auto_sleep = sleep_sec
-    if cache_ratio < 0.3 or missing_dates > 10:
-        auto_sleep = sleep_sec * 2.0
+    def fetch_all_etfs_for_date(
+        self,
+        session: requests.Session,
+        trade_date: date,
+        base_headers: Dict[str, str],
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> List[EtfCompositionItem]:
+        if proxy is None:
+            proxy = AntiBotProxy(service=SERVICE)
+
+        date_str = trade_date.strftime("%Y-%m-%d")
+        pagecount, recordcount, first_items = self.fetch_list_page(session, trade_date, 1, base_headers, proxy)
+        if pagecount <= 0 or recordcount <= 0:
+            if first_items:
+                logger.info("[list %s] p%d: got %d items (no metadata pages)", date_str, 1, len(first_items))
+                return first_items
+            logger.info("[list %s] no data (recordcount=0, pagecount=0)", date_str)
+            return []
+
+        all_items: List[EtfCompositionItem] = list(first_items)
         logger.info(
-            "Auto-cooldown: many dates missing (%d/%d cached, ratio=%.1f%%), increasing sleep from %.1fs to %.1fs",
-            len(cached_dates & set(target_dates)), len(target_dates), cache_ratio * 100,
-            sleep_sec, auto_sleep,
+            "[list %s] p1/%d: %d items, total_records_expected=%d",
+            date_str, pagecount, len(first_items), recordcount,
         )
 
-    mode_desc = {
-        "hybrid": "hybrid (quarterly history + monthly latest)",
-        "monthly": "monthly",
-        "quarterly": "quarterly",
-    }.get(download_mode, download_mode)
-    
-    logger.info(
-        "Starting SZSE ETF composition download: %s -> %s (%d dates, mode=%s: %s ... %s)",
-        _start, _end, len(target_dates), mode_desc,
-        target_dates[0].strftime("%Y-%m-%d"),
-        target_dates[-1].strftime("%Y-%m-%d"),
-    )
+        seen_codes: Set[str] = {it.etf_code for it in all_items}
 
-    session = build_default_session()
-    stats = RunStats(skipped_cached=len(saved_filenames))
-    
-    # Create unified AntiBotProxy — pacing from the service's
-    # external_request_config JSON row (sleep_jitter, timeouts, anti-bot
-    # toggles); base sleep is the row's sleep_sec (or --sleep-sec) with
-    # the auto-cooldown multiplier already applied above.
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=auto_sleep,
-    ))
-
-    dates_processed = 0
-    try:
-        if tqdm:
-            dates_iter = tqdm(target_dates, desc="Processing dates", unit="date", leave=True)
-        else:
-            dates_iter = target_dates
-        for d in dates_iter:
+        for pno in range(2, pagecount + 1):
             if proxy.is_blocked(LIST_API_URL):
-                logger.warning("  [host-blocked] szse.cn blocked, stopping download")
+                logger.warning("[list %s] szse.cn blocked, stopping pagination at page %d", date_str, pno)
                 break
+            _, _, page_items = self.fetch_list_page(session, trade_date, pno, base_headers, proxy)
+            added = 0
+            for it in page_items:
+                if it.etf_code not in seen_codes:
+                    seen_codes.add(it.etf_code)
+                    all_items.append(it)
+                    added += 1
+            logger.info("[list %s] p%d/%d: page_items=%d new=%d cumulative=%d",
+                        date_str, pno, pagecount, len(page_items), added, len(all_items))
+            proxy.sleep(SLEEP_SEC)
 
-            ymd = d.strftime("%Y%m%d")
-            base_headers = random_browser_profile()
-            if tqdm:
-                dates_iter.set_postfix({"date": str(d)})
-            logger.info("== Date %s (%d/%d) ==", d, dates_processed + 1, len(target_dates))
+        return all_items
 
-            if d in cached_dates:
-                logger.info("  Date %s already cached, skipping list API call", d)
-                dates_processed += 1
+    def download_composition(
+        self,
+        session: requests.Session,
+        item: EtfCompositionItem,
+        out_file: Path,
+        base_headers: Dict[str, str],
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> bool:
+        if proxy is None:
+            proxy = AntiBotProxy(service=SERVICE)
+
+        if is_valid_file(out_file, min_bytes=MD_MIN_BYTES):
+            # Cached MD: ensure the per-file CSV exists too (backfill legacy MDs)
+            csv_path = out_file.with_suffix(".csv")
+            if not csv_path.exists():
+                try:
+                    convert_md_to_csv(out_file, csv_path)
+                except Exception as e:
+                    logger.warning("[conv %s %s] per-file CSV conversion failed: %s", item.etf_code, item.trade_date, e)
+            return True
+
+        resp = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            resp = proxy.get(
+                session,
+                item.detail_url,
+                headers=build_detail_headers(base_headers),
+                logger=logger,
+                log_tag=f"[dl {item.etf_code} {item.trade_date}]",
+            )
+            if resp is None:
+                if attempt == MAX_RETRIES:
+                    logger.error("[dl %s %s] fetch error after %d attempts: request returned None", item.etf_code, item.trade_date, attempt)
+                    return False
+                backoff = RETRY_BACKOFF_SEC * attempt
+                logger.warning("[dl %s %s] attempt %d failed; retry in %.1fs", item.etf_code, item.trade_date, attempt, backoff)
+                time.sleep(backoff)
                 continue
+            break
 
-            items = fetch_all_etfs_for_date(session, d, base_headers, proxy)
-            if not items:
-                logger.info("  No ETF items found for %s, skipping", d)
-                dates_processed += 1
-                proxy.sleep(auto_sleep * 0.3)
-                continue
+        if len(resp.content) < MD_MIN_BYTES:
+            logger.warning("[dl %s %s] content too small (%d bytes)", item.etf_code, item.trade_date, len(resp.content))
+            return False
 
-            # On month-start, stamp items for dl_date with today's date so
-            # files are named with today's date and the trade_date column in
-            # the CSV reflects the new month — even though the actual PCF
-            # data is from the most recent trading day (dl_date).
-            if month_start and stamp_date and d == dl_date:
-                for it in items:
-                    it.trade_date = stamp_date
-                    it.md_filename = md_filename_for(stamp_date, it.etf_code)
-                logger.info("  [month-start] Stamped %d items with %s (data from %s)",
-                            len(items), stamp_date.isoformat(), d.isoformat())
+        content = resp.text
+        md_text = composition_to_markdown(item, content)
 
-            logger.info("  Found %d ETFs for %s", len(items), d)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_file, "w", encoding="utf-8") as f:
+            f.write(md_text)
 
-            date_downloaded = 0
-            date_cached = 0
-            date_failed = 0
+        # Write the per-file CSV alongside the MD so build scripts can read finished CSVs directly
+        csv_path = out_file.with_suffix(".csv")
+        try:
+            convert_md_to_csv(out_file, csv_path)
+        except Exception as e:
+            logger.warning("[conv %s %s] per-file CSV conversion failed: %s", item.etf_code, item.trade_date, e)
 
-            date_items_need_dl = 0
-            for it in items:
-                out_file = out_dir / it.md_filename
-                if not (it.md_filename in saved_filenames or is_valid_file(out_file, min_bytes=MD_MIN_BYTES)):
-                    date_items_need_dl += 1
+        if is_valid_file(out_file, min_bytes=MD_MIN_BYTES):
+            return True
+        logger.warning("[dl %s %s] saved file too small after write", item.etf_code, item.trade_date)
+        return False
 
-            date_sleep = auto_sleep
-            if date_items_need_dl > 50:
-                date_sleep = auto_sleep * 1.5
-                logger.info(
-                    "  Auto-cooldown: %d items to download, increasing per-item sleep to %.1fs",
-                    date_items_need_dl, date_sleep,
-                )
+    def download_szse_etf_composition(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        start_date: Optional[str] = DEFAULT_START_DATE,
+        end_date: Optional[str] = None,
+        sleep_sec: Optional[float] = None,
+        max_dates: Optional[int] = None,
+        skip_today: bool = True,
+        convert_csv: bool = True,
+        download_mode: str = "hybrid",
+        force_month_start: bool = False,
+    ) -> dict:
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "szse_etf_composition", out_root)
 
+        _start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d").date()
+        _end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
+
+        # Month-start trigger: on the 1st of each month (or when forced), bypass
+        # the cache for the most recent trading day and stamp files with today's
+        # date so a fresh monthly snapshot flows to prod even if the actual data
+        # is from the previous business day.
+        today = date.today()
+        month_start = force_month_start or is_month_start(today)
+        dl_date: Optional[date] = None   # the trading day to download from the API
+        stamp_date: Optional[date] = None  # the date to stamp in filenames/trade_date
+        if month_start:
+            dl_date = most_recent_trading_day(today)
+            stamp_date = today
+            logger.info(
+                "Month-start refresh (today=%s, forced=%s): forcing download for "
+                "trading day %s, stamping files with today's date %s.",
+                today.isoformat(), force_month_start,
+                dl_date.isoformat(), stamp_date.isoformat(),
+            )
+
+        if download_mode == "hybrid":
+            target_dates = generate_hybrid_dates(_start, _end)
+        elif download_mode == "monthly":
+            target_dates = generate_monthly_first_biz_dates(_start, _end)
+        elif download_mode == "quarterly":
+            target_dates = generate_hybrid_dates(_start, _end)
+            target_dates = [d for d in target_dates if d.month in (1, 4, 7, 10)]
+        else:
+            target_dates = generate_monthly_first_biz_dates(_start, _end)
+
+        # On month-start, don't skip today (we need dl_date in the target set).
+        if skip_today and not month_start:
+            target_dates = [d for d in target_dates if d != today]
+        if max_dates is not None and max_dates > 0:
+            target_dates = target_dates[:max_dates]
+
+        # On month-start, ensure dl_date is in target_dates (prepend if missing).
+        if month_start and dl_date and dl_date not in target_dates:
+            target_dates.insert(0, dl_date)
+
+        if not target_dates:
+            logger.warning("No target dates generated for %s -> %s (mode=%s)", _start, _end, download_mode)
+            return {"out_dir": str(out_dir), "start_date": str(_start), "end_date": str(_end), "target_dates": 0}
+
+        saved_filenames = scan_present_filenames(
+            out_dir, glob_pattern="*.md", min_bytes=MD_MIN_BYTES,
+        )
+
+        cached_dates = set()
+        for fname in saved_filenames:
+            m = re.search(r"_(\d{8})_", fname)
+            if m:
+                try:
+                    d = datetime.strptime(m.group(1), "%Y%m%d").date()
+                    cached_dates.add(d)
+                except ValueError:
+                    pass
+
+        # On month-start, force re-download of dl_date by removing it from the
+        # cached set (the API is still queried and files are re-downloaded).
+        if month_start and dl_date:
+            cached_dates.discard(dl_date)
+
+        missing_dates = len(target_dates) - len(cached_dates & set(target_dates))
+        cache_ratio = (len(cached_dates & set(target_dates))) / len(target_dates) if target_dates else 1.0
+
+        # Base sleep from the service's external_request_config JSON row
+        # (SLEEP_SEC) unless overridden per-run with --sleep-sec.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+
+        auto_sleep = sleep_sec
+        if cache_ratio < 0.3 or missing_dates > 10:
+            auto_sleep = sleep_sec * 2.0
+            logger.info(
+                "Auto-cooldown: many dates missing (%d/%d cached, ratio=%.1f%%), increasing sleep from %.1fs to %.1fs",
+                len(cached_dates & set(target_dates)), len(target_dates), cache_ratio * 100,
+                sleep_sec, auto_sleep,
+            )
+
+        mode_desc = {
+            "hybrid": "hybrid (quarterly history + monthly latest)",
+            "monthly": "monthly",
+            "quarterly": "quarterly",
+        }.get(download_mode, download_mode)
+
+        logger.info(
+            "Starting SZSE ETF composition download: %s -> %s (%d dates, mode=%s: %s ... %s)",
+            _start, _end, len(target_dates), mode_desc,
+            target_dates[0].strftime("%Y-%m-%d"),
+            target_dates[-1].strftime("%Y-%m-%d"),
+        )
+
+        session = build_default_session()
+        stats = RunStats(skipped_cached=len(saved_filenames))
+
+        # Create unified AntiBotProxy — pacing from the service's
+        # external_request_config JSON row (sleep_jitter, timeouts, anti-bot
+        # toggles); base sleep is the row's sleep_sec (or --sleep-sec) with
+        # the auto-cooldown multiplier already applied above.
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=auto_sleep,
+        ))
+
+        dates_processed = 0
+        try:
             if tqdm:
-                items_iter = tqdm(items, desc=f"Downloading ETFs for {d}", unit="etf", leave=False)
+                dates_iter = tqdm(target_dates, desc="Processing dates", unit="date", leave=True)
             else:
-                items_iter = items
-            for it in items_iter:
-                if proxy.is_blocked(DETAIL_BASE_URL):
-                    logger.warning("  [host-blocked] reportdocs.static.szse.cn blocked, skipping remaining items")
+                dates_iter = target_dates
+            for d in dates_iter:
+                if proxy.is_blocked(LIST_API_URL):
+                    logger.warning("  [host-blocked] szse.cn blocked, stopping download")
                     break
 
-                out_file = out_dir / it.md_filename
-                if it.md_filename in saved_filenames or is_valid_file(out_file, min_bytes=MD_MIN_BYTES):
-                    # Cached MD: ensure the per-file CSV exists too (backfill legacy MDs)
-                    csv_path = out_file.with_suffix(".csv")
-                    if not csv_path.exists():
-                        try:
-                            convert_md_to_csv(out_file, csv_path)
-                        except Exception as e:
-                            logger.warning("[conv %s %s] per-file CSV conversion failed: %s", it.etf_code, it.trade_date, e)
-                    stats.skipped_cached += 1
-                    date_cached += 1
-                    saved_filenames.add(it.md_filename)
+                ymd = d.strftime("%Y%m%d")
+                base_headers = random_browser_profile()
+                if tqdm:
+                    dates_iter.set_postfix({"date": str(d)})
+                logger.info("== Date %s (%d/%d) ==", d, dates_processed + 1, len(target_dates))
+
+                if d in cached_dates:
+                    logger.info("  Date %s already cached, skipping list API call", d)
+                    dates_processed += 1
                     continue
 
-                ok = download_composition(session, it, out_file, base_headers, proxy)
-                if ok:
-                    stats.downloaded += 1
-                    stats.files.append(str(out_file))
-                    saved_filenames.add(it.md_filename)
-                    date_downloaded += 1
+                items = self.fetch_all_etfs_for_date(session, d, base_headers, proxy)
+                if not items:
+                    logger.info("  No ETF items found for %s, skipping", d)
+                    dates_processed += 1
+                    proxy.sleep(auto_sleep * 0.3)
+                    continue
+
+                # On month-start, stamp items for dl_date with today's date so
+                # files are named with today's date and the trade_date column in
+                # the CSV reflects the new month — even though the actual PCF
+                # data is from the most recent trading day (dl_date).
+                if month_start and stamp_date and d == dl_date:
+                    for it in items:
+                        it.trade_date = stamp_date
+                        it.md_filename = md_filename_for(stamp_date, it.etf_code)
+                    logger.info("  [month-start] Stamped %d items with %s (data from %s)",
+                                len(items), stamp_date.isoformat(), d.isoformat())
+
+                logger.info("  Found %d ETFs for %s", len(items), d)
+
+                date_downloaded = 0
+                date_cached = 0
+                date_failed = 0
+
+                date_items_need_dl = 0
+                for it in items:
+                    out_file = out_dir / it.md_filename
+                    if not (it.md_filename in saved_filenames or is_valid_file(out_file, min_bytes=MD_MIN_BYTES)):
+                        date_items_need_dl += 1
+
+                date_sleep = auto_sleep
+                if date_items_need_dl > 50:
+                    date_sleep = auto_sleep * 1.5
+                    logger.info(
+                        "  Auto-cooldown: %d items to download, increasing per-item sleep to %.1fs",
+                        date_items_need_dl, date_sleep,
+                    )
+
+                if tqdm:
+                    items_iter = tqdm(items, desc=f"Downloading ETFs for {d}", unit="etf", leave=False)
                 else:
-                    stats.failed += 1
-                    date_failed += 1
-                proxy.sleep(date_sleep)
+                    items_iter = items
+                for it in items_iter:
+                    if proxy.is_blocked(DETAIL_BASE_URL):
+                        logger.warning("  [host-blocked] reportdocs.static.szse.cn blocked, skipping remaining items")
+                        break
 
-            logger.info(
-                "  Date %s done: downloaded=%d cached=%d failed=%d (total expected=%d)",
-                ymd, date_downloaded, date_cached, date_failed, len(items),
-            )
-            dates_processed += 1
-            proxy.sleep(auto_sleep)
+                    out_file = out_dir / it.md_filename
+                    if it.md_filename in saved_filenames or is_valid_file(out_file, min_bytes=MD_MIN_BYTES):
+                        # Cached MD: ensure the per-file CSV exists too (backfill legacy MDs)
+                        csv_path = out_file.with_suffix(".csv")
+                        if not csv_path.exists():
+                            try:
+                                convert_md_to_csv(out_file, csv_path)
+                            except Exception as e:
+                                logger.warning("[conv %s %s] per-file CSV conversion failed: %s", it.etf_code, it.trade_date, e)
+                        stats.skipped_cached += 1
+                        date_cached += 1
+                        saved_filenames.add(it.md_filename)
+                        continue
 
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+                    ok = self.download_composition(session, it, out_file, base_headers, proxy)
+                    if ok:
+                        stats.downloaded += 1
+                        stats.files.append(str(out_file))
+                        saved_filenames.add(it.md_filename)
+                        date_downloaded += 1
+                    else:
+                        stats.failed += 1
+                        date_failed += 1
+                    proxy.sleep(date_sleep)
 
-    summary = stats.to_dict(
-        out_dir=str(out_dir),
-        start_date=str(_start),
-        end_date=str(_end),
-        target_dates_total=len(target_dates),
-        target_dates_processed=dates_processed,
-    )
+                logger.info(
+                    "  Date %s done: downloaded=%d cached=%d failed=%d (total expected=%d)",
+                    ymd, date_downloaded, date_cached, date_failed, len(items),
+                )
+                dates_processed += 1
+                proxy.sleep(auto_sleep)
 
-    if convert_csv:
-        csv_result = build_composition_csv(out_dir)
-        summary["csv"] = csv_result
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
 
-    logger.info(
-        "Done SZSE ETF composition. downloaded=%d skipped_cached=%d failed=%d empty=%d out=%s (%d dates processed/%d total)",
-        stats.downloaded, stats.skipped_cached, stats.failed, stats.empty,
-        out_dir, dates_processed, len(target_dates),
-    )
-    return summary
+        summary = stats.to_dict(
+            out_dir=str(out_dir),
+            start_date=str(_start),
+            end_date=str(_end),
+            target_dates_total=len(target_dates),
+            target_dates_processed=dates_processed,
+        )
+
+        if convert_csv:
+            csv_result = build_composition_csv(out_dir)
+            summary["csv"] = csv_result
+
+        logger.info(
+            "Done SZSE ETF composition. downloaded=%d skipped_cached=%d failed=%d empty=%d out=%s (%d dates processed/%d total)",
+            stats.downloaded, stats.skipped_cached, stats.failed, stats.empty,
+            out_dir, dates_processed, len(target_dates),
+        )
+        return summary
+
+    def run(self) -> None:
+        result = self.download_szse_etf_composition(
+            out_root=self.args.out_root,
+            start_date=self.args.start_date,
+            end_date=self.args.end_date,
+            sleep_sec=self.args.sleep_sec,
+            max_dates=self.args.max_dates,
+            skip_today=self.args.skip_today,
+            convert_csv=self.args.convert_csv,
+            download_mode=self.args.download_mode,
+            force_month_start=self.args.force_month_start,
+        )
+        logger.info(result)
 
 
 if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser(description="Download SZSE ETF creation/redemption composition data and convert to CSV.")
-    ap.add_argument("--start-date", type=str, default=DEFAULT_START_DATE,
-                    help=f"Start date for backfill (default: {DEFAULT_START_DATE})")
-    ap.add_argument("--end-date", type=str, default=None,
-                    help="End date for backfill (default: today)")
-    ap.add_argument("--out-root", type=str, default=None,
-                    help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=None,
-                    help="Base sleep seconds between requests "
-                         f"(default: external_request_config JSON for {SERVICE})")
-    ap.add_argument("--max-dates", type=int, default=None,
-                    help="Limit to N dates (dev/testing)")
-    ap.add_argument("--skip-today", action="store_true", default=True,
-                    help="Skip today's date (default: enabled)")
-    ap.add_argument("--no-skip-today", action="store_true", default=False,
-                    help="Include today's date")
-    ap.add_argument("--convert-csv", action="store_true", default=True,
-                    help="Convert downloaded .md files to CSV (default: enabled)")
-    ap.add_argument("--no-convert-csv", action="store_true", default=False,
-                    help="Skip CSV conversion")
-    ap.add_argument("--download-mode", type=str, default="hybrid",
-                    choices=["hybrid", "monthly", "quarterly"],
-                    help="Download mode: hybrid (quarterly for history + monthly for latest month), monthly, or quarterly (default: hybrid)")
-    ap.add_argument("--force-month-start", action="store_true", default=False,
-                    help="Force month-start behavior: bypass cache for the most recent "
-                         "trading day and stamp files with today's date. For testing the "
-                         "monthly refresh flow on any day.")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    skip_today = args.skip_today and not args.no_skip_today
-    convert_csv = args.convert_csv and not args.no_convert_csv
-
-    result = download_szse_etf_composition(
-        out_root=args.out_root,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        sleep_sec=args.sleep_sec,
-        max_dates=args.max_dates,
-        skip_today=skip_today,
-        convert_csv=convert_csv,
-        download_mode=args.download_mode,
-        force_month_start=args.force_month_start,
-    )
-    logger.info(result)
+    SzseEtfCompositionDownload().execute()

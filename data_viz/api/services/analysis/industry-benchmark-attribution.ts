@@ -4,6 +4,7 @@
  * Extracted from the former analysis.service.ts.
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { renderSqlView, querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import type {
   IndustryBenchmarkAttributionRow,
@@ -48,72 +49,25 @@ export async function getIndustryBenchmarkAttribution(
   }
 
   // Look up the industry_label from stats.sec_classification.
-  const labelRows = await queryRows<{ industry_label: string | null }>(
-    `SELECT DISTINCT industry_label
-     FROM stats.sec_classification
-     WHERE type = 'index' AND industry_id = $1::text`,
-    [industryId],
+  const labelRows = await querySqlView<{ industry_label: string | null }>(
+    "data_viz/api/services/analysis/industry-benchmark-attribution/industry_label",
+    { industry_id: industryId },
   );
   const industryLabel = labelRows[0]?.industry_label ?? industryId;
 
   // Query the pre-materialized industry_attributions table for the given
   // industry at the target date (or latest available when date is NULL).
   // benchmark_return is computed on-the-fly via LATERAL join to
-  // stats.index_basic_stats (NOT stored in industry_attributions).
-  const sql = `
-    WITH target_date AS (
-      SELECT COALESCE(
-        $2::date,
-        (SELECT MAX(date) FROM analysis.industry_attributions
-         WHERE industry_id = $1::text)
-      ) AS max_date
-    ),
-    bench_rows AS (
-      SELECT
-        ia.benchmark_code,
-        ia.industry_shared_weight,
-        ia.benchmark_shared_weight
-      FROM analysis.industry_attributions ia
-      CROSS JOIN target_date ld
-      WHERE ia.industry_id = $1::text
-        AND ia.date = ld.max_date
-    )
-    SELECT
-      br.benchmark_code,
-      bi.name AS benchmark_name,
-      ld.max_date AS date,
-      br.industry_shared_weight,
-      br.benchmark_shared_weight,
-      sit.is_broad_market,
-      CASE
-        WHEN ib.close IS NOT NULL AND pb.close IS NOT NULL AND pb.close != 0
-        THEN (ib.close - pb.close) / pb.close
-        ELSE NULL
-      END AS benchmark_return
-    FROM bench_rows br
-    CROSS JOIN target_date ld
-    LEFT JOIN LATERAL (
-      SELECT DISTINCT ON (code) code, name
-      FROM stats.index_identity
-      WHERE code = br.benchmark_code
-      ORDER BY code, date DESC
-    ) bi ON true
-    LEFT JOIN LATERAL (
-      SELECT close FROM stats.index_basic_stats
-      WHERE code = br.benchmark_code AND date = ld.max_date
-    ) ib ON true
-    LEFT JOIN LATERAL (
-      SELECT close FROM stats.index_basic_stats
-      WHERE code = br.benchmark_code AND date < ld.max_date
-      ORDER BY date DESC LIMIT 1
-    ) pb ON true
-    LEFT JOIN LATERAL (
-      SELECT BOOL_OR(is_broad_market) AS is_broad_market
-      FROM stats.sec_index_tags
-      WHERE code = br.benchmark_code
-    ) sit ON true
-    ORDER BY br.benchmark_code
-  `;
+  // stats.index_basic_stats (NOT stored in industry_attributions). The
+  // SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-benchmark-attribution/attribution_bars.
+  // The date placeholder is a fragment because the original SQL numbered
+  // it as the LAST pg param while it appears FIRST in the text; the
+  // params array is bound here ([industry_id, target_date]).
+  const { sql } = renderSqlView(
+    "data_viz/api/services/analysis/industry-benchmark-attribution/attribution_bars",
+    { industry_id: industryId, target_date_param: sqlFrag("$2::date") },
+  );
   const rows = await queryRows<DbIndustryBenchmarkAttributionRow>(
     sql,
     [industryId, date ?? null],
@@ -164,27 +118,11 @@ interface DbIndustryAttributionBenchmarkRow extends QueryResultRow {
 }
 
 export async function listIndustryAttributionBenchmarks(): Promise<IndustryAttributionBenchmarkEntry[]> {
-  const sql = `
-    WITH bench_codes AS (
-      SELECT DISTINCT ia.benchmark_code
-      FROM analysis.industry_attributions ia
-      JOIN stats.sec_index_tags sit ON sit.code = ia.benchmark_code
-      WHERE sit.is_broad_market = TRUE
-    )
-    SELECT
-      bc.benchmark_code,
-      ii.name AS benchmark_name,
-      TRUE AS is_broad_market
-    FROM bench_codes bc
-    LEFT JOIN LATERAL (
-      SELECT DISTINCT ON (code) name
-      FROM stats.index_identity
-      WHERE code = bc.benchmark_code
-      ORDER BY code, date DESC
-    ) ii ON true
-    ORDER BY bc.benchmark_code
-  `;
-  const rows = await queryRows<DbIndustryAttributionBenchmarkRow>(sql, []);
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-benchmark-attribution/attribution_benchmarks.
+  const rows = await querySqlView<DbIndustryAttributionBenchmarkRow>(
+    "data_viz/api/services/analysis/industry-benchmark-attribution/attribution_benchmarks",
+  );
   return rows.map((r) => ({
     benchmark_code: r.benchmark_code,
     benchmark_name: r.benchmark_name ?? r.benchmark_code,

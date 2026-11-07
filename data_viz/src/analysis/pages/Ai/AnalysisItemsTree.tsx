@@ -1,7 +1,10 @@
 /**
  * AnalysisItemsTree — the summary page's first left foldable, "Scopes":
- * the analysis items as a nested checkbox list grouped by their top-nav
- * category (Commons / Derivatives / Composites / Signals).
+ * the SUMMARY SUBJECTS section on top (the run's scope tags + their add
+ * input — default-linked to the classification nav's multi-selected
+ * items; see AnalysisSummaryPage's scope wiring), then the analysis
+ * items as a nested checkbox list grouped by their top-nav category
+ * (Commons / Derivatives / Composites / Signals).
  *
  * The panel folds HORIZONTALLY: collapsed it is a slim vertical strip on
  * the far left (icon + rotated title + selected/total count), and a
@@ -20,11 +23,16 @@
  */
 import { useState } from "react";
 import {
+  Autocomplete,
+  createFilterOptions,
   Box,
+  Chip,
   Checkbox,
   Collapse,
   IconButton,
   Paper,
+  TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
@@ -46,16 +54,159 @@ import {
 const STRIP_WIDTH = 46;
 const PANEL_WIDTH = 300;
 
+/** The stock tree carries thousands of items — the default match set
+ *  stays bounded so the popper never renders it whole. */
+const defaultOptionFilter = createFilterOptions<{
+  code: string;
+  name: string;
+}>();
+const SUBJECT_OPTION_CAP = 60;
+
+/** One summary-subject tag — a code (or industry id) + its display name
+ *  when the loaded trees carry one. */
+export interface ScopeSubjectEntry {
+  code: string;
+  name?: string;
+}
+
 export interface AnalysisItemsTreeProps {
   /** Checked leaf keys (`categorySlug/itemSlug`); all-checked by default. */
   selectedKeys: Set<string>;
   onToggleItem: (key: string, checked: boolean) => void;
   onToggleCategory: (category: AnalysisCategoryEntry, checked: boolean) => void;
   onToggleAll: (checked: boolean) => void;
+  /** The run's scope subjects — DEFAULT-LINKED to the classification
+   *  nav's multi-selected items; the input bar below adds more (typed
+   *  codes resolve their names from the trees when they carry them). */
+  subjects: ScopeSubjectEntry[];
+  onRemoveSubject: (code: string) => void;
+  /** A committed add (the input bar's Enter/pick) — the page dedupes. */
+  onAddSubject: (code: string) => void;
+  /** The input bar's suggestion list — the loaded trees' items. */
+  subjectSuggestions: Array<{ code: string; name: string }>;
+  /** The subject kind label (Index / ETF / Stock / Industry) for the
+   *  input hint; absent in the "all" sec_type (no subjects then). */
+  subjectKind?: string;
+}
+
+/** The subjects section — the scope tags + their add input. Kept as a
+ *  subcomponent so the input state resets with the section, not with the
+ *  panel's fold. */
+function SubjectsSection({
+  subjects,
+  onRemoveSubject,
+  onAddSubject,
+  subjectSuggestions,
+  subjectKind,
+}: {
+  subjects: ScopeSubjectEntry[];
+  onRemoveSubject: (code: string) => void;
+  onAddSubject: (code: string) => void;
+  subjectSuggestions: Array<{ code: string; name: string }>;
+  subjectKind?: string;
+}) {
+  const [input, setInput] = useState("");
+  const has = (code: string) =>
+    subjects.some((s) => s.code.toUpperCase() === code.toUpperCase());
+  const commitInput = (raw: string) => {
+    const code = raw.trim();
+    if (code === "" || has(code)) {
+      setInput("");
+      return;
+    }
+    setInput("");
+    onAddSubject(code);
+  };
+
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 0.5,
+        pb: 1,
+        mb: 1,
+        borderBottom: 1,
+        borderColor: "divider",
+      }}
+    >
+      <Typography variant="caption" color="text.secondary">
+        Summary subjects{subjectKind ? ` · ${subjectKind}` : ""} — linked to
+        the classification nav picks; empty = market-wide
+      </Typography>
+      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
+        {subjects.map((s) => (
+          <Chip
+            key={s.code}
+            label={s.name ? `${s.code} ${s.name}` : s.code}
+            size="small"
+            color="primary"
+            variant="outlined"
+            onDelete={() => onRemoveSubject(s.code)}
+          />
+        ))}
+        {subjects.length === 0 && (
+          // The default placeholder tag — DISABLED (nothing to remove):
+          // an empty pick IS the market-wide run, the same label the
+          // backend's planning framing and prompt templates carry.
+          <Tooltip title="Market-wide — no subject filter; the run covers the whole market">
+            <Chip
+              label="All Market"
+              size="small"
+              disabled
+              variant="outlined"
+              sx={{ fontStyle: "italic" }}
+            />
+          </Tooltip>
+        )}
+        <Autocomplete
+          freeSolo
+          size="small"
+          disableClearable
+          options={subjectSuggestions.filter((o) => !has(o.code))}
+          getOptionLabel={(o) => (typeof o === "string" ? o : `${o.code} ${o.name}`)}
+          filterOptions={(options, state) =>
+            defaultOptionFilter(options, state).slice(0, SUBJECT_OPTION_CAP)
+          }
+          inputValue={input}
+          onInputChange={(_, value) => setInput(value)}
+          onChange={(_, value) => {
+            const code =
+              typeof value === "string" ? value.trim() : value?.code ?? "";
+            if (code !== "") commitInput(code);
+          }}
+          sx={{ minWidth: 150, flexGrow: 1, maxWidth: 240 }}
+          renderInput={(params) => (
+            <TextField
+              {...params}
+              placeholder="Pick or type a code…"
+              variant="standard"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitInput(input);
+                }
+              }}
+            />
+          )}
+        />
+      </Box>
+    </Box>
+  );
 }
 
 export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
-  const { selectedKeys, onToggleItem, onToggleCategory, onToggleAll } = props;
+  const {
+    selectedKeys,
+    onToggleItem,
+    onToggleCategory,
+    onToggleAll,
+    subjects,
+    onRemoveSubject,
+    onAddSubject,
+    subjectSuggestions,
+    subjectKind,
+  } = props;
   // The panel starts folded into a left strip — a click expands it
   // rightward; the expanded header's chevron folds it back.
   const [expanded, setExpanded] = useState(false);
@@ -131,6 +282,16 @@ export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
             </IconButton>
           </Box>
           <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", p: 1 }}>
+            {/* Summary subjects — the scope tags + input bar (top of the
+                panel: the scope pick governs the whole run, the item
+                checkboxes below say which analyses it covers). */}
+            <SubjectsSection
+              subjects={subjects}
+              onRemoveSubject={onRemoveSubject}
+              onAddSubject={onAddSubject}
+              subjectSuggestions={subjectSuggestions}
+              subjectKind={subjectKind}
+            />
             {/* Master row — spans every category. */}
             <Box sx={{ display: "flex", alignItems: "center" }}>
               <Checkbox

@@ -27,6 +27,7 @@
  *   ALL terms must hit (AND) unless searchAny ORs them.
  */
 import { queryRows } from "../lib/db.js";
+import { querySqlView, renderSqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import type {
   NewsComment,
@@ -53,22 +54,11 @@ interface CatalogRow extends QueryResultRow {
 }
 
 /** Full unified-model catalog (industry + strategy rows alike). Cached — the
- *  classification only changes on the nightly build. */
+ *  classification only changes on the nightly build. The SELECT lives in
+ *  the sql view data_viz/api/services/news/catalog_rows. */
 async function listCatalogRows(): Promise<CatalogRow[]> {
   return cachedRows("news:catalog", () =>
-    queryRows<CatalogRow>(
-      `
-      SELECT DISTINCT ON (sector_id, industry_id, is_industry_not_strategy)
-             COALESCE(sector_id,      'OTHER') AS sector_id,
-             COALESCE(sector_label,   '其他')  AS sector_label,
-             COALESCE(industry_id,    'OTHER') AS industry_id,
-             COALESCE(industry_label, '未分类') AS industry_label,
-             COALESCE(industry_slug,  'other') AS industry_slug,
-             COALESCE(is_industry_not_strategy, TRUE) AS is_industry_not_strategy
-        FROM stats.sec_classification
-       ORDER BY sector_id, industry_id, is_industry_not_strategy
-      `,
-    ),
+    querySqlView<CatalogRow>("data_viz/api/services/news/catalog_rows"),
   );
 }
 
@@ -202,10 +192,15 @@ async function getNewsCountByIndustry(
         params.push(author);
         clauses.push(`author = $${params.length}`);
       }
-      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      // The SELECT lives in the sql view
+      // data_viz/api/services/news/count_by_industry (where_clause rides a
+      // fragment; its params stay caller-assembled).
       return queryRows(
-        `SELECT COALESCE(industry_id, '') AS industry_id, COUNT(*)::text AS n
-           FROM text.news ${where} GROUP BY 1`,
+        renderSqlView("data_viz/api/services/news/count_by_industry", {
+          where_clause: sqlFrag(
+            clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
+          ),
+        }).sql,
         params,
       );
     },
@@ -344,11 +339,15 @@ export async function listNewsAuthors(
   const params: unknown[] = [];
   const conditions = await buildFilterSql(filters, params);
   if (conditions === "1=0") return [];
+  // The SELECT lives in the sql view data_viz/api/services/news/authors
+  // (where_clause rides a fragment; its params stay caller-assembled).
+  const whereClause = conditions
+    ? `${conditions} AND n.author IS NOT NULL`
+    : "n.author IS NOT NULL";
   const rows = await queryRows<{ author: string; n: string } & QueryResultRow>(
-    `SELECT n.author, COUNT(*)::text AS n
-       FROM text.news n ${conditions ? `WHERE ${conditions} AND ` : "WHERE "}n.author IS NOT NULL
-      GROUP BY n.author ORDER BY COUNT(*) DESC, n.author ASC
-      LIMIT 30`,
+    renderSqlView("data_viz/api/services/news/authors", {
+      where_clause: sqlFrag(whereClause),
+    }).sql,
     params,
   );
   return rows.map((r) => ({ author: r.author, count: Number(r.n) }));
@@ -372,16 +371,19 @@ export async function listNewsCalendar(
     params.push(filters.start, filters.end);
     extra.push(`n.date BETWEEN $${params.length - 1} AND $${params.length}`);
   }
-  const where = extra.length ? `WHERE ${extra.join(" AND ")}` : "";
+  // The SELECT lives in the sql view data_viz/api/services/news/calendar
+  // (where_clause rides a fragment; its params stay caller-assembled).
   const rows = await queryRows<{ date: string; count: string } & QueryResultRow>(
-    `SELECT n.date::text AS date, COUNT(*)::text AS count
-       FROM text.news n ${where}
-      GROUP BY n.date ORDER BY n.date`,
+    renderSqlView("data_viz/api/services/news/calendar", {
+      where_clause: sqlFrag(extra.length ? `WHERE ${extra.join(" AND ")}` : ""),
+    }).sql,
     params,
   );
   const days = rows.map((r) => ({ date: r.date, count: Number(r.count) }));
-  const bounds = await queryRows<{ min_date: string | null; max_date: string | null } & QueryResultRow>(
-    `SELECT MIN(date)::text AS min_date, MAX(date)::text AS max_date FROM text.news`,
+  // The SELECT lives in the sql view
+  // data_viz/api/services/news/date_bounds.
+  const bounds = await querySqlView<{ min_date: string | null; max_date: string | null } & QueryResultRow>(
+    "data_viz/api/services/news/date_bounds",
   );
   return {
     days,
@@ -431,22 +433,22 @@ async function finishItems(
   const limit = Math.min(Math.max(filters.limit ?? 10, 1), 200);
   const offset = Math.max(filters.offset ?? 0, 0);
 
+  // The SELECTs live in the sql views
+  // data_viz/api/services/news/items_count and news/items (where_clause
+  // rides a fragment; its params stay caller-assembled; LIMIT/OFFSET ride
+  // caller-built clamped-literal fragments).
   const totalRows = await queryRows<{ n: string } & QueryResultRow>(
-    `SELECT COUNT(*)::text AS n FROM text.news n ${whereClause}`,
+    renderSqlView("data_viz/api/services/news/items_count", {
+      where_clause: sqlFrag(whereClause),
+    }).sql,
     params,
   );
-  params.push(limit);
-  params.push(offset);
   const items = await queryRows<NewsItem & QueryResultRow>(
-    `SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
-            n.author, n.industry_id, n.sector_id, n.votes, n.is_big_fluctuation,
-            (SELECT COUNT(*)::int FROM text.news_comments c
-              WHERE c.news_id = n.news_id) AS comment_count,
-            CASE WHEN n.content IS NULL THEN NULL
-                 ELSE LEFT(n.content, 200) END AS snippet
-       FROM text.news n ${whereClause}
-      ORDER BY n.date DESC, n.votes DESC NULLS LAST, n.source ASC, n.news_id ASC
-      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    renderSqlView("data_viz/api/services/news/items", {
+      where_clause: sqlFrag(whereClause),
+      limit: sqlFrag(`${limit}`),
+      offset: sqlFrag(`${offset}`),
+    }).sql,
     params,
   );
   return { total: Number(totalRows[0]?.n ?? 0), items };
@@ -458,27 +460,20 @@ async function finishItems(
 // ---------------------------------------------------------------------------
 
 export async function getNewsItem(newsId: number): Promise<NewsItemDetail | null> {
-  const rows = await queryRows<NewsItemDetail & QueryResultRow>(
-    `SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
-            n.author, n.industry_id, n.sector_id, n.votes, n.content,
-            n.is_big_fluctuation,
-            (SELECT COUNT(*)::int FROM text.news_comments c
-              WHERE c.news_id = n.news_id) AS comment_count
-       FROM text.news n
-      WHERE n.news_id = $1`,
-    [newsId],
+  // The SELECT lives in the sql view data_viz/api/services/news/news_item.
+  const rows = await querySqlView<NewsItemDetail & QueryResultRow>(
+    "data_viz/api/services/news/news_item",
+    { news_id: newsId },
   );
   return rows[0] ?? null;
 }
 
 export async function listNewsComments(newsId: number): Promise<NewsCommentsResponse> {
-  const rows = await queryRows<NewsComment & QueryResultRow>(
-    `SELECT c.comment_id, c.parent_comment_id, c.author, c.content,
-            c.date::text AS date, c.votes, c.is_reply
-       FROM text.news_comments c
-      WHERE c.news_id = $1
-      ORDER BY c.date ASC, c.comment_id ASC`,
-    [newsId],
+  // The SELECT lives in the sql view
+  // data_viz/api/services/news/news_comments.
+  const rows = await querySqlView<NewsComment & QueryResultRow>(
+    "data_viz/api/services/news/news_comments",
+    { news_id: newsId },
   );
   // node-pg serves BIGINT (int8) as strings — normalize the id columns to
   // numbers so the NewsComment contract holds and the votes/`comment_id`

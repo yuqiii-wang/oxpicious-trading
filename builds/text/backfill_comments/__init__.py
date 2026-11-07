@@ -177,7 +177,8 @@ async def _flush(conn, pending: List[Dict[str, Any]]) -> int:
     """Write one batch through the standard comment pipeline (PK-checked)."""
     if not pending:
         return 0
-    existing_pks = await upsert.fetch_existing_comment_pks(conn)
+    upserter = upsert.TextUpsert(conn)
+    existing_pks = await upserter.fetch_existing_comment_pks()
     fresh = upsert.filter_new_comments(pending, existing_pks)
-    await upsert.insert_comments(conn, fresh)
+    await upserter.insert_comments(fresh)
     return len(fresh)

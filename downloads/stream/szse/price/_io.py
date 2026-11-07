@@ -1,8 +1,16 @@
 """SZSE stream IO — CSV archive writer and DB upsert helpers.
 
 ``write_cycle_csv`` archives one cycle's emitted bars to a CSV under
-``temps/szse_intraday/``. ``load_bars_sync`` / ``load_index_bars_sync``
-upsert identity rows (FK parent) then intraday bars for stocks / indices.
+``temps/szse_intraday/``. ``StreamIo.load_bars_sync`` /
+``StreamIo.load_index_bars_sync`` upsert identity rows (FK parent) then
+intraday bars for stocks / indices.
+
+Class shape: the conn-first upsert helpers are staticmethods of
+:class:`StreamIo` (the conn-scoped IO scope) — the live ``conn`` stays an
+explicit per-call argument and the async workers run them in threads via
+``asyncio.to_thread(StreamIo.load_bars_sync, ...)``, so no instance needs
+to cross the worker boundary. ``write_cycle_csv`` stays module-level (pure
+file writer — no conn, no state).
 """
 from __future__ import annotations
 
@@ -26,6 +34,55 @@ CSV_COLUMNS = [
 ]
 
 
+class StreamIo:
+    """Conn-scoped IO scope for the SZSE stream — the former module-level
+    conn-first upsert helpers grouped as one object (stateless: the ``conn``
+    stays an explicit argument so the worker threads need no instance)."""
+
+    @staticmethod
+    def load_bars_sync(conn, identity_rows: List[dict], bar_rows: List[dict]) -> None:
+        """Upsert identity rows (FK parent) then intraday bars (sync).
+
+        ``aggregate_5min`` emits one identity row per 5-min bar, so a single stock
+        with N bars yields N identical ``{date, code, name}`` rows. A multi-row
+        INSERT ... ON CONFLICT (date, code) with duplicate keys raises
+        "cannot affect row a second time", so collapse identity rows to one per
+        (date, code) before upserting.
+        """
+        if identity_rows:
+            seen = set()
+            uniq: List[dict] = []
+            for r in identity_rows:
+                k = (r["date"], r["code"])
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append(r)
+            bulk_upsert(conn, "stats.stock_identity", uniq, ["date", "code"])
+        if bar_rows:
+            bulk_upsert(conn, "stats.stock_intraday_5min", bar_rows, ["date", "code", "time"])
+
+    @staticmethod
+    def load_index_bars_sync(conn, identity_rows: List[dict], bar_rows: List[dict]) -> None:
+        """Upsert index identity rows (FK parent) then intraday bars (sync).
+
+        Targets ``stats.index_identity`` + ``stats.index_intraday_5min`` — the
+        index counterparts of the stock tables (no exchange, no trading_shares).
+        """
+        if identity_rows:
+            seen = set()
+            uniq: List[dict] = []
+            for r in identity_rows:
+                k = (r["date"], r["code"])
+                if k in seen:
+                    continue
+                seen.add(k)
+                uniq.append(r)
+            bulk_upsert(conn, "stats.index_identity", uniq, ["date", "code"])
+        if bar_rows:
+            bulk_upsert(conn, "stats.index_intraday_5min", bar_rows, ["date", "code", "time"])
+
+
 def write_cycle_csv(cycle_dt: datetime, bar_rows: List[dict]) -> Optional[Path]:
     """Archive one cycle's emitted bars to a CSV under temps/szse_intraday/."""
     if not bar_rows:
@@ -43,46 +100,3 @@ def write_cycle_csv(cycle_dt: datetime, bar_rows: List[dict]) -> Optional[Path]:
             out.update(row)
             writer.writerow(out)
     return out_file
-
-
-def load_bars_sync(conn, identity_rows: List[dict], bar_rows: List[dict]) -> None:
-    """Upsert identity rows (FK parent) then intraday bars (sync).
-
-    ``aggregate_5min`` emits one identity row per 5-min bar, so a single stock
-    with N bars yields N identical ``{date, code, name}`` rows. A multi-row
-    INSERT ... ON CONFLICT (date, code) with duplicate keys raises
-    "cannot affect row a second time", so collapse identity rows to one per
-    (date, code) before upserting.
-    """
-    if identity_rows:
-        seen = set()
-        uniq: List[dict] = []
-        for r in identity_rows:
-            k = (r["date"], r["code"])
-            if k in seen:
-                continue
-            seen.add(k)
-            uniq.append(r)
-        bulk_upsert(conn, "stats.stock_identity", uniq, ["date", "code"])
-    if bar_rows:
-        bulk_upsert(conn, "stats.stock_intraday_5min", bar_rows, ["date", "code", "time"])
-
-
-def load_index_bars_sync(conn, identity_rows: List[dict], bar_rows: List[dict]) -> None:
-    """Upsert index identity rows (FK parent) then intraday bars (sync).
-
-    Targets ``stats.index_identity`` + ``stats.index_intraday_5min`` — the
-    index counterparts of the stock tables (no exchange, no trading_shares).
-    """
-    if identity_rows:
-        seen = set()
-        uniq: List[dict] = []
-        for r in identity_rows:
-            k = (r["date"], r["code"])
-            if k in seen:
-                continue
-            seen.add(k)
-            uniq.append(r)
-        bulk_upsert(conn, "stats.index_identity", uniq, ["date", "code"])
-    if bar_rows:
-        bulk_upsert(conn, "stats.index_intraday_5min", bar_rows, ["date", "code", "time"])

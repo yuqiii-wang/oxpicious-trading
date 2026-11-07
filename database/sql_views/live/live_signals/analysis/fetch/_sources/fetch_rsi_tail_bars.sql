@@ -1,0 +1,15 @@
+-- The code's trailing RSI rows for the mov_rsi ADAPTIVE percentile bars:
+-- the newest RSI_BAR_WINDOW_DAYS + 1 daily rows at-or-before as_of (the
+-- caller drops the newest in Python, mirroring the engine's shift so the
+-- bar never includes the day it gates). The rsi column set is built from
+-- the cells' own (window) needs.
+-- args:
+--   rsi_columns: fragment — the "rsi_{W}days::float8" projection built
+--     from the requested windows
+--   rsi_table: fragment — the RSI source table (RSI_TABLE)
+--   sec_type: value smallint — the sec_type's SEC_TYPE_CODE
+--   code: value text — the ticker
+--   as_of: value date or None — bound the rows at-or-before this day
+--   rsi_bar_window_limit: fragment — RSI_BAR_WINDOW_DAYS + 1 inline
+--     literal (the LIMIT)
+SELECT {{rsi_columns}} FROM {{rsi_table}} WHERE sec_type = {{sec_type}} AND code = {{code}}   AND ({{as_of}}::date IS NULL OR date <= {{as_of}}::date) ORDER BY date DESC LIMIT {{rsi_bar_window_limit}}

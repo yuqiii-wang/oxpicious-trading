@@ -11,7 +11,7 @@ Every logical call is audited to ``monitor.external_resource_audit``
 (``_common.external_resource_audit.record_llm`` — one LEAN row per call
 with the FINAL attempt's outcome, fire-and-forget so auditing can never
 perturb the request) and recorded WITH its full request/response
-payloads to ``text.llm_requests`` (``_core.request_log`` — the source
+payloads to ``llm.llm_requests`` (``_core.request_log`` — the source
 log; the calling context's ``bind_ref_ids`` source-article ids ride
 along).
 
@@ -31,7 +31,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 import requests
 
 from _common.external_resource_audit import record_llm
-from llm_agents._core.errors import LlmProviderError
+from llm_agents._core.errors import LlmProviderError, LlmRequestBudgetExceeded
 from llm_agents._core.request_log import record_request
 
 logger = logging.getLogger(__name__)
@@ -82,14 +82,24 @@ class RetryingJsonClient:
         return self._session
 
     def post_json(self, url: str, payload: Dict[str, Any],
-                  *, timeout: float) -> Dict[str, Any]:
+                  *, timeout: float,
+                  budget: Optional[float] = None) -> Dict[str, Any]:
         """Synchronous retrying JSON POST (run via asyncio.to_thread).
+
+        *timeout* bounds ONE attempt's HTTP read; *budget* (optional)
+        bounds the WHOLE logical call — the retry ladder terminates at
+        the budget instead of playing every attempt out (each attempt's
+        timeout shrinks to the remaining budget; an attempt that cannot
+        start raises :class:`LlmRequestBudgetExceeded`). The budget is
+        the "individual LLM request must not run longer than N minutes"
+        policy: callers pass it from the run limits; None keeps the
+        legacy behavior (attempts × timeout).
 
         Audits one ``monitor.external_resource_audit`` row per logical
         call — the FINAL attempt's outcome (retries are not itemized);
         duration_ms covers the whole logical call, retries + backoff
         included. The same call is also recorded with its full
-        request/response payloads to ``text.llm_requests``
+        request/response payloads to ``llm.llm_requests``
         (``_core.request_log`` — the source log, fire-and-forget too;
         the context's ``bind_ref_ids`` binding rides along).
         """
@@ -97,7 +107,7 @@ class RetryingJsonClient:
         duration_ms: Optional[float] = None
         try:
             data, status_code = self._post_json_with_retries(
-                url, payload, timeout=timeout)
+                url, payload, timeout=timeout, budget=budget)
             duration_ms = (time.perf_counter() - started) * 1000.0
         except LlmProviderError as e:
             record_llm(self.name, url, e.status, is_failed=True,
@@ -124,17 +134,37 @@ class RetryingJsonClient:
         return data
 
     def _post_json_with_retries(self, url: str, payload: Dict[str, Any],
-                                *, timeout: float) -> Tuple[Dict[str, Any], int]:
-        """The retry loop — returns (parsed JSON, final HTTP status)."""
+                                *, timeout: float,
+                                budget: Optional[float] = None,
+                                ) -> Tuple[Dict[str, Any], int]:
+        """The retry loop — returns (parsed JSON, final HTTP status).
+
+        Under a *budget* the ladder terminates at the budget: every
+        attempt's HTTP timeout is min(timeout, remaining), and an
+        attempt with no remaining time raises the budget-exceeded error
+        (the caller's "input too heavy — refactor it smaller" signal)."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         last_exc: Optional[LlmProviderError] = None
+        started = time.perf_counter()
         for attempt in range(self.max_attempts):
+            attempt_timeout = timeout
+            if budget is not None:
+                remaining = budget - (time.perf_counter() - started)
+                if remaining <= 0.0:
+                    raise LlmRequestBudgetExceeded(
+                        f"{self.name}: request budget of {budget:.0f}s "
+                        f"exhausted after {attempt} attempt(s) on {url} — "
+                        "the input is too heavy for one call; the caller "
+                        "should break the work into smaller tasks",
+                        budget=budget)
+                attempt_timeout = min(timeout, remaining)
             try:
                 resp = self.session.post(url, headers=headers,
-                                         json=payload, timeout=timeout)
+                                         json=payload,
+                                         timeout=attempt_timeout)
             except (requests.Timeout, requests.ConnectionError) as e:
                 last_exc = LlmProviderError(
                     f"{self.name}: transport error on {url}: "
@@ -193,6 +223,7 @@ class RetryingJsonClient:
         time.sleep(backoff)
 
     async def post_json_async(self, url: str, payload: Dict[str, Any],
-                              *, timeout: float) -> Dict[str, Any]:
+                              *, timeout: float,
+                              budget: Optional[float] = None) -> Dict[str, Any]:
         return await asyncio.to_thread(self.post_json, url, payload,
-                                       timeout=timeout)
+                                       timeout=timeout, budget=budget)

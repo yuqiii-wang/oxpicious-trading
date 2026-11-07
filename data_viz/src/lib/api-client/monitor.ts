@@ -612,7 +612,7 @@ export function fetchSrcDataAudit(
 }
 
 // ---------------------------------------------------------------------------
-//  AI usage (the AI tab) — text.llm_requests aggregates
+//  AI usage (the AI tab) — llm.llm_requests aggregates
 // ---------------------------------------------------------------------------
 
 /** One (service, model, GMT date) aggregate of the source LLM request
@@ -659,4 +659,95 @@ export async function fetchAiUsage(days = 30): Promise<AiUsageResponse> {
     throw new Error(`ai usage fetch failed (HTTP ${res.status})`);
   }
   return (await res.json()) as AiUsageResponse;
+}
+
+// ---------------------------------------------------------------------------
+// AI knowledge-graph queries — llm.kg_queries chains (the AI tab)
+// ---------------------------------------------------------------------------
+
+/** One logged kg_search CHAIN from llm.kg_queries: the exact query
+ * text, its namespace, the chain id (uuid hex, one per successful
+ * search), the chain's edge count (each row's depth is its edge's
+ * 0-based ordinal, so minDepth is always 0), the entity-description
+ * hash the chain is valid under, and when it was logged. */
+export interface AiKgQueryEntry {
+  query: string;
+  /** kg_namespace codes (same vocabulary as llm.kg_entities): 0 DB
+   *  semantics, 1 prompts. */
+  namespace: number;
+  chainId: string;
+  edgeCount: number;
+  minDepth: number;
+  maxDepth: number;
+  entityHash: string;
+  loggedAt: string;
+}
+
+export interface AiKgQueriesResponse {
+  success: true;
+  generatedAt: string;
+  rows: AiKgQueryEntry[];
+}
+
+/** The deep agents' kg_search chain cache / log, newest chains first —
+ * what the agents asked the knowledge graphs and which chain each ask
+ * resolved to. Plain no-store fetch (NOT fetchJson): live audit state
+ * over the search log, same freshness rule as fetchAiUsage. */
+export async function fetchAiKgQueries(
+  limit = 50,
+): Promise<AiKgQueriesResponse> {
+  const res = await fetch(`/api/monitor/ai/kg-queries?limit=${limit}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`ai kg-queries fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as AiKgQueriesResponse;
+}
+
+/** One logged kg_search chain drawn as a subgraph — the chain's edges
+ * (depth order, resolved against the LIVE graph, so purged edges drop
+ * out) plus the member entities as the node set. Shapes mirror the
+ * config client's KgEntity / KgEdge so the Knowledge Graph tab's
+ * option builder renders it unchanged. Plain no-store fetch (NOT
+ * fetchJson): live runtime state, same freshness rule as
+ * fetchAiKgQueries above. */
+export interface AiKgChainResponse {
+  success: true;
+  generatedAt: string;
+  namespace: number;
+  chainId: string;
+  entities: Array<{
+    entityId: number;
+    name: string;
+    entityType: string;
+    description: string | null;
+    tags: string[];
+  }>;
+  edges: Array<{
+    edgeId: number;
+    relation: string;
+    subRelation: string | null;
+    weight: number | null;
+    members: Array<{
+      entityId: number;
+      name: string | null;
+      entityType: string | null;
+    }>;
+  }>;
+}
+
+/** The subgraph of ONE kg_search chain (the AI tab's expandable rows). */
+export async function fetchAiKgChain(
+  namespace: number,
+  chainId: string,
+): Promise<AiKgChainResponse> {
+  const res = await fetch(
+    `/api/monitor/ai/kg-chain?namespace=${namespace}&chain_id=${encodeURIComponent(chainId)}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) {
+    throw new Error(`ai kg-chain fetch failed (HTTP ${res.status})`);
+  }
+  return (await res.json()) as AiKgChainResponse;
 }

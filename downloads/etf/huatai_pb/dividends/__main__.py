@@ -29,6 +29,13 @@ Dividend records have no builds/etf consumer yet (corp-action adjustment
 in builds.etf is OHLCV-implied) — this is the reference archive the NAV
 cum-vs-unit spread corroborates.
 
+The entry point is the :class:`HuataiPbDividendsDownload` DownloadJob —
+the former ``__main__`` body is its ``run()`` (the --fund-codes comma
+split moved to ``apply_args``) and the ``download_dividends``
+orchestration function became the method of the same name (same signature
+and body); ``parse_dividend_rows`` and the markup constants stay
+module-level.
+
 Usage:
   python -m downloads.etf.huatai_pb.dividends
   python -m downloads.etf.huatai_pb.dividends --fund-codes 510880,018173
@@ -44,6 +51,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from downloads._common import (
+    DownloadJob,
     RunStats,
     build_default_session,
     is_fresh_within,
@@ -120,94 +128,105 @@ def parse_dividend_rows(html_text: str) -> List[Dict[str, object]]:
     return rows
 
 
-def download_dividends(
-    *,
-    out_root: str | None = None,
-    fund_codes: List[str] | None = None,
-    sleep_sec: float | None = None,
-    force: bool = False,
-) -> Dict[str, object]:
-    out_dir = resolve_out_dir("", "huatai_pb_dividends", out_root)
-    raw_dir = out_dir / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    codes = [c.strip() for c in (fund_codes or list(CHECKIN_FUND_CODES)) if c.strip()]
+class HuataiPbDividendsDownload(DownloadJob):
+    """DownloadJob for the huatai-pb.com dividend-history fetch cycle — the
+    former ``__main__`` body is ``run()`` and the ``download_dividends``
+    function is the method of the same name (same signature and body
+    verbatim); pacing / filter / out_root stay per-call arguments."""
 
-    session = build_default_session()
-    proxy = build_proxy(SERVICE, sleep_sec)
-    stats = RunStats()
+    description = "Download huatai-pb.com fund dividend history (分红信息)."
+    component = "huatai_pb_dividends"
 
-    for code in codes:
-        csv_path = out_dir / f"huatai_pb_dividends_{code}.csv"
-        if not force and is_fresh_within(csv_path, hours=FRESH_HOURS):
-            logger.info("[div %s] cached (fresh within %dh)", code, FRESH_HOURS // 24)
-            stats.skipped_cached += 1
-            continue
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--fund-codes", type=str, default=None,
+                        help="Comma-separated fund codes (default: the checkin "
+                             "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
+        parser.add_argument("--out-root", type=str, default=None,
+                        help="Alternative output root directory")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Sleep seconds between requests "
+                             f"(default: external_request_config JSON for {SERVICE})")
+        parser.add_argument("--force", action="store_true",
+                        help="Re-download even when the CSV is fresh.")
 
-        resp = proxy.get(
-            session, PRODUCT_PAGE_URL.format(code=code),
-            headers=None, logger=logger, log_tag=f"[div {code}]")
-        if resp is None or resp.status_code != 200:
-            logger.warning("[div %s] page fetch failed, skipping", code)
-            stats.failed += 1
-            continue
+    def apply_args(self) -> None:
+        # Former --fund-codes comma split (post-parse derivation).
+        fund_codes_arg = None
+        if self.args.fund_codes:
+            fund_codes_arg = [c.strip() for c in self.args.fund_codes.split(",") if c.strip()]
+        self.args.fund_codes = fund_codes_arg
 
-        # The response carries no charset — resp.text would decode as
-        # ISO-8859-1 mojibake; the pages are UTF-8.
-        page_html = resp.content.decode("utf-8", errors="replace")
-        raw_path = raw_dir / f"huatai_pb_page_{code}_{date.today():%Y%m%d}.html"
-        raw_path.write_text(page_html, encoding="utf-8")
+    def download_dividends(
+        self,
+        *,
+        out_root: str | None = None,
+        fund_codes: List[str] | None = None,
+        sleep_sec: float | None = None,
+        force: bool = False,
+    ) -> Dict[str, object]:
+        out_dir = resolve_out_dir("", "huatai_pb_dividends", out_root)
+        raw_dir = out_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        codes = [c.strip() for c in (fund_codes or list(CHECKIN_FUND_CODES)) if c.strip()]
 
-        rows = parse_dividend_rows(page_html)
-        if not rows:
-            logger.warning("[div %s] no 分红 rows parsed from page", code)
-            stats.empty += 1
-            continue
+        session = build_default_session()
+        proxy = build_proxy(SERVICE, sleep_sec)
+        stats = RunStats()
 
-        frame = pd.DataFrame({
-            "code": code,
-            "year": [r["year"] for r in rows],
-            "record_date": [r["record_date"] for r in rows],
-            "pay_date": [r["pay_date"] for r in rows],
-            "dividend_per_10_units": [r["dividend_per_10_units"] for r in rows],
-        })
-        frame = frame[DIVIDEND_COLS]
-        frame.to_csv(csv_path, index=False, encoding=CSV_ENCODING)
-        stats.downloaded += 1
-        logger.info("[div %s] saved %s (%d records, %s → %s)",
-                    code, csv_path.name, len(frame),
-                    frame["record_date"].iloc[-1],
-                    frame["record_date"].iloc[0])
+        for code in codes:
+            csv_path = out_dir / f"huatai_pb_dividends_{code}.csv"
+            if not force and is_fresh_within(csv_path, hours=FRESH_HOURS):
+                logger.info("[div %s] cached (fresh within %dh)", code, FRESH_HOURS // 24)
+                stats.skipped_cached += 1
+                continue
 
-    summary = stats.to_dict(out_dir=str(out_dir), funds=len(codes))
-    logger.info("Done dividends: %s", summary)
-    return summary
+            resp = proxy.get(
+                session, PRODUCT_PAGE_URL.format(code=code),
+                headers=None, logger=logger, log_tag=f"[div {code}]")
+            if resp is None or resp.status_code != 200:
+                logger.warning("[div %s] page fetch failed, skipping", code)
+                stats.failed += 1
+                continue
+
+            # The response carries no charset — resp.text would decode as
+            # ISO-8859-1 mojibake; the pages are UTF-8.
+            page_html = resp.content.decode("utf-8", errors="replace")
+            raw_path = raw_dir / f"huatai_pb_page_{code}_{date.today():%Y%m%d}.html"
+            raw_path.write_text(page_html, encoding="utf-8")
+
+            rows = parse_dividend_rows(page_html)
+            if not rows:
+                logger.warning("[div %s] no 分红 rows parsed from page", code)
+                stats.empty += 1
+                continue
+
+            frame = pd.DataFrame({
+                "code": code,
+                "year": [r["year"] for r in rows],
+                "record_date": [r["record_date"] for r in rows],
+                "pay_date": [r["pay_date"] for r in rows],
+                "dividend_per_10_units": [r["dividend_per_10_units"] for r in rows],
+            })
+            frame = frame[DIVIDEND_COLS]
+            frame.to_csv(csv_path, index=False, encoding=CSV_ENCODING)
+            stats.downloaded += 1
+            logger.info("[div %s] saved %s (%d records, %s → %s)",
+                        code, csv_path.name, len(frame),
+                        frame["record_date"].iloc[-1],
+                        frame["record_date"].iloc[0])
+
+        summary = stats.to_dict(out_dir=str(out_dir), funds=len(codes))
+        logger.info("Done dividends: %s", summary)
+        return summary
+
+    def run(self) -> None:
+        self.download_dividends(
+            out_root=self.args.out_root,
+            fund_codes=self.args.fund_codes,
+            sleep_sec=self.args.sleep_sec,
+            force=self.args.force,
+        )
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download huatai-pb.com fund dividend history (分红信息)."
-    )
-    ap.add_argument("--fund-codes", type=str, default=None,
-                    help="Comma-separated fund codes (default: the checkin "
-                         "watchlist — see _endpoints.CHECKIN_FUND_CODES)")
-    ap.add_argument("--out-root", type=str, default=None,
-                    help="Alternative output root directory")
-    ap.add_argument("--sleep-sec", type=float, default=None,
-                    help="Sleep seconds between requests "
-                         f"(default: external_request_config JSON for {SERVICE})")
-    ap.add_argument("--force", action="store_true",
-                    help="Re-download even when the CSV is fresh.")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    fund_codes_arg = None
-    if args.fund_codes:
-        fund_codes_arg = [c.strip() for c in args.fund_codes.split(",") if c.strip()]
-
-    download_dividends(
-        out_root=args.out_root,
-        fund_codes=fund_codes_arg,
-        sleep_sec=args.sleep_sec,
-        force=args.force,
-    )
+    HuataiPbDividendsDownload().execute()

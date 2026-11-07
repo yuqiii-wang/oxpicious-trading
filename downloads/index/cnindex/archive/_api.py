@@ -1,4 +1,10 @@
-"""CNINDEX daily-history API fetch (hq.cnindex.com.cn getIndexDailyData)."""
+"""CNINDEX daily-history API fetch (hq.cnindex.com.cn getIndexDailyData).
+
+Code motion only (2026-11-07): the former ``fetch_daily_data`` function is
+now the method of the same name on :class:`CnindexApi` (body verbatim);
+the pure ``ms_to_date``/``to_float`` helpers and the COL_* daily-bar
+column indices stay module-level.
+"""
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -55,40 +61,47 @@ def to_float(val: Any) -> Optional[float]:
         return None
 
 
-def fetch_daily_data(
-    session,
-    code: str,
-    proxy: Optional[AntiBotProxy] = None,
-) -> Optional[Tuple[str, list]]:
-    """Fetch the FULL daily history for one index code from cnindex.com.cn.
+class CnindexApi:
+    """CNINDEX daily-history API scope — the former ``fetch_daily_data``
+    function is the method of the same name (same signature and body
+    verbatim); the class holds no state, the pacing proxy stays a
+    per-call argument / lazily built exactly as before."""
 
-    Returns (index_name, bars) where *bars* is the raw daily-bar array
-    ([timestamp, current, high, open, low, close, chg, percent, amount,
-    volume, avg] rows, oldest first), or None on failure.
-    """
-    if proxy is None:
-        # Pacing (sleep/jitter/timeouts/toggles) from the service's
-        # external_request_config JSON row.
-        proxy = AntiBotProxy(service=SERVICE)
-
-    resp = proxy.get(
+    def fetch_daily_data(
+        self,
         session,
-        CNINDEX_DAILY_API,
-        params={"indexCode": code},
-        headers=CNINDEX_HEADERS,
-    )
-    if resp is None:
-        return None
+        code: str,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Optional[Tuple[str, list]]:
+        """Fetch the FULL daily history for one index code from cnindex.com.cn.
 
-    try:
-        result = resp.json()
-    except (ValueError, TypeError):
-        return None
+        Returns (index_name, bars) where *bars* is the raw daily-bar array
+        ([timestamp, current, high, open, low, close, chg, percent, amount,
+        volume, avg] rows, oldest first), or None on failure.
+        """
+        if proxy is None:
+            # Pacing (sleep/jitter/timeouts/toggles) from the service's
+            # external_request_config JSON row.
+            proxy = AntiBotProxy(service=SERVICE)
 
-    if not result or result.get("code") != 200:
-        return None
+        resp = proxy.get(
+            session,
+            CNINDEX_DAILY_API,
+            params={"indexCode": code},
+            headers=CNINDEX_HEADERS,
+        )
+        if resp is None:
+            return None
 
-    data = result.get("data") or {}
-    bars = data.get("data") or []
-    index_name = data.get("indexName") or code
-    return index_name, bars
+        try:
+            result = resp.json()
+        except (ValueError, TypeError):
+            return None
+
+        if not result or result.get("code") != 200:
+            return None
+
+        data = result.get("data") or {}
+        bars = data.get("data") or []
+        index_name = data.get("indexName") or code
+        return index_name, bars

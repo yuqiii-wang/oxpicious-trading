@@ -61,522 +61,28 @@ from _common.data_pipeline import bootstrap_runtime
 
 bootstrap_runtime()
 
-import os, sys, re, time
-import datetime
-
-import numpy as np
-import pandas as pd
-
-from downloads._common import read_csv_preferred
-from _common.df_utils import safe_columns
-from _common.labels import OPTION_TYPE_CODE
-
-from _common.build_commons import (
-    parse_num, parse_date, ymd_from_filename, ymd_to_date,
-    glob_source_files,
-    print_build_header, print_wall_time, PROJECT_ROOT, TODAY_STR,
-    truncate_table_async,
-    forced_date_scope,
-    bulk_upsert_async,
-)
-from builds._commons.safe_parse import safe_to_numeric, safe_to_datetime
-from builds._commons.row_emission import dates_as_date_list
-from _common.log_setup import setup_logging
-
-from _common.data_build import DataBuild
 
 import asyncio
+import os, sys
 
-# Epoch anchor for vectorized days_to_expiry math (no date objects in frames)
-_EPOCH = datetime.date(1970, 1, 1)
+from _common.build_commons import (
+    PROJECT_ROOT, TODAY_STR,
+    bulk_upsert_async,
+)
+from builds._commons.row_emission import dates_as_date_list
+
+from builds.options.__main__ import OptionsBuild
+
+from builds.options.szse.builders import (
+    add_derived_columns,
+    build_options_df,
+    load_etf_ohlcv,
+)
 
 # ============================================================================
 # Paths
 # ============================================================================
 SZSE_TREND_DIR = os.path.join(PROJECT_ROOT, "temps", "szse_trend")
-
-
-# ============================================================================
-# Contract name parsing
-# ============================================================================
-_MONTH_MAP = {
-    "1月": "01", "2月": "02", "3月": "03", "4月": "04",
-    "5月": "05", "6月": "06", "7月": "07", "8月": "08",
-    "9月": "09", "10月": "10", "11月": "11", "12月": "12",
-}
-
-_RE_CONTRACT = re.compile(
-    r"^(.+?ETF)([购沽])(\d+月)([\d]+[A]?)$"
-)
-
-_RE_UNDERLYING = re.compile(
-    r"^(.+?ETF).*?\((\d{6})\)$"
-)
-
-
-def parse_contract_name(name):
-    """Parse 合约简称 into structured components.
-
-    Examples:
-      "深证100ETF购12月2342A" → {underlying:"深证100ETF", type:"CALL", month:"12月", strike:"2342A"}
-      "创业板ETF购12月1700"    → {underlying:"创业板ETF", type:"CALL", month:"12月", strike:"1700"}
-      "沪深300ETF沽12月3500"   → {underlying:"沪深300ETF", type:"PUT", month:"12月", strike:"3500"}
-    """
-    m = _RE_CONTRACT.match(str(name))
-    if not m:
-        return None
-    underlying = m.group(1)
-    opt_type = "CALL" if m.group(2) == "购" else "PUT"
-    expiry_month = m.group(3)
-    strike_str = m.group(4)
-
-    has_a_suffix = strike_str.endswith("A")
-    strike_base = strike_str[:-1] if has_a_suffix else strike_str
-
-    try:
-        strike_price = float(strike_base)
-    except ValueError:
-        return None
-
-    return {
-        "underlying_name": underlying,
-        "option_type": opt_type,
-        "expiry_month": expiry_month,
-        "strike_str": strike_str,
-        "strike_price": strike_price,
-        "has_a_suffix": has_a_suffix,
-    }
-
-
-def parse_underlying_code(underlying_str):
-    """Parse 标的证券简称（代码）→ (name, code).
-
-    Handles both old and new SZSE naming conventions:
-      "深证100ETF(159901)"         → ("深证100ETF", "159901")     # old format
-      "深证100ETF易方达(159901)"   → ("深证100ETF", "159901")     # new format with fund company
-    """
-    m = _RE_UNDERLYING.match(str(underlying_str))
-    if not m:
-        return None, None
-    name = m.group(1) + "ETF"
-    code = m.group(2)
-    return name, code
-
-
-# SZSE ETF options keep their native ETF code (1599xx) as underlying_code.
-# CFFEX index options use index codes (000xxx/399xxx), so the two venues
-# are naturally separated by code space — no ETF→index normalization.
-
-
-def compute_expiry_date(trade_date, expiry_month):
-    """Compute the expiration date for a given trade date and expiry month.
-
-    SZSE ETF options expire on the fourth Wednesday of the expiry month
-    (到期日/行权日 = 到期月份的第四个星期三, 遇法定节假日顺延 — weekday
-    math only, no holiday calendar here).
-    """
-    month_num = int(_MONTH_MAP.get(expiry_month, expiry_month[:-1]))
-    year = trade_date.year
-
-    if month_num < trade_date.month:
-        year += 1
-
-    first_day = datetime.datetime(year, month_num, 1)
-    # Wednesday = weekday 2 (Monday=0, Sunday=6)
-    first_wednesday = first_day + datetime.timedelta(days=(2 - first_day.weekday() + 7) % 7)
-    fourth_wednesday = first_wednesday + datetime.timedelta(weeks=3)
-
-    return fourth_wednesday
-
-
-# ============================================================================
-# Byte-level empty-CSV pre-check (shared by both source readers below)
-# ============================================================================
-def _csv_is_empty(path: str) -> bool:
-    """True for zero-byte or header-only snapshot CSVs (holiday exports).
-
-    cuDF raises EmptyDataError on such files and falls back to pandas per
-    read (two "[cudf fallback] pandas.read_csv" lines each) — callers skip
-    them before parsing. The ``fsize <= len(head)`` guard keeps files larger
-    than the 64KB head (data possibly beyond it) out of the skip.
-    """
-    try:
-        fsize = os.path.getsize(path)
-        with open(path, "rb") as fh:
-            head = fh.read(65536).replace(b"\r\n", b"\n")
-    except OSError:
-        return True
-    nl = head.find(b"\n")
-    return nl == -1 or (head[nl + 1:].strip() == b"" and fsize <= len(head))
-
-
-# ============================================================================
-# Build options DataFrame from a given list of source files
-# ============================================================================
-_SZSE_OPT_RENAME = {
-    "前结算价": "prev_settle",
-    "今收盘价": "close",
-    "今结算价": "settle",
-    "涨跌幅（%）": "pct_change",
-    "成交量（张）": "volume",
-    "未平仓量（张）": "open_interest",
-}
-_SZSE_OPT_SRC_COLS = [
-    "date", "合约编码", "合约简称", "标的证券简称（代码）",
-    *_SZSE_OPT_RENAME.keys(),
-]
-
-
-def build_options_df(files, verbose=True):
-    """Build a long options DataFrame from the given szse_trend_option_*.csv files.
-
-    Contract attributes are resolved by parsing each UNIQUE 合约简称 /
-    标的证券 value exactly once (host-side) into small lookup frames merged
-    back onto the concatenated frame — no iterrows / per-row dict loops
-    (each element extraction is a cudf.pandas slow-path fallback).
-
-    Args:
-        files: list of CSV file paths (already filtered to missing dates by caller)
-    """
-    if verbose:
-        logger.info(f"    [OPTIONS] reading {len(files)} szse_trend_option_*.csv files")
-
-    frames: list[pd.DataFrame] = []
-    n_empty = 0
-    n_ok = 0
-
-    for path in files:
-        ymd = ymd_from_filename(path, "szse_trend_option_")
-        if not ymd:
-            continue
-
-        if _csv_is_empty(path):
-            n_empty += 1
-            continue
-
-        try:
-            df = read_csv_preferred(path, dtype={"合约编码": str, "合约简称": str, "标的证券简称（代码）": str})
-        except Exception:
-            continue
-
-        if df is None or len(df) == 0:
-            n_empty += 1
-            continue
-
-        first_cell = str(df.iloc[0, 0]) if len(df) else ""
-        if "没有找到" in first_cell or "无数据" in first_cell:
-            n_empty += 1
-            continue
-
-        if "合约简称" not in safe_columns(df):
-            continue
-
-        date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
-        trade_date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-
-        # Scalar broadcast datetime64 date; keep only the columns we use
-        df = df.reindex(columns=[c for c in _SZSE_OPT_SRC_COLS if c != "date"])
-        # numpy datetime64[ns] — a pd.Timestamp scalar takes the cudf slow
-        # path and lands the column as datetime64[s], breaking the
-        # ns-epoch math below
-        df["date"] = np.datetime64(trade_date_dt.date(), "ns")
-        frames.append(df)
-        n_ok += 1
-
-    if not frames:
-        if verbose:
-            logger.info(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, 0 rows")
-        return pd.DataFrame()
-
-    out = pd.concat(frames, ignore_index=True)
-
-    # --- Parse each UNIQUE contract name exactly once (host-side) ---
-    names = np.asarray(out["合约简称"]).astype(object).tolist()
-    parsed_by_name: dict = {}
-    for nm in sorted(set(names)):
-        parsed_by_name[nm] = parse_contract_name(nm)
-    meta_rows = [
-        {
-            "合约简称": nm,
-            "underlying_name": p["underlying_name"],
-            # static.label_dim 'option_type' SMALLINT code (0 CALL / 1 PUT)
-            "option_type": OPTION_TYPE_CODE[p["option_type"]],
-            "expiry_month": p["expiry_month"],
-            "strike_str": p["strike_str"],
-            "strike_price_raw": p["strike_price"],
-            "strike_price": p["strike_price"],
-            "has_a_suffix": int(p["has_a_suffix"]),
-        }
-        for nm, p in parsed_by_name.items() if p is not None
-    ]
-    if not meta_rows:
-        if verbose:
-            logger.info(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, "
-                  f"{len(out)} rows dropped as parse failures, 0 rows kept")
-        return pd.DataFrame()
-    n_pre = len(out)
-    out = out.merge(pd.DataFrame(meta_rows), on="合约简称", how="inner")
-    n_parse_fail = n_pre - len(out)
-
-    # --- Parse each UNIQUE underlying expression once → bare ETF code ---
-    under_col = "标的证券简称（代码）"
-    raw_under = np.asarray(out[under_col]).astype(object).tolist()
-    code_by_under: dict = {}
-    for u in sorted(set(raw_under)):
-        _n, _c = parse_underlying_code(u)
-        code_by_under[u] = _c
-    under_meta = pd.DataFrame([
-        {under_col: u, "underlying_code": c}
-        for u, c in code_by_under.items() if c is not None
-    ])
-    if not len(under_meta):
-        if verbose:
-            logger.info(f"    [OPTIONS] no parseable underlying codes — 0 rows")
-        return pd.DataFrame()
-    n_pre = len(out)
-    out = out.merge(under_meta, on=under_col, how="inner")
-    n_parse_fail += n_pre - len(out)
-
-    # --- Canonical whole-column rename (no row loops): the DB split in
-    # builds.options.tables and the batch dedupe on
-    # (date, contract_code) both expect these names ---
-    out = out.rename(columns={"合约编码": "contract_code", "合约简称": "contract_name"})
-
-    # --- Expiry: third Friday of the expiry month (per unique
-    # (date, expiry_month) pair — host-side, small) ---
-    pairs = out[["date", "expiry_month"]].drop_duplicates()
-    if hasattr(pairs, "to_pandas"):  # tiny host-side loop → no proxies
-        pairs = pairs.to_pandas()
-    exp_meta_rows = []
-    months_l = np.asarray(pairs["expiry_month"]).astype(object).tolist()
-    # dates_as_date_list: ONE numpy pass (Series .dt.date is NOT implemented
-    # in cuDF → per-element slow path + object-date poison)
-    dates_l = dates_as_date_list(pairs["date"])
-    for d, m in zip(dates_l, months_l):
-        mn = _MONTH_MAP.get(m, str(m)[:-1])
-        try:
-            expiry_dt = compute_expiry_date(d, m)
-        except Exception:
-            continue
-        exp_meta_rows.append({
-            "date": np.datetime64(d, "ns"),
-            "expiry_month": m,
-            "_exp_days": (expiry_dt.date() - _EPOCH).days,
-        })
-    if not exp_meta_rows:
-        if verbose:
-            logger.info(f"    [OPTIONS] no computable expiry dates — 0 rows")
-        return pd.DataFrame()
-    out = out.merge(
-        pd.DataFrame(exp_meta_rows), on=["date", "expiry_month"], how="inner")
-
-    # --- Numeric columns: source CSVs are clean (downloads guarantees
-    # dtype) — direct numeric conversion, invalid → NaN (= NULL in DB)
-    for src, dst in _SZSE_OPT_RENAME.items():
-        out[dst] = safe_to_numeric(out[src])
-
-    # --- Days to expiry from epoch-day ints; expiry_date → datetime64.
-    # The [ns] cast is unit-explicit: astype("int64") of a datetime64
-    # column yields the column's own unit (seconds under a [s] column),
-    # so the ns-per-day divisor is only correct after normalizing to [ns].
-    date_epoch = (
-        out["date"].astype("datetime64[ns]").astype("int64") // 86_400_000_000_000
-    )
-    out["days_to_expiry"] = (out["_exp_days"] - date_epoch).clip(lower=0)
-    out["expiry_date"] = pd.to_datetime(
-        out["_exp_days"].astype("int64") * 86_400_000_000_000)
-
-    if verbose:
-        logger.info(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, "
-              f"{n_parse_fail} parse failures, {len(out)} rows")
-
-    out = out.dropna(subset=["date"])
-    out = out.sort_values(
-        ["underlying_code", "date", "expiry_month", "strike_price", "option_type"]
-    ).reset_index(drop=True)
-
-    return out
-
-
-# ============================================================================
-# Load ETF OHLCV for moneyness calculation from a given list of files
-# ============================================================================
-def load_etf_ohlcv(files, verbose=True):
-    """Load ETF OHLCV data for computing moneyness ratios from given files.
-
-    Args:
-        files: list of szse_trend_etf_*.csv file paths (already filtered to missing dates)
-    """
-    if verbose:
-        logger.info(f"    [ETF-OHLCV] reading {len(files)} szse_trend_etf_*.csv files")
-
-    parts: list = []
-    n_empty = 0
-    for path in files:
-        ymd = ymd_from_filename(path, "szse_trend_etf_")
-        if not ymd:
-            continue
-        if _csv_is_empty(path):
-            n_empty += 1
-            continue
-        try:
-            df = read_csv_preferred(path, dtype={"证券代码": str, "证券简称": str})
-        except Exception:
-            continue
-        if df is None or len(df) == 0:
-            continue
-        _csv_cols = safe_columns(df)
-        if "证券代码" not in _csv_cols or "今收" not in _csv_cols:
-            continue
-        date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
-        # Vectorized code + close parsing (no iterrows — cudf-safe)
-        code_s = df["证券代码"].astype(str).str.strip()
-        code_s = code_s.str.replace(".SZ", "", regex=False).str.replace(".SS", "", regex=False)
-        code_num = pd.to_numeric(code_s, errors="coerce")
-        close_s = safe_to_numeric(df["今收"])
-        m = (code_num.notna() & close_s.notna()).to_numpy()
-        if not bool(m.any()):
-            continue
-        part = pd.DataFrame({
-            "etf_code": code_num[m].astype("Int64").astype(str).str.zfill(6),
-        })
-        part["date"] = date_str
-        part["etf_close"] = close_s[m].astype(float)
-        parts.append(part)
-
-    if not parts:
-        if verbose:
-            logger.warning("    [WARN] No ETF OHLCV data loaded for moneyness calculation")
-        return pd.DataFrame()
-
-    out = pd.concat(parts, ignore_index=True)
-    # ISO YYYY-MM-DD from filename-derived date_str — clean fast path
-    # (pd.to_datetime with errors="coerce" is not implemented in cuDF)
-    out["date"] = safe_to_datetime(out["date"]).astype("datetime64[ns]")
-    out = out.dropna(subset=["date"]).sort_values(["etf_code", "date"]).reset_index(drop=True)
-
-    if verbose:
-        logger.info(f"    → {len(out):,} ETF OHLCV rows  ·  {out['etf_code'].nunique()} ETFs"
-                    + (f"  ·  {n_empty} empty files skipped" if n_empty else ""))
-
-    return out
-
-
-# ============================================================================
-# Black-Scholes Greeks (vectorized, CPU/GPU-routed —
-# see _common/df_utils/black_scholes.py)
-# ============================================================================
-from _common.df_utils import compute_iv_and_greeks  # noqa: F401
-
-
-# ============================================================================
-# Add derived columns
-# ============================================================================
-def add_derived_columns(df, etf_ohlcv=None, verbose=True):
-    """Add derived columns for volatility analysis."""
-    if df is None or len(df) == 0:
-        return df
-
-    df = df.copy()
-
-    # cudf.pandas-safe: datetime merge/group hits a cudf concat bug
-    # ("all inputs must be Index" — pandas-backed DatetimeArray cannot be
-    # transformed), so merge/group on a string date key instead.
-    df["_date_key"] = df["date"].dt.strftime("%Y-%m-%d")
-
-    df["volume_wan"] = df["volume"] / 10000.0
-    df["open_interest_wan"] = df["open_interest"] / 10000.0
-
-    df["prev_settle_norm"] = df["prev_settle"] / 100.0
-    df["close_norm"] = df["close"] / 100.0
-    df["settle_norm"] = df["settle"] / 100.0
-
-    if etf_ohlcv is not None and len(etf_ohlcv) > 0:
-        etf = etf_ohlcv.copy()
-        etf["_date_key"] = etf["date"].dt.strftime("%Y-%m-%d")
-        df_merged = df.merge(etf[["_date_key", "etf_code", "etf_close"]],
-                            left_on=["_date_key", "underlying_code"],
-                            right_on=["_date_key", "etf_code"], how="left")
-        uc = df_merged["etf_close"].fillna(0.0)
-        # SZSE ETF option strikes use the exchange's ×1000 naming
-        # ("创业板ETF购12月2342" = 2.342 yuan → strike_price 2342), so
-        # underlying_close must live on the same ×1000 (≈ index-level)
-        # scale for moneyness / IV to be meaningful. Source windows that
-        # quote the ETF in yuan (< 50) are rescaled to that convention.
-        df["underlying_close"] = np.where(
-            (uc > 0) & (uc < 50), uc * 1000.0, uc,
-        )
-        df["moneyness_ratio"] = np.where(df["underlying_close"] > 0,
-                                         df["strike_price"] / df["underlying_close"], 0.0)
-    else:
-        df["underlying_close"] = 0.0
-        df["moneyness_ratio"] = 0.0
-
-    grouped = df.groupby(["_date_key", "underlying_code"])
-
-    df["total_volume_underlying"] = grouped["volume"].transform("sum")
-    df["total_oi_underlying"] = grouped["open_interest"].transform("sum")
-
-    df["volume_pct"] = np.where(df["total_volume_underlying"] > 0,
-                                df["volume"] / df["total_volume_underlying"] * 100.0, 0.0)
-    df["open_interest_pct"] = np.where(df["total_oi_underlying"] > 0,
-                                       df["open_interest"] / df["total_oi_underlying"] * 100.0, 0.0)
-
-    _grp_keys = ["_date_key", "underlying_code", "strike_price"]
-    call_oi = df[df["option_type"] == OPTION_TYPE_CODE["CALL"]].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "call_oi"})
-    put_oi = df[df["option_type"] == OPTION_TYPE_CODE["PUT"]].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "put_oi"})
-    call_vol = df[df["option_type"] == OPTION_TYPE_CODE["CALL"]].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "call_vol"})
-    put_vol = df[df["option_type"] == OPTION_TYPE_CODE["PUT"]].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "put_vol"})
-
-    ratios = pd.merge(call_oi, put_oi, on=_grp_keys, how="outer")
-    ratios = pd.merge(ratios, call_vol, on=_grp_keys, how="outer")
-    ratios = pd.merge(ratios, put_vol, on=_grp_keys, how="outer")
-
-    ratios["oi_call_put_ratio"] = np.where(ratios["put_oi"] > 0, ratios["call_oi"] / ratios["put_oi"], np.nan)
-    ratios["vol_call_put_ratio"] = np.where(ratios["put_vol"] > 0, ratios["call_vol"] / ratios["put_vol"], np.nan)
-
-    df = df.merge(ratios[["_date_key", "underlying_code", "strike_price", "oi_call_put_ratio", "vol_call_put_ratio"]],
-                  on=_grp_keys, how="left")
-
-    df["oi_call_put_ratio"] = df["oi_call_put_ratio"].fillna(0.0)
-    df["vol_call_put_ratio"] = df["vol_call_put_ratio"].fillna(0.0)
-
-    df["open_interest_call"] = np.where(df["option_type"] == OPTION_TYPE_CODE["CALL"], df["open_interest"], 0.0)
-    df["open_interest_put"] = np.where(df["option_type"] == OPTION_TYPE_CODE["PUT"], df["open_interest"], 0.0)
-    df["volume_call"] = np.where(df["option_type"] == OPTION_TYPE_CODE["CALL"], df["volume"], 0.0)
-    df["volume_put"] = np.where(df["option_type"] == OPTION_TYPE_CODE["PUT"], df["volume"], 0.0)
-
-    call_total = df.groupby(["_date_key", "underlying_code"])["open_interest_call"].transform("sum")
-    put_total = df.groupby(["_date_key", "underlying_code"])["open_interest_put"].transform("sum")
-
-    df["oi_total_call_put_ratio"] = np.where(put_total > 0, call_total / put_total, 0.0)
-
-    df = df.drop(columns=["_date_key"])
-
-    if verbose:
-        logger.info(f"    → Computing implied volatility and Greeks for {len(df):,} rows …")
-
-    iv, delta, theta, gamma, vega, rho = compute_iv_and_greeks(df)
-    df["implied_vol"] = iv
-    df["delta"] = delta
-    df["theta"] = theta
-    df["gamma"] = gamma
-    df["vega"] = vega
-    df["rho"] = rho
-
-    df = df.round({
-        "prev_settle_norm": 4, "close_norm": 4, "settle_norm": 4,
-        "volume_wan": 4, "open_interest_wan": 4,
-        "volume_pct": 4, "open_interest_pct": 4,
-        "oi_call_put_ratio": 4, "vol_call_put_ratio": 4,
-        "oi_total_call_put_ratio": 4,
-        "implied_vol": 4, "delta": 6, "theta": 6, "gamma": 6, "vega": 6, "rho": 6,
-    })
-
-    if verbose:
-        logger.info(f"    → Derived columns added: moneyness, ratios, normalized prices, IV, Greeks")
-
-    return df
 
 
 # CFFEX index-option underlying codes (IO/HO/MO/CO → index codes) — used
@@ -590,61 +96,7 @@ _CFFEX_INDEX_UNDERLYING_CODES = frozenset(
 )
 
 
-async def find_missing_szse_dates(
-    conn,
-    source_dates,
-    code_filter: str | None = None,
-):
-    """Find dates from source_dates that do NOT already have SZSE options data.
-
-    Scoped to ``exchange = 'SZSE'`` on the options tables (every options_*
-    table carries the venue column) — CFFEX/SSE rows never mask SZSE gaps.
-
-    With code_filter (bare underlying code), the check is scoped to that
-    underlying via stats.options_terms — dates loaded for OTHER underlyings
-    no longer mask this underlying's gaps.
-    """
-    if not source_dates:
-        return set()
-
-    if code_filter:
-        sql = (
-            'SELECT DISTINCT date FROM stats.options_terms '
-            "WHERE underlying_code = $1 AND exchange = 'SZSE'"
-        )
-        existing_rows = await conn.fetch(sql, code_filter)
-    else:
-        sql = "SELECT DISTINCT date FROM stats.options_identity WHERE exchange = 'SZSE'"
-        existing_rows = await conn.fetch(sql)
-    existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
-
-    return source_dates - existing_dates
-
-
-# ============================================================================
-# --date mode writer
-# ============================================================================
-async def upsert_split_tables_date_mode(conn, tables) -> None:
-    """Upsert each split table (FK parent first) for --date mode.
-
-    insert_split_tables' plain COPY is conflict-free only because rows are
-    PK-checked missing dates upstream; --date mode intentionally re-processes
-    rows that may already exist (refresh semantics), so every table is
-    written with a bulk ON CONFLICT (date, contract_code) DO UPDATE upsert
-    instead — no truncation, no deletes.
-    """
-    for tbl, rows in tables.items():
-        if not rows:
-            logger.info(f"    [DB] No rows to upsert into {tbl}")
-            continue
-        n = await bulk_upsert_async(conn, tbl, rows, key_columns=["date", "contract_code"])
-        logger.info(f"    [DB] Upserted {n:,} rows into {tbl}")
-
-
-# ============================================================================
-# Main pipeline — SzseOptionsBuild entry class
-# ============================================================================
-class SzseOptionsBuild(DataBuild):
+class SzseOptionsBuild(OptionsBuild):
     """``python -m builds.options.szse`` — SZSE ETF options ETL → DB.
 
     Embeddable: builds.options constructs this class with preset args and
@@ -678,6 +130,53 @@ class SzseOptionsBuild(DataBuild):
             "Code filter": self.code_filter or "(none — all underlyings)",
             "Today":      TODAY_STR,
         }
+
+    async def find_missing_szse_dates(
+        self,
+        conn,
+        source_dates,
+        code_filter: str | None = None,
+    ):
+        """Find dates from source_dates that do NOT already have SZSE options data.
+
+        Scoped to ``exchange = 'SZSE'`` on the options tables (every options_*
+        table carries the venue column) — CFFEX/SSE rows never mask SZSE gaps.
+
+        With code_filter (bare underlying code), the check is scoped to that
+        underlying via stats.options_terms — dates loaded for OTHER underlyings
+        no longer mask this underlying's gaps.
+        """
+        if not source_dates:
+            return set()
+
+        if code_filter:
+            sql = (
+                'SELECT DISTINCT date FROM stats.options_terms '
+                "WHERE underlying_code = $1 AND exchange = 'SZSE'"
+            )
+            existing_rows = await conn.fetch(sql, code_filter)
+        else:
+            sql = "SELECT DISTINCT date FROM stats.options_identity WHERE exchange = 'SZSE'"
+            existing_rows = await conn.fetch(sql)
+        existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
+
+        return source_dates - existing_dates
+
+    async def upsert_split_tables_date_mode(self, conn, tables) -> None:
+        """Upsert each split table (FK parent first) for --date mode.
+
+        insert_split_tables' plain COPY is conflict-free only because rows are
+        PK-checked missing dates upstream; --date mode intentionally re-processes
+        rows that may already exist (refresh semantics), so every table is
+        written with a bulk ON CONFLICT (date, contract_code) DO UPDATE upsert
+        instead — no truncation, no deletes.
+        """
+        for tbl, rows in tables.items():
+            if not rows:
+                logger.info(f"    [DB] No rows to upsert into {tbl}")
+                continue
+            n = await bulk_upsert_async(conn, tbl, rows, key_columns=["date", "contract_code"])
+            logger.info(f"    [DB] Upserted {n:,} rows into {tbl}")
 
     async def run(self) -> None:
         from builds._commons.code_filter import normalize_code  # noqa: F401
@@ -764,7 +263,7 @@ class SzseOptionsBuild(DataBuild):
                 # CFFEX prefixes). This ensures CFFEX data doesn't mask dates
                 # that still need SZSE data. With --code, only that underlying's
                 # dates are checked.
-                missing_dates = await find_missing_szse_dates(conn, available_dates, code_filter=code_filter)
+                missing_dates = await self.find_missing_szse_dates(conn, available_dates, code_filter=code_filter)
 
             logger.info(f"    [DB] {len(missing_dates)} dates missing from stats.options_identity "
                   f"(out of {len(available_dates)} available)")
@@ -850,7 +349,7 @@ class SzseOptionsBuild(DataBuild):
             if forced_date:
                 # --date refresh: rows may already exist → ON CONFLICT upsert
                 # (plain COPY in insert_split_tables would hit PK conflicts)
-                await upsert_split_tables_date_mode(conn, tables)
+                await self.upsert_split_tables_date_mode(conn, tables)
             else:
                 await insert_split_tables(conn, tables)
 

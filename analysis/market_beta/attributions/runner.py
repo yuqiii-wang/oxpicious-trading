@@ -34,13 +34,10 @@ from analysis.market_beta.attributions.config import (
     _SECONDARY_INDEXES,
 )
 from analysis.market_beta.attributions.queries import (
-    COUNT_MEMBER_INDICES_SQL,
-    COUNT_SOURCE_SQL,
-    PREVIEW_DIMENSIONS_SQL,
-    PREVIEW_MEMBER_DIMENSIONS_SQL,
     fetch_incremental_lookback_date,
     find_missing_attribution_dates,
 )
+from _common.sql_views import render_sql_view
 from analysis.market_beta.attributions.sql_broad_market import (
     MERGED_BROAD_MARKET_INSERT_SQL_FULL,
     MERGED_BROAD_MARKET_INSERT_SQL_INCREMENTAL,
@@ -165,8 +162,16 @@ async def run_attributions(
     # (built by builds.cross_stats from the pair rows); the
     # member-index INSERT only needs sec_composition. Only exit if BOTH
     # are empty (nothing to materialize at all).
-    n_src = await conn.fetchval(COUNT_SOURCE_SQL)
-    n_members = await conn.fetchval(COUNT_MEMBER_INDICES_SQL)
+    # Views: analysis/market_beta/attributions/queries/count_source and
+    # .../count_member_indices.
+    view_src = render_sql_view(
+        "analysis/market_beta/attributions/queries/count_source",
+    )
+    view_members = render_sql_view(
+        "analysis/market_beta/attributions/queries/count_member_indices",
+    )
+    n_src = await conn.fetchval(view_src.sql)
+    n_members = await conn.fetchval(view_members.sql)
     if not n_src and not n_members:
         logger.info("\n[a1/6] stats.cross_stats has no industry rows AND "
               "no member indices with composition data — nothing to "
@@ -177,14 +182,22 @@ async def run_attributions(
           f"indices with composition data.")
 
     # ---- Step 2: preview dimensions ----------------------------------
+    # Views: analysis/market_beta/attributions/queries/preview_dimensions
+    # and .../preview_member_dimensions.
     logger.info("\n[a2/6] Previewing output dimensions...")
-    dims = await conn.fetchrow(PREVIEW_DIMENSIONS_SQL)
+    view_dims = render_sql_view(
+        "analysis/market_beta/attributions/queries/preview_dimensions",
+    )
+    dims = await conn.fetchrow(view_dims.sql)
     n_industries = dims["n_industries"] if dims else 0
     n_benchmarks = dims["n_benchmarks"] if dims else 0
     logger.info(f"      broad-market: {n_industries} industries x {n_benchmarks} "
           f"benchmarks (max {n_industries * n_benchmarks:,} pairs, "
           f"materialized per date where member indices have data)")
-    mdims = await conn.fetchrow(PREVIEW_MEMBER_DIMENSIONS_SQL)
+    view_mdims = render_sql_view(
+        "analysis/market_beta/attributions/queries/preview_member_dimensions",
+    )
+    mdims = await conn.fetchrow(view_mdims.sql)
     n_md_ind = mdims["n_industries"] if mdims else 0
     n_md_mem = mdims["n_member_indices"] if mdims else 0
     logger.info(f"      member-index: {n_md_ind} industries x {n_md_mem} "
@@ -239,11 +252,12 @@ async def run_attributions(
     if incremental:
         phase_dates: List[datetime.date] = sorted_dates
     else:
-        phase_dates = [
-            r["date"] for r in await conn.fetch(
-                "SELECT DISTINCT date FROM stats.cross_stats "
-                "WHERE sec_type = 'industry' ORDER BY date")
-        ]
+        # The SELECT lives in the sql view
+        # analysis/market_beta/attributions/runner/force_mode_date_axis.
+        view_axis = render_sql_view(
+            "analysis/market_beta/attributions/runner/force_mode_date_axis",
+        )
+        phase_dates = [r["date"] for r in await conn.fetch(view_axis.sql)]
         logger.info(f"    -> force-mode date axis: {len(phase_dates)} "
               f"source dates")
 
@@ -362,25 +376,12 @@ async def run_attributions(
     )
 
     # ---- Step 8: sanity summary --------------------------------------
-    summary = await conn.fetch("""
-        SELECT ia.benchmark_code,
-               ia.attribution_type,
-               BOOL_OR(sit.is_broad_market) AS is_broad,
-               COUNT(*) AS n_rows,
-               COUNT(DISTINCT ia.industry_id) AS n_industries,
-               MIN(ia.date) AS first_date,
-               MAX(ia.date) AS last_date,
-               ROUND(AVG(ia.industry_shared_weight), 4) AS avg_isw,
-               ROUND(AVG(ia.benchmark_shared_weight), 4) AS avg_bsw,
-               COUNT(*) FILTER (WHERE ia.industry_shared_weight = 0
-                                 AND ia.benchmark_shared_weight = 0)
-                   AS n_zero_overlap
-        FROM analysis.industry_attributions ia
-        LEFT JOIN stats.sec_index_tags sit ON sit.code = ia.benchmark_code
-        GROUP BY ia.benchmark_code, ia.attribution_type
-        ORDER BY is_broad DESC, ia.benchmark_code, ia.attribution_type
-        LIMIT 40
-    """)
+    # The SELECT lives in the sql view
+    # analysis/market_beta/attributions/runner/summary_by_benchmark.
+    view = render_sql_view(
+        "analysis/market_beta/attributions/runner/summary_by_benchmark",
+    )
+    summary = await conn.fetch(view.sql)
     logger.info("\n      Summary by (benchmark_code, attribution_type) "
           "[top 40, broad-market first]:")
     for r in summary:

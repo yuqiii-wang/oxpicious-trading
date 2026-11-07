@@ -18,6 +18,11 @@ No fixed capital: all metrics in normalized units (base=100 at first BUY).
 Money uses shares = total_qty / 100; cash = cumulative (qty/100) × norm_price;
 total_buy_cost = peak capital deployed = (max(total_qty_after)/100) ×
 normalized_mean_buy_price. Total Return = final_cash / total_buy_cost.
+
+``run_one_sec_type`` / ``discover_and_run`` are methods of the conn-scoped
+:class:`StrategyRunner` (code motion of the former conn-first module
+functions — same bodies, ``conn`` became ``self.conn``); the pure helpers
+``_compute_total_buy_cost`` / ``_compute_info_fields`` stay module-level.
 """
 from __future__ import annotations
 
@@ -92,260 +97,278 @@ def _compute_info_fields(
     }
 
 
-async def run_one_sec_type(
-    conn,
-    *,
-    strategy_name: str,
-    sec_type: str,
-    codes: list,
-    params: dict,
-    fetch_signal_fn: Callable,
-    backtest_fn: Callable,
-    daily_fn: Optional[Callable] = None,
-    force: bool,
-    seq_no: Optional[int],
-    dry_run: bool,
-    t0: float,
-) -> None:
-    """Fetch + backtest + upsert one sec_type's worth of codes.
+class StrategyRunner:
+    """Conn-scoped orchestrator for the batched fetch→backtest→upsert
+    pipeline (one asyncpg connection).
 
-    For large code sets (> BATCH_SIZE), fetches and backtests in batches to
-    avoid loading millions of rows into memory at once. Each code's
-    decisions are written under their OWN strategy_seq row (one seq per
-    code, with total_buy_cost = sum of all BUY costs for that code).
+    Code motion of the former module-level conn-first functions: each keeps
+    its name, sequencing, and log lines — ``conn`` became ``self.conn``.
+    ``__init__`` absorbs ONLY the state that is constant across every
+    run_one_sec_type call within one process run (force / seq_no / dry_run /
+    t0 — threaded unchanged from the CLI at all call sites, binary and
+    mixed). The per-call state stays a method parameter because it differs
+    between calls: strategy_name / sec_type(s) / codes / params / the
+    fetch_signal_fn / backtest_fn / daily_fn callbacks (binary collector vs
+    each sub-algo's binary collector vs the mixed portfolio collector) /
+    discovery.
     """
-    n_batches = (len(codes) + BATCH_SIZE - 1) // BATCH_SIZE
 
-    print_build_header(
-        f"STRATEGY · {strategy_name.upper()} [{sec_type}]",
-        **{
-            "sec_type": sec_type,
-            "n_codes": str(len(codes)),
-            "buy_notional": f"{params.get('buy_notional', 0):,.0f}",
-            "mode": "DRY-RUN" if dry_run
-                    else f"seq_no={'auto' if seq_no is None else seq_no}"
-                         f"{' (force)' if force else ''}",
-        }
-    )
+    def __init__(
+        self,
+        conn,
+        *,
+        force: bool,
+        seq_no: Optional[int],
+        dry_run: bool,
+        t0: float,
+    ) -> None:
+        self.conn = conn
+        self.force = force
+        self.seq_no = seq_no
+        self.dry_run = dry_run
+        self.t0 = t0
 
-    # Cap the backtest horizon at the analysis pipeline's last processed
-    # date (MAX(date) in analysis.mov_ave_spreads_detail for this
-    # sec_type). The UI chart renders OHLC from that table, so decisions —
-    # including the LAST DAY SELL — must stay within its date range to
-    # land on visible candles. stats.<sec>_basic_stats can run ahead of the
-    # analysis build (live intraday partial bars), which would otherwise
-    # place the last-day sell beyond the chart's last candlestick.
-    horizon = await conn.fetchval(
-        "SELECT MAX(date) FROM analysis.mov_ave_spreads_detail "
-        "WHERE sec_type = $1",
-        # the detail table's sec_type stores its static.label_dim SMALLINT code
-        SEC_TYPE_CODE[sec_type],
-    )
-    if horizon is not None:
-        logger.info(f"    -> analysis horizon cap: {horizon}")
+    async def run_one_sec_type(
+        self,
+        *,
+        strategy_name: str,
+        sec_type: str,
+        codes: list,
+        params: dict,
+        fetch_signal_fn: Callable,
+        backtest_fn: Callable,
+        daily_fn: Optional[Callable] = None,
+    ) -> None:
+        """Fetch + backtest + upsert one sec_type's worth of codes.
 
-    # ---- 1-2. Fetch + backtest (batched for large code sets) --------
-    # Group decisions by code so we can write one seq per code.
-    decisions_by_code: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    # Save each code's OHLC df for BOTH the per-code date range (needed for
-    # strategy_identity.start_date/end_date = the OHLC period the strategy
-    # is run over) AND the daily-row computation (after decisions numbered).
-    df_by_code: Dict[str, Any] = {}
+        For large code sets (> BATCH_SIZE), fetches and backtests in batches to
+        avoid loading millions of rows into memory at once. Each code's
+        decisions are written under their OWN strategy_seq row (one seq per
+        code, with total_buy_cost = sum of all BUY costs for that code).
+        """
+        n_batches = (len(codes) + BATCH_SIZE - 1) // BATCH_SIZE
 
-    for bi in range(n_batches):
-        batch_codes = codes[bi * BATCH_SIZE : (bi + 1) * BATCH_SIZE]
-        if n_batches > 1:
-            logger.info(f"\n[1/4] Fetching batch {bi+1}/{n_batches} "
-                  f"({len(batch_codes)} codes)...")
-        else:
-            logger.info("\n[1/4] Fetching signal data...")
-        df = await fetch_signal_fn(conn, sec_type, batch_codes)
-        if df.empty:
-            logger.info(f"    -> batch {bi+1}: no data; skipping.")
-            continue
-        # Trim to the analysis horizon (vectorized boolean mask) so the
-        # backtest never runs past the dates the chart can render.
+        print_build_header(
+            f"STRATEGY · {strategy_name.upper()} [{sec_type}]",
+            **{
+                "sec_type": sec_type,
+                "n_codes": str(len(codes)),
+                "buy_notional": f"{params.get('buy_notional', 0):,.0f}",
+                "mode": "DRY-RUN" if self.dry_run
+                        else f"seq_no={'auto' if self.seq_no is None else self.seq_no}"
+                             f"{' (force)' if self.force else ''}",
+            }
+        )
+
+        # Cap the backtest horizon at the analysis pipeline's last processed
+        # date (MAX(date) in analysis.mov_ave_spreads_detail for this
+        # sec_type). The UI chart renders OHLC from that table, so decisions —
+        # including the LAST DAY SELL — must stay within its date range to
+        # land on visible candles. stats.<sec>_basic_stats can run ahead of the
+        # analysis build (live intraday partial bars), which would otherwise
+        # place the last-day sell beyond the chart's last candlestick.
+        horizon = await self.conn.fetchval(
+            "SELECT MAX(date) FROM analysis.mov_ave_spreads_detail "
+            "WHERE sec_type = $1",
+            # the detail table's sec_type stores its static.label_dim SMALLINT code
+            SEC_TYPE_CODE[sec_type],
+        )
         if horizon is not None:
-            df = df[df["date"] <= horizon]
+            logger.info(f"    -> analysis horizon cap: {horizon}")
+
+        # ---- 1-2. Fetch + backtest (batched for large code sets) --------
+        # Group decisions by code so we can write one seq per code.
+        decisions_by_code: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        # Save each code's OHLC df for BOTH the per-code date range (needed for
+        # strategy_identity.start_date/end_date = the OHLC period the strategy
+        # is run over) AND the daily-row computation (after decisions numbered).
+        df_by_code: Dict[str, Any] = {}
+
+        for bi in range(n_batches):
+            batch_codes = codes[bi * BATCH_SIZE : (bi + 1) * BATCH_SIZE]
+            if n_batches > 1:
+                logger.info(f"\n[1/4] Fetching batch {bi+1}/{n_batches} "
+                      f"({len(batch_codes)} codes)...")
+            else:
+                logger.info("\n[1/4] Fetching signal data...")
+            df = await fetch_signal_fn(self.conn, sec_type, batch_codes)
             if df.empty:
-                logger.info(f"    -> batch {bi+1}: no rows within the analysis "
-                      f"horizon; skipping.")
+                logger.info(f"    -> batch {bi+1}: no data; skipping.")
                 continue
-        if n_batches > 1:
-            logger.info(f"    -> batch {bi+1}: {len(df):,} rows, "
-                  f"{df['code'].nunique()} code(s)")
-        else:
-            logger.info(f"    -> {len(df):,} rows, {df['code'].nunique()} code(s), "
-                  f"{df['date'].min()} .. {df['date'].max()}")
+            # Trim to the analysis horizon (vectorized boolean mask) so the
+            # backtest never runs past the dates the chart can render.
+            if horizon is not None:
+                df = df[df["date"] <= horizon]
+                if df.empty:
+                    logger.info(f"    -> batch {bi+1}: no rows within the analysis "
+                          f"horizon; skipping.")
+                    continue
+            if n_batches > 1:
+                logger.info(f"    -> batch {bi+1}: {len(df):,} rows, "
+                      f"{df['code'].nunique()} code(s)")
+            else:
+                logger.info(f"    -> {len(df):,} rows, {df['code'].nunique()} code(s), "
+                      f"{df['date'].min()} .. {df['date'].max()}")
 
-        # Save per-code OHLC slices for the per-code date range (seq
-        # start_date/end_date) AND the daily-row computation.
-        for code, code_df in df.groupby("code", sort=False):
-            df_by_code[code] = code_df
+            # Save per-code OHLC slices for the per-code date range (seq
+            # start_date/end_date) AND the daily-row computation.
+            for code, code_df in df.groupby("code", sort=False):
+                df_by_code[code] = code_df
 
-        logger.info(f"\n[2/4] Backtest{' batch ' + str(bi+1) if n_batches > 1 else ''}...")
-        decisions = backtest_fn(df, params, sec_type, batch_codes)
-        # Each decision dict carries `code` (set by backtest_single_code).
-        # Group by code so we can write one seq per code below.
-        for d in decisions:
-            decisions_by_code[d["code"]].append(d)
-        if n_batches > 1:
-            logger.info(f"    -> batch {bi+1}: {len(decisions)} decisions "
-                  f"(running codes: {len(decisions_by_code)})")
+            logger.info(f"\n[2/4] Backtest{' batch ' + str(bi+1) if n_batches > 1 else ''}...")
+            decisions = backtest_fn(df, params, sec_type, batch_codes)
+            # Each decision dict carries `code` (set by backtest_single_code).
+            # Group by code so we can write one seq per code below.
+            for d in decisions:
+                decisions_by_code[d["code"]].append(d)
+            if n_batches > 1:
+                logger.info(f"    -> batch {bi+1}: {len(decisions)} decisions "
+                      f"(running codes: {len(decisions_by_code)})")
 
-    if not decisions_by_code:
-        logger.info("\n    -> no decisions generated; skipping this sec_type.")
-        return
+        if not decisions_by_code:
+            logger.info("\n    -> no decisions generated; skipping this sec_type.")
+            return
 
-    total_n_buys = sum(
-        1 for ds in decisions_by_code.values() for d in ds if d["side"] == "BUY"
-    )
-    total_n_sells = sum(
-        1 for ds in decisions_by_code.values() for d in ds if d["side"] == "SELL"
-    )
-    total_realized = sum(
-        d.get("realized_pnl") or 0.0
-        for ds in decisions_by_code.values()
-        for d in ds if d["side"] == "SELL"
-    )
-    total_buy_cost_all = sum(
-        _compute_total_buy_cost(ds) for ds in decisions_by_code.values()
-    )
-    logger.info(f"\n    -> TOTAL: {sum(len(v) for v in decisions_by_code.values())} "
-          f"decisions across {len(decisions_by_code)} codes "
-          f"({total_n_buys} BUY, {total_n_sells} SELL)")
-    logger.info(f"    -> total buy cost (all codes): {total_buy_cost_all:,.2f} (normalized)")
-    logger.info(f"    -> realized P&L (sum across codes): {total_realized:,.2f} (normalized)")
-
-    if dry_run:
-        logger.info("\n[3/4] --dry-run: skipping DB write.")
-        logger.info("\n[4/4] Skipped (dry-run).")
-        # Show sample from the first code with decisions.
-        sample_code = next(iter(decisions_by_code))
-        for d in decisions_by_code[sample_code][:6]:
-            logger.info(f"    {d['exec_date']} {d['side']:4s} {d['code']} "
-                  f"qty={d['qty']:.6f} @ {d['fill_price']:.4f} "
-                  f"realized={d['realized_pnl']:.2f} | {d['signal_reason']}")
-        return
-
-    # ---- 3-4. Write to DB: one strategy_seq + strategy_results per code -
-    logger.info(f"\n[3/4] Inserting one strategy_identity + strategy_results per code "
-          f"({len(decisions_by_code)} codes)...")
-    # seq_no is a display counter shared across codes in one run when given
-    # via --seq-no; otherwise auto-computed per strategy_name inside
-    # upsert_strategy_seq. The natural key (with the OHLC period) decides
-    # skip/insert — NOT seq_no.
-
-    n_seqs_inserted = 0
-    n_seqs_skipped = 0
-    n_decisions_inserted = 0
-    n_daily_inserted = 0
-    for code, code_decisions in decisions_by_code.items():
-        # Per-code OHLC period = the date range the strategy is run over.
-        code_df = df_by_code.get(code)
-        if code_df is None or code_df.empty:
-            continue  # no OHLC slice (shouldn't happen — decisions came from it)
-        code_start = code_df["date"].min()
-        code_end = code_df["date"].max()
-
-        # strategy_seq = pure identity row on the natural key. Returns None
-        # when this (strategy, sec_type, code, period) was already backtested
-        # (skip-if-already-found); with --force the existing row is replaced.
-        seq_id = await upsert_strategy_seq(
-            conn, strategy_name=strategy_name, sec_type=sec_type, code=code,
-            start_date=code_start, end_date=code_end, params=params,
-            force=force, seq_no=seq_no,
+        total_n_buys = sum(
+            1 for ds in decisions_by_code.values() for d in ds if d["side"] == "BUY"
         )
-        if seq_id is None:
-            n_seqs_skipped += 1
-            continue
-
-        # strategy_results = 1:1 results row (dates, total_buy_cost, first-buy
-        # anchor, P&L summary). Dates mirror the identity row: the code's
-        # OHLC period (code_start/code_end), NOT the first/last decision —
-        # the position is typically held after the last trade, so the run's
-        # end must be the last DATA date.
-        info = _compute_info_fields(code_decisions)
-        await insert_strategy_results(
-            conn, seq_id, sec_type, code,
-            start_date=code_start,
-            end_date=code_end,
-            total_buy_cost=info["total_buy_cost"],
-            first_buy_date=info["first_buy_date"],
-            first_buy_fill_price=info["first_buy_fill_price"],
-            total_realized_pnl=info["total_realized_pnl"],
-            total_abs_pnl=info["total_abs_pnl"],
-            n_sells=info["n_sells"],
-            n_buys=info["n_buys"],
+        total_n_sells = sum(
+            1 for ds in decisions_by_code.values() for d in ds if d["side"] == "SELL"
         )
-        # insert_decisions calls assign_decision_no in place, so code_decisions
-        # now carries decision_no — needed for daily-row linkage.
-        n_ins = await insert_decisions(conn, seq_id, code_decisions)
+        total_realized = sum(
+            d.get("realized_pnl") or 0.0
+            for ds in decisions_by_code.values()
+            for d in ds if d["side"] == "SELL"
+        )
+        total_buy_cost_all = sum(
+            _compute_total_buy_cost(ds) for ds in decisions_by_code.values()
+        )
+        logger.info(f"\n    -> TOTAL: {sum(len(v) for v in decisions_by_code.values())} "
+              f"decisions across {len(decisions_by_code)} codes "
+              f"({total_n_buys} BUY, {total_n_sells} SELL)")
+        logger.info(f"    -> total buy cost (all codes): {total_buy_cost_all:,.2f} (normalized)")
+        logger.info(f"    -> realized P&L (sum across codes): {total_realized:,.2f} (normalized)")
 
-        # Compute + insert daily portfolio state (unrealized_pnl = P&L if all
-        # remaining position sold at the day's close). Requires the code's
-        # OHLC df + the numbered decisions + the first-buy anchor price.
-        if daily_fn is not None and code in df_by_code:
-            anchor_price = info["first_buy_fill_price"]
-            daily_rows = daily_fn(df_by_code[code], code_decisions, anchor_price)
-            n_daily = await insert_daily_rows(conn, seq_id, daily_rows)
-            n_daily_inserted += n_daily
+        if self.dry_run:
+            logger.info("\n[3/4] --dry-run: skipping DB write.")
+            logger.info("\n[4/4] Skipped (dry-run).")
+            # Show sample from the first code with decisions.
+            sample_code = next(iter(decisions_by_code))
+            for d in decisions_by_code[sample_code][:6]:
+                logger.info(f"    {d['exec_date']} {d['side']:4s} {d['code']} "
+                      f"qty={d['qty']:.6f} @ {d['fill_price']:.4f} "
+                      f"realized={d['realized_pnl']:.2f} | {d['signal_reason']}")
+            return
 
-        n_seqs_inserted += 1
-        n_decisions_inserted += n_ins
+        # ---- 3-4. Write to DB: one strategy_seq + strategy_results per code -
+        logger.info(f"\n[3/4] Inserting one strategy_identity + strategy_results per code "
+              f"({len(decisions_by_code)} codes)...")
+        # seq_no is a display counter shared across codes in one run when given
+        # via --seq-no; otherwise auto-computed per strategy_name inside
+        # upsert_strategy_seq. The natural key (with the OHLC period) decides
+        # skip/insert — NOT seq_no.
 
-    skip_msg = f" (skipped {n_seqs_skipped} already-present)" if n_seqs_skipped else ""
-    logger.info(f"\n[4/4] Inserted {n_seqs_inserted} strategy_identity + strategy_results "
-          f"rows + {n_decisions_inserted:,} trade_decision rows"
-          + (f" + {n_daily_inserted:,} strategy_daily rows" if daily_fn else "")
-          + skip_msg)
+        n_seqs_inserted = 0
+        n_seqs_skipped = 0
+        n_decisions_inserted = 0
+        n_daily_inserted = 0
+        for code, code_decisions in decisions_by_code.items():
+            # Per-code OHLC period = the date range the strategy is run over.
+            code_df = df_by_code.get(code)
+            if code_df is None or code_df.empty:
+                continue  # no OHLC slice (shouldn't happen — decisions came from it)
+            code_start = code_df["date"].min()
+            code_end = code_df["date"].max()
 
-
-async def discover_and_run(
-    conn,
-    *,
-    strategy_name: str,
-    sec_types: list,
-    codes_by_st: Optional[Dict[str, list]],
-    params: dict,
-    fetch_signal_fn: Callable,
-    backtest_fn: Callable,
-    daily_fn: Optional[Callable] = None,
-    force: bool,
-    seq_no: Optional[int],
-    dry_run: bool,
-    discovery: bool,
-) -> None:
-    """Top-level driver: for each sec_type, either use explicit codes or
-    discover them, then call run_one_sec_type.
-
-    Shared by every strategy's __main__.py so the CLI parsing is the only
-    strategy-specific part of the entry point.
-    """
-    t0 = time.time()
-    for st in sec_types:
-        if discovery:
-            logger.info(f"\n>>> Discovering available codes for sec_type={st} "
-                  f"from analysis.mov_ave_spreads_detail...")
-            codes = await discover_available_codes(conn, st)
-            logger.info(f"    -> found {len(codes)} code(s)")
-            if not codes:
-                logger.info("    -> no data; skipping.")
+            # strategy_seq = pure identity row on the natural key. Returns None
+            # when this (strategy, sec_type, code, period) was already backtested
+            # (skip-if-already-found); with --force the existing row is replaced.
+            seq_id = await upsert_strategy_seq(
+                self.conn, strategy_name=strategy_name, sec_type=sec_type, code=code,
+                start_date=code_start, end_date=code_end, params=params,
+                force=self.force, seq_no=self.seq_no,
+            )
+            if seq_id is None:
+                n_seqs_skipped += 1
                 continue
-        else:
-            codes = codes_by_st[st]
 
-        await run_one_sec_type(
-            conn=conn,
-            strategy_name=strategy_name,
-            sec_type=st,
-            codes=codes,
-            params=params,
-            fetch_signal_fn=fetch_signal_fn,
-            backtest_fn=backtest_fn,
-            daily_fn=daily_fn,
-            force=force,
-            seq_no=seq_no,
-            dry_run=dry_run,
-            t0=t0,
-        )
+            # strategy_results = 1:1 results row (dates, total_buy_cost, first-buy
+            # anchor, P&L summary). Dates mirror the identity row: the code's
+            # OHLC period (code_start/code_end), NOT the first/last decision —
+            # the position is typically held after the last trade, so the run's
+            # end must be the last DATA date.
+            info = _compute_info_fields(code_decisions)
+            await insert_strategy_results(
+                self.conn, seq_id, sec_type, code,
+                start_date=code_start,
+                end_date=code_end,
+                total_buy_cost=info["total_buy_cost"],
+                first_buy_date=info["first_buy_date"],
+                first_buy_fill_price=info["first_buy_fill_price"],
+                total_realized_pnl=info["total_realized_pnl"],
+                total_abs_pnl=info["total_abs_pnl"],
+                n_sells=info["n_sells"],
+                n_buys=info["n_buys"],
+            )
+            # insert_decisions calls assign_decision_no in place, so code_decisions
+            # now carries decision_no — needed for daily-row linkage.
+            n_ins = await insert_decisions(self.conn, seq_id, code_decisions)
+
+            # Compute + insert daily portfolio state (unrealized_pnl = P&L if all
+            # remaining position sold at the day's close). Requires the code's
+            # OHLC df + the numbered decisions + the first-buy anchor price.
+            if daily_fn is not None and code in df_by_code:
+                anchor_price = info["first_buy_fill_price"]
+                daily_rows = daily_fn(df_by_code[code], code_decisions, anchor_price)
+                n_daily = await insert_daily_rows(self.conn, seq_id, daily_rows)
+                n_daily_inserted += n_daily
+
+            n_seqs_inserted += 1
+            n_decisions_inserted += n_ins
+
+        skip_msg = f" (skipped {n_seqs_skipped} already-present)" if n_seqs_skipped else ""
+        logger.info(f"\n[4/4] Inserted {n_seqs_inserted} strategy_identity + strategy_results "
+              f"rows + {n_decisions_inserted:,} trade_decision rows"
+              + (f" + {n_daily_inserted:,} strategy_daily rows" if daily_fn else "")
+              + skip_msg)
+
+    async def discover_and_run(
+        self,
+        *,
+        strategy_name: str,
+        sec_types: list,
+        codes_by_st: Optional[Dict[str, list]],
+        params: dict,
+        fetch_signal_fn: Callable,
+        backtest_fn: Callable,
+        daily_fn: Optional[Callable] = None,
+        discovery: bool,
+    ) -> None:
+        """Top-level driver: for each sec_type, either use explicit codes or
+        discover them, then call run_one_sec_type.
+
+        Shared by every strategy's __main__.py so the CLI parsing is the only
+        strategy-specific part of the entry point.
+        """
+        t0 = time.time()
+        for st in sec_types:
+            if discovery:
+                logger.info(f"\n>>> Discovering available codes for sec_type={st} "
+                      f"from analysis.mov_ave_spreads_detail...")
+                codes = await discover_available_codes(self.conn, st)
+                logger.info(f"    -> found {len(codes)} code(s)")
+                if not codes:
+                    logger.info("    -> no data; skipping.")
+                    continue
+            else:
+                codes = codes_by_st[st]
+
+            await self.run_one_sec_type(
+                strategy_name=strategy_name,
+                sec_type=st,
+                codes=codes,
+                params=params,
+                fetch_signal_fn=fetch_signal_fn,
+                backtest_fn=backtest_fn,
+                daily_fn=daily_fn,
+            )

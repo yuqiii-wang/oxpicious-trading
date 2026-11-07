@@ -83,3 +83,7 @@ watchdog, which restarts the middleware.
 - The middleware talks plain HTTP to the runner; for a quick local
   runner without docker:
   `python llm_agents/sandbox/runner.py --host 127.0.0.1 --port 8788 --root temp_scripts/sandbox-root`.
+- Middleware/runner code (`llm_agents/sandbox/`) is class-first pydantic
+  per `oxpicious-dev-conventions` (typed request/response models for the
+  runner API and MCP payloads). Scripts that RUN INSIDE the sandbox keep
+  the plain stdlib+pandas idiom — the image carries no pydantic.

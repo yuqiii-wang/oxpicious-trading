@@ -55,6 +55,14 @@ in ``/common/index.html.js``):
   rows stay in the markup; a fund with no distributions renders an
   info-noData 暂无内容 block instead. 拆分记录 table exists but is
   display:none and empty for 510880.
+
+Class motion (behavior-preserving, 2026-11-07): the request functions —
+huatai_headers, build_proxy, fetch_nav_rows, fetch_pcf_payload,
+fetch_products_index_html — are methods of ``HuataiPbEndpoints`` below (same
+names, bodies and sequencing; ``session``/``proxy``/``service`` stay per-call
+arguments, so the class is stateless). Module-level defs with the same names
+at the bottom are compatibility shims delegating to the shared
+``_ENDPOINTS`` instance; the constants and pure parsers stay module-level.
 """
 from __future__ import annotations
 
@@ -155,38 +163,6 @@ GPSC_MARKET_MAP: Dict[str, Tuple[str, str]] = {
     "XHKG": ("香港市场", "HK"),
 }
 
-def huatai_headers(
-    service: str, referer_code: Optional[str] = None,
-) -> Dict[str, str]:
-    """Request headers with the product page as Referer (the site base
-    page when no fund code is given)."""
-    urls = service_urls(service)
-    referer = (
-        urls["product_page"].format(code=referer_code)
-        if referer_code else urls["site_base"] + "/"
-    )
-    return build_headers_with_referer(
-        referer,
-        extra={
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        },
-    )
-
-
-def build_proxy(service: str, sleep_sec: Optional[float] = None) -> AntiBotProxy:
-    """AntiBotProxy for a huatai_pb downloader service.
-
-    Pacing (base sleep, jitter, timeouts, anti-bot toggles) resolves from
-    the service's external_request_config JSON row; a non-None
-    *sleep_sec* overrides only the row's base sleep.
-    """
-    if sleep_sec is None:
-        return AntiBotProxy(service=service)
-    return AntiBotProxy(replace(
-        antibot_config_for(service), base_sleep_sec=sleep_sec,
-    ))
-
 
 def is_listed_etf_code(code: str) -> bool:
     """True for 6-digit exchange-listed ETF codes (51x/56x/58x SS, 159 SZ)."""
@@ -235,74 +211,145 @@ def resolve_stock_market(gpsc: str, stock_code: str) -> Tuple[str, str]:
     return "", ""
 
 
-def fetch_nav_rows(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    fund_code: str,
-    date_from: str,
-    date_to: str,
-    service: str,
-    logger: Any = None,
-) -> List[Dict[str, Any]]:
-    """Fetch NAV rows for one fund in [date_from, date_to] (ISO dates).
+class HuataiPbEndpoints:
+    """Endpoint access layer of the huatai-pb.com downloaders (stateless).
 
-    Returns the raw dataList dicts (date desc), [] on failure/empty.
-    """
-    resp = proxy.get(
-        session,
-        service_urls(service)["nav_table"],
-        params={
-            "fundcode": fund_code,
-            "from": date_from,
-            "to": date_to,
-            "pages": NAV_PAGE_SPEC,
-            "siteId": SITE_ID,
-        },
-        headers=huatai_headers(service, fund_code),
-        logger=logger,
-        log_tag=f"[nav {fund_code}]",
-    )
-    if resp is None or resp.status_code != 200:
-        return []
-    try:
-        payload = resp.json()
-    except (ValueError, json.JSONDecodeError):
-        return []
-    rows = payload.get("dataList") or []
-    return rows if isinstance(rows, list) else []
+    The former request functions of this file are methods with the same
+    names, bodies and sequencing: ``huatai_headers`` / ``build_proxy``
+    resolve the per-service request config and ``fetch_nav_rows`` /
+    ``fetch_pcf_payload`` / ``fetch_products_index_html`` hit the
+    endpoints. ``session`` / ``proxy`` / ``service`` stay per-call
+    arguments (each downloader passes its own service row), so the class
+    holds no config; the module-level defs with the same names below are
+    compatibility shims delegating to the shared ``_ENDPOINTS`` instance.
+    The constants and pure parsers above stay module-level."""
 
+    def huatai_headers(
+        self, service: str, referer_code: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Request headers with the product page as Referer (the site base
+        page when no fund code is given)."""
+        urls = service_urls(service)
+        referer = (
+            urls["product_page"].format(code=referer_code)
+            if referer_code else urls["site_base"] + "/"
+        )
+        return build_headers_with_referer(
+            referer,
+            extra={
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            },
+        )
 
-def fetch_pcf_payload(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    fund_code: str,
-    begin_date: str,
-    service: str,
-    logger: Any = None,
-) -> Optional[Dict[str, Any]]:
-    """POST the PCF query for one fund on one trading day (ISO date).
+    def build_proxy(
+        self, service: str, sleep_sec: Optional[float] = None,
+    ) -> AntiBotProxy:
+        """AntiBotProxy for a huatai_pb downloader service.
 
-    Returns the parsed payload dict, or None on request/parse failure.
-    A non-trading date yields a successful payload with an EMPTY dayInfo —
-    callers must treat that as "no PCF for this date".
-    """
-    resp = proxy.post(
-        session,
-        service_urls(service)["pcf"],
-        data={"fundcode": fund_code, "beginDate": begin_date},
-        headers=huatai_headers(service, fund_code),
-        logger=logger,
-        log_tag=f"[pcf {fund_code} {begin_date}]",
-    )
-    if resp is None or resp.status_code != 200:
-        return None
-    try:
-        payload = resp.json()
-    except (ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict) or payload.get("status") != "success":
-        return None
-    return payload
+        Pacing (base sleep, jitter, timeouts, anti-bot toggles) resolves from
+        the service's external_request_config JSON row; a non-None
+        *sleep_sec* overrides only the row's base sleep.
+        """
+        if sleep_sec is None:
+            return AntiBotProxy(service=service)
+        return AntiBotProxy(replace(
+            antibot_config_for(service), base_sleep_sec=sleep_sec,
+        ))
+
+    def fetch_nav_rows(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        fund_code: str,
+        date_from: str,
+        date_to: str,
+        service: str,
+        logger: Any = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch NAV rows for one fund in [date_from, date_to] (ISO dates).
+
+        Returns the raw dataList dicts (date desc), [] on failure/empty.
+        """
+        resp = proxy.get(
+            session,
+            service_urls(service)["nav_table"],
+            params={
+                "fundcode": fund_code,
+                "from": date_from,
+                "to": date_to,
+                "pages": NAV_PAGE_SPEC,
+                "siteId": SITE_ID,
+            },
+            headers=self.huatai_headers(service, fund_code),
+            logger=logger,
+            log_tag=f"[nav {fund_code}]",
+        )
+        if resp is None or resp.status_code != 200:
+            return []
+        try:
+            payload = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return []
+        rows = payload.get("dataList") or []
+        return rows if isinstance(rows, list) else []
+
+    def fetch_pcf_payload(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        fund_code: str,
+        begin_date: str,
+        service: str,
+        logger: Any = None,
+    ) -> Optional[Dict[str, Any]]:
+        """POST the PCF query for one fund on one trading day (ISO date).
+
+        Returns the parsed payload dict, or None on request/parse failure.
+        A non-trading date yields a successful payload with an EMPTY dayInfo —
+        callers must treat that as "no PCF for this date".
+        """
+        resp = proxy.post(
+            session,
+            service_urls(service)["pcf"],
+            data={"fundcode": fund_code, "beginDate": begin_date},
+            headers=self.huatai_headers(service, fund_code),
+            logger=logger,
+            log_tag=f"[pcf {fund_code} {begin_date}]",
+        )
+        if resp is None or resp.status_code != 200:
+            return None
+        try:
+            payload = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict) or payload.get("status") != "success":
+            return None
+        return payload
+
+    def fetch_products_index_html(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        service: str,
+        logger: Any = None,
+    ) -> Optional[str]:
+        """GET the products index page (all-funds table) as decoded HTML.
+
+        The response carries no charset, so requests would decode ``resp.text``
+        as ISO-8859-1 (mojibake) — decode ``resp.content`` as UTF-8 explicitly.
+        Returns None on request failure.
+        """
+        resp = proxy.get(
+            session,
+            service_urls(service)["products_index"],
+            headers=self.huatai_headers(service),
+            logger=logger,
+            log_tag="[products-index]",
+        )
+        if resp is None or resp.status_code != 200:
+            return None
+        return resp.content.decode("utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -327,30 +374,6 @@ _RE_NAV_DATE = re.compile(r'class="fund-date"[^>]*>\s*([^<]*?)\s*</p>')
 # cells share the same class.
 _RE_DAY_PCT = re.compile(
     r'class="cumulative-net-worth[^"]*"[^>]*>\s*([^<]*?)\s*</p>')
-
-
-def fetch_products_index_html(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    service: str,
-    logger: Any = None,
-) -> Optional[str]:
-    """GET the products index page (all-funds table) as decoded HTML.
-
-    The response carries no charset, so requests would decode ``resp.text``
-    as ISO-8859-1 (mojibake) — decode ``resp.content`` as UTF-8 explicitly.
-    Returns None on request failure.
-    """
-    resp = proxy.get(
-        session,
-        service_urls(service)["products_index"],
-        headers=huatai_headers(service),
-        logger=logger,
-        log_tag="[products-index]",
-    )
-    if resp is None or resp.status_code != 200:
-        return None
-    return resp.content.decode("utf-8", errors="replace")
 
 
 def parse_products_index_nav_rows(html_text: str) -> List[Dict[str, Any]]:
@@ -476,3 +499,66 @@ def read_cached_fund_arr(cache_path: Path) -> List[Dict[str, str]]:
     except OSError:
         return []
     return parse_fund_arr(js_text)
+
+
+# ---------------------------------------------------------------------------
+# Compatibility shims — the former module-level request functions. Every
+# external importer of this module (the five huatai_pb downloader __main__
+# modules and builds/etf/feeder_nav) imports these names; the shims keep
+# that surface unchanged by delegating to one shared stateless instance.
+# ---------------------------------------------------------------------------
+
+_ENDPOINTS = HuataiPbEndpoints()
+
+
+def huatai_headers(
+    service: str, referer_code: Optional[str] = None,
+) -> Dict[str, str]:
+    """Shim — see HuataiPbEndpoints.huatai_headers."""
+    return _ENDPOINTS.huatai_headers(service, referer_code)
+
+
+def build_proxy(service: str, sleep_sec: Optional[float] = None) -> AntiBotProxy:
+    """Shim — see HuataiPbEndpoints.build_proxy."""
+    return _ENDPOINTS.build_proxy(service, sleep_sec)
+
+
+def fetch_nav_rows(
+    session: requests.Session,
+    proxy: AntiBotProxy,
+    fund_code: str,
+    date_from: str,
+    date_to: str,
+    service: str,
+    logger: Any = None,
+) -> List[Dict[str, Any]]:
+    """Shim — see HuataiPbEndpoints.fetch_nav_rows."""
+    return _ENDPOINTS.fetch_nav_rows(
+        session, proxy, fund_code, date_from, date_to, service, logger,
+    )
+
+
+def fetch_pcf_payload(
+    session: requests.Session,
+    proxy: AntiBotProxy,
+    fund_code: str,
+    begin_date: str,
+    service: str,
+    logger: Any = None,
+) -> Optional[Dict[str, Any]]:
+    """Shim — see HuataiPbEndpoints.fetch_pcf_payload."""
+    return _ENDPOINTS.fetch_pcf_payload(
+        session, proxy, fund_code, begin_date, service, logger,
+    )
+
+
+def fetch_products_index_html(
+    session: requests.Session,
+    proxy: AntiBotProxy,
+    service: str,
+    logger: Any = None,
+) -> Optional[str]:
+    """Shim — see HuataiPbEndpoints.fetch_products_index_html."""
+    return _ENDPOINTS.fetch_products_index_html(
+        session, proxy, service, logger,
+    )

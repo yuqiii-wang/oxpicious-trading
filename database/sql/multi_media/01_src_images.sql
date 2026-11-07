@@ -7,7 +7,7 @@
 --  Deduplication is by content_hash (sha256 of the bytes): the same
 --  screenshot re-attached by a later ask reuses the existing row, so the
 --  BYTEA is stored once. Consumers reference images by image_id through
---  junction tables in their own schemas (text.llm_qa_ask_context_images) —
+--  junction tables in their own schemas (llm.llm_qa_ask_context_images) —
 --  never add a consumer FK column here.
 -- ============================================================================
 
@@ -43,4 +43,4 @@ COMMENT ON COLUMN multi_media.src_images.label IS
 COMMENT ON TABLE multi_media.src_images IS
   'Source image binaries, deduplicated by content hash. One row per '
   'distinct image; consumer features map to image_id through junction '
-  'tables in their own schemas (see text.llm_qa_ask_context_images).';
+  'tables in their own schemas (see llm.llm_qa_ask_context_images).';

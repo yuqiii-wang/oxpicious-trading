@@ -141,90 +141,6 @@ def build_options_proxy(service: str) -> AntiBotProxy:
     ))
 
 
-def _get_jsonp(
-    session: requests.Session,
-    url: str,
-    params: Dict[str, str],
-    service: str,
-    referer: Optional[str] = None,
-    proxy: Optional[AntiBotProxy] = None,
-    inter_request_sec: Optional[float] = None,
-) -> Optional[Dict[str, Any]]:
-    """GET one yunhq JSONP endpoint and return the parsed payload.
-
-    The proxy audits the request, tracks 4xx blocking, and sleeps
-    *inter_request_sec* (jittered) after each success — callers no longer
-    sleep between pages themselves. An omitted *inter_request_sec* resolves
-    from the service row's sleep_sec (request_type "options"); the request
-    timeout comes from the proxy's row-resolved config.
-    """
-    if proxy is None:
-        proxy = build_options_proxy(service)
-    headers = {**COMMON_BASE_HEADERS, "Accept": "*/*"}
-    if referer:
-        headers["Referer"] = referer
-    if inter_request_sec is None:
-        inter_request_sec = sleep_sec_for(service, "options")
-    resp = proxy.get(
-        session, url, params=params, headers=headers,
-        sleep_sec=inter_request_sec,
-        logger=logger,
-    )
-    if resp is None:
-        logger.warning("SSE options request failed (%s)", url)
-        return None
-    try:
-        return _parse_jsonp(resp.text)
-    except ValueError as e:
-        logger.warning("SSE options JSONP parse failed (%s): %s", url, e)
-        return None
-
-
-def fetch_underlyings(
-    session: requests.Session,
-    service: str = "",
-    proxy: Optional[AntiBotProxy] = None,
-) -> List[str]:
-    """Fetch the option underlying list (e.g. ['510050', '510300', …])."""
-    payload = _get_jsonp(
-        session, service_urls(service)["options_underlying"],
-        {"callback": JSONP_CALLBACK, "select": "stockid"},
-        service=service, proxy=proxy,
-    )
-    if not payload:
-        return []
-    return [str(row[0]).strip() for row in (payload.get("list") or []) if row]
-
-
-def fetch_expire_months(
-    session: requests.Session,
-    service: str = "",
-    proxy: Optional[AntiBotProxy] = None,
-) -> Dict[str, List[str]]:
-    """Fetch live expiry months per underlying.
-
-    Returns {stockid: [yymm, …]} with yymm like '2609'. The tstyle URL month
-    is the last 2 chars ('09') — always re-derive from this live list.
-    """
-    payload = _get_jsonp(
-        session, service_urls(service)["options_expire"],
-        {"callback": JSONP_CALLBACK, "select": "stockid,expiremonth"},
-        service=service, proxy=proxy,
-    )
-    months: Dict[str, List[str]] = {}
-    if not payload:
-        return months
-    for row in payload.get("list") or []:
-        if not row or len(row) < 2 or row[1] in (None, ""):
-            continue
-        stockid = str(row[0]).strip()
-        yymm = str(row[1])[2:]  # YYYYMM → YYMM
-        months.setdefault(stockid, [])
-        if yymm not in months[stockid]:
-            months[stockid].append(yymm)
-    return months
-
-
 def _parse_tstyle_row(row: list) -> Optional[Dict[str, object]]:
     """Map one tstyle row to a record dict (order = TSTYLE_SELECT_FIELDS)."""
     if not row:
@@ -256,6 +172,283 @@ def _parse_tstyle_row(row: list) -> Optional[Dict[str, object]]:
     }
 
 
+class SseOptionsGateway:
+    """SSE ETF-options quote gateway (stateless).
+
+    Code motion only (2026-11-07): the former module-level fetch functions
+    (``_get_jsonp``, ``fetch_underlyings``, ``fetch_expire_months``,
+    ``fetch_options_snapshot``, ``fetch_day_contract_map``,
+    ``_fetch_contract_map_pages``) are now methods with the same names,
+    signatures and sequencing. The class holds no state — each method still
+    constructs its own ``AntiBotProxy`` per call exactly as the functions
+    did (pacing / host-block lifecycle unchanged) — and the module-level
+    ``fetch_*`` functions at the bottom of this file are thin delegates to
+    the shared instance so every existing import keeps working. The pure
+    contractid parser and row mapper stay module-level.
+    """
+
+    def _get_jsonp(
+        self,
+        session: requests.Session,
+        url: str,
+        params: Dict[str, str],
+        service: str,
+        referer: Optional[str] = None,
+        proxy: Optional[AntiBotProxy] = None,
+        inter_request_sec: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """GET one yunhq JSONP endpoint and return the parsed payload.
+
+        The proxy audits the request, tracks 4xx blocking, and sleeps
+        *inter_request_sec* (jittered) after each success — callers no longer
+        sleep between pages themselves. An omitted *inter_request_sec* resolves
+        from the service row's sleep_sec (request_type "options"); the request
+        timeout comes from the proxy's row-resolved config.
+        """
+        if proxy is None:
+            proxy = build_options_proxy(service)
+        headers = {**COMMON_BASE_HEADERS, "Accept": "*/*"}
+        if referer:
+            headers["Referer"] = referer
+        if inter_request_sec is None:
+            inter_request_sec = sleep_sec_for(service, "options")
+        resp = proxy.get(
+            session, url, params=params, headers=headers,
+            sleep_sec=inter_request_sec,
+            logger=logger,
+        )
+        if resp is None:
+            logger.warning("SSE options request failed (%s)", url)
+            return None
+        try:
+            return _parse_jsonp(resp.text)
+        except ValueError as e:
+            logger.warning("SSE options JSONP parse failed (%s): %s", url, e)
+            return None
+
+    def fetch_underlyings(
+        self,
+        session: requests.Session,
+        service: str = "",
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> List[str]:
+        """Fetch the option underlying list (e.g. ['510050', '510300', …])."""
+        payload = self._get_jsonp(
+            session, service_urls(service)["options_underlying"],
+            {"callback": JSONP_CALLBACK, "select": "stockid"},
+            service=service, proxy=proxy,
+        )
+        if not payload:
+            return []
+        return [str(row[0]).strip() for row in (payload.get("list") or []) if row]
+
+    def fetch_expire_months(
+        self,
+        session: requests.Session,
+        service: str = "",
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> Dict[str, List[str]]:
+        """Fetch live expiry months per underlying.
+
+        Returns {stockid: [yymm, …]} with yymm like '2609'. The tstyle URL month
+        is the last 2 chars ('09') — always re-derive from this live list.
+        """
+        payload = self._get_jsonp(
+            session, service_urls(service)["options_expire"],
+            {"callback": JSONP_CALLBACK, "select": "stockid,expiremonth"},
+            service=service, proxy=proxy,
+        )
+        months: Dict[str, List[str]] = {}
+        if not payload:
+            return months
+        for row in payload.get("list") or []:
+            if not row or len(row) < 2 or row[1] in (None, ""):
+                continue
+            stockid = str(row[0]).strip()
+            yymm = str(row[1])[2:]  # YYYYMM → YYMM
+            months.setdefault(stockid, [])
+            if yymm not in months[stockid]:
+                months[stockid].append(yymm)
+        return months
+
+    def fetch_options_snapshot(
+        self,
+        session: requests.Session,
+        months: Dict[str, List[str]],
+        service: str = "",
+        proxy: Optional[AntiBotProxy] = None,
+        inter_request_sec: Optional[float] = None,
+    ) -> Tuple[Optional[datetime], Dict[str, dict]]:
+        """Sweep every (underlying, expiry-month) tstyle endpoint into one snapshot.
+
+        Returns (update_dt, {contractid: record}) — the same contract as the
+        equity ``fetch_snapshot``. ``update_dt`` is the latest server update
+        time seen across pages; a failed page logs a warning and is skipped
+        (partial snapshot, mirroring the equity pagination behaviour).
+        """
+        urls = service_urls(service)
+        if proxy is None:
+            proxy = build_options_proxy(service)
+        snapshot: Dict[str, dict] = {}
+        update_dt: Optional[datetime] = None
+        n_pages = sum(len(v) for v in months.values())
+        if n_pages == 0:
+            return None, {}
+
+        referer = urls["options_price_referer"]
+        for stockid, yymms in sorted(months.items()):
+            for yymm in sorted(yymms):
+                payload = self._get_jsonp(
+                    session,
+                    f"{urls['options_tstyle']}/{stockid}_{yymm[2:]}",
+                    {
+                        "callback": JSONP_CALLBACK,
+                        "select": TSTYLE_SELECT_FIELDS,
+                        "order": "contractid,ase",
+                    },
+                    service=service,
+                    referer=referer,
+                    proxy=proxy,
+                    inter_request_sec=inter_request_sec,
+                )
+                if not payload:
+                    continue
+                dt = _update_datetime(payload)
+                if dt is not None and (update_dt is None or dt > update_dt):
+                    update_dt = dt
+                for row in payload.get("list") or []:
+                    rec = _parse_tstyle_row(row)
+                    if rec is not None:
+                        snapshot[rec["code"]] = rec
+
+        return update_dt, snapshot
+
+    def fetch_day_contract_map(
+        self,
+        session: requests.Session,
+        page_size: int = PAGE_SIZE,
+        max_attempts: int = 2,
+        proxy: Optional[AntiBotProxy] = None,
+        service: str = "",
+    ) -> Dict[str, Tuple[str, str]]:
+        """Fetch the current trading day's contract listing from query.sse.com.cn.
+
+        Returns {contractid: (security_id, contract_name)} — e.g.
+        ``{'510050C2609M02650': ('10011255', '50ETF购9月2650')}``. The numeric
+        security id is the ``contract_code`` used across the stats.options_*
+        tables. Paginated POST JSONP, same call as the preinfo daily downloader.
+
+        Without this map bars cannot resolve numeric contract codes, so the
+        whole pagination is retried once on failure/empty result (query.sse.com.cn
+        occasionally read-times-out under the anti-bot throttle).
+        """
+        urls = service_urls(service)
+        headers = {**COMMON_BASE_HEADERS, "Accept": "*/*",
+                   "Referer": urls["options_contract_referer"]}
+        # Retry backoff from the service row's "options" request_type (the 3.0
+        # literal is the legacy default when the row omits the field).
+        retry_backoff = retry_policy_for(service, "options")[1] or 3.0
+
+        for attempt in range(1, max_attempts + 1):
+            mapping = self._fetch_contract_map_pages(
+                session, headers, page_size, proxy=proxy, service=service)
+            if mapping:
+                return mapping
+            if attempt < max_attempts:
+                logger.warning(
+                    "SSE options contract map attempt %d/%d empty — retrying in %.0fs",
+                    attempt, max_attempts, retry_backoff,
+                )
+                _time.sleep(retry_backoff)
+        return {}
+
+    def _fetch_contract_map_pages(
+        self,
+        session: requests.Session,
+        headers: Dict[str, str],
+        page_size: int,
+        proxy: Optional[AntiBotProxy] = None,
+        service: str = "",
+    ) -> Dict[str, Tuple[str, str]]:
+        """One full paginated pass over the 当日合约 listing.
+
+        Inter-page pacing resolves from the service row (request_type
+        "options")."""
+        if proxy is None:
+            proxy = build_options_proxy(service)
+        mapping: Dict[str, Tuple[str, str]] = {}
+        page_no = 1
+        while True:
+            data = {
+                "jsonCallBack": "jsonpCallback",
+                "isPagination": "true",
+                "expireDate": "",
+                "securityId": "",
+                "sqlId": SSE_OPTIONS_CONTRACT_SQL_ID,
+                "pageHelp.pageSize": page_size,
+                "pageHelp.pageNo": page_no,
+                "pageHelp.beginPage": page_no,
+                "pageHelp.endPage": page_no,
+                "pageHelp.cacheSize": 1,
+            }
+            resp = proxy.post(
+                session, service_urls(service)["options_contract"],
+                data=data, headers=headers, logger=logger,
+            )
+            if resp is None:
+                logger.warning("SSE options contract map page %d failed", page_no)
+                break
+            try:
+                payload = _parse_jsonp(resp.text)
+            except ValueError as e:
+                logger.warning("SSE options contract map JSONP parse failed: %s", e)
+                break
+
+            results = payload.get("result") or []
+            if not results:
+                break
+            for item in results:
+                contract_id = (item.get("CONTRACT_ID") or "").strip()
+                security_id = (item.get("SECURITY_ID") or "").strip()
+                symbol = (item.get("CONTRACT_SYMBOL") or "").strip()
+                if contract_id and security_id:
+                    mapping[contract_id] = (security_id, symbol)
+
+            total_pages = int((payload.get("pageHelp") or {}).get("pageCount", 1) or 1)
+            if page_no >= total_pages:
+                break
+            page_no += 1
+
+        return mapping
+
+
+# ---------------------------------------------------------------------------
+# Compatibility shims — the pre-conversion import surface (the class is
+# stateless, so one shared instance serves every call).
+# ---------------------------------------------------------------------------
+_SSE_OPTIONS_GATEWAY = SseOptionsGateway()
+
+
+def fetch_underlyings(
+    session: requests.Session,
+    service: str = "",
+    proxy: Optional[AntiBotProxy] = None,
+) -> List[str]:
+    return _SSE_OPTIONS_GATEWAY.fetch_underlyings(
+        session, service=service, proxy=proxy,
+    )
+
+
+def fetch_expire_months(
+    session: requests.Session,
+    service: str = "",
+    proxy: Optional[AntiBotProxy] = None,
+) -> Dict[str, List[str]]:
+    return _SSE_OPTIONS_GATEWAY.fetch_expire_months(
+        session, service=service, proxy=proxy,
+    )
+
+
 def fetch_options_snapshot(
     session: requests.Session,
     months: Dict[str, List[str]],
@@ -263,49 +456,10 @@ def fetch_options_snapshot(
     proxy: Optional[AntiBotProxy] = None,
     inter_request_sec: Optional[float] = None,
 ) -> Tuple[Optional[datetime], Dict[str, dict]]:
-    """Sweep every (underlying, expiry-month) tstyle endpoint into one snapshot.
-
-    Returns (update_dt, {contractid: record}) — the same contract as the
-    equity ``fetch_snapshot``. ``update_dt`` is the latest server update
-    time seen across pages; a failed page logs a warning and is skipped
-    (partial snapshot, mirroring the equity pagination behaviour).
-    """
-    urls = service_urls(service)
-    if proxy is None:
-        proxy = build_options_proxy(service)
-    snapshot: Dict[str, dict] = {}
-    update_dt: Optional[datetime] = None
-    n_pages = sum(len(v) for v in months.values())
-    if n_pages == 0:
-        return None, {}
-
-    referer = urls["options_price_referer"]
-    for stockid, yymms in sorted(months.items()):
-        for yymm in sorted(yymms):
-            payload = _get_jsonp(
-                session,
-                f"{urls['options_tstyle']}/{stockid}_{yymm[2:]}",
-                {
-                    "callback": JSONP_CALLBACK,
-                    "select": TSTYLE_SELECT_FIELDS,
-                    "order": "contractid,ase",
-                },
-                service=service,
-                referer=referer,
-                proxy=proxy,
-                inter_request_sec=inter_request_sec,
-            )
-            if not payload:
-                continue
-            dt = _update_datetime(payload)
-            if dt is not None and (update_dt is None or dt > update_dt):
-                update_dt = dt
-            for row in payload.get("list") or []:
-                rec = _parse_tstyle_row(row)
-                if rec is not None:
-                    snapshot[rec["code"]] = rec
-
-    return update_dt, snapshot
+    return _SSE_OPTIONS_GATEWAY.fetch_options_snapshot(
+        session, months, service=service, proxy=proxy,
+        inter_request_sec=inter_request_sec,
+    )
 
 
 def fetch_day_contract_map(
@@ -315,95 +469,10 @@ def fetch_day_contract_map(
     proxy: Optional[AntiBotProxy] = None,
     service: str = "",
 ) -> Dict[str, Tuple[str, str]]:
-    """Fetch the current trading day's contract listing from query.sse.com.cn.
-
-    Returns {contractid: (security_id, contract_name)} — e.g.
-    ``{'510050C2609M02650': ('10011255', '50ETF购9月2650')}``. The numeric
-    security id is the ``contract_code`` used across the stats.options_*
-    tables. Paginated POST JSONP, same call as the preinfo daily downloader.
-
-    Without this map bars cannot resolve numeric contract codes, so the
-    whole pagination is retried once on failure/empty result (query.sse.com.cn
-    occasionally read-times-out under the anti-bot throttle).
-    """
-    urls = service_urls(service)
-    headers = {**COMMON_BASE_HEADERS, "Accept": "*/*",
-               "Referer": urls["options_contract_referer"]}
-    # Retry backoff from the service row's "options" request_type (the 3.0
-    # literal is the legacy default when the row omits the field).
-    retry_backoff = retry_policy_for(service, "options")[1] or 3.0
-
-    for attempt in range(1, max_attempts + 1):
-        mapping = _fetch_contract_map_pages(
-            session, headers, page_size, proxy=proxy, service=service)
-        if mapping:
-            return mapping
-        if attempt < max_attempts:
-            logger.warning(
-                "SSE options contract map attempt %d/%d empty — retrying in %.0fs",
-                attempt, max_attempts, retry_backoff,
-            )
-            _time.sleep(retry_backoff)
-    return {}
-
-
-def _fetch_contract_map_pages(
-    session: requests.Session,
-    headers: Dict[str, str],
-    page_size: int,
-    proxy: Optional[AntiBotProxy] = None,
-    service: str = "",
-) -> Dict[str, Tuple[str, str]]:
-    """One full paginated pass over the 当日合约 listing.
-
-    Inter-page pacing resolves from the service row (request_type
-    "options")."""
-    if proxy is None:
-        proxy = build_options_proxy(service)
-    mapping: Dict[str, Tuple[str, str]] = {}
-    page_no = 1
-    while True:
-        data = {
-            "jsonCallBack": "jsonpCallback",
-            "isPagination": "true",
-            "expireDate": "",
-            "securityId": "",
-            "sqlId": SSE_OPTIONS_CONTRACT_SQL_ID,
-            "pageHelp.pageSize": page_size,
-            "pageHelp.pageNo": page_no,
-            "pageHelp.beginPage": page_no,
-            "pageHelp.endPage": page_no,
-            "pageHelp.cacheSize": 1,
-        }
-        resp = proxy.post(
-            session, service_urls(service)["options_contract"],
-            data=data, headers=headers, logger=logger,
-        )
-        if resp is None:
-            logger.warning("SSE options contract map page %d failed", page_no)
-            break
-        try:
-            payload = _parse_jsonp(resp.text)
-        except ValueError as e:
-            logger.warning("SSE options contract map JSONP parse failed: %s", e)
-            break
-
-        results = payload.get("result") or []
-        if not results:
-            break
-        for item in results:
-            contract_id = (item.get("CONTRACT_ID") or "").strip()
-            security_id = (item.get("SECURITY_ID") or "").strip()
-            symbol = (item.get("CONTRACT_SYMBOL") or "").strip()
-            if contract_id and security_id:
-                mapping[contract_id] = (security_id, symbol)
-
-        total_pages = int((payload.get("pageHelp") or {}).get("pageCount", 1) or 1)
-        if page_no >= total_pages:
-            break
-        page_no += 1
-
-    return mapping
+    return _SSE_OPTIONS_GATEWAY.fetch_day_contract_map(
+        session, page_size=page_size, max_attempts=max_attempts,
+        proxy=proxy, service=service,
+    )
 
 
 __all__ = [

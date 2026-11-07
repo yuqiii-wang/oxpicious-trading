@@ -14,9 +14,9 @@
  * (empty) analysis tables and the UI shows its "no data" state per code
  * until the pipelines fill them.
  */
-import { queryRows } from "@api/lib/db";
-import type { QueryResultRow } from "pg";
 import { cachedRows, listClassificationMetaRows } from "@api/services/classification-cache";
+import { querySqlView } from "@api/lib/sql-views";
+import type { QueryResultRow } from "pg";
 import type { ClassificationMetaRow } from "@api/services/classification-cache";
 
 /** The sec_types these pages expose (the toggle) and their pipelines are
@@ -72,14 +72,11 @@ export interface DbIndustryUniverseRow extends QueryResultRow {
 export async function listFullIndustryUniverseRows(): Promise<
   DbIndustryUniverseRow[]
 > {
+  // The SELECT lives in the sql view
+  // data_viz/api/services/analysis/classification-universe/industry_universe.
   return cachedRows("classification_universe:industry", () =>
-    queryRows<DbIndustryUniverseRow>(
-      `
-      SELECT DISTINCT ON (code) code, name
-      FROM stats.industry_identity
-      ORDER BY code, date DESC
-      `,
-      [],
+    querySqlView<DbIndustryUniverseRow>(
+      "data_viz/api/services/analysis/classification-universe/industry_universe",
     ),
   );
 }

@@ -33,7 +33,8 @@ Usage:
   python -m builds.index.daily --force   (rebuild all daily tables)
   python -m builds.index.daily --date 2026-08-14   (force one date)
 
-The :class:`DailyBuild` entry class (a :class:`DataBuild` subclass)
+The :class:`DailyBuild` entry class (an :class:`IndexBuild` subclass —
+inheritance mirrors the directory layout)
 owns the runtime lifecycle + common argparse. It is ALSO embedded by the
 builds.index orchestrator: construct it with a preset ``args`` namespace
 and ``await child.amain()`` — no sys.argv mutation. Bootstrap-first
@@ -54,12 +55,12 @@ from _common.build_commons import (
 from builds.index.daily.paths import CSINDEX_DIR
 from _common.log_setup import setup_logging
 
-from _common.data_build import DataBuild
+from builds.index.__main__ import IndexBuild
 
 logger = setup_logging("baseline")
 
 
-class DailyBuild(DataBuild):
+class DailyBuild(IndexBuild):
     """``python -m builds.index.daily`` — CSIndex daily → DB.
 
     Embeddable: builds.index constructs this class with preset args and
@@ -105,7 +106,7 @@ class DailyBuild(DataBuild):
         }
 
     async def run(self) -> None:
-        from builds.index.daily.build_daily import build_daily_df
+        from builds.index.daily.build_daily import DailyFrameBuilder
         from builds.index.daily.db_insert import insert_daily_to_db
 
         args = self.args
@@ -240,10 +241,10 @@ class DailyBuild(DataBuild):
             # ------------------------------------------------------------------
             logger.info("\n[2/3] Building daily history frame (latest missing dates only) …")
 
-            daily_df = await build_daily_df(latest_dates,
-                                            stale_keys=stale_keys,
-                                            code_filter=code_filter,
-                                            forced_date=forced.isoformat() if forced else None)
+            daily_df = await DailyFrameBuilder().run(latest_dates,
+                                                     stale_keys=stale_keys,
+                                                     code_filter=code_filter,
+                                                     forced_date=forced.isoformat() if forced else None)
 
             # --date availability gate: no source CSV row exists at the
             # forced date — same contract as forced_date_scope.

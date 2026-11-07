@@ -1,9 +1,13 @@
 -- ============================================================================
 --  Text schema bootstrap
 --  Schema: text
---    Holds all NLP / text-derived data: raw news, extracted keywords, and
---    LLM question-answering corpora. Semantic-search (similarity) columns use
---    the pgvector `vector` type.
+--    Holds the news text corpus: raw news, extracted keywords, the
+--    news-group/comment/digestion children and the search lexicon stats.
+--    The LLM layer (Q&A knowledge bases, the request log, the prompt
+--    registry, deep-agent persistence) lives in the `llm` schema —
+--    database/sql/text/llm/ (split out 2026-11-04); the Q&A tables keep
+--    cross-schema FKs to text.news / text.news_groups provenance.
+--    Semantic-search (similarity) columns use the pgvector `vector` type.
 --
 --    Vector columns are stored as `vector(N)` where N is the embedding
 --    dimensionality. 1536 = OpenAI text-embedding-3-small (current default

@@ -25,6 +25,11 @@ whose month is before yesterday's month triggers a monthly refresh
 (re-download, stamped with today's date); otherwise any valid cache
 satisfies the run, and ``--force-month-start`` forces the refresh path on
 any day.
+
+Code motion only (2026-11-07): the former module-level
+``download_bse_index_composition`` orchestrator is now the method of the
+same name on :class:`BseCompositionRunner` (body verbatim); the shared
+csindex helpers it delegates to stay module-level imports.
 """
 from __future__ import annotations
 
@@ -63,166 +68,173 @@ from ._config import SERVICE, SLEEP_SEC, logger
 ALLOWED_SUFFIXES = (".BJ",)
 
 
-def download_bse_index_composition(
-    *,
-    index_codes: Optional[List[str]] = None,
-    out_root: Optional[str] = None,
-    skip_cached: bool = True,
-    sleep_sec: Optional[float] = None,
-    force_month_start: bool = False,
-) -> Dict[str, Any]:
-    """Download the 北证50/北证专精特新 composition (closeweight) snapshots.
+class BseCompositionRunner:
+    """Runner for the BSE composition fetch cycle — the former
+    ``download_bse_index_composition`` function is the method of the same
+    name (same keyword-only signature and body verbatim); state (session /
+    proxy / stats) stays per-call locals exactly as before."""
 
-    Same monthly-refresh contract as the csindex composition runner (see
-    the module docstring); defaults to ``BSE_INDEX_CODES`` and writes into
-    the shared CSI composition directory so the index-composition build
-    picks the snapshots up.
-    """
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csi_index_composition", out_root)
+    def download_bse_index_composition(
+        self,
+        *,
+        index_codes: Optional[List[str]] = None,
+        out_root: Optional[str] = None,
+        skip_cached: bool = True,
+        sleep_sec: Optional[float] = None,
+        force_month_start: bool = False,
+    ) -> Dict[str, Any]:
+        """Download the 北证50/北证专精特新 composition (closeweight) snapshots.
 
-    if not index_codes:
-        index_codes = sorted(BSE_INDEX_CODES)
+        Same monthly-refresh contract as the csindex composition runner (see
+        the module docstring); defaults to ``BSE_INDEX_CODES`` and writes into
+        the shared CSI composition directory so the index-composition build
+        picks the snapshots up.
+        """
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csi_index_composition", out_root)
 
-    _index_names = dict(BSE_INDEX_CODES)
+        if not index_codes:
+            index_codes = sorted(BSE_INDEX_CODES)
 
-    today = date.today()
-    yday = today - timedelta(days=1)
-    forced = force_month_start
-    if forced:
+        _index_names = dict(BSE_INDEX_CODES)
+
+        today = date.today()
+        yday = today - timedelta(days=1)
+        forced = force_month_start
+        if forced:
+            logger.info(
+                "Force-month-start: all indices will be re-downloaded and stamped "
+                "with today's date (%s).",
+                today.isoformat(),
+            )
         logger.info(
-            "Force-month-start: all indices will be re-downloaded and stamped "
-            "with today's date (%s).",
-            today.isoformat(),
+            "Starting BSE index composition download: %d indices, out=%s",
+            len(index_codes), out_dir,
         )
-    logger.info(
-        "Starting BSE index composition download: %d indices, out=%s",
-        len(index_codes), out_dir,
-    )
 
-    session = build_default_session()
-    stats = RunStats()
+        session = build_default_session()
+        stats = RunStats()
 
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
-    # overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+        # overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
 
-    results: List[Dict[str, Any]] = []
+        results: List[Dict[str, Any]] = []
 
-    try:
-        for code in index_codes:
-            code = str(code).strip()
-            if not code:
-                continue
+        try:
+            for code in index_codes:
+                code = str(code).strip()
+                if not code:
+                    continue
 
-            name = _index_names.get(code, code)
-            logger.info("== Index %s (%s) ==", code, name)
+                name = _index_names.get(code, code)
+                logger.info("== Index %s (%s) ==", code, name)
 
-            # Check cache & determine if monthly refresh is needed for
-            # THIS specific index code (same rule as the csindex runner:
-            # cached month < yesterday's month → refresh).
-            cached = find_cached_csv(out_dir, code)
-            today_csv = out_dir / f"{code}_closeweight_{today.strftime('%Y%m%d')}.csv"
-            monthly_refresh = forced
-            if not monthly_refresh and cached:
-                m = re.search(r'_closeweight_(\d{8})\.csv$', cached.name)
-                if m:
-                    cached_month = int(m.group(1)[:6])  # YYYYMM
-                    yday_month = yday.year * 100 + yday.month
-                    if cached_month < yday_month:
-                        monthly_refresh = True
+                # Check cache & determine if monthly refresh is needed for
+                # THIS specific index code (same rule as the csindex runner:
+                # cached month < yesterday's month → refresh).
+                cached = find_cached_csv(out_dir, code)
+                today_csv = out_dir / f"{code}_closeweight_{today.strftime('%Y%m%d')}.csv"
+                monthly_refresh = forced
+                if not monthly_refresh and cached:
+                    m = re.search(r'_closeweight_(\d{8})\.csv$', cached.name)
+                    if m:
+                        cached_month = int(m.group(1)[:6])  # YYYYMM
+                        yday_month = yday.year * 100 + yday.month
+                        if cached_month < yday_month:
+                            monthly_refresh = True
 
-            if monthly_refresh:
-                # Monthly refresh mode: skip only if already downloaded TODAY
-                if is_valid_file(today_csv, min_bytes=MIN_VALID_BYTES):
-                    logger.info("  [cache] %s monthly-refresh but already done today: %s",
-                                code, today_csv.name)
+                if monthly_refresh:
+                    # Monthly refresh mode: skip only if already downloaded TODAY
+                    if is_valid_file(today_csv, min_bytes=MIN_VALID_BYTES):
+                        logger.info("  [cache] %s monthly-refresh but already done today: %s",
+                                    code, today_csv.name)
+                        stats.skipped_cached += 1
+                        results.append({"code": code, "name": name,
+                                        "status": "cached", "file": str(today_csv)})
+                        continue
+                    log_tag = "force-month-start" if forced else "monthly-refresh"
+                    logger.info("  [%s] %s cache=%s yday_month=%s → refreshing",
+                                log_tag, code,
+                                cached.name if cached else "(none)",
+                                f"{yday.year:04d}{yday.month:02d}")
+                elif skip_cached and cached:
+                    # Normal mode: any valid cache is good enough
+                    logger.info("  [cache] %s already cached: %s", code, cached.name)
                     stats.skipped_cached += 1
                     results.append({"code": code, "name": name,
-                                    "status": "cached", "file": str(today_csv)})
+                                    "status": "cached", "file": str(cached)})
                     continue
-                log_tag = "force-month-start" if forced else "monthly-refresh"
-                logger.info("  [%s] %s cache=%s yday_month=%s → refreshing",
-                            log_tag, code,
-                            cached.name if cached else "(none)",
-                            f"{yday.year:04d}{yday.month:02d}")
-            elif skip_cached and cached:
-                # Normal mode: any valid cache is good enough
-                logger.info("  [cache] %s already cached: %s", code, cached.name)
-                stats.skipped_cached += 1
-                results.append({"code": code, "name": name,
-                                "status": "cached", "file": str(cached)})
-                continue
 
-            if proxy.is_blocked(CLOSEWEIGHT_URL_TEMPLATE):
-                logger.warning("  [host-blocked] OSS bucket blocked, skipping %s", code)
-                stats.failed += 1
-                results.append({"code": code, "name": name, "status": "blocked"})
-                continue
+                if proxy.is_blocked(CLOSEWEIGHT_URL_TEMPLATE):
+                    logger.warning("  [host-blocked] OSS bucket blocked, skipping %s", code)
+                    stats.failed += 1
+                    results.append({"code": code, "name": name, "status": "blocked"})
+                    continue
 
-            # Download (CSI autofile endpoint shared with csindex composition)
-            raw = fetch_closeweight_xls(session, code, proxy)
-            if raw is None:
-                stats.failed += 1
-                results.append({"code": code, "name": name, "status": "download_failed"})
-                continue
+                # Download (CSI autofile endpoint shared with csindex composition)
+                raw = fetch_closeweight_xls(session, code, proxy)
+                if raw is None:
+                    stats.failed += 1
+                    results.append({"code": code, "name": name, "status": "download_failed"})
+                    continue
 
-            # Parse + normalize with the BSE suffix (920xxx.BJ)
-            df = parse_closeweight_xls(raw)
-            if df is None:
-                stats.failed += 1
-                results.append({"code": code, "name": name, "status": "parse_failed"})
-                continue
+                # Parse + normalize with the BSE suffix (920xxx.BJ)
+                df = parse_closeweight_xls(raw)
+                if df is None:
+                    stats.failed += 1
+                    results.append({"code": code, "name": name, "status": "parse_failed"})
+                    continue
 
-            normalized = normalize_closeweight_df(df, allowed_suffixes=ALLOWED_SUFFIXES)
-            if normalized is None or len(normalized) == 0:
-                stats.empty += 1
-                results.append({"code": code, "name": name, "status": "empty"})
-                continue
+                normalized = normalize_closeweight_df(df, allowed_suffixes=ALLOWED_SUFFIXES)
+                if normalized is None or len(normalized) == 0:
+                    stats.empty += 1
+                    results.append({"code": code, "name": name, "status": "empty"})
+                    continue
 
-            # Save CSV. On monthly refresh, stamp the CSV with today's
-            # date (overriding the xls's snapshot_date, usually the
-            # previous business day) so the new month's snapshot flows to
-            # prod (stats.sec_composition) as a fresh (code, date) pair —
-            # the csindex runner's convention.
-            if monthly_refresh:
-                snapshot_date = today.isoformat()
-                normalized["snapshot_date"] = snapshot_date
-            else:
-                snapshot_date = normalized["snapshot_date"].iloc[0]
-            csv_name = csv_filename_for(code, snapshot_date)
-            csv_path = out_dir / csv_name
-            normalized.to_csv(csv_path, index=False, encoding="utf-8-sig")
+                # Save CSV. On monthly refresh, stamp the CSV with today's
+                # date (overriding the xls's snapshot_date, usually the
+                # previous business day) so the new month's snapshot flows to
+                # prod (stats.sec_composition) as a fresh (code, date) pair —
+                # the csindex runner's convention.
+                if monthly_refresh:
+                    snapshot_date = today.isoformat()
+                    normalized["snapshot_date"] = snapshot_date
+                else:
+                    snapshot_date = normalized["snapshot_date"].iloc[0]
+                csv_name = csv_filename_for(code, snapshot_date)
+                csv_path = out_dir / csv_name
+                normalized.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-            stats.downloaded += 1
-            stats.files.append(str(csv_path))
-            results.append({
-                "code": code,
-                "name": name,
-                "status": "downloaded",
-                "file": str(csv_path),
-                "n_constituents": len(normalized),
-                "snapshot_date": snapshot_date,
-                "monthly_refresh": monthly_refresh,
-            })
-            logger.info("  [ok] %s: %d constituents, snapshot=%s → %s%s",
-                        code, len(normalized), snapshot_date, csv_name,
-                        " (monthly stamp)" if monthly_refresh else "")
+                stats.downloaded += 1
+                stats.files.append(str(csv_path))
+                results.append({
+                    "code": code,
+                    "name": name,
+                    "status": "downloaded",
+                    "file": str(csv_path),
+                    "n_constituents": len(normalized),
+                    "snapshot_date": snapshot_date,
+                    "monthly_refresh": monthly_refresh,
+                })
+                logger.info("  [ok] %s: %d constituents, snapshot=%s → %s%s",
+                            code, len(normalized), snapshot_date, csv_name,
+                            " (monthly stamp)" if monthly_refresh else "")
 
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
 
-    summary = stats.to_dict(
-        out_dir=str(out_dir),
-        n_indices=len(index_codes),
-        results=results,
-    )
-    logger.info(
-        "Done BSE index composition. downloaded=%d skipped_cached=%d failed=%d empty=%d",
-        stats.downloaded, stats.skipped_cached, stats.failed, stats.empty,
-    )
-    return summary
+        summary = stats.to_dict(
+            out_dir=str(out_dir),
+            n_indices=len(index_codes),
+            results=results,
+        )
+        logger.info(
+            "Done BSE index composition. downloaded=%d skipped_cached=%d failed=%d empty=%d",
+            stats.downloaded, stats.skipped_cached, stats.failed, stats.empty,
+        )
+        return summary

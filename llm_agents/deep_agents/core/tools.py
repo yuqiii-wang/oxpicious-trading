@@ -1,41 +1,45 @@
-"""llm_agents.deep_agents.core.tools — the builtin-tool plumbing and the
-user-message assembly every conversation shares.
+"""llm_agents.deep_agents.core.tools — the user-message assembly every
+conversation shares, plus the builtin-tool type re-export.
 
-A BUILTIN TOOL is a plain function of the model's arguments riding
-beside the MCP tools: its chat-completion schema plus an async handler.
-The loop appends the schemas to the tool list and dispatches name
-matches to the handler before the MCP fallback; handler failures come
-back as the tool's result text (the loop must survive a broken tool).
-No registry, no lifecycle — everything stateful (the spawner, the
-sandbox) BUILDS a BuiltinTool and hands it to the agent's ctor, which
-is how the thread runner mounts its plan kits and the sandbox mounts
-its ``sandbox_*`` tools.
+The TOOL OBJECTS live in the tool layer now (``deep_agents.tools`` —
+:class:`~llm_agents.deep_agents.tools.base.Tool` / ``ToolKit``; the
+sandbox, plan, thread-search and delegation tool classes); this module
+keeps the two pieces the loop and its callers have always imported from
+here:
+
+  * ``BuiltinTool`` — the loop's runtime pair (schema + async handler),
+    defined in ``tools.base`` and re-exported under its historical
+    import path; ``Tool.builtin()`` renders a tool object down to one.
+  * ``user_content`` — the goal-plus-structured-context user message.
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
+from llm_agents.deep_agents.payload_guard import (
+    guard_notes_block, guard_payload,
+)
+from llm_agents.deep_agents.tools.base import BuiltinTool
 
-@dataclass
-class BuiltinTool:
-    """A plain built-in tool beside the MCP tools: its chat-completion
-    schema plus the async handler for the model's parsed arguments.
-    Handler failures come back as the tool's result text (the loop
-    must survive a broken tool)."""
-
-    schema: Dict[str, Any]
-    handler: Callable[[Dict[str, Any]], Awaitable[str]]
+__all__ = ["BuiltinTool", "user_content"]
 
 
 def user_content(goal: str, data: Optional[Dict[str, Any]] = None) -> str:
     """The user message: the goal, plus *data* (whatever JSON object the
     caller wants the run to see — analysis items, skills, …) appended as
-    a fenced structured-context block."""
+    a fenced structured-context block. The LARGE-PAYLOAD PRE-CHECK
+    (``payload_guard.guard_payload``) runs first: oversized arrays /
+    dicts ride as metadata + preview instead of full content, and the
+    notes block after the fence prompts the model which data needs
+    re-fetching and checking. Under the guard's thresholds the message
+    renders exactly as before."""
     if not data:
         return goal
-    return (f"{goal}\n\n[Structured context — JSON]\n"
-            f"```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```")
-
-
+    guarded, notes = guard_payload(data)
+    parts = [f"{goal}\n\n[Structured context — JSON]\n"
+             f"```json\n{json.dumps(guarded, ensure_ascii=False, indent=2)}\n```"]
+    block = guard_notes_block(notes)
+    if block:
+        parts.append(block)
+    return "\n\n".join(parts)

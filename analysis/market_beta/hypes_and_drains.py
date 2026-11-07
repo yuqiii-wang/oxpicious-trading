@@ -63,8 +63,8 @@ WEIGHTING VARIANTS
   non-industry trading amount) are IDENTICAL on both attribution_types'
   rows — the attributions build writes the same daily columns per type —
   so ONE input frame (attribution_type='trading_amt', the canonical set
-  COUNT_SOURCE_SQL has always keyed on) feeds BOTH weightings; only
-  metric_value differs. Emitting a weighting for a (benchmark, date,
+     the count_source guard query has always keyed on) feeds BOTH
+     weightings; only metric_value differs. Emitting a weighting for a (benchmark, date,
   industry) present in either type's rows therefore matches the former
   per-type INSERTs (both types are always written over the same keys by
   run_attributions).
@@ -118,6 +118,7 @@ from _common.build_commons import (
     rec_cols,
     truncate_table_async,
 )
+from _common.sql_views import render_sql_view
 from _common.db_commons import (
     copy_frame_chunked_async,
 )
@@ -199,86 +200,43 @@ _GROUP_KEYS = ["benchmark_code", "industry_id"]
 #  Raw-input SQL (fetch only — every computation lives in pandas below)
 # ---------------------------------------------------------------------------
 
-# Fetch all broad-market benchmark codes that have industry_attributions data.
-# Filter on attribution_type='trading_amt' to avoid duplicate benchmarks (each
-# benchmark now appears twice — once per attribution_type).
-BROAD_MARKET_BENCHMARKS_SQL = """
-    SELECT DISTINCT ia.benchmark_code
-    FROM analysis.industry_attributions ia
-    JOIN stats.sec_index_tags sit ON sit.code = ia.benchmark_code
-    WHERE sit.is_broad_market = TRUE
-      AND ia.attribution_type = 'trading_amt'
-    ORDER BY ia.benchmark_code
-"""
-
-# Guard: bail out early if the upstream table is empty / missing OR the
-# DAILY non-this-industry price column (the raw material for the daily
-# identity inversion) has not been populated.
-# Filter on attribution_type='trading_amt' to avoid duplicate counting —
-# both variants share the same daily columns.
-COUNT_SOURCE_SQL = """
-    SELECT COUNT(*) AS n
-    FROM analysis.industry_attributions ia
-    JOIN stats.sec_index_tags sit ON sit.code = ia.benchmark_code
-    WHERE sit.is_broad_market = TRUE
-      AND ia.attribution_type = 'trading_amt'
-      AND ia.benchmark_non_this_industry_price IS NOT NULL
-"""
-
-# Per-(benchmark, date) benchmark legs: the LAG returns (1d + per-period Nd)
-# are computed in pandas (_compute_bench_frame) — the former CTE's
-# LAG(...) OVER / NULLIF / CASE WHEN arithmetic, verbatim semantics:
-#   bench_return_1d    = close / NULLIF(lag1, 0) - 1
-#   benchmark_return_N = close / NULLIF(lagN, 0) - 1   (NULL when lagN NULL/0)
-# Rows keep close IS NOT NULL (the former CTE's WHERE) so the row space —
-# and thus every LAG window position — is identical.
-BENCH_DAILY_SQL = """
-    SELECT code AS benchmark_code,
-           extract(epoch from date)::float8 AS date,
-           close::float8                    AS close,
-           trading_amount::float8           AS trading_amount
-    FROM stats.index_basic_stats
-    WHERE code = ANY($1::text[])
-      AND close IS NOT NULL
-    ORDER BY code, date
-"""
-
-# (benchmark, date, industry) daily decomposition legs. attribution_type
-# ='trading_amt' only — BOTH weightings read these identical daily columns
-# (see the module docstring's WEIGHTING VARIANTS); the 'equal' rows would
-# duplicate the same values. The broad-market scope is an IN-subquery, NOT
-# a JOIN: sec_index_tags is keyed (code, sector_id, industry_id) and a
-# benchmark can carry SEVERAL broad-market tag rows (e.g. 000001 =
-# BROAD_SSE + benchmark_broadmarket) — a JOIN would fan every attribution
-# row out per tag row (the former per-benchmark INSERT never joined this
-# table; only its DISTINCT benchmark-list / >0-count guard queries did,
-# whose semantics absorb the fan-out). The shared_return_1d inversion +
-# per-period compounding are computed in pandas (_compute_shared_daily /
-# _compute_shared_nd).
-ATTR_DAILY_SQL = """
-    SELECT ia.benchmark_code,
-           extract(epoch from ia.date)::float8                 AS date,
-           ia.industry_id,
-           ia.benchmark_shared_weight::float8                  AS benchmark_shared_weight,
-           ia.benchmark_non_this_industry_price::float8        AS non_ind_price,
-           ia.benchmark_non_this_industry_trading_amt::float8  AS non_ind_amt
-    FROM analysis.industry_attributions ia
-    WHERE ia.attribution_type = 'trading_amt'
-      AND ia.benchmark_non_this_industry_price IS NOT NULL
-      AND ia.benchmark_code IN (
-          SELECT sit.code FROM stats.sec_index_tags sit
-          WHERE sit.is_broad_market = TRUE)
-    ORDER BY ia.benchmark_code, ia.date, ia.industry_id
-"""
-
-# industry_id -> industry_label pairs (the former industry_label CTE).
-INDUSTRY_LABEL_SQL = """
-    SELECT DISTINCT industry_id, industry_label
-    FROM stats.sec_classification
-    WHERE type = 'index' AND industry_id IS NOT NULL AND industry_id <> ''
-      AND industry_label IS NOT NULL
-      AND is_industry_not_strategy = TRUE
-"""
+# The read-side fetches live in sql views (rendered via
+# _common.sql_views):
+#
+#   analysis/market_beta/hypes_and_drains/broad_market_benchmarks — all
+#     broad-market benchmark codes that have industry_attributions data
+#     (filter on attribution_type='trading_amt' to avoid duplicate
+#     benchmarks — each benchmark appears once per attribution_type).
+#
+#   analysis/market_beta/hypes_and_drains/count_source — the guard: bail
+#     out early if industry_attributions is empty / missing OR the DAILY
+#     non-this-industry price column (the raw material for the daily
+#     identity inversion) has not been populated; filter on
+#     attribution_type='trading_amt' to avoid duplicate counting.
+#
+#   analysis/market_beta/hypes_and_drains/bench_daily — per-(benchmark,
+#     date) benchmark legs (close + trading_amount); the LAG returns (1d +
+#     per-period Nd) are computed in pandas (_compute_bench_frame) with
+#     the former CTE's NULLIF/CASE semantics. Rows keep close IS NOT NULL
+#     so the row space — and thus every LAG window position — is
+#     identical.
+#
+#   analysis/market_beta/hypes_and_drains/attr_daily — (benchmark, date,
+#     industry) daily decomposition legs, attribution_type='trading_amt'
+#     only — BOTH weightings read these identical daily columns (see the
+#     module docstring's WEIGHTING VARIANTS); the 'equal' rows would
+#     duplicate the same values. The broad-market scope is an IN-subquery,
+#     NOT a JOIN: sec_index_tags is keyed (code, sector_id, industry_id)
+#     and a benchmark can carry SEVERAL broad-market tag rows (e.g.
+#     000001 = BROAD_SSE + benchmark_broadmarket) — a JOIN would fan every
+#     attribution row out per tag row (the former per-benchmark INSERT
+#     never joined this table; only its DISTINCT benchmark-list /
+#     >0-count guard queries did, whose semantics absorb the fan-out).
+#     The shared_return_1d inversion + per-period compounding are computed
+#     in pandas (_compute_shared_daily / _compute_shared_nd).
+#
+#   analysis/market_beta/hypes_and_drains/industry_labels —
+#     industry_id -> industry_label pairs (the former industry_label CTE).
 
 
 # ---------------------------------------------------------------------------
@@ -293,9 +251,22 @@ async def _fetch_frames(conn, benchmark_codes: list[str]) -> tuple[
     convention) and are materialized to datetime64[us] in ONE host pass;
     NUMERIC legs arrive as Decimal and are cast to float64 vectorized.
     """
-    bench_rows = await conn.fetch(BENCH_DAILY_SQL, benchmark_codes)
-    attr_rows = await conn.fetch(ATTR_DAILY_SQL)
-    label_rows = await conn.fetch(INDUSTRY_LABEL_SQL)
+    # bench_daily view: analysis/market_beta/hypes_and_drains/bench_daily;
+    # attr_daily view: analysis/market_beta/hypes_and_drains/attr_daily;
+    # industry_labels view: analysis/market_beta/hypes_and_drains/industry_labels.
+    view_bench = render_sql_view(
+        "analysis/market_beta/hypes_and_drains/bench_daily",
+        benchmark_codes=benchmark_codes,
+    )
+    bench_rows = await conn.fetch(view_bench.sql, *view_bench.params)
+    view_attr = render_sql_view(
+        "analysis/market_beta/hypes_and_drains/attr_daily",
+    )
+    attr_rows = await conn.fetch(view_attr.sql)
+    view_labels = render_sql_view(
+        "analysis/market_beta/hypes_and_drains/industry_labels",
+    )
+    label_rows = await conn.fetch(view_labels.sql)
 
     bench_df = pd.DataFrame(
         rec_cols(bench_rows),
@@ -625,7 +596,11 @@ async def run_hypes_and_drains(
     logger.info("=" * 78)
 
     # ---- Step 1: guard -----------------------------------------------
-    n_src = await conn.fetchval(COUNT_SOURCE_SQL)
+    # count_source view: analysis/market_beta/hypes_and_drains/count_source.
+    view_count = render_sql_view(
+        "analysis/market_beta/hypes_and_drains/count_source",
+    )
+    n_src = await conn.fetchval(view_count.sql)
     if not n_src:
         logger.info("\n[hd1/6] industry_attributions has no broad-market rows "
               "with daily non-industry price data — nothing to rank. "
@@ -635,9 +610,14 @@ async def run_hypes_and_drains(
           f"{n_src:,} broad-market rows with daily non-industry price data.")
 
     # ---- Step 2: fetch broad-market benchmark codes -----------------
-    benchmark_codes = [r["benchmark_code"] for r in await conn.fetch(
-        BROAD_MARKET_BENCHMARKS_SQL
-    )]
+    # broad_market_benchmarks view:
+    # analysis/market_beta/hypes_and_drains/broad_market_benchmarks.
+    view_benchmarks = render_sql_view(
+        "analysis/market_beta/hypes_and_drains/broad_market_benchmarks",
+    )
+    benchmark_codes = [
+        r["benchmark_code"] for r in await conn.fetch(view_benchmarks.sql)
+    ]
     logger.info(f"\n[hd2/6] Found {len(benchmark_codes)} broad-market benchmarks: "
           f"{', '.join(benchmark_codes)}")
 
@@ -677,18 +657,12 @@ async def run_hypes_and_drains(
     )
 
     # ---- Step 6: sanity summary -------------------------------------
-    summary = await conn.fetch("""
-        SELECT benchmark_code, period_days, weighting,
-               COUNT(*) AS n_rows,
-               COUNT(DISTINCT industry_id) AS n_industries,
-               MIN(date) AS first_date,
-               MAX(date) AS last_date,
-               ROUND(AVG(metric_value), 6) AS avg_metric
-        FROM analysis.industry_hypes_and_drains
-        GROUP BY benchmark_code, period_days, weighting
-        ORDER BY benchmark_code, period_days, weighting
-        LIMIT 60
-    """)
+    # The SELECT lives in the sql view
+    # analysis/market_beta/hypes_and_drains/summary_by_benchmark.
+    view = render_sql_view(
+        "analysis/market_beta/hypes_and_drains/summary_by_benchmark",
+    )
+    summary = await conn.fetch(view.sql)
     logger.info("\n      Summary by (benchmark, period, weighting) [first 60]:")
     for r in summary:
         logger.info(f"        {r['benchmark_code']} {r['period_days']:>3d}d "
@@ -736,14 +710,12 @@ async def run_hypes_and_drains_seasonal(
 
     # ---- Source rows (the pipeline frame, or the stored table) -------
     if hd_df is None:
-        rows = await conn.fetch(f"""
-            SELECT extract(epoch from date)::float8 AS date,
-                   benchmark_code, period_days, weighting, rank_side,
-                   industry_id, industry_label, metric_value::float8
-                   AS metric_value
-            FROM {TABLE}
-            WHERE metric_value IS NOT NULL
-        """)
+        # The SELECT lives in the sql view
+        # analysis/market_beta/hypes_and_drains/seasonal_source_rows.
+        view = render_sql_view(
+            "analysis/market_beta/hypes_and_drains/seasonal_source_rows",
+        )
+        rows = await conn.fetch(view.sql)
         hd_df = pd.DataFrame(rec_cols(rows), columns=[
             "date", "benchmark_code", "period_days", "weighting",
             "rank_side", "industry_id", "industry_label", "metric_value",
@@ -779,20 +751,12 @@ async def run_hypes_and_drains_seasonal(
               f"({time.time() - t0:.1f}s)")
 
     # ---- Summary -----------------------------------------------------
-    summary = await conn.fetch("""
-        SELECT
-            benchmark_code,
-            period_days,
-            COUNT(DISTINCT season_qkey)  AS n_seasons,
-            COUNT(*)                     AS n_rows,
-            COUNT(DISTINCT industry_id)  AS n_industries,
-            MIN(season_qkey)             AS first_season,
-            MAX(season_qkey)             AS last_season
-        FROM analysis.industry_hypes_seasonal
-        GROUP BY benchmark_code, period_days
-        ORDER BY benchmark_code, period_days
-        LIMIT 30
-    """)
+    # The SELECT lives in the sql view
+    # analysis/market_beta/hypes_and_drains/seasonal_summary.
+    view = render_sql_view(
+        "analysis/market_beta/hypes_and_drains/seasonal_summary",
+    )
+    summary = await conn.fetch(view.sql)
     logger.info("\n      Seasonal summary by (benchmark, period) [first 30]:")
     for r in summary:
         logger.info(f"        {r['benchmark_code']} {r['period_days']:>3d}d: "

@@ -57,15 +57,17 @@ __all__ = ["bootstrap_runtime", "DataPipeline"]
 _BOOTSTRAP_DONE = False
 
 
-def bootstrap_runtime(gpu_mode: str = "auto") -> None:
+def bootstrap_runtime(gpu_mode: str = "auto", require_gpu: bool = True) -> None:
     """One-time process runtime setup for entry points.
 
     Sequence (each step idempotent; the whole function is guarded by a
     module flag so parents that import child entry modules — or an
     ``execute()`` call after a module-level bootstrap — never re-run it):
 
-      1. ``pre_check()``     exit(1) early when system RAM / GPU VRAM is
-         below the required floor (before ANY heavy import).
+      1. ``pre_check(require_gpu)``  exit(1) early when system RAM / GPU
+         VRAM is below the required floor (before ANY heavy import);
+         ``require_gpu=False`` skips the VRAM check — for GPU-less
+         pipelines (live.* asyncpg-only entry points).
       2. ``warnings.filterwarnings("ignore")``  silence third-party
          warnings (cudf.pandas fallback noise, pandas FutureWarnings).
       3. ``activate(gpu_mode)``  install the cudf.pandas import hook —
@@ -80,7 +82,7 @@ def bootstrap_runtime(gpu_mode: str = "auto") -> None:
         return
     from _common.pre_check import pre_check
 
-    pre_check()
+    pre_check(require_gpu=require_gpu)
     warnings.filterwarnings("ignore")
     from _common.df_utils._activate import activate
 

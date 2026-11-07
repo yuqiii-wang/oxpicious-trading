@@ -11,7 +11,7 @@
  * plain text and pass through untouched). Each citation bracket is replaced
  * with one small toggle button per cited tag; clicking a button expands an
  * inline box right below the citation showing the resolved article
- * (text.llm_qa_refs joined back to text.news): the title link, the
+ * (llm.llm_qa_refs joined back to text.news): the title link, the
  * exact/relevant typing with its persisted provenance (resolved_via —
  * summary echo / corpus match / ddgs title search), whether the answer
  * actually cites the article (is_used) and the source as tags,
@@ -112,7 +112,7 @@ function RefTagButton({
   );
 }
 
-/** The persisted resolution provenance (text.llm_qa_refs.resolved_via)
+/** The persisted resolution provenance (llm.llm_qa_refs.resolved_via)
  *  behind the ref_type tag: 'summary' — the article came with the
  *  provider's summary response; 'corpus' / 'ddgs' — found after the
  *  summary by title search (stored corpus / ddgs candidate page). Legacy
@@ -140,7 +140,7 @@ function viaChipMeta(refItem: AiQaRefItem): { label: string; title: string } {
 /** The expanded inline box for one cited tag — the resolved article row
  *  (title link, ref_type + provenance + source tags, date) plus a
  *  scrollable content preview (text.news.content, 4000-char server cap),
- *  or a placeholder when the tag has no text.llm_qa_refs resolution.
+ *  or a placeholder when the tag has no llm.llm_qa_refs resolution.
  *  Also reused by the card's full source list (null-content rows render
  *  title-only — no content block). */
 export function RefExpandBox({ tag, refItem }: { tag: string; refItem?: AiQaRefItem }) {
@@ -318,7 +318,7 @@ export default function AiQaRefBox({
 }: {
   /** The passage with inline citation brackets. */
   text: string;
-  /** The Q&A's resolved refs (text.llm_qa_refs) keyed by their ref tag. */
+  /** The Q&A's resolved refs (llm.llm_qa_refs) keyed by their ref tag. */
   refs: AiQaRefItem[];
   /** Caller styling (font size / color — the box only fixes pre-wrap). */
   sx?: SxProps<Theme>;

@@ -39,10 +39,9 @@
 -- ============================================================================
 
 -- Drop any prior version so a re-run rebuilds the table from the CREATE
--- below (data is repopulated by the pipeline --force runs); also remove
--- the stale analysis_identity row so the registration starts clean.
+-- below (data is repopulated by the pipeline --force runs; the registry
+-- row re-registers via the runtime upsert_analysis_identity).
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spreads_detail';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_detail  (WIDE format)

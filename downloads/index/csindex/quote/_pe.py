@@ -1,4 +1,11 @@
-"""PE (peg) historical series: fetch, cache load/save, and date indexing."""
+"""PE (peg) historical series: fetch, cache load/save, and date indexing.
+
+Code motion only (2026-11-07): the former ``fetch_pe_series`` function is
+now the method of the same name on :class:`CsindexQuotePe` (body
+verbatim); the pure cache/date helpers (``load_pe_cache`` /
+``save_pe_cache`` / ``normalize_pe_date`` / ``index_pe_by_date``) stay
+module-level.
+"""
 from __future__ import annotations
 
 import json
@@ -25,62 +32,69 @@ from ._config import (
 )
 
 
-def fetch_pe_series(
-    session: requests.Session,
-    index_code: str,
-    start_date: date,
-    end_date: date,
-    proxy: Optional[AntiBotProxy] = None,
-) -> List[Dict[str, Any]]:
-    """Fetch historical PE (peg) series via the indexCsiDsPe endpoint.
+class CsindexQuotePe:
+    """CSIndex PE-series fetch scope — the former ``fetch_pe_series``
+    function is the method of the same name (same signature and body
+    verbatim); the class holds no state, pacing stays a per-call
+    argument / lazily built exactly as before."""
 
-    The ``peg`` field in csindex's API is a PE ratio variant (not the standard
-    PEG ratio), with values in the 10-30 range typical of P/E. We treat it as PE.
-    """
-    if proxy is None:
-        # Pacing from the service's "pe" external_request_config row.
-        proxy = make_proxy("pe")
+    def fetch_pe_series(
+        self,
+        session: requests.Session,
+        index_code: str,
+        start_date: date,
+        end_date: date,
+        proxy: Optional[AntiBotProxy] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch historical PE (peg) series via the indexCsiDsPe endpoint.
 
-    params = {
-        "indexCode": index_code,
-        "startDate": ymd(start_date),
-        "endDate": ymd(end_date),
-    }
-    base_headers = dict(CSINDEX_HEADERS)
-    base_headers["Referer"] = detail_referer(index_code)
+        The ``peg`` field in csindex's API is a PE ratio variant (not the standard
+        PEG ratio), with values in the 10-30 range typical of P/E. We treat it as PE.
+        """
+        if proxy is None:
+            # Pacing from the service's "pe" external_request_config row.
+            proxy = make_proxy("pe")
 
-    resp = proxy.get(
-        session,
-        API_INDEX_CSI_DS_PE,
-        params=params,
-        headers=base_headers,
-        logger=logger,
-        log_tag=f"  [pe-fetch {index_code}]",
-    )
-    if resp is None:
-        logger.warning("  [pe-fetch] %s: request failed", index_code)
-        return []
+        params = {
+            "indexCode": index_code,
+            "startDate": ymd(start_date),
+            "endDate": ymd(end_date),
+        }
+        base_headers = dict(CSINDEX_HEADERS)
+        base_headers["Referer"] = detail_referer(index_code)
 
-    ctype = resp.headers.get("Content-Type", "")
-    if is_error_html(ctype, resp.content):
-        logger.warning("  [pe-fetch] %s: got error HTML response (blocked?)", index_code)
-        proxy.record_error(API_INDEX_CSI_DS_PE, 403, "error_html_detected")
-        return []
+        resp = proxy.get(
+            session,
+            API_INDEX_CSI_DS_PE,
+            params=params,
+            headers=base_headers,
+            logger=logger,
+            log_tag=f"  [pe-fetch {index_code}]",
+        )
+        if resp is None:
+            logger.warning("  [pe-fetch] %s: request failed", index_code)
+            return []
 
-    try:
-        payload = resp.json()
-    except ValueError as e:
-        logger.warning("  [pe-fetch] %s: json parse error: %s", index_code, e)
-        return []
+        ctype = resp.headers.get("Content-Type", "")
+        if is_error_html(ctype, resp.content):
+            logger.warning("  [pe-fetch] %s: got error HTML response (blocked?)", index_code)
+            proxy.record_error(API_INDEX_CSI_DS_PE, 403, "error_html_detected")
+            return []
 
-    if payload.get("code") != "200":
-        logger.warning("  [pe-fetch] %s: code=%s msg=%s", index_code, payload.get("code"), payload.get("msg"))
-        return []
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            logger.warning("  [pe-fetch] %s: json parse error: %s", index_code, e)
+            return []
 
-    data = payload.get("data")
-    if not isinstance(data, list):
-        return []
-    return data
+        if payload.get("code") != "200":
+            logger.warning("  [pe-fetch] %s: code=%s msg=%s", index_code, payload.get("code"), payload.get("msg"))
+            return []
+
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return []
+        return data
 
 
 def load_pe_cache(pe_cache_file: Path) -> Optional[List[Dict[str, Any]]]:

@@ -1,7 +1,7 @@
 """llm_agents.llm_qa_by_research — the research-logic Q&A agent package.
 
-Two halves sharing the text.llm_qa_by_research table (DDL:
-database/sql/text/06_llm_qa_by_research.sql):
+Two halves sharing the llm.llm_qa_by_research table (DDL:
+database/sql/text/llm/04_llm_qa_by_research.sql):
 
   * :mod:`.storage`  — the idempotent write/read API (upsert / fetch /
     deactivate) over the row's five-request shape;

@@ -59,6 +59,13 @@ Month-start refresh:
   (skip re-download). Use --force-month-start to trigger the month-start
   behavior on any day for testing.
 
+The entry point is the :class:`CsindexLinkedEtfDownload` DownloadJob — the
+former ``__main__`` body is its ``run()`` and the orchestration functions
+``fetch_funds_list`` / ``fetch_export_excel`` / ``download_csindex_linked_etf``
+became methods of the same names (same signatures and bodies); the request
+body builder, the pure frame/feeder transforms and the constants stay
+module-level.
+
 Usage:
   python download_csindex_linked_etf.py
   python download_csindex_linked_etf.py --min-aum 2.0   # AUM > 2亿
@@ -68,6 +75,7 @@ Usage:
 from __future__ import annotations
 
 
+import argparse
 import json
 import logging
 from datetime import date
@@ -81,6 +89,7 @@ from dataclasses import replace
 
 from downloads._common import (
     AntiBotProxy,
+    DownloadJob,
     RunStats,
     antibot_config_for,
     build_default_session,
@@ -167,126 +176,6 @@ def build_request_body(
             "manager": None,
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Fetchers
-# ---------------------------------------------------------------------------
-
-def fetch_funds_list(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    *,
-    fund_type: Optional[List[str]] = None,
-    search_input: Optional[str] = None,
-    page_size: int = FETCH_PAGE_SIZE,
-) -> List[Dict[str, Any]]:
-    """Fetch the full fund list from the JSON API in a single large page.
-
-    Returns a list of fund record dicts. Each record has fields:
-    productCode, fundName, fundNameEn, assetClass, fundType, coverage,
-    indexCode, indexNameCn, indexNameEn, aum (亿元), fundManager,
-    inceptionDate, exchange, etc.
-    """
-    body = build_request_body(
-        fund_type=fund_type,
-        search_input=search_input,
-        page_size=page_size,
-    )
-
-    resp = proxy.post(
-        session,
-        API_FUNDS_TRACKING_INDEX,
-        data=json.dumps(body),
-        headers=CSINDEX_HEADERS,
-        logger=logger,
-        log_tag="[funds-list]",
-    )
-    if resp is None:
-        logger.error("[funds-list] request failed (blocked or network error)")
-        return []
-
-    ctype = resp.headers.get("Content-Type", "")
-    if is_error_html(ctype, resp.content):
-        logger.error("[funds-list] got error HTML response (blocked?)")
-        proxy.record_error(API_FUNDS_TRACKING_INDEX, 403, "error_html_detected")
-        return []
-
-    try:
-        payload = resp.json()
-    except ValueError as e:
-        logger.error("[funds-list] JSON parse error: %s", e)
-        return []
-
-    if payload.get("code") != "200":
-        logger.error("[funds-list] API error: code=%s msg=%s", payload.get("code"), payload.get("msg"))
-        return []
-
-    data = payload.get("data")
-    if not isinstance(data, list):
-        logger.warning("[funds-list] no data array in response")
-        return []
-
-    total = payload.get("total", 0)
-    logger.info("[funds-list] fetched %d/%d records (pageSize=%d)", len(data), total, page_size)
-    return data
-
-
-def fetch_export_excel(
-    session: requests.Session,
-    proxy: AntiBotProxy,
-    *,
-    fund_type: Optional[List[str]] = None,
-    search_input: Optional[str] = None,
-    out_file: Path,
-) -> bool:
-    """Download the Excel export of the fund list and save to *out_file*.
-
-    Returns True on success. The export endpoint returns a .xls binary
-    with columns: 产品代码, 产品名称, 标的指数代码, 标的指数, 资产类别,
-    产品类型, 上市地, 资产净值（亿元）, 成立日期, 管理人.
-    """
-    body = build_request_body(
-        fund_type=fund_type,
-        search_input=search_input,
-    )
-
-    resp = proxy.post(
-        session,
-        API_EXPORT_FUNDS_EXCEL,
-        data=json.dumps(body),
-        headers=CSINDEX_HEADERS,
-        logger=logger,
-        log_tag="[export-excel]",
-    )
-    if resp is None:
-        logger.error("[export-excel] request failed")
-        return False
-
-    ctype = resp.headers.get("Content-Type", "")
-    content = resp.content
-
-    # Successful export returns Excel binary
-    is_xls = (
-        content[:4] == b"PK\x03\x04"  # xlsx (zip)
-        or content[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # xls (OLE2)
-        or "excel" in ctype.lower()
-        or "octet-stream" in ctype.lower()
-    )
-
-    if not is_xls:
-        # Likely a JSON error
-        try:
-            err = resp.json()
-            logger.error("[export-excel] API error: code=%s msg=%s", err.get("code"), err.get("msg"))
-        except (ValueError, AttributeError):
-            logger.error("[export-excel] non-Excel response (ctype=%s, %d bytes)", ctype, len(content))
-        return False
-
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_bytes(content)
-    logger.info("[export-excel] saved %s (%d bytes)", out_file.name, len(content))
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -423,175 +312,300 @@ def build_feeder_map(all_records: List[Dict[str, Any]]) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Main orchestrator
+# CsindexLinkedEtfDownload — the fetch + main orchestration
 # ---------------------------------------------------------------------------
 
-def download_csindex_linked_etf(
-    *,
-    out_root: Optional[str] = None,
-    min_aum: float = DEFAULT_MIN_AUM,
-    sleep_sec: Optional[float] = None,
-    fetch_excel: bool = True,
-    force_month_start: bool = False,
-) -> dict:
-    """Download all CSI index-linked ETFs and filter by AUM > *min_aum* (亿元).
+class CsindexLinkedEtfDownload(DownloadJob):
+    """DownloadJob for the CSI index-linked ETF fetch cycle — the former
+    ``__main__`` body is ``run()`` and the fetch/orchestration functions
+    (``fetch_funds_list`` / ``fetch_export_excel`` /
+    ``download_csindex_linked_etf``) are methods of the same names (same
+    signatures and bodies verbatim); pacing / filter / out_root stay
+    per-call arguments."""
 
-    Flow:
-      1. Fetch the full ETF list via JSON API (fundType=["etf"], all indices).
-      2. Optionally download the raw Excel export for archival.
-      3. Convert to DataFrame, save unfiltered ``etf_index_map_all_<today>.csv``.
-      4. Filter by AUM > min_aum, save ``etf_index_map_<today>.csv`` (the deliverable).
+    description = ("Download CSI index-linked ETF list and filter by AUM "
+                   "> 1亿 (100 million CNY).")
+    component = "csindex_linked_etf"
 
-    On non-month-start days, if today's deliverable CSV already exists it is
-    reused (skip re-download). On the 1st of each month (or when
-    *force_month_start* is set) the cache is bypassed.
-    """
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csindex_linked_etf", out_root)
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--out-root", type=str, default=None,
+                        help="Alternative output root directory")
+        parser.add_argument("--min-aum", type=float, default=DEFAULT_MIN_AUM,
+                        help=f"Minimum AUM in 亿元 (default: {DEFAULT_MIN_AUM} = 1亿/100mil CNY)")
+        parser.add_argument("--sleep-sec", type=float, default=None,
+                        help="Sleep seconds between requests "
+                             f"(default: external_request_config JSON for {SERVICE})")
+        parser.add_argument("--no-excel", action="store_true", default=False,
+                        help="Skip downloading the raw Excel export")
+        parser.add_argument("--force-month-start", action="store_true", default=False,
+                        help="Force month-start behavior: bypass cache and re-download "
+                             "the ETF list. For testing the monthly refresh flow on any day.")
 
-    today_date = date.today()
-    today = today_date.isoformat()
-    month_start = force_month_start or is_month_start(today_date)
+    def fetch_funds_list(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        *,
+        fund_type: Optional[List[str]] = None,
+        search_input: Optional[str] = None,
+        page_size: int = FETCH_PAGE_SIZE,
+    ) -> List[Dict[str, Any]]:
+        """Fetch the full fund list from the JSON API in a single large page.
 
-    # Cache check (non-month-start): reuse today's CSV if it already exists.
-    if not month_start:
-        cached_csv = out_dir / f"etf_index_map_{today}.csv"
-        cached_feeder = out_dir / f"etf_feeder_map_{today}.csv"
-        if is_valid_file(cached_csv, min_bytes=100) and is_valid_file(cached_feeder, min_bytes=100):
-            cached_all = out_dir / f"etf_index_map_all_{today}.csv"
-            logger.info(
-                "[cache] today's ETF list already downloaded: %s (use --force-month-start to re-download)",
-                cached_csv.name,
-            )
-            return {
-                "out_dir": str(out_dir),
-                "total": 0,
-                "filtered": 0,
-                "cached": True,
-                "cached_file": str(cached_csv),
-                "cached_all_file": str(cached_all) if is_valid_file(cached_all, min_bytes=100) else None,
-                "cached_feeder_file": str(cached_feeder),
-            }
-
-    if month_start:
-        logger.info(
-            "Month-start refresh (today=%s, forced=%s): bypassing cache and "
-            "re-downloading the ETF list.",
-            today, force_month_start,
+        Returns a list of fund record dicts. Each record has fields:
+        productCode, fundName, fundNameEn, assetClass, fundType, coverage,
+        indexCode, indexNameCn, indexNameEn, aum (亿元), fundManager,
+        inceptionDate, exchange, etc.
+        """
+        body = build_request_body(
+            fund_type=fund_type,
+            search_input=search_input,
+            page_size=page_size,
         )
 
-    session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
-    # overrides the row's base sleep only.
-    if sleep_sec is None:
-        proxy = AntiBotProxy(service=SERVICE)
-    else:
-        proxy = AntiBotProxy(replace(
-            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-        ))
-    stats = RunStats()
+        resp = proxy.post(
+            session,
+            API_FUNDS_TRACKING_INDEX,
+            data=json.dumps(body),
+            headers=CSINDEX_HEADERS,
+            logger=logger,
+            log_tag="[funds-list]",
+        )
+        if resp is None:
+            logger.error("[funds-list] request failed (blocked or network error)")
+            return []
 
-    logger.info(
-        "Starting csindex linked ETF download: min_aum=%s亿 out=%s",
-        min_aum, out_dir,
-    )
+        ctype = resp.headers.get("Content-Type", "")
+        if is_error_html(ctype, resp.content):
+            logger.error("[funds-list] got error HTML response (blocked?)")
+            proxy.record_error(API_FUNDS_TRACKING_INDEX, 403, "error_html_detected")
+            return []
 
-    # --- Step 1: Fetch full ETF list via JSON API ---
-    records = fetch_funds_list(
-        session, proxy,
-        fund_type=["etf"],
-        search_input=None,  # all indices
-    )
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            logger.error("[funds-list] JSON parse error: %s", e)
+            return []
 
-    if not records:
-        logger.error("No ETF records fetched, aborting")
-        return {"out_dir": str(out_dir), "total": 0, "filtered": 0}
+        if payload.get("code") != "200":
+            logger.error("[funds-list] API error: code=%s msg=%s", payload.get("code"), payload.get("msg"))
+            return []
 
-    stats.downloaded += 1
+        data = payload.get("data")
+        if not isinstance(data, list):
+            logger.warning("[funds-list] no data array in response")
+            return []
 
-    # --- Step 2: Optional raw Excel export ---
-    if fetch_excel:
-        xls_path = out_dir / "etf_raw.xls"
-        ok = fetch_export_excel(
+        total = payload.get("total", 0)
+        logger.info("[funds-list] fetched %d/%d records (pageSize=%d)", len(data), total, page_size)
+        return data
+
+    def fetch_export_excel(
+        self,
+        session: requests.Session,
+        proxy: AntiBotProxy,
+        *,
+        fund_type: Optional[List[str]] = None,
+        search_input: Optional[str] = None,
+        out_file: Path,
+    ) -> bool:
+        """Download the Excel export of the fund list and save to *out_file*.
+
+        Returns True on success. The export endpoint returns a .xls binary
+        with columns: 产品代码, 产品名称, 标的指数代码, 标的指数, 资产类别,
+        产品类型, 上市地, 资产净值（亿元）, 成立日期, 管理人.
+        """
+        body = build_request_body(
+            fund_type=fund_type,
+            search_input=search_input,
+        )
+
+        resp = proxy.post(
+            session,
+            API_EXPORT_FUNDS_EXCEL,
+            data=json.dumps(body),
+            headers=CSINDEX_HEADERS,
+            logger=logger,
+            log_tag="[export-excel]",
+        )
+        if resp is None:
+            logger.error("[export-excel] request failed")
+            return False
+
+        ctype = resp.headers.get("Content-Type", "")
+        content = resp.content
+
+        # Successful export returns Excel binary
+        is_xls = (
+            content[:4] == b"PK\x03\x04"  # xlsx (zip)
+            or content[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # xls (OLE2)
+            or "excel" in ctype.lower()
+            or "octet-stream" in ctype.lower()
+        )
+
+        if not is_xls:
+            # Likely a JSON error
+            try:
+                err = resp.json()
+                logger.error("[export-excel] API error: code=%s msg=%s", err.get("code"), err.get("msg"))
+            except (ValueError, AttributeError):
+                logger.error("[export-excel] non-Excel response (ctype=%s, %d bytes)", ctype, len(content))
+            return False
+
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(content)
+        logger.info("[export-excel] saved %s (%d bytes)", out_file.name, len(content))
+        return True
+
+    def download_csindex_linked_etf(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        min_aum: float = DEFAULT_MIN_AUM,
+        sleep_sec: Optional[float] = None,
+        fetch_excel: bool = True,
+        force_month_start: bool = False,
+    ) -> dict:
+        """Download all CSI index-linked ETFs and filter by AUM > *min_aum* (亿元).
+
+        Flow:
+          1. Fetch the full ETF list via JSON API (fundType=["etf"], all indices).
+          2. Optionally download the raw Excel export for archival.
+          3. Convert to DataFrame, save unfiltered ``etf_index_map_all_<today>.csv``.
+          4. Filter by AUM > min_aum, save ``etf_index_map_<today>.csv`` (the deliverable).
+
+        On non-month-start days, if today's deliverable CSV already exists it is
+        reused (skip re-download). On the 1st of each month (or when
+        *force_month_start* is set) the cache is bypassed.
+        """
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csindex_linked_etf", out_root)
+
+        today_date = date.today()
+        today = today_date.isoformat()
+        month_start = force_month_start or is_month_start(today_date)
+
+        # Cache check (non-month-start): reuse today's CSV if it already exists.
+        if not month_start:
+            cached_csv = out_dir / f"etf_index_map_{today}.csv"
+            cached_feeder = out_dir / f"etf_feeder_map_{today}.csv"
+            if is_valid_file(cached_csv, min_bytes=100) and is_valid_file(cached_feeder, min_bytes=100):
+                cached_all = out_dir / f"etf_index_map_all_{today}.csv"
+                logger.info(
+                    "[cache] today's ETF list already downloaded: %s (use --force-month-start to re-download)",
+                    cached_csv.name,
+                )
+                return {
+                    "out_dir": str(out_dir),
+                    "total": 0,
+                    "filtered": 0,
+                    "cached": True,
+                    "cached_file": str(cached_csv),
+                    "cached_all_file": str(cached_all) if is_valid_file(cached_all, min_bytes=100) else None,
+                    "cached_feeder_file": str(cached_feeder),
+                }
+
+        if month_start:
+            logger.info(
+                "Month-start refresh (today=%s, forced=%s): bypassing cache and "
+                "re-downloading the ETF list.",
+                today, force_month_start,
+            )
+
+        session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit --sleep-sec
+        # overrides the row's base sleep only.
+        if sleep_sec is None:
+            proxy = AntiBotProxy(service=SERVICE)
+        else:
+            proxy = AntiBotProxy(replace(
+                antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+            ))
+        stats = RunStats()
+
+        logger.info(
+            "Starting csindex linked ETF download: min_aum=%s亿 out=%s",
+            min_aum, out_dir,
+        )
+
+        # --- Step 1: Fetch full ETF list via JSON API ---
+        records = self.fetch_funds_list(
             session, proxy,
             fund_type=["etf"],
-            search_input=None,
-            out_file=xls_path,
+            search_input=None,  # all indices
         )
-        if ok:
-            stats.files.append(str(xls_path))
 
-    # --- Step 3: Convert and save unfiltered CSV ---
-    df_all = records_to_dataframe(records)
-    all_csv_path = out_dir / f"etf_index_map_all_{today}.csv"
-    df_all.to_csv(all_csv_path, index=False, encoding="utf-8-sig")
-    logger.info("[save] %s (%d ETFs)", all_csv_path.name, len(df_all))
-    stats.files.append(str(all_csv_path))
+        if not records:
+            logger.error("No ETF records fetched, aborting")
+            return {"out_dir": str(out_dir), "total": 0, "filtered": 0}
 
-    # --- Step 4: Filter by AUM and save the deliverable ---
-    df_filtered = filter_by_aum(df_all, min_aum)
-    etf_csv_path = out_dir / f"etf_index_map_{today}.csv"
-    df_filtered.to_csv(etf_csv_path, index=False, encoding="utf-8-sig")
-    logger.info("[save] %s (%d ETFs with AUM > %s亿)", etf_csv_path.name, len(df_filtered), min_aum)
-    stats.files.append(str(etf_csv_path))
-
-    # --- Step 5: Feeder map (联接基金 → target ETF, unfiltered fund list) ---
-    feeder_csv_path = out_dir / f"etf_feeder_map_{today}.csv"
-    n_feeders: Optional[int] = None
-    all_records = fetch_funds_list(session, proxy, fund_type=None, search_input=None)
-    if all_records:
-        df_feeder = build_feeder_map(all_records)
-        df_feeder.to_csv(feeder_csv_path, index=False, encoding="utf-8-sig")
-        logger.info("[save] %s (%d feeders)", feeder_csv_path.name, len(df_feeder))
-        stats.files.append(str(feeder_csv_path))
         stats.downloaded += 1
-        n_feeders = len(df_feeder)
-    else:
-        logger.warning("[feeder-map] unfiltered fund list fetch failed — %s not written",
-                       feeder_csv_path.name)
 
-    summary = stats.to_dict(
-        out_dir=str(out_dir),
-        total_etfs=len(df_all),
-        filtered_etfs=len(df_filtered),
-        min_aum=min_aum,
-    )
-    if n_feeders is not None:
-        summary["feeders"] = n_feeders
-    logger.info(
-        "Done. total=%d filtered=%d (AUM > %s亿) out=%s",
-        len(df_all), len(df_filtered), min_aum, out_dir,
-    )
-    return summary
+        # --- Step 2: Optional raw Excel export ---
+        if fetch_excel:
+            xls_path = out_dir / "etf_raw.xls"
+            ok = self.fetch_export_excel(
+                session, proxy,
+                fund_type=["etf"],
+                search_input=None,
+                out_file=xls_path,
+            )
+            if ok:
+                stats.files.append(str(xls_path))
+
+        # --- Step 3: Convert and save unfiltered CSV ---
+        df_all = records_to_dataframe(records)
+        all_csv_path = out_dir / f"etf_index_map_all_{today}.csv"
+        df_all.to_csv(all_csv_path, index=False, encoding="utf-8-sig")
+        logger.info("[save] %s (%d ETFs)", all_csv_path.name, len(df_all))
+        stats.files.append(str(all_csv_path))
+
+        # --- Step 4: Filter by AUM and save the deliverable ---
+        df_filtered = filter_by_aum(df_all, min_aum)
+        etf_csv_path = out_dir / f"etf_index_map_{today}.csv"
+        df_filtered.to_csv(etf_csv_path, index=False, encoding="utf-8-sig")
+        logger.info("[save] %s (%d ETFs with AUM > %s亿)", etf_csv_path.name, len(df_filtered), min_aum)
+        stats.files.append(str(etf_csv_path))
+
+        # --- Step 5: Feeder map (联接基金 → target ETF, unfiltered fund list) ---
+        feeder_csv_path = out_dir / f"etf_feeder_map_{today}.csv"
+        n_feeders: Optional[int] = None
+        all_records = self.fetch_funds_list(session, proxy, fund_type=None, search_input=None)
+        if all_records:
+            df_feeder = build_feeder_map(all_records)
+            df_feeder.to_csv(feeder_csv_path, index=False, encoding="utf-8-sig")
+            logger.info("[save] %s (%d feeders)", feeder_csv_path.name, len(df_feeder))
+            stats.files.append(str(feeder_csv_path))
+            stats.downloaded += 1
+            n_feeders = len(df_feeder)
+        else:
+            logger.warning("[feeder-map] unfiltered fund list fetch failed — %s not written",
+                           feeder_csv_path.name)
+
+        summary = stats.to_dict(
+            out_dir=str(out_dir),
+            total_etfs=len(df_all),
+            filtered_etfs=len(df_filtered),
+            min_aum=min_aum,
+        )
+        if n_feeders is not None:
+            summary["feeders"] = n_feeders
+        logger.info(
+            "Done. total=%d filtered=%d (AUM > %s亿) out=%s",
+            len(df_all), len(df_filtered), min_aum, out_dir,
+        )
+        return summary
+
+    def run(self) -> None:
+        result = self.download_csindex_linked_etf(
+            out_root=self.args.out_root,
+            min_aum=self.args.min_aum,
+            sleep_sec=self.args.sleep_sec,
+            fetch_excel=not self.args.no_excel,
+            force_month_start=self.args.force_month_start,
+        )
+        logger.info(result)
 
 
 if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(
-        description="Download CSI index-linked ETF list and filter by AUM > 1亿 (100 million CNY).",
-    )
-    ap.add_argument("--out-root", type=str, default=None,
-                    help="Alternative output root directory")
-    ap.add_argument("--min-aum", type=float, default=DEFAULT_MIN_AUM,
-                    help=f"Minimum AUM in 亿元 (default: {DEFAULT_MIN_AUM} = 1亿/100mil CNY)")
-    ap.add_argument("--sleep-sec", type=float, default=None,
-                    help="Sleep seconds between requests "
-                         f"(default: external_request_config JSON for {SERVICE})")
-    ap.add_argument("--no-excel", action="store_true", default=False,
-                    help="Skip downloading the raw Excel export")
-    ap.add_argument("--force-month-start", action="store_true", default=False,
-                    help="Force month-start behavior: bypass cache and re-download "
-                         "the ETF list. For testing the monthly refresh flow on any day.")
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-
-    result = download_csindex_linked_etf(
-        out_root=args.out_root,
-        min_aum=args.min_aum,
-        sleep_sec=args.sleep_sec,
-        fetch_excel=not args.no_excel,
-        force_month_start=args.force_month_start,
-    )
-    logger.info(result)
+    CsindexLinkedEtfDownload().execute()

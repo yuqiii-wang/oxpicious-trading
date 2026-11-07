@@ -62,7 +62,7 @@ def _derive_sector(industry: Optional[str], sector: Optional[str]) -> Optional[s
 async def main() -> None:
     ap = argparse.ArgumentParser(
         description="Generate + store research-logic Q&A rows in "
-                    "text.llm_qa_by_research (six LLM requests per row).")
+                    "llm.llm_qa_by_research (six LLM requests per row).")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_gen = sub.add_parser(
@@ -151,7 +151,7 @@ async def main() -> None:
                 model=args.model, lang=args.language,
                 category=args.category,
                 search_count=args.count, recency=args.recency)
-            logger.info("stored text.llm_qa_by_research qa_id=%s", qa_id)
+            logger.info("stored llm.llm_qa_by_research qa_id=%s", qa_id)
         elif args.cmd == "add":
             from .storage import upsert_qa_by_research
 
@@ -171,7 +171,7 @@ async def main() -> None:
                 sector_id=_derive_sector(args.industry, args.sector),
                 news_ids=_parse_news_ids(args.news_ids),
                 llm_model=args.model, language=args.language)
-            logger.info("stored text.llm_qa_by_research qa_id=%s", qa_id)
+            logger.info("stored llm.llm_qa_by_research qa_id=%s", qa_id)
         elif args.cmd == "list":
             from .storage import fetch_qa_by_research
 

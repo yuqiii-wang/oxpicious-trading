@@ -87,26 +87,6 @@ CREATE TABLE IF NOT EXISTS analysis_insights.insight_templates (
         CHECK (template_id = 'analysis.' || tab || '.' || page || '.' || metric)
 );
 
--- v3 (2026-10-21) item → page rename: the registry's "item" identities are
--- the analysis PAGES (one slug per chart page), so the column follows the
--- name (constraint/index follow; the id-shape CHECK rewrites itself with
--- the column rename). Conditional so the file stays re-appliable; runs
--- BEFORE the new-name index above so the existing-table path is ordered.
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema = 'analysis_insights'
-                 AND table_name = 'insight_templates'
-                 AND column_name = 'item') THEN
-        ALTER TABLE analysis_insights.insight_templates RENAME COLUMN item TO page;
-        ALTER TABLE analysis_insights.insight_templates
-            RENAME CONSTRAINT uq_insight_templates_item_metric
-            TO uq_insight_templates_page_metric;
-        ALTER INDEX analysis_insights.idx_insight_templates_tab_item
-            RENAME TO idx_insight_templates_tab_page;
-    END IF;
-END $$;
-
 CREATE INDEX IF NOT EXISTS idx_insight_templates_tab_page
     ON analysis_insights.insight_templates (tab, page, ordinal);
 

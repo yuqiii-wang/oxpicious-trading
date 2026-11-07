@@ -1,6 +1,6 @@
 /**
  * Option builder for the AI usage trend chart — stacked per-service
- * TOKEN bars per GMT date (text.llm_requests total_tokens; services on
+ * TOKEN bars per GMT date (llm.llm_requests total_tokens; services on
  * the GROUP_MAJOR_COLORS wheel like the ext-resources trend) + a total
  * request-count line on a SECOND y axis (tokens and requests live on
  * different scales). Clicking a date selects it (vertical markLine —

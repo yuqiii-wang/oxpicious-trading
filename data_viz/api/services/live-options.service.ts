@@ -12,8 +12,9 @@
  *     python -m live.options_intraday_skewness — the route spawns it on
  *     demand when rows are missing or stale (trading-signals pattern).
  */
-import { queryRows, toDateParam } from "../lib/db.js";
+import { toDateParam } from "../lib/db.js";
 import { codeVariants } from "../lib/classify-etf.js";
+import { querySqlView, sqlFrag } from "../lib/sql-views.js";
 import type { QueryResultRow } from "pg";
 import type {
   LiveOptionsDatesResponse,
@@ -52,12 +53,9 @@ export async function listLiveOptionsDates(
   targetType?: string,
 ): Promise<LiveOptionsDatesResponse> {
   const table = resolveSpotTable(targetType);
-  const rows = await queryRows<DbDateRow>(
-    `SELECT DISTINCT date
-       FROM ${table}
-      WHERE code = ANY($1::text[])
-      ORDER BY date DESC`,
-    [codeVariants(underlying)],
+  const rows = await querySqlView<DbDateRow>(
+    "data_viz/api/services/live-options/spot_dates",
+    { codes: codeVariants(underlying), spot_table: sqlFrag(table) },
   );
   return {
     underlying_code: underlying,
@@ -97,9 +95,9 @@ export async function getLiveOiSkewIntraday(opts: {
   // Date resolution: explicit param, else the latest spot date.
   let date = opts.date ? toDateParam(opts.date) : null;
   if (!date) {
-    const rows = await queryRows<DbDateRow>(
-      `SELECT MAX(date) AS date FROM ${table} WHERE code = ANY($1::text[])`,
-      [codes],
+    const rows = await querySqlView<DbDateRow>(
+      "data_viz/api/services/live-options/spot_latest_date",
+      { codes, spot_table: sqlFrag(table) },
     );
     date = rows.length > 0 ? toDateParam(fmtDate(rows[0].date) ?? "") : null;
   }
@@ -119,32 +117,18 @@ export async function getLiveOiSkewIntraday(opts: {
   }
 
   const [barRows, skewRows, snapshotRows] = await Promise.all([
-    queryRows<DbBarRow>(
-      `SELECT to_char(time, 'HH24:MI') AS time, close::float8 AS close
-         FROM ${table}
-        WHERE code = ANY($1::text[]) AND date = $2::date AND close IS NOT NULL
-        ORDER BY time`,
-      [codes, dateStr],
+    querySqlView<DbBarRow>(
+      "data_viz/api/services/live-options/spot_bars",
+      { codes, date: dateStr, spot_table: sqlFrag(table) },
     ),
-    queryRows<DbSkewRow>(
-      `SELECT to_char(time, 'HH24:MI') AS time,
-              to_char(expiry_date, 'YYYY-MM-DD') AS expiry_date,
-              spot::float8 AS spot,
-              skew_price::float8 AS skew_price,
-              skew_pct::float8 AS skew_pct,
-              oi_total::float8 AS oi_total,
-              otm_call_share::float8 AS otm_call_share,
-              otm_put_share::float8 AS otm_put_share,
-              skew_type
-         FROM live.options_intraday_skewness
-        WHERE underlying_code = $1 AND date = $2::date
-        ORDER BY time, expiry_date`,
-      [underlying, dateStr],
+    querySqlView<DbSkewRow>(
+      "data_viz/api/services/live-options/skew_series",
+      { underlying_code: underlying, date: dateStr },
     ),
     // The prev-trading-day options snapshot the OI base came from.
-    queryRows<DbDateRow>(
-      `SELECT MAX(date) AS date FROM stats.v_options_quote WHERE date < $1::date`,
-      [dateStr],
+    querySqlView<DbDateRow>(
+      "data_viz/api/services/live-options/prev_snapshot_date",
+      { date: dateStr },
     ),
   ]);
 

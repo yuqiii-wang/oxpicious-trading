@@ -4,24 +4,24 @@ Every ``--payload-file`` ask (i.e. every data_viz "AI Ask" modal submit) is
 appended to the ask-history tables so the interaction is searchable later,
 mirroring how ``llm_agents.llm_qa`` stores the knowledge base:
 
-  * ``text.llm_qa_by_ask``            — one row per ask (question, answer,
+  * ``llm.llm_qa_by_ask``            — one row per ask (question, answer,
                                         model, code/product search keys).
-  * ``text.llm_qa_ask_context``       — 1:1 per ask: the chart context the
+  * ``llm.llm_qa_ask_context``       — 1:1 per ask: the chart context the
                                         question was asked against (hot
                                         filter columns + verbatim plotInfo
                                         JSONB).
-  * ``text.llm_qa_ask_context_images``— junction: one ask context -> N
+  * ``llm.llm_qa_ask_context_images``— junction: one ask context -> N
                                         screenshots in
                                         ``multi_media.src_images`` (bytes
                                         deduplicated by content_hash).
-  * ``text.llm_qa_keywords_by_ask``   — deterministic keyword rows derived
+  * ``llm.llm_qa_keywords_by_ask``   — deterministic keyword rows derived
                                         from the payload (instrument
                                         codes/names, product/page, in-plot
                                         state values + searchKeywords,
                                         series names) — the keyword search
                                         index, like ``text.news_keywords``.
 
-Canonical DDL: ``database/sql/text/05_llm_qa_by_ask.sql`` and
+Canonical DDL: ``database/sql/text/llm/03_llm_qa_by_ask.sql`` and
 ``database/sql/multi_media/*.sql``.
 
 The whole write path is FAIL-SOFT: persistence must never fail the modal's
@@ -39,6 +39,7 @@ import struct
 from typing import Dict, List, Optional, Tuple
 
 from _common.db_commons import get_db_connection_async
+from _common.sql_writes import load_sql_write, render_sql_write
 
 from llm_agents._core.models import SHANGHAI_TZ
 from llm_agents._core.text_caps import truncate_summary
@@ -47,10 +48,10 @@ from llm_agents.llm_ask.payload import AiAskPayload
 
 logger = logging.getLogger(__name__)
 
-ASK_TABLE = "text.llm_qa_by_ask"
-CONTEXT_TABLE = "text.llm_qa_ask_context"
-CONTEXT_IMAGES_TABLE = "text.llm_qa_ask_context_images"
-KEYWORDS_TABLE = "text.llm_qa_keywords_by_ask"
+ASK_TABLE = "llm.llm_qa_by_ask"
+CONTEXT_TABLE = "llm.llm_qa_ask_context"
+CONTEXT_IMAGES_TABLE = "llm.llm_qa_ask_context_images"
+KEYWORDS_TABLE = "llm.llm_qa_keywords_by_ask"
 IMAGES_TABLE = "multi_media.src_images"
 
 # Keyword cap — beyond this the extra terms are noise for keyword search,
@@ -148,7 +149,8 @@ def derive_ask_tags(plot_info: Dict[str, object]) -> List[Tuple[str, str]]:
 
 def _context_row(ask_id: int, payload: AiAskPayload,
                  n_images: int) -> Tuple[str, List[object]]:
-    """Build the llm_qa_ask_context INSERT (sql, params) from a payload."""
+    """Build the llm_qa_ask_context INSERT (sql, params) from a payload
+    — the SQL from the sql_writes action file (arity-checked)."""
     plot_info = payload.plot_info
     chart = plot_info.get("chart")
     if not isinstance(chart, dict):
@@ -179,14 +181,11 @@ def _context_row(ask_id: int, payload: AiAskPayload,
         json.dumps(plot_info, ensure_ascii=False),
         n_images,
     ]
-    sql = (
-        f"INSERT INTO {CONTEXT_TABLE} (ask_id, chart_kind, chart_title, "
-        f"chart_subtitle, chart_intro, industry_id, sector_id, window_start, "
-        f"window_end, granularity, page, theme_mode, plot_info, n_images) "
-        f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, "
-        f"$13::jsonb, $14)"
-    )
-    return sql, params
+    # llm_agents/llm_ask/storage/llm_qa_ask_context/insert — the
+    # sql_writes action file (the render's arity check validates params)
+    write = render_sql_write(
+        "llm_agents/llm_ask/storage/llm_qa_ask_context/insert", *params)
+    return write.sql, list(write.params)
 
 
 # ----------------------------------------------------------------------------
@@ -233,7 +232,7 @@ async def _check_tables(conn) -> bool:
         if not exists:
             logger.warning("ask persist: missing table %s — run "
                            "database/sql/multi_media/*.sql and "
-                           "database/sql/text/05_llm_qa_by_ask.sql first",
+                           "database/sql/text/llm/03_llm_qa_by_ask.sql first",
                            table)
             return False
     return True
@@ -249,7 +248,7 @@ async def persist_ask(payload: AiAskPayload,
     ``result`` is the ``AskResult`` of a successful ask; when None the ask
     failed and a ``status='failed'`` row is written with *error_tail*.
     *flow_start* (tz-aware, captured by the caller before the ask's LLM
-    requests) enables the text.llm_requests backlink: request_ids are
+    requests) enables the llm.llm_requests backlink: request_ids are
     collected (fail-soft) and stored on the row. Returns the new ask_id,
     or None when persistence was skipped/failed — always fail-soft: the
     ask's answer must still reach the UI.
@@ -289,12 +288,10 @@ async def _persist_ask(payload: AiAskPayload,
             request_ids = await collect_request_ids(flow_start, conn=conn)
 
         async with conn.transaction():
-            ask_id = await conn.fetchval(
-                f"INSERT INTO {ASK_TABLE} (question, answer, status, "
-                f"error_tail, online_search, search_query, provider, "
-                f"llm_model, code, product, request_ids) "
-                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
-                f"RETURNING ask_id",
+            # llm_agents/llm_ask/storage/llm_qa_by_ask/insert — the
+            # sql_writes action file
+            write = render_sql_write(
+                "llm_agents/llm_ask/storage/llm_qa_by_ask/insert",
                 payload.question,
                 answer_text,
                 "answered" if answered else "failed",
@@ -307,6 +304,7 @@ async def _persist_ask(payload: AiAskPayload,
                 product,
                 request_ids,
             )
+            ask_id = await conn.fetchval(write.sql, *write.params)
             # search_tsv (TSV_SPECS): question A, answer B —
             # inside the same transaction so the ask and its index row land
             # (or roll back) together. Failed asks index the question only.
@@ -332,31 +330,31 @@ async def _persist_ask(payload: AiAskPayload,
                                    "screenshot %d", position)
                     continue
                 dims = _png_dims(data)
-                image_id = await conn.fetchval(
-                    f"INSERT INTO {IMAGES_TABLE} (mime_type, byte_size, "
-                    f"width, height, content_hash, label, data) "
-                    f"VALUES ($1, $2, $3, $4, $5, $6, $7) "
-                    # DO UPDATE (not DO NOTHING) so RETURNING always yields
-                    # the id, also for an already-stored identical screenshot.
-                    f"ON CONFLICT (content_hash) DO UPDATE "
-                    f"SET label = EXCLUDED.label RETURNING image_id",
+                # llm_agents/llm_ask/storage/src_images/insert — the
+                # sql_writes action file (DO UPDATE (not DO NOTHING) so
+                # RETURNING always yields the id, also for an
+                # already-stored identical screenshot)
+                write = render_sql_write(
+                    "llm_agents/llm_ask/storage/src_images/insert",
                     mime, len(data),
                     dims[0] if dims else None, dims[1] if dims else None,
                     hashlib.sha256(data).hexdigest(),
                     f"ai-ask screenshot {position + 1}/{len(payload.screenshots)}",
                     data,
                 )
-                await conn.execute(
-                    f"INSERT INTO {CONTEXT_IMAGES_TABLE} (ask_id, image_id, "
-                    f"position) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                image_id = await conn.fetchval(write.sql, *write.params)
+                write = render_sql_write(
+                    "llm_agents/llm_ask/storage/"
+                    "llm_qa_ask_context_images/insert",
                     ask_id, image_id, position)
+                await conn.execute(write.sql, *write.params)
 
             keywords = derive_ask_tags(plot_info)
             if keywords:
                 await conn.executemany(
-                    f"INSERT INTO {KEYWORDS_TABLE} (ask_id, keyword, kind, "
-                    f"code, product, ask_day) VALUES ($1, $2, $3, $4, $5, "
-                    f"$6) ON CONFLICT DO NOTHING",
+                    load_sql_write(
+                        "llm_agents/llm_ask/storage/"
+                        "llm_qa_keywords_by_ask/insert"),
                     [(ask_id, kw, kind, code, product, ask_day)
                      for kw, kind in keywords])
 

@@ -17,6 +17,9 @@ the first step of the work:
 - ANY DB write / insert / upsert / purge / DDL apply → `db-sql-write`
 - ANY table creation/alter with a type/kind/state/family column, or any
   label-vocabulary domain change → `db-smallint-type-codes`
+- ANY authoring/extending of the DB-semantics knowledge graph (llm.kg_*
+  entities/edges, seed files under
+  `database/sql/llm/static/knowledge_graphs/`) → `kg-db-semantics`
 - ANY chart component, ECharts option builder, or chart tooltip/colors
   under `data_viz/src` → `ui-charts`
 - ANY verification of `data_viz/` work → `ui-test`
@@ -28,6 +31,10 @@ the first step of the work:
   (`llm_agents/deep_agents` — core loop, planning, graph, delegation,
   prompts, server, memory / verification / eval design) →
   `deep-agent-blueprint`
+- ANY langgraph / deep-agent test or probe that would call an LLM → run
+  it on the DUMMY LLM (`llm_agents/test/dummy_llm` — canned replies
+  in-process, or the FastAPI provider simulation with rate-limit error
+  injection; see `deep-agent-blueprint`)
 - ANY daily OHLCV / K-line study (fetching index/etf/stock bars,
   MA/RSI/MACD/momentum studies) or interpretation of the Chinese volume
   vocabulary (放量, 缩量, 量价背离, 缩量弱反弹 …) → `ohlcv`
@@ -59,6 +66,10 @@ the first step of the work:
 
 ## Standing conventions (details in `oxpicious-dev-conventions`)
 
+- Backend Python is class-first OOP: implement with classes — pydantic
+  (`BaseModel`) for typed payloads — rather than module-level static
+  functions; free functions only for tiny pure helpers and throwaway
+  `temp_scripts/` scripts.
 - SQL-first DB changes (`database/sql/`), then bridge to Python.
 - Pipelines are incremental by default (`--force` purges + regenerates);
   reads filter on the target table's primary key.

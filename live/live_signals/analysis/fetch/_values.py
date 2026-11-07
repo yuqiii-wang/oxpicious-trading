@@ -34,7 +34,7 @@ No numpy, no pandas — plain Python over asyncpg rows.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field
 
 from _common.labels import ACTION_CODE
 
@@ -57,8 +57,7 @@ _RSI_ROW_KINDS = {"rsi"}
 _BOLL_ROW_KINDS = {"boll"}
 
 
-@dataclass
-class LiveValues:
+class LiveValues(BaseModel):
     """The code's CURRENT values, one source kind each (fetched once
     per code and shared by every active config), plus the mov_rsi
     ADAPTIVE bars (the trailing-2550d percentile tails keyed
@@ -66,9 +65,9 @@ class LiveValues:
     rsi cell)."""
 
     close: float | None = None             # latest intraday bar close
-    rsi: dict[int, float] = field(default_factory=dict)
-    boll: dict[int, float] = field(default_factory=dict)
-    rsi_bars: dict[tuple[int, int, str], float] = field(
+    rsi: dict[int, float] = Field(default_factory=dict)
+    boll: dict[int, float] = Field(default_factory=dict)
+    rsi_bars: dict[tuple[int, int, str], float] = Field(
         default_factory=dict,
     )
 

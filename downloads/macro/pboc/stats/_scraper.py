@@ -16,6 +16,10 @@ Navigation flow:
 
 This module discovers all URLs dynamically by parsing HTML — no hardcoded
 sub-page IDs.
+
+The fetch pipeline (central index → year index → sub-page) moved onto the
+:class:`PbocStatsScraper` class (bodies unchanged); the pure HTML parsers
+and dataclasses stay module-level.
 """
 from __future__ import annotations
 
@@ -32,6 +36,11 @@ from downloads._common import service_urls
 from ._catalog import StatsItem, find_matching_item
 from ._session import PBOC_BASE, CffiAntiBotSession, REQUEST_TYPE, SERVICE
 
+from downloads.macro.pboc.stats.data_definitions import (
+    DownloadLink,
+    SubPageLinks,
+    YearArchive,
+)
 # Endpoint URLs — the service's external_request_config JSON row (urls
 # object) is the single source; a missing role raises at the point of use.
 URLS = service_urls(SERVICE, REQUEST_TYPE)
@@ -52,60 +61,15 @@ RE_XLS_HREF = re.compile(r"\.xls[x]?$", re.I)
 RE_ATTACH_DIR = re.compile(r"/attachDir/(\d{4})/(\d{2})/")
 
 
-# ============================================================================
-# Data classes
-# ============================================================================
-@dataclass
-class YearArchive:
-    """A year's archive page URL discovered from the central index."""
-    year: int
-    index_url: str
-
-
-@dataclass
-class SubPageLinks:
-    """Discovered sub-page URLs for a single year."""
-    year: int
-    shrzgm_url: Optional[str] = None
-    hbtjgl_url: Optional[str] = None
-
-
-@dataclass
-class DownloadLink:
-    """A single xls download link found on a sub-page."""
-    item: StatsItem
-    year: int
-    href: str
-    row_text: str
-    link_text: str
-    # Year/month extracted from attachDir URL (publication date)
-    pub_year: Optional[int] = None
-    pub_month: Optional[int] = None
-    ext: str = "xlsx"  # "xlsx" or "xls"
-
-    def filename(self) -> str:
-        """Generate output filename: pboc_stats_{slug}_{year}.{ext}"""
-        return f"pboc_stats_{self.item.slug}_{self.year}.{self.ext}"
-
-    def manifest_row(self) -> Dict[str, str]:
-        """Return a dict suitable for CSV manifest output."""
-        return {
-            "year": str(self.year),
-            "item_slug": self.item.slug,
-            "cn_label": self.item.cn_label,
-            "en_label": self.item.en_label,
-            "page": self.item.page,
-            "source_url": self.href,
-            "pub_year": str(self.pub_year) if self.pub_year else "",
-            "pub_month": str(self.pub_month) if self.pub_month else "",
-            "filename": self.filename(),
-            "row_text": self.row_text[:200],
-        }
 
 
 # ============================================================================
 # Central index parsing — discover year archives
 # ============================================================================
+
+
+
+
 def parse_central_index(html: str, min_year: int = 2020, max_year: Optional[int] = None) -> List[YearArchive]:
     """Parse the central statistics index to discover year archive URLs.
 
@@ -243,58 +207,65 @@ def parse_sub_page(
 
 
 # ============================================================================
-# Full scraping pipeline
+# Full scraping pipeline — the PbocStatsScraper class
 # ============================================================================
-def discover_year_archives(
-    session: CffiAntiBotSession,
-    min_year: int,
-    max_year: Optional[int],
-    logger: logging.Logger,
-) -> List[YearArchive]:
-    """Fetch the central index and parse year archive URLs."""
-    central_url = CENTRAL_INDEX_URL
-    logger.info("[discover] fetching central index: %s", central_url)
-    html = session.get_text(central_url)
-    if html is None:
-        logger.error("[discover] failed to fetch central index")
-        return []
-    archives = parse_central_index(html, min_year=min_year, max_year=max_year)
-    logger.info("[discover] found %d year archives: %s",
-                len(archives), [a.year for a in archives])
-    return archives
+class PbocStatsScraper:
+    """The PBoC statistics page scraping pipeline — the former
+    ``discover_year_archives`` / ``discover_sub_pages`` / ``scrape_sub_page``
+    functions as methods with unchanged bodies (session and logger are
+    passed per call, so the class stays stateless)."""
 
+    def discover_year_archives(
+        self,
+        session: CffiAntiBotSession,
+        min_year: int,
+        max_year: Optional[int],
+        logger: logging.Logger,
+    ) -> List[YearArchive]:
+        """Fetch the central index and parse year archive URLs."""
+        central_url = CENTRAL_INDEX_URL
+        logger.info("[discover] fetching central index: %s", central_url)
+        html = session.get_text(central_url)
+        if html is None:
+            logger.error("[discover] failed to fetch central index")
+            return []
+        archives = parse_central_index(html, min_year=min_year, max_year=max_year)
+        logger.info("[discover] found %d year archives: %s",
+                    len(archives), [a.year for a in archives])
+        return archives
 
-def discover_sub_pages(
-    session: CffiAntiBotSession,
-    archive: YearArchive,
-    logger: logging.Logger,
-) -> SubPageLinks:
-    """Fetch a year's index page and discover shrzgm/hbtjgl sub-page URLs."""
-    logger.info("[discover] year %d index: %s", archive.year, archive.index_url)
-    html = session.get_text(archive.index_url, referer=CENTRAL_INDEX_URL)
-    if html is None:
-        logger.error("[discover] failed to fetch year %d index", archive.year)
-        return SubPageLinks(year=archive.year)
-    links = parse_year_index(html, archive.year, archive.index_url)
-    logger.info("[discover] year %d: shrzgm=%s, hbtjgl=%s",
-                archive.year,
-                links.shrzgm_url or "(none)",
-                links.hbtjgl_url or "(none)")
-    return links
+    def discover_sub_pages(
+        self,
+        session: CffiAntiBotSession,
+        archive: YearArchive,
+        logger: logging.Logger,
+    ) -> SubPageLinks:
+        """Fetch a year's index page and discover shrzgm/hbtjgl sub-page URLs."""
+        logger.info("[discover] year %d index: %s", archive.year, archive.index_url)
+        html = session.get_text(archive.index_url, referer=CENTRAL_INDEX_URL)
+        if html is None:
+            logger.error("[discover] failed to fetch year %d index", archive.year)
+            return SubPageLinks(year=archive.year)
+        links = parse_year_index(html, archive.year, archive.index_url)
+        logger.info("[discover] year %d: shrzgm=%s, hbtjgl=%s",
+                    archive.year,
+                    links.shrzgm_url or "(none)",
+                    links.hbtjgl_url or "(none)")
+        return links
 
-
-def scrape_sub_page(
-    session: CffiAntiBotSession,
-    page: str,
-    year: int,
-    sub_page_url: str,
-    referer: str,
-    logger: logging.Logger,
-) -> List[DownloadLink]:
-    """Fetch a sub-page and extract download links for target items."""
-    logger.info("[scrape] %s %s: %s", page, year, sub_page_url)
-    html = session.get_text(sub_page_url, referer=referer)
-    if html is None:
-        logger.error("[scrape] failed to fetch %s %s", page, year)
-        return []
-    return parse_sub_page(html, page, year, logger=logger)
+    def scrape_sub_page(
+        self,
+        session: CffiAntiBotSession,
+        page: str,
+        year: int,
+        sub_page_url: str,
+        referer: str,
+        logger: logging.Logger,
+    ) -> List[DownloadLink]:
+        """Fetch a sub-page and extract download links for target items."""
+        logger.info("[scrape] %s %s: %s", page, year, sub_page_url)
+        html = session.get_text(sub_page_url, referer=referer)
+        if html is None:
+            logger.error("[scrape] failed to fetch %s %s", page, year)
+            return []
+        return parse_sub_page(html, page, year, logger=logger)

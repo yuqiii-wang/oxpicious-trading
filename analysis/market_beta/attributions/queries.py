@@ -2,77 +2,38 @@
 
 Guard/preview counts, rolling-column backfill detection, and downstream
 missing-date detection. All functions are read-only (no writes).
+
+The migrated read-side SELECTs live in sql views (rendered via
+_common.sql_views, by attributions.runner / fetch_incremental_lookback_date):
+  analysis/market_beta/attributions/queries/count_source
+  analysis/market_beta/attributions/queries/preview_dimensions
+  analysis/market_beta/attributions/queries/preview_member_dimensions
+  analysis/market_beta/attributions/queries/count_member_indices
+  analysis/market_beta/attributions/queries/fetch_lookback_date
+The rolling-backfill EXISTS probe (SELECT 1-style, against this step's own
+target table) and the missing-date detection (missing-date check against
+this step's own target table) stay inline below.
 """
 from __future__ import annotations
 
 import datetime
 from typing import Set
 
+from _common.sql_views import render_sql_view
+
 
 # ---------------------------------------------------------------------------
 #  Guard + preview queries
 # ---------------------------------------------------------------------------
-
-# Guard: bail out early if the upstream table is empty / missing.
-# Source is the stats.cross_stats INDUSTRY grain (built by builds.cross_stats
-# from the pair rows) — it feeds the broad-market INSERT.
-COUNT_SOURCE_SQL = """
-    SELECT COUNT(*) AS n
-    FROM stats.cross_stats
-    WHERE sec_type = 'industry'
-"""
-
-# Lightweight preview: distinct industries + benchmarks that will appear in
-# the output. The source is already at industry grain (code = industry_id),
-# so no GROUP BY is needed. Restricted to broad-market benchmarks — only
-# these are materialized in industry_attributions.
-PREVIEW_DIMENSIONS_SQL = """
-    SELECT
-        COUNT(DISTINCT cs.code) AS n_industries,
-        COUNT(DISTINCT cs.benchmark_code) AS n_benchmarks
-    FROM stats.cross_stats cs
-    WHERE cs.sec_type = 'industry'
-      AND cs.code_sec_shared_weight IS NOT NULL
-      AND cs.benchmark_code IN (
-          SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
-      )
-"""
-
-# Preview: count distinct industries + member indices that will appear.
-PREVIEW_MEMBER_DIMENSIONS_SQL = """
-    SELECT
-        COUNT(DISTINCT cls.industry_id) AS n_industries,
-        COUNT(DISTINCT sc.code) AS n_member_indices
-    FROM stats.sec_composition sc
-    JOIN stats.sec_classification cls
-        ON cls.code = sc.code AND cls.type = 'index'
-    WHERE sc.source_type = 'index'
-      AND sc.stock_code IS NOT NULL
-      AND cls.industry_id IS NOT NULL
-      AND cls.industry_id <> ''
-      AND cls.is_active = TRUE
-      AND cls.is_industry_not_strategy = TRUE
-      AND sc.code NOT IN (
-          SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
-      )
-"""
-
-# Count of non-broad member indices with composition data (for the guard).
-COUNT_MEMBER_INDICES_SQL = """
-    SELECT COUNT(DISTINCT sc.code) AS n
-    FROM stats.sec_composition sc
-    JOIN stats.sec_classification cls
-        ON cls.code = sc.code AND cls.type = 'index'
-    WHERE sc.source_type = 'index'
-      AND sc.stock_code IS NOT NULL
-      AND cls.industry_id IS NOT NULL
-      AND cls.industry_id <> ''
-      AND cls.is_active = TRUE
-      AND cls.is_industry_not_strategy = TRUE
-      AND sc.code NOT IN (
-          SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
-      )
-"""
+# Rendered from sql views at the call sites (attributions.runner):
+#   count_source                 — analysis/market_beta/attributions/
+#                                  queries/count_source
+#   preview_dimensions           — analysis/market_beta/attributions/
+#                                  queries/preview_dimensions
+#   preview_member_dimensions    — analysis/market_beta/attributions/
+#                                  queries/preview_member_dimensions
+#   count_member_indices         — analysis/market_beta/attributions/
+#                                  queries/count_member_indices
 
 
 # ---------------------------------------------------------------------------
@@ -158,30 +119,13 @@ async def find_missing_attribution_dates(conn) -> Set[datetime.date]:
 #  Incremental lookback resolution (B-A5 cap)
 # ---------------------------------------------------------------------------
 
-# Resolve the trading-day-precise history bound for the incremental
-# merged broad-market INSERT: the LOOKBACK_TRADING_DAYS-th broad-benchmark
-# trading date strictly before the earliest target date. The subquery
-# takes the N NEWEST DISTINCT dates; MIN over that window is exactly the
-# Nth-prior trading date. Falls back to the earliest index-history date
-# (never NULL) when history is shorter than the lookback (fresh ingest)
-# so the bound never truncates warm-up.
-FETCH_LOOKBACK_DATE_SQL = """
-    SELECT COALESCE(
-        MIN(date),
-        (SELECT MIN(date) FROM stats.index_basic_stats)
-    ) AS lookback_date
-    FROM (
-        SELECT DISTINCT date
-        FROM stats.index_basic_stats
-        WHERE code IN (
-            SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
-        )
-          AND date < $1::date
-          AND close IS NOT NULL
-        ORDER BY date DESC
-        LIMIT $2
-    ) t
-"""
+# The lookback SELECT lives in the sql view
+# analysis/market_beta/attributions/queries/fetch_lookback_date: the
+# LOOKBACK_TRADING_DAYS-th broad-benchmark trading date strictly before
+# the earliest target date (the subquery takes the N NEWEST DISTINCT
+# dates; MIN over that window is exactly the Nth-prior trading date,
+# falling back to the earliest index-history date when history is shorter
+# than the lookback so the bound never truncates warm-up).
 
 
 async def fetch_incremental_lookback_date(conn, min_date: datetime.date) -> datetime.date:
@@ -191,7 +135,7 @@ async def fetch_incremental_lookback_date(conn, min_date: datetime.date) -> date
     before ``min_date`` and shifts it back by
     LOOKBACK_EXTRA_CALENDAR_DAYS so a stock's LAG(close) at the boundary
     row survives suspensions up to ~45 extra calendar days (see config.py).
-    The result is passed as a plain $2::date parameter — a plan-time
+    The result is passed as a plain date parameter — a plan-time
     constant (a scalar subquery would be re-evaluated per outer row).
     """
     from analysis.market_beta.attributions.config import (
@@ -199,8 +143,12 @@ async def fetch_incremental_lookback_date(conn, min_date: datetime.date) -> date
         LOOKBACK_TRADING_DAYS,
     )
 
-    resolved = await conn.fetchval(FETCH_LOOKBACK_DATE_SQL, min_date,
-                                   LOOKBACK_TRADING_DAYS)
+    view = render_sql_view(
+        "analysis/market_beta/attributions/queries/fetch_lookback_date",
+        min_date=min_date,
+        lookback_days=LOOKBACK_TRADING_DAYS,
+    )
+    resolved = await conn.fetchval(view.sql, *view.params)
     if resolved is None:
         return datetime.date(1900, 1, 1)
     return resolved - datetime.timedelta(days=LOOKBACK_EXTRA_CALENDAR_DAYS)

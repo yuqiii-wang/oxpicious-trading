@@ -3,52 +3,82 @@ plan-JSON contract, the proposal session, its persistence, and the
 mutation authorities.
 
 The thread's plan is a living graph with a MAIN LANE and FORKED PATHS,
-persisted as the ``text.deep_agent_states`` tree (SQL-first DDL
-``database/sql/text/09_deep_agent_states.sql``). This layer owns the
-whole contract:
+persisted as the ``llm.deep_agent_states`` tree (SQL-first DDL
+``database/sql/text/llm/07_deep_agent_states.sql``). This layer owns
+the whole contract:
 
-  * ``plan_json``   — the planner's reply contract: validation
-    (structure AND business naming) for the states JSON (steps with
-    optional delegation goals), and the same validation for runtime
-    ``update_plan`` adds;
+  * ``plan_json``   — the planner's reply contract (a subpackage,
+    2026-11-07): validation (structure AND business naming) for the
+    states JSON (steps with optional delegation goals), the planning
+    system prompts + the DB-editable repair/followup frames, and the
+    same validation for runtime ``update_plan`` adds;
   * ``planner``     — the proposal SESSION as an independent class
-    (:class:`Planner`): it assembles what the model reads (the
-    business framing, the dynamic templates, the selected plan
-    prompts' texts), calls the LLM, and on ANY rejection feeds the
-    specific complaint back for correction — until the reply compiles
-    into accepted thread states or the rounds run out (the runner
-    degrades to no-plan). Pure: no DB, no provider import — the chat
-    callable rides in duck-typed;
-  * ``store``       — the plan tree persistence (create/add/revise/
-    skip/tick over ``text.deep_agent_states`` + contexts + identities);
+    (:class:`Planner`, a subpackage): it assembles what the model
+    reads (the business framing, the dynamic templates, the selected
+    plan prompts' texts), calls the LLM, and on ANY rejection feeds
+    the specific complaint back for correction — until the reply
+    compiles into accepted thread states or the rounds run out (the
+    runner degrades to no-plan). Pure: no DB, no provider import —
+    the chat callable rides in duck-typed;
+  * ``session``     — the plan agent's ENGINE (:class:`PlanSession`, a
+    subpackage): the batched proposal stream persisting each validated
+    batch NOW, the gradual prompt-loading ladder resolved alongside,
+    the fork pass-down and the standing opening prompt. Run by
+    ``agents.plan_agent.PlanAgent`` BEFORE the graphs invoke;
+  * ``prompt_loading`` — the gradual discretionary prompt-loading
+    ladder (a subpackage): catalog previews → keyword match → the
+    KG-hotpath corroboration → the planner verdict → execution-time
+    discretion, plus the planner-scoped data compaction;
+  * ``store``       — the plan tree persistence (a subpackage of
+    domain mixins composed into one ``PlanStore``: create/add/revise/
+    skip/tick over ``llm.deep_agent_states`` + contexts + identities)
+    and the prompt accessors (system / agent / tool / plan rows over
+    ``llm.ai_prompts``);
   * ``authorities`` — WHO may mutate what: the main lane may rework
     not-yet-run steps and terminate forks; a forked subagent is
     structurally confined to the nodes it minted under its own fork.
-    The agent-facing tools (update_plan / the sub kit's tick) are
-    handlers closed over a PlanAuthority — permission is enforced in
-    code, never trusted to the prompt.
+    The model-facing tools over an authority (schemas + handlers +
+    kits) live in the tool layer (``tools.plan_tools``); permission
+    stays enforced in code here, never trusted to the prompt;
+  * ``templates``   — the runner side of saved-plan reuse (the zero-LLM
+    template lane);
+  * ``thread_search`` — the thread-internal LLM-traffic search BODY
+    (the model-facing tool object is ``tools.thread_search``);
+  * ``kg_prompts``  — the KG-hotpath corroboration probe (plan-time
+    consult of the promoted ``llm.kg_hotpaths`` chains).
 
-Purely domain-level: no LangGraph, no agent loop — both ``core`` (the
-subagent fork kit) and ``graph`` (the step tools) consume it.
+Purely domain-level: no LangGraph, no agent loop — ``core`` (the
+subagent fork kit), ``skills`` (the selected-prompt objects), the tool
+layer (the plan kits) and ``graph`` (the orchestration) consume it; it
+imports none of them back.
+
+The five former single-file modules (store / plan_json / planner /
+prompt_loading / session) are SUBPACKAGES since 2026-11-07 — each
+root re-exports its whole prior surface, so every importer keeps
+importing ``planning.<module>`` unchanged. This package root carries
+the same shield for the convenience names below (nothing in the repo
+imports the package level today; the re-exports stay maintained).
 """
 from llm_agents.deep_agents.planning.authorities import (
-    PlanAuthority, main_plan_tools, subagent_plan_tools,
+    ExternalPlanError, PlanAuthority,
 )
 from llm_agents.deep_agents.planning.plan_json import (
-    PLAN_SYSTEM_PROMPT, parse_plan_json, parse_update_steps,
+    parse_plan_json, parse_update_steps, plan_system_prompt,
 )
 from llm_agents.deep_agents.planning.planner import (
-    Planner, business_framing, plan_reply_steps, plan_user_content,
+    PlanPromptAssembler, Planner, TemplateArgs,
     render_template, template_args,
 )
 from llm_agents.deep_agents.planning.store import (
-    PlannedStep, StateRow, ThreadPlan, purge_thread,
+    PLAN_STORE, PlannedStep, StateRow, ThreadPlan,
 )
 
 __all__ = [
-    "PLAN_SYSTEM_PROMPT", "Planner", "PlanAuthority", "PlannedStep",
-    "StateRow", "ThreadPlan", "business_framing", "main_plan_tools",
-    "parse_plan_json", "parse_update_steps", "plan_reply_steps",
-    "plan_user_content", "purge_thread", "render_template",
-    "subagent_plan_tools", "template_args",
+    "Planner", "PlanPromptAssembler", "TemplateArgs",
+    "ExternalPlanError", "PlanAuthority",
+    "PlannedStep", "StateRow", "ThreadPlan",
+    "PLAN_STORE",
+    "parse_plan_json", "parse_update_steps",
+    "plan_system_prompt",
+    "render_template", "template_args",
 ]

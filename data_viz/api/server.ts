@@ -4,7 +4,7 @@
 import type { Duplex } from 'node:stream';
 import app from './app.js';
 import { closePool } from './lib/db.js';
-import { ensureStreamsAtBoot } from './routes/monitor.js';
+import { ensureStreamsAtBoot } from './routes/monitor/index.js';
 import {
   attachAiEventsClient,
   startAiEventsBridge,

@@ -24,7 +24,7 @@
  * Inside the SAME card (BaseChart `footer` slot), a hover-synced chart
  * plots the rolling correlation of the vol index against that spot
  * (analysis.options_vol_index_vs_spot_price_corr — Pearson ρ of daily
- * log-changes over 5/20/60/255-session windows; the stored table
+ * log-changes over 20/60/255-session windows; the stored table
  * samples a 5-session stride grid + the daily tail, and the API
  * LINEARLY INTERPOLATES it onto every vol-index session — the same
  * convention the options_vix signal engine reads; nothing is written
@@ -289,7 +289,7 @@ export default function VolIndexPanel({
             sx={{ color: "var(--chart-subtitle)", fontSize: "0.75rem" }}
           >
             Vol Index vs Spot · Rolling Correlation — Pearson ρ of daily
-            spot log-return vs vol-index log-change · 5d / 20d / 60d /
+            spot log-return vs vol-index log-change · 20d / 60d /
             255d windows · stride samples interpolated to daily ·
             hover-synced with the chart above
             {inSignal
@@ -308,7 +308,7 @@ export default function VolIndexPanel({
               rows.length > 0
             }
             error={corrError ? `Failed to load vol-vs-spot corr: ${corrError}` : null}
-            emptyText="No vol-vs-spot correlation rows for this underlying yet — the table fills once the vol index has joint-valid sessions with the spot close (corr_5d first, corr_255d last)."
+            emptyText="No vol-vs-spot correlation rows for this underlying yet — the table fills once the vol index has joint-valid sessions with the spot close (corr_20d first, corr_255d last)."
           />
         </Box>
       }

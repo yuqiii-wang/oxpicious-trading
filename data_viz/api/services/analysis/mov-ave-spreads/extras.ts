@@ -5,12 +5,12 @@
  * ohlc/gaps and rfest/rfaudit.
  * Split out of the former monolithic mov-ave-spreads.ts.
  */
-import { queryRows, formatDate, toNum } from "@api/lib/db";
+import { formatDate, toNum } from "@api/lib/db";
+import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import { codeVariants } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
 import { labelDecodeSql } from "@api/services/label-codes";
 import type {
-  MaSpreadSecType,
   MovAveSpreadMetric,
   MovAveSpreadExtrasResponse,
   MovAveSpreadPairSeries,
@@ -35,21 +35,36 @@ import {
 } from "./sec-sources.js";
 import { AMT_PAIR_ORDER, pairLabel } from "./pairs-config.js";
 import {
-  buildOhlcExtrasSql,
+  ROOF_FLOOR_PERIODS,
+  ohlcPivotCteSql,
+  ohlcPivotSelectSql,
+} from "./ohlc-pivot.js";
+import {
   toOhlcExtremaRow,
   type DbExtremaRow,
-  buildOhlcGapsSql,
   toOhlcGapDay,
   type DbOhlcGapRow,
 } from "./ohlc-extras.js";
 import {
-  buildRfEstimateExtrasSql,
+  rfEstimatePivotSql,
+  rfEstimateSelectSql,
   toRfEstimateRow,
   type DbRfEstimateRow,
-  buildRfReboundsSql,
   toRfRebound,
   type DbRfReboundRow,
 } from "./roof-floor.js";
+
+const EXTRAS_VIEWS = {
+  amt: "data_viz/api/services/analysis/mov-ave-spreads/extras/amt_block",
+  streaks: "data_viz/api/services/analysis/mov-ave-spreads/extras/streaks",
+  pxvol: "data_viz/api/services/analysis/mov-ave-spreads/extras/price_vs_amt",
+  rsiranks: "data_viz/api/services/analysis/mov-ave-spreads/extras/rsi_ranks",
+  momentum: "data_viz/api/services/analysis/mov-ave-spreads/extras/momentum",
+  ohlc: "data_viz/api/services/analysis/mov-ave-spreads/ohlc-extras/extrema_pivot",
+  gaps: "data_viz/api/services/analysis/mov-ave-spreads/ohlc-extras/gaps",
+  rfest: "data_viz/api/services/analysis/mov-ave-spreads/roof-floor/estimates_pivot",
+  rfaudit: "data_viz/api/services/analysis/mov-ave-spreads/roof-floor/rebounds",
+};
 
 /** The extras metric groups in canonical order — the /extras route's
  *  `metrics` param is validated against this list. */
@@ -138,33 +153,11 @@ function pickTradingAmtStd(r: DbAmtRow, window: number): number | null {
   }
 }
 
-/** SQL for the "amt" extras group: the 5 trading-amount pairs' per-date
- *  values (trading amount + high/low price reference + the 5 amt MA values
- *  + their Bollinger σ). */
-function buildAmtSql(secType: MaSpreadSecType): string {
-  const src = SEC_SOURCES[secType];
-  const tables: ChartSourceTable[] = [...src.chartTables, TRADING_AMT_TABLE];
-  return `
-    WITH d AS MATERIALIZED (
-      SELECT * FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-        AND code = ANY($2::text[])
-    ),
-    ${chartCtesSql(tables)}
-    SELECT
-      d.date,
-      ${src.tradingAmtExpr} AS trading_amount,
-      ${src.highExpr} AS high,
-      ${src.lowExpr} AS low,
-      d.trading_amt_ma5, d.trading_amt_ma20, d.trading_amt_ma60,
-      d.trading_amt_ma120, d.trading_amt_ma255,
-      ta.trading_amt_std5, ta.trading_amt_std20, ta.trading_amt_std60,
-      ta.trading_amt_std120, ta.trading_amt_std255
-    FROM d
-    ${chartJoinSql(tables)}
-    ORDER BY d.date ASC
-  `;
-}
+/** The "amt" group's query: the 5 trading-amount pairs' per-date values
+ *  (trading amount + high/low price reference + the 5 amt MA values + their
+ *  Bollinger σ). The SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/extras/amt_block (the
+ *  SEC_SOURCES pieces passed as fragment args). */
 
 /** Build the 5 Amt/MA pair series from the "amt" extras rows. The envelope
  *  draws all 5 trading_amt_ma lines; long_std carries trading_amt_stdW (the
@@ -222,53 +215,23 @@ function toAmtPairs(rows: DbAmtRow[]): MovAveSpreadPairSeries[] {
 
 // ---- "streaks" extras group ---------------------------------------------------
 
-/** SQL for the high/low band-BREAK excursion streaks of one (sec_type,
- *  code), straight from analysis.mov_ave_high_low_pct_streaks (PK
+/** The high/low band-BREAK excursion streaks of one (sec_type, code),
+ *  straight from analysis.mov_ave_high_low_pct_streaks (PK
  *  (sec_type, code, date_year_month, period, pct_type, start_date,
  *  end_date)). The streak SIDE (high leg vs low leg) is not stored — it is
- *  derived here by joining the band row of the streak's END month
+ *  derived by joining the band row of the streak's END month
  *  (date_trunc('month', s.end_date)) and comparing the streak's end close
  *  against that band: each streak day is tested against its OWN month's
  *  band (so the end-month band row is guaranteed to exist) and a streak
  *  never switches sides, so the end day's own-month band decides exactly.
  *  Fetched once per chart request for ALL (period, pct_type) combos — the
- *  client filters by its nested period→pct selection. */
-function buildStreaksSql(): string {
-  return `
-    SELECT
-      s.period,
-      s.pct_type,
-      s.start_date,
-      s.end_date,
-      s.open,
-      s.close,
-      s.high,
-      s.low,
-      b.high_val AS band_high,
-      b.low_val AS band_low,
-      s.day_count,
-      s.std_dev,
-      s.daily_ave_trading_amt,
-      CASE
-        WHEN s.close > b.high_val THEN 'high'
-        WHEN s.close < b.low_val THEN 'low'
-      END AS side
-    FROM analysis.mov_ave_high_low_pct_streaks s
-    JOIN analysis.mov_ave_high_low_pct b
-      ON b.sec_type = s.sec_type
-      AND b.code = s.code
-      AND b.date_year_month = date_trunc('month', s.end_date)::date
-      AND b.period = s.period
-      AND b.pct_type = s.pct_type
-    WHERE s.sec_type = $1
-      AND s.code = ANY($2::text[])
-    ORDER BY s.period, s.pct_type, s.start_date
-  `;
-}
+ *  client filters by its nested period→pct selection. The SELECT lives in
+ *  the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/extras/streaks. */
 
 /** One streak row from analysis.mov_ave_high_low_pct_streaks joined with
- *  its end-month band (see buildStreaksSql). side is NULL only if the
- *  end close fell exactly on a band boundary — never expected. */
+ *  its end-month band (see the extras/streaks sql view). side is NULL only
+ *  if the end close fell exactly on a band boundary — never expected. */
 interface DbStreakRow {
   period: number;
   pct_type: number;
@@ -315,27 +278,15 @@ function toStreaks(rows: DbStreakRow[]): MovAveSpreadHighLowStreak[] {
 
 // ---- "pxvol" extras group -----------------------------------------------------
 
-/** SQL for one code's per-date Price × Trading-Amount state registry
- *  rows (analysis.mov_ave_price_vs_amt — the px_vol family's
- *  date-level source of truth, built by the mov_ave_spread pipeline).
- *  Every state-valid day joins exactly ONE of the 15
- *  px_speed × vol_state categories; the UI shades the matching dates
- *  per picked combo. */
-function buildPriceVsAmtSql(): string {
-  return `
-    SELECT
-      p.date,
-      ${labelDecodeSql("px_speed", "p.px_speed")} AS px_speed,
-      ${labelDecodeSql("vol_state", "p.vol_state")} AS vol_state
-    FROM analysis.mov_ave_price_vs_amt p
-    WHERE p.sec_type = $1
-      AND p.code = ANY($2::text[])
-    ORDER BY p.date
-  `;
-}
+/** One code's per-date Price × Trading-Amount state registry rows
+ *  (analysis.mov_ave_price_vs_amt — the px_vol family's date-level source
+ *  of truth, built by the mov_ave_spread pipeline). Every state-valid day
+ *  joins exactly ONE of the 15 px_speed × vol_state categories; the UI
+ *  shades the matching dates per picked combo. The SELECT lives in the sql
+ *  view data_viz/api/services/analysis/mov-ave-spreads/extras/price_vs_amt. */
 
-/** One state-registry row from analysis.mov_ave_price_vs_amt (see
- *  buildPriceVsAmtSql). */
+/** One state-registry row from analysis.mov_ave_price_vs_amt (see the
+ *  extras/price_vs_amt sql view). */
 interface DbPriceVsAmtRow {
   date: Date | string;
   px_speed: string;
@@ -364,31 +315,16 @@ function toPriceVsAmtDays(rows: DbPriceVsAmtRow[]): MovAveSpreadPriceVsAmtDay[] 
 
 // ---- "rsiranks" extras group --------------------------------------------------
 
-/** SQL for the "rsiranks" extras group: one code's per-date RSI history
- *  ranks (analysis.mov_ave_rsi_ranks — rank 1 = the code's highest RSI
- *  reading within its own history, dense 1..N, NULL where that window's
- *  RSI is NULL). The client derives each window's top-% cutoff from the
- *  max rank over the rows (dense ranks ⇒ max = the count of ranked
- *  days), so no totals row is fetched. */
-function buildRsiRanksSql(): string {
-  return `
-    SELECT
-      r.date,
-      r.rank_rsi_3days,
-      r.rank_rsi_6days,
-      r.rank_rsi_10days,
-      r.rank_rsi_14days,
-      r.rank_rsi_20days,
-      r.rank_rsi_60days
-    FROM analysis.mov_ave_rsi_ranks r
-    WHERE r.sec_type = $1
-      AND r.code = ANY($2::text[])
-    ORDER BY r.date
-  `;
-}
+/** The "rsiranks" group's query: one code's per-date RSI history ranks
+ *  (analysis.mov_ave_rsi_ranks — rank 1 = the code's highest RSI reading
+ *  within its own history, dense 1..N, NULL where that window's RSI is
+ *  NULL). The client derives each window's top-% cutoff from the max rank
+ *  over the rows (dense ranks ⇒ max = the count of ranked days), so no
+ *  totals row is fetched. The SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/extras/rsi_ranks. */
 
-/** One analysis.mov_ave_rsi_ranks row (see buildRsiRanksSql) — int4
- *  ranks arrive as numbers, NULLs as null. */
+/** One analysis.mov_ave_rsi_ranks row (see the extras/rsi_ranks sql view)
+ *  — int4 ranks arrive as numbers, NULLs as null. */
 interface DbRsiRankRow {
   date: Date | string;
   rank_rsi_3days: number | null;
@@ -415,34 +351,15 @@ function toRsiRankDay(r: DbRsiRankRow): MovAveSpreadRsiRankDay {
 
 // ---- "momentum" extras group --------------------------------------------------
 
-/** SQL for the "momentum" extras group: one code's per-date
- *  lookback-adaptive momentum rows (analysis.mov_ave_momentum). The
- *  regime SMALLINT code is decoded to its label here — the only decode
- *  boundary (labels never ride the pipeline frames). */
-function buildMomentumSql(): string {
-  return `
-    SELECT
-      m.date,
-      ${labelDecodeSql("regime", "m.regime")} AS regime,
-      m.vol_regime,
-      m.lb_short,
-      m.lb_mid,
-      m.lb_long,
-      m.momentum_5days::float8,
-      m.momentum_20days::float8,
-      m.momentum_short::float8,
-      m.momentum_mid::float8,
-      m.momentum_long::float8
-    FROM analysis.mov_ave_momentum m
-    WHERE m.sec_type = $1
-      AND m.code = ANY($2::text[])
-    ORDER BY m.date
-  `;
-}
+/** The "momentum" group's query: one code's per-date lookback-adaptive
+ *  momentum rows (analysis.mov_ave_momentum). The regime SMALLINT code is
+ *  decoded to its label in the SQL — the only decode boundary (labels
+ *  never ride the pipeline frames). The SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/extras/momentum. */
 
-/** One analysis.mov_ave_momentum row (see buildMomentumSql) — momentum
- *  NUMERICs are cast float8 server-side (numbers, not Decimal strings);
- *  regime decodes to its label string. */
+/** One analysis.mov_ave_momentum row (see the extras/momentum sql view) —
+ *  momentum NUMERICs are cast float8 server-side (numbers, not Decimal
+ *  strings); regime decodes to its label string. */
 interface DbMomentumRow {
   date: Date | string;
   regime: string;
@@ -504,66 +421,86 @@ export async function getMovAveSpreadChartExtras(
     wanted.map(async (metric) => {
       switch (metric) {
         case "amt": {
-          const rows = await queryRows<DbAmtRow>(buildAmtSql(secType),
-            [secTypeParam(secType), variants]);
+          const src = SEC_SOURCES[secType];
+          const tables: ChartSourceTable[] = [...src.chartTables, TRADING_AMT_TABLE];
+          const rows = await querySqlView<DbAmtRow>(EXTRAS_VIEWS.amt, {
+            sec_type: secTypeParam(secType),
+            codes: variants,
+            chart_ctes: sqlFrag(chartCtesSql(tables)),
+            trading_amt_expr: sqlFrag(src.tradingAmtExpr),
+            high_expr: sqlFrag(src.highExpr),
+            low_expr: sqlFrag(src.lowExpr),
+            chart_joins: sqlFrag(chartJoinSql(tables)),
+          });
           response.amtPairs = toAmtPairs(rows);
           break;
         }
         case "ohlc": {
-          const rows = await queryRows<DbExtremaRow>(
-            buildOhlcExtrasSql(),
-            [secTypeParam(secType), variants],
-          );
+          const rows = await querySqlView<DbExtremaRow>(EXTRAS_VIEWS.ohlc, {
+            sec_type: secTypeParam(secType),
+            codes: variants,
+            ohlc_ctes: sqlFrag(ohlcPivotCteSql(ROOF_FLOOR_PERIODS)),
+            ohlc_select: sqlFrag(ohlcPivotSelectSql(ROOF_FLOOR_PERIODS, "")),
+          });
           response.ohlc = rows.map(toOhlcExtremaRow);
           break;
         }
         case "rfest": {
-          const rows = await queryRows<DbRfEstimateRow>(
-            buildRfEstimateExtrasSql(),
-            [secTypeParam(secType), variants],
-          );
+          const rows = await querySqlView<DbRfEstimateRow>(EXTRAS_VIEWS.rfest, {
+            sec_type: secTypeParam(secType),
+            codes: variants,
+            estimate_pivot: sqlFrag(rfEstimatePivotSql()),
+            estimate_select: sqlFrag(rfEstimateSelectSql()),
+          });
           response.rfEstimates = rows.map(toRfEstimateRow);
           break;
         }
         case "rfaudit": {
-          const rows = await queryRows<DbRfReboundRow>(
-            buildRfReboundsSql(),
-            [secTypeParam(secType), variants],
-          );
+          const rows = await querySqlView<DbRfReboundRow>(EXTRAS_VIEWS.rfaudit, {
+            sec_type: secTypeParam(secType),
+            codes: variants,
+            side_decode: sqlFrag(labelDecodeSql("side", "r.side")),
+            outcome_decode: sqlFrag(labelDecodeSql("rf_rebound_outcome", "r.outcome")),
+          });
           response.rfRebounds = rows
             .map(toRfRebound)
             .filter((r): r is MovAveSpreadRoofFloorRebound => r != null);
           break;
         }
         case "streaks": {
-          const rows = await queryRows<DbStreakRow>(buildStreaksSql(),
-            [secTypeParam(secType), variants]);
+          const rows = await querySqlView<DbStreakRow>(EXTRAS_VIEWS.streaks,
+            { sec_type: secTypeParam(secType), codes: variants });
           response.highLowStreaks = toStreaks(rows);
           break;
         }
         case "pxvol": {
-          const rows = await queryRows<DbPriceVsAmtRow>(buildPriceVsAmtSql(),
-            [secTypeParam(secType), variants]);
+          const rows = await querySqlView<DbPriceVsAmtRow>(EXTRAS_VIEWS.pxvol, {
+            sec_type: secTypeParam(secType),
+            codes: variants,
+            px_speed_decode: sqlFrag(labelDecodeSql("px_speed", "p.px_speed")),
+            vol_state_decode: sqlFrag(labelDecodeSql("vol_state", "p.vol_state")),
+          });
           response.priceVsAmt = toPriceVsAmtDays(rows);
           break;
         }
         case "gaps": {
-          const rows = await queryRows<DbOhlcGapRow>(buildOhlcGapsSql(),
-            [secTypeParam(secType), variants]);
+          const rows = await querySqlView<DbOhlcGapRow>(EXTRAS_VIEWS.gaps,
+            { sec_type: secTypeParam(secType), codes: variants });
           response.ohlcGaps = rows.map(toOhlcGapDay);
           break;
         }
         case "rsiranks": {
-          const rows = await queryRows<DbRsiRankRow>(
-            buildRsiRanksSql(), [secTypeParam(secType), variants],
-          );
+          const rows = await querySqlView<DbRsiRankRow>(EXTRAS_VIEWS.rsiranks,
+            { sec_type: secTypeParam(secType), codes: variants });
           response.rsiRanks = rows.map(toRsiRankDay);
           break;
         }
         case "momentum": {
-          const rows = await queryRows<DbMomentumRow>(
-            buildMomentumSql(), [secTypeParam(secType), variants],
-          );
+          const rows = await querySqlView<DbMomentumRow>(EXTRAS_VIEWS.momentum, {
+            sec_type: secTypeParam(secType),
+            codes: variants,
+            regime_decode: sqlFrag(labelDecodeSql("regime", "m.regime")),
+          });
           response.momentum = rows.map(toMomentumDay);
           break;
         }

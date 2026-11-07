@@ -17,6 +17,7 @@
  *   analysis.industry_etf_contribution      (industry aggregate, pool_size='all')
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import { renderSqlView, querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import type {
   IndustryEtfPriceSeriesResponse,
@@ -67,47 +68,13 @@ export async function getIndustryEtfPriceSeries(
   // ETFs tracking member indices of the selected industries. Ordered by
   // etf_code then date so the frontend can group-by ETF and process each
   // ETF's series in chronological order. Price uses COALESCE(adj_close, close)
-  // so share splits / dividend deliveries don't appear as large drops.
-  const sql = `
-    WITH member_indices AS (
-      SELECT DISTINCT code, industry_id, industry_label
-      FROM stats.sec_classification
-      WHERE type = 'index'
-        AND is_active = TRUE
-        AND industry_id = ANY($1::text[])
-        AND industry_id IS NOT NULL
-        AND industry_id <> ''
-    ),
-    etf_links AS (
-      SELECT DISTINCT
-        sc.code      AS etf_code,
-        sc.name      AS etf_name,
-        sc.parent_index_code,
-        mi.industry_id,
-        mi.industry_label
-      FROM stats.sec_classification sc
-      JOIN member_indices mi ON mi.code = sc.parent_index_code
-      WHERE sc.type = 'etf'
-        AND sc.is_active = TRUE
-        AND sc.is_primary_exchange = TRUE
-        AND sc.parent_index_code <> ''
-    )
-    SELECT
-      el.etf_code,
-      el.etf_name,
-      el.parent_index_code,
-      el.industry_id,
-      el.industry_label,
-      ebs.date,
-      COALESCE(ea.adj_close, ebs.close) AS close,
-      elm.trading_amount
-    FROM etf_links el
-    JOIN stats.etf_basic_stats ebs ON ebs.code = el.etf_code
-    LEFT JOIN stats.etf_adjustment ea ON ea.code = el.etf_code AND ea.date = ebs.date
-    LEFT JOIN stats.etf_liquidity_margin elm ON elm.code = el.etf_code AND elm.date = ebs.date
-    ORDER BY el.etf_code, ebs.date ASC
-  `;
-  const rows = await queryRows<DbEtfPriceRow>(sql, [industryIds]);
+  // so share splits / dividend deliveries don't appear as large drops. The
+  // SELECT lives in the sql view
+  // data_viz/api/services/analysis/industry-etf-contribution/etf_price_series.
+  const rows = await querySqlView<DbEtfPriceRow>(
+    "data_viz/api/services/analysis/industry-etf-contribution/etf_price_series",
+    { industry_ids: industryIds },
+  );
 
   // Group rows by etf_code into IndustryEtfPriceSeriesEntry[].
   const entryMap = new Map<string, IndustryEtfPriceSeriesEntry>();
@@ -174,78 +141,16 @@ export async function getIndustryEtfContributionBars(
   }
 
   // Target date: user-provided, or the latest date in
-  // analysis.industry_etf_contribution for this industry.
-  const sql = `
-    WITH target_date AS (
-      SELECT COALESCE(
-        $2::date,
-        (SELECT MAX(date) FROM analysis.industry_etf_contribution
-         WHERE industry_id = $1::text AND pool_size = 3)
-      ) AS max_date
-    ),
-    member_indices AS (
-      SELECT DISTINCT code
-      FROM stats.sec_classification
-      WHERE type = 'index' AND is_active = TRUE AND industry_id = $1::text
-    ),
-    etf_codes AS (
-      SELECT DISTINCT
-        sc.code AS etf_code,
-        sc.name AS etf_name,
-        sc.parent_index_code
-      FROM stats.sec_classification sc
-      JOIN member_indices mi ON mi.code = sc.parent_index_code
-      WHERE sc.type = 'etf'
-        AND sc.is_active = TRUE
-        AND sc.is_primary_exchange = TRUE
-        AND sc.parent_index_code <> ''
-    )
-    SELECT
-      ec.etf_code,
-      ec.etf_name,
-      ec.parent_index_code,
-      elm.trading_amount,
-      CASE
-        WHEN ebs.close IS NOT NULL AND pb.close IS NOT NULL AND pb.close != 0
-        THEN (ebs.close - pb.close) / pb.close
-        ELSE NULL
-      END AS etf_return,
-      ld.max_date AS date,
-      sc2.industry_label,
-      iec.industry_etf_trading_amount,
-      iec.industry_etf_trading_amount_ma5,
-      iec.industry_etf_trading_amount_ma20
-    FROM etf_codes ec
-    CROSS JOIN target_date ld
-    LEFT JOIN LATERAL (
-      SELECT trading_amount FROM stats.etf_liquidity_margin
-      WHERE code = ec.etf_code AND date = ld.max_date
-    ) elm ON true
-    LEFT JOIN LATERAL (
-      SELECT close FROM stats.etf_basic_stats
-      WHERE code = ec.etf_code AND date = ld.max_date
-    ) ebs ON true
-    LEFT JOIN LATERAL (
-      SELECT close FROM stats.etf_basic_stats
-      WHERE code = ec.etf_code AND date < ld.max_date
-      ORDER BY date DESC LIMIT 1
-    ) pb ON true
-    LEFT JOIN LATERAL (
-      SELECT industry_label
-      FROM stats.sec_classification
-      WHERE industry_id = $1::text AND type = 'index'
-        AND industry_label IS NOT NULL
-      LIMIT 1
-    ) sc2 ON true
-    LEFT JOIN LATERAL (
-      SELECT industry_etf_trading_amount,
-             industry_etf_trading_amount_ma5,
-             industry_etf_trading_amount_ma20
-      FROM analysis.industry_etf_contribution
-      WHERE industry_id = $1::text AND pool_size = 3 AND date = ld.max_date
-    ) iec ON true
-    ORDER BY elm.trading_amount DESC NULLS LAST
-  `;
+  // analysis.industry_etf_contribution for this industry. The SELECT lives
+  // in the sql view
+  // data_viz/api/services/analysis/industry-etf-contribution/contribution_bars.
+  // The date placeholder is a fragment because the original SQL numbered
+  // it as the LAST pg param while it appears FIRST in the text; the
+  // params array is bound here ([industry_id, target_date]).
+  const { sql } = renderSqlView(
+    "data_viz/api/services/analysis/industry-etf-contribution/contribution_bars",
+    { industry_id: industryId, target_date_param: sqlFrag("$2::date") },
+  );
   const rows = await queryRows<DbEtfBarRow>(sql, [industryId, rawDate ?? null]);
 
   const etfs: IndustryEtfContributionBarRow[] = rows.map((r) => ({

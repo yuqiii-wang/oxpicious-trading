@@ -5,6 +5,11 @@ https://www.szse.cn/market/trend/archive/index.html. Writes
 ``szse_etf_{YYYYMMDD}.xlsx/.csv`` under ``temps/sse_archive/``.
 
 DB-first mode: queries ``stats.etf_identity`` (exchange='SZ').
+
+Class motion (behavior-preserving, 2026-11-07): the orchestration function
+``download_szse_archive_etf`` is now the method of the same name on
+``SzseArchiveMarket`` (same signature and body); the endpoint/service
+constants and the tiny param/log-tag builders stay module-level.
 """
 from __future__ import annotations
 
@@ -72,33 +77,40 @@ def _archive_log_tag(security_type: str, ymd: str) -> str:
     return f"[{security_type} {ymd}]"
 
 
-def download_szse_archive_etf(
-    out_root: Optional[str] = None,
-    end_date: Optional[str] = None,
-    start_date: str = DEFAULT_START_DATE,
-    sleep_sec: Optional[float] = None,
-    session: Optional[requests.Session] = None,
-) -> dict:
-    # The daily market-archive path paces at 5s via the service file's
-    # "market" request_type row (the default row's 90s is the quarterly-
-    # reports sweep); sleep_sec still overrides the row's base when given.
-    return run_szse_download(
-        caller_file=str(Path(__file__).resolve()),
-        out_dirname="szse_archive",
-        banner_label="archive-etf",
-        security_cfgs=SECURITY_CFGS,
-        headers=ARCHIVE_HEADERS,
-        params_builder=_build_archive_params,
-        log_tag_fn=_archive_log_tag,
-        out_root=out_root,
-        end_date=end_date,
-        start_date=start_date,
-        security_types=["etf"],
-        sleep_sec=sleep_sec,
-        session=session,
-        service=SERVICE,
-        request_type="market",
-        exchange="SZ",
-        db_table_by_type=DB_TABLE_BY_TYPE,
-        db_exchange="SZ",
-    )
+class SzseArchiveMarket:
+    """The SZSE ETF archive market-data download — the former module-level
+    ``download_szse_archive_etf`` function, now the method of the same name
+    with the same signature and body. Stateless: out_root / date range /
+    pacing / session stay per-call arguments."""
+
+    def download_szse_archive_etf(
+        self,
+        out_root: Optional[str] = None,
+        end_date: Optional[str] = None,
+        start_date: str = DEFAULT_START_DATE,
+        sleep_sec: Optional[float] = None,
+        session: Optional[requests.Session] = None,
+    ) -> dict:
+        # The daily market-archive path paces at 5s via the service file's
+        # "market" request_type row (the default row's 90s is the quarterly-
+        # reports sweep); sleep_sec still overrides the row's base when given.
+        return run_szse_download(
+            caller_file=str(Path(__file__).resolve()),
+            out_dirname="szse_archive",
+            banner_label="archive-etf",
+            security_cfgs=SECURITY_CFGS,
+            headers=ARCHIVE_HEADERS,
+            params_builder=_build_archive_params,
+            log_tag_fn=_archive_log_tag,
+            out_root=out_root,
+            end_date=end_date,
+            start_date=start_date,
+            security_types=["etf"],
+            sleep_sec=sleep_sec,
+            session=session,
+            service=SERVICE,
+            request_type="market",
+            exchange="SZ",
+            db_table_by_type=DB_TABLE_BY_TYPE,
+            db_exchange="SZ",
+        )

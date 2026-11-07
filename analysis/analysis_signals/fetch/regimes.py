@@ -14,6 +14,7 @@ import pandas as pd
 from _common.build_commons import rec_cols
 from _common.df_utils import epoch_col_to_dt64
 from _common.labels import SEC_TYPE_CODE
+from _common.sql_views import render_sql_view
 
 _REGIME_COLUMNS = ["code", "date", "regime"]
 
@@ -34,19 +35,13 @@ async def fetch_market_regimes(
 
     Returns a DataFrame with columns ``_REGIME_COLUMNS`` (date as
     datetime64[us])."""
-    rows = await conn.fetch(
-        """
-        SELECT m.code,
-               extract(epoch from m.date)::float8 AS date,
-               m.regime::int AS regime
-        FROM stats.market_regimes m
-        WHERE m.sec_type = $1
-          AND m.date >= $2
-        ORDER BY m.code, m.date ASC
-        """,
-        SEC_TYPE_CODE[sec_type],
-        since,
+    # analysis/analysis_signals/fetch/regimes/market_regimes
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/regimes/market_regimes",
+        sec_type=SEC_TYPE_CODE[sec_type],
+        since=since,
     )
+    rows = await conn.fetch(view.sql, *view.params)
     if not rows:
         return pd.DataFrame(columns=_REGIME_COLUMNS)
     df = pd.DataFrame(rec_cols(rows), columns=_REGIME_COLUMNS)

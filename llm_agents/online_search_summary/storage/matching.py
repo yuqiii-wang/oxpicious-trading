@@ -1,6 +1,6 @@
 """llm_agents.online_search_summary.storage.matching — Ref typing vocabulary + match helpers.
 
-The text.llm_qa_refs vocabulary and the pure text/URL/time helpers shared
+The llm.llm_qa_refs vocabulary and the pure text/URL/time helpers shared
 by the resolution steps (storage.resolve) and the persistence layer
 (storage.store). Nothing here touches the network or the DB.
 
@@ -31,7 +31,7 @@ from llm_agents.online_search_summary.core.models import (
 REF_TYPE_EXACT = "exact"
 REF_TYPE_RELEVANT = "relevant"
 
-# Provenance stored in text.llm_qa_refs.resolved_via — where the resolved
+# Provenance stored in llm.llm_qa_refs.resolved_via — where the resolved
 # article came from (drives the feed's ref tags).
 VIA_SUMMARY = "summary"   # came with the provider's summary response
 VIA_CORPUS = "corpus"     # matched afterwards by title in the stored corpus

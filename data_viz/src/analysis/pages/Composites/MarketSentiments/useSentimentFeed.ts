@@ -43,7 +43,7 @@ export function useSentimentFeed(args: {
   const { scope, refreshKey, chartRange, chartSpan } = args;
 
   // ---- Feed source — fixed per page: "ai" (the LLM Q&A knowledge base,
-  //      text.llm_qa) or "news" (the raw news corpus, text.news). The
+  //      llm.llm_qa) or "news" (the raw news corpus, text.news). The
   //      feed, the date strip, and the keyword search all run over this
   //      corpus under the SAME scope + day pick.
   const feed: FeedSource = args.source;

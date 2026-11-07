@@ -15,6 +15,7 @@ from downloads._common import (
     EMPTY_HTML_MAX_BYTES,
     COMMON_BASE_HEADERS,
     DEFAULT_START_DATE,
+    DownloadJob,
     AntiBotProxy,
     antibot_config_for,
     service_urls,
@@ -33,6 +34,9 @@ from downloads._common import (
     convert_xlsx_to_csv,
 )
 
+from downloads.bond.shibor.data_definitions import (
+    MemberInfo,
+)
 
 SERVICE = "downloads.bond.shibor"
 
@@ -111,11 +115,6 @@ MAX_CHUNK_MONTHS = 12
 RE_DATE_RANGE_IN_NAME = re.compile(r"_(\d{8})_(\d{8})\.xlsx$")
 
 
-@dataclass
-class MemberInfo:
-    mem_code: str
-    instn_cn_nm: str
-    instn_en_nm: str
 
 
 logger = setup_logger("shibor_download")
@@ -148,6 +147,8 @@ def split_chunks(
         chunks.append((cur, chunk_end))
         cur = chunk_end + timedelta(days=1)
     return chunks
+
+
 
 
 def _fetch_member_info(session: requests.Session, proxy: Optional[AntiBotProxy] = None) -> Optional[MemberInfo]:
@@ -392,168 +393,183 @@ def _chunk_filename(data_type: str, start: date, end: date) -> str:
     return f"{prefix}_{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}.xlsx"
 
 
-def download_shibor(
-    *,
-    out_root: Optional[str] = None,
-    start_date: Optional[str] = DEFAULT_START_DATE,
-    end_date: Optional[str] = None,
-    lookback_years: int = 3,
-    data_types: Optional[List[str]] = None,
-    chunk_months: int = MAX_CHUNK_MONTHS,
-    sleep_sec: Optional[float] = None,
-    tendency_value: str = "",
-    db_table: str = "stats.debt_identity",
-) -> dict:
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "shibor", out_root)
+class ShiborDownload(DownloadJob):
+    """DownloadJob for the SHIBOR/LPR xlsx fetch cycle.
 
-    _start, _end = parse_date_window(
-        end_date=end_date,
-        start_date=start_date,
-        lookback_years=lookback_years,
-    )
+    The former module-level ``download_shibor`` orchestrator became a
+    method; the session/chunk/check/download helpers, ``MemberInfo`` and
+    constants above stay module-level. Scheduled runs use the defaults
+    (the old main had no CLI arguments)."""
 
-    if data_types is None:
-        data_types = [T_SHIBOR_HIS, T_SHIBOR_PRI, T_SHIBOR_MN, T_LPR_HIS]
-    for t in data_types:
-        if t not in DATA_TYPES:
-            raise ValueError(
-                f"Unknown data_type: {t}. Valid: {list(DATA_TYPES.keys())}"
-            )
+    component = "shibor_download"
 
-    if chunk_months <= 0 or chunk_months > MAX_CHUNK_MONTHS:
-        raise ValueError(
-            f"chunk_months must be within [1, {MAX_CHUNK_MONTHS}]. "
-            f"The SHIBOR engine enforces a ~1 year window per request."
+    def download_shibor(
+        self,
+        *,
+        out_root: Optional[str] = None,
+        start_date: Optional[str] = DEFAULT_START_DATE,
+        end_date: Optional[str] = None,
+        lookback_years: int = 3,
+        data_types: Optional[List[str]] = None,
+        chunk_months: int = MAX_CHUNK_MONTHS,
+        sleep_sec: Optional[float] = None,
+        tendency_value: str = "",
+        db_table: str = "stats.debt_identity",
+    ) -> dict:
+        """Former module-level orchestrator — moved verbatim into the job
+        class; ``run()`` calls it and logs the returned summary dict."""
+        out_dir = resolve_out_dir(str(Path(__file__).resolve()), "shibor", out_root)
+
+        _start, _end = parse_date_window(
+            end_date=end_date,
+            start_date=start_date,
+            lookback_years=lookback_years,
         )
 
-    session = build_session()
-    stats = RunStats()
+        if data_types is None:
+            data_types = [T_SHIBOR_HIS, T_SHIBOR_PRI, T_SHIBOR_MN, T_LPR_HIS]
+        for t in data_types:
+            if t not in DATA_TYPES:
+                raise ValueError(
+                    f"Unknown data_type: {t}. Valid: {list(DATA_TYPES.keys())}"
+                )
 
-    # Pacing from the service's external_request_config JSON row (sleep_sec,
-    # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
-    # argument overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = SLEEP_SEC
-    proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
-    ))
-
-    logger.info(
-        "Starting SHIBOR download: requested %s -> %s (lookback=%dy). "
-        "types=%s, chunk_months=%d, out=%s",
-        _start, _end, lookback_years, data_types, chunk_months, out_dir,
-    )
-
-    try:
-        members: Optional[MemberInfo] = None
-        if T_SHIBOR_PRI in data_types:
-            members = _fetch_member_info(session, proxy)
-            if members is None:
-                logger.warning("shibor_pri_his will be skipped (no member list)")
-                data_types = [t for t in data_types if t != T_SHIBOR_PRI]
-
-        for dt in data_types:
-            logger.info("== Processing data_type %s (%s) ==", dt, DATA_TYPES[dt]["label"])
-
-            if proxy.is_blocked(SHIBOR_BASE):
-                logger.warning("  [host-blocked] shibor.sh.cn is blocked, skipping %s", dt)
-                stats.failed += len(chunk_plan.items) if 'chunk_plan' in locals() else 1
-                continue
-
-            chunks = split_chunks(_start, _end, chunk_months)
-            chunks_by_type: Dict[str, List[Tuple[date, date]]] = {dt: chunks}
-            type_cfgs: Dict[str, Dict[str, str]] = {dt: {"prefix": DATA_TYPES[dt]["prefix"]}}
-
-            chunk_plan = build_chunk_download_plan(
-                out_dir=out_dir,
-                chunks_by_type=chunks_by_type,
-                type_configs=type_cfgs,
-                min_bytes=MIN_VALID_BYTES,
-                ext_glob="*.xlsx",
-                db_table=db_table,
-            )
-            stats.skipped_cached += chunk_plan.present_count
-            logger.info(
-                "  [%s] range %s~%s split into %d chunk(s) (max %d mo each). "
-                "cached=%d missing=%d",
-                dt, _start, _end, len(chunks), chunk_months,
-                chunk_plan.present_count, len(chunk_plan.items),
+        if chunk_months <= 0 or chunk_months > MAX_CHUNK_MONTHS:
+            raise ValueError(
+                f"chunk_months must be within [1, {MAX_CHUNK_MONTHS}]. "
+                f"The SHIBOR engine enforces a ~1 year window per request."
             )
 
-            citem: ChunkDownloadPlanItem
-            for citem in chunk_plan.items:
+        session = build_session()
+        stats = RunStats()
+
+        # Pacing from the service's external_request_config JSON row (sleep_sec,
+        # sleep_jitter, timeouts, anti-bot toggles); an explicit sleep_sec
+        # argument overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = SLEEP_SEC
+        proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE), base_sleep_sec=sleep_sec,
+        ))
+
+        logger.info(
+            "Starting SHIBOR download: requested %s -> %s (lookback=%dy). "
+            "types=%s, chunk_months=%d, out=%s",
+            _start, _end, lookback_years, data_types, chunk_months, out_dir,
+        )
+
+        try:
+            members: Optional[MemberInfo] = None
+            if T_SHIBOR_PRI in data_types:
+                members = _fetch_member_info(session, proxy)
+                if members is None:
+                    logger.warning("shibor_pri_his will be skipped (no member list)")
+                    data_types = [t for t in data_types if t != T_SHIBOR_PRI]
+
+            for dt in data_types:
+                logger.info("== Processing data_type %s (%s) ==", dt, DATA_TYPES[dt]["label"])
+
                 if proxy.is_blocked(SHIBOR_BASE):
-                    logger.warning("  [host-blocked] shibor.sh.cn blocked, skipping remaining chunks")
-                    stats.failed += len(chunk_plan.items) - chunk_plan.items.index(citem)
-                    break
-
-                cs, ce = citem.chunk_start, citem.chunk_end
-                fname = _chunk_filename(dt, cs, ce)
-                fpath = out_dir / fname
-                tag = f"[{dt} {_ymd(cs)}~{_ymd(ce)}]"
-
-                if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
-                    stats.skipped_cached += 1
-                    csv_file = fpath.with_suffix(".csv")
-                    if is_valid_file(csv_file, min_bytes=MIN_VALID_BYTES):
-                        logger.info("%s csv already converted, skipping", tag)
-                    else:
-                        convert_xlsx_to_csv(fpath, logger=logger, log_tag=tag)
-                    proxy.sleep(max(0.1, sleep_sec * 0.3))
+                    logger.warning("  [host-blocked] shibor.sh.cn is blocked, skipping %s", dt)
+                    stats.failed += len(chunk_plan.items) if 'chunk_plan' in locals() else 1
                     continue
 
-                # Skip chunks previously confirmed to have no data (empty marker)
-                if fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
-                    stats.empty += 1
-                    continue
+                chunks = split_chunks(_start, _end, chunk_months)
+                chunks_by_type: Dict[str, List[Tuple[date, date]]] = {dt: chunks}
+                type_cfgs: Dict[str, Dict[str, str]] = {dt: {"prefix": DATA_TYPES[dt]["prefix"]}}
 
-                ok, msg, confirmed_empty = _check_data(session, dt, cs, ce, members=members,
-                                      tendency_value=tendency_value,
-                                      proxy=proxy)
-                if not ok:
-                    if confirmed_empty:
-                        logger.info("  [empty] %s (%s), writing empty marker", tag, msg)
-                        fpath.parent.mkdir(parents=True, exist_ok=True)
-                        fpath.write_bytes(b"")
+                chunk_plan = build_chunk_download_plan(
+                    out_dir=out_dir,
+                    chunks_by_type=chunks_by_type,
+                    type_configs=type_cfgs,
+                    min_bytes=MIN_VALID_BYTES,
+                    ext_glob="*.xlsx",
+                    db_table=db_table,
+                )
+                stats.skipped_cached += chunk_plan.present_count
+                logger.info(
+                    "  [%s] range %s~%s split into %d chunk(s) (max %d mo each). "
+                    "cached=%d missing=%d",
+                    dt, _start, _end, len(chunks), chunk_months,
+                    chunk_plan.present_count, len(chunk_plan.items),
+                )
+
+                citem: ChunkDownloadPlanItem
+                for citem in chunk_plan.items:
+                    if proxy.is_blocked(SHIBOR_BASE):
+                        logger.warning("  [host-blocked] shibor.sh.cn blocked, skipping remaining chunks")
+                        stats.failed += len(chunk_plan.items) - chunk_plan.items.index(citem)
+                        break
+
+                    cs, ce = citem.chunk_start, citem.chunk_end
+                    fname = _chunk_filename(dt, cs, ce)
+                    fpath = out_dir / fname
+                    tag = f"[{dt} {_ymd(cs)}~{_ymd(ce)}]"
+
+                    if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                        stats.skipped_cached += 1
+                        csv_file = fpath.with_suffix(".csv")
+                        if is_valid_file(csv_file, min_bytes=MIN_VALID_BYTES):
+                            logger.info("%s csv already converted, skipping", tag)
+                        else:
+                            convert_xlsx_to_csv(fpath, logger=logger, log_tag=tag)
+                        proxy.sleep(max(0.1, sleep_sec * 0.3))
+                        continue
+
+                    # Skip chunks previously confirmed to have no data (empty marker)
+                    if fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
                         stats.empty += 1
+                        continue
+
+                    ok, msg, confirmed_empty = _check_data(session, dt, cs, ce, members=members,
+                                          tendency_value=tendency_value,
+                                          proxy=proxy)
+                    if not ok:
+                        if confirmed_empty:
+                            logger.info("  [empty] %s (%s), writing empty marker", tag, msg)
+                            fpath.parent.mkdir(parents=True, exist_ok=True)
+                            fpath.write_bytes(b"")
+                            stats.empty += 1
+                        else:
+                            logger.warning("  [check-fail] %s (%s)", tag, msg)
+                            stats.failed += 1
+                        proxy.sleep(max(0.2, sleep_sec * 0.5))
+                        continue
+
+                    saved = _download_excel(session, dt, cs, ce, fpath, members=members,
+                                            tendency_value=tendency_value,
+                                            proxy=proxy)
+                    if saved:
+                        stats.downloaded += 1
+                        stats.files.append(str(fpath))
+                        # Canonical CSV must exist next to every xlsx — builds
+                        # read CSV ONLY (a missing csv is a downloads bug).
+                        convert_xlsx_to_csv(fpath, logger=logger, log_tag=tag)
                     else:
-                        logger.warning("  [check-fail] %s (%s)", tag, msg)
                         stats.failed += 1
-                    proxy.sleep(max(0.2, sleep_sec * 0.5))
-                    continue
 
-                saved = _download_excel(session, dt, cs, ce, fpath, members=members,
-                                        tendency_value=tendency_value,
-                                        proxy=proxy)
-                if saved:
-                    stats.downloaded += 1
-                    stats.files.append(str(fpath))
-                    # Canonical CSV must exist next to every xlsx — builds
-                    # read CSV ONLY (a missing csv is a downloads bug).
-                    convert_xlsx_to_csv(fpath, logger=logger, log_tag=tag)
-                else:
-                    stats.failed += 1
+                    # Auto-sleep handled by proxy.get()/post()
 
-                # Auto-sleep handled by proxy.get()/post()
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user")
 
-    except KeyboardInterrupt:
-        logger.warning("Interrupted by user")
+        summary = stats.to_dict(
+            out_dir=str(out_dir),
+            start_date=str(_start),
+            end_date=str(_end),
+            data_types=data_types,
+            chunk_months=chunk_months,
+        )
+        logger.info(
+            "Done SHIBOR download. downloaded=%d skipped(cached)=%d failed=%d empty(check)=%d out=%s",
+            stats.downloaded, stats.skipped_cached, stats.failed, stats.empty, out_dir,
+        )
+        return summary
 
-    summary = stats.to_dict(
-        out_dir=str(out_dir),
-        start_date=str(_start),
-        end_date=str(_end),
-        data_types=data_types,
-        chunk_months=chunk_months,
-    )
-    logger.info(
-        "Done SHIBOR download. downloaded=%d skipped(cached)=%d failed=%d empty(check)=%d out=%s",
-        stats.downloaded, stats.skipped_cached, stats.failed, stats.empty, out_dir,
-    )
-    return summary
+    def run(self) -> None:
+        """One fetch cycle (the former __main__ body verbatim)."""
+        logger.info(self.download_shibor())
 
 
 if __name__ == "__main__":
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    logger.info(download_shibor())
+    ShiborDownload().execute()

@@ -82,6 +82,10 @@ Usage:
   python -m downloads.stock.sse.dividend --no-etf-filter  # all SSE equities
   python -m downloads.stock.sse.dividend --code 600008    # single stock
   python -m downloads.stock.sse.dividend --force          # overwrite existing files
+
+The entry point is the :class:`SseStockDividendDownload` DownloadJob — the
+former ``download_sse_dividends`` body is its method (verbatim) and pure
+helpers/constants stay module-level.
 """
 from __future__ import annotations
 
@@ -100,6 +104,7 @@ from downloads._common import (
     AntiBotProxy,
     antibot_config_for,
     build_headers_with_referer,
+    DownloadJob,
     is_valid_file,
     resolve_out_dir,
     service_urls,
@@ -417,225 +422,240 @@ def _read_existing_dividend_rows(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-def download_sse_dividends(
-    out_root: Optional[str] = None,
-    *,
-    sleep_sec: Optional[float] = None,
-    force: bool = False,
-    session: Optional[requests.Session] = None,
-    etf_filter: bool = True,
-    code_filter: Optional[str] = None,
-) -> dict:
-    """Download SSE per-stock dividend (利润分配/分红) data.
+class SseStockDividendDownload(DownloadJob):
+    """DownloadJob for the SSE per-stock dividend fetch cycle.
 
-    For each SSE stock (default: ETF-held only; ``--no-etf-filter`` for all),
-    fetches the full dividend history via the SSE ``commonQuery.do`` endpoint
-    (sqlId ``COMMON_SSE_CP_GPJCTPZ_GPLB_LRFP_FH_L``) and writes one CSV per
-    stock under ``temps/sse_archive/{code}_dividend_{YYYYMMDD}.csv``.
-
-    Anti-bot: ``AntiBotProxy`` with ``rotate_browser_profile``,
-    ``add_random_param``, ``enable_host_tracking``; pacing (sleep/jitter/
-    timeouts) resolves from the service's external_request_config JSON row
-    (request_type ``dividend`` — 90s base sleep).
-
-    Resumable: a stock is skipped if (a) a local CSV dated within the last
-    6 months exists, or (b) ``stats.stock_dividends`` already has rows for
-    the stock with ``last_updated`` within the last 6 months. ``--force``
-    overrides both checks.
+    The former module-level ``download_sse_dividends`` orchestrator became
+    a method; the pure fetch/parse/freshness helpers and constants above
+    stay module-level.
     """
-    archive_dir = resolve_out_dir(
-        str(Path(__file__).resolve()), DIVIDEND_DIRNAME, out_root
-    )
-    sess = session or requests.Session()
-    today_suffix = _today_str()
 
-    # Resolve the target stock list.
-    # ``--code`` overrides everything (single-stock mode).
-    # ``--no-etf-filter`` fetches all SSE equities from the list endpoint.
-    # Default: ETF-held SSE stocks via load_target_stocks (DB-backed).
-    db_conn = None
-    if code_filter:
-        bare = code_filter.split(".")[0]
-        stocks: List[Tuple[str, str]] = [(bare, "")]
-        logger.info("Single-stock mode: %s", code_filter)
-    elif etf_filter:
-        # load_target_stocks lives in the archive module's __main__ namespace
-        # — import lazily so the dividend module can be used without the
-        # archive module's full import side-effects.
-        from _common.db_commons import get_db_connection
-        from downloads.stock.sse.archive.__main__ import load_target_stocks
-        db_conn = get_db_connection()
-        try:
-            stocks = load_target_stocks(db_conn)
-        except Exception:
-            db_conn.close()
-            db_conn = None
-            raise
-    else:
-        # Reuse the list-endpoint fetcher from the archive module — it hits
-        # yunhq.sse.com.cn on the service's "list" external_request_config
-        # row (its own pacing/timeouts), so build a separate proxy for it.
-        list_proxy = AntiBotProxy(service=SERVICE, request_type="list")
-        from downloads.stock.sse.archive.__main__ import _fetch_all_stocks
-        stocks = _fetch_all_stocks(sess, list_proxy)
-    if not stocks:
-        logger.error("No stocks found")
+    description = ("Download SSE per-stock dividend (利润分配/分红) data. "
+                   "Anti-bot: AntiBotProxy with rotate_browser_profile, "
+                   "add_random_param, enable_host_tracking; pacing from the "
+                   "service's external_request_config JSON (dividend row, "
+                   "90s base sleep). "
+                   "Output: {code}_dividend_{YYYYMMDD}.csv under temps/sse_archive/. "
+                   "Skips stocks with a fresh local CSV or DB rows updated "
+                   "within the last 6 months.")
+    component = "sse_dividend_download"
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--no-etf-filter", action="store_true",
+            help="Disable the ETF filter and fetch ALL SSE equities from the "
+                 "SSE list endpoint instead.",
+        )
+        parser.add_argument(
+            "--code", type=str, default=None,
+            help="Single-stock mode: download dividend data for one stock "
+                 "(bare 6-digit code or suffixed). Overrides --no-etf-filter.",
+        )
+        parser.add_argument(
+            "--force", action="store_true",
+            help="Force download: ignore freshness checks (local CSV + DB "
+                 "last_updated) and re-download all stocks.",
+        )
+
+    # ---------------------------------------------------------------------------
+    # Main entry point
+    # ---------------------------------------------------------------------------
+    def download_sse_dividends(
+        self,
+        out_root: Optional[str] = None,
+        *,
+        sleep_sec: Optional[float] = None,
+        force: bool = False,
+        session: Optional[requests.Session] = None,
+        etf_filter: bool = True,
+        code_filter: Optional[str] = None,
+    ) -> dict:
+        """Download SSE per-stock dividend (利润分配/分红) data.
+
+        For each SSE stock (default: ETF-held only; ``--no-etf-filter`` for all),
+        fetches the full dividend history via the SSE ``commonQuery.do`` endpoint
+        (sqlId ``COMMON_SSE_CP_GPJCTPZ_GPLB_LRFP_FH_L``) and writes one CSV per
+        stock under ``temps/sse_archive/{code}_dividend_{YYYYMMDD}.csv``.
+
+        Anti-bot: ``AntiBotProxy`` with ``rotate_browser_profile``,
+        ``add_random_param``, ``enable_host_tracking``; pacing (sleep/jitter/
+        timeouts) resolves from the service's external_request_config JSON row
+        (request_type ``dividend`` — 90s base sleep).
+
+        Resumable: a stock is skipped if (a) a local CSV dated within the last
+        6 months exists, or (b) ``stats.stock_dividends`` already has rows for
+        the stock with ``last_updated`` within the last 6 months. ``--force``
+        overrides both checks.
+
+        Former module-level orchestrator — moved verbatim into the job class;
+        ``run()`` calls it and logs the returned summary dict.
+        """
+        archive_dir = resolve_out_dir(
+            str(Path(__file__).resolve()), DIVIDEND_DIRNAME, out_root
+        )
+        sess = session or requests.Session()
+        today_suffix = _today_str()
+
+        # Resolve the target stock list.
+        # ``--code`` overrides everything (single-stock mode).
+        # ``--no-etf-filter`` fetches all SSE equities from the list endpoint.
+        # Default: ETF-held SSE stocks via load_target_stocks (DB-backed).
+        db_conn = None
+        if code_filter:
+            bare = code_filter.split(".")[0]
+            stocks: List[Tuple[str, str]] = [(bare, "")]
+            logger.info("Single-stock mode: %s", code_filter)
+        elif etf_filter:
+            # load_target_stocks lives in the archive module's __main__ namespace
+            # — import lazily so the dividend module can be used without the
+            # archive module's full import side-effects.
+            from _common.db_commons import get_db_connection
+            from downloads.stock.sse.archive.__main__ import load_target_stocks
+            db_conn = get_db_connection()
+            try:
+                stocks = load_target_stocks(db_conn)
+            except Exception:
+                db_conn.close()
+                db_conn = None
+                raise
+        else:
+            # Reuse the list-endpoint fetcher from the archive module — it hits
+            # yunhq.sse.com.cn on the service's "list" external_request_config
+            # row (its own pacing/timeouts), so build a separate proxy for it.
+            list_proxy = AntiBotProxy(service=SERVICE, request_type="list")
+            from downloads.stock.sse.archive.__main__ import _fetch_all_stocks
+            stocks = _fetch_all_stocks(sess, list_proxy)
+        if not stocks:
+            logger.error("No stocks found")
+            if db_conn:
+                db_conn.close()
+            return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
+
+        # Freshness check — skip stocks that are already up-to-date.
+        # Checks BOTH: (a) local CSV dated within the last 6 months, (b) DB rows
+        # with last_updated within the last 6 months. Skips the stock if either
+        # is fresh (unless --force).
+        if not force:
+            fresh_local = 0
+            fresh_db = 0
+            filtered: List[Tuple[str, str]] = []
+            for code, name in stocks:
+                if _is_fresh_local(archive_dir, code):
+                    fresh_local += 1
+                    continue
+                if db_conn and _is_fresh_db(db_conn, f"{code}.SS"):
+                    fresh_db += 1
+                    continue
+                filtered.append((code, name))
+            stocks = filtered
+            logger.info(
+                "Freshness check (%d-month window): %d stocks skipped (local CSV fresh), "
+                "%d skipped (DB fresh), %d to process.",
+                FRESHNESS_WINDOW_MONTHS, fresh_local, fresh_db, len(stocks),
+            )
         if db_conn:
             db_conn.close()
-        return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
-
-    # Freshness check — skip stocks that are already up-to-date.
-    # Checks BOTH: (a) local CSV dated within the last 6 months, (b) DB rows
-    # with last_updated within the last 6 months. Skips the stock if either
-    # is fresh (unless --force).
-    if not force:
-        fresh_local = 0
-        fresh_db = 0
-        filtered: List[Tuple[str, str]] = []
-        for code, name in stocks:
-            if _is_fresh_local(archive_dir, code):
-                fresh_local += 1
-                continue
-            if db_conn and _is_fresh_db(db_conn, f"{code}.SS"):
-                fresh_db += 1
-                continue
-            filtered.append((code, name))
-        stocks = filtered
-        logger.info(
-            "Freshness check (%d-month window): %d stocks skipped (local CSV fresh), "
-            "%d skipped (DB fresh), %d to process.",
-            FRESHNESS_WINDOW_MONTHS, fresh_local, fresh_db, len(stocks),
-        )
-    if db_conn:
-        db_conn.close()
-
-    logger.info(
-        "Starting SSE dividend download: %d stocks. "
-        "Per-stock: fetch dividend history -> write {code}_dividend_%s.csv",
-        len(stocks), today_suffix,
-    )
-
-    # Dividend endpoint (query.sse.com.cn) — quarterly cadence so it runs on
-    # the service's aggressive "dividend" external_request_config row (90s
-    # base sleep). AntiBotProxy handles fingerprint rotation, random param,
-    # sleep jitter, and host blocking detection; an explicit *sleep_sec*
-    # argument overrides the row's base sleep only.
-    if sleep_sec is None:
-        sleep_sec = sleep_sec_for(SERVICE, "dividend")
-    dividend_proxy = AntiBotProxy(replace(
-        antibot_config_for(SERVICE, "dividend"), base_sleep_sec=sleep_sec,
-    ))
-
-    stocks_done = 0
-    stocks_failed = 0
-    rows_fetched = 0
-    rows_empty = 0
-
-    for idx, (code, name) in enumerate(stocks):
-        if dividend_proxy.is_blocked(SSE_DIVIDEND_URL):
-            logger.warning(
-                "  [host-blocked] query.sse.com.cn blocked, stopping"
-            )
-            stocks_failed += len(stocks) - idx
-            break
-
-        if (idx + 1) % 25 == 0 or idx == 0:
-            logger.info(
-                "Stock %d/%d: %s %s", idx + 1, len(stocks), code, name,
-            )
-
-        out_file = archive_dir / f"{code}_dividend_{today_suffix}.csv"
-
-        # Fetch all dividend rows (iterates board variants internally).
-        raw_rows, board_label = _fetch_all_dividend_rows(
-            sess, code, dividend_proxy
-        )
-
-        if not raw_rows:
-            logger.info(
-                "  -> %s dividend: no data (tried A_MAIN/A_STAR/B_MAIN)",
-                code,
-            )
-            rows_empty += 1
-            # Write an empty marker file so the freshness check skips it
-            # next time. This avoids re-fetching stocks with no dividend history.
-            if not out_file.exists():
-                _write_dividend_csv(out_file, [])
-            continue
-
-        # Parse rows to the CSV schema.
-        parsed_rows = [
-            _parse_dividend_row(r, code) for r in raw_rows
-        ]
-        # Dedupe by 除息交易日 — the API occasionally returns duplicate
-        # rows when a stock has both A and B boards; keep the first.
-        seen_dates: set = set()
-        deduped_rows: List[Dict[str, Any]] = []
-        for r in parsed_rows:
-            key = (r.get("除息交易日"), r.get("股权登记日"))
-            if key in seen_dates:
-                continue
-            seen_dates.add(key)
-            deduped_rows.append(r)
-
-        _write_dividend_csv(out_file, deduped_rows)
-        rows_fetched += len(deduped_rows)
-        stocks_done += 1
 
         logger.info(
-            "  -> %s dividend [%s]: %d rows -> %s",
-            code, board_label, len(deduped_rows), out_file.name,
+            "Starting SSE dividend download: %d stocks. "
+            "Per-stock: fetch dividend history -> write {code}_dividend_%s.csv",
+            len(stocks), today_suffix,
         )
 
-    logger.info(
-        "Done SSE dividend download. stocks_done=%d stocks_failed=%d "
-        "rows_fetched=%d stocks_empty=%d archive_dir=%s",
-        stocks_done, stocks_failed, rows_fetched, rows_empty, archive_dir,
-    )
-    return {
-        "downloaded": stocks_done,
-        "failed": stocks_failed,
-        "rows_fetched": rows_fetched,
-        "stocks_empty": rows_empty,
-        "archive_dir": str(archive_dir),
-        "total_stocks": len(stocks),
-    }
+        # Dividend endpoint (query.sse.com.cn) — quarterly cadence so it runs on
+        # the service's aggressive "dividend" external_request_config row (90s
+        # base sleep). AntiBotProxy handles fingerprint rotation, random param,
+        # sleep jitter, and host blocking detection; an explicit *sleep_sec*
+        # argument overrides the row's base sleep only.
+        if sleep_sec is None:
+            sleep_sec = sleep_sec_for(SERVICE, "dividend")
+        dividend_proxy = AntiBotProxy(replace(
+            antibot_config_for(SERVICE, "dividend"), base_sleep_sec=sleep_sec,
+        ))
+
+        stocks_done = 0
+        stocks_failed = 0
+        rows_fetched = 0
+        rows_empty = 0
+
+        for idx, (code, name) in enumerate(stocks):
+            if dividend_proxy.is_blocked(SSE_DIVIDEND_URL):
+                logger.warning(
+                    "  [host-blocked] query.sse.com.cn blocked, stopping"
+                )
+                stocks_failed += len(stocks) - idx
+                break
+
+            if (idx + 1) % 25 == 0 or idx == 0:
+                logger.info(
+                    "Stock %d/%d: %s %s", idx + 1, len(stocks), code, name,
+                )
+
+            out_file = archive_dir / f"{code}_dividend_{today_suffix}.csv"
+
+            # Fetch all dividend rows (iterates board variants internally).
+            raw_rows, board_label = _fetch_all_dividend_rows(
+                sess, code, dividend_proxy
+            )
+
+            if not raw_rows:
+                logger.info(
+                    "  -> %s dividend: no data (tried A_MAIN/A_STAR/B_MAIN)",
+                    code,
+                )
+                rows_empty += 1
+                # Write an empty marker file so the freshness check skips it
+                # next time. This avoids re-fetching stocks with no dividend history.
+                if not out_file.exists():
+                    _write_dividend_csv(out_file, [])
+                continue
+
+            # Parse rows to the CSV schema.
+            parsed_rows = [
+                _parse_dividend_row(r, code) for r in raw_rows
+            ]
+            # Dedupe by 除息交易日 — the API occasionally returns duplicate
+            # rows when a stock has both A and B boards; keep the first.
+            seen_dates: set = set()
+            deduped_rows: List[Dict[str, Any]] = []
+            for r in parsed_rows:
+                key = (r.get("除息交易日"), r.get("股权登记日"))
+                if key in seen_dates:
+                    continue
+                seen_dates.add(key)
+                deduped_rows.append(r)
+
+            _write_dividend_csv(out_file, deduped_rows)
+            rows_fetched += len(deduped_rows)
+            stocks_done += 1
+
+            logger.info(
+                "  -> %s dividend [%s]: %d rows -> %s",
+                code, board_label, len(deduped_rows), out_file.name,
+            )
+
+        logger.info(
+            "Done SSE dividend download. stocks_done=%d stocks_failed=%d "
+            "rows_fetched=%d stocks_empty=%d archive_dir=%s",
+            stocks_done, stocks_failed, rows_fetched, rows_empty, archive_dir,
+        )
+        return {
+            "downloaded": stocks_done,
+            "failed": stocks_failed,
+            "rows_fetched": rows_fetched,
+            "stocks_empty": rows_empty,
+            "archive_dir": str(archive_dir),
+            "total_stocks": len(stocks),
+        }
+
+    def run(self) -> None:
+        """One fetch cycle (the former __main__ body verbatim)."""
+        logger.info(self.download_sse_dividends(
+            force=self.args.force,
+            etf_filter=not self.args.no_etf_filter,
+            code_filter=self.args.code,
+        ))
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Download SSE per-stock dividend (利润分配/分红) data. "
-                    "Anti-bot: AntiBotProxy with rotate_browser_profile, "
-                    "add_random_param, enable_host_tracking; pacing from the "
-                    "service's external_request_config JSON (dividend row, "
-                    "90s base sleep). "
-                    "Output: {code}_dividend_{YYYYMMDD}.csv under temps/sse_archive/. "
-                    "Skips stocks with a fresh local CSV or DB rows updated "
-                    "within the last 6 months."
-    )
-    ap.add_argument(
-        "--no-etf-filter", action="store_true",
-        help="Disable the ETF filter and fetch ALL SSE equities from the "
-             "SSE list endpoint instead.",
-    )
-    ap.add_argument(
-        "--code", type=str, default=None,
-        help="Single-stock mode: download dividend data for one stock "
-             "(bare 6-digit code or suffixed). Overrides --no-etf-filter.",
-    )
-    ap.add_argument(
-        "--force", action="store_true",
-        help="Force download: ignore freshness checks (local CSV + DB "
-             "last_updated) and re-download all stocks.",
-    )
-    args = ap.parse_args()
-    from _common.service_heartbeat import autoregister  # lazy: keeps pandas behind the cudf hook
-    autoregister()  # heartbeat + run audit (monitor.*)
-    logger.info(download_sse_dividends(
-        force=args.force,
-        etf_filter=not args.no_etf_filter,
-        code_filter=args.code,
-    ))
+    SseStockDividendDownload().execute()

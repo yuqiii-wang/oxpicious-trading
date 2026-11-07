@@ -60,6 +60,10 @@ class ZhipuSearchProvider(BaseOnlineSearchProvider):
     name = "zhipu"
     API_KEY_ENV_VARS = ("GLM_ONLINE_SEARCH_KEY", "ZHIPU_API_KEY",
                         "BIGMODEL_API_KEY")
+    # The DB secret registry's credential family for THIS provider
+    # (static.secret_config.secret_type — provider decodes via
+    # ext_http_source for web_search rows).
+    SECRET_TYPE = "web_search"
     ENGINES = {
         "search_std": "self-developed basic engine",
         "search_pro": "multi-engine, lowest empty-result rate",

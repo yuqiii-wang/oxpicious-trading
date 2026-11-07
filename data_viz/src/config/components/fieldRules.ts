@@ -2,7 +2,7 @@
  * fieldRules — the expected-text rules for the config editors' dialog
  * fields (Service Config + External Request Config). Each rule pairs the
  * human-readable text format the underlying JSON expects (studied from
- * the tree's actual files, the PUT validators in api/routes/config.ts,
+ * the tree's actual files, the PUT validators in api/routes/config/,
  * and the Python consumer downloads/_common/net.py AntiBotConfig) with
  * a validator for the typed text.
  *
@@ -168,6 +168,25 @@ export function urlsToLines(
 export function numOrNull(text: string): number | null {
   const t = text.trim();
   return t === "" ? null : Number(t);
+}
+
+/** http(s) URL or blank (= null) — an endpoint like the chat-completions
+ *  URL on an llm_config row. */
+export const HTTP_URL_OR_NULL: FieldRule = {
+  hint: "http(s) URL · blank = null",
+  error: (t) => {
+    if (isBlank(t)) return null;
+    return /^https?:\/\//i.test(t.trim())
+      ? null
+      : "must be an http(s) URL or blank (= null)";
+  },
+};
+
+/** Validated URL text → the value (blank → null). Call only after the
+ *  field's rule accepted the text. */
+export function urlOrNull(text: string): string | null {
+  const t = text.trim();
+  return t === "" ? null : t;
 }
 
 /** Save-time scan: the first rule violation across labeled fields as one
