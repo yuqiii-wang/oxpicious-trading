@@ -17,7 +17,7 @@ class ThreadRunResult:
     threads sharing ``super_thread_id`` — the root thread's id).
 
     ``n_tool_calls`` is the RUN-LEVEL count (accumulated across both
-    execution graphs' hops and their forks — the per-conversation
+    execution graphs' hops and their spawns — the per-conversation
     transcripts ride the run context side channel and are empty on
     reconstruction); ``result.subagent_runs`` is likewise empty on
     reconstruction. ``plan`` is the settled CHAIN row list re-read

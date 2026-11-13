@@ -30,7 +30,7 @@ from llm_agents.deep_agents.core.loop import (
 from llm_agents.deep_agents.core.mcp import McpToolClient
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 from llm_agents.deep_agents.core.sandbox import Sandbox
-from llm_agents.deep_agents.langgraph.hooks import ForkBroker, ForkHooks
+from llm_agents.deep_agents.langgraph.hooks import SpawnBroker, SpawnHooks
 from llm_agents.deep_agents.langgraph.compaction import compact_findings, should_compact
 from llm_agents.deep_agents.langgraph.prompts import (
     CUSTOM_OUTPUT_DIRECTIVE, RESULT_OUTPUT_DIRECTIVE, STEP_SYSTEM_ADDENDUM,
@@ -57,14 +57,14 @@ from llm_agents.deep_agents.planning.prompt_loading import (
     CatalogRow, PromptLadder,
 )
 from llm_agents.deep_agents.planning.session import (
-    ForkPassDown, PlanSessionResult,
+    SpawnPassDown, PlanSessionResult,
     item_labels,
 )
 from llm_agents.deep_agents.planning.store import (
     AGENT_PROMPT_COMPACT_SYSTEM,
     AGENT_PROMPT_CUSTOM_OUTPUT_DIRECTIVE,
-    AGENT_PROMPT_FORK_PLAN_ADDENDUM,
-    AGENT_PROMPT_FORK_SPAWN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_PLAN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_DELEGATE_ADDENDUM,
     AGENT_PROMPT_PLAN_BATCH_FOLLOWUP,
     AGENT_PROMPT_PLAN_REPAIR_MESSAGE,
     AGENT_PROMPT_PLAN_SYSTEM,
@@ -120,12 +120,14 @@ def build_execution_graph(
     sandbox_cell: Optional[List[Any]] = None,
     output: GraphOutputSpec = CUSTOM_OUTPUT_SPEC,
     degraded_lane: bool = True,
+    decision_engine: Optional[Any] = None,
 ):
     """Compile ONE EXECUTION GRAPH — :class:`ExecutionGraphBuilder`'s
     :meth:`build` (the former closure factory, 2026-11-06)."""
     return ExecutionGraphBuilder(
         provider, mcp, run_ctx, checkpointer=checkpointer, store=store,
         repair=repair, sandbox_cell=sandbox_cell, output=output,
-        degraded_lane=degraded_lane).build()
+        degraded_lane=degraded_lane,
+        decision_engine=decision_engine).build()
 
 

@@ -2,7 +2,9 @@
  * RunControls — the action bar for the singleton strategy page.
  *
  * Renders:
- *  - AlgoWeightMenu (per-algo weight sliders + FT toggle)
+ *  - SignalTagsInput (the analysis signal-family TAG selector — no
+ *    weights; options loaded from the analysis signals tier)
+ *  - FtControl (the adverse-OHLC stress-test toggle)
  *  - Run Strategy button (with spinner during execution)
  *  - Train Model SPLIT button (main = nested trainer; side down-triangle
  *    opens Model Configs (DB) / Training Logs — see TrainSplitButton)
@@ -15,7 +17,7 @@ import {
   CircularProgress,
 } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
-import { AlgoWeightMenu } from "../_common";
+import { FtControl, SignalTagsInput } from "../_common";
 import { serializeSelection, selectionToStrategyName, type StrategySelection } from "@/lib/api-client";
 import type { MaSpreadSecType } from "@shared/types";
 import { TrainSplitButton } from "./TrainSplitButton";
@@ -65,12 +67,16 @@ export function RunControls(props: RunControlsProps) {
 
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-      <AlgoWeightMenu
+      <SignalTagsInput
+        secType={secType}
         selection={selection}
         onChange={onSelectionChange}
         disabled={busy}
+      />
+      <FtControl
         faultTolerance={faultTolerance}
         onFaultToleranceChange={onFaultToleranceChange}
+        disabled={busy}
       />
       <Button
         variant="contained"
@@ -116,7 +122,7 @@ export function RunControls(props: RunControlsProps) {
       {training && (
         <Alert severity="info" sx={{ py: 0, flex: 1 }}>
           Training <code>python -m strategy.factors_and_algos._optm_engine --algo{" "}
-          {serializeSelection(selection).split(",")[0].split(":")[0]} --sec-type {secType} --codes{" "}
+          {[...selection][0]} --sec-type {secType} --codes{" "}
           {searchCode} --trials 50</code>… Optuna study in progress — best params will be
           upserted to algo_configs.
         </Alert>

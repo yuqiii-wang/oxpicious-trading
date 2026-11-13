@@ -57,6 +57,8 @@ async def run_thread(
     enable_sandbox: bool = True,
     thread_id: Optional[str] = None,
     plan_template_id: Optional[int] = None,
+    sandbox: Optional[Any] = None,
+    decision_engine: Optional[Any] = None,
 ) -> ThreadRunResult:
     """One SUPER RUN — three chained LangGraphs (plan → custom →
     result), three threads, one ``super_thread_id`` (see the module
@@ -67,12 +69,22 @@ async def run_thread(
     (a type-plan row of llm.deep_agent_langgraph_templates — the
     materialized steps skip the planning session, fail-soft to the
     LLM proposal); ``enable_sandbox`` mints the run's ONE code-sandbox
-    scratch directory shared by every graph."""
+    scratch directory shared by every graph; ``sandbox`` INJECTS a
+    duck-typed sandbox client (the test/probe seam) into that cell —
+    every lane then walks the seam instead of the docker Sandbox(),
+    which is how the offline whole-process probe plays the scenario
+    ladder without docker; ``decision_engine`` INJECTS a duck-typed
+    System One decision engine (the same test/probe seam shape) —
+    every lane's jev gates (the supervisor's repair verdict, the
+    loop's repair-spawn breaker) ask IT instead of
+    ``JevDecisionEngine.active()``, which is how the offline jev probe
+    walks the System One lanes without the resident host."""
     return await SuperGraphRunner(
         provider, mcp,
         goal=goal, data=data, model=model, max_steps=max_steps,
         system=system, temperature=temperature,
         enable_sandbox=enable_sandbox, thread_id=thread_id,
-        plan_template_id=plan_template_id,
+        plan_template_id=plan_template_id, sandbox=sandbox,
+        decision_engine=decision_engine,
     ).run()
 

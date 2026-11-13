@@ -111,8 +111,15 @@ class StepAgent(NodeAgent):
             # matches the not-yet-loaded catalog (runner closure).
             step_node_prompts = await deps.get_node_prompts(
                 f"{step_row.node} {step_row.title}")
+            # THE MATERIALIZED-DATA HINTS: the directive KG-searched
+            # for already-stored analysis tables (read-only runner
+            # closure) — the load-before-compute block in the message.
+            step_data_hints = {}
+            if deps.get_data_hints is not None:
+                step_data_hints = await deps.get_data_hints(
+                    f"{step_row.node} {step_row.title}")
             message = deps.build_message(
-                step_row, step_node_prompts,
+                step_row, step_node_prompts, step_data_hints,
                 self._resume_block(resume))
             with self.chain(writer):
                 result = await agent.run(message)

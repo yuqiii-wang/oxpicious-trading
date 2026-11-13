@@ -22,7 +22,7 @@ class MainPlanToolKit(ToolKit):
     """The MAIN-lane kit of the step graph: ``update_plan`` (a step's
     lifecycle is RUNNER-side bookkeeping — the node ticks its own state
     row; the model's plan tool is the rework of the not-yet-run part:
-    adds, revise, removes, fork termination) + ``search_thread_context``
+    adds, revise, removes, spawn termination) + ``search_thread_context``
     (the thread-internal LLM-traffic search — every level's kit carries
     it, thread-scoped by construction).
 
@@ -54,21 +54,21 @@ class MainPlanToolKit(ToolKit):
         ]
 
 
-class ForkPlanToolKit(ToolKit):
+class SpawnPlanToolKit(ToolKit):
     """One spawned child's plan kit: the SUB authority bound to its
-    fork state plus the tick/update tools, the thread-internal search
+    spawn state plus the tick/update tools, the thread-internal search
     (any-depth children search the WHOLE thread's traffic — the main
     lane's and their siblings' included), and the system-prompt
     addendum that teaches them. The delegation hooks stamp these on
     ``SubagentRequest.builtin_tools`` / ``.system``, so a child without
     a plan (degraded run) simply gets none."""
 
-    def __init__(self, thread_id: str, fork_state_id: int,
+    def __init__(self, thread_id: str, spawn_state_id: int,
                  llm_context_id: Optional[str], *,
                  descriptions: Optional[Dict[str, str]] = None) -> None:
         super().__init__(descriptions)
         self._authority = PlanAuthority(
-            thread_id=thread_id, fork_state_id=fork_state_id,
+            thread_id=thread_id, spawn_state_id=spawn_state_id,
             llm_context_id=llm_context_id)
 
     def tools(self) -> List[Tool]:

@@ -49,9 +49,9 @@ assert (
 # log_level convention; see compute.py for the derivation).
 VOL_SPAN = 20              # EWMA span (trading rows) of ret_1d^2
 VOL_MIN_PERIODS = 10
-VOL_Z_WINDOW = 255         # trailing rows for the vol_z moments
+VOL_Z_WINDOW = 252         # trailing rows for the vol_z moments
 VOL_Z_MIN_PERIODS = 60
-AMT_Z_WINDOW = 255         # trailing rows for the amt_z moments
+AMT_Z_WINDOW = 252         # trailing rows for the amt_z moments
 AMT_Z_MIN_PERIODS = 60
 
 # Regime bars: vol_z > VOL_BAR separates elevated volatility (hot /
@@ -92,8 +92,8 @@ MARKET_REGIMES_DESCRIPTION = (
     "amt_bar: volume expansion without price movement) or calm "
     "(everything else). vol_z = z of the code's EWMA realized "
     "return-volatility (sqrt(EWMA(ret_1d^2, span=20))) vs its own "
-    "trailing 255-row moments, amt_z = z of log(trading_amount) vs its "
-    "own trailing 255-row moments — BOTH legs shifted 1 row (no "
+    "trailing 252-row moments, amt_z = z of log(trading_amount) vs its "
+    "own trailing 252-row moments — BOTH legs shifted 1 row (no "
     "look-ahead; the px_vol log_level convention — unlike the retired "
     "stats.mov_ave_market_hypes centered ±10y look-ahead percentile "
     "base). Days without state yet (first 60 rows) carry regime='calm' "

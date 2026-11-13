@@ -1,0 +1,26 @@
+{
+  "downloader": {
+    "port": 8769
+  },
+  "builder": {
+    "port": 8770
+  },
+  "analyzer": {
+    "port": 8771
+  },
+  "strategist": {
+    "port": 8772
+  },
+  "llm": {
+    "port": 8767
+  },
+  "monitor": {
+    "port": 8773
+  },
+  "config": {
+    "port": 8774
+  },
+  "maintainer": {
+    "port": 8775
+  }
+}

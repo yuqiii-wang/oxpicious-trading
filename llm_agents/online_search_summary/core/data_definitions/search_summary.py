@@ -8,6 +8,9 @@ import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from llm_agents.online_search_summary.core.citations import extract_cited_refs
+from llm_agents.online_search_summary.core.data_definitions.search_hit import (
+    SearchHit,
+)
 
 
 @dataclass
@@ -23,6 +26,11 @@ class SearchSummary:
     request_id: Optional[str] = None
     created: Optional[datetime.datetime] = None
     usage: Optional[Dict[str, Any]] = None
+    # Tags the compose seam's WHOLE-TEXT DATE SCAN flagged (their entire
+    # text only mentions years older than the run's anchor year — the
+    # stale-source double-check block named them in the prompt). None
+    # when nothing was flagged (or the flow never scanned).
+    stale_text_refs: Optional[List[str]] = None
 
     @property
     def cited_refs(self) -> List[str]:
@@ -42,6 +50,7 @@ class SearchSummary:
             "usage": self.usage,
             "cited_refs": self.cited_refs,
             "references": [h.to_dict() for h in self.hits],
+            "stale_text_refs": self.stale_text_refs,
         }
 
     @classmethod

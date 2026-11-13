@@ -5,11 +5,12 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { HttpError, intParam, strParam, wrapAsync } from "../../lib/http.js";
 import {
   queryRows,
-} from "../../services/db.service.js";
+} from "../../services/infra/db.service.js";
 import { querySqlView, renderSqlView, sqlFrag } from "@api/lib/sql-views";
-import { decodeLabel, encodeLabelParam, LABEL_CODE } from "../../services/label-codes.js";
+import { decodeLabel, encodeLabelParam, LABEL_CODE } from "../../services/infra/label-codes.js";
 
 const router = Router();
 
@@ -104,12 +105,12 @@ export interface SrcDataAuditResponse {
   rows: SrcDataAuditEntry[];
 }
 
-router.get("/src-data-audit", async (req: Request, res: Response) => {
-  const secTypeRaw = typeof req.query.sec_type === "string" ? req.query.sec_type.trim() : "";
-  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+router.get("/src-data-audit", wrapAsync(async (req: Request, res: Response) => {
+  const secTypeRaw = strParam(req, "sec_type") ?? "";
+  const q = strParam(req, "q") ?? "";
   // Cap sits above the full universe (~20k rows) so the UI can fetch one
   // sec_type COMPLETE — a "check" table that silently truncates is useless.
-  const limit = Math.min(Math.max(Number(req.query.limit) || 20000, 1), 20000);
+  const limit = intParam(req, "limit", { default: 20000, clamp: [1, 20000] });
   // "all" (or omitted) → no sec_type filter; anything else must decode to
   // a 'sec_type' label code — a bad value is a 400, not a silent "all".
   const secTypeCode =
@@ -117,88 +118,83 @@ router.get("/src-data-audit", async (req: Request, res: Response) => {
       ? null
       : encodeLabelParam("sec_type", secTypeRaw);
   if (secTypeRaw !== "all" && secTypeRaw !== "" && secTypeCode === null) {
-    res.status(400).json({
-      success: false,
-      error: "query param 'sec_type' must be index | etf | stock | all",
-    });
-    return;
-  }
-  try {
-    // queryRows routes through the replica-lag probe + primary failover —
-    // a rebuilding / replaying replica must 500 this page.
-    const countsRows = await querySqlView<{ sec_type: number; n: string }>(
-      "data_viz/api/routes/monitor/src_audit_counts",
+    throw new HttpError(
+      400,
+      "INVALID_PARAM",
+      "query param 'sec_type' must be index | etf | stock | all",
     );
-    const counts: Record<string, number> = {};
-    for (const r of countsRows) {
-      const label = decodeLabel("sec_type", r.sec_type);
-      if (label != null) counts[label] = Number(r.n);
-    }
-    // Live last_date CTEs for the served types only ($5.. guard each join
-    // to its own sec_type — bare 6-digit codes exist in BOTH the index and
-    // ETF identity tables, so an unguarded join could cross-match).
-    const servedTypes: AuditType[] =
-      secTypeRaw === "all" || secTypeRaw === ""
-        ? [...AUDIT_TYPES]
-        : [secTypeRaw as AuditType];
-    // Live last_date CTEs for the served types only ($5.. guard each join
-    // to its own sec_type — bare 6-digit codes exist in BOTH the index and
-    // ETF identity tables, so an unguarded join could cross-match). The
-    // per-type CTEs / joins / COALESCE list ride fragments of the sql view
-    // data_viz/api/routes/monitor/src_audit_rows — their positional params
-    // ($5..) are variable-arity, so the params stay caller-assembled
-    // ($1..$4 are the route's own filter/limit params, bound by the fixed
-    // template body).
-    const liveCtes = servedTypes
-      .map((t) => AUDIT_LIVE_LAST_DATE[t].cte)
-      .join(", ");
-    const liveJoins = servedTypes
-      .map((t, i) => {
-        const live = AUDIT_LIVE_LAST_DATE[t];
-        return `LEFT JOIN ${live.cteName}
-                 ON ${live.cteName}.code = a.code
-                AND ${live.cteName}.last_date IS NOT NULL
-                AND a.sec_type = $${5 + i}`;
-      })
-      .join("\n       ");
-    const lastDateExpr = `COALESCE(${servedTypes
-      .map((t) => `${AUDIT_LIVE_LAST_DATE[t].cteName}.last_date`)
-      .join(", ")}, a.last_date::text)`;
-    const rows = await queryRows<SrcDataAuditRow>(
-      renderSqlView("data_viz/api/routes/monitor/src_audit_rows", {
-        live_ctes: sqlFrag(liveCtes),
-        last_date_expr: sqlFrag(lastDateExpr),
-        live_joins: sqlFrag(liveJoins),
-      }).sql,
-      [
-        secTypeCode,
-        secTypeRaw === "all" || secTypeRaw === "" ? null : secTypeRaw,
-        q,
-        limit,
-        ...servedTypes.map((t) => AUDIT_LIVE_LAST_DATE[t].typeCode),
-      ],
-    );
-    const body: SrcDataAuditResponse = {
-      success: true,
-      generatedAt: new Date().toISOString(),
-      counts,
-      rows: rows.map((r) => ({
-        secType: decodeLabel("sec_type", r.sec_type) ?? String(r.sec_type),
-        code: r.code,
-        name: r.name,
-        exchange: r.exchange,
-        board: decodeLabel("board", r.board),
-        nDays: r.n_days,
-        firstDate: r.first_date,
-        lastDate: r.last_date,
-        updatedAt: r.updated_at.toISOString(),
-      })),
-    };
-    res.json(body);
-  } catch (err) {
-    console.error("[monitor/src-data-audit] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
   }
-});
+  // queryRows routes through the replica-lag probe + primary failover —
+  // a rebuilding / replaying replica must 500 this page.
+  const countsRows = await querySqlView<{ sec_type: number; n: string }>(
+    "data_viz/api/routes/monitor/src_audit_counts",
+  );
+  const counts: Record<string, number> = {};
+  for (const r of countsRows) {
+    const label = decodeLabel("sec_type", r.sec_type);
+    if (label != null) counts[label] = Number(r.n);
+  }
+  // Live last_date CTEs for the served types only ($5.. guard each join
+  // to its own sec_type — bare 6-digit codes exist in BOTH the index and
+  // ETF identity tables, so an unguarded join could cross-match).
+  const servedTypes: AuditType[] =
+    secTypeRaw === "all" || secTypeRaw === ""
+      ? [...AUDIT_TYPES]
+      : [secTypeRaw as AuditType];
+  // Live last_date CTEs for the served types only ($5.. guard each join
+  // to its own sec_type — bare 6-digit codes exist in BOTH the index and
+  // ETF identity tables, so an unguarded join could cross-match). The
+  // per-type CTEs / joins / COALESCE list ride fragments of the sql view
+  // data_viz/api/routes/monitor/src_audit_rows — their positional params
+  // ($5..) are variable-arity, so the params stay caller-assembled
+  // ($1..$4 are the route's own filter/limit params, bound by the fixed
+  // template body).
+  const liveCtes = servedTypes
+    .map((t) => AUDIT_LIVE_LAST_DATE[t].cte)
+    .join(", ");
+  const liveJoins = servedTypes
+    .map((t, i) => {
+      const live = AUDIT_LIVE_LAST_DATE[t];
+      return `LEFT JOIN ${live.cteName}
+               ON ${live.cteName}.code = a.code
+              AND ${live.cteName}.last_date IS NOT NULL
+              AND a.sec_type = $${5 + i}`;
+    })
+    .join("\n       ");
+  const lastDateExpr = `COALESCE(${servedTypes
+    .map((t) => `${AUDIT_LIVE_LAST_DATE[t].cteName}.last_date`)
+    .join(", ")}, a.last_date::text)`;
+  const rows = await queryRows<SrcDataAuditRow>(
+    renderSqlView("data_viz/api/routes/monitor/src_audit_rows", {
+      live_ctes: sqlFrag(liveCtes),
+      last_date_expr: sqlFrag(lastDateExpr),
+      live_joins: sqlFrag(liveJoins),
+    }).sql,
+    [
+      secTypeCode,
+      secTypeRaw === "all" || secTypeRaw === "" ? null : secTypeRaw,
+      q,
+      limit,
+      ...servedTypes.map((t) => AUDIT_LIVE_LAST_DATE[t].typeCode),
+    ],
+  );
+  const body: SrcDataAuditResponse = {
+    success: true,
+    generatedAt: new Date().toISOString(),
+    counts,
+    rows: rows.map((r) => ({
+      secType: decodeLabel("sec_type", r.sec_type) ?? String(r.sec_type),
+      code: r.code,
+      name: r.name,
+      exchange: r.exchange,
+      board: decodeLabel("board", r.board),
+      nDays: r.n_days,
+      firstDate: r.first_date,
+      lastDate: r.last_date,
+      updatedAt: r.updated_at.toISOString(),
+    })),
+  };
+  res.json(body);
+}));
 
 export default router;

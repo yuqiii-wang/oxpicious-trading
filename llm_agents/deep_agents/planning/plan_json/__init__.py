@@ -13,8 +13,8 @@ more batches follow — the batched proposal protocol; see
 ``parse_plan_reply``), one step becoming one pending
 ``llm.deep_agent_states`` row (the
 LangGraph task states the execute node ticks). A step carrying a
-``delegate`` goal is a FORK: the execute node's agent runs it by
-spawning a background subagent with that goal — the forked path the
+``delegate`` goal is a SPAWN: the execute node's agent runs it by
+spawning a background subagent with that goal — the spawned path the
 thread tree grows (``plan_store.parent_state_id``). This package owns
 that contract end to end:
 

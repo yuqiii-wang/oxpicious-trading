@@ -16,7 +16,7 @@
  */
 import { formatDate } from "../../lib/db.js";
 import { querySqlView } from "@api/lib/sql-views";
-import { LABEL_CODE } from "../label-codes.js";
+import { LABEL_CODE } from "../infra/label-codes.js";
 import { codeVariants } from "../../lib/classify-etf.js";
 import type {
   PeSecType,

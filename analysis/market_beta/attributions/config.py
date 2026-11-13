@@ -63,13 +63,13 @@ MAP_TABLE = "analysis.industry_member_index_map"
 # 120d (~6 months) is the UI DEFAULT for the BenchmarkPriceChart shade
 # overlay AND for analysis.industry_hypes_and_drains. Added in tandem with
 # the industry_hypes_and_drains feature.
-ROLLING_WINDOWS = [5, 20, 60, 120, 255, 500]
+ROLLING_WINDOWS = [5, 20, 60, 120, 252, 504]
 
 # Incremental lookback cap for the merged broad-market INSERT (B-A5
 # candidate, implemented 2026-08-30): TRADING-DAY-PRECISE history bound
 # replacing the former 800-calendar-day interval (~545 trading days).
 #
-# The longest rolling window (500 trading days) needs 500 prior window
+# The longest rolling window (504 trading days) needs 504 prior window
 # rows per (industry, benchmark) partition plus one LAG(close) row;
 # 510 adds grid margin for benchmark suspension gaps. The bound is
 # resolved by fetch_incremental_lookback_date() (queries.py) from the

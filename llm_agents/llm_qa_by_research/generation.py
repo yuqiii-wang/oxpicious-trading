@@ -6,9 +6,16 @@ database/sql/text/llm/04_llm_qa_by_research.sql):
 
   * requests 1-5 — one per evaluation dimension
     (:data:`~llm_agents.llm_qa_by_research.prompts.DIMENSIONS`): a
-    dedicated web search per dimension, then a composed answer over the
-    hits (``summarize_hits_via_compose``; plain ``_chat_complete`` when
-    the search surfaced nothing). Each reply lands in its own column —
+    dedicated web search per dimension (the query carries the OBJECT OF
+    INTEREST verbatim + the 年月 date anchor; the engine-side recency
+    knob defaults to oneYear), then a POST-SEARCH REF PRE-FILTER drops
+    every hit published outside the recent window (the recency DOUBLE
+    CHECK — :class:`~llm_agents.online_search_summary.storage.matching.
+    RefRecencyFilter`, survivors renumbered so citation tags stay
+    gapless), then a composed answer over the survivors
+    (``summarize_hits_via_compose``, its system prompt carrying the
+    matching recency rule; plain ``_chat_complete`` when nothing
+    in-window surfaced). Each reply lands in its own column —
     intro / optimistic_forecast / pessimistic_forecast / risks /
     capitalization. A failed dimension request
     is ISOLATED (movers-style): the column stays NULL, the flow
@@ -53,7 +60,7 @@ from llm_agents.online_search_summary.providers.base import (
     BaseOnlineSearchProvider,
 )
 from llm_agents.online_search_summary.storage.matching import (
-    REF_WINDOW_DAYS, in_ref_window,
+    REF_WINDOW_DAYS, REF_RECENCY_WINDOW_DAYS, RefRecencyFilter, in_ref_window,
 )
 from llm_agents.online_search_summary.storage.resolve import ResolvedRef
 from llm_agents.online_search_summary.storage.store import OnlineSearchSummaryStore
@@ -73,6 +80,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CATEGORY = "research"
 DEFAULT_SEARCH_COUNT = 8
+# The engine-side recency headroom (the coarse provider knob): keeps the
+# candidate pool within a year; the POST-SEARCH pre-filter tightens to
+# DEFAULT_REF_RECENCY_DAYS over the hits' own publish dates.
+DEFAULT_SEARCH_RECENCY = "oneYear"
+# The recency DOUBLE CHECK between search and the compose LLM request:
+# references published earlier than this window (relative to the qa day)
+# never reach the summarizer prompt (qa_id=22 study: 2012-2025 articles
+# were being cited as 当前的投资逻辑).
+DEFAULT_REF_RECENCY_DAYS = REF_RECENCY_WINDOW_DAYS
 
 
 
@@ -86,22 +102,38 @@ async def _request_dimension(
     lang: str,
     search_count: int,
     recency: str,
+    ref_recency_days: int,
+    anchor_day: datetime.date,
     conn,
     industry_id: Optional[str],
 ) -> DimensionResult:
-    """One dimension request: search, resolve the hits to text.news ids,
-    then compose over them WITH the ids bound (the llm.llm_requests
-    source-log contract — or a plain no-hits completion when the search
-    surfaced nothing). Transport/API retries are the provider's; refs
-    resolution failure is non-fatal (the request runs unbound)."""
-    query = dimension_search_query(spec, subject)
+    """One dimension request: search (query carrying the OBJECT OF
+    INTEREST + the 年月 date anchor), pre-filter the hits to the recent
+    window, resolve the survivors to text.news ids, then compose over
+    them WITH the ids bound (the llm.llm_requests source-log contract —
+    or a plain no-hits completion when the search surfaced nothing
+    in-window). Transport/API retries are the provider's; refs resolution
+    failure is non-fatal (the request runs unbound)."""
+    query = dimension_search_query(spec, subject, as_of=anchor_day)
     resp = await provider.search(
         query, SearchOptions(count=search_count, recency=recency))
-    if not resp.hits:
-        # No references surfaced — answer from the model's own knowledge.
+    hits: List[SearchHit] = list(resp.hits)
+    if ref_recency_days > 0 and hits:
+        outcome = RefRecencyFilter(
+            window_days=ref_recency_days, anchor=anchor_day).apply(hits)
+        if outcome.n_dropped:
+            logger.info("    [SEARCH] %s: dropped %d/%d ref(s) outside "
+                        "the -%dd recency window (anchor=%s)",
+                        spec.key, outcome.n_dropped, len(hits),
+                        ref_recency_days, anchor_day.isoformat())
+        hits = outcome.hits
+    if not hits:
+        # No in-window references surfaced — answer from the model's own
+        # knowledge.
         reply, _usage = await provider._chat_complete(
             [{"role": "system",
-              "content": dimension_system_prompt(spec, lang)},
+              "content": dimension_system_prompt(spec, lang,
+                                                 ref_recency_days=0)},
              {"role": "user",
               "content": dimension_plain_user_message(spec, subject)}],
             model=model)
@@ -109,14 +141,16 @@ async def _request_dimension(
     resolved: List[ResolvedRef] = []
     try:
         resolved = await OnlineSearchSummaryStore(conn)._fast_resolve(
-            resp.hits, industry_id=industry_id)
+            hits, industry_id=industry_id)
     except Exception as e:  # refs resolution is non-fatal
         logger.warning("    [DB] %s refs resolution failed (request runs "
                        "unbound): %s", spec.key, e)
     async def compose() -> SearchSummary:
         return await provider.summarize_hits_via_compose(
-            dimension_question(spec, subject), resp.hits,
-            model=model, system_prompt=dimension_system_prompt(spec, lang),
+            dimension_question(spec, subject), hits,
+            model=model,
+            system_prompt=dimension_system_prompt(
+                spec, lang, ref_recency_days=ref_recency_days),
             lang=lang, engine=resp.engine, request_id=resp.request_id,
             created=resp.created)
 
@@ -128,7 +162,7 @@ async def _request_dimension(
             summary = await compose()
     else:
         summary = await compose()
-    return DimensionResult(spec, text=summary.answer, hits=resp.hits,
+    return DimensionResult(spec, text=summary.answer, hits=hits,
                            resolved=resolved)
 
 
@@ -178,7 +212,8 @@ async def generate_research_qa(
     lang: str = "zh",
     category: Optional[str] = DEFAULT_CATEGORY,
     search_count: int = DEFAULT_SEARCH_COUNT,
-    recency: str = "noLimit",
+    recency: str = DEFAULT_SEARCH_RECENCY,
+    ref_recency_days: int = DEFAULT_REF_RECENCY_DAYS,
     qa_date: Optional[datetime.datetime] = None,
 ) -> int:
     """Run the six-request research flow and store the row; return qa_id.
@@ -188,6 +223,13 @@ async def generate_research_qa(
     stays NULL). The 6th request's failure raises AFTER the provider's
     own retries plus one parse retry — nothing is stored in that case
     (re-run ``generate``; the searches are re-issued).
+
+    Recency knobs: *recency* is the engine-side filter (oneYear default —
+    candidate-pool headroom); *ref_recency_days* is the POST-SEARCH
+    pre-filter over the hits' own publish dates (the recency DOUBLE
+    CHECK — refs older than the window never reach the compose LLM; 0
+    disables). *qa_date* anchors both the search queries' 年月 suffix and
+    the pre-filter window (default today, Asia/Shanghai).
     """
     model = model or getattr(provider, "DEFAULT_MODEL", None)
     if not model:
@@ -204,7 +246,8 @@ async def generate_research_qa(
             conn, provider, question,
             industry_id=industry_id, sector_id=sector_id, model=model,
             lang=lang, category=category, search_count=search_count,
-            recency=recency, qa_date=qa_date, flow_start=flow_start)
+            recency=recency, ref_recency_days=ref_recency_days,
+            qa_date=qa_date, flow_start=flow_start)
 
 
 async def _generate_research_qa_chained(
@@ -219,10 +262,17 @@ async def _generate_research_qa_chained(
     category: Optional[str],
     search_count: int,
     recency: str,
+    ref_recency_days: int,
     qa_date: Optional[datetime.datetime],
     flow_start: datetime.datetime,
 ) -> int:
     """The flow body (runs inside the request chain binding)."""
+
+    # The date every dimension's query suffix and the ref pre-filter
+    # anchor on: the question's own day (the interest-window semantics —
+    # a ref published after the day the question is about cannot support
+    # it), else today (Asia/Shanghai).
+    anchor_day = (qa_date or datetime.datetime.now(SHANGHAI_TZ)).date()
 
     # -- requests 1-5: the five evaluation dimensions ------------------------
     results: List[DimensionResult] = []
@@ -231,7 +281,9 @@ async def _generate_research_qa_chained(
             r = await _request_dimension(
                 provider, spec, question,
                 model=model, lang=lang, search_count=search_count,
-                recency=recency, conn=conn, industry_id=industry_id)
+                recency=recency, ref_recency_days=ref_recency_days,
+                anchor_day=anchor_day, conn=conn,
+                industry_id=industry_id)
             logger.info("    [LLM] %s: %d chars, %d hit(s)",
                         spec.key, len(r.text or ""), len(r.hits))
         except Exception as e:  # isolated per-dimension failure

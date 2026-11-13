@@ -86,6 +86,21 @@ Modules:
 
         python -m llm_agents.mcp [--stdio]
 
+  * ``local_model_host`` — REMOVED from this package 2026-11: the
+    RESIDENT local-model host migrated to the server cluster's llm
+    area (``server_cluster.llm``, always-on FastAPI on 127.0.0.1:8767,
+    watchdog-supervised like the daemons above): the OpenAI-compatible
+    chat-completions surface routing to the repo's LOCAL AI models —
+    ``dummy-1`` (the offline provider simulation, absorbed from the
+    former standalone dummy-llm server), ``word-segmenter-zh`` (the StructBERT
+    tokenization LLM the _common.tokenization search indexing calls as
+    request/response, host-first with an in-process fallback),
+    ``onejev-1.6-4b`` (OmniJev OneJev1.6-4B) — plus GET /v1/models and
+    the load/offload admin API (one-hour idle offload, warm-up).
+    Weights live under its gitignored ``local_models/`` subdir. CLI::
+
+        python -m server_cluster.llm
+
 The historical industry hypes & drains Q&A backfill (category
 'industry' / 'market' rows in llm.llm_qa) was removed with its
 ``industry_qa_weekly`` package — the live daily flow is

@@ -4,7 +4,7 @@
  *
  * Public API surface is re-exported from ./index.ts.
  */
-import { formatDate, toNum } from "../db.service.js";
+import { formatDate, toNum } from "../infra/db.service.js";
 import type { StrategyDailyRow } from "../../../shared/types.js";
 
 // Algo default — must match the Python DEFAULT_ALGO in
@@ -65,8 +65,8 @@ export interface DailyRow {
   normalized_mean_buy_period: string | number;
   return_rate: string | number;
   sharpe_ratio: string | number;
-  sharpe_ratio_255d: string | number;
-  sharpe_ratio_500d: string | number;
+  sharpe_ratio_252d: string | number;
+  sharpe_ratio_504d: string | number;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ export function mapDaily(r: DailyRow): StrategyDailyRow {
     normalized_mean_buy_period: toNum(r.normalized_mean_buy_period) ?? 0,
     return_rate: toNum(r.return_rate) ?? 0,
     sharpe_ratio: toNum(r.sharpe_ratio) ?? 0,
-    sharpe_ratio_255d: toNum(r.sharpe_ratio_255d) ?? 0,
-    sharpe_ratio_500d: toNum(r.sharpe_ratio_500d) ?? 0,
+    sharpe_ratio_252d: toNum(r.sharpe_ratio_252d) ?? 0,
+    sharpe_ratio_504d: toNum(r.sharpe_ratio_504d) ?? 0,
   };
 }

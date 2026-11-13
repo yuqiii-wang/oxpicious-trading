@@ -1,0 +1,11 @@
+{
+  "service": "server_cluster.llm",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "always",
+  "schedule": "always-on daemon (FastAPI on 127.0.0.1:8767) started by the stream watchdog like the other cluster servers",
+  "notes": "Server-cluster llm area (python -m server_cluster.llm; migrated from llm_agents.local_model_host 2026-11): the cluster's FIFTH area and the ONE resident FastAPI over the repo's LOCAL AI models — it serves its own model-host app (not the shared cluster jobs surface). POST /v1/chat/completions + the ZhiPu mirror path route to the registered models: dummy-1 (the offline provider simulation that absorbed the former standalone dummy-llm server [test.dummy_llm.server, :8768] — canned replies + rate-limit error injection via POST /control for the harness HTTP-sim runs), word-segmenter-zh (the StructBERT tokenization LLM the text/llm search indexing calls — the in-process segmenter became a host-first client with an in-process fallback), and onejev-1.6-4b (OmniJev OneJev1.6-4B, Qwen3.5-4B multimodal decision model, served text-only via transformers); plus POST /v1/systemone (the Jev noul/choice/score decision contract), GET /v1/models and the load/offload admin API (POST /v1/models/{id}/load|offload) with the one-hour idle offload (weights to CPU, RAM keeps them) and the startup warm-up pass. Weights live under the gitignored server_cluster/llm/local_models/ subdir. Model loads contend for GPU VRAM with the cudf pipelines by design: models offload when idle, and a failed load surfaces per model (503) without taking the host down. One instance only — the registration guard auto-exits a second run.",
+  "source_ref": "server_cluster/llm/__main__.py;server_cluster/llm/app.py;server_cluster/llm/routers/;server_cluster/llm/manager.py;database/stream_watchdog.py",
+  "updated_at": "2026-11-11T00:00:00.000000+00:00"
+}

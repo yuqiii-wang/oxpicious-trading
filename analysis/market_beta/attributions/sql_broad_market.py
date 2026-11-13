@@ -188,7 +188,7 @@ def _rolling_select_cols() -> str:
 #        pairs out never affects a needed pair's window).
 #      * {stock_hist_filter}/{bench_hist_filter} — trading-day-precise
 #        lookback cap ($2, resolved by fetch_incremental_lookback_date):
-#        500 window rows + LAG row + grid margin, plus a 45-calendar-day
+#        504 window rows + LAG row + grid margin, plus a 45-calendar-day
 #        stock-LAG suspension margin baked into $2. Plain INSERT —
 #        run_attributions prunes target dates to genuinely missing ones
 #        and wraps the step in a transaction.

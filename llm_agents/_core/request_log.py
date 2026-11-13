@@ -100,6 +100,16 @@ _refs: ContextVar[Optional[tuple]] = ContextVar(
 _chain: ContextVar[Optional[str]] = ContextVar(
     "llm_request_chain", default=None)
 
+# Re-entrancy guard for the WRITER thread's search_tsv tokenization:
+# the writer tokenizes row texts via SearchIndexer → the segmenter's
+# host-first path posts /v1/tokenization/segment → the host client now
+# logs that request too → the new row's texts would be tokenized again
+# → infinite row recursion. The flag is set ONLY around the writer's
+# tokenization batch (one thread context), so pipeline threads' segment
+# calls still log.
+_suppress_logging: ContextVar[bool] = ContextVar(
+    "llm_request_suppress", default=False)
+
 class RequestLog:
     """The request-log WRITER (2026-11-07 — the former module globals):
     the bounded enqueue queue, the single daemon writer thread, and the
@@ -143,7 +153,12 @@ class RequestLog:
         duration_ms: Optional[float] = None,
     ) -> None:
         """Enqueue one ``llm.llm_requests`` row. Never raises, never
-        blocks (the transport calls this per attempt)."""
+        blocks (the transport calls this per attempt). Suppressed while
+        the WRITER thread tokenizes its own batch's texts (the
+        segmenter's host call would otherwise re-enqueue rows forever —
+        ``_suppress_logging``)."""
+        if _suppress_logging.get():
+            return
         news_ids, group_id, qa_id = current_refs()
         chain_id = _chain.get()
         input_tokens, output_tokens, total_tokens = _extract_usage(data)
@@ -247,6 +262,7 @@ class RequestLog:
                     chained = {row[-3] for row in rows_tsv if row[-3]}
                     for cid in chained:
                         cur.execute(_BACKFILL_PREV_SQL, (cid,))
+                    _record_token_steps(batch, pairs)
             except Exception as e:  # noqa: BLE001 — drop batch, reconnect
                 self._warn(f"insert failed, dropping {len(batch)} "
                            f"row(s): {e}")
@@ -456,6 +472,7 @@ def _tokenize_search_pairs(pairs: Sequence[Tuple[str, str]]
     returns all-None pairs: those rows store a NULL vector (the backfill
     heals them), never a dropped row."""
     flat = [text for pair in pairs for text in pair]
+    token = _suppress_logging.set(True)
     try:
         from _common.tokenization import SearchIndexer
 
@@ -464,10 +481,47 @@ def _tokenize_search_pairs(pairs: Sequence[Tuple[str, str]]
         _warn(f"search_tsv tokenization failed ({exc!r}) — rows stored "
               f"unindexed (backfill heals)")
         return [(None, None)] * len(pairs)
+    finally:
+        _suppress_logging.reset(token)
     # '' stays '' (to_tsvector of '' is a valid EMPTY vector — the row is
     # processed, the backfill never re-visits it); None marks the
     # tokenizer-failure path (NULL vector, healed later).
     return [(tokens[i * 2], tokens[i * 2 + 1]) for i in range(len(pairs))]
+
+
+def _record_token_steps(batch: Sequence[Tuple],
+                        pairs: Sequence[Tuple[Optional[str],
+                                              Optional[str]]]) -> None:
+    """One AUX tokenization step per indexed request row (the
+    ``search_tsv`` lane of ``llm.deep_agent_aux_steps`` — 2026-11-13):
+    the UI's "Agent steps" list shows the writer thread's off-context
+    segmentation beside the conversation's inference rows. Fail-soft
+    and never on the request path (runs in the WRITER thread, after the
+    insert); a batch-shared segmentation records NO per-row duration
+    (the segment call is one pass over the whole batch)."""
+    try:
+        from llm_agents._core.aux_steps import (
+            LANE_SEARCH_TSV, STEP_TOKENIZATION, AuxStepRecorder,
+            AuxStepSpec)
+        specs = []
+        for row, (in_tok, out_tok) in zip(batch, pairs):
+            raw_in, raw_out = row[-2], row[-1]
+            if not raw_in and not raw_out:
+                continue  # nothing was indexed for this row
+            if in_tok is None and out_tok is None:
+                continue  # the tokenizer-failure path — nothing recorded
+            specs.append(AuxStepSpec(
+                step_type=STEP_TOKENIZATION, lane=LANE_SEARCH_TSV,
+                title="search_tsv index",
+                llm_context_id=row[-3],
+                input_text=(f"in {len(raw_in)} chars, out "
+                            f"{len(raw_out)} chars"),
+                output_text=(f"{len((in_tok or '').split())} + "
+                             f"{len((out_tok or '').split())} tokens")))
+        if specs:
+            AuxStepRecorder.get().record_many(specs)
+    except Exception:  # noqa: BLE001 — the step row must never hurt the lane
+        pass
 
 
 def _extract_usage(data: Optional[Dict[str, Any]]

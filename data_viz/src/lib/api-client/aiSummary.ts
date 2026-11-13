@@ -4,11 +4,12 @@
  * (llm.ai_prompts via GET /api/ai/prompts).
  *
  * The generation request body IS the spec of what to summarize, in JSON:
- * the selected analysis items (key + label + optional insight-registry
- * identity) and the picked prompt_key values — the skills- and plan-type
+ * the selected tables (the Scopes panel's ticked KG tables — key = label
+ * = the schema-qualified name, one summary section each; the same list
+ * rides forcedTables so the run's KG surface serves exactly them) and
+ * the picked prompt_key values — the skills- and plan-type
  * llm.ai_prompts rows (the deep agent fetches the matching instruction
- * texts from llm.ai_prompts itself). The server enriches the items from
- * the insight registry and runs the deep agent
+ * texts from llm.ai_prompts itself). The server runs the deep agent
  * (llm_agents.deep_agents.server) — a tool-calling loop over the
  * read-only DB, so this takes minutes, not seconds.
  *
@@ -24,7 +25,7 @@ export interface AiPrompt {
   prompt_key: string;
   /** The row's domain within its prompt_type ('' = none): skills rows
    *  carry db_query | online_search | biz_guide, tool rows the tool
-   *  kit/domain (sandbox | delegation | plan_main | plan_fork | plan |
+   *  kit/domain (sandbox | delegation | plan_main | plan_spawn | plan |
    *  mcp) — the picker nests the rows into foldable sub_type sections
    *  inside each type. */
   prompt_sub_type: string;
@@ -56,7 +57,7 @@ export interface AiPrompt {
  * A prompt row's UI identity — prompt_key flattened with its sub_type
  * ("key|sub"), the same join the deep agent's tool-prompt lookup uses.
  * prompt_key alone is NOT unique (update_plan exists once per lane as
- * the plan_main / plan_fork rows), so row identity — the open state,
+ * the plan_main / plan_spawn rows), so row identity — the open state,
  * the save round-trip, the React keys — always goes through this.
  */
 export function promptIdentity(prompt: AiPrompt): string {
@@ -130,12 +131,11 @@ export async function updateAiPromptLabels(
 }
 
 export interface AiSummaryItemRequest {
-  /** Stable category/item key, e.g. "commons/ma-spread". */
+  /** The ticked KG table's identity, e.g. "analysis.mov_ave_rsi" (the
+   *  Scopes panel's table tree — one summary section per table). */
   key: string;
   label: string;
   description?: string;
-  /** The item's insight-registry page (tab/page) when registered. */
-  insight?: { tab: string; page: string };
 }
 
 /** The classification-nav pick that focuses the summary — sec_type plus
@@ -163,13 +163,13 @@ export interface AiSummaryRequest {
    *  data as prompt_labels; never persisted. */
   promptLabels?: Record<string, PromptLabelSets>;
   /** The classification-nav scope picks — the multi-selected subject
-   *  tags, one entry each (absent/empty = market-wide). The page always
-   *  sends the plural; the singular `scope` below is the legacy
-   *  single-pick form the route still accepts. */
+   *  tags, one entry each (absent/empty = market-wide). */
   scopes?: AiSummaryScope[];
-  /** Legacy single-pick form (one subject) — the route folds it into the
-   *  same scope list. */
-  scope?: AiSummaryScope;
+  /** The FORCED-TABLE-SCOPE (the Generate dialog's table-scope knob) —
+   *  the DB tables this run's KG surface serves (kg_search / kg_expand /
+   *  the materialized-data hints are structurally filtered to them).
+   *  Empty/absent = no limitation. */
+  forcedTables?: string[];
   /** Optional focus instruction for the run. */
   question?: string;
   /** A SAVED PLAN TEMPLATE id (llm.deep_agent_plan_templates — the
@@ -280,10 +280,18 @@ export async function fetchActiveSummaryRuns(): Promise<AiActiveSummaryRun[]> {
   return Array.isArray(body.active) ? body.active : [];
 }
 
-/** GET /api/ai/summary/stop — cancel the in-flight summary run (the
- *  pending generateAnalysisSummary then resolves with stopped: true). */
-export async function stopAnalysisSummary(): Promise<AiSummaryStopResult> {
-  const res = await fetch("/api/ai/summary/stop", { method: "POST" });
+/** POST /api/ai/summary/stop — cancel the in-flight summary run (the
+ *  pending generateAnalysisSummary then resolves with stopped: true).
+ *  With a threadId only that run is cancelled; without, every active
+ *  run (the route forwards the id to the daemon's /stop). */
+export async function stopAnalysisSummary(
+  threadId?: string,
+): Promise<AiSummaryStopResult> {
+  const res = await fetch("/api/ai/summary/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(threadId ? { threadId } : {}),
+  });
   if (!res.ok) {
     throw new Error(`summary stop failed (HTTP ${res.status})`);
   }

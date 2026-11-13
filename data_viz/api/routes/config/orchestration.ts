@@ -4,7 +4,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { readOrchestrationTiers } from "../../services/orchestration.service.js";
+import { readOrchestrationTiers } from "../../services/infra/orchestration.service.js";
 
 const router = Router();
 
@@ -16,16 +16,11 @@ const router = Router();
  *  main_run.sh run order, steps by step number). No write route: the
  *  files are git-reviewed edits. */
 router.get("/orchestration", (_req: Request, res: Response) => {
-  try {
-    res.json({
-      success: true,
-      generatedAt: new Date().toISOString(),
-      tiers: readOrchestrationTiers(),
-    });
-  } catch (err) {
-    console.error("[config/orchestration GET] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    tiers: readOrchestrationTiers(),
+  });
 });
 
 export default router;

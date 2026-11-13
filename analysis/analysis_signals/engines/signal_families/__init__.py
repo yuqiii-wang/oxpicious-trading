@@ -46,10 +46,13 @@ The options families run their OWN universe — the sec_type's option
 underlyings from stats.options_terms
 (fetch/inputs.resolve_options_universe; options_wall drops the SSE ETF
 underlyings, whose chain OI is an accumulated-volume estimator). The
-hedge_pairs universe is likewise data-driven — the disjoint
-offset-opposite industry pairs from the offsets table
-(fetch/inputs._hedge_pairs.resolve_hedge_pair_universe; --codes is
-ignored for the family).
+hedge_pairs universe is likewise data-driven — ALL INDUSTRY PAIRS
+since 2026-11-07 (user-directed "for hedge pairs add all industries"):
+every unordered pair of the pool-'all' industry composites, the
+freshest offsets score/rho as nullable metadata, the pinned showcase
+pair first (fetch/inputs._hedge_pairs.resolve_hedge_pair_universe;
+--codes is ignored for the family; the run walks HP_PAIR_CHUNK
+chunks).
 """
 from __future__ import annotations
 

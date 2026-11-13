@@ -100,6 +100,11 @@ export interface TooltipContext {
   rsi14: Array<number | null>;
   rsi20: Array<number | null>;
   rsi60: Array<number | null>;
+  /** The MATERIALIZED MACD(12,26,9) block (stats.*_tech_stats via the
+   *  shared block) — nulls for industry composites / unfilled columns. */
+  macdLine: Array<number | null>;
+  macdSignal: Array<number | null>;
+  macdHist: Array<number | null>;
   amtMaSlopeOfLong: Array<number | null>;
   amtMarketShareOfLong: Array<number | null>;
   ohlcOpens: Array<number | null>;

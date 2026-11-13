@@ -49,7 +49,7 @@ Pipeline:
      with the former live 5-way-join SQL; both no FK).
   9. Compute the rolling correlation between the 30d model-free vol
      index and the underlying spot close (daily log-return vs
-     log-change, windows 20/60/255 sessions) into
+     log-change, windows 20/60/252 sessions) into
      analysis.options_vol_index_vs_spot_price_corr (PK (underlying_code,
      date), no FK — reads the options_vol_index + options_spot_daily
      read models, so it runs after pipelines 6+8). Append-only
@@ -970,13 +970,13 @@ async def _run_vol_spot_corr_pipeline(
 ) -> int:
     """Run the options_vol_index_vs_spot_price_corr pipeline.
 
-    Rolling Pearson correlation (20/60/255 trading sessions) between the
+    Rolling Pearson correlation (20/60/252 trading sessions) between the
     30d model-free vol index and the underlying spot close — daily
     log-return vs log-change (the CBOE VIX-vs-spot convention; see
     compute/vol_spot_corr.py). Append-only incremental ("existing data is
     old"): for a new day — any session after the underlying's latest
     stored corr date — the run computes a row for EACH new session
-    (windows reach back up to 255 sessions from their own date); stored
+    (windows reach back up to 252 sessions from their own date); stored
     rows are never rewritten or deleted. Fresh underlyings seed the
     5-session stride grid + their latest session. Reads the
     options_vol_index + options_spot_daily read models, so it MUST run

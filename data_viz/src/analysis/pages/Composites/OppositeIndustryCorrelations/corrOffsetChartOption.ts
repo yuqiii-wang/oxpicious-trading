@@ -1,7 +1,7 @@
 /**
  * Chart option for the Opposite Industry Correlations page — one line per
  * industry pair on the selected metric (Overall / Offset) and window
- * (20d/60d/255d), with an axis tooltip that shows ALL three windows'
+ * (20d/60d/252d), with an axis tooltip that shows ALL three windows'
  * values per pair (the selected one bolded).
  */
 import React from "react";
@@ -134,7 +134,7 @@ export function buildCorrOffsetChartOption(
             React.createElement("span", { style: { display: "flex", gap: 6, alignItems: "baseline" } },
               makeChip("20d", rowVal(r, col["20d"])),
               makeChip("60d", rowVal(r, col["60d"])),
-              makeChip("255d", rowVal(r, col["255d"])),
+              makeChip("252d", rowVal(r, col["252d"])),
             ),
           ));
         }

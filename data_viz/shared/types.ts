@@ -5,6 +5,34 @@
  */
 
 // ----------------------------------------------------------------------------
+// API envelope contract (data_viz/api/CONTRACTS.md, api/lib/http.ts)
+// ----------------------------------------------------------------------------
+
+/** Machine-readable error class carried by every non-2xx API body.
+ *  MISSING_PARAM / INVALID_PARAM → 400, NOT_FOUND → 404, CONFLICT → 409,
+ *  UPSTREAM_FAILED → failed python runner / LLM / daemon, INTERNAL → 500. */
+export type ApiErrorCode =
+  | "MISSING_PARAM"
+  | "INVALID_PARAM"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "UPSTREAM_FAILED"
+  | "INTERNAL";
+
+/** Body of EVERY non-2xx API response. HTTP status stays the success
+ *  discriminator; `error` is the human-readable message the UI surfaces
+ *  (api-client formatFetchError reads exactly this field), `code` the
+ *  optional machine-readable class, `details` optional per-field context.
+ *  Note: a python-run command may answer 200 with `success: false` — that
+ *  outcome is DATA (see the run-response types), never this shape. */
+export interface ApiErrorBody {
+  success: false;
+  error: string;
+  code?: ApiErrorCode;
+  details?: Record<string, string>;
+}
+
+// ----------------------------------------------------------------------------
 // Debt (debt_baseline.csv)
 // ----------------------------------------------------------------------------
 export interface DebtDailyRow {
@@ -474,8 +502,8 @@ export interface VolIndexCorrRow {
   corr_20d: number | null;
   /** Same over the trailing 60 sessions. */
   corr_60d: number | null;
-  /** Same over the trailing 255 sessions. */
-  corr_255d: number | null;
+  /** Same over the trailing 252 sessions. */
+  corr_252d: number | null;
 }
 
 export interface VolIndexCorrResponse {
@@ -643,7 +671,7 @@ export interface IndexDailyRow {
   ma20: number | null;
   ma60: number | null;
   ma120: number | null;
-  ma255: number | null;
+  ma252: number | null;
   /** TRUE when 5-minute intraday bars exist for this (date, code). */
   has_intraday_5mins: boolean;
 }
@@ -1178,8 +1206,8 @@ export interface SnapshotDate {
 //     analysis.mov_ave_spreads_detail   (per-(sec_type, code, date) WIDE row)
 //
 //   9 gap pairs per asset:
-//     • 5 price-vs-MA pairs:  ma_short = 0 (price sentinel), ma_long ∈ {5,20,60,120,255}
-//     • 4 MA-vs-MA pairs:     ma_short = 5, ma_long ∈ {20,60,120,255}
+//     • 5 price-vs-MA pairs:  ma_short = 0 (price sentinel), ma_long ∈ {5,20,60,120,252}
+//     • 4 MA-vs-MA pairs:     ma_short = 5, ma_long ∈ {20,60,120,252}
 //   gap_value = (short_value - long_value) / long_value
 //
 //   The sec_type is supplied as a query param on every endpoint; responses
@@ -1218,7 +1246,7 @@ export interface MovAveSpreadPairRow {
   /**
    * 1st derivative of the long MA/EMA — the DB-stored direct diff
    * (ma{5,20}_slope / ema{6,12}_slope). Null for the windows without a
-   * persisted derivative (SMA 60/120/255; the EMA26 leg).
+   * persisted derivative (SMA 60/120/252; the EMA26 leg).
    */
   long_slope: number | null;
   /** 2nd derivative of the long MA/EMA — see long_slope. */
@@ -1256,6 +1284,15 @@ export interface MovAveSpreadSharedMetricsRow {
   rsi_14days: number | null;
   rsi_20days: number | null;
   rsi_60days: number | null;
+  /** The MATERIALIZED MACD(12,26,9) block (the per-sec_type
+   *  stats.*_tech_stats columns via the reconstructed daily views):
+   *  macd_line = ema12 − ema26 (DIF), macd_signal = the 9-span EMA of
+   *  the macd_line series (DEA), macd_hist = line − signal. NULL for
+   *  industry composites (no tech_stats table) and any not-yet-settled
+   *  column. */
+  macd_line: number | null;
+  macd_signal: number | null;
+  macd_hist: number | null;
   /** Tail-episode population flags per window (LEFT JOINed from
    *  analysis.trend_episode_days — the consolidated trends component's
    *  store; a missing row = out-of-band): 1 = typical (the side's
@@ -1274,13 +1311,13 @@ export interface MovAveSpreadSharedMetricsRow {
   trading_amt_ma20_slope: number | null;
   trading_amt_ma60_slope: number | null;
   trading_amt_ma120_slope: number | null;
-  trading_amt_ma255_slope: number | null;
+  trading_amt_ma252_slope: number | null;
   /** Trading-amount market-share MA (ratio 0..1) — tooltip percentage. */
   trading_amt_market_share_ma5: number | null;
   trading_amt_market_share_ma20: number | null;
   trading_amt_market_share_ma60: number | null;
   trading_amt_market_share_ma120: number | null;
-  trading_amt_market_share_ma255: number | null;
+  trading_amt_market_share_ma252: number | null;
   /** Rolling OHLC of the pair-matching windows (analysis.mov_ave_spreads_roof_and_floor_lines):
    *  open W trading days ago + max high / min low over the window. Shown in
    *  the tooltip of SMA pairs whose ma_long matches the window. */
@@ -1293,9 +1330,9 @@ export interface MovAveSpreadSharedMetricsRow {
   open_120d: number | null;
   high_120d: number | null;
   low_120d: number | null;
-  open_255d: number | null;
-  high_255d: number | null;
-  low_255d: number | null;
+  open_252d: number | null;
+  high_252d: number | null;
+  low_252d: number | null;
 }
 
 /**
@@ -1310,7 +1347,7 @@ export interface MovAveSpreadAmtRow extends MovAveSpreadPairRow {
   trading_amt_ma20: number | null;
   trading_amt_ma60: number | null;
   trading_amt_ma120: number | null;
-  trading_amt_ma255: number | null;
+  trading_amt_ma252: number | null;
 }
 
 /**
@@ -1324,7 +1361,7 @@ export interface MovAveSpreadAmtRow extends MovAveSpreadPairRow {
  * aliases the columns back to the per-window names below, so the response
  * shape is unchanged.
  *
- * For each window W ∈ {20, 60, 120, 255, 500, 750, 1275} (the table's
+ * For each window W ∈ {20, 60, 120, 252, 504, 756, 1260} (the table's
  * `period`):
  *   open_Wd           — open price on the W-th trading day before `date`
  *   high_Wd           — top-high anchor: highest CLOSE among window dates
@@ -1397,69 +1434,69 @@ export interface MovAveSpreadOhlcRow {
   change_since_last_low_120d: number | null;
   days_since_last_low_120d: number | null;
 
-  open_255d: number | null;
-  high_255d: number | null;
-  high_date_255d: string | null;
-  high_2nd_255d: number | null;
-  high_2nd_date_255d: string | null;
-  high_line_slope_255d: number | null;
-  low_255d: number | null;
-  low_date_255d: string | null;
-  low_2nd_255d: number | null;
-  low_2nd_date_255d: string | null;
-  low_line_slope_255d: number | null;
-  change_since_last_high_255d: number | null;
-  days_since_last_high_255d: number | null;
-  change_since_last_low_255d: number | null;
-  days_since_last_low_255d: number | null;
+  open_252d: number | null;
+  high_252d: number | null;
+  high_date_252d: string | null;
+  high_2nd_252d: number | null;
+  high_2nd_date_252d: string | null;
+  high_line_slope_252d: number | null;
+  low_252d: number | null;
+  low_date_252d: string | null;
+  low_2nd_252d: number | null;
+  low_2nd_date_252d: string | null;
+  low_line_slope_252d: number | null;
+  change_since_last_high_252d: number | null;
+  days_since_last_high_252d: number | null;
+  change_since_last_low_252d: number | null;
+  days_since_last_low_252d: number | null;
 
-  open_500d: number | null;
-  high_500d: number | null;
-  high_date_500d: string | null;
-  high_2nd_500d: number | null;
-  high_2nd_date_500d: string | null;
-  high_line_slope_500d: number | null;
-  low_500d: number | null;
-  low_date_500d: string | null;
-  low_2nd_500d: number | null;
-  low_2nd_date_500d: string | null;
-  low_line_slope_500d: number | null;
-  change_since_last_high_500d: number | null;
-  days_since_last_high_500d: number | null;
-  change_since_last_low_500d: number | null;
-  days_since_last_low_500d: number | null;
+  open_504d: number | null;
+  high_504d: number | null;
+  high_date_504d: string | null;
+  high_2nd_504d: number | null;
+  high_2nd_date_504d: string | null;
+  high_line_slope_504d: number | null;
+  low_504d: number | null;
+  low_date_504d: string | null;
+  low_2nd_504d: number | null;
+  low_2nd_date_504d: string | null;
+  low_line_slope_504d: number | null;
+  change_since_last_high_504d: number | null;
+  days_since_last_high_504d: number | null;
+  change_since_last_low_504d: number | null;
+  days_since_last_low_504d: number | null;
 
-  open_750d: number | null;
-  high_750d: number | null;
-  high_date_750d: string | null;
-  high_2nd_750d: number | null;
-  high_2nd_date_750d: string | null;
-  high_line_slope_750d: number | null;
-  low_750d: number | null;
-  low_date_750d: string | null;
-  low_2nd_750d: number | null;
-  low_2nd_date_750d: string | null;
-  low_line_slope_750d: number | null;
-  change_since_last_high_750d: number | null;
-  days_since_last_high_750d: number | null;
-  change_since_last_low_750d: number | null;
-  days_since_last_low_750d: number | null;
+  open_756d: number | null;
+  high_756d: number | null;
+  high_date_756d: string | null;
+  high_2nd_756d: number | null;
+  high_2nd_date_756d: string | null;
+  high_line_slope_756d: number | null;
+  low_756d: number | null;
+  low_date_756d: string | null;
+  low_2nd_756d: number | null;
+  low_2nd_date_756d: string | null;
+  low_line_slope_756d: number | null;
+  change_since_last_high_756d: number | null;
+  days_since_last_high_756d: number | null;
+  change_since_last_low_756d: number | null;
+  days_since_last_low_756d: number | null;
 
-  open_1275d: number | null;
-  high_1275d: number | null;
-  high_date_1275d: string | null;
-  high_2nd_1275d: number | null;
-  high_2nd_date_1275d: string | null;
-  high_line_slope_1275d: number | null;
-  low_1275d: number | null;
-  low_date_1275d: string | null;
-  low_2nd_1275d: number | null;
-  low_2nd_date_1275d: string | null;
-  low_line_slope_1275d: number | null;
-  change_since_last_high_1275d: number | null;
-  days_since_last_high_1275d: number | null;
-  change_since_last_low_1275d: number | null;
-  days_since_last_low_1275d: number | null;
+  open_1260d: number | null;
+  high_1260d: number | null;
+  high_date_1260d: string | null;
+  high_2nd_1260d: number | null;
+  high_2nd_date_1260d: string | null;
+  high_line_slope_1260d: number | null;
+  low_1260d: number | null;
+  low_date_1260d: string | null;
+  low_2nd_1260d: number | null;
+  low_2nd_date_1260d: string | null;
+  low_line_slope_1260d: number | null;
+  change_since_last_high_1260d: number | null;
+  days_since_last_high_1260d: number | null;
+  change_since_last_low_1260d: number | null;
+  days_since_last_low_1260d: number | null;
 }
 
 /** Kind of pair: price-based (Simple MA, default, backward-compatible),
@@ -1568,7 +1605,7 @@ export interface MarketRegimeSpansResponse {
  *  (period, pctType) combos — the client filters by its nested
  *  period→pct selection. */
 export interface MovAveSpreadHighLowStreak {
-  /** Band lookback window in trading rows (255/500/750/1275). */
+  /** Band lookback window in trading rows (252/504/756/1260). */
   period: number;
   /** Band tightness in percent (1/5/10) — the band's pct_type. */
   pctType: number;
@@ -1641,10 +1678,10 @@ export interface MovAveSpreadPriceVsAmtDay {
  *    pxvol    — per-date Price × Trading-Amount states (Px-Vol States shading)
  *    rsiranks — per-date RSI history ranks (RSI Trends' Top-% shades)
  *    momentum — per-date lookback-adaptive momentum (Momentum overlay lines) */
-export type MovAveSpreadMetric = "amt" | "ohlc" | "rfest" | "rfaudit" | "streaks" | "pxvol" | "gaps" | "rsiranks" | "momentum";
+export type MovAveSpreadMetric = "amt" | "ohlc" | "rfest" | "rfaudit" | "streaks" | "pxvol" | "gaps" | "rsiranks" | "momentum" | "alignment";
 
 /** All metric groups, in canonical order (used to normalize the query param). */
-export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "rfest", "rfaudit", "streaks", "pxvol", "gaps", "rsiranks", "momentum"] as const;
+export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "rfest", "rfaudit", "streaks", "pxvol", "gaps", "rsiranks", "momentum", "alignment"] as const;
 
 /** The quantitative roof/floor estimate methods (static.label_dim
  *  'roof_floor_method' codes 0..5; analysis.mov_ave_spreads_roof_floor_
@@ -1657,7 +1694,7 @@ export type RoofFloorEstimateMethod = (typeof ROOF_FLOOR_ESTIMATE_METHODS)[numbe
 
 /** The estimate windows (trading days) — the roof/floor windows (the 20d
  *  window is not a roof/floor window). */
-export const ROOF_FLOOR_ESTIMATE_WINDOWS = [60, 120, 255, 500, 750, 1275] as const;
+export const ROOF_FLOOR_ESTIMATE_WINDOWS = [60, 120, 252, 504, 756, 1260] as const;
 export type RoofFloorEstimateWindow = (typeof ROOF_FLOOR_ESTIMATE_WINDOWS)[number];
 
 /** One row of the "rfest" extras group: the estimated roof/floor (resistance/
@@ -1859,6 +1896,26 @@ export interface MovAveSpreadExtrasResponse {
   /** Per-date lookback-adaptive momentum (analysis.mov_ave_momentum) —
    *  drives the Momentum overlay's fixed + adaptive term lines. */
   momentum?: MovAveSpreadMomentumDay[];
+  /** Per-date MA-chain alignment (analysis.mov_ave_spreads_detail's
+   *  alignment_score/state) — drives the Alignment section's trajectory
+   *  chart + verdict chip. */
+  alignment?: MovAveSpreadAlignmentDay[];
+}
+
+/** The five-leg MA-chain alignment verdict (static.label_dim
+ *  'ma_alignment' codes, decoded server-side): all five legs of
+ *  close>ma5>ma20>ma60>ma120>ma252 positive = bullish 多头排列, all
+ *  negative = bearish 空头排列, otherwise mixed 纠缠. */
+export type MaAlignment = "bearish" | "mixed" | "bullish";
+
+/** One row of the "alignment" extras group: the code's per-date
+ *  alignment score (count of positive legs, 0..5) and its decoded
+ *  verdict. NULL score = insufficient MA history (the ma252 leg not yet
+ *  realized) — never a verdict. */
+export interface MovAveSpreadAlignmentDay {
+  date: string;
+  alignment_score: number | null;
+  alignment_state: MaAlignment | null;
 }
 
 /** One day's OHLC gap anatomy row (the gaps store's wide row, trimmed
@@ -1992,7 +2049,7 @@ export type PeStreakMetric = "pe";
 export interface PeStreak {
   /** Which valuation series was audited — always "pe". */
   metric: PeStreakMetric;
-  /** Band lookback window in observations (255/500/750/1275). */
+  /** Band lookback window in observations (252/504/756/1260). */
   period: number;
   /** Band tightness in percent (1/5/10) — the band's pct_type. */
   pctType: number;
@@ -2365,7 +2422,7 @@ export interface MarginTrendsShadeResponse {
 //    PK: (code, benchmark_code, date, sec_type)
 //
 //    Stored per-row: code_sec_shared_weight, benchmark_sec_shared_weight,
-//    corr_{20,60,255}d. The ETF-market liquidity fields below (amounts,
+//    corr_{20,60,252}d. The ETF-market liquidity fields below (amounts,
 //    ratio, MA5) are NOT stored — the API derives them at read time from
 //    stats.index_exts.total_etf_trading_amount.
 // ----------------------------------------------------------------------------
@@ -2471,7 +2528,7 @@ export interface PerfAttrChartRow {
    *  Materialized only on stride-20 grid dates (every 20 trading days). */
   corr_20d: number | null;
   corr_60d: number | null;
-  corr_255d: number | null;
+  corr_252d: number | null;
 }
 
 export interface PerfAttrChartResponse {
@@ -2619,7 +2676,7 @@ export interface MarketBetaChartResponse {
 //  Source: analysis.industry_correlations (built by the correlations step
 //  of analysis.market_beta). One row per (start_date, pair,
 //  pool_size, interval) with corr_ma20_20d / corr_ma60_60d /
-//  corr_ma255_255d: corr_ma{W}_{W}d is the Pearson correlation between
+//  corr_ma252_252d: corr_ma{W}_{W}d is the Pearson correlation between
 //  the two industries' MA-W curves over the W trading days starting on
 //  start_date. Window starts sit on the calendar grid every `interval`
 //  (default 20) trading days.
@@ -2665,10 +2722,10 @@ export interface IndustryCorrelationRow {
    *  60 trading days starting on start_date. NULL when the window is not
    *  full. */
   corr_ma60_60d: number | null;
-  /** Pearson correlation between the two industries' MA255 curves over
-   *  the 255 trading days starting on start_date. NULL when the window is
+  /** Pearson correlation between the two industries' MA252 curves over
+   *  the 252 trading days starting on start_date. NULL when the window is
    *  not full. */
-  corr_ma255_255d: number | null;
+  corr_ma252_252d: number | null;
 }
 
 /** Response for GET /api/analysis/industry-correlations?industry_ids=...
@@ -2692,7 +2749,7 @@ export interface IndustryCorrelationsResponse {
 //  benchmark MA is rebased to the industry's MA level at each window start
 //  (k = MA_X[s] / MA_B[s]), then subtracted (common market factor removed)
 //  and rebuilt as a recomputed price starting at 100. The row audits, per
-//  20/60/255 trading-day window:
+//  20/60/252 trading-day window:
 //    overall_corr_ma{W}_{W}d    — RAW pairwise correlation of the MA-W
 //      curves (same semantics as IndustryCorrelationRow.corr_ma{W}_{W}d).
 //    offset_sub_corr_ma{W}_{W}d — correlation of the benchmark-offset
@@ -2726,7 +2783,7 @@ export interface IndustryCorrOffsetRow {
    *  audit value was knowable through, and the chart's x key. */
   end_ma20_20d: string | null;
   end_ma60_60d: string | null;
-  end_ma255_255d: string | null;
+  end_ma252_252d: string | null;
   /** Stride in trading days between consecutive window starts (default
    *  20). */
   interval: number;
@@ -2736,13 +2793,13 @@ export interface IndustryCorrOffsetRow {
    *  window. NULL when the window is not full. */
   overall_corr_ma20_20d: number | null;
   overall_corr_ma60_60d: number | null;
-  overall_corr_ma255_255d: number | null;
+  overall_corr_ma252_252d: number | null;
   /** Correlation of the benchmark-offset SUBTRACTED recomputed prices
    *  (industry MA − rebased benchmark MA). NULL when the window is not
    *  full or the benchmark MA is undefined on a window date. */
   offset_sub_corr_ma20_20d: number | null;
   offset_sub_corr_ma60_60d: number | null;
-  offset_sub_corr_ma255_255d: number | null;
+  offset_sub_corr_ma252_252d: number | null;
 }
 
 /** Response for GET /api/analysis/industry-corr-offsets?industry_ids=...
@@ -2801,7 +2858,7 @@ export interface IndustryCorrOffsetIndustriesResponse {
 // ----------------------------------------------------------------------------
 //  Pair Pct-Change Ratios — the subject's daily pct change as a multiple
 //  of the benchmark's (ratio = pct_change_code / pct_change_benchmark on
-//  the pair's common trading dates), smoothed by trailing 5/20/60/255-
+//  the pair's common trading dates), smoothed by trailing 5/20/60/252-
 //  common-day rolling means and materialized ONLY on stride-grid dates
 //  of the global index calendar (default stride 20 — the corr pattern).
 //  Ratio > 1 = subject outmoves the benchmark, (0,1) = undermoves, < 0 =
@@ -2864,14 +2921,14 @@ export interface PairPctRatioRow {
   hedge_raw_ma5d: number | null;
   hedge_raw_ma20d: number | null;
   hedge_raw_ma60d: number | null;
-  hedge_raw_ma255d: number | null;
+  hedge_raw_ma252d: number | null;
   /** Same ratio on market-offset series A' = A - M, B' = B - M (M =
    *  benchmark_market index pct — the market factor cancelled; the
    *  opposite-moves regime where the buy-to-hedge answer lives). */
   hedge_offset_ma5d: number | null;
   hedge_offset_ma20d: number | null;
   hedge_offset_ma60d: number | null;
-  hedge_offset_ma255d: number | null;
+  hedge_offset_ma252d: number | null;
 }
 
 /** Response for GET /api/analysis/pair-pct-ratios?code=&benchmark= */
@@ -3019,10 +3076,10 @@ export interface IndustryAttributionPriceSeriesRow {
    *  This is the DEFAULT rolling window for the BenchmarkPriceChart shade
    *  overlay AND for analysis.industry_hypes_and_drains. */
   non_this_industry_rolling_120days_price: number | null;
-  /** Same as above over the trailing 255-trading-day window (~1 year). */
-  non_this_industry_rolling_255days_price: number | null;
-  /** Same as above over the trailing 500-trading-day window (~2 years). */
-  non_this_industry_rolling_500days_price: number | null;
+  /** Same as above over the trailing 252-trading-day window (~1 year). */
+  non_this_industry_rolling_252days_price: number | null;
+  /** Same as above over the trailing 504-trading-day window (~2 years). */
+  non_this_industry_rolling_504days_price: number | null;
   /** Benchmark's weight % (0-100) on the UNION of this industry's member
    *  stocks (latest stats.sec_composition snapshot). Sourced directly from
    *  analysis.industry_attributions.benchmark_shared_weight. Used by the
@@ -3475,6 +3532,45 @@ export interface IndustryEtfContributionBarsResponse {
 }
 
 // ----------------------------------------------------------------------------
+//  Industry Stock Attribution — per-industry daily pct-change bucket
+//  distribution (the audit view on the Market Beta page: "how many stocks
+//  in industry X rose >= 7.5% today"). Source:
+//  analysis.industry_stock_change_dist (bucket = the
+//  'stock_change_bucket' static.label_dim code, 12 codes drop tail ->
+//  rise tail).
+// ----------------------------------------------------------------------------
+
+/** One bucket of the per-industry pct-change distribution. */
+export interface IndustryStockAttributionBucket {
+  /** The 'stock_change_bucket' label_dim code (0 '<-17.5%' .. 11 '>=17.5%'). */
+  bucket: number;
+  /** Decoded bucket label, e.g. '7.5~12.5%'. */
+  bucket_label: string;
+  /** Number of member stocks whose pct_change falls in this bucket. */
+  stock_count: number;
+  /** stock_count / total_stocks (fraction 0-1). Null when total_stocks is 0. */
+  pct_of_industry: number | null;
+}
+
+/** Response for GET /api/analysis/industry-stock-attribution
+ *  ?industry_id=BANKS&date=YYYY-MM-DD (date optional → latest). */
+export interface IndustryStockAttributionResponse {
+  industry_id: string;
+  industry_label: string;
+  /** As-of date (latest available when no `date` was requested). */
+  date: string;
+  /** Total mapped stocks with non-NULL pct_change on the date
+   *  (= SUM of the buckets' stock_count). */
+  total_stocks: number;
+  /** All 12 buckets in code order (drop tail -> rise tail). Empty when the
+   *  industry has no distribution data at all. */
+  buckets: IndustryStockAttributionBucket[];
+  /** The 90 most recent available dates (DESC) — feeds the view's date
+   *  dropdown. */
+  available_dates: string[];
+}
+
+// ----------------------------------------------------------------------------
 //  Live Data — intraday 5-min bars (index + stock)
 //  Source: stats.index_intraday_5min / stats.stock_intraday_5min
 //  ETF is currently unsupported (no stats.etf_intraday_5min table) — the
@@ -3670,7 +3766,7 @@ export interface StrategyOhlcRow {
  *  first BUY), weighted on remaining qty; mean holding time =
  *  (trade_date − first_buy_date).days − normalized_mean_buy_period.
  *  return_rate = ANNUALIZED return on capital = (total_pnl / capital_deployed
- *  / max(mean_holding_days, 1)) × 255. 0 when total_qty = 0 or
+ *  / max(mean_holding_days, 1)) × 252. 0 when total_qty = 0 or
  *  mean_holding_days <= 0. */
 export interface StrategyDailyRow {
   trade_date: string;
@@ -3681,16 +3777,16 @@ export interface StrategyDailyRow {
   position_value: number;
   normalized_mean_buy_period: number;
   /** ANNUALIZED return on capital = (total_pnl / ((total_qty/100) *
-   *  normalized_mean_buy_price) / max(mean_holding_days, 1)) × 255. 0 when
+   *  normalized_mean_buy_price) / max(mean_holding_days, 1)) × 252. 0 when
    *  total_qty = 0 (no capital at risk) or mean_holding_days <= 0. */
   return_rate: number;
-  /** Annualized Sharpe ratio (×√255, rf=0) of daily Δtotal_pnl over ALL
+  /** Annualized Sharpe ratio (×√252, rf=0) of daily Δtotal_pnl over ALL
    *  history up to this trade_date. 0 when < 2 deltas or σ = 0. */
   sharpe_ratio: number;
-  /** Annualized Sharpe ratio over a rolling 255-trading-day window (~1 year). */
-  sharpe_ratio_255d: number;
-  /** Annualized Sharpe ratio over a rolling 500-trading-day window (~2 years). */
-  sharpe_ratio_500d: number;
+  /** Annualized Sharpe ratio over a rolling 252-trading-day window (~1 year). */
+  sharpe_ratio_252d: number;
+  /** Annualized Sharpe ratio over a rolling 504-trading-day window (~2 years). */
+  sharpe_ratio_504d: number;
 }
 
 export interface StrategyBacktestResponse {
@@ -3934,6 +4030,9 @@ export interface NewsItem {
    *  (builds.text big_market_mv: |day change| >= 3% AND RSI(3) pinned,
    *  5-td cooldown per industry). */
   is_big_fluctuation: boolean;
+  /** LLM digestion sentiment in [-5, 5] (text.news_digestions; jev or the
+   *  chat digestion pipeline). NULL while the article is not digested yet. */
+  sentiment_level: number | null;
   /** First ~200 chars of the article body (or null when not crawled). */
   snippet: string | null;
 }

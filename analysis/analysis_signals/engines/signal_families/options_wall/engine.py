@@ -15,7 +15,7 @@ back toward it.
       realized (the variance-risk-premium confirmation — a breach
       with RICH IV is the capitulation rebound; with cheap IV it is
       the falling knife). The gate is realized as
-      vrp_ratio >= its own trailing-255d 60th-percentile bar (shifted
+      vrp_ratio >= its own trailing-252d 60th-percentile bar (shifted
       — no look-ahead; 120-row warmup, the bar's min_periods is NOT
       the full window — the full-window warmup erased whole codes'
       breach history, the 2026-10-19 sparsity study). History: the
@@ -75,7 +75,7 @@ class WallBreachEntry(RuleEntry):
         # spot-return σ, annualized) — the ratio beyond its own trailing
         # percentile bar, the bar SHIFTED one row (no look-ahead). The
         # bar's warmup is the SHORT min_periods (OW_VRP_PCTL_MIN_
-        # PERIODS), not the full 255d window: the full-window warmup
+        # PERIODS), not the full 252d window: the full-window warmup
         # erased whole codes' breach history (the 2026-10-19 sparsity
         # study — 000016's put side was structurally empty)
         ret = frame["price"] / grouped_shift(

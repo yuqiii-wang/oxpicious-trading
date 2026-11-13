@@ -3,7 +3,7 @@
  *
  * Renders one line per industry pair, showing the windowed Pearson
  * correlation of the two industries' MA curves of mean_close over the
- * user-selected window (20d / 60d / 255d): corr_ma{W}_{W}d correlates the
+ * user-selected window (20d / 60d / 252d): corr_ma{W}_{W}d correlates the
  * two industries' MA-W curves over the W trading days starting on each
  * grid start_date (window starts every `interval` — default 20 — trading
  * days). Hover shows the correlation value(s) at the hovered start date.
@@ -221,10 +221,10 @@ export function CorrelationChart({
     const allDates = Array.from(allDatesSet).sort();
 
     // Selected window column → numeric value.
-    const windowCol: Record<CorrWindow, "corr_ma20_20d" | "corr_ma60_60d" | "corr_ma255_255d"> = {
+    const windowCol: Record<CorrWindow, "corr_ma20_20d" | "corr_ma60_60d" | "corr_ma252_252d"> = {
       "20d": "corr_ma20_20d",
       "60d": "corr_ma60_60d",
-      "255d": "corr_ma255_255d",
+      "252d": "corr_ma252_252d",
     };
 
     const series: Array<Record<string, unknown>> = sortedPairs.map((key, i) => {
@@ -328,7 +328,7 @@ export function CorrelationChart({
               },
                 makeChip("20d", r.corr_ma20_20d),
                 makeChip("60d", r.corr_ma60_60d),
-                makeChip("255d", r.corr_ma255_255d),
+                makeChip("252d", r.corr_ma252_252d),
               ),
             ));
           }

@@ -31,7 +31,7 @@ AGENT_STANDING_SYSTEM = (
     "toolkit lacks the tool), and read every metric through the "
     "applicable skill's trading semantics — never generic priors. "
     "Stay alert to what does not add up: when your toolkit carries "
-    "spawn_subagent, fork one proactively — dive deep into a "
+    "spawn_subagent, spawn one proactively — dive deep into a "
     "suspicious finding through a dedicated subagent, and hand messy "
     "or diluted context off to a fresh subagent with a self-contained "
     "goal instead of pushing on."

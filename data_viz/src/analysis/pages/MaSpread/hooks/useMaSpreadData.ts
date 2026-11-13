@@ -50,7 +50,7 @@ import type { ExtrasState } from "../types";
  *   Streaks row · pxvol → the Px-Vol States row ·
  *   rsiranks → the RSI Trends section's pct row.
  */
-const METRIC_STATE_KEY: Record<MovAveSpreadMetric, "amtPairs" | "ohlc" | "rfEstimates" | "rfRebounds" | "highLowStreaks" | "priceVsAmt" | "ohlcGaps" | "rsiRanks" | "momentum"> = {
+const METRIC_STATE_KEY: Record<MovAveSpreadMetric, "amtPairs" | "ohlc" | "rfEstimates" | "rfRebounds" | "highLowStreaks" | "priceVsAmt" | "ohlcGaps" | "rsiRanks" | "momentum" | "alignment"> = {
   amt: "amtPairs",
   ohlc: "ohlc",
   rfest: "rfEstimates",
@@ -60,6 +60,7 @@ const METRIC_STATE_KEY: Record<MovAveSpreadMetric, "amtPairs" | "ohlc" | "rfEsti
   gaps: "ohlcGaps",
   rsiranks: "rsiRanks",
   momentum: "momentum",
+  alignment: "alignment",
 };
 
 /** Called the moment the REQUIRED pairs block lands (loading flips off) —
@@ -200,25 +201,38 @@ export function useMaSpreadData(
       .catch((e) => {
         console.warn(`[ma-spread] shared block failed for ${code} — tooltip metrics hidden:`, e);
       });
-    // The Momentum section's group auto-loads with the blocks (NOT
-    // pick-gated like the other groups): the adaptive short/mid/long
+    // The Momentum + Alignment sections' groups auto-load with the blocks
+    // (NOT pick-gated like the other groups): the adaptive short/mid/long
     // chips spell their CURRENT effective lookbacks (latest day), known
-    // only once the rows land. Same loading/freeze machinery as
-    // ensureMetric; a failure leaves the group unloaded — clicking a
-    // term retries through the normal path.
-    setLoadingMetrics((prev) =>
-      prev.includes("momentum") ? prev : [...prev, "momentum"],
-    );
-    fetchMovAveSpreadExtras(code, secType, ["momentum"])
+    // only once the rows land, and the alignment verdict chip reads the
+    // latest day's state. ONE /extras call serves both. Same
+    // loading/freeze machinery as ensureMetric; a failure leaves the
+    // group unloaded — clicking a term retries through the normal path.
+    setLoadingMetrics((prev) => {
+      const withMomentum: MovAveSpreadMetric[] = prev.includes("momentum")
+        ? prev
+        : [...prev, "momentum" as MovAveSpreadMetric];
+      return withMomentum.includes("alignment")
+        ? withMomentum
+        : [...withMomentum, "alignment" as MovAveSpreadMetric];
+    });
+    fetchMovAveSpreadExtras(code, secType, ["momentum", "alignment"])
       .then((d) => {
-        if (!cancelled) setExtras((prev) => ({ ...prev, momentum: d.momentum }));
+        if (!cancelled)
+          setExtras((prev) => ({
+            ...prev,
+            momentum: d.momentum,
+            alignment: d.alignment,
+          }));
       })
       .catch((e: Error) => {
         if (!cancelled) setMetricError(e.message);
       })
       .finally(() => {
         if (!cancelled)
-          setLoadingMetrics((prev) => prev.filter((m) => m !== "momentum"));
+          setLoadingMetrics((prev) =>
+            prev.filter((m) => m !== "momentum" && m !== "alignment"),
+          );
       });
     return () => {
       cancelled = true;

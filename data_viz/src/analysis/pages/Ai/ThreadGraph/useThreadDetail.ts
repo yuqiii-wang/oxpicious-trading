@@ -1,6 +1,8 @@
 /**
  * useThreadDetail — the Thread Graph view's poll loop: fetch one thread's
- * graph now, then keep polling every few seconds while the run is live
+ * graph now, then keep polling at AI_EVENTS_FALLBACK_POLL_MS (60s —
+ * the event channel that used to push these instantly is intentionally
+ * disabled, 2026-11-11) while the run is live
  * (any state pending/in_progress — threadIsActive). A settled thread is
  * fetched once (finalize settles every state, so the graph is final) and
  * the timer stops; a threadId switch resets immediately.
@@ -16,16 +18,25 @@
  * (aiEvents.ts — the daemon's WS stream) bumps it on every
  * state-created/updated event for the open thread, and each bump
  * fetches NOW instead of waiting out the poll interval (coalesced at
- * the source). The poll loop remains the fallback for a silent channel.
+ * the source). 2026-11-11 the channel is INTENTIONALLY DISABLED
+ * (AI_EVENTS_CHANNEL_DISABLED — bypassed, not removed), so no bump ever
+ * arrives and this poll loop is the ONLY refresh path, at the channel
+ * module's AI_EVENTS_FALLBACK_POLL_MS cadence (60s).
+ *
+ * `refresh()` is the same immediate fetch behind the header's Refresh
+ * button — the user's proactive pull (also the only manual path after
+ * the run settled, when the poll loop has stopped); `refreshing` flags
+ * its in-flight window for the button's spinner.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchAgentThread,
   threadIsActive,
   type AgentThreadDetail,
 } from "@/lib/api-client/aiThreads";
+import { AI_EVENTS_FALLBACK_POLL_MS } from "@/lib/api-client/aiEvents";
 
-const POLL_MS = 3000;
+const POLL_MS = AI_EVENTS_FALLBACK_POLL_MS;
 
 export interface ThreadDetailState {
   detail: AgentThreadDetail | null;
@@ -33,6 +44,11 @@ export interface ThreadDetailState {
   error: string | null;
   /** Server-time of the last successful fetch's states (polling indicator). */
   fetchedAt: Date | null;
+  /** One fetch NOW (the header's Refresh button) — drops the pending
+   * poll timer so the manual fetch is not doubled by the next tick. */
+  refresh: () => void;
+  /** True while a refresh() fetch is in flight. */
+  refreshing: boolean;
 }
 
 export function useThreadDetail(
@@ -139,5 +155,24 @@ export function useThreadDetail(
     void tickRef.current?.();
   }, [refreshSignal, threadId]);
 
-  return { detail, loading, error, fetchedAt };
+  // The manual pull (the header's Refresh button): the same immediate
+  // fetch as a push signal, user-driven — also the only refresh path on
+  // a SETTLED thread, where the poll loop has already stopped and no
+  // further events will come. `refreshing` stays true until the tick's
+  // fetch settles (a no-op tick — a fetch already in flight — clears it
+  // right away; the in-flight fetch's own finally re-arms the poll).
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = useCallback(() => {
+    if (threadId === null) return;
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setRefreshing(true);
+    void Promise.resolve(tickRef.current?.()).finally(
+      () => setRefreshing(false),
+    );
+  }, [threadId]);
+
+  return { detail, loading, error, fetchedAt, refresh, refreshing };
 }

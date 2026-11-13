@@ -22,10 +22,11 @@ All prompts are Chinese-first (``lang`` param follows the
 """
 from __future__ import annotations
 
+import datetime
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from _common.labels import RESEARCH_LOGIC_CODE
 from llm_agents._core.prompts import lang_label
@@ -90,19 +91,33 @@ def dimension_question(spec: DimensionSpec, subject: str) -> str:
     return spec.ask.format(subject=subject)
 
 
-def dimension_search_query(spec: DimensionSpec, subject: str) -> str:
-    """The dimension's retrieval query (subject + dimension terms)."""
-    return f"{subject} {spec.search_suffix}"
+def dimension_search_query(spec: DimensionSpec, subject: str,
+                           as_of: Optional[datetime.date] = None) -> str:
+    """The dimension's retrieval query — subject + dimension terms + the
+    run's year-month date anchor.
+
+    The two facts a web search must carry to rank current material: the
+    OBJECT OF INTEREST (the research subject verbatim) and the DATE (the
+    年月 the question is about). Without the date the engines resolve
+    broad industry terms to years-old SEO-dominant pages (the
+    2026-11-07 qa_id=22 study: 通信行业 asked 当前的投资逻辑, refs came
+    back 2012-2025)."""
+    as_of = as_of or datetime.date.today()
+    return f"{subject} {spec.search_suffix} {as_of.year}年{as_of.month}月"
 
 
-def dimension_system_prompt(spec: DimensionSpec, lang: str = "zh") -> str:
+def dimension_system_prompt(spec: DimensionSpec, lang: str = "zh",
+                            ref_recency_days: int = 0) -> str:
     """System prompt for one dimension request (refs-cited answer).
 
     Used by BOTH request variants: the searched one (hits handed to
     ``summarize_hits_via_compose``, which embeds them and the ask question
     in its own user message) and the no-hits plain fallback (the provider's
-    ``_chat_complete`` over :func:`dimension_plain_user_message`)."""
-    return (
+    ``_chat_complete`` over :func:`dimension_plain_user_message`).
+    *ref_recency_days* > 0 adds the recency rule — the prompt-side half
+    of the ref pre-filter: the compose request must anchor “当前”到今天
+    and cite only in-window sources for current-state facts."""
+    prompt = (
         "你是一位严谨的证券研究分析师，正在为投资者整理某一行业/标的的"
         "底层研究资料。请只围绕给定维度的要求作答：\n"
         f"1. 输出 3-6 个要点，每个要点以简短小标题开头（8 字以上），"
@@ -111,6 +126,15 @@ def dimension_system_prompt(spec: DimensionSpec, lang: str = "zh") -> str:
         "与编号一致；搜索结果未覆盖的内容不要编造，可以基于常识给出"
         "分析但要标明是分析；\n"
         f"3. 全文必须使用{lang_label(lang)}作答，不要输出与该维度无关的内容。")
+    if ref_recency_days > 0:
+        months = max(1, round(ref_recency_days / 30))
+        prompt += (
+            "\n4. 本研究描述的是当前状态：以用户消息中的今天日期为锚，"
+            f"现状、最新数据、近期观点与资金动向只能引用发布时间在最近"
+            f"{months}个月内的来源；发布时间更早的来源只能支撑长期不变的"
+            "背景事实（定义、产业链位置、历史沿革等），不得据此描述当前"
+            "状态，更不得把旧数据当作最新数据引用。")
+    return prompt
 
 
 def dimension_plain_user_message(
@@ -118,8 +142,6 @@ def dimension_plain_user_message(
 ) -> str:
     """User message for the NO-HITS plain fallback of a dimension request
     (search surfaced nothing; the model answers from its own knowledge)."""
-    import datetime
-
     from llm_agents._core.models import SHANGHAI_TZ
 
     return (

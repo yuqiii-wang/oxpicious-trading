@@ -19,9 +19,11 @@ strongly it was verified):
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import re
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence
 from urllib.parse import urlparse
 
 from llm_agents.online_search_summary.core.models import (
@@ -108,6 +110,84 @@ def in_ref_window(ref_time: Optional[datetime.datetime],
         return True
     d = ref_time.astimezone(SHANGHAI_TZ).date()
     return qa_day - datetime.timedelta(days=REF_WINDOW_DAYS) <= d <= qa_day
+
+
+# Default ref-recency pre-filter window: "recent few months" (~3 months,
+# 92 days). The 2026-11-07 study of llm.llm_qa_by_research qa_id=22
+# (通信行业, asked 当前的投资逻辑) found the compose requests citing
+# 2012-2025 articles — the searches ran recency=noLimit with no date in
+# the query, so stale SEO-dominant pages ranked in. This window is the
+# POST-SEARCH double check: a hit whose KNOWN publish date predates it
+# never reaches the summarizer prompt.
+REF_RECENCY_WINDOW_DAYS = 92
+
+
+@dataclass
+class RefFilterOutcome:
+    """What :class:`RefRecencyFilter` kept and what it dropped.
+
+    ``hits`` are the survivors, renumbered ``ref_1..ref_K`` when the
+    filter renumbers (the citation tags handed downstream — compose
+    prompt, ref resolution, dim_refs — must stay gapless); ``dropped``
+    keeps the original hit objects for logging/observability.
+    """
+
+    hits: List[SearchHit] = field(default_factory=list)
+    dropped: List[SearchHit] = field(default_factory=list)
+
+    @property
+    def n_dropped(self) -> int:
+        return len(self.dropped)
+
+
+@dataclass
+class RefRecencyFilter:
+    """POST-SEARCH ref pre-filter: drop references older than a window.
+
+    The double-check seam between a web search and the LLM request over
+    its results. A hit survives when its ACTUAL publish time
+    (:func:`hit_ref_time` — the response's publish_date, else the date
+    embedded in the article URL) falls inside
+    ``[anchor - window_days, anchor]``; unknown-dated hits are KEPT
+    (nothing places them outside the window — same policy as
+    :func:`in_ref_window`); dates after *anchor* drop too — the
+    :func:`in_ref_window` semantics, where a ref published after the day
+    the question is about cannot support it. *anchor* is the date the
+    question is about (the qa day / today, Asia/Shanghai) — not the time
+    the answer is built.
+
+    Survivors are renumbered ``ref_1..ref_K`` by default so every
+    downstream consumer (compose prompt reference list, citation
+    extraction, ref resolution) sees one gapless numbering; pass
+    ``renumber=False`` to keep the provider's original tags.
+    """
+
+    window_days: int = REF_RECENCY_WINDOW_DAYS
+    anchor: Optional[datetime.date] = None   # None -> today (Asia/Shanghai)
+    keep_unknown: bool = True                # undated refs stay (nothing
+    #                                            places them outside)
+    renumber: bool = True
+
+    def apply(self, hits: Sequence[SearchHit]) -> RefFilterOutcome:
+        """Split *hits* into (kept, dropped) per the window rule."""
+        if self.window_days <= 0:
+            return RefFilterOutcome(hits=list(hits))
+        anchor = self.anchor or datetime.datetime.now(SHANGHAI_TZ).date()
+        floor = anchor - datetime.timedelta(days=self.window_days)
+        kept: List[SearchHit] = []
+        dropped: List[SearchHit] = []
+        for h in hits:
+            ref_time = hit_ref_time(h)
+            if ref_time is None:
+                (kept if self.keep_unknown else dropped).append(h)
+            elif floor <= ref_time.date() <= anchor:
+                kept.append(h)
+            else:
+                dropped.append(h)
+        if self.renumber:
+            kept = [dataclasses.replace(h, refer=f"ref_{i}")
+                    for i, h in enumerate(kept, start=1)]
+        return RefFilterOutcome(hits=kept, dropped=dropped)
 
 
 # Structural publish dates in article URLs — separated path segments

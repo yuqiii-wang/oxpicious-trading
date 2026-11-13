@@ -13,9 +13,11 @@ the agent-flow next-step hints, delegating the flow to
 ``KnowledgeGraphService``.
 """
 from llm_agents.deep_agents.tools.kg_tools.kit import (
-    KgExpandTool, KgSearchTool, KgToolSet,
+    KgExpandTool, KgSearchTool, KgToolSet, schema_scope_from_data,
+    table_scope_from_data,
 )
 
 __all__ = [
-    "KgExpandTool", "KgSearchTool", "KgToolSet",
+    "KgExpandTool", "KgSearchTool", "KgToolSet", "schema_scope_from_data",
+    "table_scope_from_data",
 ]

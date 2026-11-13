@@ -26,7 +26,7 @@ SELECT date,
               benchmark_close,
               corr_20d,
               corr_60d,
-              corr_255d
+              corr_252d
        FROM (
          SELECT a.date,
                 er.ratio AS etf_trading_amount_ratio,
@@ -36,7 +36,7 @@ SELECT date,
                 iec.etf_num AS code_etf_num,
                 a.corr_20d,
                 a.corr_60d,
-                a.corr_255d,
+                a.corr_252d,
                 {{subject_price_expr}} AS subject_close,
                 ib.close AS benchmark_close
          FROM stats.cross_stats a

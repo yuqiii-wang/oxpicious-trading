@@ -77,6 +77,7 @@ import { PanelHeaderActions } from "./sections/PanelHeaderActions";
 import { PairChipGrid } from "./sections/PairChipGrid";
 import { RsiTrendsSection } from "./sections/RsiTrendsSection";
 import { MomentumSection } from "./sections/MomentumSection";
+import { AlignmentSection } from "./sections/AlignmentSection";
 import { RoofFloorSection } from "./sections/RoofFloorSection";
 import { HighLowStreaksSection } from "./sections/HighLowStreaksSection";
 import { PxVolSection, PxVolCaption } from "./sections/PxVolSection";
@@ -691,6 +692,11 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
             disabled={extrasLoading}
             loadingMomentum={loadingMetrics.includes("momentum")}
             momentumRows={extras.momentum}
+          />
+
+          <AlignmentSection
+            alignmentRows={extras.alignment}
+            loading={loadingMetrics.includes("alignment")}
           />
 
           <RoofFloorSection

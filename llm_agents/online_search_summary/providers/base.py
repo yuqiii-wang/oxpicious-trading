@@ -22,15 +22,21 @@ from __future__ import annotations
 
 import abc
 import datetime
+import logging
 from typing import Any, ClassVar, Dict, Optional, Sequence, Tuple
 
 from llm_agents._core.base import BaseLlmProvider
 from llm_agents.online_search_summary.core.errors import OnlineSearchError
 from llm_agents.online_search_summary.core.citations import format_references
+from llm_agents.online_search_summary.core.date_scan import DateScanner
 from llm_agents.online_search_summary.core.models import (
     SHANGHAI_TZ, SearchHit, SearchOptions, SearchResponse, SearchSummary,
 )
-from llm_agents.online_search_summary.core.prompts import summary_system_prompt
+from llm_agents.online_search_summary.core.prompts import (
+    stale_refs_check_block, summary_system_prompt,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class BaseOnlineSearchProvider(BaseLlmProvider):
@@ -115,7 +121,15 @@ class BaseOnlineSearchProvider(BaseLlmProvider):
         survivors here; citation tags are rebuilt from the filtered set
         so refs always align. ``context`` is optional caller-supplied
         text anchored between the date and the search results (the AI
-        Ask chart adviser passes its plot-info block there)."""
+        Ask chart adviser passes its plot-info block there).
+
+        The WHOLE-TEXT DATE SCAN double check rides every call: a
+        reference whose entire text (title + snippet) only mentions
+        years older than today's year — the undated snippet describing
+        2023 while the question is about 2026 — is named in a caution
+        block appended to the user message (the model must double check
+        it before citing it for current state); the flagged tags ride
+        back on the summary as ``stale_text_refs``."""
         model = model or getattr(self, "DEFAULT_MODEL", None)
         if not model:
             raise OnlineSearchError(
@@ -124,11 +138,28 @@ class BaseOnlineSearchProvider(BaseLlmProvider):
             raise OnlineSearchError(
                 f"{self.name}: no references to summarize for {query!r}")
         references = format_references(hits)
+        today = datetime.datetime.now(SHANGHAI_TZ)
+        scanner = DateScanner()
+        stale_refs = [
+            (h.refer, scan.sample_years())
+            for h in hits
+            if (scan := scanner.scan(
+                f"{h.title}\n{h.content or ''}")).is_all_older(
+                today.date())
+        ]
+        check_block = stale_refs_check_block(stale_refs, today.date())
+        if stale_refs:
+            logger.info("    [%s] whole-text date scan: %d/%d reference(s) "
+                        "only mention pre-%d years — double-check block "
+                        "appended (%s)", self.name, len(stale_refs),
+                        len(hits), today.year,
+                        ", ".join(t for t, _ in stale_refs))
         user_msg = (
-            f"今天的日期是{datetime.datetime.now(SHANGHAI_TZ):%Y-%m-%d}。\n\n"
+            f"今天的日期是{today:%Y-%m-%d}。\n\n"
             + (f"{context}\n\n" if context else "")
             + f"网络搜索结果：\n\n{references}\n\n"
-            f"用户问题：{query}")
+            + (f"{check_block}\n\n" if check_block else "")
+            + f"用户问题：{query}")
         content, usage = await self._chat_complete(
             [{"role": "system",
               "content": system_prompt or summary_system_prompt(lang)},
@@ -137,7 +168,8 @@ class BaseOnlineSearchProvider(BaseLlmProvider):
         return SearchSummary(
             question=query, answer=content, hits=list(hits),
             provider=self.name, model=model, engine=engine, mode="compose",
-            request_id=request_id, created=created, usage=usage)
+            request_id=request_id, created=created, usage=usage,
+            stale_text_refs=[t for t, _ in stale_refs] or None)
 
     async def summarize_via_compose(
         self, query: str, *, model: Optional[str] = None,
@@ -148,14 +180,38 @@ class BaseOnlineSearchProvider(BaseLlmProvider):
         """Two-step composition usable by ANY provider: ``search`` then a
         plain ``_chat_complete`` whose user message embeds the formatted
         references (the documented ``{search_result}`` pattern, with the
-        citation tags under our control so refs always align)."""
+        citation tags under our control so refs always align).
+
+        When ``opts.ref_recency_days`` > 0 the POST-SEARCH pre-filter
+        drops references published before that window — a stronger
+        guarantee than the engine's own coarse recency knob (the recency
+        DOUBLE CHECK) — and the survivors, renumbered, are what the
+        summary LLM sees; when the filter empties the hit set the flow
+        raises no-references like an empty search would."""
         opts = opts or SearchOptions()
         resp = await self.search(query, opts)
-        if not resp.hits:
+        hits = resp.hits
+        if opts.ref_recency_days > 0 and hits:
+            # storage.matching is pure (core.models only) — but importing
+            # it pulls the package facade, so keep the import at this
+            # seam like the rest of the search stack's lazy edges.
+            from llm_agents.online_search_summary.storage.matching import (
+                RefRecencyFilter,
+            )
+            outcome = RefRecencyFilter(
+                window_days=opts.ref_recency_days).apply(hits)
+            if outcome.n_dropped:
+                logger.info(
+                    "    [%s] ref pre-filter (-%dd): dropped %d/%d "
+                    "reference(s) as stale, %d survive",
+                    self.name, opts.ref_recency_days, outcome.n_dropped,
+                    len(hits), len(outcome.hits))
+            hits = outcome.hits
+        if not hits:
             raise OnlineSearchError(
                 f"{self.name}: search returned no references for {query!r}")
         return await self.summarize_hits_via_compose(
-            query, resp.hits, model=model, system_prompt=system_prompt,
+            query, hits, model=model, system_prompt=system_prompt,
             lang=lang, engine=resp.engine,
             request_id=resp.request_id or opts.request_id,
             created=resp.created)

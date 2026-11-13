@@ -43,7 +43,7 @@ class RoofFloorEstimateStep(TableStep):
 
     Reuses the caller's DB connection; the source DataFrame must carry
     [sec_type, code, date, price, high, low] — the FULL per-code
-    history (rolling methods need up to 1275 trading days of lookback).
+    history (rolling methods need up to 1260 trading days of lookback).
 
     Write flavor "frame": :meth:`build_frame` delegates to
     ``build_estimate_long_frame`` (wide per-(method, window) layout →

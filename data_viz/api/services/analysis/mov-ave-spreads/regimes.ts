@@ -7,7 +7,7 @@ import { formatDate } from "@api/lib/db";
 import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import { codeVariants } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
-import { labelDecodeSql } from "@api/services/label-codes";
+import { labelDecodeSql } from "@api/services/infra/label-codes";
 import type {
   MarketRegimeSpan,
   MarketRegimeSpansResponse,

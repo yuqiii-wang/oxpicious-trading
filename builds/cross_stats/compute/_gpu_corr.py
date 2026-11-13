@@ -104,7 +104,7 @@ def compute_rolling_correlations_bulk(
             in full-recompute mode).
 
     Returns DataFrame [date, code, benchmark_code, corr_20d, corr_60d,
-    corr_255d]; empty when no work.
+    corr_252d]; empty when no work.
     """
     t_start = time.time()
     if enable_gpu is not None:
@@ -277,7 +277,6 @@ def compute_rolling_correlations_bulk(
                         keep_cols = blk_sub_cols + \
                             [f"b|{n}" for n in chunk_names]
                         block_wide = combined[keep_cols]
-                c0 = c1
 
                 # Block/chunk-local positions (kernel sorts block_wide
                 # columns).
@@ -302,6 +301,11 @@ def compute_rolling_correlations_bulk(
                     acc[rows] = tensor[
                         date_idx[rows], blk_sub_pos[sc], local
                     ]
+                # advance AFTER the scatter — the chunk bounds [c0, c1) are
+                # the window the tensor above was computed for; advancing
+                # before it left `rows` empty and every corr NULL (the
+                # pre-2026-11 silent corr loss).
+                c0 = c1
                 del tensor
         for f, acc in zip(base_frames, corr_accs):
             f[corr_col] = acc

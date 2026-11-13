@@ -125,7 +125,7 @@ _DAY_CLOSE = time(15, 0)
 
 # the frequency floor's warmup guard: calendar days before which a
 # code's trailing-bar population cannot be complete (HP_LEG_BAR_MIN_
-# PERIODS ~ 255 traded rows ≈ 400 calendar days) — the year containing
+# PERIODS ~ 252 traded rows ≈ 400 calendar days) — the year containing
 # a code's first ~400 days can never carry triggers, so it is not an
 # eligible year (2026-10-25, the per-year coverage floor)
 FREQ_WARMUP_DAYS = 400
@@ -138,35 +138,56 @@ def eligible_freq_years(df: pd.DataFrame) -> dict[str, list[int]]:
     FREQ_WARMUP_DAYS), COMPLETE years only (the running year is exempt
     until it ends — a January rebuild must not loosen every pair to the
     shallowest tail for a year that has barely started). ONE host
-    unwrap of code/date, then a single pass — the tiny per-code
+    unwrap of code/date, then VECTORIZED per-code summaries (the
+    all-industries scale runs this per pair chunk — a per-row python
+    loop would walk millions of rows; the packed-key unique pass is
+    order-independent and code-local). The per-code year sets decode
+    from ONE unique pass over the packed (code, year) keys — the tiny
     summary is the sanctioned host boundary."""
     if df.empty:
         return {}
-    codes = host_array(df["code"]).tolist()
+    codes = host_array(df["code"])
     dates = host_array(df["date"]).astype("datetime64[D]")
+    # the code factorization: a Series method call (the cudf.pandas
+    # dispatched hash path on the raw host array — one unwrap back)
+    inv_proxy, uniq_proxy = pd.Series(codes).factorize()
+    inv = np.asarray(host_array(inv_proxy), dtype="int64")
+    uniq = host_array(uniq_proxy)
+    n_codes = len(uniq)
+    # per-code first/last traded day: ONE unique pass over the packed
+    # (code, day-ordinal) keys — the sorted unique values' first and
+    # last occurrence per code block (day ordinals are small positive
+    # ints, days since 1970 — the 1e6 stride cannot collide)
+    day_ord = dates.astype("int64")
+    packed = inv * 1_000_000 + day_ord
+    upk = np.unique(packed)
+    u_inv = upk // 1_000_000
+    u_day = upk % 1_000_000
+    first_pos = np.searchsorted(u_inv, np.arange(n_codes), side="left")
+    last_pos = np.searchsorted(u_inv, np.arange(n_codes), side="right") - 1
+    first_days = u_day[first_pos]
+    last_days = u_day[last_pos]
+    # present years per code: ONE unique pass over the packed
+    # (code, year-since-1900) keys — decode back to per-code year sets
     years = dates.astype("datetime64[Y]").astype("int64") + 1970
-    first: dict[str, np.datetime64] = {}
-    last: dict[str, np.datetime64] = {}
-    present: dict[str, set] = {}
-    for i, c in enumerate(codes):
-        f = first.get(c)
-        if f is None:
-            first[c] = dates[i]
-            last[c] = dates[i]
-            present[c] = {int(years[i])}
-        else:
-            if dates[i] < f:
-                first[c] = dates[i]
-            if dates[i] > last[c]:
-                last[c] = dates[i]
-            present[c].add(int(years[i]))
+    ypacked = inv * 1000 + (years - 1900)
+    uyp = np.unique(ypacked)
+    present: dict[int, list[int]] = {}
+    for k in uyp.tolist():
+        present.setdefault(int(k) // 1000, []).append(
+            int(k) % 1000 + 1900)
     out: dict[str, list[int]] = {}
-    for c, lo in first.items():
-        y0 = int((lo + np.timedelta64(FREQ_WARMUP_DAYS, "D"))
-                 .astype("datetime64[Y]").astype("int64")) + 1970
-        last_y = int(last[c].astype("datetime64[Y]").astype("int64")) \
-            + 1970
-        out[c] = sorted(y for y in present[c] if y0 <= y < last_y)
+    first_dt = first_days.astype("datetime64[D]")
+    y0_years = (first_dt + np.timedelta64(FREQ_WARMUP_DAYS, "D")) \
+        .astype("datetime64[Y]").astype("int64") + 1970
+    last_years = last_days.astype("datetime64[D]") \
+        .astype("datetime64[Y]").astype("int64") + 1970
+    for i in range(n_codes):
+        y0 = int(y0_years[i])
+        last_y = int(last_years[i])
+        code = str(uniq[i])
+        out[code] = sorted(
+            y for y in present.get(i, ()) if y0 <= y < last_y)
     return out
 
 

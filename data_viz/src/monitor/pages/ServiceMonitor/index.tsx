@@ -1,10 +1,12 @@
 /**
- * Service Monitor page — liveness of the repo's monitored service processes
- * (the five downloads.stream.* pollers + the stream_watchdog supervisor),
- * grouped by scope (downloads / database / ...) and sub_scope, PLUS the
- * last-known state of every OTHER registered pipeline process (batch
+ * Service Monitor page — liveness of the repo's resident processes (the
+ * always-on services the stream watchdog supervises: the five
+ * downloads.stream.* pollers, the db_health sampler, the llm_agents
+ * daemons + the stream_watchdog supervisor), grouped by scope
+ * (downloads / database / ...) and sub_scope, PLUS the last-known state
+ * of every OTHER registered pipeline process (batch
  * builds / downloads / analyses / llm runs — "Pipeline processes").
- * Two tables, no standalone audit sections. Stream-service rows open the
+ * Two tables, no standalone audit sections. Resident-process rows open the
  * service's CURRENT log on click (the shared LogViewerDialog over the
  * logs/<today>/<service>.log tail — one append-only file per (date,
  * service) shared by log_setup and the nohup'd stdout, so the tail
@@ -120,10 +122,10 @@ import {
   type HealthCheckResponse,
   type MonitorStreamResponse,
   type ProcessStatus,
+  type ResidentProcessStatus,
   type RunLog,
   type ServiceAuditEntry,
   type StreamAlwaysResponse,
-  type StreamServiceStatus,
 } from "@/lib/api-client/monitor";
 import {
   ALL,
@@ -139,12 +141,12 @@ import RunServiceDialog from "./RunServiceDialog";
 import ServiceRow from "./ServiceRow";
 
 /** What the shared LogViewerDialog is showing: a pipeline HISTORY run
- * (log of the run's Shanghai start date) or a stream service's CURRENT
+ * (log of the run's Shanghai start date) or a resident process's CURRENT
  * life (log of today — the always-on pollers append to the one per-day
  * file across restart lives). */
 type LogSource =
   | { kind: "run"; service: string; run: ServiceAuditEntry }
-  | { kind: "live"; svc: StreamServiceStatus };
+  | { kind: "live"; svc: ResidentProcessStatus };
 
 export default function ServiceMonitorPage() {
   const [data, setData] = useState<MonitorStreamResponse | null>(null);
@@ -156,7 +158,7 @@ export default function ServiceMonitorPage() {
   // never included), and the freq dropdown + search narrow within the
   // selected mode. Rows expand to their run history, fetched once per
   // service on first expand (the runsCacheRef guards double fetches).
-  // Stream-service rows expand to their watchdog restarts (client-side
+  // Resident-process rows expand to their watchdog restarts (client-side
   // filter over the payload's recentRestarts window — the merged
   // service_audit trail).
   const [processSearch, setProcessSearch] = useState("");
@@ -326,7 +328,7 @@ export default function ServiceMonitorPage() {
 
   // ---- Run-log viewer (clickable history-run rows + stream rows) -------
   // `logSource` says what the dialog title / subtitle describe: a
-  // pipeline history run or a stream service's current life (its row
+  // pipeline history run or a resident process's current life (its row
   // click) — both resolve to the same logs/<date>/<service>.log tail.
   const [logSource, setLogSource] = useState<LogSource | null>(null);
   const [runLog, setRunLog] = useState<RunLog | null>(null);
@@ -407,7 +409,7 @@ export default function ServiceMonitorPage() {
     () =>
       data
         ? [data.watchdog, ...data.services].filter(
-            (s): s is StreamServiceStatus => s != null,
+            (s): s is ResidentProcessStatus => s != null,
           )
         : [],
     [data],
@@ -509,7 +511,7 @@ export default function ServiceMonitorPage() {
         </Tooltip>
         <Tooltip
           title={
-            "Start all always-on stream services — spawns a hidden keeper " +
+            "Start all always-on resident processes — spawns a hidden keeper " +
             "session via the API's WSL runner (no cmd window): idempotent " +
             "watchdog starter first (heals leaked parallel slots, covers " +
             "db_health), then scripts/stream_always.sh (nohup each " +
@@ -638,9 +640,9 @@ export default function ServiceMonitorPage() {
             flexWrap: "wrap",
           }}
         >
-          <Typography variant="subtitle2">Stream services</Typography>
+          <Typography variant="subtitle2">Resident processes</Typography>
           <Typography variant="caption" color="text.secondary">
-            always-on pollers + watchdog · click a row for its current log ·
+            always-on resident processes · click a row for its current log ·
             chevron for the restart trail
           </Typography>
         </Box>

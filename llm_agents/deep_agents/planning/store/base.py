@@ -24,6 +24,27 @@ from llm_agents.deep_agents.planning.store.models import (
 )
 
 
+def _record_tag_step(thread_id: str, state_id: Optional[int],
+                     llm_context_id: Optional[str], payload_json: str,
+                     tokens: Optional[str]) -> None:
+    """One AUX tokenization step per context insert (the
+    ``context_tags`` lane of ``llm.deep_agent_aux_steps`` — 2026-11-13):
+    the tags vector's build becomes a visible step on the UI's "Agent
+    steps" list, joined by the context's own thread/state/chain keys.
+    Fail-soft — the recorded step must never break the insert."""
+    try:
+        from llm_agents._core.aux_steps import record_tokenization
+
+        record_tokenization(
+            lane="context_tags", title="context tags index",
+            input_text=f"{len(payload_json)} chars",
+            output_text=f"{len((tokens or '').split())} tokens",
+            thread_id=thread_id, state_id=state_id,
+            llm_context_id=llm_context_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class _StoreBase:
     """The store's connection + write plumbing (no domain methods)."""
 
@@ -54,6 +75,8 @@ class _StoreBase:
         except (TypeError, ValueError):
             critical = False
         tokens = await asyncio.to_thread(_tokenize_tags_sync, payload_json)
+        _record_tag_step(thread_id, state_id, llm_context_id,
+                         payload_json, tokens)
         write = render_sql_write(
             "llm_agents/deep_agents/planning/store/deep_agent_contexts/insert",
             thread_id, _kind(kind_label), payload_json,

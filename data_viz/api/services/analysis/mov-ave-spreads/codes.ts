@@ -44,11 +44,11 @@ export interface DbCodeRow extends QueryResultRow {
   price_vs_ma20: number | null;
   price_vs_ma60: number | null;
   price_vs_ma120: number | null;
-  price_vs_ma255: number | null;
+  price_vs_ma252: number | null;
   ma5_vs_ma20: number | null;
   ma5_vs_ma60: number | null;
   ma5_vs_ma120: number | null;
-  ma5_vs_ma255: number | null;
+  ma5_vs_ma252: number | null;
   // All-time max gain / max loss across all 9 pairs (fractional).
   max_gain: number | null;
   max_loss: number | null;

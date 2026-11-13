@@ -61,7 +61,7 @@ export function fetchOptionsCombined(
 }
 
 // ----------------------------------------------------------------------------
-//  Per-plot fetchers — one SQL per plot (see api/services/options.service.ts
+//  Per-plot fetchers — one SQL per plot (see api/services/market/options.service.ts
 //  "Per-plot queries"). Each Options Analysis panel loads its own aggregate
 //  instead of the full-history /combined blob.
 // ----------------------------------------------------------------------------
@@ -339,7 +339,7 @@ export function fetchOptionsVolIndex(
   );
 }
 
-/** Rolling corr of the vol index vs spot log-changes (20/60/255d windows,
+/** Rolling corr of the vol index vs spot log-changes (20/60/252d windows,
  *  stride-sampled every 20th session) — omit `underlying` for all. */
 export function fetchOptionsVolIndexCorr(
   underlying?: string | null,

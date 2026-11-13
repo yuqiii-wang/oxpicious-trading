@@ -5,11 +5,12 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { HttpError } from "../../lib/http.js";
 import {
   readDeepAgentLimits,
   writeDeepAgentLimits,
   type DeepAgentLimitsEntry,
-} from "../../services/static-config.service.js";
+} from "../../services/infra/static-config.service.js";
 
 const router = Router();
 
@@ -32,7 +33,7 @@ export interface DeepAgentLimitsPayload {
   planRepairRounds: number;
   planProposalBatches: number;
   maxTotalPlanSteps: number;
-  maxForkChildren: number;
+  maxSpawnChildren: number;
   maxParallelDelegatedSteps: number;
   maxConcurrentSubagents: number;
   maxSpawnDepth: number;
@@ -73,7 +74,7 @@ function toLimitsPayload(e: DeepAgentLimitsEntry): DeepAgentLimitsPayload {
     planRepairRounds: e.plan_repair_rounds,
     planProposalBatches: e.plan_proposal_batches,
     maxTotalPlanSteps: e.max_total_plan_steps,
-    maxForkChildren: e.max_fork_children,
+    maxSpawnChildren: e.max_spawn_children,
     maxParallelDelegatedSteps: e.max_parallel_delegated_steps,
     maxConcurrentSubagents: e.max_concurrent_subagents,
     maxSpawnDepth: e.max_spawn_depth,
@@ -122,7 +123,7 @@ const LIMITS_PAYLOAD_FIELDS: Array<{
   { key: "planRepairRounds", snake: "plan_repair_rounds", min: 0, max: 10 },
   { key: "planProposalBatches", snake: "plan_proposal_batches", min: 1, max: 24 },
   { key: "maxTotalPlanSteps", snake: "max_total_plan_steps", min: 1, max: 1000 },
-  { key: "maxForkChildren", snake: "max_fork_children", min: 0, max: 200 },
+  { key: "maxSpawnChildren", snake: "max_spawn_children", min: 0, max: 200 },
   { key: "maxParallelDelegatedSteps", snake: "max_parallel_delegated_steps", min: 1, max: 64 },
   { key: "maxConcurrentSubagents", snake: "max_concurrent_subagents", min: 1, max: 64 },
   { key: "maxSpawnDepth", snake: "max_spawn_depth", min: 0, max: 8 },
@@ -148,53 +149,45 @@ const LIMITS_PAYLOAD_FIELDS: Array<{
 /** GET /api/config/deep-agent — the current run limits (defaults served
  *  for a missing/unparseable file). */
 router.get("/deep-agent", (_req: Request, res: Response) => {
-  try {
-    res.json({
-      success: true,
-      generatedAt: new Date().toISOString(),
-      limits: toLimitsPayload(readDeepAgentLimits()),
-    });
-  } catch (err) {
-    console.error("[config/deep-agent GET] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    limits: toLimitsPayload(readDeepAgentLimits()),
+  });
 });
 
 /** PUT /api/config/deep-agent — write the run limits (updated_at
  *  stamped server-side). Takes effect on the NEXT deep-agent run — the
  *  daemon re-reads the file per run. */
 router.put("/deep-agent", (req: Request, res: Response) => {
-  try {
-    const b = (typeof req.body === "object" && req.body != null
-      ? req.body
-      : {}) as Record<string, unknown>;
-    const entry = { updated_at: "" } as DeepAgentLimitsEntry;
-    for (const spec of LIMITS_PAYLOAD_FIELDS) {
-      const value = b[spec.key];
-      if (spec.nullable && (value === null || value === "")) {
-        entry[spec.snake] = null;
-        continue;
-      }
-      if (
-        typeof value !== "number" || !Number.isFinite(value) ||
-        value < spec.min || (spec.max !== null && value > spec.max)
-      ) {
-        throw new Error(
-          `${String(spec.key)} must be a number in [${spec.min}, ` +
-          `${spec.max ?? "∞"}]`,
-        );
-      }
-      entry[spec.snake] = value;
+  const b = (typeof req.body === "object" && req.body != null
+    ? req.body
+    : {}) as Record<string, unknown>;
+  const entry = { updated_at: "" } as DeepAgentLimitsEntry;
+  for (const spec of LIMITS_PAYLOAD_FIELDS) {
+    const value = b[spec.key];
+    if (spec.nullable && (value === null || value === "")) {
+      entry[spec.snake] = null;
+      continue;
     }
-    entry.notes = typeof b.notes === "string" ? b.notes : null;
-    entry.source_ref =
-      typeof b.sourceRef === "string" ? b.sourceRef : null;
-    const saved = writeDeepAgentLimits(entry);
-    res.json({ success: true, limits: toLimitsPayload(saved) });
-  } catch (err) {
-    console.error("[config/deep-agent PUT] error:", err);
-    res.status(400).json({ success: false, error: String(err) });
+    if (
+      typeof value !== "number" || !Number.isFinite(value) ||
+      value < spec.min || (spec.max !== null && value > spec.max)
+    ) {
+      throw new HttpError(
+        400,
+        "INVALID_PARAM",
+        `${String(spec.key)} must be a number in [${spec.min}, ` +
+        `${spec.max ?? "∞"}]`,
+      );
+    }
+    entry[spec.snake] = value;
   }
+  entry.notes = typeof b.notes === "string" ? b.notes : null;
+  entry.source_ref =
+    typeof b.sourceRef === "string" ? b.sourceRef : null;
+  const saved = writeDeepAgentLimits(entry);
+  res.json({ success: true, limits: toLimitsPayload(saved) });
 });
 
 export default router;

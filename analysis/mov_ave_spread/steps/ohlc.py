@@ -1,7 +1,7 @@
 """Internal OHLC step for analysis.mov_ave_spread.
 
 Rolling roof/floor anchor summary (today_close + open/high/low/second-
-peak-high/second-trough-low over 7 windows: 20/60/120/255/500/750/1275
+peak-high/second-trough-low over 7 windows: 20/60/120/252/504/756/1260
 trading days, plus the change/days since the last high anchor and the
 last low anchor, one pair per side) for
 ETF + Index + Stock. One row per (sec_type, code, date, period) in
@@ -97,7 +97,7 @@ Incremental mode (``force=False``):
        up-front so the chunked COPY path can re-insert the recomputed
        rows (COPY cannot upsert).
 
-  The OHLC columns require up to 1275 prior rows per code, so the FULL
+  The OHLC columns require up to 1260 prior rows per code, so the FULL
   per-code history (already in the parent DataFrame) is used and the
   result is filtered to target_dates before upsert.
 
@@ -748,7 +748,7 @@ class OhlcStep(TableStep):
     close while 2nd-anchor values use the intraday ``high``/``low``).
     The DataFrame must contain the FULL per-code history (not filtered
     to target_dates) so rolling computations have enough lookback rows
-    (up to 1275 trading days ≈ 5 years).
+    (up to 1260 trading days ≈ 5 years).
 
     Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates

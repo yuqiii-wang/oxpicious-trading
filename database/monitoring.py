@@ -45,6 +45,7 @@ import sys
 import time
 
 import psycopg
+from pydantic import BaseModel
 
 from _common.db_commons._helpers import _get_conn_params, _get_replica_conn_params
 from _common.service_heartbeat import (
@@ -145,152 +146,238 @@ def _fetch(conn: psycopg.Connection, sql: str) -> list[tuple]:
         return cur.fetchall()
 
 
+class CheckItem(BaseModel):
+    """One health-check observation — the exact CLI line plus its
+    structured form (the server_cluster monitor area serves these as
+    JSON; the CLI prints them verbatim)."""
+
+    label: str
+    ok: bool
+    message: str
+
+
+class HealthCheck:
+    """The replica/stream health probes as a reusable class.
+
+    The module-level CLI functions below are thin wrappers that print
+    this class's items byte-identically (oks first in probe order, then
+    alerts) and map to the same 0/1 exit; ``server_cluster/monitor``
+    serves the structured items over HTTP instead."""
+
+    def replication(self) -> list[CheckItem]:
+        """Replica state + replay backlog + slot WAL retention + pg_wal
+        dir size."""
+        items: list[CheckItem]
+
+        with _connect(_get_conn_params()) as primary:
+            repl = _fetch(primary, _REPLICATION_SQL)
+            items: list[CheckItem] = []
+            if not repl:
+                items.append(CheckItem(
+                    label="replication",
+                    ok=False,
+                    message=(
+                        "[ALERT] primary has NO standby attached — "
+                        "pg_stat_replication is empty (replica container down "
+                        "or reconnecting). Reads still work but the replica is "
+                        "not protecting anything."
+                    ),
+                ))
+            for state, backlog_bytes, primary_lsn in repl:
+                if state != "streaming":
+                    items.append(CheckItem(
+                        label="replication", ok=False,
+                        message=(
+                            f"[ALERT] standby state is {state!r} (not "
+                            f"streaming); primary_lsn={primary_lsn}"
+                        ),
+                    ))
+                if backlog_bytes > BACKLOG_ALERT_BYTES:
+                    items.append(CheckItem(
+                        label="replication", ok=False,
+                        message=(
+                            f"[ALERT] replay backlog {_fmt_bytes(backlog_bytes)} "
+                            f"> {_fmt_bytes(BACKLOG_ALERT_BYTES)} — replica "
+                            "replaying a WAL burst; API reads fail over to the "
+                            "primary meanwhile"
+                        ),
+                    ))
+                else:
+                    items.append(CheckItem(
+                        label="replication", ok=True,
+                        message=(
+                            f"[ok] standby {state}, replay backlog "
+                            f"{_fmt_bytes(backlog_bytes)} "
+                            f"(primary_lsn={primary_lsn})"
+                        ),
+                    ))
+
+            slots = _fetch(primary, _SLOT_SQL)
+            if not slots:
+                items.append(CheckItem(
+                    label="slot", ok=False,
+                    message=(
+                        "[ALERT] no physical replication slot on the primary — "
+                        "a restarted replica may never catch up "
+                        "(wal_keep_size=0 recycles segments)"
+                    ),
+                ))
+            for slot_name, active, retained_bytes in slots:
+                if not active:
+                    items.append(CheckItem(
+                        label=f"slot {slot_name}", ok=False,
+                        message=(
+                            f"[ALERT] slot {slot_name} is INACTIVE — WAL is "
+                            "being pinned on the primary while the replica is "
+                            "down (E: disk fills silently)"
+                        ),
+                    ))
+                if retained_bytes > SLOT_RETAINED_ALERT_BYTES:
+                    items.append(CheckItem(
+                        label=f"slot {slot_name}", ok=False,
+                        message=(
+                            f"[ALERT] slot {slot_name} retains "
+                            f"{_fmt_bytes(retained_bytes)} of WAL > "
+                            f"{_fmt_bytes(SLOT_RETAINED_ALERT_BYTES)}"
+                        ),
+                    ))
+                else:
+                    items.append(CheckItem(
+                        label=f"slot {slot_name}", ok=True,
+                        message=(
+                            f"[ok] slot {slot_name} active={active}, "
+                            f"retained WAL {_fmt_bytes(retained_bytes)}"
+                        ),
+                    ))
+
+            # WAL disk: pg_wal dir size vs the cluster's own recycle horizon
+            # (max_wal_size). Recyclable segments legitimately keep the dir a
+            # few GB; only growth beyond the horizon means something is pinned.
+            wal_bytes, max_wal_bytes = _fetch(primary, _WAL_SQL)[0]
+            wal_ceiling = int(max_wal_bytes * WAL_DIR_ALERT_FACTOR)
+            if wal_bytes > wal_ceiling:
+                items.append(CheckItem(
+                    label="wal_dir", ok=False,
+                    message=(
+                        f"[ALERT] pg_wal dir {_fmt_bytes(wal_bytes)} > "
+                        f"{WAL_DIR_ALERT_FACTOR}× max_wal_size "
+                        f"({_fmt_bytes(wal_ceiling)}) — segments are pinned "
+                        "beyond the recycle horizon; check the slot state "
+                        "above and disk space"
+                    ),
+                ))
+            else:
+                items.append(CheckItem(
+                    label="wal_dir", ok=True,
+                    message=(
+                        f"[ok] pg_wal dir {_fmt_bytes(wal_bytes)} "
+                        f"(alert ceiling {_fmt_bytes(wal_ceiling)} = "
+                        f"{WAL_DIR_ALERT_FACTOR}× max_wal_size "
+                        f"{_fmt_bytes(max_wal_bytes)})"
+                    ),
+                ))
+        return items
+
+    def streams(self) -> list[CheckItem]:
+        """Downloads-stream liveness: every poller + the watchdog supervisor
+        must have a fresh heartbeat in monitor.service_heartbeat.
+
+        Heartbeats are written by a daemon thread inside each process
+        (_common/service_heartbeat.py) every ~60s regardless of the poll
+        loop's sleep windows, so a stale beat means the process is dead or
+        wedged — it never means "market closed". The watchdog
+        (database/stream_watchdog.py) is included because a dead supervisor
+        silently stops restarting pollers. The heartbeat rows of the repo's
+        OTHER (batch) processes are NOT liveness-alerted here: they
+        legitimately sit stopped between runs (their run history lives in
+        monitor.service_audit; the watchdog's orphan pass closes unrecorded
+        deaths). Restart counts read the same audit table's merged watchdog
+        restart trail (dead lives closed with a 'watchdog restart: …'
+        exit_reason).
+        """
+        expected = list(MONITORED_SERVICES)
+
+        with _connect(_get_conn_params()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT service, pid, "
+                    f"EXTRACT(EPOCH FROM (now() - beat_at))::bigint, "
+                    f"scope, sub_scope, stop_reason "
+                    f"FROM {HEARTBEAT_TABLE} WHERE service = ANY(%s)",
+                    (expected,),
+                )
+                beats = {
+                    svc: (pid, age, scope, sub, stop)
+                    for svc, pid, age, scope, sub, stop in cur.fetchall()
+                }
+                cur.execute(
+                    "SELECT service, count(*) FROM monitor.service_audit "
+                    "WHERE exit_reason LIKE 'watchdog restart%' "
+                    "AND ended_at > now() - interval '24 hours' "
+                    "GROUP BY service"
+                )
+                restarts_24h = dict(cur.fetchall())
+
+        items: list[CheckItem] = []
+        for service in expected:
+            row = beats.get(service)
+            label = "watchdog" if service == WATCHDOG_SERVICE else service
+            if row is None:
+                items.append(CheckItem(
+                    label=label, ok=False,
+                    message=(
+                        f"[ALERT] {label}: no heartbeat row — not running (or "
+                        "a pre-heartbeat build; restart it once to gain "
+                        "heartbeats)"
+                    ),
+                ))
+                continue
+            pid, age, scope, sub, stop_reason = row
+            where = f"{scope}/{sub}" if scope and sub else (scope or "?")
+            stop_note = f" — last exit: {stop_reason}" if stop_reason else ""
+            if age > int(STALE_AFTER_S):
+                items.append(CheckItem(
+                    label=label, ok=False,
+                    message=(
+                        f"[ALERT] {label} ({where}): heartbeat stale {age}s > "
+                        f"{int(STALE_AFTER_S)}s (pid {pid}) — dead or wedged"
+                        f"{stop_note}"
+                    ),
+                ))
+            else:
+                n = restarts_24h.get(service, 0)
+                items.append(CheckItem(
+                    label=label, ok=True,
+                    message=(
+                        f"[ok] {label} ({where}): heartbeat {age}s ago "
+                        f"(pid {pid})"
+                        + (f", {n} restart(s) in 24h" if n else "")
+                    ),
+                ))
+        return items
+
+
+def _print_items(items: list[CheckItem]) -> int:
+    """CLI rendering: oks first (probe order), then alerts — the same
+    output layout the pre-refactor functions produced. 0/1 exit."""
+    for item in items:
+        if item.ok:
+            print(item.message)
+    alerts = [item for item in items if not item.ok]
+    for item in alerts:
+        print(item.message)
+    return 1 if alerts else 0
+
+
 def check_health() -> int:
     """Replica state + replay backlog + slot WAL retention + pg_wal dir
     size. 0/1 exit."""
-    alerts: list[str] = []
-
-    with _connect(_get_conn_params()) as primary:
-        repl = _fetch(primary, _REPLICATION_SQL)
-        if not repl:
-            alerts.append(
-                "[ALERT] primary has NO standby attached — pg_stat_replication is "
-                "empty (replica container down or reconnecting). Reads still work "
-                "but the replica is not protecting anything."
-            )
-        for state, backlog_bytes, primary_lsn in repl:
-            if state != "streaming":
-                alerts.append(
-                    f"[ALERT] standby state is {state!r} (not streaming); "
-                    f"primary_lsn={primary_lsn}"
-                )
-            if backlog_bytes > BACKLOG_ALERT_BYTES:
-                alerts.append(
-                    f"[ALERT] replay backlog {_fmt_bytes(backlog_bytes)} > "
-                    f"{_fmt_bytes(BACKLOG_ALERT_BYTES)} — replica replaying a WAL "
-                    f"burst; API reads fail over to the primary meanwhile"
-                )
-            else:
-                print(
-                    f"[ok] standby {state}, replay backlog {_fmt_bytes(backlog_bytes)} "
-                    f"(primary_lsn={primary_lsn})"
-                )
-
-        slots = _fetch(primary, _SLOT_SQL)
-        if not slots:
-            alerts.append(
-                "[ALERT] no physical replication slot on the primary — a restarted "
-                "replica may never catch up (wal_keep_size=0 recycles segments)"
-            )
-        for slot_name, active, retained_bytes in slots:
-            if not active:
-                alerts.append(
-                    f"[ALERT] slot {slot_name} is INACTIVE — WAL is being pinned on "
-                    "the primary while the replica is down (E: disk fills silently)"
-                )
-            if retained_bytes > SLOT_RETAINED_ALERT_BYTES:
-                alerts.append(
-                    f"[ALERT] slot {slot_name} retains {_fmt_bytes(retained_bytes)} "
-                    f"of WAL > {_fmt_bytes(SLOT_RETAINED_ALERT_BYTES)}"
-                )
-            else:
-                print(
-                    f"[ok] slot {slot_name} active={active}, "
-                    f"retained WAL {_fmt_bytes(retained_bytes)}"
-                )
-
-        # WAL disk: pg_wal dir size vs the cluster's own recycle horizon
-        # (max_wal_size). Recyclable segments legitimately keep the dir a
-        # few GB; only growth beyond the horizon means something is pinned.
-        wal_bytes, max_wal_bytes = _fetch(primary, _WAL_SQL)[0]
-        wal_ceiling = int(max_wal_bytes * WAL_DIR_ALERT_FACTOR)
-        if wal_bytes > wal_ceiling:
-            alerts.append(
-                f"[ALERT] pg_wal dir {_fmt_bytes(wal_bytes)} > "
-                f"{WAL_DIR_ALERT_FACTOR}× max_wal_size "
-                f"({_fmt_bytes(wal_ceiling)}) — segments are pinned beyond the "
-                "recycle horizon; check the slot state above and disk space"
-            )
-        else:
-            print(
-                f"[ok] pg_wal dir {_fmt_bytes(wal_bytes)} "
-                f"(alert ceiling {_fmt_bytes(wal_ceiling)} = "
-                f"{WAL_DIR_ALERT_FACTOR}× max_wal_size {_fmt_bytes(max_wal_bytes)})"
-            )
-
-    for line in alerts:
-        print(line)
-    return 1 if alerts else 0
+    return _print_items(HealthCheck().replication())
 
 
 def check_streams() -> int:
-    """Downloads-stream liveness: every poller + the watchdog supervisor
-    must have a fresh heartbeat in monitor.service_heartbeat. 0/1 exit.
-
-    Heartbeats are written by a daemon thread inside each process
-    (_common/service_heartbeat.py) every ~60s regardless of the poll loop's
-    sleep windows, so a stale beat means the process is dead or wedged —
-    it never means "market closed". The watchdog (database/stream_watchdog.py)
-    is included because a dead supervisor silently stops restarting
-    pollers. The heartbeat rows of the repo's OTHER (batch) processes are
-    NOT liveness-alerted here: they legitimately sit stopped between runs
-    (their run history lives in monitor.service_audit; the watchdog's
-    orphan pass closes unrecorded deaths). Restart counts read the same
-    audit table's merged watchdog restart trail (dead lives closed with a
-    'watchdog restart: …' exit_reason).
-    """
-    alerts: list[str] = []
-    expected = list(MONITORED_SERVICES)
-
-    with _connect(_get_conn_params()) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT service, pid, "
-                f"EXTRACT(EPOCH FROM (now() - beat_at))::bigint, "
-                f"scope, sub_scope, stop_reason "
-                f"FROM {HEARTBEAT_TABLE} WHERE service = ANY(%s)",
-                (expected,),
-            )
-            beats = {
-                svc: (pid, age, scope, sub, stop)
-                for svc, pid, age, scope, sub, stop in cur.fetchall()
-            }
-            cur.execute(
-                "SELECT service, count(*) FROM monitor.service_audit "
-                "WHERE exit_reason LIKE 'watchdog restart%' "
-                "AND ended_at > now() - interval '24 hours' "
-                "GROUP BY service"
-            )
-            restarts_24h = dict(cur.fetchall())
-
-    for service in expected:
-        row = beats.get(service)
-        label = "watchdog" if service == WATCHDOG_SERVICE else service
-        if row is None:
-            alerts.append(
-                f"[ALERT] {label}: no heartbeat row — not running (or a "
-                "pre-heartbeat build; restart it once to gain heartbeats)"
-            )
-            continue
-        pid, age, scope, sub, stop_reason = row
-        where = f"{scope}/{sub}" if scope and sub else (scope or "?")
-        stop_note = f" — last exit: {stop_reason}" if stop_reason else ""
-        if age > int(STALE_AFTER_S):
-            alerts.append(
-                f"[ALERT] {label} ({where}): heartbeat stale {age}s > "
-                f"{int(STALE_AFTER_S)}s (pid {pid}) — dead or wedged"
-                f"{stop_note}"
-            )
-        else:
-            n = restarts_24h.get(service, 0)
-            print(
-                f"[ok] {label} ({where}): heartbeat {age}s ago (pid {pid})"
-                + (f", {n} restart(s) in 24h" if n else "")
-            )
-
-    for line in alerts:
-        print(line)
-    return 1 if alerts else 0
+    """Downloads-stream liveness (see HealthCheck.streams). 0/1 exit."""
+    return _print_items(HealthCheck().streams())
 
 
 def wait_catchup(max_bytes: int, timeout_s: float, interval_s: float) -> int:

@@ -15,11 +15,14 @@ INSERT INTO llm.ai_prompts (prompt_key, prompt_sub_type, prompt_type, title, ver
      1,
      'DB search',
      1,
-     'db-search: ground every claim in the data — inspect schemas '
-     '(db_list_tables / db_describe_table) and run narrow aggregate '
-     'queries (db_run_query) with the items'' metric db_keywords '
-     'recipes before writing.',
-     'Ground every claim in the database — inspect schemas and run narrow aggregates with the metric db_keywords recipes before writing.',
+     'db-search: ground every claim in the data — start from the '
+     'items'' tags (as_of date, scope codes/industry, page keywords) '
+     'and their preloaded article excerpts, decide what to check, '
+     'inspect schemas (db_list_tables / db_describe_table) and run '
+     'narrow aggregate queries (db_run_query) before writing; '
+     'kg_search resolves the tables by business meaning when the '
+     'owning table is unknown.',
+     'Ground every claim in the database — work from the item tags and article excerpts, inspect schemas and run narrow aggregates before writing.',
      'Ground claims in actual DB values via the agent''s read-only tools.',
      1),
     ('rarity-ranking',

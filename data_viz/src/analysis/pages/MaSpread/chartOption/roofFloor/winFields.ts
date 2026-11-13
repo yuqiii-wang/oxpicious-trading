@@ -1,6 +1,6 @@
 /**
  * Per-window OHLC extrema field picking for the Roof/Floor Trendlines
- * row — the roof/floor window buttons (60…1275d) each read their own
+ * row — the roof/floor window buttons (60…1260d) each read their own
  * suffixed columns off a MovAveSpreadOhlcRow.
  */
 import type { MovAveSpreadOhlcRow } from "@shared/types";
@@ -78,57 +78,57 @@ export function pickRoofFloorWinFields(r: MovAveSpreadOhlcRow, w: number): RoofF
         changeSinceLastLow: r.change_since_last_low_120d,
         daysSinceLastLow: r.days_since_last_low_120d,
       };
-    case 255:
+    case 252:
       return {
-        open: r.open_255d, high: r.high_255d, highDate: r.high_date_255d,
-        high2nd: r.high_2nd_255d, high2ndDate: r.high_2nd_date_255d,
-        highSlope: r.high_line_slope_255d,
-        low: r.low_255d, lowDate: r.low_date_255d,
-        low2nd: r.low_2nd_255d, low2ndDate: r.low_2nd_date_255d,
-        lowSlope: r.low_line_slope_255d,
-        changeSinceLastHigh: r.change_since_last_high_255d,
-        daysSinceLastHigh: r.days_since_last_high_255d,
-        changeSinceLastLow: r.change_since_last_low_255d,
-        daysSinceLastLow: r.days_since_last_low_255d,
+        open: r.open_252d, high: r.high_252d, highDate: r.high_date_252d,
+        high2nd: r.high_2nd_252d, high2ndDate: r.high_2nd_date_252d,
+        highSlope: r.high_line_slope_252d,
+        low: r.low_252d, lowDate: r.low_date_252d,
+        low2nd: r.low_2nd_252d, low2ndDate: r.low_2nd_date_252d,
+        lowSlope: r.low_line_slope_252d,
+        changeSinceLastHigh: r.change_since_last_high_252d,
+        daysSinceLastHigh: r.days_since_last_high_252d,
+        changeSinceLastLow: r.change_since_last_low_252d,
+        daysSinceLastLow: r.days_since_last_low_252d,
       };
-    case 500:
+    case 504:
       return {
-        open: r.open_500d, high: r.high_500d, highDate: r.high_date_500d,
-        high2nd: r.high_2nd_500d, high2ndDate: r.high_2nd_date_500d,
-        highSlope: r.high_line_slope_500d,
-        low: r.low_500d, lowDate: r.low_date_500d,
-        low2nd: r.low_2nd_500d, low2ndDate: r.low_2nd_date_500d,
-        lowSlope: r.low_line_slope_500d,
-        changeSinceLastHigh: r.change_since_last_high_500d,
-        daysSinceLastHigh: r.days_since_last_high_500d,
-        changeSinceLastLow: r.change_since_last_low_500d,
-        daysSinceLastLow: r.days_since_last_low_500d,
+        open: r.open_504d, high: r.high_504d, highDate: r.high_date_504d,
+        high2nd: r.high_2nd_504d, high2ndDate: r.high_2nd_date_504d,
+        highSlope: r.high_line_slope_504d,
+        low: r.low_504d, lowDate: r.low_date_504d,
+        low2nd: r.low_2nd_504d, low2ndDate: r.low_2nd_date_504d,
+        lowSlope: r.low_line_slope_504d,
+        changeSinceLastHigh: r.change_since_last_high_504d,
+        daysSinceLastHigh: r.days_since_last_high_504d,
+        changeSinceLastLow: r.change_since_last_low_504d,
+        daysSinceLastLow: r.days_since_last_low_504d,
       };
-    case 750:
+    case 756:
       return {
-        open: r.open_750d, high: r.high_750d, highDate: r.high_date_750d,
-        high2nd: r.high_2nd_750d, high2ndDate: r.high_2nd_date_750d,
-        highSlope: r.high_line_slope_750d,
-        low: r.low_750d, lowDate: r.low_date_750d,
-        low2nd: r.low_2nd_750d, low2ndDate: r.low_2nd_date_750d,
-        lowSlope: r.low_line_slope_750d,
-        changeSinceLastHigh: r.change_since_last_high_750d,
-        daysSinceLastHigh: r.days_since_last_high_750d,
-        changeSinceLastLow: r.change_since_last_low_750d,
-        daysSinceLastLow: r.days_since_last_low_750d,
+        open: r.open_756d, high: r.high_756d, highDate: r.high_date_756d,
+        high2nd: r.high_2nd_756d, high2ndDate: r.high_2nd_date_756d,
+        highSlope: r.high_line_slope_756d,
+        low: r.low_756d, lowDate: r.low_date_756d,
+        low2nd: r.low_2nd_756d, low2ndDate: r.low_2nd_date_756d,
+        lowSlope: r.low_line_slope_756d,
+        changeSinceLastHigh: r.change_since_last_high_756d,
+        daysSinceLastHigh: r.days_since_last_high_756d,
+        changeSinceLastLow: r.change_since_last_low_756d,
+        daysSinceLastLow: r.days_since_last_low_756d,
       };
-    case 1275:
+    case 1260:
       return {
-        open: r.open_1275d, high: r.high_1275d, highDate: r.high_date_1275d,
-        high2nd: r.high_2nd_1275d, high2ndDate: r.high_2nd_date_1275d,
-        highSlope: r.high_line_slope_1275d,
-        low: r.low_1275d, lowDate: r.low_date_1275d,
-        low2nd: r.low_2nd_1275d, low2ndDate: r.low_2nd_date_1275d,
-        lowSlope: r.low_line_slope_1275d,
-        changeSinceLastHigh: r.change_since_last_high_1275d,
-        daysSinceLastHigh: r.days_since_last_high_1275d,
-        changeSinceLastLow: r.change_since_last_low_1275d,
-        daysSinceLastLow: r.days_since_last_low_1275d,
+        open: r.open_1260d, high: r.high_1260d, highDate: r.high_date_1260d,
+        high2nd: r.high_2nd_1260d, high2ndDate: r.high_2nd_date_1260d,
+        highSlope: r.high_line_slope_1260d,
+        low: r.low_1260d, lowDate: r.low_date_1260d,
+        low2nd: r.low_2nd_1260d, low2ndDate: r.low_2nd_date_1260d,
+        lowSlope: r.low_line_slope_1260d,
+        changeSinceLastHigh: r.change_since_last_high_1260d,
+        daysSinceLastHigh: r.days_since_last_high_1260d,
+        changeSinceLastLow: r.change_since_last_low_1260d,
+        daysSinceLastLow: r.days_since_last_low_1260d,
       };
     default:
       return EMPTY_ROOF_FLOOR_WIN;

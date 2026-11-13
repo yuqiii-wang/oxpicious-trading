@@ -5,6 +5,7 @@ import type {
   MaSpreadSecType,
   MovAveSpreadHighLowStreak,
   MovAveSpreadMomentumDay,
+  MovAveSpreadAlignmentDay,
   MovAveSpreadOhlcGapDay,
   MovAveSpreadOhlcRow,
   MovAveSpreadPairSeries,
@@ -44,6 +45,7 @@ export interface ExtrasState {
   ohlcGaps?: MovAveSpreadOhlcGapDay[];
   rsiRanks?: MovAveSpreadRsiRankDay[];
   momentum?: MovAveSpreadMomentumDay[];
+  alignment?: MovAveSpreadAlignmentDay[];
 }
 
 /** The panel's single shade slot's families — activating one clears every

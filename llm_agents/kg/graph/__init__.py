@@ -2,7 +2,8 @@
 SEARCH ENGINE (pure domain).
 
 The graph itself lives in PostgreSQL (``llm.kg_entities`` /
-``llm.kg_edges``, DDL ``database/sql/llm/13_kg_hypergraph.sql``): the
+``llm.kg_edges``, DDL ``database/sql/llm/kg_entities.sql`` +
+``kg_edges.sql``): the
 namespace-0 DB-semantics subgraph is seeded under
 ``database/sql/llm/static/knowledge_graphs/db_semantics/`` (ONE ENTITY
 = ONE TABLE/VIEW, one edge = one table relationship); namespace 1 is
@@ -59,8 +60,8 @@ The DB load lives in :mod:`.service` (the TTL-cached
 """
 from llm_agents.kg.graph.engine import KnowledgeGraph
 from llm_agents.kg.graph.rendering import (
-    NODE_MAX_CAP, NODE_MAX_DEFAULT, render_expand, render_replay,
-    render_search,
+    DETAIL_FULL, DETAIL_LEAN, DETAIL_TIERS, NODE_MAX_CAP, NODE_MAX_DEFAULT,
+    normalize_detail, render_expand, render_replay, render_search,
 )
 from llm_agents.kg.graph.values import (
     KgEdge, KgEntity, ScoredNode, SeedHit, SearchResult, WalkHit,
@@ -71,10 +72,11 @@ from llm_agents.kg.graph.vocabulary import (
 )
 
 __all__ = [
-    "ACT_BLEND", "FACE_DESC", "FACE_NAME", "FACE_TAG", "FACE_TYPE",
+    "ACT_BLEND", "DETAIL_FULL", "DETAIL_LEAN", "DETAIL_TIERS",
+    "FACE_DESC", "FACE_NAME", "FACE_TAG", "FACE_TYPE",
     "HOP_DECAY", "KgEdge", "KgEntity", "KnowledgeGraph", "NODE_MAX_CAP",
     "NODE_MAX_DEFAULT", "ScoredNode", "SearchResult", "SeedHit",
     "SUBRELATION_BOOST", "WalkHit", "WALK_BEAM", "edge_factor",
-    "extract_tokens", "normalize", "render_expand", "render_replay",
-    "render_search",
+    "extract_tokens", "normalize", "normalize_detail", "render_expand",
+    "render_replay", "render_search",
 ]

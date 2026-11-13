@@ -3,9 +3,12 @@
  */
 import { fetchJson } from "./_cache";
 
-export type StreamServiceState = "live" | "stale" | "stopped" | "down";
+/** Liveness state of one resident process (the Service Monitor page's
+ * first table — the always-on services the stream watchdog supervises;
+ * the category used to be called "stream services"). */
+export type ResidentProcessState = "live" | "stale" | "stopped" | "down";
 
-export interface StreamServiceStatus {
+export interface ResidentProcessStatus {
   service: string;
   scope: string;
   subScope: string | null;
@@ -13,7 +16,7 @@ export interface StreamServiceStatus {
   startedAt: string | null;
   beatAt: string | null;
   beatAgeS: number | null;
-  status: StreamServiceState;
+  status: ResidentProcessState;
   stopReason: string | null;
   isNormalExit: boolean | null;
   stoppedAt: string | null;
@@ -87,8 +90,11 @@ export interface MonitorStreamResponse {
   success: true;
   generatedAt: string;
   staleAfterS: number;
-  watchdog: StreamServiceStatus | null;
-  services: StreamServiceStatus[];
+  watchdog: ResidentProcessStatus | null;
+  /** The resident processes: always-on pollers, db_health, the
+   *  llm_agents daemons — everything the stream watchdog supervises,
+   *  minus the watchdog itself. */
+  services: ResidentProcessStatus[];
   processes: ProcessStatus[];
   recentRestarts: StreamRestartEntry[];
 }
@@ -190,7 +196,7 @@ export async function runHealthCheck(): Promise<HealthCheckResponse> {
 }
 
 // ---------------------------------------------------------------------------
-// Start always-on stream services — POST /api/monitor/stream-always
+// Start the always-on resident processes — POST /api/monitor/stream-always
 // ---------------------------------------------------------------------------
 
 /** Result of the always-stream starter: `success` = the hidden keeper
@@ -208,8 +214,11 @@ export interface StreamAlwaysResponse {
   message: string;
 }
 
-/** Bring the always-on stream up (watchdog + five pollers + db_health).
- * Resolves as soon as the keeper session is handed to WSL — NOT when
+/** Bring the always-on resident processes up: the keeper session runs
+ * the watchdog starter then the poller starter — the watchdog then
+ * revives every supervised resident process (pollers, db_health, the
+ * llm_agents daemons). Resolves as soon as the keeper session is handed
+ * to WSL — NOT when
  * services are live. A raw fetch, NOT fetchJson: this POST spawns a
  * long-lived process and must never be served from (or written into)
  * the client cache. Deduped server-side by process-id-tag while the

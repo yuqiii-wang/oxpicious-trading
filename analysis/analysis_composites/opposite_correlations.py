@@ -2,7 +2,7 @@
 
 Populates analysis_composites.industry_corr_benchmark_offsets — one row
 per (industry_id, benchmark_industry_id, pool_size, benchmark_code,
-start_date, interval) auditing, per 20/60/255-trading-day window:
+start_date, interval) auditing, per 20/60/252-trading-day window:
 
   overall_corr_ma{W}_{W}d     RAW Pearson correlation of the two
                               industries' MA-{W} curves of mean_close
@@ -161,7 +161,7 @@ async def find_missing_offset_window_ends(
     the earliest calendar date any targeted window's MA curves need —
     ``cal[min(s − W + 1)]`` over the targeted windows — so the daily
     increment fetches only the tail span (typically ~2.1 years for the
-    255d trailing window) instead of full history. The caller passes it
+    252d trailing window) instead of full history. The caller passes it
     through ONLY when the heal set is empty (heal pairs need full
     history back to the calendar start).
 
@@ -174,8 +174,8 @@ async def find_missing_offset_window_ends(
                 OR offset_sub_corr_ma20_20d IS NOT NULL) AS c20,
                (overall_corr_ma60_60d IS NOT NULL
                 OR offset_sub_corr_ma60_60d IS NOT NULL) AS c60,
-               (overall_corr_ma255_255d IS NOT NULL
-                OR offset_sub_corr_ma255_255d IS NOT NULL) AS c255
+               (overall_corr_ma252_252d IS NOT NULL
+                OR offset_sub_corr_ma252_252d IS NOT NULL) AS c252
         FROM {TABLE_OFFSETS}
         WHERE benchmark_code = $1
     """
@@ -208,7 +208,7 @@ async def find_missing_offset_window_ends(
     if t_len == 0:
         return set(), None, set()
     cov: dict[datetime.date, dict[int, bool]] = {
-        r["start_date"]: {20: r["c20"], 60: r["c60"], 255: r["c255"]}
+        r["start_date"]: {20: r["c20"], 60: r["c60"], 252: r["c252"]}
         for r in cov_rows
     }
     missing_industries: Set[str] = (
@@ -662,18 +662,18 @@ async def run_opposite_correlations(
                     "interval": INTERVAL_DAYS,
                     "overall_corr_ma20_20d": o20,
                     "overall_corr_ma60_60d": o60,
-                    "overall_corr_ma255_255d": o255,
+                    "overall_corr_ma252_252d": o255,
                     "offset_sub_corr_ma20_20d": u20,
                     "offset_sub_corr_ma60_60d": u60,
-                    "offset_sub_corr_ma255_255d": u255,
+                    "offset_sub_corr_ma252_252d": u255,
                     "opposite_score_ma20_20d": c20,
                     "opposite_score_ma60_60d": c60,
-                    "opposite_score_ma255_255d": c255,
+                    "opposite_score_ma252_252d": c252,
                 }
                 for a, b, d,
                     o20, o60, o255,
                     u20, u60, u255,
-                    c20, c60, c255
+                    c20, c60, c252
                 in zip(
                     ind_l, bench_ind_l, sd_l,
                     ov_l[0], ov_l[1], ov_l[2],

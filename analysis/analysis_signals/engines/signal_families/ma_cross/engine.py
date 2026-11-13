@@ -18,7 +18,7 @@ mov_ave_spreads_detail gap columns ARE the values):
       episode ended within 20 traded days — the failed rally / double
       top; the SELL is exit timing for longs, never a short entry.
   MaGdepthEntry        (buy ONLY) — the raw-gap band breach below the
-      MA at {3, 5, 8}% (ma120_gap / ma255_gap), the boll_std
+      MA at {3, 5, 8}% (ma120_gap / ma252_gap), the boll_std
       band-breach architecture on the raw gap axis. NO top side: deep
       gaps ABOVE the MA measured uniformly negative (momentum — the
       equity asymmetry).
@@ -278,14 +278,14 @@ class MaBreadthEntry(_MaCrossBase):
 class MaGdepthEntry(_MaCrossBase):
     """gdepth — the raw-gap band breach below the MA (buy ONLY)."""
 
-    SUB_TYPES = ("ma120_gap", "ma255_gap")
+    SUB_TYPES = ("ma120_gap", "ma252_gap")
 
     def run(self, frame: pd.DataFrame) -> tuple[list[dict], list[dict]]:
         rules: list[dict] = []
         history: list[dict] = []
         if frame.empty:
             return rules, history
-        for w in (120, 255):
+        for w in (120, 252):
             gap = frame[f"gap{w}"].astype("float64")
             candidates = [
                 Candidate(

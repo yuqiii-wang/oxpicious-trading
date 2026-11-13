@@ -41,7 +41,7 @@ from _common.sql_views import render_sql_view
 #
 #  needs_rolling_backfill() lets callers detect rows that SHOULD have
 #  rolling price data (broad-market benchmark, benchmark_shared_weight > 0)
-#  but have a NULL rolling_255d/120d column — e.g. after an ALTER TABLE ADD
+#  but have a NULL rolling_252d/120d column — e.g. after an ALTER TABLE ADD
 #  COLUMN or an interrupted pre-transaction run. The fix is a full recompute
 #  (run_attributions with force=True): the merged INSERT recomputes ALL
 #  columns, including the rolling prices, for every date.
@@ -57,10 +57,10 @@ _ROLLING_BACKFILL_CHECK_SQL = """
             WHERE is_broad_market = TRUE
         )
         AND (
-            -- 255d is the long-established column; NULL here means a prior
+            -- 252d is the long-established column; NULL here means a prior
             -- force run never completed (or the table was ALTER'd with a
             -- schema change). Triggers a FULL backfill.
-            benchmark_non_this_industry_rolling_255days_price IS NULL
+            benchmark_non_this_industry_rolling_252days_price IS NULL
             -- 120d is the newest column (added with the
             -- industry_hypes_and_drains feature). After ALTER TABLE ADD
             -- COLUMN, ALL existing rows have NULL 120d — the incremental
@@ -79,7 +79,7 @@ async def needs_rolling_backfill(conn) -> bool:
 
     Returns True when existing rows SHOULD have rolling data (broad-market
     benchmark with benchmark_shared_weight > 0) but the
-    benchmark_non_this_industry_rolling_255days_price column is NULL —
+    benchmark_non_this_industry_rolling_252days_price column is NULL —
     typically after a schema change that added the column via ALTER TABLE
     without repopulating it.
     """

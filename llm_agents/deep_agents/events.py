@@ -102,11 +102,35 @@ class EventBus:
     def __init__(self, queue_max: int = _QUEUE_MAX) -> None:
         self._queue_max = queue_max
         self._subscribers: Set["asyncio.Queue[Dict[str, Any]]"] = set()
+        # The chain-membership registry (register_chain): member thread
+        # id → its chain root. The store write paths publish under the
+        # segment thread they wrote (the three-graph chain's custom /
+        # result threads among them) and know nothing of the chain — the
+        # runner registers each minted thread here so publish() can stamp
+        # the missing ``super_thread_id`` on the frame and the UI can
+        # match every segment's node updates against the chain ROOT it
+        # opened the run with.
+        self._chain_by_thread: Dict[str, str] = {}
 
     @property
     def subscriber_count(self) -> int:
         """Live subscribers (the /ws handshake's in-flight count)."""
         return len(self._subscribers)
+
+    def register_chain(self, members: list[str], super_thread_id: str) -> None:
+        """Learn one run's chain membership: every *member* thread id maps
+        to its chain root. Frames already carrying ``super_thread_id``
+        (thread_started / thread_settled / the supervisor's) are never
+        touched; a re-register of a known member re-points it (uuid keys,
+        runs never collide)."""
+        for member in members:
+            self._chain_by_thread[member] = super_thread_id
+
+    def drop_chain(self, members: list[str]) -> None:
+        """Forget a settled run's members (the runner's unwind path) —
+        the registry stays bounded by the live runs, not run history."""
+        for member in members:
+            self._chain_by_thread.pop(member, None)
 
     @staticmethod
     def _as_dict(event: Union[DeepAgentEvent, Dict[str, Any]]) -> Dict[str, Any]:
@@ -120,8 +144,17 @@ class EventBus:
     def publish(self, event: Union[DeepAgentEvent, Dict[str, Any]]) -> None:
         """Announce one event to every subscriber. Never blocks the caller
         (a store write path inside a run): a full queue drops its OLDEST
-        event — the newest state wins for a consumer that fell behind."""
+        event — the newest state wins for a consumer that fell behind.
+
+        THE CHAIN STAMP: a frame keyed to a registered member thread and
+        lacking ``super_thread_id`` gains the chain root here (see
+        ``register_chain``) — one wire shape where every frame of a run
+        names both its segment thread and the chain the UI watches."""
         payload = self._as_dict(event)
+        if ("thread_id" in payload and "super_thread_id" not in payload):
+            root = self._chain_by_thread.get(payload["thread_id"])
+            if root is not None:
+                payload = {**payload, "super_thread_id": root}
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(payload)
@@ -170,3 +203,15 @@ def subscribe() -> "asyncio.Queue[Dict[str, Any]]":
 def unsubscribe(queue: "asyncio.Queue[Dict[str, Any]]") -> None:
     """Module-level delegate over :data:`EVENT_BUS`."""
     EVENT_BUS.unsubscribe(queue)
+
+
+def register_chain(members: list[str], super_thread_id: str) -> None:
+    """Module-level delegate over :data:`EVENT_BUS` (the runner's mint
+    seam — one call per chain thread as the run creates it)."""
+    EVENT_BUS.register_chain(members, super_thread_id)
+
+
+def drop_chain(members: list[str]) -> None:
+    """Module-level delegate over :data:`EVENT_BUS` (the runner's unwind
+    seam — the settled run's members leave the registry)."""
+    EVENT_BUS.drop_chain(members)

@@ -97,7 +97,7 @@ def _step_delegate(raw: Dict[str, Any]) -> Optional[str]:
     {"goal": ...}}``, a plain string ``"delegate"``, or the flat
     ``"delegate_goal"`` key (all three appear across model styles).
     None = an inline step; an empty/oversized goal degrades to None
-    (a fork without a usable goal is just an ordinary step)."""
+    (a spawn without a usable goal is just an ordinary step)."""
     candidate = raw.get("delegate", raw.get("delegate_goal"))
     if isinstance(candidate, dict):
         candidate = candidate.get("goal")
@@ -120,8 +120,8 @@ def _review_fixup(step: PlannedStep) -> PlannedStep:
     parse site: a review-tagged step is an INDEPENDENT inline reviewer -
     parallel forced on (it joins the closing wave whatever the model
     marked) and any delegate goal stripped BEFORE the delegated cap
-    counts it (a delegated fork never sees the findings bridge, so a
-    fork cannot review; the callers apply this before the cap logic)."""
+    counts it (a delegated spawn never sees the findings bridge, so a
+    spawn cannot review; the callers apply this before the cap logic)."""
     if step.node not in REVIEW_NODE_TAGS:
         return step
     if step.delegate is None and step.parallel:
@@ -238,7 +238,7 @@ def parse_plan_json(text: str) -> List[PlannedStep]:
             delegated += 1
             if delegated > limits.max_delegated_steps:
                 logger.info("plan JSON: delegate marker dropped on %d-th "
-                            "fork (cap %d)", delegated,
+                            "spawn (cap %d)", delegated,
                             limits.max_delegated_steps)
                 step = step.model_copy(update={'delegate': None})
         steps.append(step)

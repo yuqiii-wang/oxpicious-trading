@@ -1,6 +1,6 @@
 /**
  * Moneyness series adapter — converts the server-computed oi_moneyness
- * aggregate (/oi-moneyness-series, see api/services/options.service.ts)
+ * aggregate (/oi-moneyness-series, see api/services/market/options.service.ts)
  * into the unified SharedSkewSpec consumed by sharedSkewOption.ts.
  *
  * Replaces the former in-browser computeDailySkewSeries(): the SQL already

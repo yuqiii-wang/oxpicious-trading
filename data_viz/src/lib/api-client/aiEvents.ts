@@ -4,7 +4,7 @@
  * lifecycle events (thread_started when a run registers, a
  * state_created/state_updated per planning-store write, node_finished
  * on every node-lane settle, thread_settled at the end); the data_viz
- * API bridges them at /api/ai/events (api/services/ai-events.service.ts).
+ * API bridges them at /api/ai/events (api/services/ai/ai-events.service.ts).
  *
  * ONE module-level connection shared by every subscriber (components
  * mount/unmount handlers, not sockets): auto-reconnect with capped
@@ -15,7 +15,31 @@
  * re-read the run/thread endpoints they already have. While the channel
  * is down the pages' poll loops are the fallback; events only make the
  * updates instant.
+ *
+ * 2026-11-11 — THE CHANNEL IS INTENTIONALLY DISABLED (bypassed, not
+ * removed): AI_EVENTS_CHANNEL_DISABLED below is the single kill switch.
+ * connect() no-ops, so no browser socket to /api/ai/events is ever
+ * opened; every consumer keeps its subscription (the handler code stays
+ * for the day the channel returns) and refreshes through the page poll
+ * loops at AI_EVENTS_FALLBACK_POLL_MS instead. The bridge side carries
+ * the matching switch (api/services/ai/ai-events.service.ts — no upstream
+ * daemon connection either); the daemon's /ws endpoint itself is
+ * untouched. To re-enable: flip the flag here and there.
  */
+
+/** The intentional ws bypass (2026-11-11 — see the header): false =
+ *  the disabled state. While true every page refreshes through its
+ *  AI_EVENTS_FALLBACK_POLL_MS poll loop; subscribeAiEvents still
+ *  registers listeners (handlers stay live code, they simply never
+ *  receive a frame) and probeAiEvents answers {ok:false} at once. */
+export const AI_EVENTS_CHANNEL_DISABLED = true;
+
+/** The poll cadence the pages refresh at while the event channel is
+ *  disabled (see above): the Thread Graph detail poll (useThreadDetail),
+ *  the summary strip's live polls and the monitor's runs poll all key
+ *  off this one constant, so re-enabling the channel (or retuning the
+ *  cadence) is a one-line change. */
+export const AI_EVENTS_FALLBACK_POLL_MS = 60_000;
 
 /** The daemon event vocabulary (llm_agents/deep_agents/events.py + the
  *  server/bridge hellos) plus the bridge's own injected frame: the run
@@ -52,6 +76,11 @@ export interface AiDaemonEvent {
   type: AiDaemonEventType;
   /** The run the event concerns (absent on hello). */
   thread_id?: string;
+  /** The frame's chain root (the run's super_thread_id — the daemon's
+   *  bus stamps it on every frame of a registered chain): a page watching
+   *  the run by its root id matches the custom/result segments' node
+   *  events through this field, not only thread_id. */
+  super_thread_id?: string;
   state_id?: number;
   node?: string;
   title?: string;
@@ -101,6 +130,9 @@ function scheduleReconnect(): void {
 }
 
 function connect(): void {
+  // The intentional bypass (see the header): never open the socket —
+  // the reconnect/backoff machinery below stays for the re-enable day.
+  if (AI_EVENTS_CHANNEL_DISABLED) return;
   if (connecting || socket !== null) return;
   connecting = true;
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";

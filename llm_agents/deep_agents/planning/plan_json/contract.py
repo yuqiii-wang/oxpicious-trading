@@ -23,7 +23,7 @@ from typing import Tuple
 from pydantic import BaseModel, ConfigDict
 
 # Plan guardrails: a plan is a checklist, not the work itself. The
-# RUN-BUDGET caps (planned step count, delegated-fork count) live in
+# RUN-BUDGET caps (planned step count, delegated-spawn count) live in
 # the static deep_agent_config (limits.run_limits() — max_plan_nodes /
 # max_delegated_steps, read at the use sites and rendered into the
 # system prompt); the shape bounds below stay code constants.
@@ -40,8 +40,8 @@ MAX_DELEGATE_LEN = 1500
 # ONE concurrent wave of fresh conversations (own context each) that
 # read the accumulated FINDINGS bridge through their own lens - the
 # generator-critic pattern with independent reviewers instead of
-# self-review. They are NEVER delegated: a delegated fork inherits
-# only the run goal + business context (never the findings), so a fork
+# self-review. They are NEVER delegated: a delegated spawn inherits
+# only the run goal + business context (never the findings), so a spawn
 # cannot review what the run found; any delegate goal on these tags is
 # stripped and the parallel mark forced (``_review_fixup`` - defensive
 # normalization for stubborn models). The seat definitions seed the

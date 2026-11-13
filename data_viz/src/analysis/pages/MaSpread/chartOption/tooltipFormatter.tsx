@@ -27,6 +27,7 @@ import type { TooltipContext, TooltipFmtHelpers } from "./_common";
 import { findTrendSpanAt } from "./trendBands";
 import { appendBollingerRows } from "./bollinger";
 import { appendRsiRow } from "./rsiTrend";
+import { appendMacdRow } from "./macdTooltipRow";
 import { appendDerivTrendRows } from "./derivTrend";
 import { appendMomentumTrendRows } from "./momentumTrend";
 import {
@@ -193,6 +194,9 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
 
     // Wilder RSI (rsiTrend group).
     appendRsiRow(children, ctx, idx);
+
+    // MATERIALIZED MACD block (tech_stats via the shared block).
+    appendMacdRow(children, ctx, idx);
 
     // Trend classification (tooltip-only — the signals tier's spans,
     // analysis.trend_days via the trend-spans API; the hovered DATE

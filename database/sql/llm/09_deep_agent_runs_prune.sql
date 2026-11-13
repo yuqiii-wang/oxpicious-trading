@@ -20,7 +20,9 @@
 --  05_llm_requests.sql: the purged runs' llm.llm_requests chains first
 --  (a request's chain_id is the node's llm_context_id — resolved from the
 --  states, the store's node items and the context registry while the
---  linking rows still exist), then states (the self-FK cascades child
+--  linking rows still exist), the aux steps with them
+--  (llm.deep_agent_aux_steps — same chain resolution + the
+--  thread/super-stamped rows), then states (the self-FK cascades child
 --  states, and contexts.state_id CASCADE removes their task-linked
 --  context rows), then the thread's remaining contexts (kind
 --  final-result and unlinked legacy rows), then the deep-agent store items
@@ -56,6 +58,28 @@ CREATE TEMP TABLE _runs_purge AS
 
 DELETE FROM llm.llm_requests
 WHERE chain_id IN (
+    SELECT s.llm_context_id
+    FROM llm.deep_agent_states s
+    JOIN _runs_purge p USING (thread_id)
+    WHERE s.llm_context_id IS NOT NULL
+    UNION
+    SELECT i.value ->> 'llm_context_id'
+    FROM llm.deep_agent_store_items i
+    JOIN _runs_purge p
+      ON i.namespace[1:2] = ARRAY['deep_agent', p.thread_id]::text[]
+    WHERE i.value ->> 'llm_context_id' IS NOT NULL
+    UNION
+    SELECT i.key
+    FROM llm.deep_agent_store_items i
+    JOIN _runs_purge p
+      ON i.namespace[1:3] = ARRAY['deep_agent', p.thread_id, 'contexts']::text[]);
+
+-- The aux steps (llm.deep_agent_aux_steps) go with their run's chains:
+-- the same chain resolution, plus the thread/super-stamped rows.
+DELETE FROM llm.deep_agent_aux_steps
+WHERE thread_id IN (SELECT thread_id FROM _runs_purge)
+   OR super_thread_id IN (SELECT thread_id FROM _runs_purge)
+   OR llm_context_id IN (
     SELECT s.llm_context_id
     FROM llm.deep_agent_states s
     JOIN _runs_purge p USING (thread_id)

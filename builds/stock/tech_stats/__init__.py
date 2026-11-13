@@ -1,6 +1,6 @@
 """builds.stock.tech_stats — Stock technical indicator computation.
 
-Computes MA5/20/60/120/255 + MA5 ratio + EMA6/12/20/26/60/120/255 from
+Computes MA5/20/60/120/252 + MA5 ratio + EMA6/12/20/26/60/120/252 from
 stats.stock_basic_stats.close, plus trading_amt_per_pct_change, storing
 results in stats.stock_tech_stats.
 

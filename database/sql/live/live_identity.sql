@@ -1,0 +1,47 @@
+-- ============================================================================
+--  Table: live.live_identity
+--    Registry of all live pipelines stored in the `live` schema.
+--    Each row corresponds to one or more live result tables.
+--
+--  Columns:
+--    name             — primary pipeline identifier (PK). Matches the suffix
+--                       of the main result table when only one exists.
+--    detail_name      — optional suffix of the per-tick detail result table
+--                       (e.g. 'sec_alloc_live_attribution'). NULL when the
+--                       pipeline has no separate detail table.
+--    summary_name     — optional suffix of the aggregated summary result table
+--                       (falls back to the main table name when the
+--                       pipeline has a single table). NULL when the
+--                       pipeline has no summary table.
+--    last_run_datetime — timestamp of the most recent run that recomputed
+--                       this pipeline (UTC).
+--    description      — free-form description of what the pipeline computes.
+--
+--  Mirrors analysis.analysis_identity in structure.
+-- ============================================================================
+-- kg entity (ns0 db_semantics_tables reads the payload below):
+-- description: The registry of live pipelines stored in the live schema — one row per pipeline.
+-- tags: live registry, 实时注册表, identity, 标识, reference, 参考
+
+
+CREATE TABLE IF NOT EXISTS live.live_identity (
+    name              TEXT         NOT NULL,
+    detail_name       TEXT,
+    summary_name      TEXT,
+    last_run_datetime TIMESTAMP    NOT NULL DEFAULT NOW(),
+    description       TEXT,
+
+    CONSTRAINT pk_live_identity PRIMARY KEY (name)
+);
+
+COMMENT ON TABLE  live.live_identity                     IS 'Registry of live pipelines stored in the live schema. One row per pipeline (may have a detail table, a summary table, or both).';
+COMMENT ON COLUMN live.live_identity.name               IS 'Primary pipeline identifier; matches the suffix of the main result table.';
+COMMENT ON COLUMN live.live_identity.detail_name        IS 'Optional suffix of the per-tick detail result table (e.g. sec_alloc_live_attribution).';
+COMMENT ON COLUMN live.live_identity.summary_name       IS 'Optional suffix of the aggregated summary result table (same as name when the pipeline has a single table).';
+COMMENT ON COLUMN live.live_identity.last_run_datetime  IS 'Timestamp of the most recent run that recomputed this pipeline (UTC).';
+COMMENT ON COLUMN live.live_identity.description        IS 'Free-form description of what the live pipeline computes.';
+
+-- 2026-09 index hygiene: idx_live_identity_name duplicated the PK (name)
+-- — dropped here so existing installations lose it; fresh installs never
+-- create it.
+DROP INDEX IF EXISTS live.idx_live_identity_name;

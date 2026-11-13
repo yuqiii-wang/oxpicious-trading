@@ -5,7 +5,7 @@
  * Split out of the former monolithic industry-sentiments.ts.
  */
 import type { QueryResultRow } from "pg";
-import { cachedRows } from "@api/services/classification-cache";
+import { cachedRows } from "@api/services/infra/classification-cache";
 import { querySqlView } from "@api/lib/sql-views";
 
 export interface DbMarketBetaMetaRow extends QueryResultRow {

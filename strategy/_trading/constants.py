@@ -50,5 +50,5 @@ SHARES_PER_QTY = 100.0
 # ---------------------------------------------------------------------------
 # Annualization (for Sharpe + return-rate formulas)
 # ---------------------------------------------------------------------------
-# ~255 trading days per year on A-share / US-equity calendars.
-TRADING_DAYS_PER_YEAR = 255
+# ~252 trading days per year on A-share / US-equity calendars.
+TRADING_DAYS_PER_YEAR = 252

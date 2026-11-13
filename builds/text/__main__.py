@@ -102,6 +102,9 @@ class TextBuild(DataBuild):
                             help="Skip text.news_keywords (text.news only).")
         parser.add_argument("--no-industry-change", action="store_true",
                             help="Skip the today_industry_change update.")
+        parser.add_argument("--no-digest", action="store_true",
+                            help="Skip the jev news_digestions side task "
+                                 "(default: jev-digest newly loaded articles).")
 
     def apply_args(self) -> None:
         self.sources = ([s.strip() for s in self.args.sources.split(",") if s.strip()]
@@ -227,6 +230,38 @@ class TextBuild(DataBuild):
                     conn, tbl)
                 logger.info("    [DB] lexicon DF stats: %s — %d lexemes",
                             tbl, n_lex)
+
+            # --- 3b. jev digestions (text.news_digestions) -------------------
+            # Side task over the SAME connection: the local jev decision
+            # model (onejev-1.6-4b, POST /v1/systemone) scores a sentiment
+            # for every JUST-LOADED article still missing a digestion row
+            # (idempotent — rows digested earlier, e.g. by the chat
+            # engine, are skipped; --force does NOT re-digest). Fail-soft:
+            # an unreachable model host warns here, it never fails the
+            # news build — catch up later with
+            # `python -m llm_agents.news_digestions run --engine jev`.
+            if self.args.no_digest:
+                logger.info("\n[3b/4] jev digestions skipped (--no-digest)")
+            else:
+                logger.info("\n[3b/4] jev digestions for newly loaded "
+                            "articles …")
+                try:
+                    from llm_agents.news_digestions.jev_digest import (
+                        digest_new_articles_jev,
+                    )
+                    stats = await digest_new_articles_jev(
+                        conn, [news_id for news_id, _r in articles])
+                    logger.info(
+                        "    [DB] text.news_digestions: %d digested, "
+                        "%d failed, %d still pending (jev)",
+                        stats["digested"], stats["failed"],
+                        stats["pending"])
+                except Exception as exc:
+                    logger.warning(
+                        "    [DB] jev digestions skipped (%s: %s) — "
+                        "catch up with `python -m "
+                        "llm_agents.news_digestions run --engine jev`",
+                        type(exc).__name__, exc)
 
             # --- 4. text.news_keywords --------------------------------------
             if self.args.no_keywords:

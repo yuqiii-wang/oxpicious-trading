@@ -1,84 +1,122 @@
 /**
- * POST /orchestration/run — manual orchestration tier run via the shared
- * serial runner (scripts/run_steps.sh).
+ * POST /orchestration/run — manual orchestration tier run via the server
+ * cluster's monitor area (the serial step runner inside
+ * server_cluster/monitor/orchestration.py — the server-side
+ * run_steps.sh).
  * Full route docs: see index.ts.
  */
 
-import { existsSync } from "fs";
-import path from "path";
 import { Router, type Request, type Response } from "express";
+import { HttpError, wrapAsync } from "../../lib/http.js";
 import {
-  isPythonProcessRunning,
-  runWslScript,
-} from "../../services/py-runner.service.js";
-import { REPO_ROOT } from "./_shared.js";
+  monitorOrchestrationFiles,
+  monitorOrchestrationPlan,
+  monitorOrchestrationStatus,
+  monitorRunOrchestration,
+} from "../../services/infra/monitor-client.service.js";
 
 const router = Router();
 
 // ---------------------------------------------------------------------------
-//  Orchestration tier run — scripts/run_steps.sh (the Orchestration
-//  config tab's title Run button)
+//  Orchestration tier run — the monitor area's serial runner (the
+//  Orchestration config tab's title Run button)
 // ---------------------------------------------------------------------------
 
-/** POST /api/monitor/orchestration/run { file, dryRun? } — fire-and-forget
- *  spawn of the shared serial runner over ONE orchestration step file:
- *  `bash scripts/run_steps.sh scripts/orchestration/<file>` (the exact
- *  delegation the scripts/<tier>.sh guards end in — calling run_steps.sh
- *  directly IS the manual run, no trading-day/time gate). The steps spawn
- *  one by one and each registers its own heartbeat, so the tier's steps
- *  show up on the Pipeline processes table as they start. dryRun=true
- *  passes the runner's own DRY_RUN=1 knob (echoes the plan, executes
- *  nothing) — verification / smoke only, never surfaced in the UI.
- *  Deduped per tier by process-id-tag; the wsl.exe client is held for the
- *  whole tier (same keeper mechanics as the stream starters). */
-router.post("/orchestration/run", (req: Request, res: Response) => {
+/** POST /api/monitor/orchestration/run { file, dryRun? } — starts ONE
+ *  orchestration step file's tier on the monitor area (POST
+ *  /orchestration/run): the steps run one by one, in numeric key order,
+ *  each submitted through the monitor area's job registry — so the
+ *  tier's steps show up on the Pipeline processes table as they start,
+ *  and GET /api/monitor/orchestration/runs/:tag polls their statuses.
+ *  dryRun=true runs nothing: the plan is echoed from the monitor area
+ *  (the former DRY_RUN=1 knob) — verification / smoke only. A second run
+ *  of the SAME tier while one is in flight is refused by the monitor
+ *  area (409 → surfaced here as alreadyRunning). */
+router.post("/orchestration/run", wrapAsync(async (req: Request, res: Response) => {
   const file = typeof req.body?.file === "string" ? req.body.file.trim() : "";
   const dryRun = req.body?.dryRun === true;
   if (!/^[A-Za-z0-9_-]+\.json$/.test(file)) {
-    res.status(400).json({
-      success: false,
-      error: `file must be an orchestration step file name like builds_daily.json, got '${file}'`,
-    });
-    return;
-  }
-  // Forward slashes: the path is joined into the WSL bash command, where
-  // a Windows separator would not resolve.
-  const jsonRel = `scripts/orchestration/${file}`;
-  if (!existsSync(path.join(REPO_ROOT, "scripts", "orchestration", file))) {
-    res.status(400).json({
-      success: false,
-      error: `no orchestration step file ${jsonRel}`,
-    });
-    return;
+    throw new HttpError(
+      400,
+      "INVALID_PARAM",
+      `file must be an orchestration step file name like builds_daily.json, got '${file}'`,
+    );
   }
   const tier = file.replace(/\.json$/, "");
-  const tag = `orchestration-run:${tier}`;
-  if (isPythonProcessRunning(tag)) {
+  if (dryRun) {
+    // Echo the plan only (the former DRY_RUN=1: verification / smoke,
+    // never surfaced in the UI).
+    const plan = await monitorOrchestrationPlan(tier).catch((err) => {
+      throw new HttpError(
+        502,
+        "UPSTREAM_FAILED",
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+    res.json({
+      success: true,
+      started: false,
+      dryRun: true,
+      tier,
+      steps: plan.steps,
+      message: `dry run — plan only (${plan.steps.length} step(s)), nothing executed`,
+    });
+    return;
+  }
+  try {
+    const run = await monitorRunOrchestration(tier);
     res.json({
       success: true,
       started: true,
-      alreadyRunning: true,
       tier,
-      message: `${tier} is already running (this UI spawn) — deduped, no new process`,
+      tag: run.tag,
+      steps: run.steps,
+      message: `monitor area is running ${tier} (${run.steps.length} step(s), one by one) — poll the tag for step statuses`,
     });
-    return;
-  }
-  const cmd = `${dryRun ? "DRY_RUN=1 " : ""}bash scripts/run_steps.sh ${jsonRel}`;
-  void runWslScript(cmd, `run_steps.sh ${file}`, { processIdTag: tag }).then((r) => {
-    if (r.success) {
-      console.log(`[monitor/orchestration/run] ${file} exited 0`);
-    } else {
-      console.error(
-        `[monitor/orchestration/run] ${file} exited ${r.exitCode}: ${r.stderr.slice(-500)}`,
-      );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("409") || msg.toLowerCase().includes("already")) {
+      res.json({
+        success: true,
+        started: true,
+        alreadyRunning: true,
+        tier,
+        message: `${tier} is already running on the monitor area — deduped, no new run`,
+      });
+      return;
     }
-  });
-  res.json({
-    success: true,
-    started: true,
-    tier,
-    message: `spawned ${cmd}${dryRun ? " (dry run)" : ""} — steps start one by one, each heartbeating onto Pipeline processes (~60s)`,
-  });
-});
+    throw new HttpError(502, "UPSTREAM_FAILED", msg);
+  }
+}));
+
+/** GET /api/monitor/orchestration/runs/:tag — one tier run's step
+ *  statuses (the UI's progress poll for a Run started here). */
+router.get("/orchestration/runs/:tag", wrapAsync(async (req: Request, res: Response) => {
+  try {
+    const status = await monitorOrchestrationStatus(req.params.tag);
+    res.json({ success: true, ...status });
+  } catch (err) {
+    throw new HttpError(
+      502,
+      "UPSTREAM_FAILED",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}));
+
+/** GET /api/monitor/orchestration — the orchestration tier names the
+ *  monitor area serves (the config tab's file list source of record). */
+router.get("/orchestration", wrapAsync(async (_req: Request, res: Response) => {
+  try {
+    const files = await monitorOrchestrationFiles();
+    res.json({ success: true, files });
+  } catch (err) {
+    throw new HttpError(
+      502,
+      "UPSTREAM_FAILED",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}));
 
 export default router;

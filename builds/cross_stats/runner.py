@@ -19,7 +19,7 @@
      + stats.cross_stats_benchmark_weight_summary).
 
 ``CrossStatsRunner.run_corr_update()`` (the ``--corr`` sub-command)
-recomputes corr_20d/60d/255d for grid dates and upserts them onto
+recomputes corr_20d/60d/252d for grid dates and upserts them onto
 existing rows (payload = 4 PK cols + 3 corr cols; base columns never
 touched).
 
@@ -317,7 +317,7 @@ class CrossStatsRunner:
         # Max corr window — the pair grain's heaviest rolling need. (The
         # former +5 MA5 buffer went away with the ETF ratio MA5; industry-
         # grain trading amounts have NO rolling window.)
-        _LOOKBACK: int = max(CORR_WINDOWS)  # 255 trading days
+        _LOOKBACK: int = max(CORR_WINDOWS)  # 252 trading days
         start_date: Optional[datetime.date] = None
         if target_dates:
             min_target: datetime.date = min(target_dates)
@@ -548,7 +548,7 @@ class CrossStatsRunner:
     #  Corr-only build (--corr sub-command)
     # ---------------------------------------------------------------------------
     async def run_corr_update(self) -> None:
-        """Recompute corr_20d/60d/255d for grid dates and upsert onto
+        """Recompute corr_20d/60d/252d for grid dates and upsert onto
         EXISTING rows (base columns untouched — see compute/_orchestrator).
 
         The main pipeline runs with corr OFF (the GPU tensor pass is the

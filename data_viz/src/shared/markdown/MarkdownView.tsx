@@ -8,6 +8,7 @@
  * elements whose scale should follow the theme typography (headings,
  * paragraphs) are mapped to Typography components.
  */
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Box, Typography } from "@mui/material";
@@ -96,7 +97,10 @@ export interface MarkdownViewProps {
   dense?: boolean;
 }
 
-export default function MarkdownView({ source, dense = false }: MarkdownViewProps) {
+/** Memoized: the react-markdown parse is the expensive part, and parents
+ *  re-render frequently (poll loops, panels) with an unchanged source —
+ *  skip the re-parse unless the source or the scale actually changed. */
+function MarkdownViewImpl({ source, dense = false }: MarkdownViewProps) {
   return (
     <Box
       sx={{
@@ -154,3 +158,6 @@ export default function MarkdownView({ source, dense = false }: MarkdownViewProp
     </Box>
   );
 }
+
+const MarkdownView = memo(MarkdownViewImpl);
+export default MarkdownView;

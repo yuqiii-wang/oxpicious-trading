@@ -37,8 +37,9 @@ Usage::
     python -m downloads.macro.ai_daily --force              # re-run over a cached artifact
     python -m downloads.macro.ai_daily --no-movers          # general summary only
     python -m downloads.macro.ai_daily --no-geo             # skip the geopolitics asks
+    python -m downloads.macro.ai_daily --no-topics          # skip the topic searches
 
-Two phases per run:
+Four phases per run:
 
 1. **General summary** — the broad-market daily question above, loaded
    by builds.text under the broad-market industry tag by default.
@@ -69,6 +70,18 @@ Two phases per run:
    (weekends/holidays excluded), the phase makes NO industry requests.
    Each survivor gets its own search+summary ask, loaded by builds.text
    under its own industry_id with ``qa_date`` = the plan date.
+4. **AI-mentioned topic searches** (``topics.py``; skip with
+   ``--no-topics``, cap with ``--max-topics``) — ONE plain chat
+   completion (``llm_agents.llm_ask``, no web search) extracts the day's
+   key topics from the answers the first three phases just produced,
+   then each topic becomes a Zhihu question-mode content search via
+   ``ZhihuNewsDownload.search_zhihu_question``: the standard
+   ``search_*.json`` artifacts land under ``temps/zhihu_news/`` and
+   builds.text ingests them into text.news (+ comments) with the rest
+   of the corpus. Outcomes embed in the general artifact under
+   ``topic_searches``; a failed extraction / per-topic search is
+   recorded and never kills the run. Runs only when ai_daily itself
+   runs (the cached-artifact early return skips it).
 
 Credentials come from ``GLM_ONLINE_SEARCH_KEY`` in the project-root
 ``.env`` (resolved by the provider layer). The parsed result is echoed
@@ -108,7 +121,7 @@ from llm_agents.online_search_summary import (  # noqa: E402
     DAILY_COUNT, SearchSummary, daily_geo_asks, daily_request,
     daily_target_or_clamp, default_daily_target, get_provider,
 )
-from downloads.macro.ai_daily import movers  # noqa: E402
+from downloads.macro.ai_daily import movers, topics  # noqa: E402
 
 OUTPUT_DIR_NAME = "ai_daily"
 # A valid stored artifact (answer + references) is a few KB at minimum;
@@ -144,8 +157,8 @@ class AiDailyDownload(DownloadJob):
     """DownloadJob for the daily AI market summary — the former ``main()``
     body is ``run()`` verbatim (the target-date resolution moved to
     ``apply_args``), the argparse surface moved to ``add_arguments`` and
-    the three async phase functions (general summary / geo asks / movers
-    phase) became methods with unchanged bodies."""
+    the async phase functions (general summary / geo asks / movers phase /
+    topic searches) became methods with unchanged bodies."""
 
     description = ("Daily AI stock-market summary: online search + LLM "
                    "answer for today / the latest biz date (sectors up "
@@ -192,6 +205,13 @@ class AiDailyDownload(DownloadJob):
                             help="Skip the AI Research auto-run embedded in the "
                                  "movers phase (per-industry research-logic Q&A "
                                  "generation, quarterly cooldown by default).")
+        parser.add_argument("--no-topics", action="store_true",
+                            help="Skip the AI-mentioned topic searches phase "
+                                 "(extract the day's topics from the answers, "
+                                 "then one Zhihu question search per topic).")
+        parser.add_argument("--max-topics", type=int, default=topics.MAX_TOPICS,
+                            help=f"Topic searches per run at most (default: "
+                                 f"{topics.MAX_TOPICS}).")
         parser.add_argument("--force", action="store_true",
                             help="Re-run even when a cached artifact exists "
                                  "for the target biz date.")
@@ -220,6 +240,8 @@ class AiDailyDownload(DownloadJob):
                 logger.info("today is not a trading day -> summarizing the "
                             "latest biz date %s", target)
         self.args.target = target
+        if self.args.max_topics < 1:
+            self.parser.error("--max-topics must be >= 1")
 
     async def run_daily_summary(
         self,
@@ -368,6 +390,23 @@ class AiDailyDownload(DownloadJob):
             from _common.db_commons import close_pools_async
             await close_pools_async()
 
+    async def run_topic_searches(
+        self,
+        summary: SearchSummary,
+        geo_env: Optional[Dict[str, Any]],
+        movers_env: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Extract the day's AI-mentioned topics and search Zhihu for each.
+
+        Thin delegation to :class:`topics.TopicSearches` with this run's
+        provider/model/--max-topics — see ``topics.py`` for the phase
+        semantics (extraction envelope, per-topic search outcomes).
+        """
+        return await topics.TopicSearches().run(
+            summary, geo_env, movers_env,
+            provider_name=self.args.provider, model=self.args.model,
+            max_topics=self.args.max_topics)
+
     def run(self) -> None:
         """One download cycle — the former ``main()`` body (argparse parsing
         and the target-date resolution are owned by the base template
@@ -421,6 +460,21 @@ class AiDailyDownload(DownloadJob):
                             len(movers_env.get("asked", [])),
                             len(movers_env.get("failed", [])))
 
+        # AI-mentioned topic searches: extract the day's key topics from
+        # the answers just collected (summary + geo + movers) and run one
+        # Zhihu question-mode search per topic — the search_*.json
+        # artifacts land under temps/zhihu_news/ and builds.text ingests
+        # them with the rest of the corpus (this step runs BEFORE the
+        # scheduled news downloads in the daily tier on purpose).
+        topics_env: Optional[Dict[str, Any]] = None
+        if not self.args.no_topics:
+            topics_env = asyncio.run(self.run_topic_searches(
+                summary, geo_env, movers_env))
+            logger.info("topics phase: %s (%d searched, %d failed)",
+                        topics_env.get("status"),
+                        len(topics_env.get("searched", [])),
+                        len(topics_env.get("failed", [])))
+
         envelope: Dict[str, Any] = summary.to_dict()
         envelope["target_date"] = self.args.target.strftime("%Y-%m-%d")
         envelope["out_file"] = str(out_path)
@@ -430,6 +484,8 @@ class AiDailyDownload(DownloadJob):
             envelope["movers"] = movers_env
         if geo_env is not None:
             envelope["geo"] = geo_env
+        if topics_env is not None:
+            envelope["topic_searches"] = topics_env
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with out_path.open("w", encoding="utf-8") as f:
             json.dump(envelope, f, ensure_ascii=False, indent=2)

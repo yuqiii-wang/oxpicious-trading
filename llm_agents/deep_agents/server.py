@@ -40,6 +40,12 @@ here the whole request IS one JSON body).
               The cancelled /run settles its thread (runner.settle_thread:
                 in_progress → failed 'stopped by user', pending → skipped)
                 and returns stopped: true. → {stopped, thread_ids}.
+              THE CONFIRMED STOP (2026-11-13): the response resolves only
+              AFTER the cancelled run(s) finished unwinding and settling
+              (bounded by STOP_SETTLE_WAIT_SEC) — when it reaches the UI
+              the chain rows are already terminal, so one refresh draws
+              the settled state and the running node greys out exactly at
+              the confirmed stop, never off the bare request.
   POST /threads/:thread_id/steps — EXTERNAL TOPOLOGY CHANGE: add steps
                 to a RUNNING thread's main lane from outside the
                 conversations (operator tooling / another service), body
@@ -47,7 +53,7 @@ here the whole request IS one JSON body).
                 after_ordinal?} — the same vocabulary and caps as the
                 model's own update_plan adds, add-only and top-lane-only:
                 history rows never move (later rows shift ordinals only),
-                other paths' future nodes (pending steps, fork subtrees)
+                other paths' future nodes (pending steps, spawn subtrees)
                 are kept, and the running graph executes the new nodes on
                 its next hop (the router re-reads the living tree between
                 hops). 409 when the thread is not running here (or its
@@ -198,6 +204,16 @@ class RunRequest(BaseModel):
     """One deep-agent run: the goal + whatever structured data the
     caller wants the run to see (+ the CLI's optional overrides)."""
 
+    # Unknown request fields are a HARD error (422), never a silent
+    # drop: a STALE daemon (running startup-time code while the sources
+    # moved on) used to accept a fresh field like ``provider`` and
+    # quietly run the wrong provider — the field vanished and the run
+    # misbehaved with no signal (observed live 2026-11-13). Loud failure
+    # surfaces the staleness; the stream watchdog's stale-process check
+    # (database/stream_watchdog.py) is the structural fix that restarts
+    # such a daemon on its own.
+    model_config = ConfigDict(extra="forbid")
+
     goal: str = Field(min_length=1)
     data: Optional[Dict[str, Any]] = None
     model: Optional[str] = None
@@ -266,16 +282,66 @@ class StopRequest(BaseModel):
 
 
 class StopResponse(BaseModel):
-    """How many runs the stop actually cancelled (0 = none was running)."""
+    """How many runs the stop actually cancelled (0 = none was running).
+    The response itself is the stop confirmation: it resolves only after
+    the cancelled run(s) unwound and settled their chains (bounded by
+    STOP_SETTLE_WAIT_SEC), so a client may draw the settled chain from
+    one read issued right after it."""
 
     stopped: int
     thread_ids: List[str] = Field(default_factory=list)
+
+
+# The boot-time ORPHAN SWEEP's failure note — written over the dead
+# runs' still-pending/in_progress rows so the UI reads them as ended
+# (a stale beat of a DIFFERENT kind: the run data, not the process).
+ORPHAN_FAILURE = "orphaned by a daemon restart — settled at boot"
+
+
+async def _settle_orphan_chains() -> int:
+    """Settle every chain still holding pending/in_progress rows at
+    daemon START. The fresh process owns ZERO runs, so each unsettled
+    chain belongs to a dead daemon life (killed mid-run by a crash,
+    OOM kill or a forced recycle — e.g. the stream watchdog's
+    stale-process recycle) — its rows used to read as a live run
+    forever and the UI kept the live chip + Stop button up (observed
+    2026-11-13: six zombie chains dating back to Nov 7). Fail-soft: a
+    failed sweep only leaves the old zombies, never blocks the boot."""
+    from llm_agents.deep_agents.langgraph.state_store import DeepAgentStore
+    from llm_agents.deep_agents.planning.store import PLAN_STORE
+
+    settled = 0
+    try:
+        orphans = await PLAN_STORE.list_unsettled_super_threads()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("orphan sweep read failed: %s", exc)
+        return 0
+    store: Optional[DeepAgentStore] = None
+    for sid in orphans:
+        try:
+            await runner.settle_thread(sid, failure=ORPHAN_FAILURE)
+            if store is None:
+                store = DeepAgentStore()
+            for member in await PLAN_STORE.fetch_chain_threads(sid):
+                await store.settle_node_items(member, failure=ORPHAN_FAILURE)
+            settled += 1
+            logger.warning("[orphan sweep] %s settled (dead daemon life's "
+                           "chain)", sid)
+        except Exception as exc:  # noqa: BLE001 — fail-soft per chain
+            logger.warning("orphan sweep: %s settle failed: %s", sid, exc)
+    return settled
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     global _provider
     _provider = ZhipuChatProvider()
+    # The boot sweep runs BEFORE serving: this process owns zero runs,
+    # so every unsettled chain is an orphan of a dead life.
+    settled = await _settle_orphan_chains()
+    if settled:
+        logger.warning("[orphan sweep] %d orphaned chain(s) settled at "
+                       "boot", settled)
     yield
 
 
@@ -316,7 +382,7 @@ async def active() -> ActiveResponse:
 class ExternalStepIn(BaseModel):
     """One externally added step — the same shape as update_plan's
     add_steps entries (validated by the same parser: business node
-    names, title required, optional notes / fork goal)."""
+    names, title required, optional notes / spawn goal)."""
 
     node: Optional[str] = None
     title: str = Field(min_length=1)
@@ -643,6 +709,15 @@ async def ws(socket: WebSocket) -> None:
             await socket.close()
 
 
+# How long /stop waits for a cancelled run's unwind to finish before
+# answering anyway (see stop()). The normal unwind — the CancelledError
+# propagation plus the whole-chain settle — lands well inside a second;
+# the window only bounds a wedged unwind (a sync block the event loop
+# cannot interrupt), after which the cancel stays in effect and the
+# settle lands late (the UI's poll loop catches it).
+STOP_SETTLE_WAIT_SEC = 10.0
+
+
 @app.post("/stop", response_model=StopResponse)
 async def stop(req: StopRequest) -> StopResponse:
     if req.thread_id is not None:
@@ -653,6 +728,19 @@ async def stop(req: StopRequest) -> StopResponse:
         targets = RUNS.snapshot()
     for run_task in targets.values():
         run_task.cancel()
+    # THE CONFIRMED STOP — wait for the cancellations to land before
+    # answering: each cancelled /run_one unwinds at its current await and
+    # its CancelledError handler settles the whole chain (state rows
+    # failed/skipped through settle_thread, node lanes through the
+    # graphs' unwind handlers), so when this response reaches the client
+    # the rows are already terminal and ONE refresh draws the settled
+    # chain. The node therefore leaves its live appearance only at the
+    # confirmed instant — never on the client's own initiative (the UI
+    # must not grey the running node off a stop request the server has
+    # not confirmed yet).
+    if targets:
+        await asyncio.wait(
+            list(targets.values()), timeout=STOP_SETTLE_WAIT_SEC)
     return StopResponse(stopped=len(targets), thread_ids=sorted(targets))
 
 

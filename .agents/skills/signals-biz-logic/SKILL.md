@@ -404,11 +404,17 @@ the knife state all measured out — do not re-add without new
 evidence).
 
 THE TYPICAL SOLUTION on the trio structure: TWO negatively-correlated
-leg curves (the offsets table's disjoint offset-opposite industry
-pairs, trailing 255d opposite score > 0.5, greedy-disjoint, PLUS the
-PINNED showcase DIV_GENERAL~TECH_GENERAL — the page's default 红利 vs
-科技, reserved before the greedy pass) + ONE broad-market curve
-(000300). The construction is the classic:
+leg curves + ONE broad-market curve (000300). THE UNIVERSE (widened
+2026-11-07, user-directed "for hedge pairs add all industries (would
+have (n ** 2) / 2 pairs of n industries)"): ALL INDUSTRY PAIRS —
+every unordered pair of the pool-'all' industry composites (106 →
+5,565 pairs), each riding its freshest offsets reading as NULLABLE
+metadata (the scored-disjoint era — trailing 255d opposite score >
+0.5, greedy one-pair-per-industry — is retired; the measured gate
+self-picks the tradable pairs on evidence, so a positively-correlated
+pair's washes simply measure out), the PINNED showcase
+DIV_GENERAL~TECH_GENERAL — the page's default 红利 vs 科技 — first.
+The construction is the classic:
 inverse-vol weights over the 60d return window, lagged one row,
 long-long; pair value = 100·exp(cumsum(log1p(w_a·r_a + w_b·r_b))) —
 the response axis AND the audited benefit gauge.
@@ -1016,3 +1022,30 @@ lists across the trio's two windows (and the legs across both
 portfolio rules) is deliberate: every witness states its own mapping,
 and the per-witness mapping is exactly what its condition claims —
 the market/leg curve's own RSI wash — nothing more.
+
+## The all-indexes daily scope + the all-industry-pairs hedge universe (2026-11-07)
+
+User-directed: "in analysis signals, only a small num of codes are
+run daily, now add for all indexes, and for hedge pairs add all
+industries (would have (n ** 2) / 2 pairs of n industries)". Two
+universe widenings, no trigger-logic change:
+
+1. **The standalone families' daily population is the FULL index
+   universe** (524 codes with close data; was the 10 study indices).
+   Every family's bars/measures stay per-code adaptive and
+   code-local, so the per-code evidence is unchanged — the
+   populations double ~50×: more cells per (trend, regime) corner,
+   thinner cells trading at the starvation scale, the pooled
+   (sub_type, action) verdicts on 50× populations. The equity
+   asymmetry and every measured-negative rule stand; expect the
+   measured-out share to rise (a fixed 0.25% bar over a wider,
+   noisier cross-section — the gate rejects on evidence).
+2. **hedge_pairs trades ALL INDUSTRY PAIRS** (5,565; was the 48
+   scored-disjoint pairs). The score floor is no longer a universe
+   filter — a positively-correlated pair's trio resonance is
+   structurally rare (both legs + the market wash the same day) and
+   its cells measured-out on their own; the pairs that trade are the
+   measured-negative-corr ones the gate keeps. The offsets score/rho
+   stay on each pair's rule_params as nullable metadata (the UI's
+   construction block reads them). Architecture of the chunked run:
+   the sibling skill signals-live-vs-history (2026-11-07 entry).

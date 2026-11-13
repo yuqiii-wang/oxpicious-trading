@@ -15,7 +15,7 @@
                 COALESCE(a.adj_low, b.low)::float8     AS low,
                 COALESCE(a.adj_high, b.high)::float8   AS high,
                 t.ma5::float8, t.ma20::float8, t.ma60::float8,
-                t.ma120::float8, t.ma255::float8,
+                t.ma120::float8, t.ma252::float8,
                 t.ema6::float8, t.ema12::float8, t.ema26::float8,
                 m.trading_amount::float8,
                 b.is_ohl_estimated

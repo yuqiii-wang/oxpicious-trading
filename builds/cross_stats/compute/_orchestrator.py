@@ -9,7 +9,7 @@ Ported from analysis.sec_alloc_perf_attribution.compute._orchestrator
     dates MISSING from the table → rows can never conflict; pure COPY
     (5-10x faster than upsert).
   - CORR-ONLY mode (``with_corr=True`` — the dedicated ``--corr``
-    sub-command): upserts corr_20d/60d/255d DIRECTLY from the GPU corr
+    sub-command): upserts corr_20d/60d/252d DIRECTLY from the GPU corr
     tensor frame; the payload carries only the 4 PK cols + 3 corr cols,
     so base columns are never touched. Per-subject frames sit below GPU
     breakeven (~310K rows), which is exactly why the corr path bypasses
@@ -171,7 +171,7 @@ async def _corr_only_update(conn, subject_closes: pd.DataFrame,
                             sec_type: str,
                             target_dates: Optional[Set[datetime.date]],
                             n_subjects: int) -> int:
-    """Upsert corr_20d/60d/255d straight from the GPU tensor frame."""
+    """Upsert corr_20d/60d/252d straight from the GPU tensor frame."""
     logger.info("    -> Corr-only fast path: GPU tensor -> upsert "
           "(no per-subject pipeline, base columns untouched)")
 

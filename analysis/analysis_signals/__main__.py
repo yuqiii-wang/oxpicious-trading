@@ -28,11 +28,16 @@ Modes:
     (history_signal_performance is NEVER purged — past snapshots are
     the point of the table).
 
-Universe: --sec-type index (default) with the 10 study indices; the
-options families run their OWN universe — the sec_type's option
-underlyings from stats.options_terms
+Universe: --codes 'all' (default) resolves the sec_type's FULL code
+universe from its base stats table (close IS NOT NULL) — every index
+since 2026-11-07 (user-directed; was the 10 study indices, still
+available via --codes <list>); the options families run their OWN
+universe — the sec_type's option underlyings from stats.options_terms
 (fetch/inputs.resolve_options_universe; options_wall drops the SSE ETF
-underlyings, whose chain OI is an accumulated-volume estimator).
+underlyings, whose chain OI is an accumulated-volume estimator) — and
+hedge_pairs runs the ALL-INDUSTRY-PAIRS universe
+(fetch/inputs.resolve_hedge_pair_universe; --codes is ignored for
+both).
 Bootstrap-first layout: the runtime setup runs before this module's
 imports.
 """
@@ -47,7 +52,6 @@ bootstrap_runtime()
 
 from _common.log_setup import setup_logging
 
-from analysis.analysis_signals import config as cfg
 from analysis.analysis_signals.engines.signal_families import (
     OPTIONS_FAMILIES,
     SIGNAL_FAMILY_ENTRIES,
@@ -80,11 +84,15 @@ def _parse_args() -> argparse.Namespace:
                    help="security type scope (default: index)")
     p.add_argument("--families", default=",".join(SIGNAL_FAMILY_ENTRIES),
                    help="comma-separated family labels (default: all)")
-    p.add_argument("--codes", default=",".join(cfg.STUDY_INDEX_CODES),
-                   help="comma-separated codes (default: the 10 study "
-                        "indices; ignored for the options families — "
-                        "their universe resolves per sec_type from "
-                        "stats.options_terms)")
+    p.add_argument("--codes", default="all",
+                   help="comma-separated codes, or 'all' (default): the "
+                        "sec_type's full universe resolved from its base "
+                        "stats table (close IS NOT NULL) — the daily run "
+                        "covers every index since 2026-11-07 (was the 10 "
+                        "study indices); ignored for the options families "
+                        "(stats.options_terms) and hedge_pairs (its "
+                        "all-industry-pairs universe resolves from the "
+                        "composites + offsets)")
     p.add_argument("--analyze", action="store_true",
                    help="run ANALYZE on the two tables after the writes")
     p.add_argument("--no-boost", action="store_true",
@@ -102,6 +110,7 @@ async def amain() -> None:
         raise SystemExit(f"unknown families: {unknown} "
                          f"(known: {sorted(SIGNAL_FAMILY_ENTRIES)})")
     codes = [c.strip() for c in args.codes.split(",") if c.strip()]
+    all_codes = codes == ["all"]
 
     from _common.db_commons import (
         analyze_tables_async,
@@ -109,6 +118,15 @@ async def amain() -> None:
     )
     conn = await get_db_connection_async()
     try:
+        if all_codes:
+            from analysis.analysis_signals.fetch.inputs import (
+                resolve_sec_type_universe,
+            )
+            codes = await resolve_sec_type_universe(conn, args.sec_type)
+            if not codes:
+                logger.warning(f"[universe] no {args.sec_type} codes with "
+                               f"close data — nothing to do")
+                return
         totals = {"rules": 0, "history": 0}
         for label in labels:
             if label in OPTIONS_FAMILIES:

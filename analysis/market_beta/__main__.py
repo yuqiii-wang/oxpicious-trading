@@ -48,17 +48,25 @@ Pipeline
      industries -> analysis.industry_hypes_and_drains (see
      hypes_and_drains.py). Depends on step 3 (attributions) being
      populated first. Always full recompute.
+  6. INTERNAL STEP: per-industry daily pct-change bucket counts ->
+     analysis.industry_stock_change_dist (see stock_attribution.py; the
+     Stock Attribution audit on the Market Beta page). Self-managing
+     incremental — its source calendar (stats.stock_basic_stats) is
+     independent of the cross_stats grid, so it detects its OWN missing
+     dates and also runs on the "attribution dates up to date" early-exit
+     paths.
 
 Default (incremental, no-corr) mode:
   Step 2 runs first and populates any missing cross_stats pair dates; then
   only the dates missing from industry_attributions are (re)computed in
-  steps 3/4.
+  steps 3/4. Step 6 self-detects its own missing dates either way.
 
 --force mode:
-  Truncates analysis.industry_attributions + industry_hypes_and_drains
-  (plus analysis.industry_correlations with --with-corr), then recomputes
-  all downstream rows (the baseline stats.industry_basic_stats is NOT
-  truncated — it is rebuilt by ``python -m builds.industry --force``).
+  Truncates analysis.industry_attributions + industry_hypes_and_drains +
+  industry_stock_change_dist (plus analysis.industry_correlations with
+  --with-corr), then recomputes all downstream rows (the baseline
+  stats.industry_basic_stats is NOT truncated — it is rebuilt by
+  ``python -m builds.industry --force``).
 """
 from __future__ import annotations
 
@@ -93,6 +101,10 @@ from analysis.market_beta.etf_contribution import (
 from analysis.market_beta.hypes_and_drains import (
     run_hypes_and_drains,
     TABLE as HYPES_DRAINS_TABLE,
+)
+from analysis.market_beta.stock_attribution import (
+    run_stock_attribution,
+    TABLE as STOCK_ATTRIBUTION_TABLE,
 )
 from builds.cross_stats.runner import (
     run_cross_stats,
@@ -196,21 +208,23 @@ class MarketBetaAnalysis(DataAnalysis):
         ran_perf = False  # step 2 already executed in step 0?
         # ---- Step 0: determine target dates -------------------------------
         if args.force:
-            tables = "attributions + hypes_and_drains"
+            tables = ("attributions + hypes_and_drains + "
+                      "stock_change_dist")
             if args.with_corr:
                 tables = "correlations + " + tables
-            logger.info(f"\n[0/5] Force mode: truncating downstream tables "
+            logger.info(f"\n[0/6] Force mode: truncating downstream tables "
                   f"({tables})...")
             if args.with_corr:
                 await truncate_table_async(conn, CORRELATIONS_TABLE)
             await truncate_table_async(conn, ATTRIBUTIONS_TABLE)
             await truncate_table_async(conn, HYPES_DRAINS_TABLE)
+            await truncate_table_async(conn, STOCK_ATTRIBUTION_TABLE)
             target_dates: Optional[Set[datetime.date]] = None
             logger.info("    -> truncated; will recompute all downstream rows "
                   "(baseline table untouched — rebuild it via "
                   "'python -m builds.industry --force')")
         elif args.with_corr:
-            logger.info("\n[0/5] Detecting missing corr windows "
+            logger.info("\n[0/6] Detecting missing corr windows "
                   "(source: industry_basic_stats vs correlations)...")
             # Window-end detection: the correlations table is keyed by
             # window START dates (which lag the source calendar by
@@ -229,10 +243,11 @@ class MarketBetaAnalysis(DataAnalysis):
                 # the backfill + downstream aggregations read a current
                 # stats.cross_stats.
                 await run_cross_stats(conn, force=False)
+                await run_stock_attribution(conn)
                 await _up_to_date_checks(self, conn)
                 return
         else:
-            logger.info("\n[0/5] Correlations SKIPPED (disabled by default — "
+            logger.info("\n[0/6] Correlations SKIPPED (disabled by default — "
                   "run 'python -m analysis.market_beta.corr' "
                   "separately, or pass --with-corr).")
             # Step 2 runs FIRST here: it manages its own missing-date
@@ -245,6 +260,10 @@ class MarketBetaAnalysis(DataAnalysis):
             logger.info(f"    -> {len(target_dates)} dates missing from "
                   f"{ATTRIBUTIONS_TABLE}")
             if not target_dates:
+                # Attributions are up to date, but the stock-attribution
+                # step follows the stock daily build's OWN calendar —
+                # give it its self-managing incremental pass too.
+                await run_stock_attribution(conn)
                 await _up_to_date_checks(self, conn)
                 return
 
@@ -258,7 +277,7 @@ class MarketBetaAnalysis(DataAnalysis):
             await run_correlations(conn, target_dates=target_dates,
                                    force=args.force)
         else:
-            logger.info("\n[1/5] correlations step skipped (disabled).")
+            logger.info("\n[1/6] correlations step skipped (disabled).")
 
         # ---- Step 2: INTERNAL cross-stats producer ----------------------
         # Populate the pair-grain rows of stats.cross_stats (composition
@@ -295,6 +314,16 @@ class MarketBetaAnalysis(DataAnalysis):
         # Always runs full recompute (truncate-then-recompute) — the table
         # is small (~245K rows max) and rankings shift when any date changes.
         await run_hypes_and_drains(conn, force=True)
+
+        # ---- Step 6: INTERNAL stock-attribution step -------------------
+        # Per-industry daily pct-change bucket counts ->
+        # analysis.industry_stock_change_dist (the Stock Attribution audit
+        # on the Market Beta page). Reuses this same connection. See
+        # stock_attribution.py. Self-managing incremental: its source
+        # calendar (stats.stock_basic_stats) is independent of the
+        # cross_stats grid, so it detects its OWN missing dates (force
+        # cascades from the parent).
+        await run_stock_attribution(conn, force=args.force)
 
 
 if __name__ == "__main__":

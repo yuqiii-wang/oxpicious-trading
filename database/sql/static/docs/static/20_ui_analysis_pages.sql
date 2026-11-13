@@ -146,7 +146,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
 (
   'ui.composites.offset-correlations',
   NULL,
-  'Benchmark-offset industry correlations: each industry''s MA trend has the benchmark rebased to its window-start level subtracted (common market factor removed), then every industry PAIR''s Pearson r is charted per rolling 20/60/255-day window as horizontal segments from each window date. Overall = raw r (benchmark still in); Benchmark Offset = r after removal — offset −1 = perfectly opposite ex-market, 0 = uncorrelated, +1 = co-moving. Pairs near −1 are the minority and the prize: natural market-neutral candidates — long one, hedge with the other — and the seed population of the pair-hedge universe.',
+  'Benchmark-offset industry correlations: each industry''s MA trend has the benchmark rebased to its window-start level subtracted (common market factor removed), then every industry PAIR''s Pearson r is charted per rolling 20/60/252-day window as horizontal segments from each window date. Overall = raw r (benchmark still in); Benchmark Offset = r after removal — offset −1 = perfectly opposite ex-market, 0 = uncorrelated, +1 = co-moving. Pairs near −1 are the minority and the prize: natural market-neutral candidates — long one, hedge with the other — and the seed population of the pair-hedge universe.',
   NULL,
   '[
     {"key": "pairLines", "text": "One line per industry pair (dynamic series names); windows start every 20 trading days."},
@@ -157,7 +157,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
 (
   'ui.composites.pair-ratio',
   NULL,
-  'Minimum-variance hedge ratio h* = −Cov(A,B)/Var(A) of the selected subject industry vs benchmark industry over trailing 20/60/255-day windows on the stride grid. h* > 0 = the pair moves opposite: buy the subject at h* units to hedge one unit of the benchmark (the hedge-grade anti-correlation regime — a minority of pairs); h* < 0 = short it. Market-offset mode strips the broad-market pct from both sides first — where the page''s opposite-moves finding becomes the buy-to-hedge answer.',
+  'Minimum-variance hedge ratio h* = −Cov(A,B)/Var(A) of the selected subject industry vs benchmark industry over trailing 20/60/252-day windows on the stride grid. h* > 0 = the pair moves opposite: buy the subject at h* units to hedge one unit of the benchmark (the hedge-grade anti-correlation regime — a minority of pairs); h* < 0 = short it. Market-offset mode strips the broad-market pct from both sides first — where the page''s opposite-moves finding becomes the buy-to-hedge answer.',
   NULL,
   '[
     {"key": "strideGrid", "text": "Values appear only on stride-grid dates; null days are skipped, never zero-filled."}
@@ -225,7 +225,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   'Windowed pairwise correlation of the selected industries'' mean curves: for every industry pair, the Pearson r of the two industries'' MA-W mean_close curves over the W-trading-day window starting on each grid date. +1 = the pair''s trends lock-step (one factor, one money); near 0 = independent (pair-diversification material); deep negative = structurally opposite — the natural hedge candidate (long one, hedge with the other). Negative collapsing toward 0 = the hedge decaying; a fresh slide into negative = a new pair-hedge forming.',
   NULL,
   '[
-    {"key": "dynamicNames", "text": "Series names are industry pairs (A ↔ B); the tooltip shows all three windows (20/60/255d) at the hovered window start — the selected one highlighted."},
+    {"key": "dynamicNames", "text": "Series names are industry pairs (A ↔ B); the tooltip shows all three windows (20/60/252d) at the hovered window start — the selected one highlighted."},
     {"key": "strideGrid", "text": "Values appear only on the stride grid (a window starts every 20 trading days); dates between are absent, never zero-filled."}
   ]'::jsonb,
   0
@@ -271,6 +271,36 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   '[
     {"key": "seasonalCast", "text": "Which industries appear is frozen per MONTH (seasonal rankings); the ranking table below the chart follows the clicked date''s season."},
     {"key": "rebased", "text": "Curves are REBASED to 100 over the trailing {{period}}d — absolute levels are not comparable; slopes and benchmark crossovers are the read."}
+  ]'::jsonb,
+  0
+),
+(
+  'ui.market-beta.stock-attribution',
+  NULL,
+  'Per-industry rise/drop audit for {{industry}} as of {{date}}: the industry''s member stocks counted into 12 daily pct-change buckets from <-17.5% to >=17.5% (green = rise side ≥0, red = drop side <0, the repo chart convention; one bar per bucket). The subtitle''s headline numbers — up(≥0)/down(<0) split plus the ≥7.5% / ≤-7.5% tails — read straight off the grid ("26 stocks rose above 7.5%" = the rise-tail buckets). A fat one-sided tail = breadth concentration (limit-up / limit-down clusters); a compressed middle = the industry trading as one block. Compare several industries on the SAME as-of date via the shared date dropdown.',
+  '[
+    {"key": "stocks", "name": "Stocks", "unit": "count", "description": "number of member stocks whose daily pct_change falls in the bucket"}
+  ]'::jsonb,
+  '[
+    {"key": "bucketEdges", "text": "Bucket k = [edge[k-1], edge[k]) over edges -17.5/-12.5/-7.5/-5/-2.5/0/2.5/5/7.5/12.5/17.5 percent (left-closed); pct_change exactly 0 counts on the rise side (''0~2.5%'')."},
+    {"key": "strategyThemes", "text": "Strategy-theme selections (RIGHT column) carry no stock mapping — their histograms stay empty; pick LEFT-column industries."}
+  ]'::jsonb,
+  0
+),
+(
+  'ui.market-beta.participation',
+  NULL,
+  'Whole-market participation, one row per trading day: total SS+SZ proxy turnover (stacked bars, 亿元 — each exchange proxied by ONE representative broad index, NOT a true exchange-wide sum) with the RAW daily SSE share line (right axis, toggleable), then the advance/decline breadth — adv(+)/dec(−) name counts around zero with the day''s median % change and the A/D ratio line (toggleable). Turnover above its 20d mean = 放量-side participation; below = 缩量-side; the 252d percentile in the subtitle locates today in its own trailing-year distribution.',
+  '[
+    {"key": "total_trading_amount", "name": "Market total", "unit": "亿元", "description": "SS + SZ proxy trading turnover per day (stacked: each exchange''s representative index)"},
+    {"key": "ss_share", "name": "SSE share", "unit": "%", "description": "raw daily share ss/(ss+sz) — 沪强于深 rising, 深强于沪 falling"},
+    {"key": "adv_count", "name": "Advancing names", "unit": "count", "description": "stocks with pct_change > 0 that day"},
+    {"key": "dec_count", "name": "Declining names", "unit": "count", "description": "stocks with pct_change < 0 that day"},
+    {"key": "ad_ratio", "name": "A/D ratio", "unit": "ratio", "description": "adv/dec; >1 advance-dominated, <1 decline-dominated"}
+  ]'::jsonb,
+  '[
+    {"key": "proxy", "text": "PROXY: SS is proxied by 000001 上证指数 and SZ by 399001 深证成指 (stats.exchange_trading_amt) — the total is the representative-pair sum, not the true exchange-wide total; BJ is not covered."},
+    {"key": "breadthUniverse", "text": "Breadth counts the WHOLE stock_basic_stats universe; suspended/placeholder rows (NULL pct_change) drop out of every count."}
   ]'::jsonb,
   0
 );

@@ -11,6 +11,7 @@ import {
   listHotStockMomentumStrategyThemes,
 } from "../../services/analysis/index.js";
 import { parseSecType, parseCode, parseExchange } from "./_shared.js";
+import { wrapAsync, HttpError } from "../../lib/http.js";
 
 const router = Router();
 
@@ -33,54 +34,31 @@ const router = Router();
 //   GET /api/analysis/hot-stock-momentum/chart?sec_type=index&code=000001
 //     Returns HotStockMomentumChartResponse: daily (date, momentum) rows
 //     for one security — empty until the pipeline is implemented.
-router.get("/hot-stock-momentum/codes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listHotStockMomentumCodes(
-      parseSecType(req),
-      parseExchange(req),
-    ));
-  } catch (err) {
-    console.error("[analysis/hot-stock-momentum/codes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/hot-stock-momentum/codes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listHotStockMomentumCodes(
+    parseSecType(req),
+    parseExchange(req),
+  ));
+}));
 
-router.get("/hot-stock-momentum/themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listHotStockMomentumThemes(
-      parseSecType(req),
-      parseExchange(req),
-    ));
-  } catch (err) {
-    console.error("[analysis/hot-stock-momentum/themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/hot-stock-momentum/themes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listHotStockMomentumThemes(
+    parseSecType(req),
+    parseExchange(req),
+  ));
+}));
 
-router.get("/hot-stock-momentum/strategy-themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listHotStockMomentumStrategyThemes(
-      parseSecType(req),
-      parseExchange(req),
-    ));
-  } catch (err) {
-    console.error("[analysis/hot-stock-momentum/strategy-themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/hot-stock-momentum/strategy-themes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listHotStockMomentumStrategyThemes(
+    parseSecType(req),
+    parseExchange(req),
+  ));
+}));
 
-router.get("/hot-stock-momentum/chart", async (req: Request, res: Response) => {
-  try {
-    const code = parseCode(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    res.json(await getHotStockMomentumChart(code, parseSecType(req)));
-  } catch (err) {
-    console.error("[analysis/hot-stock-momentum/chart] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/hot-stock-momentum/chart", wrapAsync(async (req: Request, res: Response) => {
+  const code = parseCode(req);
+  if (!code) throw HttpError.missingParam("code");
+  res.json(await getHotStockMomentumChart(code, parseSecType(req)));
+}));
 
 export default router;

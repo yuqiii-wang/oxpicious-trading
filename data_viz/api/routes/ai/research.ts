@@ -5,12 +5,13 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { HttpError, intParam, wrapAsync } from "../../lib/http.js";
 import {
   getAiResearchQa,
   listAiResearchCalendar,
   listAiResearchItems,
-} from "../../services/ai-research.service.js";
-import { encodeLabelParam } from "../../services/label-codes.js";
+} from "../../services/ai/ai-research.service.js";
+import { encodeLabelParam } from "../../services/infra/label-codes.js";
 import { industryIds, str } from "./_shared.js";
 
 const router = Router();
@@ -22,84 +23,56 @@ const router = Router();
 // unknown name is a 400 (the monitor.ts encode precedent).
 // ---------------------------------------------------------------------------
 
-/** logic_label query param -> research_logic code, or null (absent). */
-function researchLogicCode(
-  res: Response,
-  raw: unknown,
-): number | null | undefined {
+/** logic_label query param -> research_logic code, or null (absent);
+ *  an unknown name throws the standard 400. */
+function researchLogicCode(raw: unknown): number | null {
   const name = str(raw);
   if (name === undefined) return null; // absent — all labels
   const code = encodeLabelParam("research_logic", name);
   if (code === null) {
-    res.status(400).json({ error: `Unknown 'logic_label': ${name}` });
-    return undefined; // signals the handler to stop
+    throw new HttpError(400, "INVALID_PARAM", `Unknown 'logic_label': ${name}`);
   }
   return code;
 }
 
-router.get("/research-calendar", async (req: Request, res: Response) => {
-  try {
-    const logicLabel = researchLogicCode(res, req.query.logic_label);
-    if (logicLabel === undefined) return;
-    res.json(
-      await listAiResearchCalendar({
-        sectorId: str(req.query.sector_id) ?? null,
-        industryId: str(req.query.industry_id) ?? null,
-        industryIds: industryIds(req.query.industry_ids),
-        search: str(req.query.search) ?? null,
-        logicLabel,
-      }),
-    );
-  } catch (err) {
-    console.error("[ai/research-calendar] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/research-calendar", wrapAsync(async (req: Request, res: Response) => {
+  const logicLabel = researchLogicCode(req.query.logic_label);
+  res.json(
+    await listAiResearchCalendar({
+      sectorId: str(req.query.sector_id) ?? null,
+      industryId: str(req.query.industry_id) ?? null,
+      industryIds: industryIds(req.query.industry_ids),
+      search: str(req.query.search) ?? null,
+      logicLabel,
+    }),
+  );
+}));
 
-router.get("/research-items", async (req: Request, res: Response) => {
-  try {
-    const limit = Number(req.query.limit);
-    const offset = Number(req.query.offset);
-    const logicLabel = researchLogicCode(res, req.query.logic_label);
-    if (logicLabel === undefined) return;
-    res.json(
-      await listAiResearchItems({
-        sectorId: str(req.query.sector_id) ?? null,
-        industryId: str(req.query.industry_id) ?? null,
-        industryIds: industryIds(req.query.industry_ids),
-        search: str(req.query.search) ?? null,
-        logicLabel,
-        date: str(req.query.date) ?? null,
-        dateFrom: str(req.query.date_from) ?? null,
-        dateTo: str(req.query.date_to) ?? null,
-        limit: Number.isFinite(limit) ? limit : null,
-        offset: Number.isFinite(offset) ? offset : null,
-      }),
-    );
-  } catch (err) {
-    console.error("[ai/research-items] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/research-items", wrapAsync(async (req: Request, res: Response) => {
+  const logicLabel = researchLogicCode(req.query.logic_label);
+  res.json(
+    await listAiResearchItems({
+      sectorId: str(req.query.sector_id) ?? null,
+      industryId: str(req.query.industry_id) ?? null,
+      industryIds: industryIds(req.query.industry_ids),
+      search: str(req.query.search) ?? null,
+      logicLabel,
+      date: str(req.query.date) ?? null,
+      dateFrom: str(req.query.date_from) ?? null,
+      dateTo: str(req.query.date_to) ?? null,
+      limit: intParam(req, "limit") ?? null,
+      offset: intParam(req, "offset") ?? null,
+    }),
+  );
+}));
 
 // GET /api/ai/research-qa?qa_id= — summary + four dimensions + sources.
-router.get("/research-qa", async (req: Request, res: Response) => {
-  try {
-    const qaId = Number(req.query.qa_id);
-    if (!Number.isFinite(qaId) || qaId <= 0) {
-      res.status(400).json({ error: "Missing 'qa_id'" });
-      return;
-    }
-    const row = await getAiResearchQa(qaId);
-    if (row === null) {
-      res.status(404).json({ error: `qa_id ${qaId} not found` });
-      return;
-    }
-    res.json(row);
-  } catch (err) {
-    console.error("[ai/research-qa] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/research-qa", wrapAsync(async (req: Request, res: Response) => {
+  const qaId = Number(req.query.qa_id);
+  if (!Number.isFinite(qaId) || qaId <= 0) throw HttpError.missingParam("qa_id");
+  const row = await getAiResearchQa(qaId);
+  if (row === null) throw HttpError.notFound(`qa_id ${qaId} not found`);
+  res.json(row);
+}));
 
 export default router;

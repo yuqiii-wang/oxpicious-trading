@@ -73,6 +73,7 @@ import json
 import logging
 
 from _common.db_commons import (
+    batched_copy_by_key_async,
     chunked_purge_async,
     copy_insert_async,
     copy_or_upsert_split_async,
@@ -253,7 +254,13 @@ async def _write_trend_days(conn, sec_type: str, frame,
         params=(st, sorted(stale)), key_column="code",
     )
     if rows:
-        await copy_insert_async(conn, TREND_TABLE, rows)
+        # the all-indexes scale writes ~700k trend rows per stale sweep
+        # (524 codes x full history) — the KEY-CHUNKED COPY keeps every
+        # commit under the 100k-row replication-slot target
+        # (batched_copy_by_key_async groups by code, never splitting one)
+        await batched_copy_by_key_async(conn, TREND_TABLE, rows,
+                                        key="code",
+                                        label="trend_days")
     return len(rows)
 
 
@@ -406,7 +413,12 @@ async def run_family(conn, label: str, sec_type: str, codes: list[str],
                 key_column="code",
             )
         if history_rows:
-            await copy_insert_async(conn, HISTORY_TABLE, history_rows)
+            # the all-indexes scale's history scope can exceed the
+            # 100k-row single-transaction target — the KEY-CHUNKED COPY
+            # (grouped by code, never splitting one)
+            await batched_copy_by_key_async(conn, HISTORY_TABLE,
+                                            history_rows, key="code",
+                                            label="history")
     elif history_rows:
         await copy_or_upsert_split_async(
             conn, HISTORY_TABLE, history_rows, key_columns=HISTORY_PK,
@@ -619,7 +631,15 @@ async def _write_portfolio_tables(
     # themselves. The engine's marker names each row's TARGET RULES
     # (subs): the shared market cells ride every pair's trio_wash rule
     # only (the spread disregards the benchmark), a leg cell its own
-    # pair's rules that witness the legs (the legs witness both)
+    # pair's rules that witness the legs (the legs witness both). The
+    # LEG targeting is indexed (a leg→groups map built once — the
+    # all-industries universe puts each industry in ~n-1 pairs; the
+    # per-row full-group scan would be O(rows × groups) ≈ tens of
+    # millions)
+    leg_targets: dict[str, list[dict]] = {}
+    for g in groups.values():
+        for leg in ((g["frag"].get("portfolio") or {}).get("legs") or []):
+            leg_targets.setdefault(leg, []).append(g)
     if sourced_member_by_id:
         for row in rules_rows:
             marker = sourced_member_by_id.get(row["signal_rule_id"])
@@ -632,9 +652,8 @@ async def _write_portfolio_tables(
             else:
                 leg = marker.get("leg")
                 targets = [
-                    g for g in groups.values() if g["sub"] in subs
-                    and leg in ((g["frag"].get("portfolio") or {}).get(
-                        "legs") or [])
+                    g for g in leg_targets.get(leg, [])
+                    if g["sub"] in subs
                 ]
             for g in targets:
                 g["ids"].append(rid)
@@ -694,8 +713,11 @@ async def _write_portfolio_tables(
                 where_sql="sec_type = $1 AND portfolio_type = $2",
                 params=(st, pt), key_column="code",
             )
-            await copy_insert_async(conn, PORTFOLIO_HISTORY_TABLE,
-                                    portfolio_events)
+            # the all-industries event tier (hundreds of thousands of
+            # rows) — the KEY-CHUNKED COPY
+            await batched_copy_by_key_async(
+                conn, PORTFOLIO_HISTORY_TABLE, portfolio_events,
+                key="code", label="portfolio_history")
         else:
             await copy_or_upsert_split_async(
                 conn, PORTFOLIO_HISTORY_TABLE, portfolio_events,

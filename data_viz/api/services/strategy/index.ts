@@ -38,3 +38,8 @@ export {
   type TrainTrialRow,
   type TrainLossType,
 } from "./train-history.js";
+
+export {
+  fetchSignalFamilies,
+  type SignalFamilyRow,
+} from "./signal-families.js";

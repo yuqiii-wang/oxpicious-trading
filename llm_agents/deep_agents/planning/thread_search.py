@@ -13,7 +13,7 @@ GIN-indexed lanes:
   ``llm.llm_requests`` rows across all member threads — the plan
   graph's proposal session, each of the custom graph's step hops and
   its output synthesis, the result graph's review seats and final
-  answer, every spawned fork at any depth — because a node's requests
+  answer, every spawned child at any depth — because a node's requests
   ride ``chain_id`` = its ``llm_context_id`` and every chain of every
   member thread resolves from ``llm.deep_agent_states`` /
   ``llm.deep_agent_contexts`` (the one-node-one-chained-context key).
@@ -22,7 +22,7 @@ GIN-indexed lanes:
   StructBERT-segmented by the repo's shared tokenization stack).
 
 * CONTEXTS — the run's recorded PAYLOADS: ``llm.deep_agent_contexts``
-  rows (plan JSONs, step directives and results, fork answers, the
+  rows (plan JSONs, step directives and results, spawn answers, the
   graphs' syntheses) matched over their ``tags`` column (the
   StructBERT-tokenized GIN-indexed vector over each payload's text —
   the same tokenization contract, written by ``planning.store``'s
@@ -95,6 +95,25 @@ SELECT s.thread_id
 """
 
 
+def _record_query_segment_step(query: str, tokens: str, *,
+                               duration_ms: int) -> None:
+    """One AUX tokenization step per search call (the ``query_segment``
+    lane of ``llm.deep_agent_aux_steps`` — 2026-11-13): the query-side
+    segmentation the search tool triggers becomes a visible step on the
+    UI's "Agent steps" list, keyed to the conversation's ambient chain.
+    Fail-soft — the recorded step must never break the search."""
+    try:
+        from llm_agents._core.aux_steps import record_tokenization
+
+        record_tokenization(
+            lane="query_segment", title="search query segmentation",
+            input_text=f"{len(query)} chars",
+            output_text=f"{len((tokens or '').split())} tokens",
+            duration_ms=duration_ms)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class ThreadSearch:
     """The run-chain LLM-traffic search as ONE object (2026-11-07 — the
     former ``search_thread_context`` module function): bound to ONE
@@ -125,7 +144,7 @@ class ThreadSearch:
         """The run-chain search scope: (member thread ids in chain order,
         their graph labels, and the chain-id -> (graph label, node) map —
         every llm_context_id every member minted (states + contexts rows:
-        step hops, forks at any depth, the plan node, the output seats),
+        step hops, spawns at any depth, the plan node, the output seats),
         each labeled with the graph and the node that ran it."""
         members = [r["thread_id"] for r in await conn.fetch(_CHAIN_SQL, thread_id)]
         if not members:
@@ -182,10 +201,18 @@ class ThreadSearch:
             try:
                 # Query-side segmentation — the SAME tokenization the document
                 # vectors were built with (raw Chinese in a tsquery matches
-                # nothing).
+                # nothing). Timed + recorded as an AUX tokenization step
+                # (the query_segment lane of llm.deep_agent_aux_steps —
+                # off-context observability, never prompt content).
+                import time as _time
+
                 from _common.tokenization import SearchIndexer
 
+                _t0 = _time.monotonic()
                 tokens = SearchIndexer.get().tokenize_for_search(query)
+                _record_query_segment_step(
+                    query, tokens,
+                    duration_ms=round((_time.monotonic() - _t0) * 1000))
             except Exception as exc:  # noqa: BLE001 — tool text, not a crash
                 return f"search_thread_context error: query segmentation failed: {exc}"
             if not tokens.strip() and not critical_only:

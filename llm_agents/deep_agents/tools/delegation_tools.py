@@ -5,7 +5,7 @@ as OBJECTS.
 model-facing tools. Their HANDLERS are deliberately method-level parts
 of the agent loop (``core.loop`` intercepts the two names before the
 builtin fallback: spawning registers a supervised child task in the
-loop's own registry, collection reads its background-fork bookkeeping —
+loop's own registry, collection reads its background-spawn bookkeeping —
 neither can live outside the loop without duplicating its supervision
 state). What belongs in the tool LAYER — the schemas the model sees,
 and the ``llm.ai_prompts`` tool rows' seed source — lives here as the
@@ -24,6 +24,7 @@ from llm_agents.deep_agents.tools.base import Tool
 
 SUBAGENT_TOOL_NAME = "spawn_subagent"
 COLLECT_TOOL_NAME = "collect_subagents"
+FORK_TOOL_NAME = "fork_subagent"
 
 
 class SpawnSubagentTool(Tool):
@@ -54,7 +55,7 @@ class SpawnSubagentTool(Tool):
             },
             "background": {
                 "type": "boolean",
-                "description": "Fork the subagent in the "
+                "description": "Spawn the subagent in the "
                                "background: this call returns "
                                "immediately with the run id and "
                                "the subagent runs while you keep "
@@ -75,9 +76,9 @@ class SpawnSubagentTool(Tool):
         "metric/aspect to study), with every schema/table/column "
         "hint it needs; when the host attaches a run context, the "
         "subagent also sees that (subject, focus question, selected "
-        "prompts), so the goal states THIS fork's question. Its "
+        "prompts), so the goal states THIS spawn's question. Its "
         "final answer comes back as this tool's result (or via "
-        "collect_subagents for a background fork) — read it before "
+        "collect_subagents for a background spawn) — read it before "
         "concluding. A subagent may itself spawn further subagents "
         "when its investigation needs it, up to the spawn-depth cap "
         "(the tool is absent at the cap). The spawner supervises "
@@ -99,6 +100,63 @@ class SpawnSubagentTool(Tool):
                 "object carries the schema and the prompt row only.")
 
 
+class ForkSubagentTool(Tool):
+    """The ``fork_subagent`` tool object — the schema and the seed
+    source; the loop's ``DeepAgent._run_fork_subagent`` owns the
+    runtime. The spawn/fork contrast is the whole description: a spawn
+    child starts FRESH (goal only), a fork child CONTINUES this
+    conversation (the full context above is inherited) and works the
+    forked objective with everything already established."""
+
+    name: ClassVar[str] = FORK_TOOL_NAME
+    db_key: ClassVar[Tuple[str, str]] = (FORK_TOOL_NAME, "delegation")
+    parameters: ClassVar[Dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "goal": {
+                "type": "string",
+                "description": "The objective the forked continuation "
+                               "works — the conversation above already "
+                               "carries the background, so this states "
+                               "ONLY what remains to do and what to "
+                               "return.",
+            },
+            "max_steps": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional tool-step budget for the "
+                               "forked node (default: this agent's "
+                               "own budget).",
+            },
+        },
+        "required": ["goal"],
+    }
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Fork this conversation: a subagent node CONTINUES from the "
+        "full context above (every message, tool result and script "
+        "already in play — unlike spawn_subagent, whose subagent sees "
+        "ONLY the goal you write) and works the objective you give, "
+        "starting from where this conversation stands. The forked "
+        "node's final answer comes back as this tool's result and "
+        "this conversation stays on its own thread. Use fork_subagent "
+        "when the next work chunk needs everything discussed so far "
+        "but would burn this node's own step budget or derail its "
+        "main line — the fork inherits the context so nothing is "
+        "re-derived; use spawn_subagent when a fresh, self-contained "
+        "sub-question is enough. The fork runs in the FOREGROUND — "
+        "this call returns only when the forked node hands back — "
+        "and the forked node may itself spawn or fork further subagents "
+        "below the depth cap. It shares this sandbox session (its "
+        "files and scripts are already visible to it)."
+    )
+
+    async def run(self, arguments: Dict[str, Any]) -> str:
+        return (f"{self.name} is dispatched by the agent loop itself "
+                "(its handler is the loop's supervised fork spawner); "
+                "this object carries the schema and the prompt row "
+                "only.")
+
+
 class CollectSubagentsTool(Tool):
     """The ``collect_subagents`` tool object — schema + seed source;
     the loop's ``DeepAgent._collect_subagents`` owns the runtime."""
@@ -111,37 +169,37 @@ class CollectSubagentsTool(Tool):
             "run_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "The fork run ids to gather (every "
-                               "outstanding fork when omitted).",
+                "description": "The spawn run ids to gather (every "
+                               "outstanding spawn when omitted).",
             },
             "wait": {
                 "type": "boolean",
-                "description": "Block until the requested forks "
+                "description": "Block until the requested spawns "
                                "finish (default true).",
             },
             "timeout": {
                 "type": "number",
                 "minimum": 1,
                 "description": "Seconds to wait at most (default "
-                               "120; running forks report their "
+                               "120; running spawns report their "
                                "status after it).",
             },
         },
     }
     DEFAULT_DESCRIPTION: ClassVar[str] = (
         "Gather the results of background subagents (spawned with "
-        "background=true). Reports each requested fork's finished "
+        "background=true). Reports each requested spawn's finished "
         "answer or its still-running status; with wait=true (the "
-        "default) it blocks until the requested forks finish (up "
+        "default) it blocks until the requested spawns finish (up "
         "to timeout seconds) before reporting. Call it before your "
-        "final answer — an uncollected fork blocks the answer. "
+        "final answer — an uncollected spawn blocks the answer. "
         "Call it with no arguments to collect every outstanding "
-        "fork."
+        "spawn."
     )
 
     async def run(self, arguments: Dict[str, Any]) -> str:
         return (f"{self.name} is dispatched by the agent loop itself "
-                "(its handler is the loop's fork collector); this "
+                "(its handler is the loop's spawn collector); this "
                 "object carries the schema and the prompt row only.")
 
 
@@ -149,3 +207,4 @@ class CollectSubagentsTool(Tool):
 # by core.delegation under its historical names.
 SUBAGENT_TOOL_SCHEMA: Dict[str, Any] = SpawnSubagentTool().schema
 COLLECT_SUBAGENTS_SCHEMA: Dict[str, Any] = CollectSubagentsTool().schema
+FORK_TOOL_SCHEMA: Dict[str, Any] = ForkSubagentTool().schema

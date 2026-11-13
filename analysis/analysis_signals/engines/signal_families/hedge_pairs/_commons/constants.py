@@ -56,6 +56,7 @@ SOURCED_MARKET_SUBS = (TRIO_WASH_CODE,)
 SOURCED_LEG_SUBS = tuple(sorted({ps for ps, _ in
                                  HP_PORTFOLIO_SUBS.values()}))
 PAIR_K = REENTRY_EXIT_DAYS
-UNIVERSE = ("offset-opposite industry pairs (trailing 255d opposite "
-            "score > 0.5, greedy-disjoint), pool 'all'")
+UNIVERSE = ("all industry pairs (pool-'all' composites; the freshest "
+            "offsets score/rho rides each pair as nullable metadata), "
+            "the showcase pair pinned first")
 WEIGHTING = "inverse-vol 60d, lagged one row"

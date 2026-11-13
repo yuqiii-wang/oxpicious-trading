@@ -9,7 +9,7 @@ import {
   attachAiEventsClient,
   startAiEventsBridge,
   stopAiEventsBridge,
-} from './services/ai-events.service.js';
+} from './services/ai/ai-events.service.js';
 import { WebSocketServer } from 'ws';
 
 /**

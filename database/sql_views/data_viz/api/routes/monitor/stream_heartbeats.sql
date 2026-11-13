@@ -1,6 +1,6 @@
--- Service Monitor — every heartbeat row (always-on stream services AND
+-- Service Monitor — every heartbeat row (resident always-on services AND
 -- batch pipelines): last-run state with beat age in seconds, stop record
--- and live parallelism. The always-on catalog annotates its rows and the
+-- and live parallelism. The resident catalog annotates its rows and the
 -- rest become the pipeline-process table.
 -- Serves GET /api/monitor/stream.
 -- args: none

@@ -15,7 +15,7 @@ no look-ahead). The category definitions are THIS package's —
 constants (config.py), recorded on every row so consumers can verify
 what they read:
 
-  t = ret_1d / σ_ret(code, 255 rows ending t-1)   (rolling sample std
+  t = ret_1d / σ_ret(code, 252 rows ending t-1)   (rolling sample std
       ddof=1, min_periods 60, shifted 1 row; σ below sigma_floor 0.005
       excludes bond-like codes)
       sharp_up t > 2.0 | slow_up 1.26 < t <= 2.0 | flat
@@ -24,7 +24,7 @@ what they read:
   z = (log(trading_amount[t]) - μ) / σ   the z-scored log AMOUNT LEVEL
       — what heavy/shrink (Amt Up/Down) claim: the day's amount vs the
       code's OWN trailing-year amount distribution. μ/σ are the
-      rolling 255-row (min_periods 60, ddof=1) moments of
+      rolling 252-row (min_periods 60, ddof=1) moments of
       log(trading_amount), shifted 1 row.
       heavy z > 2.0 | normal | shrink z < -0.92
       (The RETIRED 量比-ratio z — amt_ratio = amount / its own 5-day

@@ -110,24 +110,100 @@ def _spread_sub_condition(win: int, tail: int, top: bool) -> str:
 
 
 class PortfolioFragmentsMixin(RuleEntry):
-    """The portfolio-fragment writer's method. A partial
-    HedgePairTrioEntry — never instantiated alone."""
+    """The portfolio-fragment writer's methods — SPLIT for the chunked
+    all-pairs run (2026-11-07): ``_collect_chunk_fragments`` runs
+    INSIDE the engine's chunk loop (the chunk frame's host grids exist
+    only there — the per-pair benefit audit, the per-(pair, sub) dd
+    lenses and each event's member records compute per chunk and
+    STASH/stamp), and ``_stamp_portfolio_fragments`` runs ONCE after
+    the registered standalone cells exist (the stored rule conditions
+    read their vocabulary). Everything per-pair — the chunk partition
+    changes nothing per pair."""
+
+    def _collect_chunk_fragments(
+        self, frame: pd.DataFrame, rules: list[dict],
+        history: list[dict],
+    ) -> None:
+        """One chunk's fragment collection (the engine's chunk loop
+        calls this right after the chunk's subs ran): the chunk's
+        per-pair host lookup grids (dates, trough, dd gauges, the
+        per-curve rsi / bars / breach bools — the sanctioned boundary,
+        one unwrap per column, python loops over the structural event
+        list only), the full-history BENEFIT audit per pair (stashed —
+        the final stamping reads it), the per-(pair, sub) dd lenses
+        from the events (stashed) and each event's per-curve member
+        records STAMPED on the history rows (_portfolio_event_members
+        — the portfolio signal sets its own cell-level member records;
+        cell_signals stays empty, every member a pair-frame facet).
+        The PAIR-frame events only — the registered standalone
+        component rows ride component codes outside the pair grids."""
+        grids = pair_grids(frame)
+        if not grids:
+            return
+        # each (pair, sub)'s winning cell's RSI window (the emitted
+        # bar_def carries it — the spread members read THAT window;
+        # the standalone component rows' rolling_quantile bar_def
+        # carries no window key)
+        win_window: dict[tuple[str, int], int] = {
+            (row["code"], row["signal_sub_type"]):
+                int(row["rule_params"]["bar_def"]["window"])
+            for row in rules
+            if row["code"] in grids
+            and "window" in row["rule_params"].get("bar_def", {})
+        }
+        # the benefit + gate per pair (full-history drawdown gauges) —
+        # stashed for the final stamping
+        for code, grid in grids.items():
+            self._benefit_by_pair[code] = benefit(grid)
+        # the per-(pair, sub) dd lenses from the events themselves —
+        # the PAIR-frame events only (the registered standalone
+        # component rows ride component codes outside the pair grids)
+        events_by_cell: dict[tuple, list[dict]] = {}
+        for row in history:
+            if row["code"] not in grids:
+                continue
+            events_by_cell.setdefault((row["code"], row["signal_sub_type"]),
+                                      []).append(row)
+        for key, rows in events_by_cell.items():
+            self._lens_by_cell[key] = dd_lens(
+                grids[key[0]], [r["date"] for r in rows])
+        spread_code = self.sub_type_code("hp_entry_spread")
+        exit_code = self.sub_type_code("hp_exit_spread")
+        for row in history:
+            if row["code"] not in grids:
+                continue
+            sub_code = row["signal_sub_type"]
+            is_spread = sub_code in (spread_code, exit_code)
+            # the event's PORTFOLIO RULE (the sub split) — the column
+            # stamp on the portfolio event tier
+            ps_code, _name = HP_PORTFOLIO_SUBS.get(
+                sub_code, (TRIO_WASH_CODE, cfg.HP_PORTFOLIO_NAME))
+            row["_portfolio_event_members"] = {
+                "portfolio_sub_type": ps_code,
+                "member_signals": (
+                    self._spread_event_members(
+                        row, grids.get(row["code"]),
+                        window=win_window.get((row["code"], sub_code)),
+                        top_side=sub_code == exit_code)
+                    if is_spread else
+                    self._event_witnesses(row, grids.get(row["code"]))
+                ),
+                "cell_signals": [],
+            }
 
     def _stamp_portfolio_fragments(
         self, rules: list[dict], history: list[dict],
-        frame: pd.DataFrame, pair_info: dict[str, dict],
+        pair_info: dict[str, dict],
     ) -> None:
         """Attach the run_family-peeled fragments to the orchestrating
-        rows: the per-cell dd lens + the per-pair benefit/gate on the
-        RULE rows (_portfolio_rule_params / _portfolio_performance)
-        and each event's per-curve WITNESS records on the HISTORY rows
-        (_portfolio_event_members — the portfolio signal sets its own
-        cell-level member records; cell_signals stays empty, every
-        member a pair-frame facet). Each orchestrating row additionally
-        stamps its PORTFOLIO RULE (_portfolio_sub_type — the 2026-10-25
-        sub split: trio wash vs spread, config HP_PORTFOLIO_SUB_TYPES;
-        run_family groups the portfolio tables by it) and the events
-        carry the same stamp. The rule rows' subs spec also
+        RULE rows: the per-cell dd lens + the per-pair benefit/gate
+        (_portfolio_rule_params / _portfolio_performance — the
+        benefit/lens stashes the chunk collections filled) and each
+        row's PORTFOLIO RULE stamp (_portfolio_sub_type — the
+        2026-10-25 sub split: trio wash vs spread, config
+        HP_PORTFOLIO_SUB_TYPES; run_family groups the portfolio tables
+        by it). The event member records were stamped per chunk. The
+        rule rows' subs spec also
         carries the STORED RULE CONDITIONS (2026-10-25, user-directed
         "all UI data must be sourced from DB"): the sub's
         plain-language condition line + the per-witness cell_signals
@@ -142,35 +218,8 @@ class PortfolioFragmentsMixin(RuleEntry):
         trigger sentence states the row's own winner bar_def (the
         fired bar, not the scanned grid — the candidate grids stay in
         the coordination block, their documented home)."""
-        # per-pair host lookup grids: (dates, trough, dd gauges, the
-        # per-curve rsi / bars / breach bools) — the sanctioned
-        # boundary (one unwrap per column, python loops over the
-        # structural event list only)
-        grids = pair_grids(frame)
-        # the per-(pair, sub) dd lenses from the events themselves —
-        # the PAIR-frame events only (the registered standalone
-        # component rows ride component codes outside the pair grids)
-        events_by_cell: dict[tuple, list[dict]] = {}
-        for row in history:
-            if row["code"] not in grids:
-                continue
-            events_by_cell.setdefault((row["code"], row["signal_sub_type"]),
-                                      []).append(row)
-        lens = {key: dd_lens(grids[key[0]],
-                             [r["date"] for r in rows])
-                for key, rows in events_by_cell.items()}
-        # each (pair, sub)'s winning cell's RSI window (the emitted
-        # bar_def carries it — the witnesses + the stored cell-signal
-        # condition records read THAT window; the standalone component
-        # rows' rolling_quantile bar_def carries no window key)
-        win_window: dict[tuple[str, int], int] = {
-            (row["code"], row["signal_sub_type"]):
-                int(row["rule_params"]["bar_def"]["window"])
-            for row in rules
-            if "window" in row["rule_params"].get("bar_def", {})
-        }
-        # the benefit + gate per pair (full-history drawdown gauges).
-        # The sub's STORED RULE CONDITIONS ride the params too (2026-10-25,
+        # the benefit + gate per pair ride the chunk stashes. The sub's
+        # STORED RULE CONDITIONS ride the params too (2026-10-25,
         # user-directed "add Rule condition in Rule params ... all UI data
         # must be sourced from DB"): the sub's plain-language condition
         # line + one CELL-SIGNAL condition record per witness curve —
@@ -265,13 +314,11 @@ class PortfolioFragmentsMixin(RuleEntry):
             ps_code, ps_name = HP_PORTFOLIO_SUBS.get(
                 sub_code, (TRIO_WASH_CODE, cfg.HP_PORTFOLIO_NAME))
             row["_portfolio_sub_type"] = ps_code
-            benefit_d = benefit(grids[row["code"]])
-            cell_lens = [v for (c, _s), v in lens.items()
+            benefit_d = self._benefit_by_pair.get(row["code"])
+            cell_lens = [v for (c, _s), v in self._lens_by_cell.items()
                          if c == row["code"]]
             is_entry = sub_code == spread_code
             is_exit = sub_code == exit_code
-            win_w = win_window.get(
-                (row["code"], sub_code), cfg.HP_LEG_RSI_WINDOW)
             # the row's OWN winner bar — the sub-condition numbers'
             # source (the hard hook): the emitted sentence states the
             # winner window x tail the cell actually fires on, never
@@ -281,6 +328,7 @@ class PortfolioFragmentsMixin(RuleEntry):
             row_bar = row["rule_params"].get("bar_def", {})
             row_win = row_bar.get("window")
             row_tail = row_bar.get("tail_pct")
+            win_w = int(row_bar.get("window", cfg.HP_LEG_RSI_WINDOW))
             # the per-pair sub spec: the shared construction + the
             # pair's OWN cell-signal condition records (the witness
             # codes differ per pair)
@@ -458,34 +506,6 @@ class PortfolioFragmentsMixin(RuleEntry):
                 "gate": gate_digest(benefit_d),
                 "dd": combine_lens(cell_lens),
             }
-        # each event's member records — set by the portfolio signal
-        # itself: the trio's per-curve witnesses (market + both legs;
-        # the event's own window DETECTED — the union cell fires on
-        # either window) or the spread subs' one-buy-one-sell leg
-        # records at the spread cell's winning window (the exit sub's
-        # records flip the roles: sell the leader leg A, buy the
-        # laggard leg B). The PAIR-frame events only — the registered
-        # standalone component events ride component codes with NO
-        # member payload (ordinary history rows; a portfolio event
-        # needs its >=2 coordinated members)
-        for row in history:
-            if row["code"] not in grids:
-                continue
-            sub_code = row["signal_sub_type"]
-            is_spread = sub_code in (spread_code, exit_code)
-            # the event's PORTFOLIO RULE (the sub split) — the column
-            # stamp on the portfolio event tier
-            ps_code, _name = HP_PORTFOLIO_SUBS.get(
-                sub_code, (TRIO_WASH_CODE, cfg.HP_PORTFOLIO_NAME))
-            row["_portfolio_event_members"] = {
-                "portfolio_sub_type": ps_code,
-                "member_signals": (
-                    self._spread_event_members(
-                        row, grids.get(row["code"]),
-                        window=win_window.get((row["code"], sub_code)),
-                        top_side=sub_code == exit_code)
-                    if is_spread else
-                    self._event_witnesses(row, grids.get(row["code"]))
-                ),
-                "cell_signals": [],
-            }
+        # the event member records were stamped per chunk
+        # (_collect_chunk_fragments — the chunk frame's grids exist
+        # only inside the engine's chunk loop)

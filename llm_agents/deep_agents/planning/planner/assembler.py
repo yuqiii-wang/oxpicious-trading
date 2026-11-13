@@ -116,10 +116,15 @@ class PlanPromptAssembler:
                 if not label:
                     continue
                 insight = item.get("insight")
-                n_metrics = (len(insight.get("metrics") or [])
-                             if isinstance(insight, dict) else 0)
-                parts.append(f"{label} ({n_metrics} registered metrics)"
-                             if n_metrics else label)
+                bits = []
+                if isinstance(insight, dict):
+                    n_kw = len(insight.get("keywords") or [])
+                    if n_kw:
+                        bits.append(f"{n_kw} kw")
+                    n_art = len(insight.get("articles") or [])
+                    if n_art:
+                        bits.append(f"{n_art} articles")
+                parts.append(f"{label} ({', '.join(bits)})" if bits else label)
             if parts:
                 lines.append("Analysis items to cover: " + "; ".join(parts))
         return "\n".join(lines)

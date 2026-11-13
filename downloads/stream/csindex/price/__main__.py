@@ -83,7 +83,7 @@ from _common.importance import (
     fetch_importance_ranks_or_empty,
     order_pairs_by_importance,
 )
-from _common.service_heartbeat import register_service
+from _common.service_heartbeat import register_pipeline
 from _common._holidays_and_weekdays import is_trading_day
 
 from ._constants import (
@@ -152,9 +152,9 @@ class CsindexStreamDaemon(DownloadJob):
     dev modes that exit before a beat would matter — a beat from a dying
     one-shot would make the watchdog think the real service is alive).
     autoregister derives the same "downloads.stream.csindex.price" name
-    (register_service itself is idempotent per process), but one-shot runs
+    (register_pipeline itself is idempotent per process), but one-shot runs
     would GAIN a registration they never had, so the base hook is skipped
-    and the former conditional ``register_service`` call is kept verbatim.
+    and the former conditional ``register_pipeline`` call is kept verbatim.
     No single-instance lock existed before — ``service`` stays "".
     """
 
@@ -178,7 +178,7 @@ class CsindexStreamDaemon(DownloadJob):
         )
 
     def execute(self, argv: Optional[list] = None) -> None:
-        """parse → conditional register_service (verbatim former main()) → run()."""
+        """parse → conditional register_pipeline (verbatim former main()) → run()."""
         if self.args is None:
             self.parse_argv(argv)
         else:
@@ -186,7 +186,7 @@ class CsindexStreamDaemon(DownloadJob):
         # Liveness heartbeat for database/stream_watchdog.py — long-running
         # mode only; the one-shot dev modes exit before a beat would matter.
         if not self.args.once and not self.args.code:
-            register_service(SERVICE)
+            register_pipeline(SERVICE)
         self.run()
 
     def run(self) -> None:

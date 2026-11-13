@@ -52,7 +52,7 @@ BOOST_WEIGHT_FLOOR = 0.5
 BOOST_DEPTH_Z_CAP = 2.0
 # the day-0 anatomy axes: the OHLC pattern, the amount/price-speed
 # cell, the TURNOVER-CLIMAX grade (2026-10-16: the day's trading_amount
-# / its 255d MA bucketed 0/1/2 — the buying-climax / capitulation-
+# / its 252d MA bucketed 0/1/2 — the buying-climax / capitulation-
 # volume literature as a trust axis), and the tail depth z
 BOOST_AXIS_KEYS = ("ohlc", "vol", "amt", "rsi")
 BOOST_AXIS_COLUMNS = ("eo", "ev", "ea", "er")

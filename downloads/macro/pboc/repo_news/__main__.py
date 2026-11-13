@@ -11,6 +11,7 @@ stay module-level.
 from __future__ import annotations
 
 
+import argparse
 import logging
 import re
 import time
@@ -776,6 +777,24 @@ class PbocRepoNewsDownload(DownloadJob):
 
     description = "Download and parse PBoC repo news"
     component = "pboc_repo_news"
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        """CLI surface — restores the former inline-``__main__`` options
+        (the DownloadJob template owns parsing; ``run()`` reads them)."""
+        parser.add_argument("--start-date", type=str, default=None,
+                            help="Reparse window start (YYYY-MM-DD)")
+        parser.add_argument("--end-date", type=str, default=None,
+                            help="Reparse window end (YYYY-MM-DD)")
+        parser.add_argument("--convert-csv", action="store_true", default=True,
+                            help="Convert parsed downloads to csv (default: on)")
+        parser.add_argument("--no-convert-csv", action="store_true", default=False,
+                            help="Skip xls/html→csv conversion after download")
+        parser.add_argument("--build-csv", action="store_true", default=True,
+                            help="Build combined csv after download (default: on)")
+        parser.add_argument("--no-build-csv", action="store_true", default=False,
+                            help="Skip the combined-CSV build after download")
+        parser.add_argument("--reparse", action="store_true", default=False,
+                            help="Reparse existing local files instead of fetching")
 
     def build_session(self) -> requests.Session:
         s = build_default_session()

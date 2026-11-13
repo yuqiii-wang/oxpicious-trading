@@ -17,6 +17,7 @@ import cors from "cors";
 // bodies that the loopback absorbs instantly.
 import compression from "compression";
 
+import { sendError, sendThrowable } from "./lib/http.js";
 import debtRoutes from "./routes/debt.js";
 import optionsRoutes from "./routes/options.js";
 import etfMarginRoutes from "./routes/etf-margin.js";
@@ -79,18 +80,24 @@ app.use("/api/health", (_req: Request, res: Response) => {
 });
 
 /**
- * Error handler
+ * Error handler — every non-2xx body is the standard ApiErrorBody
+ * ({ success: false, error, code?, details? }; see lib/http.ts +
+ * CONTRACTS.md). Honors HttpError and the service-layer
+ * `Object.assign(new Error, { status })` convention via sendThrowable.
  */
 app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
+  // Express identifies an error middleware by 4-arg arity — `_next` is
+  // required in the signature even though every error is answered here.
+  void _next;
   console.error("[api] unhandled error:", error);
-  res.status(500).json({ success: false, error: "Server internal error" });
+  sendThrowable(res, error);
 });
 
 /**
  * 404 handler
  */
 app.use((_req: Request, res: Response) => {
-  res.status(404).json({ success: false, error: "API not found" });
+  sendError(res, 404, "API not found");
 });
 
 export default app;

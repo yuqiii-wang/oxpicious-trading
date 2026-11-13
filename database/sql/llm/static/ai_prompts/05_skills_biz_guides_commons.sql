@@ -40,11 +40,16 @@ INSERT INTO llm.ai_prompts (prompt_key, prompt_sub_type, prompt_type, title, ver
      'crosses are the slow, lagging confirmation — weakest as a '
      'standalone edge. MA compression = a coiled consolidation '
      'deciding direction; a flattening slope after a run = trend '
-     'exhaustion. The long windows (120/255) are the long-horizon '
+     'exhaustion. The long windows (120/252) are the long-horizon '
      'cost basis — major support in uptrends, overhead resistance '
      'after breakdowns. Judge every reversion claim against the '
      'security''s trend regime (reversion edges live in fall/bottom '
-     'states), never the MA picture alone.',
+     'states), never the MA picture alone. DATA: the 9 gaps + their '
+     'trailing ranks/verdicts are MATERIALIZED — '
+     'study_kit.db.fetch_spread_stats(sec_type, code) retrieves them '
+     '(analysis.mov_ave_spreads_detail joined to _trailing); compute '
+     'only custom windows via study_kit.studies (spread_report / '
+     'ma_alignment).',
      'What the moving-average state means for trading — alignment, extension vs the security''s own history, crossing semantics and the trend regime.',
      'One guide per biz scope: the MA lens (commons/ma-spread).',
      ARRAY['均线', '移动平均', 'MA20'],

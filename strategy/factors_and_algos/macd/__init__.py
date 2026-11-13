@@ -1,21 +1,21 @@
-"""strategy.factors_and_algos.macd — MACD (12/26/9) crossover mean-reversion.
+"""strategy.factors_and_algos.macd — MACD crossover via analysis signals.
 
-A pluggable signal algo implementing :class:`strategy.factors_and_algos._algo.AlgoBase`.
-Produces the two columns the execution engine in ``strategy._trading``
-consumes (``signal_confidence`` + ``signal_value``) and exposes a
-``run_backtest`` method (inherited from ``AlgoBase``) that wires the signals
-to the engine. Short/long EMAs are READ from the precomputed
-``stats.<sec_type>_tech_stats`` columns (ema12 / ema26 — the classic MACD
-spans); only the signal-line EMA is computed inline (it is an EMA of the
-MACD line, not of close).
+A pluggable signal algo implementing
+:class:`strategy.factors_and_algos._algo.AnalysisSignalAlgoBase`: the
+signals are PICKED UP from ``analysis_signals.history_signals``
+(signal_type = 10 — the analysis tier's macd family, the classic
+12/26/9 signal-line crossover), never recomputed here. The generic
+fetch (OHLC + the family's standalone-tier events) and the generic
+event→``signal_confidence`` mapping are inherited; the algo contributes
+only its family identity and the reason phrasing.
 
 Public surface (consumed via
 ``strategy.factors_and_algos.get_algo("macd")`` — returns the ``ALGO``
 singleton instance):
 
   - ALGO                       — singleton MacdAlgo instance
-  - fetch_signal_data(conn, sec_type, codes) -> DataFrame
-  - apply_signals(df, params) -> DataFrame
+  - fetch_signal_data(conn, sec_type, codes) -> DataFrame   (inherited)
+  - apply_signals(df, params) -> DataFrame                  (inherited)
   - build_signal_reason(row, side, params, confidence) -> str
   - run_backtest(df, params, sec_type, codes) -> list[dict]   (inherited)
   - compute_daily_rows(...)                                   (inherited)

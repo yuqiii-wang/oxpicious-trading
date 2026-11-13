@@ -4,8 +4,8 @@
  * the RSI re-entry classification shared with the rule cells, replacing
  * the retired client-side close-vs-MA60 classifier 2026-10-15): rise/
  * fall = the RSI(10) momentum episodes + the 2026-10-21 travel claim
- * (a traveling MA255-gap extreme claims rise/fall directly),
- * top/bottom = the STATIONED MA255-gap extremes. Each picked phase
+ * (a traveling MA252-gap extreme claims rise/fall directly),
+ * top/bottom = the STATIONED MA252-gap extremes. Each picked phase
  * shades its own date spans (light red / green / blue / amber) on
  * every selected pair (date-based rects). A pick takes the panel's
  * single shade slot — the other shade rows' picks clear (that handler
@@ -61,10 +61,10 @@ export function TrendSection({ trendPicks, onToggle }: Props) {
         >
           signals-tier trend spans shaded (analysis.trend_days) — rise /
           fall: RSI(10) re-entry momentum episodes + the travel claim
-          (a MA255-gap extreme whose leg traveled ≥4 average daily
+          (a MA252-gap extreme whose leg traveled ≥4 average daily
           moves from the prior 60-row high/low with the guard agreeing
           claims rise/fall directly) · top / bottom: the STATIONED
-          MA255-gap extremes (RSI re-cross of 50 after a deep ≤30/≥70
+          MA252-gap extremes (RSI re-cross of 50 after a deep ≤30/≥70
           anchor flips the trend within 40d) · unknown = background ·
           dates from the rules tier, drawn on every pair
         </Typography>

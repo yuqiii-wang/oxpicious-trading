@@ -16,7 +16,7 @@ Pure string building — no network, no DB.
 from __future__ import annotations
 
 import datetime
-from typing import Optional
+from typing import Optional, Sequence, Tuple
 
 from llm_agents._core.prompts import LANG_LABELS, lang_label
 from llm_agents.online_search_summary.core.models import SHANGHAI_TZ
@@ -34,7 +34,11 @@ SUMMARY_FORMAT_RULES = (
     "4. 每个要点末尾单独一行给出关键词，形如“关键词：词1、词2、词3”（3-8个）。\n"
     "5. 若问题指定了时间范围（如“截至2025年9月12日”），必须只引用发布时间与该时间"
     "范围相符的来源，检索时也必须带上问题中的年份和月份，"
-    "不要引用发布时间晚于该日期的报道。")
+    "不要引用发布时间晚于该日期的报道。\n"
+    "6. 回答“当前/最新/近期/现状”类问题时，必须以今天日期为锚，只引用发布时间"
+    "距今天不超过最近三个月的来源作为现状、最新数据与近期观点的依据；发布时间"
+    "更早的来源只能支撑长期不变的背景事实（定义、产业链位置、历史沿革等），"
+    "不得据此描述当前状态或最新变化，更不得把旧数据当作最新数据引用。")
 
 
 def summary_system_prompt(lang: str = "zh") -> str:
@@ -58,3 +62,34 @@ def native_search_prompt(lang: str = "zh", today: Optional[str] = None) -> str:
             f"{SUMMARY_FORMAT_RULES}\n"
             f"全文必须使用{lang_label(lang)}作答，只使用搜索结果中给出的信息，"
             f"没有的内容不要编造。今天的日期是{today}。")
+
+
+def stale_refs_check_block(
+    stale_refs: "Sequence[Tuple[str, Sequence[int]]]",
+    today: datetime.date,
+) -> str:
+    """The per-ref staleness DOUBLE-CHECK block appended to a compose user
+    message when the whole-text date scan
+    (:mod:`~llm_agents.online_search_summary.core.date_scan`) found
+    references whose ENTIRE text only talks about years older than the
+    anchor year — "scan only found 2023, but no {today.year}".
+
+    *stale_refs* pairs each flagged reference's citation tag with the
+    years its text mentions (newest-first sample rendered inline). Empty
+    input -> "" (nothing appended; undated or current-year-carrying refs
+    are never flagged).
+    """
+    if not stale_refs:
+        return ""
+    lines = [f"[来源时效性双重核查] 今天是{today:%Y-%m-%d}。对上述来源的全文"
+             "日期扫描发现，以下来源的全文只出现早于"
+             f"{today.year}年的年份，没有任何{today.year}年或之后的日期："]
+    for tag, years in stale_refs:
+        sample = "、".join(f"{y}年" for y in years) or "（未见任何年份）"
+        lines.append(f"- {tag}（文中出现的年份：{sample}）")
+    lines.append(
+        "这些来源很可能描述的是旧时点的情况，而非当前最新状态。请逐条双重核查："
+        "除非某来源的内容明确属于长期不变的背景事实（定义、产业链位置、历史沿革"
+        "等），不得用它支撑当前状态、最新数据或近期观点的要点；若确需引用，请在"
+        "要点中注明其数据所属时点，不得当作最新情况表述。")
+    return "\n".join(lines)

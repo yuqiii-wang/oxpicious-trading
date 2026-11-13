@@ -12,30 +12,36 @@ stamped on every row of the run):
                           its own id IS the chain id.
     C  custom (type 1)  — ``build_execution_graph`` over the plan's
                           steps (the on-demand graph the plan built;
-                          waves, forks, compaction, the repair lane) →
+                          waves, spawns, compaction, the repair lane) →
                           the findings-synthesis output node (the
                           ``graph-output`` handoff row).
-    R  result (type 2)  — ``build_execution_graph`` over the result
+    R  result (type 2)  — ``build_result_graph`` over the result
                           template's four REVIEW SEATS (return_estimate
                           / risk_analysis / optimistic_review /
-                          pessimistic_review — one parallel wave) → the
-                          final-answer output node (the
-                          ``final-result`` row the UI's Result view
-                          reads).
+                          pessimistic_review) — ONE REAL LangGraph node
+                          per seat (2026-11-07: the graph is literally
+                          as saved from the langgraph template), the
+                          four reviews as a TRUE parallel wave into the
+                          ``review_join`` barrier → the final-answer
+                          output node (the ``final-result`` row the UI's
+                          Result view reads).
 
-C and R are INDEPENDENT compiled graphs; R ALWAYS WAITS for C (the
-orchestrator awaits C's ainvoke before minting R — the result stage
-reads C's output node document as its input, seeded into its findings
-bridge). Shared across all three: ONE wall-clock budget
-(``run_timeout_sec`` from the single ``run_started`` anchor), the
-prompt-ladder pass-down, ONE sandbox session, ONE supervisor session
-(the repair channel + the backend poller watching the whole chain),
-and the run-context side channel.
+C and R are INDEPENDENT compiled graphs; R ALWAYS WAITS for the
+execution lane (the orchestrator awaits C's ainvoke before minting R —
+the result stage reads C's output node document as its input, seeded
+into its findings bridge). Shared across all three: ONE wall-clock
+budget (``run_timeout_sec`` from the single ``run_started`` anchor),
+the prompt-ladder pass-down, ONE sandbox session, ONE supervisor
+session (the repair channel + the backend poller watching the whole
+chain), and the run-context side channel.
 
-DEGRADED RUNS (the plan never persisted) stay entirely in P — the
-plain execute lane, no C/R threads minted; the always-answer contract
-is unchanged (``run_thread``'s pre-graph fail-soft shape). A stopped
-run settles the whole chain (``settle_thread`` is chain-aware).
+DEGRADED RUNS (the plan never persisted) keep the plain execute lane in
+P (no C thread) — but the RESULT graph now runs for them too (2026-11-07
+"always runs": P → R, the reviews read the degraded lane's own
+answer/findings; the chain is TWO segments, the UI labels them
+plan + result). The always-answer contract is unchanged
+(``run_thread``'s pre-graph fail-soft shape). A stopped run settles the
+whole chain (``settle_thread`` is chain-aware).
 
 The orchestration lives in :class:`SuperGraphRunner`; ``run_thread``
 is the thin public entry the server/CLI call (same signature as

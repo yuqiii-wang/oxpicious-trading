@@ -1,0 +1,11 @@
+{
+  "service": "server_cluster.config",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "always",
+  "schedule": "always-on daemon (FastAPI on 127.0.0.1:8774) started by the stream watchdog like the other cluster servers",
+  "notes": "Server-cluster config area (python -m server_cluster.config; added 2026-11): a READ-ONLY configuration server — the UI API reads configuration over HTTP instead of from disk/DB. GET /catalog serves the service catalog (MONITORED_SERVICES + the database/sql/monitoring/static/service_config tree + per-area residents — the data formerly hand-mirrored in data_viz monitor _shared.ts SERVICE_CATALOG), GET /orchestration + /orchestration/{file} serve the scripts/orchestration step files, GET /cluster serves the areas/ports/residents/lifecycle topology from DEFAULT_AREAS + cluster_config.json, GET /health and /stats the standard liveness. Serves its own lean app (no jobs surface, no residents), like the llm area. One instance only — the registration guard auto-exits a second run.",
+  "source_ref": "server_cluster/config/__main__.py;server_cluster/config/app.py;server_cluster/_common/config.py;_common/service_heartbeat.py",
+  "updated_at": "2026-11-12T00:00:00.000000+00:00"
+}

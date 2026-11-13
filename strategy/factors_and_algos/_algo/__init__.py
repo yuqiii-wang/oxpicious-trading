@@ -3,6 +3,10 @@
 Contains:
   - The abstract base class (:class:`AlgoBase`) that defines the
     pluggable-algo contract
+  - :class:`AnalysisSignalAlgoBase` — the SIGNALS-PICKED-UP base (the
+    2026-11-07 refactor): a strategy algo reads its signals from
+    ``analysis_signals.history_signals`` instead of recomputing them;
+    concrete family algos subclass it (macd is the first)
   - Shared fetch helpers (``basic_stats_table``, ``tech_stats_table``,
     ``rows_to_df``)
   - Signal tuning helpers (``tune_signals``)
@@ -25,6 +29,9 @@ The ABC enforces a CONSISTENT surface across algos:
 from __future__ import annotations
 
 from strategy.factors_and_algos._algo.base import AlgoBase  # noqa: F401
+from strategy.factors_and_algos._algo.analysis_source import (  # noqa: F401
+    AnalysisSignalAlgoBase,
+)
 from strategy.factors_and_algos._algo.fetch_base import (  # noqa: F401
     basic_stats_table,
     tech_stats_table,
@@ -46,6 +53,7 @@ from strategy.factors_and_algos._algo.registry import (  # noqa: F401
 
 __all__ = [
     "AlgoBase",
+    "AnalysisSignalAlgoBase",
     "basic_stats_table",
     "tech_stats_table",
     "rows_to_df",

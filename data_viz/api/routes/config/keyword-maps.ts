@@ -4,7 +4,8 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { listKeywordMaps } from "../../services/keyword-maps.service.js";
+import { wrapAsync } from "../../lib/http.js";
+import { listKeywordMaps } from "../../services/knowledge/keyword-maps.service.js";
 
 const router = Router();
 
@@ -17,19 +18,14 @@ const router = Router();
  *  READ-ONLY: the map is a static seed table (rows land only via the SQL
  *  seed files under database/sql/static/keyword_maps/) — editing means
  *  editing the seed file and re-applying, like every other static config. */
-router.get("/keyword-maps", async (_req: Request, res: Response) => {
-  try {
-    const entries = await listKeywordMaps();
-    res.json({
-      success: true,
-      generatedAt: new Date().toISOString(),
-      count: entries.length,
-      entries,
-    });
-  } catch (err) {
-    console.error("[config/keyword-maps GET] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+router.get("/keyword-maps", wrapAsync(async (_req: Request, res: Response) => {
+  const entries = await listKeywordMaps();
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    count: entries.length,
+    entries,
+  });
+}));
 
 export default router;

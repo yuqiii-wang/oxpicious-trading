@@ -14,7 +14,7 @@ trending levels, whose correlation would be spurious):
               after it — groupby diff, never a cross-gap return); NULL
               until the window holds W joint-valid pairs.
 
-Windows 20/60/255 sessions (~1m/3m/1y); rows are emitted at two kinds
+Windows 20/60/252 sessions (~1m/3m/1y); rows are emitted at two kinds
 of sample per underlying (append-only — no stored row is ever rewritten):
   • the VOL_SPOT_CORR_STRIDE-session grid (the seed — a pure
     1-based row-ordinal rule, immutable once written) plus the latest
@@ -22,7 +22,7 @@ of sample per underlying (append-only — no stored row is ever rewritten):
   • every session STRICTLY AFTER the underlying's latest stored corr
     date (``stored_max``) — the daily tail growth: each new trading day
     adds one row, a multi-day pipeline gap backfills each day, and every
-    window reaches back up to 255 sessions from its own date.
+    window reaches back up to 252 sessions from its own date.
 
 cudf layout (B-A4): ONE whole-frame grouped pass — groupby().diff() for
 the log-changes, then grouped rolling SUMS for the Pearson algebra

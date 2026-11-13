@@ -21,7 +21,7 @@
  * decisions array is returned (the UI shows an "info" alert).
  */
 import { getMovAveSpreadChart } from "../analysis/mov-ave-spreads/index.js";
-import { formatDate, toNum } from "../db.service.js";
+import { formatDate, toNum } from "../infra/db.service.js";
 import { querySqlView } from "@api/lib/sql-views";
 import type { MaSpreadSecType, StrategyDailyRow } from "../../../shared/types.js";
 import {

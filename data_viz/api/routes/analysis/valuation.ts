@@ -13,6 +13,7 @@ import {
   listDividendDeliveries,
 } from "../../services/analysis/index.js";
 import { parseSecType, parseCode, parseExchange } from "./_shared.js";
+import { wrapAsync, HttpError } from "../../lib/http.js";
 
 const router = Router();
 
@@ -47,50 +48,27 @@ const router = Router();
 //     Returns PeStreaksResponse: band-BREAK excursion streaks of the
 //     code's pe series (analysis.pe_pct_streaks, side derived from the
 //     end month's band), flat for ALL (period, pct_type) combos.
-router.get("/valuation/codes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listValuationCodes(
-      parseSecType(req),
-      undefined, undefined, undefined, undefined,
-      parseExchange(req),
-    ));
-  } catch (err) {
-    console.error("[analysis/valuation/codes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/valuation/codes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listValuationCodes(
+    parseSecType(req),
+    undefined, undefined, undefined, undefined,
+    parseExchange(req),
+  ));
+}));
 
-router.get("/valuation/themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listValuationThemes(parseSecType(req), parseExchange(req)));
-  } catch (err) {
-    console.error("[analysis/valuation/themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/valuation/themes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listValuationThemes(parseSecType(req), parseExchange(req)));
+}));
 
-router.get("/valuation/strategy-themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listValuationStrategyThemes(parseSecType(req), parseExchange(req)));
-  } catch (err) {
-    console.error("[analysis/valuation/strategy-themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/valuation/strategy-themes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listValuationStrategyThemes(parseSecType(req), parseExchange(req)));
+}));
 
-router.get("/pe/chart", async (req: Request, res: Response) => {
-  try {
-    const code = parseCode(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    res.json(await getPeChart(code, parseSecType(req)));
-  } catch (err) {
-    console.error("[analysis/pe/chart] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/pe/chart", wrapAsync(async (req: Request, res: Response) => {
+  const code = parseCode(req);
+  if (!code) throw HttpError.missingParam("code");
+  res.json(await getPeChart(code, parseSecType(req)));
+}));
 
 //   GET /api/analysis/pe/streaks?sec_type=index&code=000300
 //     Returns PeStreaksResponse: the band-BREAK excursion
@@ -98,19 +76,11 @@ router.get("/pe/chart", async (req: Request, res: Response) => {
 //     side derived at query time from the end month's band), shipped
 //     flat for ALL (period, pct_type) combos — the client filters by
 //     its nested selection.
-router.get("/pe/streaks", async (req: Request, res: Response) => {
-  try {
-    const code = parseCode(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    res.json(await listPeStreaks(code, parseSecType(req)));
-  } catch (err) {
-    console.error("[analysis/pe/streaks] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/pe/streaks", wrapAsync(async (req: Request, res: Response) => {
+  const code = parseCode(req);
+  if (!code) throw HttpError.missingParam("code");
+  res.json(await listPeStreaks(code, parseSecType(req)));
+}));
 
 // ---- Dividend Deliveries (rolling 5y / 1y-stride audit table)
 //   analysis.dividend_deliveries — per-(sec_type, code, window_end_date)
@@ -123,18 +93,10 @@ router.get("/pe/streaks", async (req: Request, res: Response) => {
 //   GET /api/analysis/dividends/deliveries?sec_type=etf&code=161010
 //     Returns DividendDeliveriesResponse: the code's window rows,
 //     newest first. Non-payers / index resolve to an empty list.
-router.get("/dividends/deliveries", async (req: Request, res: Response) => {
-  try {
-    const code = parseCode(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    res.json(await listDividendDeliveries(code, parseSecType(req)));
-  } catch (err) {
-    console.error("[analysis/dividends/deliveries] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/dividends/deliveries", wrapAsync(async (req: Request, res: Response) => {
+  const code = parseCode(req);
+  if (!code) throw HttpError.missingParam("code");
+  res.json(await listDividendDeliveries(code, parseSecType(req)));
+}));
 
 export default router;

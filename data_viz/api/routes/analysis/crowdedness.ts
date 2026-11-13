@@ -11,6 +11,7 @@ import {
   listMarketCrowdednessStrategyThemes,
 } from "../../services/analysis/index.js";
 import { parseSecType, parseCode, parseExchange } from "./_shared.js";
+import { wrapAsync, HttpError } from "../../lib/http.js";
 
 const router = Router();
 
@@ -36,54 +37,31 @@ const router = Router();
 //     trading_amount, crowdedness_score, concentration, flow_change,
 //     top_stocks) rows for one security — metric fields NULL on dates
 //     with no defined crowdedness row.
-router.get("/market-crowdedness/codes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listMarketCrowdednessCodes(
-      parseSecType(req),
-      parseExchange(req),
-    ));
-  } catch (err) {
-    console.error("[analysis/market-crowdedness/codes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/market-crowdedness/codes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listMarketCrowdednessCodes(
+    parseSecType(req),
+    parseExchange(req),
+  ));
+}));
 
-router.get("/market-crowdedness/themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listMarketCrowdednessThemes(
-      parseSecType(req),
-      parseExchange(req),
-    ));
-  } catch (err) {
-    console.error("[analysis/market-crowdedness/themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/market-crowdedness/themes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listMarketCrowdednessThemes(
+    parseSecType(req),
+    parseExchange(req),
+  ));
+}));
 
-router.get("/market-crowdedness/strategy-themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listMarketCrowdednessStrategyThemes(
-      parseSecType(req),
-      parseExchange(req),
-    ));
-  } catch (err) {
-    console.error("[analysis/market-crowdedness/strategy-themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/market-crowdedness/strategy-themes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listMarketCrowdednessStrategyThemes(
+    parseSecType(req),
+    parseExchange(req),
+  ));
+}));
 
-router.get("/market-crowdedness/chart", async (req: Request, res: Response) => {
-  try {
-    const code = parseCode(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    res.json(await getMarketCrowdednessChart(code, parseSecType(req)));
-  } catch (err) {
-    console.error("[analysis/market-crowdedness/chart] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/market-crowdedness/chart", wrapAsync(async (req: Request, res: Response) => {
+  const code = parseCode(req);
+  if (!code) throw HttpError.missingParam("code");
+  res.json(await getMarketCrowdednessChart(code, parseSecType(req)));
+}));
 
 export default router;

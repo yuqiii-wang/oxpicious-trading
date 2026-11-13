@@ -26,7 +26,7 @@ export function seriesGroupWord(group: string): string {
 }
 
 /** The window-only display word for one record's sub_type —
- *  "ma20_retest" → "MA 20", "ma255_ed8pct" → "EMA 255". Null for
+ *  "ma20_retest" → "MA 20", "ma252_ed8pct" → "EMA 252". Null for
  *  non-ma literals. */
 export function maSubTypeLabel(subType: string): string | null {
   const g = maSeriesGroup(subType);

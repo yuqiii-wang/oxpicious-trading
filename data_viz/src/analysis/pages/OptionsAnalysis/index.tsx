@@ -1,7 +1,7 @@
 /**
  * Options Analysis page — options analytics: OI, Volatility Smile, Greeks.
  *
- * Per-plot loading (one plot, one SQL — see api/services/options.service.ts
+ * Per-plot loading (one plot, one SQL — see api/services/market/options.service.ts
  * "Per-plot queries"): the page itself only loads the light /dates index
  * (date picker + caption), the selected date's /snapshot-rows (wall / smile
  * / greeks — one small index-narrow query), the history-wide /snapshot-axes

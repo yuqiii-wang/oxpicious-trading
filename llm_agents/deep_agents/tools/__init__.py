@@ -13,7 +13,7 @@ mounts per conversation role:
   sandbox_tools.py    — the four sandbox_* tools over one Sandbox
                         client (SandboxToolSet);
   plan_tools/         — the plan-mutation tools over a PlanAuthority
-                        (MainPlanToolKit / ForkPlanToolKit + the fork
+                        (MainPlanToolKit / SpawnPlanToolKit + the spawn
                         addenda; package: addenda / common / tick /
                         update_plan / kits);
   stats_tools/        — the six stats_* study tools over the daily
@@ -46,7 +46,7 @@ BOUNDARY — who imports what:
     permission model stay planning-side; this layer wraps them);
   * ``graph`` composes: the runner mounts SandboxToolSet +
     MainPlanToolKit + StatsToolSet + KgToolSet, the delegation hooks
-    stamp ForkPlanToolKit + StatsToolSet + KgToolSet.
+    stamp SpawnPlanToolKit + StatsToolSet + KgToolSet.
 
 This package root re-exports the layer contract plus the delegation
 schemas — deliberately NOT plan_tools (its planning import would drag
@@ -55,6 +55,7 @@ the plan domain into every importer).
 from llm_agents.deep_agents.tools.base import BuiltinTool, Tool, ToolKit
 from llm_agents.deep_agents.tools.delegation_tools import (
     COLLECT_SUBAGENTS_SCHEMA, COLLECT_TOOL_NAME, CollectSubagentsTool,
+    FORK_TOOL_NAME, FORK_TOOL_SCHEMA, ForkSubagentTool,
     SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_SCHEMA, SpawnSubagentTool,
 )
 from llm_agents.deep_agents.tools.prompt_tools import (
@@ -63,7 +64,8 @@ from llm_agents.deep_agents.tools.prompt_tools import (
 
 __all__ = [
     "BuiltinTool", "CollectSubagentsTool", "COLLECT_SUBAGENTS_SCHEMA",
-    "COLLECT_TOOL_NAME", "LoadPromptTool", "PromptLoadToolKit",
+    "COLLECT_TOOL_NAME", "ForkSubagentTool", "FORK_TOOL_NAME",
+    "FORK_TOOL_SCHEMA", "LoadPromptTool", "PromptLoadToolKit",
     "SpawnSubagentTool", "SUBAGENT_TOOL_NAME",
     "SUBAGENT_TOOL_SCHEMA", "Tool", "ToolKit",
 ]

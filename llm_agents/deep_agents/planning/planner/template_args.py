@@ -24,14 +24,12 @@ _TEMPLATE_ARG_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
 
 def _scope_entries(data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The run's scope picks — the ``scopes`` list (the multi-pick
-    subject tags), falling back to the legacy single ``scope`` object
-    wrapped as a one-entry list; dict entries only, order preserved."""
-    data = data or {}
-    raw = data.get("scopes")
+    subject tags); dict entries only, order preserved. (The legacy
+    singular ``scope`` object fallback is retired 2026-11-11 — no
+    caller sends it anymore.)"""
+    raw = (data or {}).get("scopes")
     if isinstance(raw, list):
         return [e for e in raw if isinstance(e, dict)]
-    if isinstance(data.get("scope"), dict):
-        return [data["scope"]]
     return []
 
 

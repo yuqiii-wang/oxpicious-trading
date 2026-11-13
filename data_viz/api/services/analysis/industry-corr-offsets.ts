@@ -7,7 +7,7 @@
  * benchmark (benchmark MA rebased to the industry's MA level at each
  * window start, then subtracted — the common market factor removed;
  * prices recomputed starting at 100), and the pairwise correlations are
- * audited per 20/60/255-day window next to the RAW (overall) correlation.
+ * audited per 20/60/252-day window next to the RAW (overall) correlation.
  * The table's derived opposite_score_* = (1 − offset_sub_corr) / 2 stays
  * DB-side audit storage only — a pure rescale of the offset correlation,
  * so the API does not expose it.
@@ -27,7 +27,7 @@ import type {
   IndustryCorrOffsetsResponse,
 } from "../../../shared/types.js";
 import { fetchIndustryLabels } from "./industry-correlations.js";
-import { encodeLabelParam } from "../label-codes.js";
+import { encodeLabelParam } from "../infra/label-codes.js";
 
 // ----------------------------------------------------------------------------
 //  Coverage cache — the industries/benchmarks endpoints describe what is
@@ -58,14 +58,14 @@ interface DbIndustryCorrOffsetRow extends QueryResultRow {
   start_date: Date | string;
   end_ma20_20d: Date | string | null;
   end_ma60_60d: Date | string | null;
-  end_ma255_255d: Date | string | null;
+  end_ma252_252d: Date | string | null;
   interval: number;
   overall_corr_ma20_20d: string | number | null;
   overall_corr_ma60_60d: string | number | null;
-  overall_corr_ma255_255d: string | number | null;
+  overall_corr_ma252_252d: string | number | null;
   offset_sub_corr_ma20_20d: string | number | null;
   offset_sub_corr_ma60_60d: string | number | null;
-  offset_sub_corr_ma255_255d: string | number | null;
+  offset_sub_corr_ma252_252d: string | number | null;
 }
 
 const VALID_INDUSTRY_CORR_POOLS = new Set(["all", "small", "mid", "large"]);
@@ -153,16 +153,16 @@ export async function getIndustryCorrOffsets(
     start_date: formatDate(r.start_date),
     end_ma20_20d: r.end_ma20_20d == null ? null : formatDate(r.end_ma20_20d),
     end_ma60_60d: r.end_ma60_60d == null ? null : formatDate(r.end_ma60_60d),
-    end_ma255_255d:
-      r.end_ma255_255d == null ? null : formatDate(r.end_ma255_255d),
+    end_ma252_252d:
+      r.end_ma252_252d == null ? null : formatDate(r.end_ma252_252d),
     interval: r.interval,
     pool_size: poolSize,
     overall_corr_ma20_20d: toNum(r.overall_corr_ma20_20d),
     overall_corr_ma60_60d: toNum(r.overall_corr_ma60_60d),
-    overall_corr_ma255_255d: toNum(r.overall_corr_ma255_255d),
+    overall_corr_ma252_252d: toNum(r.overall_corr_ma252_252d),
     offset_sub_corr_ma20_20d: toNum(r.offset_sub_corr_ma20_20d),
     offset_sub_corr_ma60_60d: toNum(r.offset_sub_corr_ma60_60d),
-    offset_sub_corr_ma255_255d: toNum(r.offset_sub_corr_ma255_255d),
+    offset_sub_corr_ma252_252d: toNum(r.offset_sub_corr_ma252_252d),
   }));
 
   return {

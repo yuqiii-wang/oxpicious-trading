@@ -1,0 +1,11 @@
+{
+  "service": "server_cluster.maintainer",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "always",
+  "schedule": "always-on daemon (FastAPI on 127.0.0.1:8775) started by the stream watchdog like the other cluster servers",
+  "notes": "Server-cluster maintainer area (python -m server_cluster.maintainer; added 2026-11): the cluster's resident janitor. Owns the periodic maintenance jobs on a daily schedule (03:30 Asia/Shanghai, env MAINTAINER_FIRE_AT) — the log cleanup (logs/ files and date dirs older than one month) today — plus the daily 07:00 China-time fleet bring-up (env MAINTAINER_BRING_UP_AT) migrated from the monitor area 2026-11: it fires the monitor area's POST /residents/ensure-up (start every desired-running resident that is down; spawn a stale stream watchdog) and appends the pass to monitor.service_audit (exit_reason 'daily 07:00 bring-up'). GET /health and /stats the standard liveness, GET /jobs the job catalogue with each job's last result, POST /jobs/{name}/run + POST /jobs/run-all run jobs on demand. Serves its own lean app (no jobs surface, no residents), like the config area. One instance only — the registration guard auto-exits a second run.",
+  "source_ref": "server_cluster/maintainer/__main__.py;server_cluster/maintainer/app.py;server_cluster/maintainer/jobs.py;server_cluster/maintainer/scheduler.py;server_cluster/maintainer/bring_up.py;server_cluster/_common/config.py;_common/service_heartbeat.py",
+  "updated_at": "2026-11-12T00:00:00.000000+00:00"
+}

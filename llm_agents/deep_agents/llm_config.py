@@ -48,6 +48,13 @@ logger = logging.getLogger(__name__)
 # built-in chat provider (core.provider.ZhipuChatProvider.name).
 _DEFAULT_PROVIDER_LABEL = "zhipu"
 
+# The ``dummy`` label's HTTP-sim endpoint: the resident local-model
+# host's dummy-1 chat simulation (server_cluster.llm,
+# watchdog-supervised; the seeded llm/dummy secret_config row carries
+# the same endpoint). An EMPTY api_url selects the offline in-process
+# double instead — its output is decided by test/dummy_llm.
+DUMMY_HOST_CHAT_URL = "http://127.0.0.1:8767/v1/chat/completions"
+
 
 class LlmRuntimeConfig(BaseModel):
     """One agent start's resolved LLM identity (the active
@@ -136,46 +143,48 @@ def build_chat_provider(
 ):
     """Construct the chat provider a config label names — the ONE place
     the label → class mapping lives. ``zhipu`` builds the real chat
-    provider; ``dummy`` builds the offline test double, in one of TWO
-    forms:
+    provider. ``dummy`` is the TEST double and has TWO faces:
 
-    * IN-PROCESS (default — ``api_url`` empty): the canned-reply
-      ``llm_agents.test.dummy_llm.DummyLlmProvider`` directly — no
-      server, no network, instant;
-    * HTTP-SIM (``api_url`` set — the dummy secret_config row's
-      endpoint): the REAL ``ZhipuChatProvider`` transport pointed at
-      the running dummy llm server
-      (``python -m llm_agents.test.dummy_llm.server``, default
-      http://127.0.0.1:8768) — retries, error codes, the rate-limit
-      ladder and the audit rows all exercise for real. The key rides
-      along as ``dummy`` (the server checks the header, not the
-      secret).
+    * ``api_url`` EMPTY — the offline in-process double whose output is
+      determined ENTIRELY by the ``test/dummy_llm`` gherkin
+      feature dataset (``DummyLlmProvider``): the test's input
+      format goes in, the scenario's Then comes out. Zero network.
+    * ``api_url`` SET — the SAME real transport pointed at that URL
+      (the resident local-model host's ``dummy-1`` simulation,
+      ``server_cluster.llm``): retries, error codes, the rate-limit
+      ladder and the audit rows all exercise for real; the key rides
+      along as the seeded ``lmh-dummy`` dummy value (the host checks
+      the header, not the secret).
 
-    An unknown label logs a warning and degrades to zhipu (a bad
-    registry row must not take a run down); provider classes import
-    lazily so this module stays stdlib-only at import time (the
-    limits.py layering rule)."""
+    Zero PROVIDER spend either way. An unknown label logs a warning
+    and degrades to zhipu (a bad registry row must not take a run
+    down); provider classes import lazily so this module stays
+    stdlib-only at import time (the limits.py layering rule)."""
     label = (provider_label or "").strip().lower() or \
         _DEFAULT_PROVIDER_LABEL
     if label == "dummy":
-        if api_url and api_url.strip():
-            from llm_agents.deep_agents.core.provider import (
-                ZhipuChatProvider)
+        if not (api_url and api_url.strip()):
+            # The offline face: the dataset decides every output.
+            from test.dummy_llm import DummyLlmProvider
 
-            return ZhipuChatProvider(
-                api_key=api_key or "dummy", api_url=api_url,
-                max_output_tokens=max_output_tokens)
-        from llm_agents.test.dummy_llm import DummyLlmProvider
+            return DummyLlmProvider()
+        from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 
-        return DummyLlmProvider()
+        return ZhipuChatProvider(
+            api_key=api_key or "dummy",
+            api_url=api_url.strip(),
+            max_output_tokens=max_output_tokens, label=label)
     if label != _DEFAULT_PROVIDER_LABEL:
         logger.warning("unknown llm provider label %r — falling back to "
                        "%s", provider_label, _DEFAULT_PROVIDER_LABEL)
     from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 
+    # The label rides even on the degrade path: the audit records what
+    # the secrets registry NAMED (an unknown label included), the class
+    # fallback is only the serving reality.
     return ZhipuChatProvider(
         api_key=api_key, api_url=api_url,
-        max_output_tokens=max_output_tokens)
+        max_output_tokens=max_output_tokens, label=label)
 
 
 async def load_llm_config() -> Optional[LlmRuntimeConfig]:

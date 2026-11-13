@@ -31,7 +31,7 @@ export const SIGNALS_ANALYSES: SignalItem[] = [
     description:
       "Pick two industries (subject vs benchmark, role-swappable) to see " +
       "the pair portfolio's close curves with signal events, the hedge-ratio " +
-      "trend (raw / market-offset, 20/60/255d), and the pair's signal rules " +
+      "trend (raw / market-offset, 20/60/252d), and the pair's signal rules " +
       "and replayed history.",
   },
   {

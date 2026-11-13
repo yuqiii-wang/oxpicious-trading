@@ -28,7 +28,11 @@ This module owns the RUNNER side of the reuse, per template TYPE
     graph's fixed four-review-wave definition (the SEEDED
     ``default-result-wave`` row; the review goals are DB-editable),
     materialized into :class:`PlannedStep` seats; the caller falls back
-    to the built-in ``plan_json.review_wave_steps`` fail-soft.
+    to the built-in ``plan_json.review_wave_steps`` fail-soft. The
+    result-graph builder compiles each saved seat as ONE REAL parallel
+    LangGraph node (``langgraph.runner.review_lane`` — the graph is
+    literally as saved from the template), so editing the row's goals
+    edits the graph's nodes.
   * type 1 custom — reserved vocabulary (a saved custom-graph step
     set); no runner lane reads it yet.
 
@@ -133,7 +137,7 @@ class TemplateLibrary:
         :class:`PlannedStep` — the same field extraction the plan-JSON
         parser applies (delegate / parallel marks included), without the
         ops-name rejection a template already passed the day it was
-        planned. The step/fork caps clamp as sanity. Raises
+        planned. The step/spawn caps clamp as sanity. Raises
         :class:`ValueError` when the payload carries no usable steps (the
         runner's fallback)."""
         raw_steps = (plan_json.get("steps")

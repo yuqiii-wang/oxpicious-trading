@@ -66,7 +66,7 @@ from analysis.mov_ave_spread.config import (
 import logging
 logger = logging.getLogger(__name__)
 
-TRADING_AMT_STD_WINDOWS = (5, 20, 60, 120, 255)
+TRADING_AMT_STD_WINDOWS = (5, 20, 60, 120, 252)
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +193,7 @@ class TradingAmtStep(TableStep):
     ``trading_amt_market_share_ma{*}``, ``trading_amt_ma{*}_slope``, and
     ``trading_amt_market_share_vs_ma{*}`` columns are reused — no second
     DB fetch). The DataFrame must contain the FULL per-code history so
-    rolling computations have enough lookback rows (up to 255).
+    rolling computations have enough lookback rows (up to 252).
 
     Pipeline (see _common.steps.TableStep.execute)
       0. Determine target dates (per-sec_type) by checking missing dates

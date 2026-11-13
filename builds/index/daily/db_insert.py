@@ -132,8 +132,9 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
             _src[_c] = _to_db_series(_src[_c])
     # trading_amt_per_pct_change is absent when no source CSV carried
     # trading_amount (build_daily skips the metric then) — conditional emit.
-    _tech_cols = ["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
-                  "ema6", "ema12", "ema20", "ema26", "ema60", "ema120", "ema255",
+    _tech_cols = ["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma252",
+                  "ema6", "ema9", "ema12", "ema20", "ema26", "ema60", "ema120", "ema252",
+                  "macd_line", "macd_signal", "macd_hist",
                   "trading_amt_per_pct_change"]
 
     pk = ["date", "code"]

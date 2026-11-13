@@ -15,12 +15,12 @@
  * Per (code, date), a day joins a state when BOTH legs hold, evaluated
  * with information available at that day (every rolling stat shifted 1
  * row → no look-ahead):
- *   t = ret_1d / σ_ret(code, 255 rows ending t-1, min 60, ddof=1)
+ *   t = ret_1d / σ_ret(code, 252 rows ending t-1, min 60, ddof=1)
  *       sharp_up t > 2.0 | slow_up 1.26 < t <= 2.0 | flat | slow_dn | sharp_dn
  *       (never fires when σ_ret is NaN or below sigma_floor 0.005)
  *   z = (log(amount[t]) - μ) / σ  — the z-scored log AMOUNT LEVEL (what
  *       "Amt Up/Down" claim: the day's amount vs the code's OWN trailing
- *       amount distribution), μ/σ = the rolling-255 (min 60) moments of
+ *       amount distribution), μ/σ = the rolling-252 (min 60) moments of
  *       log(amount), shifted 1
  *       heavy z > 2.0 | normal -0.92 <= z <= 2.0 | shrink z < -0.92
  *       (the retired 量比-ratio z — amount / its own 5-day trailing mean,
@@ -36,7 +36,7 @@ export type PxVolSpeed = "sharp_up" | "slow_up" | "flat" | "slow_dn" | "sharp_dn
 export type PxVolVolState = "heavy" | "normal" | "shrink";
 
 /** Registry thresholds (19_price_vs_amt.sql recorded build parameters). */
-export const PX_VOL_SIGMA_WINDOW = 255;
+export const PX_VOL_SIGMA_WINDOW = 252;
 export const PX_VOL_SIGMA_MIN_DAYS = 60;
 export const PX_VOL_K_SHARP = 2.0;
 export const PX_VOL_K_SLOW_UP = 1.26;
@@ -131,7 +131,7 @@ export function computePxVolStates(
   {
     // Sliding sums for O(n) mean/m2 (Welford-free: sum & sum-of-squares
     // with NaN-free compaction via a ring of valid values is overkill —
-    // a simple recompute per step over the ≤255-row window is ~1.3M ops).
+    // a simple recompute per step over the ≤252-row window is ~1.3M ops).
     for (let i = 0; i < n; i++) {
       const lo = Math.max(0, i - PX_VOL_SIGMA_WINDOW + 1);
       let sum = 0;

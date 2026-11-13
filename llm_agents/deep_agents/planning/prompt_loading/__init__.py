@@ -5,7 +5,7 @@ The problem this package owns (measured 2026-11-02 on live runs): a run
 with every scope and every skill picked carried a 76 KB structured-data
 block (16 analysis items with full metric query recipes) in its FIRST
 user message — the planner's — and the goal text then taught EVERY
-conversation (step hops, forks) to fetch ALL selected skill rows
+conversation (step hops, spawns) to fetch ALL selected skill rows
 (prompt_type 1, 25 active rows ≈ 19 KB) wholesale before working. No
 stage of the run ever decided whether a skill is RELEVANT to the ask;
 loading was all-or-nothing at every level.
@@ -34,7 +34,7 @@ The loading ladder implemented here (each rung cheaper than the next):
      the PLAN itself structures work around. Everything else stays a
      catalog line.
   5. EXECUTION-TIME DISCRETION — the unloaded rows ride every step hop
-     and fork as one preview line each (:meth:`PromptLadder.pass_down`
+     and spawn as one preview line each (:meth:`PromptLadder.pass_down`
      → the messages' catalog blocks); a step that turns out to work a
      cataloged skill's domain fetches THAT ONE row by prompt_key
      through its read-only DB tools (never wholesale).

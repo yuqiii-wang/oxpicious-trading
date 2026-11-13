@@ -36,6 +36,22 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('vol_state',  0, 'shrink', 0),
     ('vol_state',  1, 'normal', 1),
     ('vol_state',  2, 'heavy',  2),
+    -- spread_verdict: analysis.mov_ave_spreads_detail
+    -- {price_vs_ma,ma5_vs_ma}{W}_verdict — the day's MA-spread gap
+    -- sitting in its own trailing-252d percentile tails (top/bottom
+    -- decile = stretched; the middle band = neutral), signed semantic
+    -- order like px_speed
+    ('spread_verdict', 0, 'stretched_low',  0),
+    ('spread_verdict', 1, 'neutral',        1),
+    ('spread_verdict', 2, 'stretched_high', 2),
+    -- ma_alignment: analysis.mov_ave_spreads_detail.alignment_state —
+    -- the five-leg MA-chain verdict (close>ma5>ma20>ma60>ma120>ma252):
+    -- all five legs positive = bullish 多头排列, all negative = bearish
+    -- 空头排列, anything between = mixed 纠缠; NULL score (insufficient
+    -- MA history) stores NULL, never a code
+    ('ma_alignment', 0, 'bearish', 0),
+    ('ma_alignment', 1, 'mixed',   1),
+    ('ma_alignment', 2, 'bullish', 2),
     -- roof_floor_method: how a roof/floor (resistance/support) level is
     -- quantitatively estimated — analysis.mov_ave_spreads_roof_floor_
     -- estimates.method. Registry order = the pipeline's method registry

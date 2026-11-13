@@ -4,7 +4,7 @@
 --  back into one row. Conventions: .agents/skills/kg-db-semantics — one
 --  entity per table/view, ONE biz sentence, tags = business + query-usage
 --  terms, edges = relation verb + prepositional sub_relation. DDL:
---  13_kg_hypergraph.sql.
+--  kg_entities.sql + kg_edges.sql.
 --
 --  Idempotent — entities upsert on uq_kg_entities_ns_type_name (ids stay
 --  stable for edge member references); edges insert only when the
@@ -12,16 +12,16 @@
 --  counterpart entity is seeded in a LATER file live in that later file
 --  (member resolution joins existing rows only).
 -- ============================================================================
+--  2026-11-09: the 'table' entities migrated to the corpus rule
+--  db_semantics_tables; since 2026-11-10 the payloads live in the
+--  tables' own database/sql/ DDL files — ONE TABLE = ONE FILE, payload
+--  in the leading banner (formerly the parallel database/kg_tables/
+--  corpus, filename = the schema-qualified name). This seed keeps
+--  only what doesn't fit a rule: the edge INSERTs and the DB
+--  view entities. The rule's ledger owns the migrated tables;
+--  edges here still resolve them BY NAME.
 
 INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VALUES
-    (0, 'stats.index_intraday_5min',   'table', ARRAY['index', '指数', 'intraday', '盘中', 'five-minute bars', '五分钟K线', 'ohlcv', 'K线'],
-     'Each index''s 5-minute intraday price bars within the trading day.'),
-    (0, 'stats.etf_intraday_5min',     'table', ARRAY['etf', 'intraday', '盘中', 'five-minute bars', '五分钟K线', 'ohlcv', 'K线'],
-     'Each ETF''s 5-minute intraday price bars within the trading day.'),
-    (0, 'stats.stock_intraday_5min',   'table', ARRAY['stock', '股票', 'intraday', '盘中', 'five-minute bars', '五分钟K线', 'ohlcv', 'K线'],
-     'Each stock''s 5-minute intraday price bars within the trading day.'),
-    (0, 'stats.options_intraday_5min', 'table', ARRAY['options', '期权', 'intraday', '盘中', 'five-minute bars', '五分钟K线'],
-     'Each listed option contract''s 5-minute intraday price bars within the trading day.'),
     (0, 'stats.v_debt_daily',     'view', ARRAY['debt', '债券', 'rates', '利率', 'central bank', '央行', 'yield curve', '收益率曲线'],
      'Each trading day''s full debt-market record in one row — policy operations, repo stock, SHIBOR and the treasury yield curve joined per date.'),
     (0, 'stats.v_etf_margin',     'view', ARRAY['etf', 'ohlcv', 'K线', 'margin', '融资融券', 'adjusted price', '复权'],

@@ -4,11 +4,12 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { HttpError, wrapAsync } from "../../lib/http.js";
 import {
   isKgNamespace,
   KG_NAMESPACES,
   listKgGraph,
-} from "../../services/kg.service.js";
+} from "../../services/knowledge/kg.service.js";
 
 const router = Router();
 
@@ -23,28 +24,23 @@ const router = Router();
  *  static seed (rows land only via database/sql/llm/static/
  *  knowledge_graphs/); ?namespace outside the shipped vocabulary is a
  *  400, not an empty graph. */
-router.get("/kg", async (req: Request, res: Response) => {
+router.get("/kg", wrapAsync(async (req: Request, res: Response) => {
   const namespace: unknown = Number(req.query.namespace ?? 0);
   if (!isKgNamespace(namespace)) {
-    res.status(400).json({
-      success: false,
-      error: `namespace must be one of ${
+    throw new HttpError(
+      400,
+      "INVALID_PARAM",
+      `namespace must be one of ${
         KG_NAMESPACES.map((n) => n.code).join(" / ")
       } (${KG_NAMESPACES.map((n) => n.label).join(" / ")})`,
-    });
-    return;
+    );
   }
-  try {
-    const graph = await listKgGraph(namespace);
-    res.json({
-      success: true,
-      generatedAt: new Date().toISOString(),
-      ...graph,
-    });
-  } catch (err) {
-    console.error("[config/kg GET] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+  const graph = await listKgGraph(namespace);
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    ...graph,
+  });
+}));
 
 export default router;

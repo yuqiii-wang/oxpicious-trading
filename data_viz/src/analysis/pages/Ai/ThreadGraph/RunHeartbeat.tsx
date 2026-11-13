@@ -9,15 +9,21 @@
  * stays active, so the monitoring chip shows the channel's CURRENT
  * health, not just the open instant's. Good → a green
  * `heartbeat {latency}ms` chip; a missed pong → a red `no pong` chip
- * (the 3s poll fallback keeps the graph updating even then, so this is
+ * (the poll fallback keeps the graph updating even then, so this is
  * a channel alarm, not a data-stale alarm). The probe id matching is
  * per-instance: several open graphs each track their own probes.
+ *
+ * 2026-11-11 — the channel is INTENTIONALLY DISABLED
+ * (AI_EVENTS_CHANNEL_DISABLED in aiEvents.ts, bypassed not removed), so
+ * the whole chip renders nothing while that stands: a red "no pong"
+ * alarm over a channel that is off by choice would be noise.
  */
 import { useEffect, useState } from "react";
 import { Chip, Tooltip } from "@mui/material";
 import { MonitorHeart } from "@mui/icons-material";
 import {
   probeAiEvents,
+  AI_EVENTS_CHANNEL_DISABLED,
   type AiHeartbeatProbe,
 } from "@/lib/api-client/aiEvents";
 
@@ -28,7 +34,7 @@ export default function RunHeartbeat({ active }: { active: boolean }) {
   const [probe, setProbe] = useState<AiHeartbeatProbe | null>(null);
 
   useEffect(() => {
-    if (!active) {
+    if (!active || AI_EVENTS_CHANNEL_DISABLED) {
       setProbe(null);
       return;
     }
@@ -47,7 +53,7 @@ export default function RunHeartbeat({ active }: { active: boolean }) {
     };
   }, [active]);
 
-  if (!active) return null;
+  if (!active || AI_EVENTS_CHANNEL_DISABLED) return null;
   if (probe === null) {
     return (
       <Chip
@@ -68,7 +74,7 @@ export default function RunHeartbeat({ active }: { active: boolean }) {
             `re-probes every 30s while the run is live`
           : `The daemon did not answer the heartbeat probe ` +
             `(at ${probe.at.toLocaleTimeString()}) — the channel is down; ` +
-            `the graph still updates through the 3s poll fallback`
+            `the graph still updates through the 60s poll fallback`
       }
     >
       <Chip

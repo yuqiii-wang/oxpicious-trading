@@ -26,7 +26,7 @@ UNCLASSIFIED_CLASS = "UNCLASSIFIED"
 
 RSI_WINDOWS = (3, 6, 10, 14, 20, 60)
 BOLL_WINDOWS = (5, 20, 60)
-MA_WINDOWS = (20, 60, 120, 255)
+MA_WINDOWS = (20, 60, 120, 252)
 
 # ---------------------------------------------------------------------------
 # the shared evaluation contract (how a rule cell is judged)
@@ -104,8 +104,8 @@ CONFIDENCE_CAP_BP = 10_000
 # window (never fixed 30/70); the tail pcts are the nested carving grid
 # (3% ⊃ 2% ⊃ 1% — a deep breach counts once, at its deepest claim)
 RSI_TAIL_PCTS = (1, 2, 3)
-RSI_BAR_WINDOW_DAYS = 2550   # trailing 10y
-RSI_BAR_MIN_PERIODS = 255
+RSI_BAR_WINDOW_DAYS = 2520   # trailing 10y
+RSI_BAR_MIN_PERIODS = 252
 # the rules-era ENTRY grid: 14 the Wilder classic + 10 the measured
 # best buy window (2026-10-15 window study, temp_scripts/
 # rsi_window_study/: rsi10_1pct +1.91% @72.2% pooled vs rsi14_1pct
@@ -157,8 +157,8 @@ MA_RETEST_WINDOW = 20
 # across axes — a 5d and a 100d axis breach compare in sigma units).
 MOMENTUM_AXES = ("5days", "20days", "short", "mid", "long")
 MOMENTUM_TAIL_PCTS = (1, 2, 3)
-MOMENTUM_BAR_WINDOW_DAYS = 2550   # trailing 10y
-MOMENTUM_BAR_MIN_PERIODS = 255
+MOMENTUM_BAR_WINDOW_DAYS = 2520   # trailing 10y
+MOMENTUM_BAR_MIN_PERIODS = 252
 
 # ---------------------------------------------------------------------------
 # options_wall — the VRP-gated OI-wall family
@@ -183,9 +183,9 @@ OW_BREACH_WIDTH_PCTS = (0.10,)
 # +4.04%; p50 halves it, do not go below 0.60 without new evidence)
 OW_VRP_PCTL_MIN = 0.60          # implied vol30 in its trailing top 40% vs realized
 OW_VRP_REALIZED_WINDOW = 20     # the realized-vol leg (rolling σ of spot returns)
-OW_VRP_PCTL_WINDOW = 255        # the VRP ratio's trailing percentile window
+OW_VRP_PCTL_WINDOW = 252        # the VRP ratio's trailing percentile window
 # the VRP bar's WARMUP (the sparsity study's main lever): the
-# min_periods=255 window erased whole codes' breach history — 000016's
+# min_periods=252 window erased whole codes' breach history — 000016's
 # 10-of-11 put breach days fell in the NaN-bar warmup and its put side
 # was structurally empty. 120 and 60 measured IDENTICALLY (the rescued
 # 000016 population: n=6 +0.73% hit 83% — a passing buy cell; the
@@ -247,7 +247,7 @@ OVIX_PEAK_DN_WINDOW = 5         # the downside leg's slope-matched window
 # method 1) and median (the NaN-skipping median of the five estimate
 # methods per (date, period) — the cross-method CONSENSUS level,
 # method 5).
-RF_BREAK_WINDOWS = (60, 120, 255, 500)
+RF_BREAK_WINDOWS = (60, 120, 252, 504)
 # (label infix, static.label_dim 'roof_floor_method' code) — the infix
 # joins the sub_type label: rf{W}_{side} donchian, rf{W}_med_{side}
 # median
@@ -280,7 +280,7 @@ RF_FLOOR_DEEP_BARS = (2.0, 3.0, 5.0)
 # verbatim when the axes went shared (rf_break floor legs / bollinger
 # turnover opt-ins) — the REBOUND_PE_* names stay as aliases for the
 # study scripts.
-PE_MIN_PERIODS = 255
+PE_MIN_PERIODS = 252
 # the PE gates: the capitulation class needs a PE EXTREME (cheap OR rich
 # tail — the middle-PE capitulation is the dead zone); the
 # outside-cheap class (stalled rebounds / reclaims) only holds at
@@ -288,7 +288,7 @@ PE_MIN_PERIODS = 255
 PE_GATE_EXTREMES = (0.4, 0.6)   # cheap <= 0.4 or rich >= 0.6
 PE_GATE_NOT_CHEAP = 0.2
 # the OHLCV-boost gate: the day's turnover-climax grade (amount /
-# 255d-MA bucket, fetch/inputs._shared.finalize_input_frame) at least
+# 252d-MA bucket, fetch/inputs._shared.finalize_input_frame) at least
 # HEAVY (>= 1.5x normal turnover; 2 = the 2.5x climax grade) — the
 # volume-confirmation literature as a variant population (never a gate
 # on the plain rows: invariant 12's trust-measurement unchanged)
@@ -319,7 +319,7 @@ OHLCV_BOOST_MIN_AMT_CODE = 1
 # PE-PERCENTILE rank (today's PE vs the code's own prior PE history,
 # min REBOUND_PE_MIN_PERIODS observations, strictly before t — no
 # look-ahead; stats.index_valuation.pe joined at the fetch).
-REBOUND_WINDOWS = (60, 255)
+REBOUND_WINDOWS = (60, 252)
 # the "big drop" activation bars as CANDIDATES (deepest first — the
 # nested-carve/tie convention): the D10 study buckets sharpened without
 # sign changes, so the cell gate self-picks per (code, trend)
@@ -364,19 +364,20 @@ MACD_EMA_SIGNAL = 9           # the signal line: EMA of the MACD line
 # the confidence depth normalizer's trailing window — the histogram's
 # own trailing sigma (pct of close), the momentum bar convention
 # (trailing 10y, one-row-shifted — no look-ahead)
-MACD_SIGMA_WINDOW = 2550
-MACD_SIGMA_MIN_PERIODS = 255
+MACD_SIGMA_WINDOW = 2520
+MACD_SIGMA_MIN_PERIODS = 252
 
 # ---------------------------------------------------------------------------
 # ohlcv boost — the turnover-climax axis (2026-10-16)
 # ---------------------------------------------------------------------------
-# The day-0 amount axis: trading_amount / its own trading_amt_ma255,
+# The day-0 amount axis: trading_amount / its own trading_amt_ma252,
 # bucketed into the int8 climax code (0 normal / 1 heavy / 2 climax).
 # The volume/turnover-climax literature (buying climax at blow-off
 # tops, capitulation volume at lows) as a TRUST-WEIGHTED boost axis —
 # never a gate (the boost invariant). Source: the sec_type's raw
-# amount table x analysis.mov_ave_spreads_detail.trading_amt_ma255.
-AMT_CLIMAX_HEAVY = 1.5       # ratio >= 1.5x the 255d turnover average
+# amount table x analysis.mov_ave_trading_amt.trading_amt_ma252 (the
+# amt columns' home since the 2026-11-08 detail split).
+AMT_CLIMAX_HEAVY = 1.5       # ratio >= 1.5x the 252d turnover average
 AMT_CLIMAX_EXTREME = 2.5     # ratio >= 2.5x — the climax grade
 
 # ---------------------------------------------------------------------------
@@ -447,22 +448,40 @@ BREADTH_9TO1_RATIO = 9.0
 # (hp_exit_spread) is the engine's measured asymmetry check, rows
 # discarded.
 #
-# The pair universe is DATA-DRIVEN (the options families' precedent):
-# each pair's FRESHEST offsets reading (pool 'all', interval 20) with
-# trailing opposite score above HP_MIN_PAIR_SCORE, greedy-disjoint by
-# score (each industry in at most one pair), pair code 'A~B'
-# lexicographic.
+# The pair universe is ALL INDUSTRY PAIRS (2026-11-07, user-directed
+# "for hedge pairs add all industries (would have (n ** 2) / 2 pairs
+# of n industries)"): every unordered pair of the pool-'all' industry
+# composites (stats.industry_basic_stats, mean_close rows), n industries
+# -> n(n-1)/2 pairs (106 -> 5,565). The scored-disjoint era (trailing
+# opposite score above the retired HP_MIN_PAIR_SCORE floor, greedy
+# one-pair-per-industry) is retired — each pair's FRESHEST offsets
+# reading (pool 'all', interval 20) rides the pair as METADATA
+# (score/rho, null where the offsets carry no reading), never a filter,
+# and the pinned showcase pair stays the universe's FIRST entry (the
+# Hedge Pairs page's default picks). The negative-correlation story
+# the gate self-picks on evidence: a positively-correlated pair's
+# washes measure thin and its cells measured-out on their own.
 HP_MARKET_CODE = "000300"        # the broad-market curve (witness only)
 HP_OFFSETS_TABLE = "analysis_composites.industry_corr_benchmark_offsets"
 HP_OFFSETS_POOL = 3              # pool_size 'all' (static.label_dim)
 HP_OFFSETS_INTERVAL = 20
-HP_MIN_PAIR_SCORE = 0.5          # floor: trailing opposite score (corr < 0)
 # the PINNED showcase pair — the Hedge Pairs page's default picks
-# (红利 vs 科技): always in the universe even when the pair's freshest
-# offsets reading carries no opposite score (its legs' closes and the
-# trio gauges are computed the same as every other pair; the
+# (红利 vs 科技): always the universe's first entry (its legs' closes
+# and the trio gauges are computed the same as every other pair; the
 # score/rho ride rule_params as nulls when the offsets have none)
 HP_SHOWCASE_PAIR = ("DIV_GENERAL", "TECH_GENERAL")
+# the pair-frame CHUNK (2026-11-07, the all-industries scale): the
+# universe's pairs are measured in chunks of this many (each chunk one
+# self-contained mini-run of the proven per-pair machinery — build +
+# value/spread/trio attaches + the subs' run_cells — so the ~5.5k-pair
+# frame never materializes whole: 500 pairs x ~1.7k industry dates x
+# the gauge columns is ~2-3GB of GPU, vs ~15-20GB for the whole
+# universe at once). Every step is per-pair or per-(pair, date) — the
+# chunk partition changes nothing per pair; the ONE cross-pair
+# coupling, the pooled evidence tier, judges each chunk's own
+# (sub_type, action) population (hundreds of pairs -> thousands of
+# triggers per pool — statistically the full-universe verdict).
+HP_PAIR_CHUNK = 500
 # the legs' gauge — the mov_rsi family's conventions verbatim: Wilder
 # RSI window 14 (the classic), per-curve adaptive percentile bars
 # (trailing 10y, one-row-shifted — no look-ahead), the tail grid.
@@ -509,8 +528,8 @@ HP_LEG_TAIL_PCTS = (1, 2, 3, 5, 10, 15, 20)
 # the trio's full grid (the portfolio candidates' own vocabulary)
 HP_STANDALONE_RSI_WINDOWS = (14, 10, 6)
 HP_STANDALONE_TAIL_PCTS = (1, 2, 3, 5, 10)
-HP_LEG_BAR_WINDOW_DAYS = 2550
-HP_LEG_BAR_MIN_PERIODS = 255
+HP_LEG_BAR_WINDOW_DAYS = 2520
+HP_LEG_BAR_MIN_PERIODS = 252
 # the hedge cells' FREQUENCY FLOOR (2026-10-25, user-directed "the
 # signals are too rare, loosen it to at least once per year", then the
 # same day EVENING "portfolio event should be at least once per year"
@@ -584,8 +603,13 @@ PF_CONF_CAP = 2.0         # the benefit-boost depth cap (max x1.5)
 # ---------------------------------------------------------------------------
 # population universes
 # ---------------------------------------------------------------------------
-# the mandatory study scope (analysis/strategy: industries + these 10
-# indices only)
+# the study scope of the OTHER analysis/strategy packages (industries +
+# these 10 indices only — market_crowdedness etc. still default to it).
+# The signals tier's own daily scope is the FULL index universe since
+# 2026-11-07 (user-directed "only a small num of codes are run daily,
+# now add for all indexes"): --codes 'all' resolves the sec_type's
+# codes from its base stats table at run time
+# (fetch/inputs._shared.resolve_sec_type_universe).
 STUDY_INDEX_CODES = (
     "000001", "931743", "931160", "931071", "000015", "930708",
     "931994", "931594", "000683", "000991",

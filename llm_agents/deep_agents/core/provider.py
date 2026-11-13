@@ -44,15 +44,28 @@ class ZhipuChatProvider(BaseLlmProvider):
     # glm-5.3-flash is the project default (same family the other
     # llm_agents providers use); override per call/CLI when needed.
     DEFAULT_MODEL = "glm-5.3-flash"
-    chat_timeout = 120.0
+    # ONE attempt's HTTP read timeout — 2026-11-08 live probe: the plan
+    # proposal's first batch (big system + data block, reasoning
+    # generation) regularly exceeds 120s at provider peak latency and
+    # died 3x (deterministic re-read of the same prompt), degrading the
+    # run to no-plan; 300s matches the documented default budget
+    # (run_limits().llm_request_timeout_sec 300s/600s bounds the whole
+    # ladder, so the 3-attempt shrink still caps total wall time).
+    chat_timeout = 300.0
     # The default per-request output ceiling (see class docstring).
     DEFAULT_MAX_TOKENS = 8192
 
     def __init__(self, *, api_key: Optional[str] = None,
                  max_attempts: int = 3,
                  max_output_tokens: Optional[int] = None,
-                 api_url: Optional[str] = None) -> None:
-        super().__init__(api_key=api_key, max_attempts=max_attempts)
+                 api_url: Optional[str] = None,
+                 label: Optional[str] = None) -> None:
+        # ``label`` = the configured provider type (the static.secret_config
+        # row's ext_llm_provider label resolved at agent start) — the audit
+        # rows record WHICH type served the tokens instead of the class
+        # constant ("dummy" test/sim runs stop reading as "zhipu").
+        super().__init__(api_key=api_key, max_attempts=max_attempts,
+                         audit_name=label)
         # None = resolve per request from the static deep_agent_config
         # (run_limits().max_output_tokens); an explicit value pins it.
         self.max_output_tokens = (
@@ -116,4 +129,17 @@ class ZhipuChatProvider(BaseLlmProvider):
         choices = data.get("choices") or []
         message = (choices[0].get("message") or {}
                    if isinstance(choices[0], dict) else {})
-        return message if isinstance(message, dict) else {}
+        if not isinstance(message, dict):
+            message = {}
+        # Surface WHY the reply ended (2026-11-13, run-4597f052): a
+        # reply that hit the per-request output ceiling MID tool-call
+        # ships a cut arguments string — the loop's tool seam reads
+        # this key to teach the model the CAUSE ("hit max tokens")
+        # instead of a bare JSON error, so it resends the same call
+        # with shorter arguments instead of guessing. Fail-soft: a
+        # provider shape without finish_reason simply omits the key.
+        finish = (choices[0].get("finish_reason")
+                  if isinstance(choices[0], dict) else None)
+        if finish:
+            message["finish_reason"] = str(finish)
+        return message

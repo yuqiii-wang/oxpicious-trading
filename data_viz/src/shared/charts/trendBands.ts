@@ -8,7 +8,7 @@
  * same-trend runs computed over analysis.trend_days (the store
  * analysis.trends.trend_state.attach_trend fills on every
  * analysis_signals run: top/bottom the overextended extremes of the
- * price-vs-MA255 gap vs its own trailing q90/q10, rise/fall the
+ * price-vs-MA252 gap vs its own trailing q90/q10, rise/fall the
  * Wilder-RSI14 RE-ENTRY episodes vs the code's own trailing q75/q25
  * band — the 2026-10-15 replacement of the delayed price-vs-MA60
  * states, unknown the unclassified bucket).

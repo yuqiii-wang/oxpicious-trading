@@ -4,7 +4,7 @@ gradual prompt-loading ladder as a model-callable tool.
 The ladder (``planning.prompt_loading``) runs at the plan node (catalog
 → keyword match → verdict); this module makes its LAST rung live for
 the WHOLE graph: :class:`LoadPromptTool` lets ANY conversation — an
-inline step hop, a forked subagent, a sub-sub child, the degraded
+inline step hop, a spawned subagent, a sub-sub child, the degraded
 execute lane — pull ONE cataloged skill's full instruction the moment
 its work touches that skill's domain, instead of hand-writing SQL
 against ``llm.ai_prompts`` (or worse, fetching every skill wholesale).
@@ -98,7 +98,7 @@ class LoadPromptTool(Tool):
 
 class PromptLoadToolKit(ToolKit):
     """The dynamic-loading kit the runner mounts on EVERY conversation
-    beside its role kit (main plan / fork plan / stats / none): the
+    beside its role kit (main plan / spawn plan / stats / none): the
     catalog-gated ``load_prompt`` tool over the run's shared cache.
     An empty catalog mounts nothing (no menu, no tool)."""
 

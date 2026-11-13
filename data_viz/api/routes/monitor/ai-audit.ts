@@ -5,11 +5,12 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { HttpError, intParam, wrapAsync } from "../../lib/http.js";
 import {
   getReadPool,
-} from "../../services/db.service.js";
+} from "../../services/infra/db.service.js";
 import { renderSqlView } from "@api/lib/sql-views";
-import { getKgChain, isKgNamespace } from "../../services/kg.service.js";
+import { getKgChain, isKgNamespace } from "../../services/knowledge/kg.service.js";
 
 const router = Router();
 
@@ -67,40 +68,35 @@ export interface AiUsageResponse {
   rows: AiUsageEntry[];
 }
 
-router.get("/ai/usage", async (req: Request, res: Response) => {
-  const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
-  try {
-    const pool = getReadPool();
-    const { sql, params } = renderSqlView(
-      "data_viz/api/routes/monitor/ai_usage_agg",
-      { days },
-    );
-    const agg = await pool.query<AiUsageRow>(sql, params);
-    const rows: AiUsageEntry[] = agg.rows.map((r) => ({
-      service: r.service,
-      model: r.model,
-      date: r.date,
-      requestCount: r.request_count,
-      failedCount: r.failed_count,
-      inputTokens: Number(r.input_tokens),
-      outputTokens: Number(r.output_tokens),
-      totalTokens: Number(r.total_tokens),
-      avgDurationMs: r.avg_duration_ms == null ? null : Number(r.avg_duration_ms),
-      maxDurationMs: r.max_duration_ms,
-    }));
-    const body: AiUsageResponse = {
-      success: true,
-      generatedAt: new Date().toISOString(),
-      dates: [...new Set(rows.map((r) => r.date))].sort(),
-      services: [...new Set(rows.map((r) => r.service))].sort(),
-      rows,
-    };
-    res.json(body);
-  } catch (err) {
-    console.error("[monitor/ai/usage] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+router.get("/ai/usage", wrapAsync(async (req: Request, res: Response) => {
+  const days = intParam(req, "days", { default: 30, clamp: [1, 365] });
+  const pool = getReadPool();
+  const { sql, params } = renderSqlView(
+    "data_viz/api/routes/monitor/ai_usage_agg",
+    { days },
+  );
+  const agg = await pool.query<AiUsageRow>(sql, params);
+  const rows: AiUsageEntry[] = agg.rows.map((r) => ({
+    service: r.service,
+    model: r.model,
+    date: r.date,
+    requestCount: r.request_count,
+    failedCount: r.failed_count,
+    inputTokens: Number(r.input_tokens),
+    outputTokens: Number(r.output_tokens),
+    totalTokens: Number(r.total_tokens),
+    avgDurationMs: r.avg_duration_ms == null ? null : Number(r.avg_duration_ms),
+    maxDurationMs: r.max_duration_ms,
+  }));
+  const body: AiUsageResponse = {
+    success: true,
+    generatedAt: new Date().toISOString(),
+    dates: [...new Set(rows.map((r) => r.date))].sort(),
+    services: [...new Set(rows.map((r) => r.service))].sort(),
+    rows,
+  };
+  res.json(body);
+}));
 
 // ---------------------------------------------------------------------------
 //  AI knowledge-graph queries — GET /ai/kg-queries?limit=50
@@ -144,36 +140,31 @@ export interface AiKgQueriesResponse {
   rows: AiKgQueryEntry[];
 }
 
-router.get("/ai/kg-queries", async (req: Request, res: Response) => {
-  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
-  try {
-    const pool = getReadPool();
-    const { sql, params } = renderSqlView(
-      "data_viz/api/routes/monitor/ai_kg_queries",
-      { limit },
-    );
-    const agg = await pool.query<AiKgQueryRow>(sql, params);
-    const rows: AiKgQueryEntry[] = agg.rows.map((r) => ({
-      query: r.query,
-      namespace: r.namespace,
-      chainId: r.chain_id,
-      edgeCount: r.edge_count,
-      minDepth: r.min_depth,
-      maxDepth: r.max_depth,
-      entityHash: r.entity_hash,
-      loggedAt: r.created_at.toISOString(),
-    }));
-    const body: AiKgQueriesResponse = {
-      success: true,
-      generatedAt: new Date().toISOString(),
-      rows,
-    };
-    res.json(body);
-  } catch (err) {
-    console.error("[monitor/ai/kg-queries] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+router.get("/ai/kg-queries", wrapAsync(async (req: Request, res: Response) => {
+  const limit = intParam(req, "limit", { default: 50, clamp: [1, 500] });
+  const pool = getReadPool();
+  const { sql, params } = renderSqlView(
+    "data_viz/api/routes/monitor/ai_kg_queries",
+    { limit },
+  );
+  const agg = await pool.query<AiKgQueryRow>(sql, params);
+  const rows: AiKgQueryEntry[] = agg.rows.map((r) => ({
+    query: r.query,
+    namespace: r.namespace,
+    chainId: r.chain_id,
+    edgeCount: r.edge_count,
+    minDepth: r.min_depth,
+    maxDepth: r.max_depth,
+    entityHash: r.entity_hash,
+    loggedAt: r.created_at.toISOString(),
+  }));
+  const body: AiKgQueriesResponse = {
+    success: true,
+    generatedAt: new Date().toISOString(),
+    rows,
+  };
+  res.json(body);
+}));
 
 //  AI knowledge-graph chain — GET /ai/kg-chain?namespace=N&chain_id=X
 //  ONE logged kg_search chain drawn as a subgraph for the AI tab's
@@ -204,28 +195,22 @@ export interface AiKgChainResponse {
   }>;
 }
 
-router.get("/ai/kg-chain", async (req: Request, res: Response) => {
+router.get("/ai/kg-chain", wrapAsync(async (req: Request, res: Response) => {
   const namespace = Number(req.query.namespace);
   const chainId = String(req.query.chain_id ?? "");
   if (!isKgNamespace(namespace) || !/^[0-9a-f]{8,64}$/i.test(chainId)) {
-    res.status(400).json({ success: false, error: "bad namespace or chain_id" });
-    return;
+    throw new HttpError(400, "INVALID_PARAM", "bad namespace or chain_id");
   }
-  try {
-    const chain = await getKgChain(namespace, chainId);
-    const body: AiKgChainResponse = {
-      success: true,
-      generatedAt: new Date().toISOString(),
-      namespace: chain.namespace,
-      chainId: chain.chainId,
-      entities: chain.entities,
-      edges: chain.edges,
-    };
-    res.json(body);
-  } catch (err) {
-    console.error("[monitor/ai/kg-chain] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+  const chain = await getKgChain(namespace, chainId);
+  const body: AiKgChainResponse = {
+    success: true,
+    generatedAt: new Date().toISOString(),
+    namespace: chain.namespace,
+    chainId: chain.chainId,
+    entities: chain.entities,
+    edges: chain.edges,
+  };
+  res.json(body);
+}));
 
 export default router;

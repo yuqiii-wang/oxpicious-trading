@@ -7,7 +7,7 @@
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import { renderSqlView, querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
-import { encodeLabelParam } from "../label-codes.js";
+import { encodeLabelParam } from "../infra/label-codes.js";
 import type {
   IndustryCorrelationRow,
   IndustryCorrelationsResponse,
@@ -43,7 +43,7 @@ interface DbIndustryCorrelationRow extends QueryResultRow {
   interval: number;
   corr_ma20_20d: number | null;
   corr_ma60_60d: number | null;
-  corr_ma255_255d: number | null;
+  corr_ma252_252d: number | null;
 }
 
 const VALID_INDUSTRY_CORR_POOLS = new Set(["all", "small", "mid", "large"]);
@@ -150,7 +150,7 @@ export async function getIndustryCorrelations(
     pool_size: poolSize,
     corr_ma20_20d: toNum(r.corr_ma20_20d),
     corr_ma60_60d: toNum(r.corr_ma60_60d),
-    corr_ma255_255d: toNum(r.corr_ma255_255d),
+    corr_ma252_252d: toNum(r.corr_ma252_252d),
   }));
 
   return {

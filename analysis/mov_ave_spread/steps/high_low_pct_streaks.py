@@ -9,7 +9,7 @@ analysis.mov_ave_high_low_pct_streaks.
   FINANCIAL SEMANTICS
 =======================================================================
 
-For each (period, pct_type) band — 60/120/255/500/750/1275 trading
+For each (period, pct_type) band — 60/120/252/504/756/1260 trading
 rows x pct_type 1/5/10 — each banded TRADING day is tested with a
 CLOSE-based breakout: a day is OUT-OF-BAND when its adjusted close (the parent
 ``price`` column) falls ABOVE the day's own month-band ``high_val`` or

@@ -62,6 +62,26 @@ FACE_TYPE = 0.5
 # A lone CJK character is ambiguous — it matches at half weight.
 _UNIGRAM_FACTOR = 0.5
 
+# Seed damping for the read-side sql_views templates: a template
+# matching the query is weaker "IS about the query" evidence than a
+# table — the corpus is locator-lane enrichment (the related-sql-views
+# block and the walk carry it), so the damp keeps tables primary in
+# the ranking instead of letting 400+ template name tokens crowd them
+# out. The corpus's own name shape (slash loader path — the static
+# rule's convention) distinguishes it from the hand-seeded schema-
+# qualified DB views (stats.v_*), which stay FULL-weight derived
+# objects; entity_type 'view' alone is shared by both kinds.
+_READ_SIDE_NAME_MARK = "/"
+
+
+def seed_type_damp(entity_type: str, name: str) -> float:
+    """The seed-score multiplier for one entity (1.0 default): the
+    read-side sql_views templates — 'view' entities whose name is a
+    slash path — match at half strength."""
+    if entity_type == "view" and _READ_SIDE_NAME_MARK in name:
+        return 0.5
+    return 1.0
+
 
 # ---------------------------------------------------------------------------
 # Spreading-activation constants
@@ -90,6 +110,14 @@ _WALK_FLOOR = 0.02
 _SEED_MIN = 3
 _WALK_MIN = 2
 
+# The ns0 read-side corpus relation: a sql_views template → each base
+# relation its text reads (head-first [view, table]; NULL sub_relation).
+# The edges are DERIVED, not seeded — llm_agents/kg/static_rules/
+# parses the templates (references resolved against pg_class); the
+# constant is shared by the engine (factors + related_views) and the
+# rule that writes the edges.
+READS_FROM = "reads_from"
+
 # Per-(relation, is-subject) propagation factors. is_subject: the
 # walking node is entity_ids[0] (the head). Both directions walk —
 # "what feeds this table" and "what does this table feed" are both
@@ -112,6 +140,19 @@ _EDGE_FACTORS: Dict[Tuple[str, bool], float] = {
     # Source → its derivations: the "what do people compute from
     # this" read — the more common agent question.
     ("computed_from", False): 0.85,
+    # The sql_views corpus hop (READS_FROM): template → the base
+    # relation it reads is the provenance read (computed_from's
+    # strength); relation → its reading templates answers "which
+    # read-side queries serve this table" — the common agent question,
+    # walking outward as strong as a source→derivations read.
+    ("reads_from", True): 0.75,
+    ("reads_from", False): 0.85,
+    # The label-index hop (ns2): a table's typed SMALLINT column ↔ its
+    # static.label_dim vocabulary — both directions are the lane's own
+    # questions ("which tables carry this vocabulary" / "which
+    # vocabulary types this table"), so it walks strong both ways.
+    ("labeled_by", True): 0.85,
+    ("labeled_by", False): 0.85,
     # Fact → its identity anchor: a grain hop into a hub.
     ("anchored_by", True): 0.45,
     # Identity → the fact tables on its grain: "what data exists".

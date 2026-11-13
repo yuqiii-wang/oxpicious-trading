@@ -16,7 +16,7 @@
  *
  *   - rolling_Xdays_price is the 100-based cumulative product of
  *     (1 + non_industry_return) over the trailing X-day window (X = the
- *     user-selected rolling window: 5/20/60/255/500). When the window is
+ *     user-selected rolling window: 5/20/60/252/504). When the window is
  *     full and returns are flat, it equals 100, so industry == benchmark
  *     (gap = 0).
  *   - Scaling by benchmark_close / 100 puts the curve on the benchmark's
@@ -78,7 +78,7 @@ import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-rende
 export interface IndustryShadeData {
   industry_id: string;
   industry_label: string;
-  /** rolling_Xdays_price values (X = the user-selected window: 5/20/60/255/500),
+  /** rolling_Xdays_price values (X = the user-selected window: 5/20/60/252/504),
    *  one per benchmark date (aligned by index). NULL where no non-this-industry
    *  data exists. */
   values: Array<number | null>;

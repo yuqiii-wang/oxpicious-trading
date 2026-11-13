@@ -57,6 +57,7 @@ import {
 } from "@mui/material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
+import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import {
   fetchMarketBetaThemes,
   fetchMarketBetaChart,
@@ -77,6 +78,8 @@ import { IndustryEtfPriceChart } from "./IndustryEtfPriceChart";
 import { IndustryEtfContributionChart } from "./IndustryEtfContributionChart";
 import { MarketTrendChart } from "./MarketTrendChart";
 import { IndexAllocationView } from "./IndexAllocationView";
+import { StockAttributionView } from "./StockAttributionView";
+import { MarketParticipationChart } from "./MarketParticipationChart";
 
 /** Nav trees endpoints (index-only — market beta merges member indices). */
 const THEMES_SOURCES = {
@@ -103,6 +106,7 @@ export default function MarketBetaPage() {
       invalidateCacheForPrefix("/api/analysis/industry-benchmark-attribution");
       invalidateCacheForPrefix("/api/analysis/industry-attribution-bars");
       invalidateCacheForPrefix("/api/analysis/industry-etf-contribution");
+      invalidateCacheForPrefix("/api/analysis/industry-stock-attribution");
       // Index Allocation view fetches per-code attribution + charts from the
       // perf-attr endpoints — invalidate those too so Refresh covers all modes.
       invalidateCacheForPrefix("/api/analysis/perf-attr/");
@@ -130,8 +134,10 @@ export default function MarketBetaPage() {
   // multi-line price + PE + amount + pairwise-correlation charts; "attribution"
   // swaps them for a benchmark price chart (1st plot, clickable to pick a
   // date) + one per-industry attribution bar chart per selected industry
-  // (2nd plot onward — sourced from analysis.industry_attributions).
-  const [viewMode, setViewMode] = useState<"correlation" | "attribution" | "etf_contribution" | "market_trend" | "index_allocation">("correlation");
+  // (2nd plot onward — sourced from analysis.industry_attributions);
+  // "stock_attribution" shows the rise/drop audit (per-industry histograms
+  // of member stocks counted into the 12 daily pct-change buckets).
+  const [viewMode, setViewMode] = useState<"correlation" | "attribution" | "etf_contribution" | "market_trend" | "index_allocation" | "stock_attribution" | "participation">("correlation");
   // Benchmark dropdown list (fetched once when entering attribution mode).
   const [attributionBenchmarks, setAttributionBenchmarks] = useState<IndustryAttributionBenchmarkEntry[]>([]);
   // The selected benchmark code (drives the 1st plot). Defaults to 000300
@@ -441,6 +447,23 @@ export default function MarketBetaPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, nav.refreshKey]);
 
+  // ---- Market Participation mode is WHOLE-MARKET: the classification nav
+  // (industry/index selection) does not concern it. Entering the mode drives
+  // the shared nav to its "all" scope (the locked all-exchange row — the
+  // existing allMode contract) and clears the page-local multi-selects;
+  // leaving restores the index scope (trees reload from cache). The mode
+  // panel itself renders regardless of selection (see the render gate).
+  useEffect(() => {
+    if (viewMode === "participation") {
+      setSelectedIndustrySlugs([]);
+      setSelectedItemCodes([]);
+      if (nav.secType !== "all") nav.setSecType("all");
+    } else if (nav.secType === "all") {
+      nav.setSecType("index");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
+
   // Sector change only updates the row-2 browsing context — it does NOT clear
   // the multi-select selection (industries picked from other sectors persist).
   // Non-exclusive mode (nav handlers): engaging the LEFT column does NOT clear
@@ -509,6 +532,7 @@ export default function MarketBetaPage() {
         ? `${strat.sector_label} / ${strat.industries.find((t) => t.industry_slug === nav.themeSlug)?.industry_label ?? strat.sector_label}`
         : strat.sector_label
       : null;
+    if (viewMode === "participation") return "All Market";
     if (indPart && stratPart) return `${indPart} + ${stratPart}`;
     if (indPart) return indPart;
     if (stratPart) return stratPart;
@@ -523,12 +547,31 @@ export default function MarketBetaPage() {
       backPath="/analysis/commons"
       backLabel="back to commons"
       subtitle={docs.text("ui.market-beta.page", { label: headerLabel })}      // Index-only page with no code search — both render DISABLED.
-      secTypes={["index"]}
+      // "all" joins the (disabled) toggle so Market Participation's
+      // market-wide scope is visible — the toggle follows nav.secType as
+      // the participation mode drives it index <-> all.
+      secTypes={["index", "all"]}
       disableToggle
       disableSearch
       refreshTooltip="Refresh market-beta data (bypass cache)"
       errorPrefix="market-beta data"
       navSlot={
+        // Market Participation holds the nav in its market-wide "all"
+        // scope — the locked all-exchange row (the existing allMode
+        // contract; same render the AI page uses for sec_type="all").
+        viewMode === "participation" ? (
+          <SecClassificationNav
+            allMode
+            sectors={nav.sectors}
+            sectorId={nav.sectorId}
+            industrySlug={nav.industrySlug}
+            exchange={nav.exchange}
+            onSectorChange={nav.handleSectorChange}
+            onIndustryChange={nav.handleIndustryChange}
+            onExchangeChange={nav.handleExchangeChange}
+            loading={nav.loading}
+          />
+        ) : (
         <SecClassificationNavMulti
           sectors={nav.sectors}
           sectorId={nav.sectorId}
@@ -547,184 +590,206 @@ export default function MarketBetaPage() {
           onMultiItemSelected={setSelectedItemCodes}
           loading={nav.loading}
         />
+        )
       }
     >
-      {effectiveIndustryIds.length === 0 && selectedItemCodes.length === 0 && (
-        <Alert severity="warning">Select one or more industries to see the member indices.</Alert>
-      )}
-      {(effectiveIndustryIds.length > 0 || selectedItemCodes.length > 0) && (
-        <>
-          {/* Top-level view-mode toggle: "Industry Correlation" (existing
-              multi-line price + PE + amount + pairwise-correlation charts)
-              vs "Benchmark Attribution" (benchmark price chart as 1st plot
-              + per-industry attribution bar charts from
-              analysis.industry_attributions as 2nd+ plots). In attribution
-              mode a benchmark dropdown selects the benchmark for the 1st
-              plot; clicking a date on the 1st plot sets the as-of date for
-              the attribution bar charts below. */}
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 2,
-              flexWrap: "wrap",
-              mb: 1,
-              mt: 0.5,
+      {/* Top-level view-mode toggle — rendered UNGATED: "Market
+          Participation" is whole-market (needs no classification
+          selection), so the toggle must stay reachable while that mode
+          holds the nav in its "all" scope. The other modes:
+          "Industry Correlation" (existing multi-line price + PE + amount +
+          pairwise-correlation charts) vs "Benchmark Attribution"
+          (benchmark price chart as 1st plot + per-industry attribution bar
+          charts from analysis.industry_attributions as 2nd+ plots; a
+          benchmark dropdown selects the 1st plot's benchmark, and clicking
+          a date on it sets the as-of date for the bars below). */}
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 2,
+          flexWrap: "wrap",
+          mb: 1,
+          mt: 0.5,
+        }}
+      >
+        <ToggleButtonGroup
+          value={viewMode}
+          exclusive
+          size="small"
+          onChange={(_, v: "correlation" | "attribution" | "etf_contribution" | "market_trend" | "index_allocation" | "stock_attribution" | "participation" | null) => {
+            if (v) setViewMode(v);
+          }}
+        >
+          <ToggleButton value="correlation">Industry Correlation</ToggleButton>
+          <ToggleButton value="attribution">Benchmark Attribution</ToggleButton>
+          <ToggleButton value="etf_contribution">ETF Contribution</ToggleButton>
+          <ToggleButton value="market_trend">Market Trend</ToggleButton>
+          <ToggleButton value="index_allocation">Index Allocation</ToggleButton>
+          <ToggleButton value="stock_attribution">Stock Attribution</ToggleButton>
+          <ToggleButton value="participation">Market Participation</ToggleButton>
+        </ToggleButtonGroup>
+        {viewMode === "attribution" && (
+          <Autocomplete
+            size="small"
+            options={attributionBenchmarks}
+            getOptionLabel={(b) =>
+              `${b.benchmark_name} (${b.benchmark_code})${b.is_broad_market === true ? " ★" : ""}`
+            }
+            isOptionEqualToValue={(a, b) => a.benchmark_code === b.benchmark_code}
+            value={
+              attributionBenchmarks.find(
+                (b) => b.benchmark_code === selectedBenchmarkCode,
+              ) ?? null
+            }
+            onChange={(_, newValue) => {
+              if (newValue) setSelectedBenchmarkCode(newValue.benchmark_code);
             }}
-          >
-            <ToggleButtonGroup
-              value={viewMode}
-              exclusive
-              size="small"
-              onChange={(_, v: "correlation" | "attribution" | "etf_contribution" | "market_trend" | "index_allocation" | null) => {
-                if (v) setViewMode(v);
-              }}
-            >
-              <ToggleButton value="correlation">Industry Correlation</ToggleButton>
-              <ToggleButton value="attribution">Benchmark Attribution</ToggleButton>
-              <ToggleButton value="etf_contribution">ETF Contribution</ToggleButton>
-              <ToggleButton value="market_trend">Market Trend</ToggleButton>
-              <ToggleButton value="index_allocation">Index Allocation</ToggleButton>
-            </ToggleButtonGroup>
-            {viewMode === "attribution" && (
-              <Autocomplete
+            renderInput={(params) => (
+              <TextField
+                {...params}
                 size="small"
-                options={attributionBenchmarks}
-                getOptionLabel={(b) =>
-                  `${b.benchmark_name} (${b.benchmark_code})${b.is_broad_market === true ? " ★" : ""}`
-                }
-                isOptionEqualToValue={(a, b) => a.benchmark_code === b.benchmark_code}
-                value={
-                  attributionBenchmarks.find(
-                    (b) => b.benchmark_code === selectedBenchmarkCode,
-                  ) ?? null
-                }
-                onChange={(_, newValue) => {
-                  if (newValue) setSelectedBenchmarkCode(newValue.benchmark_code);
-                }}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    size="small"
-                    label="Benchmark (★ = broad-market)"
-                    sx={{ minWidth: 240, "& .MuiOutlinedInput-root": { py: 0.25 } }}
-                  />
-                )}
-                sx={{ minWidth: 240, maxWidth: 340 }}
+                label="Benchmark (★ = broad-market)"
+                sx={{ minWidth: 240, "& .MuiOutlinedInput-root": { py: 0.25 } }}
               />
             )}
-          </Box>
+            sx={{ minWidth: 240, maxWidth: 340 }}
+          />
+        )}
+      </Box>
 
-          {viewMode === "correlation" && (
+      {/* Market Participation is whole-market — render it WITHOUT the
+          classification-selection gate; every other mode keeps the
+          selection gate (warning when nothing picked). */}
+      {viewMode === "participation" ? (
+        <MarketParticipationChart />
+      ) : (
+        <>
+          {effectiveIndustryIds.length === 0 && selectedItemCodes.length === 0 && (
+            <Alert severity="warning">Select one or more industries to see the member indices.</Alert>
+          )}
+          {(effectiveIndustryIds.length > 0 || selectedItemCodes.length > 0) && (
             <>
-              {chartLoading && (
-                <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-                  <CircularProgress size={28} />
-                </Box>
-              )}
-              {chartError && (
-                <Alert severity="error" sx={{ py: 0.5 }}>{chartError}</Alert>
-              )}
-              {!chartLoading && !chartError && mergedChartData && (
-                <MarketBetaPlot
-                  data={mergedChartData}
-                  multiIndustry={multiIndustry}
-                  numIndustries={chartDataList.length}
-                  chartDataList={chartDataList}
-                  selectedIndustryIds={effectiveIndustryIds}
-                  selectedItemCodes={selectedItemCodes}
+            {viewMode === "correlation" && (
+              <>
+                {chartLoading && (
+                  <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+                    <CircularProgress size={28} />
+                  </Box>
+                )}
+                {chartError && (
+                  <Alert severity="error" sx={{ py: 0.5 }}>{chartError}</Alert>
+                )}
+                {!chartLoading && !chartError && mergedChartData && (
+                  <MarketBetaPlot
+                    data={mergedChartData}
+                    multiIndustry={multiIndustry}
+                    numIndustries={chartDataList.length}
+                    chartDataList={chartDataList}
+                    selectedIndustryIds={effectiveIndustryIds}
+                    selectedItemCodes={selectedItemCodes}
+                  />
+                  )}
+              </>
+            )}
+
+            {viewMode === "attribution" && (
+              <Stack spacing={1.5}>
+                {/* 1st plot: Benchmark price chart with non-this-industry green/red shades.
+                    The shades show, for each selected industry, what the
+                    benchmark's price would be if the industry's shared stocks
+                    were removed. Green shade = non-industry above benchmark
+                    (industry was a drag); red shade = below (industry was a
+                    boost). Toggle switches between Percentage (rebased to 100)
+                    and Absolute (raw prices). The chart is clickable — clicking
+                    a date sets the as-of date for the bar charts below. */}
+                <BenchmarkPriceChart
+                  benchmarkCode={selectedBenchmarkCode}
+                  selectedDate={selectedDate}
+                  onDateSelect={(d) => setSelectedDate(d)}
+                  selectedIndustries={selectedIndustries}
                 />
-              )}
+
+                {/* 2nd+ plots: Per-industry benchmark attribution bar charts.
+                    One plot per selected industry; each bar = one benchmark.
+                    Shows the benchmark's contribution (return × shared weight)
+                    and both shared weight metrics as grouped bars. Includes
+                    an All/Sector toggle (identical to PerfAttr's fluctuation
+                    chart) to show/hide broad-market benchmarks. The selected
+                    benchmark (from the dropdown) is highlighted. Same date as
+                    the BenchmarkPriceChart above. */}
+                {selectedIndustries.map((ind) => (
+                  <IndustryBenchmarkAttributionChart
+                    key={ind.id}
+                    industryId={ind.id}
+                    industryLabel={ind.label}
+                    date={selectedDate}
+                    selectedBenchmarkCode={selectedBenchmarkCode}
+                  />
+                ))}
+              </Stack>
+            )}
+
+            {viewMode === "etf_contribution" && (
+              <Stack spacing={1.5}>
+                {/* 1st plot: Multi-ETF price chart with cascading rebase.
+                    Each ETF tracking a member index of the selected industries
+                    is plotted as a separate line, rebased to 100 at its own
+                    first available date. Later-listed ETFs start at the MEAN
+                    of already-active ETFs on their first date (cascading
+                    rebase) so they blend in rather than jumping to 100. The
+                    chart is clickable — clicking a date sets the as-of date
+                    for the bar charts below.
+
+                    In-plot controls (top-right): a "Trading Amt" MA dropdown
+                    (MA5 / MA20) and a merged toggle that switches between the
+                    price-trend curve being prominent (trading-amt bars + MA
+                    lowkey) vs the trading-amt bars + MA being prominent (price
+                    curve lowkey). The plot is never hidden — only the relative
+                    emphasis flips. */}
+                <IndustryEtfPriceChart
+                  industryIds={selectedIndustryIds}
+                  selectedDate={selectedDate}
+                  onDateSelect={(d) => setSelectedDate(d)}
+                />
+
+                {/* 2nd+ plots: Per-industry ETF contribution bar charts.
+                    One plot per selected industry; each bar = one ETF showing
+                    its trading amount (capital flow, colored by return
+                    direction) and its % share of the industry total ETF
+                    trading amount. Same date as the IndustryEtfPriceChart
+                    above. */}
+                {selectedIndustries.map((ind) => (
+                  <IndustryEtfContributionChart
+                    key={ind.id}
+                    industryId={ind.id}
+                    industryLabel={ind.label}
+                    date={selectedDate}
+                  />
+                ))}
+              </Stack>
+            )}
+
+            {viewMode === "market_trend" && (
+              <MarketTrendChart />
+            )}
+
+            {viewMode === "index_allocation" && (
+              <IndexAllocationView
+                chartDataList={chartDataList}
+                selectedItemCodes={selectedItemCodes}
+              />
+            )}
+
+            {viewMode === "stock_attribution" && (
+              <StockAttributionView
+                industries={selectedIndustries}
+                refreshKey={nav.refreshKey}
+              />
+            )}
+
             </>
-          )}
-
-          {viewMode === "attribution" && (
-            <Stack spacing={1.5}>
-              {/* 1st plot: Benchmark price chart with non-this-industry green/red shades.
-                  The shades show, for each selected industry, what the
-                  benchmark's price would be if the industry's shared stocks
-                  were removed. Green shade = non-industry above benchmark
-                  (industry was a drag); red shade = below (industry was a
-                  boost). Toggle switches between Percentage (rebased to 100)
-                  and Absolute (raw prices). The chart is clickable — clicking
-                  a date sets the as-of date for the bar charts below. */}
-              <BenchmarkPriceChart
-                benchmarkCode={selectedBenchmarkCode}
-                selectedDate={selectedDate}
-                onDateSelect={(d) => setSelectedDate(d)}
-                selectedIndustries={selectedIndustries}
-              />
-
-              {/* 2nd+ plots: Per-industry benchmark attribution bar charts.
-                  One plot per selected industry; each bar = one benchmark.
-                  Shows the benchmark's contribution (return × shared weight)
-                  and both shared weight metrics as grouped bars. Includes
-                  an All/Sector toggle (identical to PerfAttr's fluctuation
-                  chart) to show/hide broad-market benchmarks. The selected
-                  benchmark (from the dropdown) is highlighted. Same date as
-                  the BenchmarkPriceChart above. */}
-              {selectedIndustries.map((ind) => (
-                <IndustryBenchmarkAttributionChart
-                  key={ind.id}
-                  industryId={ind.id}
-                  industryLabel={ind.label}
-                  date={selectedDate}
-                  selectedBenchmarkCode={selectedBenchmarkCode}
-                />
-              ))}
-            </Stack>
-          )}
-
-          {viewMode === "etf_contribution" && (
-            <Stack spacing={1.5}>
-              {/* 1st plot: Multi-ETF price chart with cascading rebase.
-                  Each ETF tracking a member index of the selected industries
-                  is plotted as a separate line, rebased to 100 at its own
-                  first available date. Later-listed ETFs start at the MEAN
-                  of already-active ETFs on their first date (cascading
-                  rebase) so they blend in rather than jumping to 100. The
-                  chart is clickable — clicking a date sets the as-of date
-                  for the bar charts below.
-
-                  In-plot controls (top-right): a "Trading Amt" MA dropdown
-                  (MA5 / MA20) and a merged toggle that switches between the
-                  price-trend curve being prominent (trading-amt bars + MA
-                  lowkey) vs the trading-amt bars + MA being prominent (price
-                  curve lowkey). The plot is never hidden — only the relative
-                  emphasis flips. */}
-              <IndustryEtfPriceChart
-                industryIds={selectedIndustryIds}
-                selectedDate={selectedDate}
-                onDateSelect={(d) => setSelectedDate(d)}
-              />
-
-              {/* 2nd+ plots: Per-industry ETF contribution bar charts.
-                  One plot per selected industry; each bar = one ETF showing
-                  its trading amount (capital flow, colored by return
-                  direction) and its % share of the industry total ETF
-                  trading amount. Same date as the IndustryEtfPriceChart
-                  above. */}
-              {selectedIndustries.map((ind) => (
-                <IndustryEtfContributionChart
-                  key={ind.id}
-                  industryId={ind.id}
-                  industryLabel={ind.label}
-                  date={selectedDate}
-                />
-              ))}
-            </Stack>
-          )}
-
-          {viewMode === "market_trend" && (
-            <MarketTrendChart />
-          )}
-
-          {viewMode === "index_allocation" && (
-            <IndexAllocationView
-              chartDataList={chartDataList}
-              selectedItemCodes={selectedItemCodes}
-            />
           )}
         </>
       )}

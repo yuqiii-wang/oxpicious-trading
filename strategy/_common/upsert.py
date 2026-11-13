@@ -407,7 +407,7 @@ DAILY_COLUMNS = [
     "total_qty", "cost_basis_norm", "position_value", "cash",
     "realized_pnl_cum", "unrealized_pnl", "total_pnl",
     "return_rate",
-    "sharpe_ratio", "sharpe_ratio_255d", "sharpe_ratio_500d",
+    "sharpe_ratio", "sharpe_ratio_252d", "sharpe_ratio_504d",
     "normalized_mean_buy_period",
     "is_decision_day", "decision_no",
 ]

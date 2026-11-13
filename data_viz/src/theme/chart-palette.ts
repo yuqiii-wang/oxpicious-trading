@@ -36,7 +36,7 @@ export const MA5_COLOR = cssVar("--chart-ma5", "#e91e63"); // MA5 magenta
 export const MA20_COLOR = cssVar("--chart-ma20", "#f39c12"); // MA20 orange
 export const MA60_COLOR = cssVar("--chart-ma60", "#8e44ad"); // MA60 purple
 export const MA120_COLOR = cssVar("--chart-ma120", "#7f8c8d"); // MA120 gray
-export const MA255_COLOR = cssVar("--chart-ma255", "#16a085"); // MA255 teal
+export const MA252_COLOR = cssVar("--chart-ma252", "#16a085"); // MA252 teal
 
 // Quant / IV-smile colors
 export const IV_BLUE = cssVar("--chart-iv-blue", "#1F77B4"); // standard tableau blue
@@ -188,7 +188,7 @@ export function expiryGreyColor(i: number, n: number): string {
 
 // ----------------------------------------------------------------------------
 // Rolling-window gradient (blue) — one hue at graded darkness for the ordered
-// trailing windows (20/60/255d) of a SINGLE metric (e.g. the pair hedge-ratio
+// trailing windows (20/60/252d) of a SINGLE metric (e.g. the pair hedge-ratio
 // panels). Dark = shortest window (nearest horizon), light = longest — the
 // same dark-near/light-far convention as the expiry gradients above. Unlike
 // MUTED_PALETTE (a distinct hue per series), one metric's windows share a hue

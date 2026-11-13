@@ -8,7 +8,7 @@ import { querySqlView } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { codeVariants } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
-import { LABEL_CODE } from "@api/services/label-codes";
+import { LABEL_CODE } from "@api/services/infra/label-codes";
 import type {
   PeStreak,
   PeStreaksResponse,

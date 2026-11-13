@@ -43,7 +43,7 @@ Calibration (retune here + the matching SQL COMMENTs together):
     term    target_move   clip bounds     typical calm A-share index
     short   3%            [5, 60]         sigma~1.2%/d -> ~6d
     mid     6%            [20, 120]                         ~25d
-    long    12%           [60, 255]                        ~100d
+    long    12%           [60, 252]                        ~100d
 
 Fallback chain when a (code, regime) slice is too thin to trust its own
 median (< MIN_REGIME_VOL_DAYS non-null vol days): the code's overall
@@ -97,6 +97,8 @@ from _common.db_commons import chunked_purge_async, csv_copy_frame_chunked_async
 from _common.df_utils import (
     column_subset,
     epoch_col_to_dt64,
+    grouped_rolling_agg,
+    grouped_rolling_rank_pct,
     grouped_shift,
     host_array,
     host_unique,
@@ -111,7 +113,9 @@ from analysis.mov_ave_spread._common.steps import (
     infer_sec_types,
     sec_type_code,
 )
-from analysis.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
+from analysis.mov_ave_spread.config import (
+    SEC_TYPE_IDENTITY_TABLE, SPREAD_TRAILING_WINDOW,
+)
 from _common.sql_views import render_sql_view
 
 import logging
@@ -137,7 +141,7 @@ MOMENTUM_DESCRIPTION = (
     "EWMA(ret_1d^2, span=20)) over the code's full-history days in that "
     "regime — equal-expected-move targeting, so high-volatility regimes "
     "get SHORTER lookbacks. short: target 3% clip [5,60]; mid: 6% "
-    "[20,120]; long: 12% [60,255]; ordering enforced; thin slices fall "
+    "[20,120]; long: 12% [60, 252]; ordering enforced; thin slices fall "
     "back to the code-level median vol, then a 2%/day default. lb_short "
     "/ lb_mid / lb_long record the day's effective lookbacks, vol_regime "
     "the sigma they were derived from, regime the day's market_regimes "
@@ -158,7 +162,7 @@ TERMS = ("short", "mid", "long")
 # in database/sql/analysis/mov_ave_spreads/11_mov_ave_momentum.sql.
 TERM_TARGET_MOVE = {"short": 0.03, "mid": 0.06, "long": 0.12}
 TERM_LB_MIN = {"short": 5, "mid": 20, "long": 60}
-TERM_LB_MAX = {"short": 60, "mid": 120, "long": 255}
+TERM_LB_MAX = {"short": 60, "mid": 120, "long": 252}
 
 # A (code, regime) slice needs at least this many non-null vol days to
 # trust its own median; thinner slices fall back to the code-level median.
@@ -176,6 +180,8 @@ MOMENTUM_COLUMNS = [
     "sec_type", "code", "date", "regime", "vol_regime",
     "lb_short", "lb_mid", "lb_long",
     "momentum_5days", "momentum_20days",
+    "momentum_5days_pct_rank", "momentum_5days_zscore",
+    "momentum_20days_pct_rank", "momentum_20days_zscore",
     "momentum_short", "momentum_mid", "momentum_long",
 ]
 
@@ -343,12 +349,19 @@ def _log_lookback_summary(stats: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 
 def compute_fixed_momentum(frame: pd.DataFrame) -> pd.DataFrame:
-    """Add momentum_{5,20}days — the fixed-anchor ROC — via the shared
-    grouped_shift helper (GPU whole-frame pass).
+    """Add momentum_{5,20}days — the fixed-anchor ROC — plus each one's
+    OWN-HISTORY trailing stats ({w}_pct_rank / {w}_zscore, 2026-11-09)
+    via the shared grouped helpers (GPU whole-frame passes; the rank
+    rides the accepted CPU-pandas rolling-rank convention).
 
-    The frame must be sorted by (sec_type, code, date) — the caller
-    guarantees it; sort=False keeps that order. NaN until the code has
-    n prior rows; base<=0 legs null out (defensive; closes are > 0)."""
+    The frame must be sorted by (sec_type, code, date) and carry FULL
+    per-code history (the trailing window needs 252 prior rows — the
+    wholesale execute contract guarantees it; callers filter to target
+    dates AFTER). momentum NaN until the code has n prior rows;
+    base<=0 legs null out (defensive; closes are > 0). pct_rank/zscore
+    NaN until the trailing window is realized — same semantics as the
+    mov_ave_spreads_detail_trailing companion (window 252,
+    min_periods=252, rank includes the current point, z ddof=1)."""
     grp = ["sec_type", "code"]
     for w in FIXED_WINDOWS:
         grouped_shift(
@@ -360,6 +373,36 @@ def compute_fixed_momentum(frame: pd.DataFrame) -> pd.DataFrame:
             frame["price"] / base - 1.0
         ).where(base > 0)
         frame = frame.drop(columns=[f"_base{w}"])
+        frame = _momentum_trailing_stats(frame, f"momentum_{w}days")
+    return frame
+
+
+def _momentum_trailing_stats(
+    frame: pd.DataFrame, value_col: str,
+) -> pd.DataFrame:
+    """Add ``{value_col}_pct_rank`` / ``{value_col}_zscore`` — the
+    value's trailing-252d own-history stats per (sec_type, code), the
+    compute_gap_trailing_stats convention (window/min_periods 252,
+    ddof=1). cuDF notes: mean/std ride the GPU via grouped_rolling_agg;
+    grouped_rolling_rank_pct falls back to CPU pandas per call (cuDF
+    lacks rolling-rank — the accepted convention)."""
+    grp = ["sec_type", "code"]
+    window = SPREAD_TRAILING_WINDOW
+    mean = grouped_rolling_agg(
+        frame, grp, value_col, window=window,
+        min_periods=window, agg="mean",
+    )
+    std = grouped_rolling_agg(
+        frame, grp, value_col, window=window,
+        min_periods=window, agg="std", ddof=1,
+    )
+    rank = grouped_rolling_rank_pct(
+        frame, grp, value_col, window=window, min_periods=window,
+    )
+    frame[f"{value_col}_pct_rank"] = rank.round(6)
+    frame[f"{value_col}_zscore"] = (
+        ((frame[value_col] - mean) / std).round(6)
+    )
     return frame
 
 
@@ -448,6 +491,22 @@ def build_momentum_copy_frame(
         ),
         "momentum_20days": host_array(
             frame["momentum_20days"].to_numpy(
+                dtype="float64", na_value=np.nan)
+        ),
+        "momentum_5days_pct_rank": host_array(
+            frame["momentum_5days_pct_rank"].to_numpy(
+                dtype="float64", na_value=np.nan)
+        ),
+        "momentum_5days_zscore": host_array(
+            frame["momentum_5days_zscore"].to_numpy(
+                dtype="float64", na_value=np.nan)
+        ),
+        "momentum_20days_pct_rank": host_array(
+            frame["momentum_20days_pct_rank"].to_numpy(
+                dtype="float64", na_value=np.nan)
+        ),
+        "momentum_20days_zscore": host_array(
+            frame["momentum_20days_zscore"].to_numpy(
                 dtype="float64", na_value=np.nan)
         ),
         "momentum_short": adaptive_host["short"],
@@ -555,15 +614,18 @@ class MomentumStep(TableStep):
         frame = compute_fixed_momentum(frame)
         adaptive_host = compute_adaptive_momentum_host(frame)
 
-        # Overflow guard on the frame-side fixed columns (the adaptive host
-        # arrays were guarded inside the boundary).
+        # Overflow guard on the frame-side fixed columns + their trailing
+        # stats (the adaptive host arrays were guarded inside the
+        # boundary).
         nulled = {}
         for w in FIXED_WINDOWS:
-            c = f"momentum_{w}days"
-            clean, n_n = null_if_overflow_counted(frame[c])
-            frame[c] = clean
-            if n_n > 0:
-                nulled[c] = n_n
+            for c in (f"momentum_{w}days",
+                      f"momentum_{w}days_pct_rank",
+                      f"momentum_{w}days_zscore"):
+                clean, n_n = null_if_overflow_counted(frame[c])
+                frame[c] = clean
+                if n_n > 0:
+                    nulled[c] = n_n
         if nulled:
             total = sum(nulled.values())
             per = ", ".join(f"{c}={n}" for c, n in nulled.items())

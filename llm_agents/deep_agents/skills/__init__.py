@@ -13,7 +13,7 @@ rendering both consumers share:
     placeholders filled from the run's scope/question args);
   * ``SkillBook.render_all``      — the runner's pass-down shape
     (prompt_key -> rendered instruction — every step hop's conversation
-    and every forked child receives the SAME rendered texts the planner
+    and every spawned child receives the SAME rendered texts the planner
     planned under);
   * ``SkillBook.items_block``     — the quoted "[Selected prompts —
     …]" block builder; the graph's per-step user message

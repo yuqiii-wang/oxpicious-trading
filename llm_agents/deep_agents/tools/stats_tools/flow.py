@@ -21,7 +21,7 @@ from llm_agents.deep_agents.tools.stats_tools.trend import parse_windows
 # (W=20 is the house default).
 VOLUME_HOUSE_WINDOWS = (5, 20, 60)
 # The trailing-range windows analysis.mov_ave_high_low_pct bands by.
-RANGE_HOUSE_WINDOWS = (60, 120, 255)
+RANGE_HOUSE_WINDOWS = (60, 120, 252)
 
 
 class StatsVolumeTool(Tool):
@@ -142,7 +142,7 @@ class StatsRangeTool(Tool):
                           "maximum": 1000},
                 "maxItems": 4,
                 "description": "Trailing windows in trading days; "
-                               "defaults to 60/120/255 (the "
+                               "defaults to 60/120/252 (the "
                                "analysis.mov_ave_high_low_pct band "
                                "periods).",
             },
@@ -151,7 +151,7 @@ class StatsRangeTool(Tool):
     }
     DEFAULT_DESCRIPTION: ClassVar[str] = (
         "Where price sits in ONE security's OWN trailing window "
-        "(default 60/120/255 trading days — the analysis band "
+        "(default 60/120/252 trading days — the analysis band "
         "periods): the window high/low with their dates, the close's "
         "position within that range (%: 0 = at the low, 100 = at the "
         "high), and the drawdown from the window high %. A "

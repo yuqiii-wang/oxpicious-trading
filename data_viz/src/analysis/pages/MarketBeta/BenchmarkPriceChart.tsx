@@ -13,10 +13,10 @@
  *                window).
  *
  * A rolling-days DROPDOWN lets the user pick which trailing window
- * (5 / 20 / 60 / 255 / 500 trading days) drives the shade overlay. Each
+ * (5 / 20 / 60 / 252 / 504 trading days) drives the shade overlay. Each
  * option selects one of the 5 pre-materialized
  * benchmark_non_this_industry_rolling_{N}days_price columns from
- * analysis.industry_attributions. Defaults to 255 days (~1 year).
+ * analysis.industry_attributions. Defaults to 252 days (~1 year).
  *
  * The chart is CLICKABLE — clicking anywhere inside the plot grid selects the
  * nearest date (via onCanvasClick), which flows up to the parent and updates
@@ -103,10 +103,10 @@ export function BenchmarkPriceChart({
   // highlighted at the bottom of the bar in the industry's color.
   const [showTradingAmt, setShowTradingAmt] = useState<boolean>(false);
 
-  // Rolling-days dropdown: which trailing window (5/20/60/255/500) drives the
+  // Rolling-days dropdown: which trailing window (5/20/60/252/504) drives the
   // shade overlay. Selects one of the 5 pre-materialized
   // non_this_industry_rolling_{N}days_price columns from the API response.
-  // Defaults to 255 days (~1 year).
+  // Defaults to 252 days (~1 year).
   const [rollingDays, setRollingDays] = useState<RollingDays>(DEFAULT_ROLLING_DAYS);
 
   // Fetch benchmark price when benchmarkCode changes.

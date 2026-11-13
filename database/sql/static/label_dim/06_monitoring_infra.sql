@@ -3,14 +3,18 @@
 --
 --  The operational monitors' closed vocabularies: the external request
 --  audit's resource family, request host and LLM provider, the DB
---  health sampler's instance identity + WAL shipping state, and the
---  secret registry's credential type. Owning
+--  health sampler's instance identity + WAL shipping state, the
+--  secret registry's credential type + service tier, and the
+--  maintainer backup audit's batch mode + outcome. Owning
 --  tables: monitor.external_resource_audit (ext_resource /
 --  ext_http_source / ext_llm_provider — sub_type's domain is selected
 --  by resource_type), monitor.db_health (db_instance /
 --  db_replication_state), static.secret_config (secret_type — the
---  provider domain is selected by it: ext_llm_provider when llm,
---  ext_http_source when web_search).
+--  provider domain is selected by it: ext_llm_provider when
+--  llm / jev / tokenization, ext_http_source when web_search;
+--  secret_sub_type — the credential service tier, ONE shared domain
+--  across all types), maintenance.src_data_backup (backup_mode /
+--  backup_status).
 -- ============================================================================
 
 INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
@@ -44,19 +48,44 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- ext_llm_provider: sub_type when resource_type = 1 — the provider
     -- name (RetryingJsonClient's owning BaseLlmProvider.name); 99 fallback
     ('ext_llm_provider',  0, 'zhipu',  0),
-    -- dummy = the offline test double (llm_agents.test.dummy_llm —
-    -- canned replies / the simulated endpoint): the always-present
-    -- llm secret_config row's provider label (secrets/
-    -- 01_seed_secret_config.sql), never an audited live provider.
+    -- dummy = the offline test double (test/dummy_langgraph at the
+    -- project root — canned replies; the simulated endpoint lives in
+    -- server_cluster.llm): the always-present llm secret_config row's
+    -- provider label (secrets/01_seed_secret_config.sql), never an
+    -- audited live provider.
     ('ext_llm_provider',  1, 'dummy',  1),
+    -- local = the resident local-model host's REAL chat model
+    -- (server_cluster.llm — the cluster's llm area, migrated from
+    -- llm_agents.local_model_host 2026-11 — OpenAI-compatible
+    -- /v1/chat/completions over the manager-loaded jev models, e.g.
+    -- onejev-1.6-4b): the local secret_config row's provider label.
+    -- Registry-only like dummy — the audit records the transport's own
+    -- name (ZhipuChatProvider.name = zhipu).
+    ('ext_llm_provider',  2, 'local',  2),
     ('ext_llm_provider', 99, 'other', 99),
     -- secret_type: static.secret_config.secret_type — the credential
     -- family a secret row serves. Its PROVIDER column's domain is
-    -- selected by this one: ext_llm_provider when llm,
-    -- ext_http_source when web_search (the audit's selected-domain
-    -- pattern).
+    -- selected by this one: ext_llm_provider when llm / jev /
+    -- tokenization, ext_http_source when web_search (the audit's
+    -- selected-domain pattern). jev = the local-model host's Jev /
+    -- System One decision-model credentials (onejev-1.6-4b, the
+    -- standard /v1/systemone contract); tokenization = its StructBERT
+    -- word-segmenter credential (word-segmenter-zh,
+    -- POST /v1/tokenization/segment) — both retyped out of llm
+    -- 2026-11-11: they are the resident host's model-serving
+    -- credentials, NOT chat-LLM ones (the deep agent's chat config
+    -- reads ONLY llm rows).
     ('secret_type', 0, 'llm',  0),
     ('secret_type', 1, 'web_search', 1),
+    ('secret_type', 2, 'jev', 2),
+    ('secret_type', 3, 'tokenization', 3),
+    -- secret_sub_type: static.secret_config.sub_type — the credential
+    -- SERVICE TIER, one shared domain across both secret_types (0
+    -- general = the standard tier — glm flash chat models, the
+    -- offline dummy, generic content search; 1 pro = the paid-pro
+    -- tier — the zhipu search_pro web-search engine)
+    ('secret_sub_type', 0, 'general', 0),
+    ('secret_sub_type', 1, 'pro', 1),
     -- db_instance: monitor.db_health.instance — the Postgres instance a
     -- health sample came from (docker-compose: db + db-replica)
     ('db_instance', 0, 'primary', 0),
@@ -75,3 +104,17 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('db_replication_state',  5, 'connecting', 5),
     ('db_replication_state',  6, 'stopped',    6),
     ('db_replication_state', 99, 'none',      99);
+
+INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
+    -- backup_mode: maintenance.src_data_backup.mode — the robocopy
+    -- batch's scope (code order is semantic: incremental only exists
+    -- after a full)
+    ('backup_mode', 0, 'full',         0),
+    ('backup_mode', 1, 'incremental',  1),
+    -- backup_status: maintenance.src_data_backup.status — the batch
+    -- outcome, from robocopy's exit code bits (0-3 ok, 4-7 mismatches
+    -- present, 8+ copy failures / fatal). Code order is semantic:
+    -- best -> worst
+    ('backup_status', 0, 'ok',      0),
+    ('backup_status', 1, 'partial', 1),
+    ('backup_status', 2, 'failed',  2);

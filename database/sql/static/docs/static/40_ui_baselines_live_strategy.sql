@@ -15,7 +15,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
 (
   'ui.index.panel',
   NULL,
-  'Daily chart of index {{code}} {{name}}: {{#hasOhlc}}OHLC candles{{/hasOhlc}}{{^hasOhlc}}a close line{{/hasOhlc}} + MA5/20/60/120 on the left price axis (the weekly/monthly/quarterly/half-year anchors the ma-cross families trade), turnover bars (亿元) on the right, PE on an offset twin axis. Read price against the MA ladder — the MA120/255 regime line separates trending from mean-reverting tape; PE in its own historical tail (the 5y band edges) marks valuation stretch. % mode rebases OHLC + MAs to % change from the first valid close (Amount and PE stay absolute).',
+  'Daily chart of index {{code}} {{name}}: {{#hasOhlc}}OHLC candles{{/hasOhlc}}{{^hasOhlc}}a close line{{/hasOhlc}} + MA5/20/60/120 on the left price axis (the weekly/monthly/quarterly/half-year anchors the ma-cross families trade), turnover bars (亿元) on the right, PE on an offset twin axis. Read price against the MA ladder — the MA120/252 regime line separates trending from mean-reverting tape; PE in its own historical tail (the 5y band edges) marks valuation stretch. % mode rebases OHLC + MAs to % change from the first valid close (Amount and PE stay absolute).',
   '[
     {"key": "ohlc", "name": "OHLC", "unit": "{{unit}}", "description": "daily candlesticks (open/high/low/close)"},
     {"key": "close", "name": "Close", "unit": "{{unit}}", "description": "daily closing price"},
@@ -138,7 +138,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
 (
   'ui.hedge-pairs.ratio',
   NULL,
-  'Minimum-variance hedge ratio h² = −Cov(A,B)/Var(A) of the subject industry vs the benchmark industry over trailing 20/60/255-day windows, on the stride-grid dates. h² > 0 means the pair moves opposite (negative covariance — the hedge-grade anti-correlation regime, a minority of pairs): BUY the subject to hedge one unit long of the benchmark, at h² units; h² < 0 means positive covariance — short it instead. Market-offset mode strips the 沪深300 common factor from both sides first — the pure relative-value answer, and the mode the pair-hedge universe is screened in.',
+  'Minimum-variance hedge ratio h² = −Cov(A,B)/Var(A) of the subject industry vs the benchmark industry over trailing 20/60/252-day windows, on the stride-grid dates. h² > 0 means the pair moves opposite (negative covariance — the hedge-grade anti-correlation regime, a minority of pairs): BUY the subject to hedge one unit long of the benchmark, at h² units; h² < 0 means positive covariance — short it instead. Market-offset mode strips the 沪深300 common factor from both sides first — the pure relative-value answer, and the mode the pair-hedge universe is screened in.',
   NULL,
   '[
     {"key": "strideGrid", "text": "Values appear only on stride-grid dates; null days are skipped, never zero-filled."}
@@ -149,7 +149,7 @@ INSERT INTO static.docs (doc_id, title, intro, series, notes, ordinal) VALUES
   'ui.hedge-pairs.ratio.info',
   'Pair hedge ratio vs benchmark industry',
   'Both sides come from the nav''s pair selection — subject industry = the hedging instrument, benchmark industry = the position.
-The plotted value is the minimum-variance hedge h² = −Cov(A,B) / Var(A) over trailing 20/60/255-day windows — how many units of the subject industry to hold per unit long of the benchmark industry. Above 0 = BUY the subject (negative covariance — the opposite-moves regime); below 0 = short it.
+The plotted value is the minimum-variance hedge h² = −Cov(A,B) / Var(A) over trailing 20/60/252-day windows — how many units of the subject industry to hold per unit long of the benchmark industry. Above 0 = BUY the subject (negative covariance — the opposite-moves regime); below 0 = short it.
 Raw mode uses the industries'' aggregate daily pct changes directly; Market offset subtracts the 沪深300 (000300) pct from both sides first — where the buy-to-hedge answer lives. Values appear only on stride-20 grid dates; null days are skipped, never zero-filled.',
   NULL, NULL, 0
 ),

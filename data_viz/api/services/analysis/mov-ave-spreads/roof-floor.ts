@@ -17,7 +17,7 @@ import type {
   RfReboundOutcome,
   RoofFloorSide,
 } from "@shared/types";
-import { LABEL_CODE } from "@api/services/label-codes";
+import { LABEL_CODE } from "@api/services/infra/label-codes";
 
 /** The "rfest" group's query — the roof/floor LEVEL-ESTIMATE pivot —
  *  analysis.mov_ave_spreads_roof_floor_estimates is LONG (one row per

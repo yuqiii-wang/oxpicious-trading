@@ -42,9 +42,9 @@ INSERT INTO llm.ai_prompts (prompt_key, prompt_sub_type, prompt_type, title, ver
      'support the answer''s statements. When a sample looks suspicious, '
      'do NOT argue it out inline — spawn_subagent with a SELF-CONTAINED '
      'goal (the qa_id, the question, the exact claim to verify, the '
-     'tables to check) and let the fork dive deep; collect it and '
+     'tables to check) and let the spawn dive deep; collect it and '
      'report the verdict with the evidence.',
-     'Audit the AI QA corpus: fix the dates of interest, sample a few answers, verify claims against the DB, fork a subagent on anything suspicious.',
+     'Audit the AI QA corpus: fix the dates of interest, sample a few answers, verify claims against the DB, spawn a subagent on anything suspicious.',
      'The QA corpus is LLM output — sample, verify, and dive deep via a subagent.',
      ARRAY['问答', 'AI回答', 'qa'],
      ARRAY['ai qa', 'qa audit', 'qa sampling', 'answer audit', 'llm_qa', 'knowledge base'],
@@ -72,9 +72,9 @@ INSERT INTO llm.ai_prompts (prompt_key, prompt_sub_type, prompt_type, title, ver
      'boilerplate; do the top comments contradict its claim. When a '
      'sample looks suspicious, spawn_subagent with a SELF-CONTAINED '
      'goal (the news_id, the exact claim to verify, the tables to '
-     'check) to dive deep; collect the fork and report the verdict '
+     'check) to dive deep; collect the spawn and report the verdict '
      'with the evidence.',
-     'Audit the news corpus: fix the dates of interest, sample the hottest articles (most votes/comments), verify against the data, fork a subagent on anything suspicious.',
+     'Audit the news corpus: fix the dates of interest, sample the hottest articles (most votes/comments), verify against the data, spawn a subagent on anything suspicious.',
      'News feeds every digest and QA answer — sample the hot items, verify, dive deep via a subagent.',
      ARRAY['新闻', '资讯', '舆情'],
      ARRAY['news audit', 'news sampling', 'news comments', 'engagement', 'most commented', 'thumbs up', 'news corpus'],

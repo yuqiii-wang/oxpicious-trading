@@ -1,14 +1,14 @@
 """llm_agents.deep_agents.tools.stats_tools — the STATS tools: the
 most frequently used study calculations as direct ``Tool`` objects, so
-a step or a fork gets the standard numbers WITHOUT a sandbox script
+a step or a spawn gets the standard numbers WITHOUT a sandbox script
 round-trip (the sandbox keeps the deep/verification work —
 study_kit — for anything beyond these).
 
 The house conventions these tools bake in (mirroring
 ``analysis.mov_ave_*`` and the sandbox ``study_kit.studies``):
 
-- MA/EMA at the house ladders — ma5/20/60/120/255 and
-  ema6/12/20/26/60/120/255 come PRECOMPUTED off the daily view
+- MA/EMA at the house ladders — ma5/20/60/120/252 and
+  ema6/12/20/26/60/120/252 come PRECOMPUTED off the daily view
   (``stats.index_tech_stats``); the 10-day short-term line and any
   other window compute from the bars (2020-01-01 warmup floor);
 - RSI is Wilder smoothing (alpha = 1/w) at the six house windows

@@ -171,6 +171,9 @@ function mapSharedRows(chartRows: DbChartRow[]): MovAveSpreadSharedMetricsRow[] 
     rsi_14days: toNum(r.rsi_14days),
     rsi_20days: toNum(r.rsi_20days),
     rsi_60days: toNum(r.rsi_60days),
+    macd_line: toNum(r.macd_line),
+    macd_signal: toNum(r.macd_signal),
+    macd_hist: toNum(r.macd_hist),
     is_typical_3days: toNum(r.is_typical_3days),
     is_typical_6days: toNum(r.is_typical_6days),
     is_typical_10days: toNum(r.is_typical_10days),
@@ -181,12 +184,12 @@ function mapSharedRows(chartRows: DbChartRow[]): MovAveSpreadSharedMetricsRow[] 
     trading_amt_ma20_slope: toNum(r.trading_amt_ma20_slope),
     trading_amt_ma60_slope: toNum(r.trading_amt_ma60_slope),
     trading_amt_ma120_slope: toNum(r.trading_amt_ma120_slope),
-    trading_amt_ma255_slope: toNum(r.trading_amt_ma255_slope),
+    trading_amt_ma252_slope: toNum(r.trading_amt_ma252_slope),
     trading_amt_market_share_ma5: toNum(r.trading_amt_market_share_ma5),
     trading_amt_market_share_ma20: toNum(r.trading_amt_market_share_ma20),
     trading_amt_market_share_ma60: toNum(r.trading_amt_market_share_ma60),
     trading_amt_market_share_ma120: toNum(r.trading_amt_market_share_ma120),
-    trading_amt_market_share_ma255: toNum(r.trading_amt_market_share_ma255),
+    trading_amt_market_share_ma252: toNum(r.trading_amt_market_share_ma252),
     open_20d: toNum(r.sh_open_20d),
     high_20d: toNum(r.sh_high_20d),
     low_20d: toNum(r.sh_low_20d),
@@ -196,9 +199,9 @@ function mapSharedRows(chartRows: DbChartRow[]): MovAveSpreadSharedMetricsRow[] 
     open_120d: toNum(r.sh_open_120d),
     high_120d: toNum(r.sh_high_120d),
     low_120d: toNum(r.sh_low_120d),
-    open_255d: toNum(r.sh_open_255d),
-    high_255d: toNum(r.sh_high_255d),
-    low_255d: toNum(r.sh_low_255d),
+    open_252d: toNum(r.sh_open_252d),
+    high_252d: toNum(r.sh_high_252d),
+    low_252d: toNum(r.sh_low_252d),
   }));
 }
 
@@ -213,7 +216,7 @@ function mapSharedRows(chartRows: DbChartRow[]): MovAveSpreadSharedMetricsRow[] 
 //  JOINs analysis.mov_ave_spreads_detail with the asset-appropriate source
 //  tables (per-code prefetched CTEs, see chartCtesSql) to recover:
 //    • price (COALESCE(adj_close, close) for ETFs; close for indices/stocks)
-//    • ma5 / ma20 / ma60 / ma120 / ma255 + the typical ema6 / ema12 / ema26
+//    • ma5 / ma20 / ma60 / ma120 / ma252 + the typical ema6 / ema12 / ema26
 //  …alongside the precomputed gap_value columns. Client-side, each row is
 //  fanned out into the 9 Simple-MA + 6 typical EMA pair series entries
 //  (short_value, long_value, gap_value) plus one shared metrics row.
@@ -307,7 +310,8 @@ export async function getMovAveSpreadChartEma(
 }
 
 /** Best-effort chart block — the per-date tooltip metrics (RSI table +
- *  OHLC pivot + detail amt slopes/market shares). The chart's tooltip
+ *  OHLC pivot + detail amt slopes/market shares + the MATERIALIZED MACD
+ *  block from the per-sec_type tech_stats table). The chart's tooltip
  *  formatters already tolerate its absence. */
 export async function getMovAveSpreadChartShared(
   rawCode: string,
@@ -316,7 +320,13 @@ export async function getMovAveSpreadChartShared(
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
   const variants = codeVariants(target);
-  const tables = CHART_ANALYSIS_TABLES.filter((t) => t.alias === "rsi");
+  const tables = [
+    ...CHART_ANALYSIS_TABLES.filter((t) => t.alias === "rsi"),
+    // The per-sec_type tech_stats source (alias `t`) — the MACD block's
+    // home (etf/index/stock carry the real table; industry the NULL-
+    // column subquery). LEFT-joined — a missing row degrades to NULLs.
+    ...SEC_SOURCES[secType].chartTables.filter((t) => t.alias === "t"),
+  ];
   const chartRows = await querySqlView<DbChartRow>(
     "data_viz/api/services/analysis/mov-ave-spreads/chart/shared_block",
     {

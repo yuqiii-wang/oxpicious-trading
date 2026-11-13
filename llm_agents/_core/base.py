@@ -57,11 +57,20 @@ class BaseLlmProvider(abc.ABC):
     _RETRY_BACKOFF_SEC = (1.0, 3.0)
 
     def __init__(self, *, api_key: Optional[str] = None,
-                 max_attempts: int = 3) -> None:
+                 max_attempts: int = 3,
+                 audit_name: Optional[str] = None) -> None:
         self.api_key = api_key or self._resolve_api_key()
         self.max_attempts = max(1, max_attempts)
+        # The name the audit rows carry (llm.llm_requests.provider /
+        # monitor.external_resource_audit): the class constant unless a
+        # subclass threads the CONFIGURED provider label (the
+        # static.secret_config ext_llm_provider label resolved at agent
+        # start — zhipu / dummy) so the audit says which TYPE served the
+        # tokens, not merely which class. Key resolution (env chain +
+        # registry) keeps keying on the class constant (cls.name).
         self._http = RetryingJsonClient(
-            self.name, self.api_key, max_attempts=self.max_attempts,
+            audit_name or self.name, self.api_key,
+            max_attempts=self.max_attempts,
             retry_statuses=self._RETRY_STATUSES,
             retry_codes=self._RETRY_CODES,
             backoff=self._RETRY_BACKOFF_SEC)

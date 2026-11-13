@@ -4,7 +4,7 @@ contract: run records and supervision hooks.
 This is the deep-agent counterpart of Claude Code's Task tool /
 DeepSeek Harness's subagent scheduling: the parent's model PROPOSES a
 delegation (``spawn_subagent`` — sync, or ``background: true`` for a
-detached fork gathered later via
+detached spawn gathered later via
 ``collect_subagents``); the spawner
 OWNS the supervision policy. Everything the spawner and the thread
 runner's hooks need to intercept a delegation lives here:
@@ -19,7 +19,7 @@ runner's hooks need to intercept a delegation lives here:
     ``SubagentSpawnRejected``), output hook (rewrite the tool text),
     run wrapper (bind contextvars INSIDE the child task);
   * ``format_subagent_result`` — the default tool-result text, run id
-    first so the model can address the fork (collect / cancel by id).
+    first so the model can address the spawn (collect / cancel by id).
 
 Delegation failures NEVER raise into the loop — timeout, veto, cancel
 and child crash all become tool-result text the parent recovers from
@@ -48,7 +48,8 @@ from typing import (
 
 from llm_agents.deep_agents.core.tools import BuiltinTool
 from llm_agents.deep_agents.tools.delegation_tools import (
-    COLLECT_SUBAGENTS_SCHEMA, SUBAGENT_TOOL_SCHEMA,
+    COLLECT_SUBAGENTS_SCHEMA, FORK_TOOL_NAME, FORK_TOOL_SCHEMA,
+    SUBAGENT_TOOL_SCHEMA, SUBAGENT_TOOL_NAME,
 )
 
 from llm_agents.deep_agents.core.data_definitions import (
@@ -73,11 +74,16 @@ DELEGATION_GUIDANCE = (
     "work splits into NON-OVERLAPPING sub-questions (different subjects "
     "or different indicators), issue ALL their spawn calls together in "
     "ONE step as sibling calls — sibling delegations run in parallel, "
-    "while spawning one at a time serializes the work."
+    "while spawning one at a time serializes the work. When the next "
+    "work chunk instead CONTINUES this conversation — it needs the "
+    "context already established here but would burn your step budget "
+    "or derail your main line — fork_subagent is the lane: the forked "
+    "node inherits this full conversation and hands back the result."
 )
 
 SUBAGENT_TOOL_NAME = "spawn_subagent"
 COLLECT_TOOL_NAME = "collect_subagents"
+FORK_TOOL_NAME = "fork_subagent"
 
 # The model-facing schemas ride the tool layer now (tools.delegation_
 # tools — the Tool objects that also seed the ai_prompts tool rows);
@@ -95,7 +101,7 @@ class SubagentSpawnRejected(Exception):
 def format_subagent_result(run: SubagentRun) -> str:
     """The default tool-result text for a completed subagent — also the
     raw form an output hook receives via ``format_subagent_result``.
-    The run id LEADS so the model can address the fork later (collect /
+    The run id LEADS so the model can address the spawn later (collect /
     cancel by id)."""
     return (f"subagent {run.run_id} finished ({run.steps} step(s), "
             f"{run.tool_call_count} tool call(s)):\n{run.answer}")

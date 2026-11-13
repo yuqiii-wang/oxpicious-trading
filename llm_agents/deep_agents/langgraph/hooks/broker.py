@@ -1,6 +1,6 @@
-"""llm_agents.deep_agents.langgraph.hooks.broker — ``ForkBroker`` — the main lane's fork canceller:
+"""llm_agents.deep_agents.langgraph.hooks.broker — ``SpawnBroker`` — the main lane's spawn canceller:
 ``update_plan``'s terminate op routed to the execute agent's
-own registry; stops the child tasks and settles their fork
+own registry; stops the child tasks and settles their spawn
 states immediately.
 """
 from __future__ import annotations
@@ -28,22 +28,22 @@ from llm_agents.deep_agents.planning.plan_json import (
     MAX_NODE_LEN, MAX_TITLE_LEN,
 )
 from llm_agents.deep_agents.planning.store import (
-    AGENT_PROMPT_FORK_PLAN_ADDENDUM,
-    AGENT_PROMPT_FORK_SPAWN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_PLAN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_DELEGATE_ADDENDUM,
     AGENT_PROMPT_SUBAGENT_SYSTEM,
     PlannedStep,
     PLAN_STORE,
 )
 from llm_agents.deep_agents.tools.plan_tools import (
-    SUBAGENT_SPAWN_ADDENDUM, ForkPlanToolKit,
+    SUBAGENT_SPAWN_ADDENDUM, SpawnPlanToolKit,
 )
 from llm_agents.deep_agents.tools.kg_tools import KgToolSet
 from llm_agents.deep_agents.tools.stats_tools import StatsToolSet
 
 from llm_agents.deep_agents.langgraph.hooks.data_definitions import (
-    ForkBroker,
+    SpawnBroker,
 )
 logger = logging.getLogger("deep_agents.langgraph.hooks")
 from llm_agents.deep_agents.langgraph.hooks.slug import (  # noqa: E402
-    _fork_node_slug,
+    _spawn_node_slug,
 )

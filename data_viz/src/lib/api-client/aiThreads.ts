@@ -20,6 +20,11 @@ export interface AgentThreadState {
   thread_id: string;
   /** NULL = a top-level plan step; set = a child state under that step. */
   parent_state_id: number | null;
+  /** How the child was raised (the agent_child_kind label code, raw —
+   *  decode via the label mirror): NULL top-level | 0 spawn
+   *  (fresh-context child) | 1 fork (inherit-context child — the
+   *  canvas draws its edge THICKER than a spawn's). */
+  child_kind: number | null;
   /** The graph node the state belongs to (work tag / spawn_subagent). */
   node: string;
   title: string;
@@ -70,8 +75,13 @@ export interface AgentNodeState {
 
 /** One context's recorded LLM traffic — llm.llm_requests rolled up by
  *  chain_id (the context id): the Contexts panel's token consumption
- *  (rendered in k) and LLM busy time. Absent for contexts that recorded
- *  no request (or runs predating the chain binding). */
+ *  (rendered in k) and LLM busy time — CACHE-AWARE: a conversation
+ *  chain resends its accumulated history every tool turn, so
+ *  input_tokens (the naive sum) double-counts the overlapping prefix;
+ *  cache_tokens is that overlap (the prefix the provider's context
+ *  cache serves, a subset of input_tokens) and fresh_input_tokens =
+ *  input − cache is the genuinely new input. Absent for contexts that
+ *  recorded no request (or runs predating the chain binding). */
 export interface AgentLlmUsage {
   context_id: string;
   n_requests: number;
@@ -79,9 +89,23 @@ export interface AgentLlmUsage {
   llm_ms: number | null;
   /** First → last request wall-clock span in seconds. */
   span_s: number | null;
+  /** Naive input sum over the chain's requests (the history re-sent on
+   *  every tool turn counted once per call). */
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
+  /** The re-sent-history overlap (chained by prev_request_id) — the
+   *  cache-served prefix; 0 for a single-request chain. */
+  cache_tokens: number;
+  /** input_tokens − cache_tokens — the genuinely new input (NULL when
+   *  no request carried a usage block). */
+  fresh_input_tokens: number | null;
+  /** The provider type the chain ran under — the ext_llm_provider
+   *  label loaded from static.secret_config at agent start (zhipu /
+   *  dummy). Null on legacy rows predating the label threading. */
+  provider: string | null;
+  /** The model id the chain's requests named. */
+  model: string | null;
   first_at: string | null;
   last_at: string | null;
 }
@@ -162,37 +186,60 @@ export interface AgentThreadDetail {
   llm_usage: AgentLlmUsage[];
 }
 
-/** One llm.llm_requests row attributed to a task. A chain-bound row's
- *  request_payload is INCREMENTAL — `_chain_incremental` /
- *  `_chain_shared_messages` inside the payload flag it (the shared
- *  conversation stored once in the chain's first row); the response
- *  payload is the final attempt's full response body. */
-export interface AgentStateLlmRequest {
-  request_id: string;
+/** One AGENT STEP — the surface that replaces the raw llm-requests
+ *  list (2026-11-12). step_type 0 inference = one LLM request
+ *  (identical to a former AgentStateLlmRequest); step_type 1 spawn =
+ *  ONE spawned sub node collapsed — input_text is the fresh prompt the
+ *  spawn was given, output_text is the sub node's FINAL output (its
+ *  answer, or its error when the spawn failed — the parent collects the
+ *  error and continues). The spawn step is sequential on the parent's
+ *  timeline (the parent awaits the child): duration_ms is the wall
+ *  span and the token columns are the cache-aware rollup over the
+ *  child's OWN chain. The sub node's own intermediates are never
+ *  inlined — child_state_id links the child node, whose own steps list
+ *  through this same endpoint. step_type 4 fork (2026-11-13) is the
+ *  spawn step's inherit-context counterpart — the child CONTINUED a
+ *  deep copy of its parent's transcript (child_kind 1); same collapse
+ *  semantics, fork- step-id prefix. */
+export interface AgentStep {
+  step_id: string;
+  /** 0 inference | 1 spawn | 2 decision | 3 tokenization | 4 fork
+   *  (agent_step_type). */
+  step_type: number;
+  llm_context_id: string | null;
+  /** spawn only — the child deep_agent_states row (the child node). */
+  child_state_id: number | null;
+  /** spawn — the fresh prompt; decision — the compact facts face;
+   *  tokenize — the raw char counts. */
+  input_text: string | null;
+  /** spawn — the sub node's final answer (or error when failed);
+   *  decision — the verdict line; tokenize — the token counts. */
+  output_text: string | null;
+  provider: string | null;
   model: string | null;
   status_code: number | null;
   is_failed: boolean;
   failure_reason: string | null;
   duration_ms: number | null;
-  /** Usage token counts from the response's usage block (null on rows
-   *  recorded before the columns existed or responses without usage). */
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
-  prev_request_id: string | null;
+  /** spawn only — the child chain's cache-aware overlap sum. */
+  cache_tokens: number | null;
+  /** inference — the request as sent; decision — the typed facts
+   *  (size-capped); tokenize — null. */
   request_payload: unknown;
   response_payload: unknown;
+  /** spawn only — the child state's settle status. */
+  child_status: string | null;
   created_at: string;
 }
 
-/** GET /threads/:threadId/states/:stateId/llm-requests — one task's
- *  recorded requests: a top-level step's rows are its context's chain
- *  rows between its start/finish ticks; a subagent child owns its whole
- *  chain. */
-export interface AgentStateLlmRequests {
+/** GET /threads/:threadId/states/:stateId/agent-steps — one task's
+ *  steps, ordered by settle time. */
+export interface AgentStateSteps {
   state_id: number;
-  llm_context_id: string | null;
-  requests: AgentStateLlmRequest[];
+  steps: AgentStep[];
 }
 
 const PENDING_OR_RUNNING = new Set(["pending", "in_progress"]);
@@ -221,19 +268,19 @@ export async function fetchAgentThread(
   return (await res.json()) as AgentThreadDetail;
 }
 
-/** Fetch one task's recorded LLM requests/responses. null = unknown
- *  thread / task (404). Uncached: a live run ticks new requests in. */
-export async function fetchStateLlmRequests(
+/** Fetch one task's AGENT STEPS. null = unknown thread / task (404).
+ *  Uncached: a live run ticks new steps in. */
+export async function fetchStateAgentSteps(
   threadId: string,
   stateId: number,
-): Promise<AgentStateLlmRequests | null> {
+): Promise<AgentStateSteps | null> {
   const res = await fetch(
-    `/api/ai/threads/${encodeURIComponent(threadId)}/states/${stateId}/llm-requests`,
+    `/api/ai/threads/${encodeURIComponent(threadId)}/states/${stateId}/agent-steps`,
     { cache: "no-store" },
   );
   if (res.status === 404) return null;
   if (!res.ok) {
-    throw new Error(`task llm-requests fetch failed (HTTP ${res.status})`);
+    throw new Error(`task agent-steps fetch failed (HTTP ${res.status})`);
   }
-  return (await res.json()) as AgentStateLlmRequests;
+  return (await res.json()) as AgentStateSteps;
 }

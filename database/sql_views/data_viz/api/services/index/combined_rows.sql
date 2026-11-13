@@ -16,7 +16,7 @@
            bs.open, bs.high, bs.low, bs.close, bs.trading_shares, bs.trading_amount, bs.change_pct,
            bs.has_intraday_5mins,
            v.pe, v.cons_number,
-           t.ma5, t.ma20, t.ma60, t.ma120, t.ma255
+           t.ma5, t.ma20, t.ma60, t.ma120, t.ma252
       FROM stats.index_identity i
       JOIN stats.index_basic_stats bs
         ON bs.date = i.date AND bs.code = i.code AND bs.code = ANY({{codes}}::text[])

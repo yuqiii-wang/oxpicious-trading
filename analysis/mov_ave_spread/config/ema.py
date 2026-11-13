@@ -6,7 +6,7 @@ steps/ema.py).
 
 2026-10-26 the TYPICAL EMA rebase (user-directed "in ma-spread Pairs
 (Exponential MA) is still using non-typical ema, which is wrong"): the
-section's window set mirrored the SMA conventions (6/20/60/120/255) —
+section's window set mirrored the SMA conventions (6/20/60/120/252) —
 per the typical-EMA study the TYPICAL EMA spans are 6 (the A-share
 short), 12 and 26 (the classic MACD pair, precomputed in tech_stats
 since the same day). The EMA pairs now cover exactly {6, 12, 26}; the
@@ -34,7 +34,7 @@ EMA_PAIRS = [
 # per (sec_type, code) ordered by date, so the NUMERIC(10,6) overflow
 # guard applies (same as ma{W}_slope). Windows 6/12 — the two shortest
 # legs (every short leg + every long-but-26 leg of the pair set);
-# the 26 leg carries no derivatives, like the SMA table's 60/120/255.
+# the 26 leg carries no derivatives, like the SMA table's 60/120/252.
 EMA_DERIV_WINDOWS = (6, 12)
 EMA_SLOPE_COLUMNS = (
     "ema6_slope",
@@ -69,7 +69,7 @@ EMA_VS_COLUMNS = (
 # std_5days (5-day σ) is the closest available window (the 1-day
 # difference vs the EMA6 window is negligible for σ). std_12days /
 # std_26days match the EMA windows exactly and exist ONLY on this
-# table (the SMA detail table keeps its own 5/20/60/120/255 set).
+# table (the SMA detail table keeps its own 5/20/60/120/252 set).
 EMA_STD_COLUMNS = (
     "std_5days",
     "std_12days",
@@ -77,5 +77,5 @@ EMA_STD_COLUMNS = (
 )
 
 # The σ windows compute_rolling_stds adds BEYOND the SMA table's
-# MA_WINDOWS (5/20/60/120/255) — the typical EMA longs' own windows.
+# MA_WINDOWS (5/20/60/120/252) — the typical EMA longs' own windows.
 EMA_STD_EXTRA_WINDOWS = (12, 26)

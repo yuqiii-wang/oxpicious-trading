@@ -184,6 +184,8 @@ export {
   fetchIndustryCorrelations,
   runIndustryCorrelationsRefresh,
   INDUSTRY_CORR_RUN_TAG,
+  fetchMarketParticipation,
+  type MarketParticipationDay,
 } from "./analysis-market-beta";
 
 export {
@@ -208,6 +210,7 @@ export {
   fetchAllIndustriesAttribution,
   fetchIndustryHypesAndDrains,
   fetchMemberIndexAttribution,
+  fetchIndustryStockAttribution,
 } from "./analysis-industry-attribution";
 
 export {
@@ -292,8 +295,8 @@ export {
 } from "./analysis-run";
 
 export type {
-  StrategyAlgo,
   StrategySelection,
+  SignalFamilyInfo,
   RunStrategyResult,
   CheckExistingResult,
   TrainConfigRow,
@@ -304,15 +307,12 @@ export type {
 } from "./strategy";
 
 export {
-  STRATEGY_ALGOS,
   DEFAULT_STRATEGY_SELECTION,
-  ALGO_LABELS,
   ftSuffix,
   selectionToStrategyName,
   serializeSelection,
-  isBinarySelection,
-  selectionSum,
   selectionLabel,
+  fetchSignalFamilies,
   fetchSingletonBacktest,
   fetchSingletonRisks,
   checkExistingStrategy,

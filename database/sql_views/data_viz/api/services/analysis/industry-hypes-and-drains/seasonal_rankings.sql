@@ -7,7 +7,7 @@
 -- Serves GET /api/analysis/industry-hypes-and-drains.
 -- args:
 --   benchmark_code: value text — the benchmark index code
---   period_days: value int — the ranking window (5/20/60/120/255/500)
+--   period_days: value int — the ranking window (5/20/60/120/252/504)
 --   weighting_code: value smallint — weighting's static.label_dim code
 --   rank_side_decode: fragment — labelDecodeSql("rank_side", "rank_side")
     SELECT season_qkey,

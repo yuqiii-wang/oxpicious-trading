@@ -32,11 +32,11 @@ PE_PCT_TABLE = "analysis.pe_pct"
 PE_PCT_NAME = "pe_pct"
 
 # Lookback window lengths in pe observations (the `period` PK column):
-# 255 / 500 / 750 / 1275 = ~1 / 2 / 3 / 5 trading years (the ma255
+# 252 / 504 / 756 / 1260 = ~1 / 2 / 3 / 5 trading years (the ma252
 # yearly-window precedent, shared with mov_ave_spread's HIGH_LOW_PCT_*).
 # The window is TRAILING (backward-only), ending inclusive at the month's
 # last non-NULL observation row of the metric.
-PE_PCT_PERIODS = (255, 500, 750, 1275)
+PE_PCT_PERIODS = (252, 504, 756, 1260)
 
 # Band tightness levels (percent). The band is SYMMETRIC on the pe
 # distribution: low_val = pct_type-th percentile, high_val =
@@ -44,10 +44,10 @@ PE_PCT_PERIODS = (255, 500, 750, 1275)
 # range ([1st, 99th]); 10 = core envelope ([10th, 90th]).
 PE_PCT_TYPES = (1, 5, 10)
 
-# Minimum non-NULL observations for a band: 255 rows (1 trading year, the
+# Minimum non-NULL observations for a band: 252 rows (1 trading year, the
 # HIGH_LOW_PCT_MIN_PERIODS precedent). Fewer yields no band (the month is
 # skipped — high_val/low_val are NOT NULL).
-PE_PCT_MIN_PERIODS = 255
+PE_PCT_MIN_PERIODS = 252
 
 # Rows per (sec_type, code, date_year_month) triple when complete: one
 # band per (period, pct_type). The missing-triple detection counts rows
@@ -70,11 +70,11 @@ PE_PCT_DESCRIPTION = (
     "applied to the valuation metric). low_val = pct_type-th and "
     "high_val = (100 - pct_type)-th percentile (linear interpolation) "
     "of the pe series' non-NULL values over the TRAILING window of "
-    "`period` observations (255/500/750/1275 = ~1/2/3/5 trading years) "
+    "`period` observations (252/504/756/1260 = ~1/2/3/5 trading years) "
     "ending at the month's last observation row; both legs use the SAME "
     "series. One band per calendar month stored under the month's first "
     "day; the in-progress month is skipped (no true month-end anchor "
-    "yet); fewer than 255 non-NULL observations yields no band. Trailing "
+    "yet); fewer than 252 non-NULL observations yields no band. Trailing "
     "windows make completed months immutable — only missing (code, "
     "month) triples are computed incrementally (a triple is complete "
     "when all 12 period x pct_type rows exist); --force / single-code "

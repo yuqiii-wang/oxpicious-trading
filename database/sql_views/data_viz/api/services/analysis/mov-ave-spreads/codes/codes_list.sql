@@ -18,19 +18,19 @@
       c.latest_price_vs_ma20  AS price_vs_ma20,
       c.latest_price_vs_ma60  AS price_vs_ma60,
       c.latest_price_vs_ma120 AS price_vs_ma120,
-      c.latest_price_vs_ma255 AS price_vs_ma255,
+      c.latest_price_vs_ma252 AS price_vs_ma252,
       c.latest_ma5_vs_ma20    AS ma5_vs_ma20,
       c.latest_ma5_vs_ma60    AS ma5_vs_ma60,
       c.latest_ma5_vs_ma120   AS ma5_vs_ma120,
-      c.latest_ma5_vs_ma255   AS ma5_vs_ma255,
-      GREATEST(c.max_p5, c.max_p20, c.max_p60, c.max_p120, c.max_p255,
-               c.max_5_20, c.max_5_60, c.max_5_120, c.max_5_255) AS max_gain,
-      LEAST(c.min_p5, c.min_p20, c.min_p60, c.min_p120, c.min_p255,
-            c.min_5_20, c.min_5_60, c.min_5_120, c.min_5_255)    AS max_loss,
-      (GREATEST(c.max_p5, c.max_p20, c.max_p60, c.max_p120, c.max_p255,
-                c.max_5_20, c.max_5_60, c.max_5_120, c.max_5_255)
-       - LEAST(c.min_p5, c.min_p20, c.min_p60, c.min_p120, c.min_p255,
-               c.min_5_20, c.min_5_60, c.min_5_120, c.min_5_255)) AS max_spread
+      c.latest_ma5_vs_ma252   AS ma5_vs_ma252,
+      GREATEST(c.max_p5, c.max_p20, c.max_p60, c.max_p120, c.max_p252,
+               c.max_5_20, c.max_5_60, c.max_5_120, c.max_5_252) AS max_gain,
+      LEAST(c.min_p5, c.min_p20, c.min_p60, c.min_p120, c.min_p252,
+            c.min_5_20, c.min_5_60, c.min_5_120, c.min_5_252)    AS max_loss,
+      (GREATEST(c.max_p5, c.max_p20, c.max_p60, c.max_p120, c.max_p252,
+                c.max_5_20, c.max_5_60, c.max_5_120, c.max_5_252)
+       - LEAST(c.min_p5, c.min_p20, c.min_p60, c.min_p120, c.min_p252,
+               c.min_5_20, c.min_5_60, c.min_5_120, c.min_5_252)) AS max_spread
     FROM analysis.mov_ave_spreads_codes c
     WHERE c.sec_type = {{sec_type}}
     ORDER BY max_spread DESC NULLS LAST, c.code

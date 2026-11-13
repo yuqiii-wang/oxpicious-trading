@@ -64,7 +64,7 @@ USAGE
 
     df = compute_moving_averages(
         df, group_key="code", value_col="adj_close",
-        windows=[5, 20, 60, 120, 255],
+        windows=[5, 20, 60, 120, 252],
     )
 
     # Single-window grouped rolling agg (analyzes).
@@ -80,9 +80,9 @@ USAGE
 
     grouped_diff(
         df, ["sec_type", "code"],
-        cols=["price", "ma5", "ma20", "ma60", "ma120", "ma255"],
+        cols=["price", "ma5", "ma20", "ma60", "ma120", "ma252"],
         out_names=["price_slope", "ma5_slope", "ma20_slope",
-                   "ma60_slope", "ma120_slope", "ma255_slope"],
+                   "ma60_slope", "ma120_slope", "ma252_slope"],
     )
 
 MODULES
@@ -133,8 +133,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     # Rolling helpers
     "compute_moving_averages": ("_common.df_utils.rolling", "compute_moving_averages"),
     "compute_emas": ("_common.df_utils.rolling", "compute_emas"),
+    "compute_macd": ("_common.df_utils.rolling", "compute_macd"),
     "grouped_rolling_agg": ("_common.df_utils.rolling", "grouped_rolling_agg"),
     "grouped_rolling_quantile": ("_common.df_utils.rolling", "grouped_rolling_quantile"),
+    "grouped_rolling_rank_pct": ("_common.df_utils.rolling", "grouped_rolling_rank_pct"),
     # Pairwise rolling corr — CuPy fallback for the op cuDF lacks
     "pairwise_rolling_corr": ("_common.df_utils.rolling_corr", "pairwise_rolling_corr"),
     # Return CuPy pooled VRAM to the driver after a GPU burst

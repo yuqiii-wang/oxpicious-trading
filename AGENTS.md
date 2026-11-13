@@ -19,7 +19,9 @@ the first step of the work:
   label-vocabulary domain change → `db-smallint-type-codes`
 - ANY authoring/extending of the DB-semantics knowledge graph (llm.kg_*
   entities/edges, seed files under
-  `database/sql/llm/static/knowledge_graphs/`) → `kg-db-semantics`
+  `database/sql/llm/static/knowledge_graphs/`, a table's KG payload in
+  its own DDL file's leading banner under `database/sql/`) →
+  `kg-db-semantics`
 - ANY chart component, ECharts option builder, or chart tooltip/colors
   under `data_viz/src` → `ui-charts`
 - ANY verification of `data_viz/` work → `ui-test`
@@ -32,9 +34,30 @@ the first step of the work:
   prompts, server, memory / verification / eval design) →
   `deep-agent-blueprint`
 - ANY langgraph / deep-agent test or probe that would call an LLM → run
-  it on the DUMMY LLM (`llm_agents/test/dummy_llm` — canned replies
-  in-process, or the FastAPI provider simulation with rate-limit error
-  injection; see `deep-agent-blueprint`)
+  it on the DUMMY LLM double (`test/dummy_llm` at the project root —
+  the request→response `DummyLlmProvider` in-process, matched request →
+  the feature's canned reply; the kg/jev cucumber assertion datasets
+  stay in the sibling `test/dummy_langgraph`), or HTTP-sim against the
+  resident local-model host's dummy-1 endpoint (127.0.0.1:8767) with
+  rate-limit error injection; see `deep-agent-blueprint`
+- ANY change to the resident local-model host (`server_cluster/llm` —
+  the server cluster's llm area (ex `llm_agents/local_model_host`),
+  the FastAPI over the repo's local AI models by
+  KIND: ``tokenization`` (StructBERT word segmenter), ``jev`` (Jev /
+  System One decision models — OneJev; the standard `/v1/systemone`
+  contract: noul/choice/score → calibrated probabilities), plus the
+  OpenAI chat completions surface and the model load/offload
+  management) → keep the serving contracts: the segmenter is
+  host-first with an in-process fallback
+  (`_common/tokenization/chinese_word_segmenter.py`), the dummy-1
+  simulation preserves the former standalone dummy-llm server
+  (`test.dummy_llm.server`, removed 2026-11) semantics verbatim
+  (Bearer-401 code 1002, zhipu-coded 429s, POST /control)
+- ANY use of the Jev decision models — code/agents asking for
+  calibrated probabilities or typed decisions (noul/choice/score),
+  the `/v1/systemone` contract, the deep-agent decision submodule
+  (`llm_agents/deep_agents/langgraph/decision/`), or debugging
+  systemone responses → `jev-systemone`
 - ANY daily OHLCV / K-line study (fetching index/etf/stock bars,
   MA/RSI/MACD/momentum studies) or interpretation of the Chinese volume
   vocabulary (放量, 缩量, 量价背离, 缩量弱反弹 …) → `ohlcv`

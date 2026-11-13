@@ -69,7 +69,7 @@ WEIGHTING VARIANTS
   per-type INSERTs (both types are always written over the same keys by
   run_attributions).
 
-PERIODS: {5, 20, 60, 120, 255, 500}. 120d is the UI default. The 120d
+PERIODS: {5, 20, 60, 120, 252, 504}. 120d is the UI default. The 120d
 column on industry_attributions is added by 08_industry_hypes_and_drains.sql
 and populated by the attributions step (ROLLING_WINDOWS includes 120).
 
@@ -159,7 +159,7 @@ ANALYSIS_DESCRIPTION = (
     "benchmark_shared_weight / 100) and compounding over the full N-row "
     "window — never by inverting the materialized rolling column, whose "
     "construction artifacts the 1/swf inversion would amplify into noise. "
-    "period_days in {5,20,60,120,255,500} (120 default). Built by "
+    "period_days in {5, 20, 60, 120, 252, 504} (120 default). Built by "
     "analysis.market_beta.hypes_and_drains (internal step, "
     "truncate-then-recompute, pandas-vectorized). Depends on "
     "analysis.industry_attributions (incl. the daily "
@@ -169,7 +169,7 @@ ANALYSIS_DESCRIPTION = (
 # Trailing windows (trading days). Must match the rolling_{N}days_price
 # columns materialized in analysis.industry_attributions (see
 # attributions.ROLLING_WINDOWS). 120d is the UI default.
-PERIODS: tuple[int, ...] = (5, 20, 60, 120, 255, 500)
+PERIODS: tuple[int, ...] = (5, 20, 60, 120, 252, 504)
 
 # Output column order (mirrors the former INSERT column list).
 HD_COLUMNS: list[str] = [

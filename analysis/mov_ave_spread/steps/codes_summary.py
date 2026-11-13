@@ -13,7 +13,6 @@ from analysis.mov_ave_spread._common.steps import sec_type_code
 from analysis.mov_ave_spread.config import (
     CODES_SUMMARY_TABLE,
     DETAIL_TABLE,
-    PAIRS,
     SEC_TYPE_IDENTITY_TABLE,
 )
 
@@ -27,11 +26,11 @@ _GAP_SUMMARY_ALIASES = [
     ("price_vs_ma20", "p20"),
     ("price_vs_ma60", "p60"),
     ("price_vs_ma120", "p120"),
-    ("price_vs_ma255", "p255"),
+    ("price_vs_ma252", "p252"),
     ("ma5_vs_ma20", "5_20"),
     ("ma5_vs_ma60", "5_60"),
     ("ma5_vs_ma120", "5_120"),
-    ("ma5_vs_ma255", "5_255"),
+    ("ma5_vs_ma252", "5_252"),
 ]
 
 
@@ -48,8 +47,12 @@ async def refresh_codes_summary(
     (7-14s on the stock universe); after the refresh those endpoints are a
     small indexed table read.
     """
-    # All 9 gap column names from PAIRS, in canonical order.
-    gaps = [gap_col for _, _, gap_col in PAIRS]
+    # The summary's gap set = the 9 trader-facing pairs (the alias list
+    # is authoritative) — deliberately NOT PAIRS: the 3 senior inter-MA
+    # legs (ma20_vs_ma60 …) extend PAIRS for the detail/trailing tables
+    # but stay out of the all-time-extremes summary (their extremes are
+    # derivable from the detail table directly).
+    gaps = [gap_col for gap_col, _ in _GAP_SUMMARY_ALIASES]
     extremes = ",\n                       ".join(
         f"MAX({g}) AS max_{alias}, MIN({g}) AS min_{alias}"
         for g, alias in _GAP_SUMMARY_ALIASES

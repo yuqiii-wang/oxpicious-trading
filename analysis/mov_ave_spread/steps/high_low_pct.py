@@ -12,8 +12,8 @@ the security's daily prices traded over its recent history.
 For each calendar month m of a code's history, anchor the window at the
 month's LAST trading row and look BACK over a TRAILING window of
 `period` trading rows ending there, for each period in
-HIGH_LOW_PCT_PERIODS (60 / 120 / 255 / 500 / 750 / 1275 trading rows
-= ~0.25 / 0.5 / 1 / 2 / 3 / 5 trading years — the ma255 yearly-window
+HIGH_LOW_PCT_PERIODS (60 / 120 / 252 / 504 / 756 / 1260 trading rows
+= ~0.25 / 0.5 / 1 / 2 / 3 / 5 trading years — the ma252 yearly-window
 precedent). Over that window:
 
     low_val[m, period, pct]  = pct-th percentile (linear
@@ -51,12 +51,12 @@ the rebuild semantics:
    last identity month), so no pair is ever expected before it is
    computable.
 
-Detection also requires HIGH_LOW_PCT_MIN_PERIODS (255 = 1 trading
+Detection also requires HIGH_LOW_PCT_MIN_PERIODS (252 = 1 trading
 year) cumulative identity rows through the month's end — fewer rows
 yield no band (truncated window; high_val/low_val are NOT NULL). All
-periods share the same 255-row minimum, so pair expectation is
+periods share the same 252-row minimum, so pair expectation is
 period-independent. Windows near a code's history start are naturally
-truncated to the available rows (a 1275-period band over 300 rows of
+truncated to the available rows (a 1260-period band over 300 rows of
 history is a percentile of those 300 rows). The code universe is the
 ACTIVE universe (codes with recent identity data), so delisted codes'
 months never count as missing.
@@ -151,7 +151,7 @@ async def find_missing_high_low_pct_pairs(
         ACTIVE universe is fetched: codes with identity data in the
         last RECENT_TRADING_DAYS trading days — delisted codes are
         outside the pipeline's universe and would never converge),
-      - the code has >= HIGH_LOW_PCT_MIN_PERIODS (255) cumulative
+      - the code has >= HIGH_LOW_PCT_MIN_PERIODS (252) cumulative
         identity rows through the month's end (fewer rows yield no
         band — the truncated window cannot satisfy min_periods; all
         periods share this minimum, so the expectation is
@@ -263,7 +263,7 @@ def compute_high_low_pct_bands(df: pd.DataFrame) -> pd.DataFrame:
     Args:
       df: frame sorted by (sec_type, code, date) carrying columns
           [sec_type, code, date, high, low] — the FULL per-code history
-          (the trailing windows need up to 1275 prior rows per anchor).
+          (the trailing windows need up to 1260 prior rows per anchor).
           The frame must have a reset (positional) index.
 
     Returns:
@@ -323,9 +323,9 @@ def compute_high_low_pct_bands(df: pd.DataFrame) -> pd.DataFrame:
     # leg, so the passes cannot be merged.
     frames: list[pd.DataFrame] = []
     for period in HIGH_LOW_PCT_PERIODS:
-        # min_periods = the full-window floor (255 obs = 1 trading year
-        # for every period >= 255), clamped to the window — the 60/120-row
-        # (~0.25/0.5y) windows cannot satisfy a 255-row min_periods (pandas
+        # min_periods = the full-window floor (252 obs = 1 trading year
+        # for every period >= 252), clamped to the window — the 60/120-row
+        # (~0.25/0.5y) windows cannot satisfy a 252-row min_periods (pandas
         # requires min_periods <= window), so they band on their own full
         # window instead.
         min_obs = min(HIGH_LOW_PCT_MIN_PERIODS, period)
@@ -459,7 +459,7 @@ class HighLowPctStep(TableStep):
     Reuses the caller's DB connection and source DataFrame (the
     ``high`` / ``low`` columns — no second DB fetch). The DataFrame
     must contain the FULL per-code history so each month-end anchor's
-    trailing windows see up to 1275 prior rows.
+    trailing windows see up to 1260 prior rows.
 
     Pipeline
       0. Detect missing / incomplete (code, month) pairs per sec_type
@@ -504,7 +504,7 @@ class HighLowPctStep(TableStep):
     ) -> bool:
         """The parent phase-0 pair check: (code, month) pairs of
         ``sec_type`` whose band rows are missing or INCOMPLETE in the
-        bands table (active universe; >= 255 cumulative identity rows
+        bands table (active universe; >= 252 cumulative identity rows
         through the month's end; the in-progress month excluded). The
         old phase-0 call passed the SOURCE identity table — the
         ``src_identity_table`` argument the caller supplies here.

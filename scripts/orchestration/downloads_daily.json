@@ -44,41 +44,41 @@
   "can_be_parallel": false
  },
  "12": {
+  "script": "downloads.macro.ai_daily",
+  "can_be_parallel": false,
+  "note": "runs BEFORE the news steps by design: the AI daily answers feed the embedded topic-search phase (per-topic Zhihu question-mode searches stored as temps/zhihu_news/search_*.json artifacts). Artifact-only (temps/ai_daily/*.json); builds.text loads them into text.news / llm.llm_qa"
+ },
+ "13": {
   "script": "downloads.macro.pboc.repo_news",
   "can_be_parallel": false
  },
- "13": {
+ "14": {
   "script": "downloads.options.sse.price",
   "can_be_parallel": false
  },
- "14": {
+ "15": {
   "script": "downloads.options.sse.risk",
   "can_be_parallel": false
  },
- "15": {
+ "16": {
   "script": "downloads.options.szse.trend",
   "can_be_parallel": false
  },
- "16": {
+ "17": {
   "script": "downloads.options.cffex.trend",
   "can_be_parallel": false
  },
- "17": {
+ "18": {
   "script": "downloads.macro.pboc.lpr_news",
   "can_be_parallel": false
  },
- "18": {
+ "19": {
   "script": "downloads.macro.zhihu.news",
   "can_be_parallel": false
  },
- "19": {
+ "20": {
   "script": "downloads.macro.gov.news",
   "can_be_parallel": false
- },
- "20": {
-  "script": "downloads.macro.ai_daily",
-  "can_be_parallel": false,
-  "note": "artifact-only (temps/ai_daily/*.json); builds.text loads them into text.news / llm.llm_qa"
  },
  "21": {
   "script": "downloads.stream.sse.price",

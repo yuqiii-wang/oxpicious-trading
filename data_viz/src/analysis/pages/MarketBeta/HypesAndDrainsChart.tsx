@@ -13,7 +13,7 @@
  *
  * The benchmark is picked via the Autocomplete dropdown in the parent
  * MarketTrendChart (upper right corner). This component only owns the period
- * (5/20/60/120/255/500d, default 120d).
+ * (5/20/60/120/252/504d, default 120d).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {

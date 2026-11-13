@@ -3,8 +3,11 @@ module, one row per entry (each entry is a :class:`TableStep` subclass
 whose ``execute`` carries the pipeline; the shared skeleton lives in
 ``_common.steps.TableStep``):
 
-  detail                 — build_detail_frame (the parent detail-table
-                           step's wide build; inserted via __main__)
+  detail                 — build_detail_frame + build_trailing_frame
+                           (the parent detail-table step's builds, split
+                           2026-11-08 out of the former wide frame into
+                           the CORE detail table + the TRAILING companion;
+                           both inserted via __main__)
   rsi                    — analysis.mov_ave_rsi (Wilder RSI)
   rsi_ranks              — analysis.mov_ave_rsi_ranks (per-code RSI
                            history ranks; wholesale rebuild hooked into
@@ -44,7 +47,10 @@ wholesale-rebuild steps (price_vs_amt, momentum, roof_floor_rebound,
 high_low_pct, high_low_pct_streaks) override ``execute`` with their own
 flows.
 """
-from analysis.mov_ave_spread.steps.detail import build_detail_frame
+from analysis.mov_ave_spread.steps.detail import (
+    build_detail_frame,
+    build_trailing_frame,
+)
 from analysis.mov_ave_spread.steps.rsi import RsiStep, RSI_TABLE
 from analysis.mov_ave_spread.steps.rsi_ranks import (
     RSI_RANKS_TABLE,
@@ -85,6 +91,7 @@ from analysis.mov_ave_spread.steps.codes_summary import refresh_codes_summary
 
 __all__ = [
     "build_detail_frame",
+    "build_trailing_frame",
     "RsiStep", "RSI_TABLE",
     "RSI_RANKS_TABLE", "rebuild_rsi_ranks",
     "HolidayStep",

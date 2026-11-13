@@ -11,7 +11,7 @@ import {
   buildIndustryStrategyThemes,
   buildStrategyThemesFromRows,
 } from "@api/services/_shared";
-import { listIndustryEntityClassRows } from "@api/services/classification-cache.js";
+import { listIndustryEntityClassRows } from "@api/services/infra/classification-cache.js";
 import type {
   SectorNode,
   IndustryNode,

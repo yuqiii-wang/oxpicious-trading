@@ -13,62 +13,48 @@
  *     notes, subagent answers). 404 for an unknown/malformed id (no
  *     states). See services/ai-thread.service.ts for the shape.
  *
- *   GET /api/ai/threads/:threadId/states/:stateId/llm-requests
- *     One task's recorded LLM requests/responses (the task-row
- *     expansion's lazy fetch — payloads are big, so they are not in the
- *     thread detail). Attribution: chain_id = the task's llm_context_id,
- *     a top-level step narrowed to its tick window (see the service).
- *     404 unknown thread/state, 400 a non-integer stateId.
+ *   GET /api/ai/threads/:threadId/states/:stateId/agent-steps
+ *     One task's AGENT STEPS (the task-row expansion's lazy fetch) —
+ *     replaces the former llm-requests list: step_type 0 inference =
+ *     one LLM request (chain attribution as before), step_type 1 spawn =
+ *     ONE spawned sub node collapsed (fresh prompt in, final output
+ *     out, child-chain token rollup; the sub node's intermediates stay
+ *     at the child node). 404 unknown thread/state, 400 a non-integer
+ *     stateId.
  */
 import { Router, type Request, type Response } from "express";
+import { HttpError, wrapAsync } from "../lib/http.js";
 import {
   getAgentThreadDetail,
-  getAgentStateLlmRequests,
-} from "../services/ai-thread.service.js";
+  getAgentStateAgentSteps,
+} from "../services/ai/ai-thread.service.js";
 
 const router = Router();
 
-router.get("/threads/:threadId", async (req: Request, res: Response) => {
-  try {
-    const detail = await getAgentThreadDetail(String(req.params.threadId));
-    if (detail === null) {
-      res.status(404).json({
-        error: `no deep-agent thread '${String(req.params.threadId)}'`,
-      });
-      return;
-    }
-    res.json(detail);
-  } catch (err) {
-    console.error("[ai/threads] error:", err);
-    res.status(500).json({ error: String(err) });
+router.get("/threads/:threadId", wrapAsync(async (req: Request, res: Response) => {
+  const detail = await getAgentThreadDetail(String(req.params.threadId));
+  if (detail === null) {
+    throw HttpError.notFound(`no deep-agent thread '${String(req.params.threadId)}'`);
   }
-});
+  res.json(detail);
+}));
 
 router.get(
-  "/threads/:threadId/states/:stateId/llm-requests",
-  async (req: Request, res: Response) => {
+  "/threads/:threadId/states/:stateId/agent-steps",
+  wrapAsync(async (req: Request, res: Response) => {
     const stateId = Number(req.params.stateId);
     if (!Number.isInteger(stateId)) {
-      res.status(400).json({ error: "stateId must be an integer" });
-      return;
+      throw new HttpError(400, "INVALID_PARAM", "stateId must be an integer");
     }
-    try {
-      const data = await getAgentStateLlmRequests(
-        String(req.params.threadId),
-        stateId,
-      );
-      if (data === null) {
-        res.status(404).json({
-          error: `no task ${stateId} on thread '${String(req.params.threadId)}'`,
-        });
-        return;
-      }
-      res.json(data);
-    } catch (err) {
-      console.error("[ai/threads] llm-requests error:", err);
-      res.status(500).json({ error: String(err) });
+    const data = await getAgentStateAgentSteps(
+      String(req.params.threadId),
+      stateId,
+    );
+    if (data === null) {
+      throw HttpError.notFound(`no task ${stateId} on thread '${String(req.params.threadId)}'`);
     }
-  },
+    res.json(data);
+  }),
 );
 
 export default router;

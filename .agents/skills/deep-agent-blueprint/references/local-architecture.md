@@ -45,9 +45,9 @@ llm_agents/
 │   │   ├── base.py       (Tool / ToolKit ABCs; BuiltinTool — the
 │   │   │                  loop's runtime pair, re-exported by core.tools)
 │   │   ├── sandbox_tools.py (SandboxToolSet: the four sandbox_* tools)
-│   │   ├── plan_tools/   (Main/ForkPlanToolKit: update_plan,
+│   │   ├── plan_tools/   (Main/SpawnPlanToolKit: update_plan,
 │   │   │                  update_plan_step over a PlanAuthority +
-│   │   │                  the fork addenda + ThreadSearchTool;
+│   │   │                  the spawn addenda + ThreadSearchTool;
 │   │   │                  package: addenda / common / tick /
 │   │   │                  update_plan / kits)
 │   │   ├── stats_tools/  (StatsToolSet: stats_ma/rsi/macd/roc/
@@ -91,7 +91,7 @@ llm_agents/
 │   │   │                  hops is not identity) without re-running
 │   │   │                  the walk; mounted
 │   │   │                  beside StatsToolSet on every
-│   │   │                  step / fork / degraded lane)
+│   │   │                  step / spawn / degraded lane)
 │   │   ├── thread_search.py (ThreadSearchTool — schema object)
 │   │   ├── prompt_tools.py (LoadPromptTool / PromptLoadToolKit — the
 │   │   │                  ladder's DYNAMIC rung: one cataloged
@@ -120,6 +120,27 @@ llm_agents/
 │   ├── agents/                     # the AGENT LAYER (one agent == one node)
 │   │   ├── plan_agent.py, step_agent.py, output_agent.py (the graphs'
 │   │   │                 FINAL OUTPUT NODE seats), supervisor_agent.py
+│   ├── supervisor/                 # the SUPERVISOR (2026-11-11 the
+│   │   │                 EVENT-QUEUE PICKER; outside langgraph —
+│   │   │                 imports it only under TYPE_CHECKING)
+│   │   ├── event_queue.py (the BOTTOM: EventKind/FailureRef/
+│   │   │                 SupervisorEvent, SupervisorEventQueue —
+│   │   │                 bounded coalescing tray, RepairWindow — the
+│   │   │                 lane pause window's future)
+│   │   ├── repair.py      (policy + lane facade: classifiers,
+│   │   │                 parse_action, should_retry; RepairChannel =
+│   │   │                 window registry + supervision ledger)
+│   │   ├── classify.py    (pure EventClass REPAIR/REVIEW/SWEEP +
+│   │   │                 CLASS_PRIORITY + classify_event)
+│   │   ├── workers.py     (the worker sub-agents: RepairWorker /
+│   │   │                 ObserveWorker / SweepWorker +
+│   │   │                 WORKER_FACTORIES — the dispatch registry)
+│   │   ├── poller.py      (SupervisorSession — the PICKER loop:
+│   │   │                 drain → classify → dispatch, the belt
+│   │   │                 producer, the agent-context wrapper)
+│   │   └── engine.py, loop.py, tools.py, prompts.py (the bounded
+│   │                     intervention, BoundedToolLoop, the kit, the
+│   │                     prompt fetches — shared by all workers)
 │   └── langgraph/                  # the ORCHESTRATION
 │       ├── runner.py     (build_plan_graph, build_execution_graph,
 │       │                 settle_thread — the graph builders)
@@ -128,22 +149,44 @@ llm_agents/
 │       │                 three threads under one super_thread_id)
 │       ├── prompts.py    (per-step prompt surfaces, findings bridge,
 │       │                 the output-node directives)
-│       ├── hooks.py      (subagent_hooks, ForkBroker)
+│       ├── hooks.py      (subagent_hooks, SpawnBroker)
 │       └── state_store.py(DeepAgentStore BaseStore, NodeRunWriter)
 ├── sandbox/            # dockerized py-sandbox middleware (separate MCP daemon :8789)
 │   ├── server.py, runner.py, docker_api.py, Dockerfile
 ├── mcp/                # read-only DB MCP server :8765 (readonly_server.py)
 ├── llm_ask/            # plain chat agent; backs the data_viz "AI Ask" chart adviser
-├── test/dummy_llm/     # THE DUMMY LLM (2026-11-07) — offline test double:
-│   │                   # provider.py (DummyLlmProvider — canned chat_complete
-│   │                   # + complete_from_payload envelope; script=/fail_matching=),
-│   │                   # replies.py (DummyReplyBook — DIFF query-text → DIFF
-│   │                   # reply rule catalog, planning shape, shape fallbacks,
-│   │                   # TOOL:name directive), server.py (FastAPI provider
-│   │                   # SIMULATION :8768 — Bearer 401, 429 rate-limit errors
-│   │                   # with zhipu codes 1302/1701/1113 via POST /control,
-│   │                   # so the REAL transport runs against it). Production
-│   │                   # code never imports this package.
+├── test/dummy_langgraph/  # THE DUMMY LANGGRAPH DOUBLE (2026-11-07, ex
+│   │                   # test/dummy_llm renamed 2026-11-11; refactored
+│   │                   # 2026-11-11 into the semantic LANE LAYOUT) —
+│   │                   # offline test double:
+│   │                   # infra_setup/ (the machinery: specs.py the typed
+│   │                   # reply payloads — the leaf module, state.py the
+│   │                   # conversation-state ledger + teaching-block
+│   │                   # stripping + the harness fingerprints, replies.py
+│   │                   # DummyReplyBook — DIFF query-text → DIFF reply
+│   │                   # rule catalog, planning shape, shape fallbacks,
+│   │                   # TOOL:name directive — stitching the lanes into
+│   │                   # the standing catalog, provider.py
+│   │                   # DummyLanggraphProvider canned chat_complete;
+│   │                   # script=/fail_matching=; the HTTP envelope MOVED
+│   │                   # to the host's DummyChatBackend 2026-11-11,
+│   │                   # scenarios/ the feature machinery chain/parser/
+│   │                   # builder/fakes/catalog — the parser reads
+│   │                   # CANONICAL GHERKIN),
+│   │                   # biz_logic/ (the reply CONTENT by graph segment:
+│   │                   # plan/ the plan shape + planning cases, custom/
+│   │                   # the step rules + dynamics walks + the granular
+│   │                   # cases/ — sql, sandbox, db_semantics, tool_args,
+│   │                   # step_budget, repair —, result/ the review-seat
+│   │                   # rules + synthesis). Its HTTP-SIM form is the
+│   │                   # resident LOCAL-MODEL HOST server_cluster/llm/ (ex
+│   │                   # llm_agents/local_model_host, migrated 2026-11)
+│   │                   # (:8767, dummy-1 model — Bearer 401, 429 rate-limit
+│   │                   # errors with zhipu codes 1302/1701/1113 via POST
+│   │                   # /control, so the REAL transport runs against it;
+│   │                   # the former standalone test.dummy_llm.server was
+│   │                   # absorbed 2026-11-11). The harness never imports
+│   │                   # this; server_cluster's dummy backend wraps it.
 └── online_search_summary/, news_digestions/, llm_qa_by_research/, llm_qa.py
 ```
 
@@ -202,7 +245,7 @@ C.output ──handoff──> R.entry   (the UI draws this as the special edge)
   fresh `DeepAgent` with user message from
   `langgraph/prompts.py::step_user_message()` (goal + structured context +
   selected prompt texts + step directive + accumulated findings);
-  delegated (fork) step = `agent.run_delegation(goal)` with no main
+  delegated (spawn) step = `agent.run_delegation(goal)` with no main
   conversation. Per-hop `max_steps` clamped to `max(4, min(run_max_steps,
   20))` (tuned after live runs showed 12 starving delegated data pulls).
 - **parallel wave + its join** (2026-11-03): consecutive
@@ -232,13 +275,13 @@ C.output ──handoff──> R.entry   (the UI draws this as the special edge)
 
 - Tools: `spawn_subagent` (goal, max_steps, `background: bool`) and
   `collect_subagents` (run_ids/wait/timeout). Sync spawn awaits the child;
-  background forks are detached, supervised by `_supervise_background`,
+  background spawns are detached, supervised by `_supervise_background`,
   parked in `_background_results` until collected.
 - Parallelism: sibling tool calls via `asyncio.gather`; fan-out capped by
   `asyncio.Semaphore(max_concurrent_subagents)` (default 4).
-- Answer gate: finishing while background forks are uncollected gets a
+- Answer gate: finishing while background spawns are uncollected gets a
   nudge to `collect_subagents`; last-step stragglers cancelled; a `finally`
-  cancels all orphan forks.
+  cancels all orphan spawns.
 - Supervision is parent-owned, never model-controlled: wall-clock
   `subagent_timeout`, concurrency cap, three interception surfaces —
   `SubagentInputHook` (rewrite/veto via `SubagentSpawnRejected`),
@@ -248,11 +291,11 @@ C.output ──handoff──> R.entry   (the UI draws this as the special edge)
   not offered (structural gating).
 - Context: fresh — only the goal plus `SubagentRequest.data`; the graph
   path stamps the business context pass-down (`langgraph/hooks.py::
-  subagent_hooks`, `_fork_biz_context` in `runner.py`), recursing to
+  subagent_hooks`, `_spawn_biz_context` in `runner.py`), recursing to
   sub-sub children.
 - Merge: child answer returns as tool text (`format_subagent_result`,
   run id first); in the thread each child becomes a child state row under
-  its step (`create_child_state`, slug `fork_<content-words>`), its answer
+  its step (`create_child_state`, slug `spawn_<content-words>`), its answer
   a `subagent-result` context row. Roll-up is one level.
 
 ## Tools
@@ -286,7 +329,7 @@ C.output ──handoff──> R.entry   (the UI draws this as the special edge)
   `tags` lane, the GIN-indexed StructBERT vector over each
   `deep_agent_contexts` payload, thread-scoped; `critical_only=true`
   lists the run's `is_critical` rows — the CRITICAL-DISCOVERIES
-  must-check the step/fork/output prompts teach, flagged by the model
+  must-check the step/spawn/output prompts teach, flagged by the model
   via the tick tool's `critical` arg or the `[CRITICAL]` reply-line
   marker `planning/store.py::extract_critical` parses). Every tool
   carries an ai_prompts row (prompt_type 4) whose active instruction
@@ -309,7 +352,7 @@ constants):
 - `planning/plan_json.py`: `PLAN_SYSTEM_PROMPT` — SHORT ordered plan of
   BUSINESS steps (≤12; ≤6 delegated), snake_case business node tags (ops
   verbs like `fetch_`/`load_`/`query_` rejected by validation), concrete
-  question titles ≤160 chars, `delegate.goal` self-contained fork
+  question titles ≤160 chars, `delegate.goal` self-contained spawn
   instructions; since 2026-11-06 the plan is the BUSINESS MIDDLE ONLY —
   the four review steps and the final answer run in the run's separate
   RESULT graph, and neither the prompt nor the plan lane teaches, nudges
@@ -318,7 +361,7 @@ constants):
   from saved-template loads). No ops/bookkeeping steps.
 - `langgraph/prompts.py`: `STEP_SYSTEM_ADDENDUM` — "you are ONE research
   step"; self-contained finding with numbers/verdict; REPLAN via
-  update_plan (only not-yet-run steps; terminate own forks); FORKS via
+  update_plan (only not-yet-run steps; terminate own spawns); SPAWNS via
   background spawn + collect before answering. Plus the two OUTPUT-NODE
   DIRECTIVES (2026-11-06 inline; DB-EDITABLE since 2026-11-07 as the
   type-3 rows `deep-agent-custom-output-directive` /
@@ -332,14 +375,14 @@ constants):
   resolves `agent_prompts.get(KEY) or spec.directive` at the output
   node (`langgraph/runner.py::output_node`).
 - `tools/plan_tools/addenda.py`: `SUBAGENT_PLAN_ADDENDUM` (extend only your
-  own fork), `SUBAGENT_SPAWN_ADDENDUM` (sub-sub spawning + gather duty).
+  own spawn), `SUBAGENT_SPAWN_ADDENDUM` (sub-sub spawning + gather duty).
 - `core/sandbox.py`: `SANDBOX_PROMPT_ADDENDUM` — prefer ONE computational
   script over many MCP queries; psycopg is read-only; use `text_search`
   for Chinese keyword search (raw ILIKE matches nothing).
 - Dynamic templates: `{{sec_type}}/{{code}}/{{name}}/{{question}}`
   substituted from `data.scope` (`planning/planner.py::template_args/
   render_template`); user-selected "plan prompts" (prompt_type 2) are
-  rendered once per run and passed to every step conversation and fork.
+  rendered once per run and passed to every step conversation and spawn.
 - GRADUAL INCREMENTAL DISCRETIONARY PROMPT LOADING (2026-11-02,
   `planning/prompt_loading.py` + the plan node in `langgraph/runner.py`):
   which picked SKILLS rows (prompt_type 1) load at all is a ladder —
@@ -365,7 +408,7 @@ constants):
   proposal); the rest ride `prompt_catalog` (prompt_key → preview line)
   into every step hop's message (a per-step by-key fetch menu — never
   the wholesale `prompt_type = 1` fetch the old goal text taught) and
-  every fork's `data.prompt_catalog`. The planner reads
+  every spawn's `data.prompt_catalog`. The planner reads
   `planner_scoped_data(data)` (item identities + metric names, no
   per-metric `db_keywords` recipes, docs as id+title — measured 71%
   cut); step hops keep the FULL data. The plan payload records
@@ -375,13 +418,13 @@ constants):
   auto-loads at every inline hop (`[Step-matched prompts]` block) and
   every delegated goal (merged into the child's pass-down); the
   catalog-gated `load_prompt` tool (`tools/prompt_tools.py`) rides
-  every conversation (inline steps, fork children via
+  every conversation (inline steps, spawn children via
   `subagent_hooks(extra_builtin_tools=…)`, the degraded execute
   lane); and the THIN GENERAL PLAN (`general-plan`, prompt_type 2)
-  keeps the main plan to scope entry + sub-plan section forks that
+  keeps the main plan to scope entry + sub-plan section spawns that
   NAME their study prompt keys + final_view — the granular planning
-  happens inside each sub-plan fork (ForkPlanToolKit add_nodes, the
-  fork addendum's plan-first sentence).
+  happens inside each sub-plan spawn (SpawnPlanToolKit add_nodes, the
+  spawn addendum's plan-first sentence).
 - Prompt management: type-0 row = standing system prompt; type-3 internal
   rows = machinery prompts; type-4 tool rows (2026-11-02) = tool
   descriptions, seeded from the `tools/` classes by
@@ -395,7 +438,7 @@ PostgreSQL-first (DDL `database/sql/text/llm/07_deep_agent_states.sql`,
 `10_deep_agent_store.sql`, `09_deep_agent_runs_prune.sql`):
 
 - `llm.deep_agent_states` — one row per node/task state (thread_id,
-  parent_state_id self-FK for fork subgraphs, node, title, status
+  parent_state_id self-FK for spawn subgraphs, node, title, status
   pending→in_progress→completed/failed/skipped, ordinal, context refs,
   llm_context_id).
 - `llm.deep_agent_contexts` — JSONB payloads (plan JSON, step notes,
@@ -450,11 +493,14 @@ PostgreSQL-first (DDL `database/sql/text/llm/07_deep_agent_states.sql`,
   build_chat_provider(label)` (zhipu | dummy; the active
   static.secret_config llm row's own `ext_llm_provider` label, an
   explicit `RunRequest.provider` / CLI `--provider` wins over it);
-  `dummy` = the offline test double — in-process `DummyLlmProvider`
-  (canned replies, zero spend), or HTTP-SIM when the row/CLI carries an
-  `api_url` (the REAL transport against `python -m
-  llm_agents.test.dummy_llm.server`, the :8768 provider simulation
-  with rate-limit error injection). Langgraph/agent TESTS run on the
+  `dummy` = the offline test double — HTTP-SIM ALWAYS since
+  2026-11-11 (the former in-process factory lane is gone): the REAL
+  transport against the resident `server_cluster.llm` (the cluster's
+  llm area) :8767 dummy-1 provider simulation with rate-limit error
+  injection (api_url defaults to
+  http://127.0.0.1:8767/v1/chat/completions; the in-process
+  `DummyLanggraphProvider` at `test/dummy_langgraph` is constructed by
+  tests directly). Langgraph/agent TESTS run on the
   dummy (see the SKILL.md house rule); the seeded always-present
   `llm/dummy` secret_config row stays INACTIVE.
 - **DB**: everything via `_common.db_commons` plain-SQL rung (asyncpg,
@@ -494,6 +540,6 @@ duck-typed `chat_complete` stub.
 
 No memory across threads; no verification/critic pass; no eval harness;
 no resume from checkpoints; no effort scaling or token budget; no
-artifact filesystem for run outputs; no cost rollup; no mid-flight fork
+artifact filesystem for run outputs; no cost rollup; no mid-flight spawn
 steering (only cancel + collect); no token streaming (state lifecycle
 events only). See the SKILL.md roadmap for the ranked build plan.

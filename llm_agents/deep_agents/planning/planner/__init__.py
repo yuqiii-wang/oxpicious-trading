@@ -38,7 +38,7 @@ unit-tests against a stub.
 Package layout (the former single planner.py, split 2026-11-07):
 template_args.py (TemplateArgs + render_template + the study-scope
 family) / assembler.py (PlanPromptAssembler) / planner.py (Planner:
-init, preplan_fork, propose_batches, propose). This root re-exports
+init, preplan_spawn, propose_batches, propose). This root re-exports
 the whole public surface, so every importer keeps importing from
 ``planning.planner`` unchanged.
 """

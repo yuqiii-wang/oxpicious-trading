@@ -47,13 +47,16 @@ async def fetch_pending_articles(
     source: Optional[str] = None,
     include_empty: bool = False,
     force: bool = False,
+    news_ids: Optional[Sequence[int]] = None,
     limit: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Articles in scope still missing a text.news_digestions row.
 
     Newest first. ``force`` selects every in-scope article regardless of
     existing digestions (they get overwritten on upsert); ``include_empty``
-    also admits NULL/empty-content rows (title-only placeholders).
+    also admits NULL/empty-content rows (title-only placeholders);
+    ``news_ids`` (the builds.text side task's just-loaded ids, empty list
+    = no rows) further restricts the queue to those ids.
     """
     sql = (
         f'SELECT n.news_id, n.title, n.content, n.date, n.source, '
@@ -66,11 +69,13 @@ async def fetch_pending_articles(
         f'  AND ($4::text IS NULL OR n.source = $4) '
         f'  AND (d.news_id IS NULL OR $5) '
         f'  AND ($6 OR (n.content IS NOT NULL AND btrim(n.content) <> \'\')) '
+        f'  AND ($7::bigint[] IS NULL OR n.news_id = ANY($7)) '
         f'ORDER BY n.date DESC, n.news_id DESC')
     params: List[Any] = [start, end, industry_id, source,
-                         force, include_empty]
+                         force, include_empty,
+                         list(news_ids) if news_ids else None]
     if limit:
-        sql += ' LIMIT $7'
+        sql += ' LIMIT $8'
         params.append(limit)
     return [dict(r) for r in await conn.fetch(sql, *params)]
 

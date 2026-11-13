@@ -1,5 +1,5 @@
 """llm_agents.deep_agents.tools.plan_tools.tick — ``update_plan_step``,
-the FORK's tick tool: a subagent ticks ONLY the nodes its own
+the SPAWN's tick tool: a subagent ticks ONLY the nodes its own
 update_plan minted, addressed by state id.
 """
 from __future__ import annotations
@@ -15,11 +15,11 @@ from llm_agents.deep_agents.tools.plan_tools.common import (
 
 
 class UpdatePlanStepTool(_PlanAuthorityTool):
-    """``update_plan_step`` — the FORK's tick tool: a subagent ticks
+    """``update_plan_step`` — the SPAWN's tick tool: a subagent ticks
     ONLY the nodes its own update_plan minted, addressed by state id."""
 
     name: ClassVar[str] = "update_plan_step"
-    db_key: ClassVar[Tuple[str, str]] = (name, "plan_fork")
+    db_key: ClassVar[Tuple[str, str]] = (name, "plan_spawn")
     parameters: ClassVar[Dict[str, Any]] = {
         "type": "object",
         "properties": {
@@ -55,7 +55,7 @@ class UpdatePlanStepTool(_PlanAuthorityTool):
         "required": ["state_id", "status"],
     }
     DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Tick one of YOUR OWN fork's investigation nodes by the "
+        "Tick one of YOUR OWN spawn's investigation nodes by the "
         "state id its update_plan call reported: 'in_progress' when "
         "you start it, 'completed' only when the node's goal is "
         "settled (the tick marks that goal finished) or 'failed' "
@@ -99,8 +99,14 @@ class UpdatePlanStepTool(_PlanAuthorityTool):
                 return ("update_plan_step error: 'state_id' must be an "
                         "integer")
             if state_id not in authority.minted:
-                return ("update_plan_step error: you may only tick nodes "
-                        "your own update_plan added under your fork")
+                return (f"update_plan_step error: state {state_id} is "
+                        "not a node your update_plan added — you may "
+                        "only tick nodes YOUR OWN update_plan minted "
+                        "under your spawn (the parent's step the "
+                        "directive names is not yours to tick). To "
+                        "record this work: update_plan add_nodes YOUR "
+                        "spawn's node(s) first, then tick the state ids "
+                        "its report names")
             state = await PLAN_STORE.fetch_state(state_id)
             if state is None:
                 return (f"update_plan_step error: state {state_id} is gone")
@@ -118,7 +124,7 @@ class UpdatePlanStepTool(_PlanAuthorityTool):
             return f"update_plan_step error: {type(exc).__name__}: {exc}"
         # Keep the runner's spawn parenting pointed at the open step —
         # and remember the last ticked step as the fallback parent for
-        # forks spawned in the same step as their tick.
+        # spawns created in the same step as their tick.
         if authority.last_state_id is not None:
             authority.last_state_id[0] = state.state_id
         if authority.current_state_id is not None:
@@ -127,5 +133,5 @@ class UpdatePlanStepTool(_PlanAuthorityTool):
             elif authority.current_state_id[0] == state.state_id:
                 authority.current_state_id[0] = None
         what = (f"plan step {state.ordinal}" if authority.is_main
-                else f"fork node {state.state_id}")
+                else f"spawn node {state.state_id}")
         return f"{what} marked {status}"

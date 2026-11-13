@@ -6,20 +6,21 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { HttpError, intParam, strParam, wrapAsync } from "../../lib/http.js";
 import {
   getReadPool,
-} from "../../services/db.service.js";
+} from "../../services/infra/db.service.js";
 import { renderSqlView } from "@api/lib/sql-views";
-import { decodeLabel } from "../../services/label-codes.js";
+import { decodeLabel } from "../../services/infra/label-codes.js";
 import {
   getPythonProcessStatus,
   runPythonModule,
-} from "../../services/py-runner.service.js";
+} from "../../services/infra/py-runner.service.js";
 import {
   readDefaultExtRequestConfig,
   readExternalRequestConfig,
   type ExtRequestConfigRow,
-} from "../../services/static-config.service.js";
+} from "../../services/infra/static-config.service.js";
 
 const router = Router();
 
@@ -122,65 +123,60 @@ export interface ExtRequestConfigsResponse {
  *  a read-only window over it). Small by construction — days × services ×
  *  statuses rows — so the tab fetches the whole window once and pivots
  *  client-side. */
-router.get("/ext-resources/stats", async (req: Request, res: Response) => {
-  const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
-  try {
-    const pool = getReadPool();
-    const statsView = renderSqlView(
-      "data_viz/api/routes/monitor/ext_stats_rows",
-      { days },
-    );
-    const computedView = renderSqlView(
-      "data_viz/api/routes/monitor/ext_stats_computed_at",
-      { days },
-    );
-    const stats = await pool.query<ExtStatRow>(statsView.sql, statsView.params);
-    const computed = await pool.query<{ computed_at: Date | null }>(
-      computedView.sql,
-      computedView.params,
-    );
-    const rows: ExtResourceStatEntry[] = stats.rows.map((r) => ({
-      service: r.service,
-      statusCode: r.status_code,
-      date: r.date,
-      requestCount: r.request_count,
-      failedCount: r.failed_count,
-      avgDurationMs: r.avg_duration_ms == null ? null : Number(r.avg_duration_ms),
-      maxDurationMs: r.max_duration_ms,
-    }));
-    const body: ExtResourceStatsResponse = {
-      success: true,
-      generatedAt: new Date().toISOString(),
-      computedAt: computed.rows[0]?.computed_at
-        ? computed.rows[0].computed_at.toISOString()
-        : null,
-      dates: [...new Set(rows.map((r) => r.date))].sort(),
-      services: [...new Set(rows.map((r) => r.service))].sort(),
-      rows,
-    };
-    res.json(body);
-  } catch (err) {
-    console.error("[monitor/ext-resources/stats] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+router.get("/ext-resources/stats", wrapAsync(async (req: Request, res: Response) => {
+  const days = intParam(req, "days", { default: 30, clamp: [1, 365] });
+  const pool = getReadPool();
+  const statsView = renderSqlView(
+    "data_viz/api/routes/monitor/ext_stats_rows",
+    { days },
+  );
+  const computedView = renderSqlView(
+    "data_viz/api/routes/monitor/ext_stats_computed_at",
+    { days },
+  );
+  const stats = await pool.query<ExtStatRow>(statsView.sql, statsView.params);
+  const computed = await pool.query<{ computed_at: Date | null }>(
+    computedView.sql,
+    computedView.params,
+  );
+  const rows: ExtResourceStatEntry[] = stats.rows.map((r) => ({
+    service: r.service,
+    statusCode: r.status_code,
+    date: r.date,
+    requestCount: r.request_count,
+    failedCount: r.failed_count,
+    avgDurationMs: r.avg_duration_ms == null ? null : Number(r.avg_duration_ms),
+    maxDurationMs: r.max_duration_ms,
+  }));
+  const body: ExtResourceStatsResponse = {
+    success: true,
+    generatedAt: new Date().toISOString(),
+    computedAt: computed.rows[0]?.computed_at
+      ? computed.rows[0].computed_at.toISOString()
+      : null,
+    dates: [...new Set(rows.map((r) => r.date))].sort(),
+    services: [...new Set(rows.map((r) => r.service))].sort(),
+    rows,
+  };
+  res.json(body);
+}));
 
 /** GET /api/monitor/ext-resources/audit?service=&date=&status=&limit= —
  *  raw audit rows behind ONE (service, date) aggregate bucket. status
  *  = "none" selects the no-response bucket (status_code IS NULL); a
  *  numeric value narrows to that HTTP status; omitted returns the
  *  service+date rows across all statuses. */
-router.get("/ext-resources/audit", async (req: Request, res: Response) => {
-  const service = typeof req.query.service === "string" ? req.query.service.trim() : "";
-  const date = typeof req.query.date === "string" ? req.query.date.trim() : "";
-  const statusRaw = typeof req.query.status === "string" ? req.query.status.trim() : "";
-  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+router.get("/ext-resources/audit", wrapAsync(async (req: Request, res: Response) => {
+  const service = strParam(req, "service") ?? "";
+  const date = strParam(req, "date") ?? "";
+  const statusRaw = strParam(req, "status") ?? "";
+  const limit = intParam(req, "limit", { default: 100, clamp: [1, 500] });
   if (!service || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    res.status(400).json({
-      success: false,
-      error: "query params 'service' and 'date' (YYYY-MM-DD) are required",
-    });
-    return;
+    throw new HttpError(
+      400,
+      "MISSING_PARAM",
+      "query params 'service' and 'date' (YYYY-MM-DD) are required",
+    );
   }
   // "none" → status_code IS NULL (transport errors); digits → that status;
   // anything else non-empty is a bad param, not a silent "all". Each shape
@@ -190,53 +186,48 @@ router.get("/ext-resources/audit", async (req: Request, res: Response) => {
     // no-op — the view narrows to IS NULL
   } else if (statusRaw !== "") {
     if (!/^\d{1,3}$/.test(statusRaw)) {
-      res.status(400).json({
-        success: false,
-        error: "query param 'status' must be a numeric HTTP status or 'none'",
-      });
-      return;
+      throw new HttpError(
+        400,
+        "INVALID_PARAM",
+        "query param 'status' must be a numeric HTTP status or 'none'",
+      );
     }
     statusParam = Number(statusRaw);
   }
-  try {
-    const pool = getReadPool();
-    const view =
-      statusRaw === "none"
-        ? "data_viz/api/routes/monitor/ext_audit_rows_none"
-        : statusParam != null
-          ? "data_viz/api/routes/monitor/ext_audit_rows_status"
-          : "data_viz/api/routes/monitor/ext_audit_rows";
-    const rendered = renderSqlView(
-      view,
-      statusParam != null
-        ? { service, date, status_code: statusParam, limit }
-        : { service, date, limit },
-    );
-    const rows = await pool.query<ExtAuditRow>(rendered.sql, rendered.params);
-    res.json({
-      success: true,
-      service,
-      date,
-      entries: rows.rows.map((r) => ({
-        id: r.id,
-        resourceType: decodeLabel("ext_resource", r.resource_type),
-        subType: decodeLabel(
-          r.resource_type === 0 ? "ext_http_source" : "ext_llm_provider",
-          r.sub_type,
-        ),
-        url: r.url,
-        statusCode: r.status_code,
-        isFailed: r.is_failed,
-        failureReason: r.failure_reason,
-        durationMs: r.duration_ms,
-        createdAt: r.created_at.toISOString(),
-      })),
-    });
-  } catch (err) {
-    console.error("[monitor/ext-resources/audit] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+  const pool = getReadPool();
+  const view =
+    statusRaw === "none"
+      ? "data_viz/api/routes/monitor/ext_audit_rows_none"
+      : statusParam != null
+        ? "data_viz/api/routes/monitor/ext_audit_rows_status"
+        : "data_viz/api/routes/monitor/ext_audit_rows";
+  const rendered = renderSqlView(
+    view,
+    statusParam != null
+      ? { service, date, status_code: statusParam, limit }
+      : { service, date, limit },
+  );
+  const rows = await pool.query<ExtAuditRow>(rendered.sql, rendered.params);
+  res.json({
+    success: true,
+    service,
+    date,
+    entries: rows.rows.map((r) => ({
+      id: r.id,
+      resourceType: decodeLabel("ext_resource", r.resource_type),
+      subType: decodeLabel(
+        r.resource_type === 0 ? "ext_http_source" : "ext_llm_provider",
+        r.sub_type,
+      ),
+      url: r.url,
+      statusCode: r.status_code,
+      isFailed: r.is_failed,
+      failureReason: r.failure_reason,
+      durationMs: r.duration_ms,
+      createdAt: r.created_at.toISOString(),
+    })),
+  });
+}));
 
 /** Process-id-tag of the ext-resource stats refresh run — one fixed tag:
  *  there is exactly one logical refresh (whole-table incremental), so
@@ -249,7 +240,7 @@ const EXT_RES_STATS_TAG = "monitor:ext-res-stats";
  *  The stats table is COMPUTED — the stats endpoint above never
  *  aggregates on read — so a day appears only after this has run. The
  *  incremental run rebuilds just the stale dates and exits in seconds. */
-router.post("/ext-resources/refresh", async (_req: Request, res: Response) => {
+router.post("/ext-resources/refresh", wrapAsync(async (_req: Request, res: Response) => {
   const result = await runPythonModule("database.external_resource_stats", [], {
     processIdTag: EXT_RES_STATS_TAG,
   });
@@ -262,16 +253,18 @@ router.post("/ext-resources/refresh", async (_req: Request, res: Response) => {
     rebuiltDates: rebuilt ? Number(rebuilt[1]) : null,
     stderrTail: result.stderr.slice(-1000),
   });
-});
+}));
 
 /** GET /api/monitor/ext-resources/refresh/status — running-state of the
  *  stats refresh tag, polled on mount so a page refresh mid-run puts the
- *  button straight back into its spinning state. */
-router.get("/ext-resources/refresh/status", (_req: Request, res: Response) => {
+ *  button straight back into its spinning state. (database.* runs stay
+ *  legacy WSL spawns, but the status read is uniformly async.) */
+router.get("/ext-resources/refresh/status", wrapAsync(async (_req: Request, res: Response) => {
+  const status = await getPythonProcessStatus([EXT_RES_STATS_TAG]);
   res.json({
-    running: getPythonProcessStatus([EXT_RES_STATS_TAG])[EXT_RES_STATS_TAG] ?? false,
+    running: status[EXT_RES_STATS_TAG] ?? false,
   });
-});
+}));
 
 /** GET /api/monitor/ext-resources/configs — the whole per-(service,
  *  request_type) pacing / anti-bot config inventory, read from the
@@ -283,38 +276,33 @@ router.get("/ext-resources/refresh/status", (_req: Request, res: Response) => {
  *  once. `defaultRows` carries the default.json fallback (60s cooldown)
  *  for services without their own file. */
 router.get("/ext-resources/configs", (_req: Request, res: Response) => {
-  try {
-    const toEntry = (r: ExtRequestConfigRow): ExtRequestConfigEntry => ({
-      service: r.service,
-      requestType: r.request_type,
-      resourceType: decodeLabel("ext_resource", r.resource_type),
-      sleepSec: r.sleep_sec,
-      sleepJitter: r.sleep_jitter,
-      pollIntervalSec: r.poll_interval_sec,
-      maxRetries: r.max_retries,
-      retryBackoffSec: r.retry_backoff_sec,
-      timeoutConnectSec: r.timeout_connect_sec,
-      timeoutReadSec: r.timeout_read_sec,
-      rotateBrowserProfile: r.rotate_browser_profile,
-      addRandomParam: r.add_random_param,
-      enableHostTracking: r.enable_host_tracking,
-      hostBlockCooldownSec: r.host_block_cooldown_sec,
-      settleSleepSec: r.settle_sleep_sec ?? null,
-      urls: r.urls ?? null,
-      notes: r.notes,
-      sourceRef: r.source_ref,
-    });
-    const body: ExtRequestConfigsResponse = {
-      success: true,
-      generatedAt: new Date().toISOString(),
-      rows: readExternalRequestConfig().map(toEntry),
-      defaultRows: readDefaultExtRequestConfig().map(toEntry),
-    };
-    res.json(body);
-  } catch (err) {
-    console.error("[monitor/ext-resources/configs] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
+  const toEntry = (r: ExtRequestConfigRow): ExtRequestConfigEntry => ({
+    service: r.service,
+    requestType: r.request_type,
+    resourceType: decodeLabel("ext_resource", r.resource_type),
+    sleepSec: r.sleep_sec,
+    sleepJitter: r.sleep_jitter,
+    pollIntervalSec: r.poll_interval_sec,
+    maxRetries: r.max_retries,
+    retryBackoffSec: r.retry_backoff_sec,
+    timeoutConnectSec: r.timeout_connect_sec,
+    timeoutReadSec: r.timeout_read_sec,
+    rotateBrowserProfile: r.rotate_browser_profile,
+    addRandomParam: r.add_random_param,
+    enableHostTracking: r.enable_host_tracking,
+    hostBlockCooldownSec: r.host_block_cooldown_sec,
+    settleSleepSec: r.settle_sleep_sec ?? null,
+    urls: r.urls ?? null,
+    notes: r.notes,
+    sourceRef: r.source_ref,
+  });
+  const body: ExtRequestConfigsResponse = {
+    success: true,
+    generatedAt: new Date().toISOString(),
+    rows: readExternalRequestConfig().map(toEntry),
+    defaultRows: readDefaultExtRequestConfig().map(toEntry),
+  };
+  res.json(body);
 });
 
 export default router;

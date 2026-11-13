@@ -4,7 +4,7 @@ Consolidates two patterns that share the same ``groupby(keys)[col]
 .rolling(W, min_periods=P).agg(...)`` shape:
 
   - ``compute_moving_averages``: compute MULTIPLE MA windows (ma5,
-    ma20, ma60, ma120, ma255) on a single value column in one pass.
+    ma20, ma60, ma120, ma252) on a single value column in one pass.
     Used by builds (stock_tech_stats, etf, index_daily) on the
     6.8M / 971K / 649K row source tables.
 
@@ -90,7 +90,7 @@ def compute_moving_averages(
         group_key: column to group by (e.g. "code").
         value_col: column to compute MAs on (e.g. "close",
             "adj_close").
-        windows: list of window sizes (e.g. [5, 20, 60, 120, 255]).
+        windows: list of window sizes (e.g. [5, 20, 60, 120, 252]).
         min_periods: minimum non-NaN values in the window for a
             result. Default 1 = partial MAs for the first W-1 rows
             (matches the build-script convention).
@@ -111,9 +111,9 @@ def compute_moving_averages(
         df = df.sort_values(["code", "date"]).reset_index(drop=True)
         df = compute_moving_averages(
             df, group_key="code", value_col="adj_close",
-            windows=[5, 20, 60, 120, 255],
+            windows=[5, 20, 60, 120, 252],
         )
-        # df now has columns: ma5, ma20, ma60, ma120, ma255, ma5_ratio
+        # df now has columns: ma5, ma20, ma60, ma120, ma252, ma5_ratio
     """
     if df.empty:
         for w in windows:
@@ -168,6 +168,7 @@ def compute_emas(
     *,
     adjust: bool = False,
     round_to: int = 6,
+    out_prefix: str = "ema",
 ) -> pd.DataFrame:
     """Compute multiple exponential moving averages per group.
 
@@ -175,7 +176,10 @@ def compute_emas(
     ``close.ewm(span=N, adjust=False).mean()`` per group (``adjust=False``
     = the industry-standard "recursive" EMA where the first observation
     seeds the EMA; ``adjust=True`` would weight early observations
-    differently to correct for the warm-up bias).
+    differently to correct for the warm-up bias). ``out_prefix`` renames
+    the output columns (default ``ema``; e.g. ``out_prefix="macd_ema"``
+    yields ``macd_ema9`` — the MACD block uses it to EMA the macd_line
+    series without touching the close EMAs).
 
     Implementation: fused CUDA kernel (builds/_algo_kernels/ema.cpp) —
     the exact recursion
@@ -238,7 +242,8 @@ def compute_emas(
             logger.info(f"    [EMA] {n_nan} NaN in '{value_col}' → pandas ewm fallback "
                   f"(discounted sum would propagate NaN)")
         return _compute_emas_pandas(df, group_key, value_col, spans,
-                                    adjust=adjust, round_to=round_to)
+                                    adjust=adjust, round_to=round_to,
+                                    out_prefix=out_prefix)
 
     x = df[value_col]
     codes = df[group_key]
@@ -266,7 +271,7 @@ def compute_emas(
             alpha = 2.0 / (s + 1.0)
             ema_adjust_false(x_gpu, pos_gpu, alpha=alpha, span=s,
                              out=out_gpu)
-            df[f"ema{s}"] = cp.round(out_gpu, round_to)
+            df[f"{out_prefix}{s}"] = cp.round(out_gpu, round_to)
         del x_gpu, pos_gpu, out_gpu
     except (ImportError, TypeError):
         # no cupy / cudf.pandas inactive -> shift-doubling column path
@@ -288,9 +293,46 @@ def compute_emas(
                 dstep *= dstep
             # exact adjust=False warm-up: y_t = a*G_t + d^(t+1)*x0
             seed = np.exp((pos + 1) * log_d) * x0
-            df[f"ema{s}"] = (alpha * g + seed).round(round_to)
+            df[f"{out_prefix}{s}"] = (alpha * g + seed).round(round_to)
 
     return df
+
+
+def compute_macd(
+    df: pd.DataFrame,
+    group_key: str,
+    *,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+    round_to: int = 6,
+) -> pd.DataFrame:
+    """MACD block from PRECOMPUTED EMA columns (run ``compute_emas`` first).
+
+    Adds three columns in place:
+
+    - ``macd_line``   = ``ema{fast} - ema{slow}`` (the DIF)
+    - ``macd_signal`` = the ``signal``-span EMA (adjust=False) of the
+      ``macd_line`` SERIES per group (the DEA) — path-dependent, so it
+      rides the same EMA kernel/shift-doubling machinery as the close
+      EMAs (``out_prefix`` keeps the group's ``ema{signal}`` untouched)
+    - ``macd_hist``   = ``macd_line - macd_signal`` (the repo macd
+      engine's plain difference — NOT the 2x Chinese-market variant;
+      matches analysis_signals' macd family and the
+      stats.*_tech_stats.macd_hist column comments)
+
+    Requires the ``ema{fast}`` / ``ema{slow}`` columns to exist (compute
+    them with ``compute_emas`` on the close column first). NaN in the
+    fast/slow EMAs propagates into the block; the signal EMA falls back
+    to the pandas path on NaN exactly like ``compute_emas``.
+    """
+    df["macd_line"] = (df[f"ema{fast}"] - df[f"ema{slow}"]).round(round_to)
+    sig_col = f"macd_ema{signal}"
+    df = compute_emas(df, group_key, value_col="macd_line", spans=[signal],
+                      round_to=round_to, out_prefix="macd_ema")
+    df["macd_signal"] = df[sig_col]
+    df["macd_hist"] = (df["macd_line"] - df["macd_signal"]).round(round_to)
+    return df.drop(columns=[sig_col])
 
 
 def _compute_emas_pandas(
@@ -301,6 +343,7 @@ def _compute_emas_pandas(
     *,
     adjust: bool = False,
     round_to: int = 6,
+    out_prefix: str = "ema",
 ) -> pd.DataFrame:
     """Legacy pandas ``groupby.ewm`` path (NaN-tolerant, adjust-aware).
 
@@ -317,7 +360,7 @@ def _compute_emas_pandas(
             .mean()
             .reset_index(level=0, drop=True)
         )
-        df[f"ema{s}"] = result.reindex(df.index).round(round_to)
+        df[f"{out_prefix}{s}"] = result.reindex(df.index).round(round_to)
 
     return df
 
@@ -477,6 +520,51 @@ def grouped_rolling_quantile(
         s.groupby([df[k] for k in group_keys], sort=False)
         .rolling(window=window, min_periods=min_periods, center=center)
         .quantile(q)
+    )
+    res = res.reset_index(
+        level=list(range(len(group_keys))), drop=True
+    )
+    return res.reindex(df.index)
+
+
+# ---------------------------------------------------------------------------
+#  Single-window grouped rolling percentile rank (own-history anchoring)
+# ---------------------------------------------------------------------------
+def grouped_rolling_rank_pct(
+    df: pd.DataFrame,
+    group_keys: str | list[str],
+    col: str,
+    window: int,
+    min_periods: int,
+) -> pd.Series:
+    """Grouped rolling percentile rank (0..1), aligned to df.index.
+
+    ``groupby(keys)[col].rolling(window, min_periods).rank(pct=True)``
+    with the MultiIndex group-key levels stripped and the result
+    reindexed to df.index — the same alignment contract as
+    ``grouped_rolling_agg``. The rank INCLUDES the current point in its
+    own window (pandas convention): 1.0 = the highest value the group
+    has seen in the window. This is the house own-history anchoring
+    ("how unusual is today vs this security's own past year"), the
+    semantics ``study_kit.studies.trailing_pct_rank`` and the
+    mov_ave_spreads_detail ``{gap}_pct_rank`` columns share.
+
+    cuDF lacks rolling-rank support, so under cudf.pandas this op
+    transparently falls back to CPU pandas (one CPU pass per call —
+    the accepted convention documented on ``grouped_rolling_quantile``
+    since the high_low_pct / pct_bands steps). NaN input values are
+    skipped by the rolling window and count against min_periods.
+
+    Added 2026-11-08 for analysis.mov_ave_spread
+    ``compute_gap_trailing_stats`` (the trailing-252d spread stats).
+    """
+    if isinstance(group_keys, str):
+        group_keys = [group_keys]
+    s = pd.to_numeric(df[col], errors="coerce")
+    res = (
+        s.groupby([df[k] for k in group_keys], sort=False)
+        .rolling(window=window, min_periods=min_periods)
+        .rank(pct=True)
     )
     res = res.reset_index(
         level=list(range(len(group_keys))), drop=True

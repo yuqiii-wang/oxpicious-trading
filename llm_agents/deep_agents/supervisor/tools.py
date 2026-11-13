@@ -4,7 +4,7 @@ watchdog's OWN diagnostic kit (``search_thread_context`` +
 taken from the existing Tool classes so their type-4 ``ai_prompts``
 description rows (db_keys ``search_thread_context|plan`` and
 ``kg_search|kg``) hook in unchanged — the kit applies them through the
-same ``descriptions`` map the delegation hooks use for forks.
+same ``descriptions`` map the delegation hooks use for spawns.
 
 ``search_thread_context`` re-reads the failed run's OWN recorded
 traffic (what the failed node was asked, answered, fetched — the
@@ -47,6 +47,11 @@ class SupervisorToolKit(ToolKit):
             ThreadSearchTool(
                 self._thread_id,
                 description=self.db_description(ThreadSearchTool.db_key)),
+            # Deliberately UNSCOPED (no table_scope): the watchdog
+            # diagnoses whether the run's plan/scope itself was wrong,
+            # so its KG evidence must span the whole corpus — the
+            # forced-table scope is the run's constraint to judge, not
+            # one to inherit.
             KgSearchTool(
                 description=self.db_description(KgSearchTool.db_key)),
         ]

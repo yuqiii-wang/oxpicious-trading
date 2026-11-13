@@ -18,7 +18,7 @@ HOW a config's value / bar resolve in that space:
   resolve_threshold  — one rule cell's bar for THIS check, from its
                        OWN bar_def (rule_params.bar_def): bollinger's
                        FIXED ±kσ constant; mov_rsi's per-code ADAPTIVE
-                       percentile tail (the trailing-2550d quantile the
+                       percentile tail (the trailing-2520d quantile the
                        fetch layer computes). None when not derivable
                        (never invented).
 
@@ -60,7 +60,7 @@ _BOLL_ROW_KINDS = {"boll"}
 class LiveValues(BaseModel):
     """The code's CURRENT values, one source kind each (fetched once
     per code and shared by every active config), plus the mov_rsi
-    ADAPTIVE bars (the trailing-2550d percentile tails keyed
+    ADAPTIVE bars (the trailing-2520d percentile tails keyed
     (window, tail_pct, side) — fetched once per code, shared by every
     rsi cell)."""
 
@@ -93,7 +93,7 @@ def resolve_threshold(sig: dict, values: LiveValues) -> float | None:
       fixed_sigma      bollinger's FIXED ±kσ constant (buy breaches
                        below −k, sell above +k)
       rolling_quantile mov_rsi's per-code ADAPTIVE percentile tail —
-                       the trailing-2550d quantile computed at fetch
+                       the trailing-2520d quantile computed at fetch
                        time (values.rsi_bars, keyed (window, tail_pct,
                        side))
 

@@ -4,7 +4,7 @@
  */
 export { listMovAveSpreadCodes, getMovAveSpreadChart, getMovAveSpreadChartPairs, getMovAveSpreadChartEma, getMovAveSpreadChartShared, getMovAveSpreadChartExtras, getMarketRegimeSpans, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads/index.js";
 export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution/index.js";
-export { listMarketBetaThemes, listMarketBetaStrategyThemes, getMarketBetaChart, getMarketBetaChartByCode } from "./market-beta/index.js";
+export { listMarketBetaThemes, listMarketBetaStrategyThemes, getMarketBetaChart, getMarketBetaChartByCode, getMarketParticipation, type MarketParticipationRow } from "./market-beta/index.js";
 export { getIndustryCorrelations } from "./industry-correlations.js";
 export { getIndustryCorrOffsets, listIndustryCorrOffsetBenchmarks, listIndustryCorrOffsetIndustries, invalidateIndustryCorrOffsetCoverage } from "./industry-corr-offsets.js";
 export { listPairPctRatioUniverse, getPairPctRatios } from "./pair-pct-ratios.js";
@@ -12,6 +12,7 @@ export { getBenchmarkPriceChart, getIndustryAttributionPriceSeries } from "./ben
 export { getAllIndustriesAttribution, getMemberIndexAttribution } from "./industry-attribution-bars.js";
 export { getIndustryBenchmarkAttribution, listIndustryAttributionBenchmarks } from "./industry-benchmark-attribution.js";
 export { getIndustryEtfPriceSeries, getIndustryEtfContributionBars } from "./industry-etf-contribution.js";
+export { getIndustryStockAttribution } from "./industry-stock-attribution.js";
 export { getIndustryHypesAndDrains } from "./industry-hypes-and-drains.js";
 export { getIntradayMovements, listIntradayMovementsBenchmarks, listIntradayMovementsDates } from "./intraday-movements.js";
 export { getIntradayMovementsPrevDayOhlc } from "./intraday-movements-prev-day-ohlc.js";

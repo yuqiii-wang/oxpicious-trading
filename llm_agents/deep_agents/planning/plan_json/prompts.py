@@ -1,7 +1,7 @@
 """llm_agents.deep_agents.planning.plan_json.prompts — the plan
 conversation's PROMPT TEXTS.
 
-The planning node's system prompt and the fork pre-planner's system
+The planning node's system prompt and the spawn pre-planner's system
 prompt, both rendered with the CURRENT ``run_limits()`` (the caps are
 quoted in the text, so the prompt must state what the parser will
 enforce), plus the two DB-editable message frames — the correction
@@ -41,8 +41,8 @@ def plan_system_prompt() -> str:
     "EVERY STEP SERVES ONE GOAL — the business question its title "
     "states — and goals NEST BY PATH: a step on the main (parent) "
     "path carries the GRANDER goals, one per aspect of the ask; a "
-    "delegated fork's goal is a SMALLER self-contained goal cut from "
-    "that grander one; the nodes a sub-plan adds under its fork "
+    "delegated spawn's goal is a SMALLER self-contained goal cut from "
+    "that grander one; the nodes a sub-plan adds under its spawn "
     "decompose it into smaller goals still. A step is marked "
     "completed only when its goal is settled — the completion tick "
     "marks that goal FINISHED — so size every goal to what ONE "
@@ -85,13 +85,13 @@ def plan_system_prompt() -> str:
     "and what does the spacing say about the trend?\")\n"
     "- notes (optional): the business evidence it must settle — the "
     "claims, metrics or signal readings it weighs\n"
-    "- delegate (optional): mark the step as a FORK — a self-contained "
+    "- delegate (optional): mark the step as a SPAWN — a self-contained "
     "chunk a separate subagent pursues (e.g. one deep-dive per skill "
     "or per scope subject whose intermediate queries would flood the "
     "main thread). CONSECUTIVE delegated steps run as ONE parallel "
-    "wave (a fork goal is fixed before any step runs, so sibling "
-    "forks cannot depend on each other): give each fork a "
-    "NON-OVERLAPPING question — one subject or one aspect per fork — "
+    "wave (a spawn goal is fixed before any step runs, so sibling "
+    "spawns cannot depend on each other): give each spawn a "
+    "NON-OVERLAPPING question — one subject or one aspect per spawn — "
     "and keep any step that must weigh earlier findings INLINE "
     "between the waves. Its \"goal\" must OPEN with the business "
     "question (the subject + what to settle) and then carry the "
@@ -99,7 +99,7 @@ def plan_system_prompt() -> str:
     "tables/columns to check and what to report back — the subagent "
     "automatically also receives the run's business context (subject, "
     "focus question, selected prompts), so the goal states THIS "
-    "fork's question, not the run's. "
+    "spawn's question, not the run's. "
     f"Use at most {limits.max_delegated_steps} delegated steps.\n"
     "- parallel (optional, default false): mark a step whose work does "
     "NOT need any earlier step's findings — an independent aspect study "
@@ -129,11 +129,11 @@ def plan_system_prompt() -> str:
     f"the {limits.max_plan_nodes}-step cap can honestly cover (a market-wide "
     "sweep over many items), do NOT cram every item into main-lane "
     "steps — keep the main plan THIN and GENERAL: one scope-entry step "
-    "anchoring the subject, then one delegated SUB-PLAN section fork "
+    "anchoring the subject, then one delegated SUB-PLAN section spawn "
     "per coherent group of items, and ONE final inline synthesis step "
     "weighing the sections' findings. Each sub-plan goal opens with "
     "'First plan your own sub-steps: call update_plan with add_nodes "
-    "under your fork, then work and tick them yourself as you go', "
+    "under your spawn, then work and tick them yourself as you go', "
     "then names the section's STUDY PROMPTS by their prompt_key "
     "EXACTLY as the catalog lists them (a named key auto-loads its "
     "full instruction in that sub-plan's context — the granular biz "
@@ -154,13 +154,13 @@ def plan_system_prompt() -> str:
 
 
 def subplan_system_prompt() -> str:
-    """The FORK PRE-PLANNER's system prompt — the runner's small
-    parent-side call that proposes one delegated fork's sub-steps
-    BEFORE the fork's executor conversation starts (the structural fix
-    for the measured failure where a fork's single conversation burned
+    """The SPAWN PRE-PLANNER's system prompt — the runner's small
+    parent-side call that proposes one delegated spawn's sub-steps
+    BEFORE the spawn's executor conversation starts (the structural fix
+    for the measured failure where a spawn's single conversation burned
     its whole hop budget exploring and never called update_plan). The
     contract is the same steps array (validated by ``parse_plan_json``
-    through the Planner); the input is TINY (the fork goal + the run's
+    through the Planner); the input is TINY (the spawn goal + the run's
     business framing), so the call sits far under the per-request
     budget — the "break the big task into smaller tasks" pattern: one
     small plan call, then the executor works pre-laid-out nodes.
@@ -169,18 +169,23 @@ def subplan_system_prompt() -> str:
     must stay in sync)."""
     limits = run_limits()
     return (
-        "You are the sub-planning step for ONE delegated research fork "
+        "You are the sub-planning step for ONE delegated research spawn "
         "of a financial research agent with read-only database tools. "
-        "The fork goal below is one self-contained section of a larger "
+        "The spawn goal below is one self-contained section of a larger "
         "study. Lay out its SHORT ordered plan of BUSINESS sub-steps — "
         "WHAT each settles about the subject, never HOW data is fetched "
-        "(the executor picks tables and writes queries). Goals NEST: "
-        "each sub-step is a SMALLER goal cut from the fork's goal, "
+        "(the executor picks tables and writes queries). Prefer "
+        "READINGS over computations: the analysis schema materializes "
+        "most indicators and the executor's message names them — a "
+        "sub-step says what to READ and judge (never 'compute X from "
+        "daily bars'); the executor loads the materialized tables "
+        "first and computes only the gaps. Goals NEST: "
+        "each sub-step is a SMALLER goal cut from the spawn's goal, "
         "sized to what one research conversation-step can finish. "
         "BUSINESS sub-steps only — never review-wave steps (the run's "
         "SEPARATE RESULT graph owns the four reviews and the final "
         "answer; nothing here plans for it). "
-        f"Use 2-{min(6, limits.max_fork_children)} sub-steps, ordered so "
+        f"Use 2-{min(6, limits.max_spawn_children)} sub-steps, ordered so "
         "the early ones de-risk the later ones, ending with the "
         "section's synthesis. Reply with ONLY a JSON object, no prose:\n"
         '{"steps": [{"node": "...", "title": "...", "notes": "..."}]}\n'

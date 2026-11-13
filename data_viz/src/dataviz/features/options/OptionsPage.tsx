@@ -1,7 +1,7 @@
 /**
  * SZSE Options page — interactive mirror of plot_szse_options.py.
  *
- * Per-plot loading (one plot, one SQL — see api/services/options.service.ts
+ * Per-plot loading (one plot, one SQL — see api/services/market/options.service.ts
  * "Per-plot queries"): the page loads the light /dates index (date picker +
  * caption), the selected date's /snapshot-rows (wall / smile), the
  * history-wide /snapshot-axes (wall axes) and ONE batched /snapshot-rows

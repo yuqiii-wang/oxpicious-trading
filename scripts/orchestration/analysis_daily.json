@@ -55,5 +55,10 @@
     "script": "analysis.hot_stock_momentum",
     "can_be_parallel": false,
     "note": "hot stock momentum curves (analysis.hot_stock_momentum → analysis.hot_stock_momentum) — IMPLEMENTATION PLACEHOLDER (2026-10-31): run() is empty, the run registers the service heartbeat and exits without writing; kept after market_crowdedness so the nightly slot exists once the metric definition lands (target table schema is live for the /api/analysis/hot-stock-momentum/* wiring)"
+  },
+  "12": {
+    "script": "analysis.market_participation",
+    "can_be_parallel": false,
+    "note": "whole-market participation gauges, one row per trading day (analysis.market_participation): total SS+SZ proxy turnover + MA/vs-MA/252-percentile gauges (stats.exchange_trading_amt proxies), raw daily SSE share + pp gauges + 20d OLS slope, and whole-universe advance/decline breadth (stats.stock_basic_stats sign counts, A/D ratio, median); incremental by missing date, --force truncates + COPY rebuild"
   }
 }

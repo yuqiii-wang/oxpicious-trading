@@ -12,7 +12,9 @@
  * walks it live:
  *
  *   • watch the progress — the graph polls GET /api/ai/threads/:threadId
- *     every 3s while any state is pending/in_progress and settles when
+ *     every 60s (AI_EVENTS_FALLBACK_POLL_MS — the event channel that
+ *     used to push these instantly is intentionally disabled,
+ *     2026-11-11) while any state is pending/in_progress and settles when
  *     the run does; the canvas draws the graph's own TOPOLOGY ONLY
  *     (graphModel.ts — the LangGraph/LangSmith observability contract):
  *     the runner chain START → plan → execute → result →
@@ -32,8 +34,10 @@
  *   • click a node — ONLY that node's own view appears beneath the
  *     graph, never another node's: its CONTEXTS first (the runner-lane
  *     state line — status · model · call counts · elapsed wall time ·
- *     token consumption in k (total, in · out, from the context's
- *     llm_requests chain rollup); the node's own llm-context registry
+ *     token consumption in k (total, in · out · cached, from the
+ *     context's llm_requests chain rollup — cached = the re-sent
+ *     history overlap chained by prev_request_id); the node's own
+ *     llm-context registry
  *     entries — "N llm requests under this one context", each wearing
  *     its token consumption; and for the plan node the persisted plan
  *     JSON, its artifact) and, for EXECUTE alone, its TASK list — the
@@ -52,12 +56,17 @@
  *     persisted INPUT/OUTPUT payloads (the step-input / step-result /
  *     subagent-result contexts — what the task was given and what it
  *     recorded) AND its recorded LLM REQUESTS/RESPONSES — hidden by
- *     default behind an outlined "LLM requests" chip that loads them
+ *     default behind an outlined "Agent steps" chip that loads them
  *     on first click (spinner while in flight; GET
- *     /threads/:id/states/:stateId/llm-requests — llm.llm_requests
+ *     /threads/:id/states/:stateId/agent-steps — inference steps (the
+ *     llm.llm_requests rows) + spawn steps (one per spawned sub node)
  *     rows attributed by chain: the task's llm_context_id, a top-level
  *     step narrowed to its start/finish tick window; a subagent child
- *     owns its whole chain). Each request row defaults to the CONTENT
+ *     owns its whole chain). A SPAWN step row is itself CLICKABLE TO
+ *     EXPAND — its "sub node #N agent steps" affordance lazily loads
+ *     the child node's own agent steps (the same endpoint keyed on
+ *     child_state_id) and renders them nested inline, spawn rows
+ *     clickable the same way down the tree. Each request row defaults to the CONTENT
  *     view — the semantic data only (the final assistant message, the
  *     call's NEW request messages; chained requests store the shared
  *     conversation once) — with a content/raw toggle; raw shows the
@@ -66,67 +75,58 @@
  *
  * onSettled fires when the watched run transitions live → settled — the
  * parent refreshes its run history so the strip's dot counts jump.
+ *
+ * The extracted pieces live beside this file: ./format (formatters),
+ * ./payloadViews (ContextBlock/ChatMessage/ToolCallArgs), ./stepRows
+ * (the four step-type rows + the shared AgentStepList body),
+ * ./TaskAgentSteps (the lazy accordion),
+ * ./GraphBoundaryHandle (the drag-resize grip) and ./ContextsPanel
+ * (the beneath-graph contexts view).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
+  Button,
   Chip,
   CircularProgress,
   Collapse,
   IconButton,
-  ToggleButton,
-  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from "@mui/material";
-import { Bolt, Check, ContentCopy, ExpandLess, ExpandMore } from "@mui/icons-material";
+import { Bolt, Check, ContentCopy, ExpandLess, ExpandMore, Refresh, Stop } from "@mui/icons-material";
 import {
   BaseChart,
   useChartThemeMode,
 } from "@/shared/charts/base-chart";
 import {
+  bareNodeId,
   buildPendingThreadGraphModel,
   buildThreadGraphModel,
+  estimateFitScale,
+  graphViewHeight,
   isOutputNodeId,
   itemsUnderNodeId,
   segmentIndexOfNodeId,
+  FIT_FLOOR,
 } from "./graphModel";
-import { buildThreadGraphOption } from "./threadGraphOption";
+import { buildThreadGraphOption, defaultGraphView, ZOOM_MAX } from "./threadGraphOption";
+import type { ThreadGraphModel } from "./graphModel";
+import type { AgentLlmUsage } from "@/lib/api-client/aiThreads";
 import StatusChip from "./StatusChip";
 import RunHeartbeat from "./RunHeartbeat";
+import {
+  loadExpandedNodes,
+  saveExpandedNodes,
+} from "./expandedNodesStore";
 import SaveTemplateButton from "./SaveTemplateButton";
 import { useThreadDetail } from "./useThreadDetail";
-import {
-  fetchStateLlmRequests,
-  type AgentLlmUsage,
-  type AgentStateLlmRequest,
-} from "@/lib/api-client/aiThreads";
-import MarkdownView from "@/shared/markdown/MarkdownView";
-
-/** Seconds → compact elapsed text ("42.3s" / "1m 12s" / "1h 03m"). */
-function formatElapsedS(s: number | null): string {
-  if (s === null || !Number.isFinite(s)) return "—";
-  if (s < 60) return `${s.toFixed(1)}s`;
-  if (s < 3600) {
-    return `${Math.floor(s / 60)}m ${String(Math.floor(s % 60)).padStart(2, "0")}s`;
-  }
-  return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
-}
-
-/** Token count → the k unit ("18.3k" — the Contexts panel's consumption
- *  scale; sub-k counts keep the one-decimal k form). */
-function formatTokensK(n: number | null): string {
-  return n === null ? "—" : `${(n / 1000).toFixed(1)}k`;
-}
-
-/** The node/context consumption tail — "12.4k tok (8.1k in · 4.3k out)"
- *  off the context's llm_usage rollup; empty when nothing recorded. */
-function usageTail(usage: AgentLlmUsage | null): string {
-  if (usage === null) return "";
-  return ` · ${formatTokensK(usage.total_tokens)} tok`
-    + ` (${formatTokensK(usage.input_tokens)} in`
-    + ` · ${formatTokensK(usage.output_tokens)} out)`;
-}
+import { formatElapsedS, usageTail } from "./format";
+import { ContextBlock } from "./payloadViews";
+import { TaskAgentSteps } from "./TaskAgentSteps";
+import GraphBoundaryHandle from "./GraphBoundaryHandle";
+import ContextsPanel from "./ContextsPanel";
+import type { SpawnReview } from "./ContextsPanel";
 
 interface ThreadGraphViewProps {
   /** The thread to draw (null = nothing picked — placeholder only). */
@@ -139,452 +139,20 @@ interface ThreadGraphViewProps {
   onSettled?: () => void;
   /** Bumped by the AI event channel on every daemon state event for
    *  this thread — each bump refetches the detail immediately instead
-   *  of waiting out the 3s poll (the poll stays the fallback). */
+   *  of waiting out the poll. 2026-11-11 the channel is intentionally
+   *  disabled (AI_EVENTS_CHANNEL_DISABLED), so no bump arrives and the
+   *  60s poll is the only refresh path. */
   refreshSignal?: number;
   /** Fires when the run's plan was saved as a template (the Save plan
    *  button) — the parent refreshes its template picker. */
   onPlanTemplateSaved?: () => void;
-}
-
-/** One input/output block of an expanded task row: the context
- *  payload's text — a single {"note"|"answer"|"error": string} payload
- *  renders as the bare string (the tick notes / subagent results),
- *  anything else as pretty JSON. `scroll` caps the height (the plan
- *  JSON can run long) instead of stretching the panel. */
-function ContextBlock({
-  label,
-  payload,
-  scroll = false,
-}: {
-  label: string;
-  payload: unknown;
-  scroll?: boolean;
-}) {
-  let text: string;
-  if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
-    const entries = Object.entries(payload as Record<string, unknown>).filter(
-      ([, v]) => v !== null && v !== undefined,
-    );
-    text =
-      entries.length === 1 && typeof entries[0][1] === "string"
-        ? entries[0][1]
-        : JSON.stringify(payload, null, 2);
-  } else {
-    text = JSON.stringify(payload, null, 2);
-  }
-  return (
-    <Box sx={{ borderLeft: 2, borderColor: "divider", pl: 1.25, py: 0.25 }}>
-      <Typography variant="caption" color="text.secondary">
-        {label}
-      </Typography>
-      <Typography
-        variant="body2"
-        sx={{
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-          ...(scroll ? { maxHeight: 280, overflowY: "auto" } : {}),
-        }}
-      >
-        {text}
-      </Typography>
-    </Box>
-  );
-}
-
-/** Monospace pre-render shared by the tool-argument bodies (pretty JSON
- *  fallback and the extracted dominant field alike). */
-const argsPreSx = {
-  margin: 0,
-  fontFamily: "monospace",
-  fontSize: "0.75rem",
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-} as const;
-
-/** The content-view rendering of one tool call's arguments. The
- *  DOMINANT string field is the call's semantic payload — the written
- *  file's content (sandbox_write_file), the SQL (db_run_query), the
- *  delegated goal (spawn_subagent), the tick note (update_plan_step) —
- *  so it becomes the body (real newlines, scroll-capped), and the
- *  remaining short fields compress to a `k=v` meta line. Only when no
- *  string field dominates (small flat args) does the whole pretty JSON
- *  show. */
-function ToolCallArgs({ argsText }: { argsText: string }) {
-  const body = (() => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(argsText);
-    } catch {
-      return null;
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
-    }
-    const entries = Object.entries(parsed as Record<string, unknown>);
-    let longest: [string, string] | null = null;
-    for (const [key, value] of entries) {
-      if (typeof value === "string" && (longest === null || value.length > longest[1].length)) {
-        longest = [key, value];
-      }
-    }
-    if (longest === null || longest[1].length < 80) return null;
-    const restLine = entries
-      .filter(([key]) => key !== longest![0])
-      .map(([key, value]) => {
-        const s = typeof value === "string" ? value : JSON.stringify(value) ?? "";
-        return `${key}=${s.length > 60 ? `${s.slice(0, 57)}…` : s}`;
-      })
-      .join(" · ");
-    return { restLine, text: longest[1] };
-  })();
-  if (body === null) {
-    return (
-      <Typography variant="body2" component="pre" sx={argsPreSx}>
-        {argsText}
-      </Typography>
-    );
-  }
-  return (
-    <>
-      {body.restLine !== "" && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-          {body.restLine}
-        </Typography>
-      )}
-      <Typography
-        variant="body2"
-        component="pre"
-        sx={{ ...argsPreSx, maxHeight: 280, overflowY: "auto", mt: body.restLine ? 0.25 : 0 }}
-      >
-        {body.text}
-      </Typography>
-    </>
-  );
-}
-
-/** One chat message of a request/response payload, laid out for
- *  reading instead of a raw JSON dump: a role line (plus the tool
- *  identity on tool results) over the content — string content renders
- *  as MARKDOWN (the shared MarkdownView at dense scale, matching how
- *  the Result view renders the model's documents); assistant tool_calls
- *  via :class:`ToolCallArgs` — the semantic argument field as the body.
- *  Anything that is not a role-shaped object falls back to pretty
- *  JSON. */
-function ChatMessage({ message }: { message: unknown }) {
-  if (message === null || typeof message !== "object") {
-    return <ContextBlock label="message" payload={message} />;
-  }
-  const msg = message as Record<string, unknown>;
-  const role = typeof msg.role === "string" ? msg.role : "message";
-  const toolCallId =
-    typeof msg.tool_call_id === "string" ? msg.tool_call_id : null;
-  const contentIsText = typeof msg.content === "string";
-  const content =
-    typeof msg.content === "string"
-      ? msg.content
-      : msg.content === null || msg.content === undefined
-        ? null
-        : JSON.stringify(msg.content, null, 2);
-  const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-  return (
-    <Box sx={{ borderLeft: 2, borderColor: "divider", pl: 1.25, py: 0.25 }}>
-      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-        {role}
-        {toolCallId ? ` · ${toolCallId}` : ""}
-        {typeof msg.name === "string" ? ` · ${msg.name}` : ""}
-      </Typography>
-      {content !== null && content.trim() !== "" && (
-        contentIsText ? (
-          <MarkdownView source={content} dense />
-        ) : (
-          <Typography
-            variant="body2"
-            sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-          >
-            {content}
-          </Typography>
-        )
-      )}
-      {toolCalls.map((call, i) => {
-        const fn = ((call as Record<string, unknown>)?.function ??
-          {}) as Record<string, unknown>;
-        const argsText = (() => {
-          const raw = String(fn.arguments ?? "");
-          try {
-            return JSON.stringify(JSON.parse(raw), null, 2);
-          } catch {
-            return raw;
-          }
-        })();
-        return (
-          <Box key={i} sx={{ mt: 0.5 }}>
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block" }}
-            >
-              tool call · {String(fn.name ?? "?")}
-            </Typography>
-            <ToolCallArgs argsText={argsText} />
-          </Box>
-        );
-      })}
-      {content === null && toolCalls.length === 0 && (
-        <Typography
-          variant="body2"
-          component="pre"
-          sx={{
-            margin: 0,
-            fontFamily: "monospace",
-            fontSize: "0.75rem",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-          }}
-        >
-          {JSON.stringify(msg, null, 2)}
-        </Typography>
-      )}
-    </Box>
-  );
-}
-
-/** One recorded request/response pair of an expanded task row: a meta
- *  line (id · time · model · duration · outcome · tokens) with a
- *  content/raw toggle, then the pair in the picked view — content
- *  (default) lays out the semantic data only (the final assistant
- *  message; the call's NEW request messages, chained rows storing the
- *  shared conversation once), raw shows the stored JSONB payloads as
- *  pretty JSON. */
-function RequestRow({ req }: { req: AgentStateLlmRequest }) {
-  const [view, setView] = useState<"content" | "raw">("content");
-  // Token counts: the request-log columns first, the response payload's
-  // usage block as the fallback for rows recorded before the columns.
-  const usage = (req.response_payload as
-    | { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } }
-    | null)?.usage;
-  const inTok = req.input_tokens ?? usage?.prompt_tokens ?? null;
-  const outTok = req.output_tokens ?? usage?.completion_tokens ?? null;
-  const totTok = req.total_tokens ?? usage?.total_tokens ?? null;
-  const tokenSummary = [
-    inTok !== null ? `${inTok} in` : null,
-    outTok !== null ? `${outTok} out` : null,
-    totTok !== null ? `${totTok} tok` : null,
-  ]
-    .filter((part) => part !== null)
-    .join(" / ");
-  const responseBody = req.response_payload as
-    | { choices?: { message?: unknown }[] }
-    | null;
-  const responseMessage = responseBody?.choices?.[0]?.message ?? null;
-  const payload = req.request_payload as Record<string, unknown> | null;
-  const messages =
-    payload !== null &&
-    typeof payload === "object" &&
-    Array.isArray(payload.messages)
-      ? payload.messages
-      : null;
-  const incremental = payload?._chain_incremental === true;
-  const shared =
-    typeof payload?._chain_shared_messages === "number"
-      ? payload._chain_shared_messages
-      : 0;
-  return (
-    <Box sx={{ borderLeft: 2, borderColor: "divider", pl: 1.25, py: 0.25 }}>
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          flexWrap: "wrap",
-        }}
-      >
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ minWidth: 0, flex: "1 1 auto" }}
-        >
-          #{req.request_id} · {req.created_at.slice(11, 19)} ·{" "}
-          {req.model ?? "—"} ·{" "}
-          {req.duration_ms !== null ? `${(req.duration_ms / 1000).toFixed(1)}s` : "—"} ·{" "}
-          {req.is_failed
-            ? `failed: ${req.failure_reason ?? "unknown"}`
-            : `ok${req.status_code !== null ? ` (${req.status_code})` : ""}`}
-          {tokenSummary !== "" ? ` · ${tokenSummary}` : ""}
-        </Typography>
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={view}
-          onChange={(_, v: "content" | "raw" | null) => {
-            if (v !== null) setView(v);
-          }}
-        >
-          <ToggleButton
-            value="content"
-            sx={{ px: 0.75, py: 0, fontSize: "0.65rem", textTransform: "none" }}
-          >
-            content
-          </ToggleButton>
-          <ToggleButton
-            value="raw"
-            sx={{ px: 0.75, py: 0, fontSize: "0.65rem", textTransform: "none" }}
-          >
-            raw
-          </ToggleButton>
-        </ToggleButtonGroup>
-      </Box>
-      {view === "raw" ? (
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5, mt: 0.5 }}>
-          <ContextBlock
-            label="response — raw payload"
-            payload={req.response_payload ?? req.failure_reason ?? "(no response body recorded)"}
-            scroll
-          />
-          {req.request_payload !== null && req.request_payload !== undefined && (
-            <ContextBlock
-              label="request — raw payload"
-              payload={req.request_payload}
-              scroll
-            />
-          )}
-        </Box>
-      ) : (
-        <>
-          {responseMessage !== null && typeof responseMessage === "object" ? (
-            <Box sx={{ mt: 0.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                response
-              </Typography>
-              <ChatMessage message={responseMessage} />
-            </Box>
-          ) : (
-            <ContextBlock
-              label="response"
-              payload={req.response_payload ?? req.failure_reason ?? "(no response body recorded)"}
-              scroll
-            />
-          )}
-          {messages !== null && (
-            <Box sx={{ mt: 0.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                request ·{" "}
-                {incremental
-                  ? `${shared} shared messages stored once · ${messages.length} new`
-                  : `${messages.length} messages as sent`}
-              </Typography>
-              <Box
-                sx={{
-                  maxHeight: 280,
-                  overflowY: "auto",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 0.5,
-                  mt: 0.25,
-                }}
-              >
-                {messages.map((m, i) => (
-                  <ChatMessage key={i} message={m} />
-                ))}
-              </Box>
-            </Box>
-          )}
-        </>
-      )}
-    </Box>
-  );
-}
-
-/** The clicked task's recorded LLM requests/responses — HIDDEN by
- *  default; clicking the section loads them once (spinner on the toggle
- *  line, uncached: a live run records new ones) and renders them under
- *  the task's input/output contexts. A task's rows are its
- *  llm_context_id chain (a top-level step narrowed to its tick window,
- *  a subagent child its whole chain); tasks from runs that predate the
- *  chain binding have no linkage and say so. */
-function TaskLlmRequests({
-  threadId,
-  stateId,
-  hasContext,
-}: {
-  threadId: string;
-  stateId: number;
-  hasContext: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [data, setData] = useState<Awaited<
-    ReturnType<typeof fetchStateLlmRequests>
-  > | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!open || data !== null || error !== null) return;
-    let live = true;
-    fetchStateLlmRequests(threadId, stateId)
-      .then((d) => {
-        if (live) setData(d);
-      })
-      .catch((e: unknown) => {
-        if (live) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-      });
-    return () => {
-      live = false;
-    };
-  }, [open, data, error, threadId, stateId]);
-  const loading = open && data === null && error === null;
-
-  return (
-    <Box sx={{ mt: 0.75 }}>
-      <Chip
-        size="small"
-        variant="outlined"
-        color={data !== null && data.requests.length > 0 ? "primary" : "default"}
-        icon={
-          loading ? (
-            <CircularProgress size={12} />
-          ) : open ? (
-            <ExpandLess sx={{ fontSize: 16 }} />
-          ) : (
-            <ExpandMore sx={{ fontSize: 16 }} />
-          )
-        }
-        label={
-          data !== null
-            ? `LLM requests — ${data.requests.length} recorded · ctx ${data.llm_context_id?.slice(0, 6) ?? "—"}`
-            : "LLM requests"
-        }
-        onClick={() => setOpen((o) => !o)}
-        sx={{
-          height: 24,
-          fontSize: "0.75rem",
-          "& .MuiChip-icon": { fontSize: 16, ml: 0.5 },
-        }}
-      />
-      <Collapse in={open} timeout="auto" unmountOnExit>
-        {error !== null ? (
-          <Typography variant="caption" color="error" sx={{ display: "block", pl: 0.5 }}>
-            llm requests: {error}
-          </Typography>
-        ) : loading ? (
-          <Typography variant="caption" color="text.disabled" sx={{ display: "block", pl: 0.5 }}>
-            loading llm requests…
-          </Typography>
-        ) : data === null ? null : data.requests.length === 0 ? (
-          <Typography variant="caption" color="text.disabled" sx={{ display: "block", pl: 0.5 }}>
-            {hasContext
-              ? "no llm requests recorded for this task"
-              : "no llm-request linkage — this run predates the request-chain binding"}
-          </Typography>
-        ) : (
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75, mt: 0.5 }}>
-            {data.requests.map((req) => (
-              <RequestRow key={req.request_id} req={req} />
-            ))}
-          </Box>
-        )}
-      </Collapse>
-    </Box>
-  );
+  /** Stops the live run (POST /api/ai/summary/stop keyed on the super
+   *  thread id) — the header renders its Stop button ONLY when this
+   *  handler is present AND the canvas shows a live run (any node
+   *  running/pending, the same flag the live chip reads). The view owns
+   *  the button's busy state + the post-stop refresh pulses; the parent
+   *  owns the API call and its error/notice surface (never rethrows). */
+  onStop?: (superThreadId: string) => Promise<void>;
 }
 
 export default function ThreadGraphView({
@@ -593,15 +161,13 @@ export default function ThreadGraphView({
   onSettled,
   refreshSignal = 0,
   onPlanTemplateSaved,
+  onStop,
 }: ThreadGraphViewProps) {
   const themeMode = useChartThemeMode();
 
   // ---- the polled thread graph + selections ----
-  const { detail, loading, error, fetchedAt } = useThreadDetail(
-    threadId,
-    expectLive,
-    refreshSignal,
-  );
+  const { detail, loading, error, fetchedAt, refresh, refreshing } =
+    useThreadDetail(threadId, expectLive, refreshSignal);
   // The optimistic planning-window canvas (buildPendingThreadGraphModel):
   // a generation in flight whose thread detail hasn't landed yet — the
   // daemon registers the thread only once POST /run reaches it, and the
@@ -616,9 +182,21 @@ export default function ThreadGraphView({
         : null,
     [expectLive, detail, threadId],
   );
+  // THE FOLD REGISTRY — the canvas node ids ("step-<id>" / "spawn-<id>")
+  // whose spawn spurs render. Default EMPTY: the smallest level (the
+  // spawn subtrees) is folded, the layout reserves no room for a folded
+  // parent's column, and the main path stays properly spaced. A parent
+  // click toggles its subtree one level; a thread switch restores the
+  // thread's PERSISTED registry (expandedNodesStore — 2026-11-11, so a
+  // page refresh freezes the canvas: expanded/folded nodes sit exactly
+  // as before the reload), a never-seen thread starts folded.
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const model = useMemo(
-    () => (detail !== null ? buildThreadGraphModel(detail) : pendingModel),
-    [detail, pendingModel],
+    () =>
+      detail !== null
+        ? buildThreadGraphModel(detail, expandedNodes)
+        : pendingModel,
+    [detail, pendingModel, expandedNodes],
   );
   // The clicked graph circle (drives the beneath-the-graph items list).
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -629,11 +207,68 @@ export default function ThreadGraphView({
   const [ctxOpenRows, setCtxOpenRows] = useState<Set<number>>(new Set());
   // The header's thread-id copy button flips to a check for a beat.
   const [idCopied, setIdCopied] = useState(false);
+  // The user's roamed graph zoom/center (content coords, read off the
+  // live option after every graphRoam event) — folded back into each
+  // rebuilt option so the 60s live poll, node clicks and theme toggles
+  // never yank the pan/zoom back to the fit view. Reset on thread
+  // change (the view of a different run starts at its own fit).
+  const roamRef = useRef<{ zoom: number; center: [number, number] } | null>(
+    null,
+  );
+  // The chart instance (structural — only getOption is read, inside the
+  // graphRoam listener, to lift the roamed zoom/center the action
+  // handler just wrote into the series model).
+  const chartRef = useRef<{ getOption: () => unknown } | null>(null);
   useEffect(() => {
     setSelectedNodeId(null);
     setExpandedRows(new Set());
     setCtxOpenRows(new Set());
+    // The fold registry RESTORES (not resets — see expandedNodesStore):
+    // the thread's persisted expansion survives the page refresh, and
+    // the graph reflows to exactly the shape the user left it in.
+    setExpandedNodes(loadExpandedNodes(threadId));
+    roamRef.current = null;
   }, [threadId]);
+  // Persist every expansion/fold click under the thread id. Declared
+  // AFTER the restore effect so a thread switch writes back the freshly
+  // restored set (never the previous thread's registry), and the page
+  // refresh finds the canvas as it was left. The FIRST run per threadId
+  // is SKIPPED: at that commit `expandedNodes` is still the stale
+  // all-folded default (the restore's setState has not landed yet), and
+  // writing it would clobber the stored entry before the restore reads
+  // it — under StrictMode's double effect pass the second restore would
+  // then read the clobbered store and the fold state would never
+  // survive (observed live 2026-11-11: the seeded entry wiped to {}).
+  const persistedThreadRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (persistedThreadRef.current !== threadId) {
+      persistedThreadRef.current = threadId;
+      return;
+    }
+    saveExpandedNodes(threadId, expandedNodes);
+  }, [threadId, expandedNodes]);
+  // The chart box — the anchor the canvas width measurement reads (the
+  // model is viewport-agnostic on purpose).
+  const chartBoxRef = useRef<HTMLDivElement | null>(null);
+  // The canvas' measured width — the fit-scale estimate the view's
+  // zoom floor needs.
+  const [chartWidth, setChartWidth] = useState(0);
+  useEffect(() => {
+    const el = chartBoxRef.current;
+    if (el === null) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      setChartWidth((prev) => (Math.abs(prev - w) > 0.5 ? w : prev));
+    });
+    ro.observe(el);
+    setChartWidth(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
+  // The user-dragged viewport height override (px) — set by dragging
+  // the graph's bottom boundary, cleared by double-clicking it. Unlike
+  // the roam view (reset per thread) it persists across thread changes:
+  // a viewport preference, not a view of one run's geometry.
+  const [heightOverride, setHeightOverride] = useState<number | null>(null);
 
   // THE SUPER THREAD ID (2026-11-06 three-chain refactor) — the run's
   // CHAIN ROOT (the plan graph's thread id = llm.deep_agent_states.
@@ -646,6 +281,29 @@ export default function ThreadGraphView({
     model?.superThreadId ?? detail?.super_thread_id ?? threadId;
   const viewingMemberId =
     threadId !== null && superThreadId !== null && threadId !== superThreadId;
+
+  // The header Stop button (the onStop prop's affordance): cancel the
+  // live chain keyed on the super thread id. THE CONFIRMED STOP — the
+  // daemon's /stop resolves only AFTER the cancelled run finished
+  // unwinding and settling the whole chain (server-side
+  // STOP_SETTLE_WAIT_SEC bound), so the single refresh below draws the
+  // settled rows straight away: the running node keeps its live
+  // appearance while the await is in flight (the button reads
+  // "Stopping…") and turns settled grey exactly when the server
+  // confirms — never off the bare stop request, and no speculative
+  // re-pulses (the pre-confirmation refresh race they papered over is
+  // gone).
+  const [stopping, setStopping] = useState(false);
+  const handleStop = async () => {
+    if (onStop === undefined || superThreadId === null || stopping) return;
+    setStopping(true);
+    try {
+      await onStop(superThreadId);
+      refresh();
+    } finally {
+      setStopping(false);
+    }
+  };
 
   const copyThreadId = async () => {
     if (superThreadId === null) return;
@@ -666,10 +324,73 @@ export default function ThreadGraphView({
     wasActiveRef.current = active;
   }, [model, onSettled]);
 
-  const option = useMemo(
-    () => (model !== null ? buildThreadGraphOption(model, themeMode, selectedNodeId) : null),
-    [model, themeMode, selectedNodeId],
+  // The canvas height — TRACKS the content: the model's natural height
+  // (graphViewHeight = content height × FIT_FLOOR), so the vertical fit
+  // ratio stays at the floor as subtrees expand and collapse and the
+  // rows keep their spacing. A boundary drag overrides it; double-click
+  // resets to the natural height.
+  const graphHeight = useMemo(
+    () =>
+      heightOverride ??
+      (model !== null ? graphViewHeight(model) : 360),
+    [model, heightOverride],
   );
+  // The refs the view lock reads — the lock memo deliberately does NOT
+  // depend on the model (an expansion reflow must never re-fit the
+  // view); it reads the CURRENT model/canvas height through them.
+  const modelRef = useRef<ThreadGraphModel | null>(null);
+  modelRef.current = model;
+  const graphHeightRef = useRef(360);
+  graphHeightRef.current = graphHeight;
+  // THE VIEW LOCK — the frozen center (and the zoom floor it locked
+  // at), recomputed ONLY on viewport changes: thread switch, canvas
+  // width (panel/window resize), boundary drag — plus the moment the
+  // model first becomes measurable (chartWidth is often already
+  // measured when the detail lands; without the ready flag the lock
+  // would stay null forever and the view would fall back to the
+  // auto-fit). Expansion toggles, poll ticks and node selections keep
+  // the lock — the graph re-renders IN PLACE, the anchor point never
+  // moves.
+  const modelReady = model !== null && chartWidth > 0;
+  const viewportKey = `${threadId ?? ""}|${chartWidth}|${heightOverride ?? "x"}`;
+  const viewLock = useMemo(
+    () => {
+      const m = modelRef.current;
+      const h = graphHeightRef.current;
+      if (m === null || chartWidth <= 0 || h <= 0) return null;
+      return defaultGraphView(
+        m,
+        estimateFitScale(m, chartWidth, h),
+        chartWidth,
+      );
+    },
+    // viewportKey + modelReady encode every legitimate re-fit trigger;
+    // reading the model/canvas height through refs IS the freeze.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [viewportKey, modelReady],
+  );
+  const option = useMemo(() => {
+    if (model === null) return null;
+    // THE SPACING FLOOR RIDES ON THE FROZEN VIEW — the center stays
+    // locked (or roamed), and the zoom is the frozen zoom RAISED (never
+    // lowered) to the floor of the CURRENT fit: an expansion that would
+    // otherwise compress the smallest nodes re-scales around the
+    // anchored point instead of squeezing, and the extra content pans.
+    const roamed = roamRef.current;
+    const fs = estimateFitScale(model, chartWidth, graphHeight);
+    const floorZoom = fs < FIT_FLOOR
+      ? Math.min(FIT_FLOOR / Math.max(fs, 1e-6), ZOOM_MAX)
+      : 1;
+    const zoom = roamed?.zoom ?? Math.max(viewLock?.zoom ?? 1, floorZoom);
+    const center = roamed?.center ?? viewLock?.center;
+    return buildThreadGraphOption(
+      model,
+      themeMode,
+      selectedNodeId,
+      center !== undefined ? { roam: { zoom, center } } : { roam: null },
+      expandedNodes,
+    );
+  }, [model, themeMode, selectedNodeId, chartWidth, graphHeight, viewLock, expandedNodes]);
 
   const items = useMemo(
     () => (model !== null && selectedNodeId !== null ? itemsUnderNodeId(model, selectedNodeId) : []),
@@ -718,7 +439,7 @@ export default function ThreadGraphView({
       : null;
   const planContext = useMemo(
     () =>
-      effectiveNodeId === "plan"
+      bareNodeId(effectiveNodeId ?? "") === "plan"
         ? (detail?.contexts ?? []).find((c) => c.kind === "plan") ?? null
         : null,
     [detail, effectiveNodeId],
@@ -755,25 +476,34 @@ export default function ThreadGraphView({
         : null,
     [detail, effectiveNodeId],
   );
-  // The clicked step's FORK RESULTS — the parent agent's reviewed
+  // The clicked step's SPAWN RESULTS — the parent agent's reviewed
   // material: each child's subagent-result context (the answer the
   // parent's conversation gathered and synthesized into its own work;
-  // for a DELEGATED step the fork WAS the engine and its answer became
-  // the step's finding). Rendered in the parent's context section —
-  // the merge-back edge's payload, so to speak.
-  const forkReviews = useMemo(() => {
-    if (effectiveNodeId === null || !effectiveNodeId.startsWith("step-")) {
-      return [] as { stateId: number; title: string; status: string;
-                     startedAt: string | null;
-                     payload: unknown }[];
+  // for a DELEGATED step the spawn WAS the engine and its answer became
+  // the step's finding). A clicked SPAWN node with its own sub-spawns
+  // renders the same section for its children. Rendered in the parent's
+  // context section — the merge-back edge's payload, so to speak.
+  const spawnReviews = useMemo(() => {
+    if (
+      effectiveNodeId === null ||
+      (!effectiveNodeId.startsWith("step-") &&
+        !effectiveNodeId.startsWith("spawn-") &&
+        !effectiveNodeId.startsWith("fork-") &&
+        !effectiveNodeId.startsWith("old-"))
+    ) {
+      return [] as SpawnReview[];
     }
-    const stateId = Number(effectiveNodeId.slice(5));
+    const stateId = Number(effectiveNodeId.replace(
+      /^(step|spawn|fork|old)-/,
+      "",
+    ));
     const children = model?.childrenByParent.get(stateId) ?? [];
     return children.map((child) => ({
       stateId: child.state_id,
       title: child.title,
       status: child.status,
       startedAt: child.started_at,
+      childKind: child.child_kind,
       payload:
         child.result_context_id !== null
           ? detail?.contexts.find(
@@ -782,6 +512,54 @@ export default function ThreadGraphView({
           : null,
     }));
   }, [effectiveNodeId, model, detail]);
+
+  // A clicked SPAWN node's own faces — spawn children are not
+  // runner-lane nodes (no node_states store item; their node value is
+  // the goal slug, never the canvas id), so the panel joins through the
+  // child's STATE row: the context registry's state_id key for its one
+  // llm context, and the state's input/result context ids for its
+  // prompt + answer payloads.
+  const spawnState = useMemo(() => {
+    if (
+      effectiveNodeId === null ||
+      (!effectiveNodeId.startsWith("spawn-") &&
+        !effectiveNodeId.startsWith("fork-") &&
+        !effectiveNodeId.startsWith("old-"))
+    ) {
+      return null;
+    }
+    const sliceLen = effectiveNodeId.startsWith("old-") ? 4
+      : effectiveNodeId.startsWith("fork-") ? 5 : 6;
+    return model?.statesById.get(Number(effectiveNodeId.slice(sliceLen)))
+      ?? null;
+  }, [effectiveNodeId, model]);
+  const spawnCtx = useMemo(
+    () =>
+      spawnState !== null
+        ? detail?.llm_contexts.find(
+            (c) => c.state_id === spawnState.state_id,
+          ) ?? null
+        : null,
+    [spawnState, detail],
+  );
+  const spawnInputPayload = useMemo(
+    () =>
+      spawnState?.input_context_id != null
+        ? detail?.contexts.find(
+            (c) => c.context_id === spawnState.input_context_id,
+          )?.payload ?? null
+        : null,
+    [spawnState, detail],
+  );
+  const spawnAnswerPayload = useMemo(
+    () =>
+      spawnState?.result_context_id != null
+        ? detail?.contexts.find(
+            (c) => c.context_id === spawnState.result_context_id,
+          )?.payload ?? null
+        : null,
+    [spawnState, detail],
+  );
 
   // The header's status line — the id itself renders in full beside it
   // (with its copy button), so only the state texts live here. The
@@ -855,6 +633,19 @@ export default function ThreadGraphView({
                 ? `${state.ordinal}. ${state.node}`
                 : state.node}
               {state.started_at ? ` · ${state.started_at.slice(11, 19)}` : ""}
+              {state.started_at !== null && state.finished_at !== null
+                ? ` · ${formatElapsedS(
+                    (new Date(state.finished_at).getTime()
+                      - new Date(state.started_at).getTime()) / 1000,
+                  )}`
+                : state.started_at !== null
+                  ? " · running"
+                  : ""}
+              {usageTail(usageByContext.get(state.llm_context_id ?? "") ?? null)}
+              {state.llm_context_id !== null &&
+                !usageByContext.has(state.llm_context_id)
+                ? " · — tok"
+                : ""}
               {state.llm_context_id
                 ? ` · ctx ${state.llm_context_id.slice(0, 6)}`
                 : ""}
@@ -895,7 +686,7 @@ export default function ThreadGraphView({
               </Box>
             )}
             {threadId !== null && (
-              <TaskLlmRequests
+              <TaskAgentSteps
                 threadId={threadId}
                 stateId={state.state_id}
                 hasContext={state.llm_context_id !== null}
@@ -931,7 +722,7 @@ export default function ThreadGraphView({
       >
         <Typography variant="subtitle2">LangGraph thread</Typography>
         {(detail?.segments ?? []).length > 1 && (
-          <Tooltip title="One run = THREE chained LangGraphs (plan → custom → result), one thread each, chained by super_thread_id — the canvas joins them with the dashed double-arrow handoff edges">
+          <Tooltip title="One run = THREE chained LangGraphs (plan → custom → result), one thread each, chained by super_thread_id — the canvas joins them with the dashed handoff edges, chain-styled across the inter-graph gap">
             <Chip
               size="small"
               variant="outlined"
@@ -1008,8 +799,30 @@ export default function ThreadGraphView({
               </Box>
             ),
           )}
+          {/* The proactive pull: one fetch NOW from the backend — the
+              60s live poll is automatic (the websocket push is
+              intentionally disabled, 2026-11-11), this is the user's
+              manual belt (and the only refresh path on a settled run,
+              whose poll loop has stopped). */}
+          <Tooltip title="Refresh now — pull the run's latest state from the backend">
+            <span>
+              <IconButton
+                size="small"
+                aria-label="refresh run state"
+                onClick={refresh}
+                disabled={threadId === null}
+                sx={{ p: 0.5 }}
+              >
+                {refreshing ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <Refresh sx={{ fontSize: 18 }} />
+                )}
+              </IconButton>
+            </span>
+          </Tooltip>
           {model?.active && (
-            <Tooltip title={`Live — websocket updates + 3s poll fallback${fetchedAt ? ` · last ${fetchedAt.toLocaleTimeString()}` : ""}`}>
+            <Tooltip title={`Live — 60s poll refresh (websocket disabled)${fetchedAt ? ` · last ${fetchedAt.toLocaleTimeString()}` : ""}`}>
               <Chip
                 size="small"
                 color="primary"
@@ -1020,6 +833,34 @@ export default function ThreadGraphView({
               />
             </Tooltip>
           )}
+          {/* The live run's Stop: the canvas' own affordance (the page
+              toolbar's Stop is gated on the daemon's active-run
+              registry, not on what this view shows). Renders beside the
+              live chip — the pair reads "this run is live, stop it" —
+              and only when the parent wired onStop. The optimistic
+              planning canvas (active: true, superThreadId = threadId)
+              gets it too, so a generation in flight is stoppable before
+              its first detail fetch lands. */}
+          {onStop !== undefined &&
+            superThreadId !== null &&
+            model?.active && (
+              <Tooltip title="Stop the run — cancels the chain and settles every remaining node">
+                <span>
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    startIcon={
+                      stopping ? <CircularProgress size={14} /> : <Stop />
+                    }
+                    onClick={handleStop}
+                    disabled={stopping}
+                  >
+                    {stopping ? "Stopping…" : "Stop"}
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
           <RunHeartbeat active={model?.active ?? false} />
           {/* The plan-template Save action: only a SETTLED run with a
               persisted plan can be templated (a live run's plan may still
@@ -1038,169 +879,101 @@ export default function ThreadGraphView({
             )}
         </Box>
       </Box>
-      <BaseChart
-        variant="bare"
-        loading={loading && detail === null}
-        error={error}
-        option={option}
-        emptyText={
-          threadId === null
-            ? expectLive
-              ? "Starting the run — the planning node opens the moment the daemon registers it…"
-              : "No run picked — click a Summary History dot"
-            : expectLive && detail === null
-              ? "Run registered — waiting for its plan to persist…"
-              : "This run left no thread — stopped before its plan persisted"
-        }
-        height={model !== null && model.maxForkRows > 0
-          ? 320 + Math.min(model.maxForkRows, 6) * 70
-          : 320}
-        onEvents={{
-          click: (params: unknown) => {
-            const p = params as { data?: { id?: string }; dataType?: string };
-            const id = p.data?.id;
-            if (p.dataType === "edge" || id === undefined) return;
-            if (selectedNodeId === id) {
-              setSelectedNodeId(null);
-              setExpandedRows(new Set());
-            } else {
-              setSelectedNodeId(id);
-              setExpandedRows(new Set());
-            }
-          },
-        }}
-        onCanvasClick={() => {
-          setSelectedNodeId(null);
-          setExpandedRows(new Set());
-        }}
-      />
+      <Box ref={chartBoxRef}>
+        <BaseChart
+          variant="bare"
+          loading={loading && detail === null}
+          error={error}
+          option={option}
+          emptyText={
+            threadId === null
+              ? expectLive
+                ? "Starting the run — the planning node opens the moment the daemon registers it…"
+                : "No run picked — click a Summary History dot"
+              : expectLive && detail === null
+                ? "Run registered — waiting for its plan to persist…"
+                : "This run left no thread — stopped before its plan persisted"
+          }
+          height={graphHeight}
+          onReady={(chart) => {
+            chartRef.current = chart;
+          }}
+          onEvents={{
+            // The roamed zoom/center land in the series model via the
+            // graphRoam action; lift them here so the next rebuild (60s
+            // live poll, node click, theme toggle) re-applies them.
+            graphRoam: () => {
+              const chart = chartRef.current;
+              if (chart === null) return;
+              const opt = chart.getOption() as
+                | { series?: { zoom?: number; center?: number[] }[] }
+                | undefined;
+              const s = opt?.series?.[0];
+              if (
+                typeof s?.zoom === "number" &&
+                Array.isArray(s.center) &&
+                s.center.length === 2
+              ) {
+                roamRef.current = {
+                  zoom: s.zoom,
+                  center: [s.center[0], s.center[1]],
+                };
+              }
+            },
+            click: (params: unknown) => {
+              const p = params as { data?: { id?: string }; dataType?: string };
+              const id = p.data?.id;
+              if (p.dataType === "edge" || id === undefined) return;
+              // A PARENT node toggles its spawn subtree (the ▸N/▾N cue's
+              // contract — the ONLY expand/fold control) while the
+              // click also selects the node as before; childless nodes
+              // just select.
+              if (model?.childCountByNodeId.has(id) === true) {
+                setExpandedNodes((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(id)) next.delete(id);
+                  else next.add(id);
+                  return next;
+                });
+              }
+              if (selectedNodeId === id) {
+                setSelectedNodeId(null);
+                setExpandedRows(new Set());
+              } else {
+                setSelectedNodeId(id);
+                setExpandedRows(new Set());
+              }
+            },
+          }}
+          onCanvasClick={() => {
+            setSelectedNodeId(null);
+            setExpandedRows(new Set());
+          }}
+        />
+      </Box>
+      {model !== null && (
+        <GraphBoundaryHandle height={graphHeight} onResize={setHeightOverride} />
+      )}
       {/* ---- the context view beneath the graph: the clicked node's —
            or, by DEFAULT (nothing clicked), the supervisor's (the main
            path's checker: its runner-lane state, its ONE context and
-           the kind supervisor-review document). ONE CONTEXT PER NODE
-           (the runner's design — the node's whole execution, every LLM
-           request in it, runs as one conversation referenced by id) ---- */}
-      {effectiveNodeId !== null &&
-        (nodeLane !== null ||
-          planContext !== null ||
-          resultContext !== null ||
-          supervisorReview !== null) && (
-          <Box sx={{ mt: 2 }}>
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mb: 0.5 }}
-            >
-              {selectedNodeId === null
-                ? `Contexts — ${effectiveNodeId} by default (no node clicked; click a circle for its own)`
-                : "Contexts — one context per node, shared across its LLM requests"}
-            </Typography>
-            {nodeLane !== null && (
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ display: "block" }}
-              >
-                {nodeLane.node} · {nodeLane.status} · model{" "}
-                {nodeLane.model ?? "—"} · {nodeLane.n_llm_calls} llm calls ·{" "}
-                {nodeLane.n_tool_calls} tool calls
-                {nodeLane.n_states > 0 ? ` · ${nodeLane.n_states} tasks` : ""}
-                {nodeLane.answer_chars > 0
-                  ? ` · ${nodeLane.answer_chars} answer chars`
-                  : ""}
-                {nodeLane.elapsed_s !== null
-                  ? ` · elapsed ${formatElapsedS(nodeLane.elapsed_s)}`
-                  : ""}
-                {usageTail(nodeUsage)}
-                {nodeLane.error ? ` · ${nodeLane.error}` : ""}
-              </Typography>
-            )}
-            {nodeLlmContexts.map((c) => (
-              <Typography
-                key={c.context_id}
-                variant="caption"
-                color="text.secondary"
-                sx={{ display: "block" }}
-              >
-                ctx {c.context_id.slice(0, 6)} · {c.n_llm_calls} llm ·{" "}
-                {c.n_tool_calls} tool requests under this one context
-                {usageTail(usageByContext.get(c.context_id) ?? null)}
-                {c.checkpoint_id
-                  ? ` · ckpt ${c.checkpoint_id.slice(0, 8)}`
-                  : ""}
-              </Typography>
-            ))}
-            {planContext !== null && (
-              <Box sx={{ mt: 1 }}>
-                <ContextBlock label="plan" payload={planContext.payload} scroll />
-              </Box>
-            )}
-            {resultContext !== null && (
-              <Box sx={{ mt: 1 }}>
-                <ContextBlock
-                  label="final result — the Result view's document"
-                  payload={resultContext.payload}
-                  scroll
-                />
-              </Box>
-            )}
-            {effectiveNodeId === "supervisor" && (
-              supervisorReview !== null ? (
-                <Box sx={{ mt: 1 }}>
-                  <ContextBlock
-                    label="supervisor review — the watchdog's intervention on a root-path failure (error diagnosis · plan/topology verdict)"
-                    payload={supervisorReview.payload}
-                    scroll
-                  />
-                </Box>
-              ) : (
-                <Typography
-                  variant="caption"
-                  color="text.disabled"
-                  sx={{ display: "block", mt: 1 }}
-                >
-                  {nodeLane?.status === "running"
-                    ? "watching — intervenes only when a root-path node fails"
-                    : "idle — no root-path failure (the watchdog made no intervention)"}
-                </Typography>
-              )
-            )}
-            {forkReviews.length > 0 && (
-              <Box sx={{ mt: 1 }}>
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ display: "block", mb: 0.5 }}
-                >
-                  Fork results — merged back into this node ·{" "}
-                  {nodeLane?.llm_context_id != null
-                    ? "gathered & reviewed by this node's conversation (its synthesis rides this node's llm requests)"
-                    : "delegation — the fork was this step's engine; its answer became the step's finding"}
-                </Typography>
-                {forkReviews.map((fork) => (
-                  <Box key={fork.stateId} sx={{ mb: 0.75 }}>
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ display: "block" }}
-                    >
-                      fork · {fork.status}
-                      {fork.startedAt ? ` · ${fork.startedAt.slice(11, 19)}` : ""}{" "}
-                      — {fork.title}
-                    </Typography>
-                    {fork.payload !== null && fork.payload !== undefined ? (
-                      <ContextBlock label="fork answer" payload={fork.payload} scroll />
-                    ) : (
-                      <Typography variant="caption" color="text.disabled">
-                        no persisted result context for this fork
-                      </Typography>
-                    )}
-                  </Box>
-                ))}
-              </Box>
-            )}
-          </Box>
-        )}
+           the kind supervisor-review document) ---- */}
+      <ContextsPanel
+        effectiveNodeId={effectiveNodeId}
+        defaultSelection={selectedNodeId === null}
+        nodeLane={nodeLane}
+        nodeLlmContexts={nodeLlmContexts}
+        nodeUsage={nodeUsage}
+        usageByContext={usageByContext}
+        planContext={planContext}
+        resultContext={resultContext}
+        supervisorReview={supervisorReview}
+        spawnReviews={spawnReviews}
+        spawnState={spawnState}
+        spawnCtx={spawnCtx}
+        spawnInputPayload={spawnInputPayload}
+        spawnAnswerPayload={spawnAnswerPayload}
+      />
       {/* ---- the clicked node's tasks — the plan node's planning task
            (the running planning node every run begins with), the plan
            steps a step node's hop executed in plan order (not canvas

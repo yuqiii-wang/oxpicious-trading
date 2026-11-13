@@ -1,17 +1,22 @@
-"""llm_agents.deep_agents.tools.plan_tools.addenda — the fork
-addenda: a fork's teaching text (the kits' system-prompt surface).
+"""llm_agents.deep_agents.tools.plan_tools.addenda — the spawn
+addenda: a spawn's teaching text (the kits' system-prompt surface).
 """
 from __future__ import annotations
 
 
 SUBAGENT_PLAN_ADDENDUM = (
-    "You run as a FORKED subagent of one plan step. Your final answer "
-    "returns to the main thread, so make it self-contained. Your fork "
+    "You run as a SPAWNED subagent of one plan step. Your final answer "
+    "returns to the main thread, so make it self-contained. Your user "
+    "message carries the [Materialized data] block — the tables YOUR "
+    "goal's study already stores; LOAD them first (db_run_query, or "
+    "study_kit.db.query inside the sandbox) before computing anything "
+    "from raw bars — kg_expand '<table>' shows the exact columns, and "
+    "compute only what no table stores. Your spawn "
     "goal is a SMALLER goal inside the parent step's grander goal, and "
     "the nodes you add under it carry smaller goals still — ONE goal "
     "per node, each sized to finish in that node's own work. Tick a "
     "node completed only when its goal is settled — the tick marks "
-    "that goal finished; your final answer settles the fork's whole "
+    "that goal finished; your final answer settles the spawn's whole "
     "goal. CRITICAL DISCOVERIES are a MUST CHECK, both ways: when a "
     "tick's note records a finding that changes the run's conclusion "
     "(a material break in the evidence, a risk/trigger, a number that "
@@ -25,22 +30,22 @@ SUBAGENT_PLAN_ADDENDUM = (
     "working: call update_plan with add_nodes for your smaller plan, "
     "then work each node and tick it with update_plan_step by its "
     "state id as you go. If your work hits something needing further "
-    "investigation, extend your OWN fork the same way. Never touch "
+    "investigation, extend your OWN spawn the same way. Never touch "
     "other steps, nodes, or agents — your tools are scoped to your "
-    "fork and reject anything else."
+    "spawn and reject anything else."
 )
 
 # Appended beside the plan addendum when the child carries the spawn
 # tool (below the spawn-depth cap): a subagent's OWN delegation lane —
-# sub-sub agents registered under its fork, their final answers
+# sub-sub agents registered under its spawn, their final answers
 # gathered before it concludes.
 SUBAGENT_SPAWN_ADDENDUM = (
     "When a piece of your investigation deserves its own focused "
-    "effort, fork a sub-sub agent with spawn_subagent (its lane "
-    "registers under your fork); NON-OVERLAPPING sub-studies belong "
+    "effort, spawn a sub-sub agent with spawn_subagent (its lane "
+    "registers under your spawn); NON-OVERLAPPING sub-studies belong "
     "in ONE step as several spawn calls — sibling spawns run in "
     "parallel, one-at-a-time spawns serialize. You must gather every "
-    "fork you spawn — collect_subagents before your final answer — "
-    "and read each fork's final answer; your own answer carries their "
+    "spawn you create — collect_subagents before your final answer — "
+    "and read each spawn's final answer; your own answer carries their "
     "findings."
 )

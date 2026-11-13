@@ -1,0 +1,37 @@
+{
+  "host": "127.0.0.1",
+  "port": 8767,
+  "warmup_on_start": true,
+  "idle_offload_s": 3600.0,
+  "auth_token": null,
+  "models": [
+    {
+      "model_id": "dummy-1",
+      "kind": "dummy",
+      "path": null,
+      "enabled": true,
+      "warmup": false
+    },
+    {
+      "model_id": "word-segmenter-zh",
+      "kind": "tokenization",
+      "path": "local_models/iic/nlp_structbert_word-segmentation_chinese-base",
+      "enabled": true,
+      "warmup": true,
+      "device": "cuda",
+      "dtype": "bfloat16",
+      "aggressive": false,
+      "batch_size": 16
+    },
+    {
+      "model_id": "onejev-1.6-4b",
+      "kind": "jev",
+      "path": "local_models/OmniJev/OneJev1.6-4B",
+      "enabled": true,
+      "warmup": true,
+      "device": "cuda",
+      "dtype": "bfloat16",
+      "max_new_tokens": 2048
+    }
+  ]
+}

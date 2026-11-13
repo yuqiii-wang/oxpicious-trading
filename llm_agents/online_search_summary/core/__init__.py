@@ -11,9 +11,12 @@ is providers/storage/cli -> core, never back.
     (RECENCY_FILTERS / CONTENT_SIZES) and SHANGHAI_TZ.
   * ``citations`` — the refer/citation/date helpers (normalize_refer,
     parse_publish_date, extract_cited_refs, format_references).
+  * ``date_scan`` — the regex date-like-object scanner (DateScanner /
+    DateScan): the whole-text freshness signal behind the compose seam's
+    stale-source double check.
   * ``prompts``   — the summary output contract and its prompt builders
     (SUMMARY_FORMAT_RULES, summary_system_prompt, native_search_prompt,
-    lang_label).
+    stale_refs_check_block, lang_label).
 """
 from __future__ import annotations
 
@@ -22,13 +25,16 @@ from llm_agents.online_search_summary.core.citations import (
     REF_TAG_RE, extract_cited_refs, format_references, normalize_refer,
     parse_publish_date,
 )
+from llm_agents.online_search_summary.core.date_scan import (
+    DateScan, DateScanner,
+)
 from llm_agents.online_search_summary.core.models import (
     CONTENT_SIZES, RECENCY_FILTERS, SHANGHAI_TZ, SearchHit, SearchIntent,
     SearchOptions, SearchResponse, SearchSummary,
 )
 from llm_agents.online_search_summary.core.prompts import (
     LANG_LABELS, SUMMARY_FORMAT_RULES, lang_label, native_search_prompt,
-    summary_system_prompt,
+    stale_refs_check_block, summary_system_prompt,
 )
 
 __all__ = [
@@ -37,6 +43,8 @@ __all__ = [
     "SearchSummary", "RECENCY_FILTERS", "CONTENT_SIZES", "SHANGHAI_TZ",
     "REF_TAG_RE", "normalize_refer", "parse_publish_date",
     "extract_cited_refs", "format_references",
+    "DateScan", "DateScanner",
     "LANG_LABELS", "SUMMARY_FORMAT_RULES", "lang_label",
     "native_search_prompt", "summary_system_prompt",
+    "stale_refs_check_block",
 ]

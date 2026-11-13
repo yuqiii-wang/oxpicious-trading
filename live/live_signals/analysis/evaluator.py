@@ -233,7 +233,7 @@ class AnalysisEvaluator:
         # The code's current values — fetched ONCE, shared by every
         # cell (only the sources the active types actually consume are
         # queried), plus the mov_rsi cells' adaptive percentile bars
-        # (the trailing-2550d quantiles, one fetch keyed by the cells'
+        # (the trailing-2520d quantiles, one fetch keyed by the cells'
         # (window, tail_pct) needs). as_of bounds every source to its
         # latest row at-or-before D (the replay never peeks at later
         # data).

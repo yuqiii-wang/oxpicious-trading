@@ -620,7 +620,7 @@ export interface TrendSpansResponse {
 /** The code's TREND spans — contiguous same-trend runs over
  *  analysis.trend_days (the rule tier's per-(code, date)
  *  classification: rise/fall the RSI re-entry episodes, top/bottom the
- *  MA255-gap extremes, unknown the unclassified bucket; default window
+ *  MA252-gap extremes, unknown the unclassified bucket; default window
  *  the last 3y, API cap 10y). The shared CodeTrendChart's Trend toggle
  *  and the MaSpread Trend section fetch these (the regime spans
  *  precedent). */

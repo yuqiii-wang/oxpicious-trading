@@ -17,11 +17,9 @@ loses completed work; ``--dry-run`` just lists the work queue.
 """
 from __future__ import annotations
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-
+# resource pre-check runs in main() (NOT at import time): the package
+# __init__ imports cli, so an import-time pre_check would gate every
+# consumer of the package (the builds.text side task included) on GPU RAM.
 from _common.build_commons import (  # noqa: E402
     get_db_or_exit, setup_utf8_stdout,
 )
@@ -103,7 +101,36 @@ async def _run(args) -> None:
             logger.info("%d article(s) would be digested", len(articles))
             return
 
-        provider = get_provider(args.provider)()
+        if args.engine == "jev":
+            # Jev path: the local decision model scores the sentiment;
+            # --provider/--model do not apply (the model is fixed).
+            from llm_agents.news_digestions.jev_digest import (
+                JevDigestionConfig, JevDigestionEngine,
+            )
+
+            engine = JevDigestionEngine(JevDigestionConfig(
+                max_content_chars=max(args.max_content_chars, 200)))
+            logger.info("    digesting with jev/%s (concurrency=%d) …",
+                        engine.config.model, args.concurrency)
+        else:
+            engine = None
+            provider = get_provider(args.provider)()
+            model = args.model or getattr(provider, "DEFAULT_MODEL", None)
+            if not model:
+                logger.error("    [FATAL] no chat model — pass --model")
+                sys.exit(2)
+            logger.info("    digesting with %s/%s (concurrency=%d) …",
+                        provider.name, model, args.concurrency)
+
+        sem = asyncio.Semaphore(max(1, args.concurrency))
+
+        async def run_one(article):
+            async with sem:
+                if engine is not None:
+                    return await engine.digest_article(article)
+                return await digest_article(
+                    provider, article, model=model, lang=args.lang,
+                    max_content_chars=args.max_content_chars)
         model = args.model or getattr(provider, "DEFAULT_MODEL", None)
         if not model:
             logger.error("    [FATAL] no chat model — pass --model")
@@ -112,12 +139,6 @@ async def _run(args) -> None:
                     provider.name, model, args.concurrency)
 
         sem = asyncio.Semaphore(max(1, args.concurrency))
-
-        async def run_one(article):
-            async with sem:
-                return await digest_article(
-                    provider, article, model=model, lang=args.lang,
-                    max_content_chars=args.max_content_chars)
 
         ok = failed = 0
         for fut in asyncio.as_completed([run_one(a) for a in articles]):
@@ -163,6 +184,11 @@ async def _list(args) -> None:
 
 
 async def main() -> None:
+    # resource pre-check — exit early when sys/GPU memory is insufficient
+    from _common.pre_check import pre_check
+
+    pre_check()
+
     ap = argparse.ArgumentParser(
         prog="python -m llm_agents.news_digestions",
         description="Per-article LLM digestion agent: summarize every "
@@ -192,9 +218,15 @@ async def main() -> None:
     p_run.add_argument("--include-empty", action="store_true",
                        help="Also digest NULL/empty-content rows "
                             "(title-only placeholders; default skipped).")
+    p_run.add_argument("--engine", default="chat", choices=("chat", "jev"),
+                       help="Digestion engine: chat = provider chat "
+                            "completion (summary + sentiment), jev = the "
+                            "local onejev-1.6-4b decision model "
+                            "(calibrated sentiment only, --provider/--model "
+                            "ignored; default chat).")
     p_run.add_argument("--provider", default="zhipu",
                        choices=sorted(PROVIDERS),
-                       help="Chat provider (default zhipu).")
+                       help="Chat provider (default zhipu; chat engine only).")
     p_run.add_argument("--model", type=str, default=None,
                        help="Chat model (default: provider default).")
     p_run.add_argument("--concurrency", type=int, default=4,

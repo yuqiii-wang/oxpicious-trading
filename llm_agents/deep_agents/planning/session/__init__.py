@@ -25,14 +25,14 @@ checkpoint None).
 Package layout (the former single session.py, split 2026-11-07):
 standing.py (AGENT_STANDING_SYSTEM + standing_system — the shared
 opening prompt) / pass_down.py (PromptBudget, _catalog_mirror,
-item_labels, ForkPassDown, plan_payload_steps — what the session hands
-down to hops, forks and the payload) / session.py (PlanSession +
+item_labels, SpawnPassDown, plan_payload_steps — what the session hands
+down to hops, spawns and the payload) / session.py (PlanSession +
 PlanSessionResult). This root re-exports the whole public surface —
 including the private ``_catalog_mirror`` the live probe imports — so
 every importer keeps importing from ``planning.session`` unchanged.
 """
 from llm_agents.deep_agents.planning.session.pass_down import (
-    ForkPassDown, PromptBudget, _catalog_mirror, item_labels,
+    SpawnPassDown, PromptBudget, _catalog_mirror, item_labels,
     plan_payload_steps,
 )
 from llm_agents.deep_agents.planning.session.session import (
@@ -45,5 +45,5 @@ from llm_agents.deep_agents.planning.session.standing import (
 __all__ = [
     "PlanSession", "PlanSessionResult",
     "standing_system", "AGENT_STANDING_SYSTEM",
-    "ForkPassDown", "PromptBudget", "item_labels", "plan_payload_steps",
+    "SpawnPassDown", "PromptBudget", "item_labels", "plan_payload_steps",
 ]

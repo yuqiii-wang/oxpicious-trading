@@ -1,6 +1,6 @@
 -- The ma_cross family's joined long-format input frame, keyed on the
 -- family's value source (analysis.mov_ave_spreads_detail — the table's
--- own price_vs_ma{20,60,120,255} gaps + price_slope) with the price LEFT
+-- own price_vs_ma{20,60,120, 252} gaps + price_slope) with the price LEFT
 -- JOINed from the base OHLCV table + the day-0 ohlcv-boost axis columns
 -- + the turnover-climax amt ratio.
 -- args:
@@ -13,8 +13,9 @@
 --   pattern_table: fragment — the ohlc_gaps pattern axis store
 --   px_vol_table: fragment — the (vol_state, px_speed) axis store
 --   amt_select: fragment — the amt_ratio select expression
---   amt_joins: fragment — the amt_ratio join clauses (the detail-table
---     alias d already carries trading_amt_ma255 — no extra ma join)
+--   amt_joins: fragment — the amt_ratio join clauses (the 252d turnover
+--     MA rides the trading-amount table's own t join — the 2026-11-08
+--     detail split moved the amt columns off the gap table)
         SELECT d.code,
                extract(epoch from d.date)::float8 AS date,
                {{price_expr}}::float8 AS price,

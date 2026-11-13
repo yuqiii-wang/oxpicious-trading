@@ -54,9 +54,11 @@ AMOUNT_SOURCE = {
     "etf": "stats.etf_liquidity_margin",
     "stock": "stats.stock_liquidity_margin",
 }
-# the 255d turnover-MA denominator (analysis.mov_ave_spreads_detail.
-# trading_amt_ma255 — the climax ratio's normal-turnover basis)
-AMT_MA_TABLE = "analysis.mov_ave_spreads_detail"
+# the 252d turnover-MA denominator (analysis.mov_ave_trading_amt.
+# trading_amt_ma252 — the climax ratio's normal-turnover basis; the amt
+# columns' single authoritative home since the 2026-11-08 detail split
+# dropped the mirror off analysis.mov_ave_spreads_detail)
+AMT_MA_TABLE = "analysis.mov_ave_trading_amt"
 
 # True first-data-date source per sec_type (the base OHLCV table — the
 # same rows the input fetch admits via b.close IS NOT NULL).
@@ -116,25 +118,47 @@ async def resolve_options_universe(conn, label: str,
     return universe
 
 
+async def resolve_sec_type_universe(conn, sec_type: str) -> list[str]:
+    """The sec_type's FULL emission universe (--codes 'all', the daily
+    default since 2026-11-07, user-directed "only a small num of codes
+    are run daily, now add for all indexes"): distinct codes with at
+    least one clean-close row in the sec_type's base OHLCV table — the
+    same admission filter the family fetches apply, so a code without
+    closes is invisible to the families anyway. Sorted; empty for an
+    unknown sec_type."""
+    if sec_type not in _FIRST_DATE_SOURCE:
+        return []
+    # analysis/analysis_signals/fetch/inputs/_shared/sec_type_universe
+    view = render_sql_view(
+        "analysis/analysis_signals/fetch/inputs/_shared/"
+        "sec_type_universe",
+        base_table=frag(_FIRST_DATE_SOURCE[sec_type]),
+    )
+    rows = await conn.fetch(view.sql, *view.params)
+    codes = sorted(r["code"] for r in rows)
+    logger.info(f"      universe: {len(codes):,} {sec_type} codes with "
+                f"close data (--codes 'all')")
+    return codes
+
+
 def amt_ratio_fragments(sec_type: str, base_alias: str = "b",
                         ma_alias: str | None = None) -> tuple[str, str]:
     """(select fragment, join fragment) for the turnover-climax axis:
-    the day's raw trading_amount over its own 255d turnover MA. NULL-
+    the day's raw trading_amount over its own 252d turnover MA. NULL-
     safe both legs (a missing amount or MA row → NULL → AXIS_MISSING
     once finalize_input_frame buckets it). ``ma_alias`` names an
-    already-joined detail-table alias carrying trading_amt_ma255 (the
-    ma_cross fetch keys on that table); the default joins the detail
-    table as ``t`` itself."""
+    already-joined alias of AMT_MA_TABLE carrying trading_amt_ma252;
+    the default joins the trading-amount table as ``t`` itself."""
     st_code = SEC_TYPE_CODE[sec_type]
     if ma_alias is None:
         ma_join = (f"LEFT JOIN {AMT_MA_TABLE} t "
                    f"ON t.sec_type = {st_code} "
                    f"AND t.code = {base_alias}.code "
                    f"AND t.date = {base_alias}.date")
-        denom = "NULLIF(t.trading_amt_ma255, 0)"
+        denom = "NULLIF(t.trading_amt_ma252, 0)"
     else:
         ma_join = ""
-        denom = f"NULLIF({ma_alias}.trading_amt_ma255, 0)"
+        denom = f"NULLIF({ma_alias}.trading_amt_ma252, 0)"
     joins = (
         f"LEFT JOIN {AMOUNT_SOURCE[sec_type]} b2 "
         f"ON b2.code = {base_alias}.code AND b2.date = {base_alias}.date"

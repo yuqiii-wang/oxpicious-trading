@@ -7,8 +7,9 @@
 --
 -- Params (asyncpg $n, in order):
 --   $1 state_id           BIGINT — the child row settling
---   $2 status             TEXT — 'completed' | 'failed' (validated
---                         host-side)
+--   $2 status             TEXT — 'completed' | 'failed' | 'skipped'
+--                         (validated host-side; skipped = the drift
+--                         fork's abandoned pre-fork tail stub)
 --   $3 result_context_id  BIGINT — the minted subagent-result context
 --   $4 error              TEXT | NULL — the failure reason
 UPDATE llm.deep_agent_states SET status = $2, finished_at = now(),

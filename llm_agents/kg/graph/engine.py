@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
+from typing import Collection, Dict, FrozenSet, Iterable, List, Optional, \
+    Sequence, Tuple
 
 from llm_agents.kg.graph.values import (
     KgEdge, KgEntity, ScoredNode, SeedHit, SearchResult, WalkHit,
@@ -17,8 +18,8 @@ from llm_agents.kg.graph.vocabulary import (
     _CJK_RE, _EDGE_OUTWARD_CAP, _EDGE_RENDER_CAP, _HUB_DEGREE,
     _HUB_FACTOR, _SEED_FLOOR, _SEED_MIN, _UNIGRAM_FACTOR, _WALK_FLOOR,
     _WALK_MIN, ACT_BLEND, FACE_DESC, FACE_NAME, FACE_TAG, FACE_TYPE,
-    HOP_DECAY, SUBRELATION_BOOST, WALK_BEAM, edge_factor, extract_tokens,
-    normalize,
+    HOP_DECAY, READS_FROM, SUBRELATION_BOOST, WALK_BEAM, edge_factor,
+    extract_tokens, normalize, seed_type_damp,
 )
 
 from llm_agents.kg.graph.data_definitions import (
@@ -97,6 +98,22 @@ class KnowledgeGraph:
         hub signal the ranking damper and the expand renderer read."""
         return len(self._adjacency.get(entity_id, ()))
 
+    def related_views(self, entity_id: int) -> List[KgEntity]:
+        """The sql_views template entities whose ``reads_from`` edge
+        lands on this entity (it is the edge's OBJECT — the relation
+        being read): deduped, name-sorted. The service's related-sql-
+        views block reads this — a hub table's reading templates
+        (100+ for the classification tables) drown in walk fan-out, so
+        the block answers deterministically instead."""
+        views: Dict[int, KgEntity] = {}
+        for edge, other_id, is_subject in self._adjacency.get(entity_id, ()):
+            if edge.relation != READS_FROM or is_subject:
+                continue
+            other = self._entities.get(other_id)
+            if other is not None and other.entity_type == "view":
+                views[other.entity_id] = other
+        return sorted(views.values(), key=lambda entity: entity.name)
+
     @property
     def n_entities(self) -> int:
         return len(self._entities)
@@ -152,6 +169,63 @@ class KnowledgeGraph:
                 or normalize(e.bare_name).startswith(wanted)]
         return hits[:limit]
 
+    # -- the serving-scope derivation -------------------------------------
+
+    def scoped(self, allowed: Collection[str],
+               allowed_schemas: Optional[Collection[str]] = None,
+               ) -> "KnowledgeGraph":
+        """The FORCED-TABLE-SCOPE subgraph: the entities *allowed* names
+        (schema-qualified ``analysis.mov_ave_rsi`` or bare
+        ``mov_ave_rsi``, case-insensitive) and — when *allowed_schemas*
+        rides — every schema-qualified entity UNDER one of those
+        schemas (``stats`` keeps ``stats.*`` tables and DB views;
+        slash-path sql_views templates have no schema dot and ride only
+        via the attachment pass below), plus — pass two — every
+        NON-table entity riding an edge whose other members all kept
+        (the ns0 ``view`` templates/DB views reading a kept table, the
+        ns2 label domains typing one), with the edges pruned to the
+        survivors (no ghost endpoints). Entity/edge ids are preserved,
+        so a scoped graph's chain logs and replays resolve against the
+        same rows; the ``entity_digest`` is the subset's own, so scoped
+        chains never cross between scopes or into the unscoped graph's.
+        A namespace with no table entities (ns1, the prompt catalog)
+        yields an empty graph by construction — the service exempts ns1
+        from the table scope instead of calling this there. Empty
+        *allowed*/*allowed_schemas* returns the graph unchanged (no
+        limitation)."""
+        tokens = {str(name).strip().casefold() for name in allowed
+                  if str(name).strip()}
+        schema_tokens = {str(name).strip().casefold() for name in
+                         (allowed_schemas or ()) if str(name).strip()}
+        if not tokens and not schema_tokens:
+            return self
+        kept: Dict[int, KgEntity] = {}
+        for entity in self._entities.values():
+            folded = entity.name.casefold()
+            if folded in tokens or entity.bare_name.casefold() in tokens:
+                kept[entity.entity_id] = entity
+                continue
+            if schema_tokens:
+                dot = folded.rfind(".")
+                if dot > 0 and folded[:dot] in schema_tokens:
+                    kept[entity.entity_id] = entity
+        # Pass two: a non-table entity rides when ONE edge names it and
+        # every other member of that edge is kept — a view template
+        # reading a kept table, a label domain typing one. A still-
+        # unknown TABLE member never rides (the scope's whole point).
+        for edge in self._edges.values():
+            unknown = [member for member in edge.member_ids
+                       if member not in kept]
+            if len(unknown) != 1:
+                continue
+            rider = self._entities.get(unknown[0])
+            if rider is not None and rider.entity_type != "table":
+                kept[rider.entity_id] = rider
+        return KnowledgeGraph(
+            entities=kept.values(),
+            edges=(edge for edge in self._edges.values()
+                   if all(member in kept for member in edge.member_ids)))
+
     # -- rung 1: seed recognition ---------------------------------------
 
     def seed_scores(self, tokens: Sequence[str]) -> Dict[int, SeedHit]:
@@ -182,8 +256,11 @@ class KnowledgeGraph:
                     "description" if face_weight >= FACE_DESC else "type")
         hits: Dict[int, SeedHit] = {}
         for entity_id, score in scores.items():
+            entity = self._entities.get(entity_id)
+            damp = (seed_type_damp(entity.entity_type, entity.name)
+                    if entity else 1.0)
             terms = tuple(sorted(evidence[entity_id].items()))
-            hits[entity_id] = SeedHit(score=score, terms=terms)
+            hits[entity_id] = SeedHit(score=score * damp, terms=terms)
         return hits
 
     # -- rung 2: spreading activation -----------------------------------

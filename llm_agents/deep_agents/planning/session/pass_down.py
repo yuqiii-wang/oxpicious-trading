@@ -1,10 +1,10 @@
 """llm_agents.deep_agents.planning.session.pass_down — the plan
 session's PASS-DOWN pieces: the ladder's outcome carrier, the catalog
-mirror, the fork pass-down, and the plan payload's steps array.
+mirror, the spawn pass-down, and the plan payload's steps array.
 
 These are the pure shapes the session hands DOWNWARD — to every step
 hop's conversation (the loaded texts + the not-loaded catalog), to
-every forked child (the run context + goal + the same prompt faces),
+every spawned child (the run context + goal + the same prompt faces),
 and to the plan payload (the steps array both planning lanes persist).
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from llm_agents.deep_agents.planning.store import (
 
 class PromptBudget(BaseModel):
     """The ladder's outcome: the LOADED set's rendered texts (the
-    pass-down every step hop's conversation and every forked child
+    pass-down every step hop's conversation and every spawned child
     receives) and the NOT-loaded rows' catalog lines (prompt_key ->
     one preview line — the per-step fetch menu)."""
 
@@ -60,15 +60,15 @@ def item_labels(data: Optional[Dict[str, Any]]) -> List[str]:
     return labels
 
 
-class ForkPassDown(BaseModel):
-    """The PARENT'S PASS-DOWN for every forked subagent (2026-11-06 —
-    the former ``fork_biz_context`` dict): the run's structured context
+class SpawnPassDown(BaseModel):
+    """The PARENT'S PASS-DOWN for every spawned subagent (2026-11-06 —
+    the former ``spawn_biz_context`` dict): the run's structured context
     (the model's extra fields) plus the run goal, the rendered texts of
     the LOADED prompts, and — when the ladder left rows unloaded —
     their catalog lines (prompt_key -> preview; the child fetches one
-    by key when its fork works that skill's domain) — what the fork's
+    by key when its spawn works that skill's domain) — what the spawn's
     work runs under, stamped on ``SubagentRequest.data`` and rendered
-    into the child's first user message beside its fork goal."""
+    into the child's first user message beside its spawn goal."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -83,7 +83,7 @@ class ForkPassDown(BaseModel):
         data: Optional[Dict[str, Any]],
         prompt_texts: Dict[str, str],
         prompt_catalog: Optional[Dict[str, str]] = None,
-    ) -> "ForkPassDown":
+    ) -> "SpawnPassDown":
         """The pass-down from the parent's inputs — the structured
         context as the model's extra fields, the three pass-down keys
         set only when non-empty (absent on the wire, as before)."""
@@ -97,14 +97,14 @@ class ForkPassDown(BaseModel):
     def to_context(self) -> Dict[str, Any]:
         """The context dict the child's message builder reads — the
         pass-down keys absent when empty (the exact shape
-        ``fork_biz_context`` produced)."""
+        ``spawn_biz_context`` produced)."""
         return self.model_dump(exclude_none=True)
 
 
 def plan_payload_steps(
     steps: List[PlannedStep],
 ) -> List[Dict[str, Any]]:
-    """The plan payload's steps array — node/title/notes plus the fork
+    """The plan payload's steps array — node/title/notes plus the spawn
     goal verbatim (the audit trail of what the planner delegated) and
     the parallel mark (the wave assertion rides the payload, so a
     Thread-Save templating of it keeps the wave — the one shape both

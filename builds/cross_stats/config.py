@@ -40,7 +40,7 @@ TOP_N_NON_BROAD = 3
 
 # Rolling-correlation windows (trading days); materialized ONLY on the
 # stride-20 grid. min_periods = max(2N/3, 3) allows up to 1/3 NaN.
-CORR_WINDOWS = (20, 60, 255)
+CORR_WINDOWS = (20, 60, 252)
 COMPUTE_CORR: bool = False  # corr OFF by default (dedicated --corr build)
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ _DESCRIPTION = (
     "(code, benchmark_code, date) — code_sec_shared_weight and "
     "benchmark_sec_shared_weight from the LATEST stats.sec_composition "
     "snapshot overlap (stocks held by BOTH subject and benchmark; "
-    "zero-overlap pairs explicit (0,0)); corr_20d/60d/255d Pearson close "
+    "zero-overlap pairs explicit (0,0)); corr_20d/60d/252d Pearson close "
     "correlations on stride-20 grid dates (--corr build). ETF-market "
     "liquidity is NOT stored — the amounts are verbatim "
     "stats.index_exts.total_etf_trading_amount copies and the bench/code "

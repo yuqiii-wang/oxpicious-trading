@@ -10,7 +10,7 @@ future re-link (the trust-weighted measurement beside it,
 measurement.py, stays ACTIVE through the OHLCV_BOOST class flag).
 
 The gate AND-gates a family's plain candidate masks by the day's
-TURNOVER-CLIMAX confirmation — the amount / 255d-MA ratio bucketed
+TURNOVER-CLIMAX confirmation — the amount / 252d-MA ratio bucketed
 into the int8 climax code (fetch/inputs._shared.finalize_input_frame:
 0 normal / 1 >= AMT_CLIMAX_HEAVY heavy / 2 >= AMT_CLIMAX_EXTREME
 climax; AXIS_MISSING -1 where the stores have no row). The
@@ -38,7 +38,7 @@ __all__ = ["OhlcvBoostGate"]
 class OhlcvBoostGate(VariantGate):
     """The OHLCV-boost variant axis (is_ohlcv_boosted): the plain
     candidates' masks AND-gated by the day's turnover-climax grade at
-    least ``min_code`` (default HEAVY — the ratio >= 1.5x the 255d
+    least ``min_code`` (default HEAVY — the ratio >= 1.5x the 252d
     turnover average; 2 = the 2.5x climax grade)."""
 
     bar_key: ClassVar[str] = "ohlcv_gate"

@@ -25,6 +25,16 @@ function avatarColor(seed: string): string {
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
 }
 
+/** Sentiment chip color/label from the digestion's [-5, 5] score — green
+ *  bullish, red bearish, grey near-neutral; undefined hides the chip
+ *  (article not digested yet). */
+function sentimentChip(level: number | null): { label: string; color: "success" | "error" | "default" } | null {
+  if (level == null) return null;
+  if (level > 0.5) return { label: `情绪 +${level.toFixed(1)}`, color: "success" };
+  if (level < -0.5) return { label: `情绪 ${level.toFixed(1)}`, color: "error" };
+  return { label: `情绪 ${level.toFixed(1)}`, color: "default" };
+}
+
 export default function NewsPostCard({ item }: { item: NewsItem }) {
   // Comments state — a separate lazy fetch (below the expand toggle).
   const [showComments, setShowComments] = useState(false);
@@ -34,6 +44,7 @@ export default function NewsPostCard({ item }: { item: NewsItem }) {
   const [commentsError, setCommentsError] = useState<string | null>(null);
 
   const name = item.author ?? item.source ?? "新闻";
+  const sentiment = sentimentChip(item.sentiment_level ?? null);
 
   const loadComments = async () => {
     if (commentsLoading) return;
@@ -96,6 +107,7 @@ export default function NewsPostCard({ item }: { item: NewsItem }) {
           {!item.industry_id && item.sector_id && <PostChip label={item.sector_id} color="secondary" />}
           {item.industry_id && <PostChip label={item.industry_id} color="secondary" />}
           {item.is_big_fluctuation && <PostChip label="On Big Fluctuations" color="warning" />}
+          {sentiment && <PostChip label={sentiment.label} color={sentiment.color} />}
         </>
       }
       headline={item.title}

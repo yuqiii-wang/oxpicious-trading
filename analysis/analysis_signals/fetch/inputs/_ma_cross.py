@@ -3,7 +3,7 @@ fetch.inputs._ma_cross) — the EXISTING mov_ave gap table (analysis.
 mov_ave_spreads_detail; NO new analysis table, NO in-engine SMA — the
 table's price_vs_ma{W} columns ARE the values).
 
-(The former EMA-twin LEFT JOIN — the egap{20,60,120,255} columns off
+(The former EMA-twin LEFT JOIN — the egap{20, 60, 120, 252} columns off
 mov_ave_spreads_detail_ema — retired 2026-10-26: no EMA rule ever
 graduated (the 2026-10-16 re-measure, the signals-biz-logic record)
 and the EMA detail table's TYPICAL-EMA rebase dropped the
@@ -30,7 +30,7 @@ from ._shared import (
 )
 
 MA_GAP_TABLE = "analysis.mov_ave_spreads_detail"
-_MA_GAP_WINDOWS = (20, 60, 120, 255)
+_MA_GAP_WINDOWS = (20, 60, 120, 252)
 
 _MA_FETCH_COLUMNS = ["code", "date", "price", "price_slope"] + [
     f"gap{w}" for w in _MA_GAP_WINDOWS
@@ -50,7 +50,7 @@ async def fetch_ma_inputs(
 ) -> pd.DataFrame:
     """The ma_cross family's joined long-format input frame: one row
     per (code, date) of the mov_ave_spreads_detail population — the
-    table's own price_vs_ma{20,60,120,255} gaps (::float8, NULL during
+    table's own price_vs_ma{20, 60, 120, 252} gaps (::float8, NULL during
     the parent pipeline's warmup) + its price_slope (the deep kind's
     up-day leg) — with the mov_ave_spread PRICE convention (ETF
     adjusted close) LEFT JOINed from the base OHLCV table for the
@@ -72,9 +72,10 @@ async def fetch_ma_inputs(
     gap_cols = ",\n               ".join(
         f"d.price_vs_ma{w}::float8 AS gap{w}" for w in _MA_GAP_WINDOWS
     )
-    amt_select, amt_joins = amt_ratio_fragments(
-        sec_type, base_alias="d", ma_alias="d",
-    )
+    # the amt_ratio's 252d turnover-MA denominator rides the trading-
+    # amount table's own t-join (the 2026-11-08 detail split moved the
+    # amt columns off the gap table)
+    amt_select, amt_joins = amt_ratio_fragments(sec_type, base_alias="d")
     # analysis/analysis_signals/fetch/inputs/_ma_cross/ma_inputs
     view = render_sql_view(
         "analysis/analysis_signals/fetch/inputs/_ma_cross/ma_inputs",

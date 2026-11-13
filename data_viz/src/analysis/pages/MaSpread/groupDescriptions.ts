@@ -15,6 +15,7 @@ export type MaSpreadGroupId =
   | "tradingAmt"
   | "rsiTrends"
   | "momentum"
+  | "alignment"
   | "roofFloorWindow"
   | "highLowStreaks"
   | "pxVolStates"

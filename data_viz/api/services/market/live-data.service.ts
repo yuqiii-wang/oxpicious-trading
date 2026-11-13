@@ -1,0 +1,398 @@
+/**
+ * Live Data service — queries stats.{index,stock}_intraday_5min tables joined
+ * with stats.sec_classification to provide per-(date, code) intraday bars
+ * filtered by L1 sector + L2 industry + exchange.
+ *
+ * Two security types are supported via the `type` query param:
+ *   • 'index' → stats.index_intraday_5min  (no volume column)
+ *   • 'stock' → stats.stock_intraday_5min  (has volume column, in shares)
+ * ETF is currently unsupported (no stats.etf_intraday_5min table) — the
+ * frontend renders an empty placeholder until that table is added.
+ *
+ * The available-dates endpoint returns the union of dates present in the
+ * intraday table for the requested type (descending — most recent first).
+ */
+import { toDateParam, formatDate, toNum } from "../../lib/db.js";
+import { querySqlView, sqlFrag } from "../../lib/sql-views.js";
+import type { QueryResultRow } from "pg";
+import { matchesExchange, stripExchangeSuffix } from "../../lib/classify-etf.js";
+import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
+import { cachedRows } from "../infra/classification-cache.js";
+import type {
+  LiveDataIntradayBar,
+  LiveDataBundle,
+  LiveDataCombinedResponse,
+  LiveDataDatesResponse,
+  SectorNode,
+  IndustryNode,
+  StrategyNode,
+} from "../../../shared/types.js";
+
+// ----------------------------------------------------------------------------
+//  Row types
+// ----------------------------------------------------------------------------
+interface DbLiveMetaRow extends QueryResultRow {
+  code: string;
+  name: string;
+  sector_id: string;
+  sector_label: string;
+  industry_id: string;
+  industry_label: string;
+  industry_slug: string;
+  /** When TRUE, sector_id/industry_id hold INDUSTRY classification (industry-
+   *  primary row). When FALSE, they hold STRATEGY classification (strategy-
+   *  primary row). Used by the parallel strategy/theme selector. */
+  is_industry_not_strategy: boolean;
+  exchange: string;
+  /** Daily coverage from the precomputed sec_classification.n_days column
+   *  (build_classification.py). Used only for ordering — pagination order
+   *  in getLiveDataCombined follows it. NOT a live intraday-bar count. */
+  n_dates: number;
+  first_date: string;
+  last_date: string;
+}
+
+interface DbIntradayBarRow extends QueryResultRow {
+  time: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+  change: number | null;
+  change_pct: number | null;
+}
+
+// ----------------------------------------------------------------------------
+//  Type discriminator + table routing
+// ----------------------------------------------------------------------------
+export type LiveDataSecType = "index" | "stock";
+
+interface LiveDataTableConfig {
+  /** Schema-qualified intraday table name. */
+  table: string;
+  /** Whether the table has a `volume` column (only stocks do). */
+  hasVolume: boolean;
+}
+
+const TABLES: Record<LiveDataSecType, LiveDataTableConfig> = {
+  index: { table: "stats.index_intraday_5min", hasVolume: false },
+  stock: { table: "stats.stock_intraday_5min", hasVolume: true },
+};
+
+// ----------------------------------------------------------------------------
+//  Meta query — one row per ACTIVE code of the requested type that has at
+//  least one intraday bar, with the L1/L2 taxonomy from
+//  stats.sec_classification. The SELECT lives in the sql view
+//  data_viz/api/services/live-data/meta (the LATERAL-probe perf rationale
+//  and DISTINCT ON dedup rules are documented in its header).
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+//  Available dates — returns the union of dates with at least one intraday
+//  bar for the requested security type, descending (most recent first).
+// ----------------------------------------------------------------------------
+export async function listLiveDataDates(
+  secType: LiveDataSecType,
+): Promise<LiveDataDatesResponse> {
+  const cfg = TABLES[secType];
+  const rows = await querySqlView<{ date: string }>(
+    "data_viz/api/services/live-data/dates",
+    { intraday_table: sqlFrag(cfg.table) },
+  );
+  return {
+    type: secType,
+    dates: rows.map((r) => formatDate(r.date)),
+  };
+}
+
+// Cached meta rows — the per-code intraday probes in the meta view are cheap
+// (~0.1s) but their result only changes as new intraday data lands, so rows
+// are read once per 10-min TTL window and shared by listLiveDataThemes(),
+// listStrategyThemes() and getLiveDataCombined().
+async function getLiveMetaRows(secType: LiveDataSecType): Promise<DbLiveMetaRow[]> {
+  return cachedRows(`live-data:meta:${secType}`, () =>
+    querySqlView<DbLiveMetaRow>("data_viz/api/services/live-data/meta", {
+      sec_type: secType,
+      intraday_table: sqlFrag(TABLES[secType].table),
+    }),
+  );
+}
+
+// ----------------------------------------------------------------------------
+//  Themes tree — build the L1 sector → L2 industry → codes tree restricted
+//  to codes with intraday data (same shape as listIndexThemes).
+// ----------------------------------------------------------------------------
+export async function listLiveDataThemes(
+  secType: LiveDataSecType,
+  exchange?: string | null,
+): Promise<SectorNode[]> {
+  const rows = await getLiveMetaRows(secType);
+  const exFilter = (exchange ?? "").trim() || null;
+
+  const sectorMap = new Map<string, {
+    sector_label: string;
+    industries: Map<string, IndustryNode>;
+  }>();
+
+  for (const r of rows) {
+    // LEFT column: only industry-primary securities. Strategy-primary rows
+    // (is_industry_not_strategy=FALSE) carry strategy/theme in
+    // sector_id/industry_id and belong in the RIGHT column only.
+    if (!r.is_industry_not_strategy) continue;
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
+    const item = { code: r.code, name: r.name ?? "" };
+    if (!sectorMap.has(r.sector_id)) {
+      sectorMap.set(r.sector_id, {
+        sector_label: r.sector_label,
+        industries: new Map(),
+      });
+    }
+    const sector = sectorMap.get(r.sector_id)!;
+    if (!sector.industries.has(r.industry_id)) {
+      sector.industries.set(r.industry_id, {
+        industry_id: r.industry_id,
+        industry_label: r.industry_label,
+        industry_slug: r.industry_slug,
+        count: 0,
+        items: [],
+      });
+    }
+    const ind = sector.industries.get(r.industry_id)!;
+    ind.items.push(item);
+    ind.count++;
+  }
+
+  const sectors: SectorNode[] = [];
+  for (const [sector_id, sector] of sectorMap) {
+    const industries = Array.from(sector.industries.values()).sort((a, b) => {
+      if (a.industry_id === "OTHER") return 1;
+      if (b.industry_id === "OTHER") return -1;
+      return b.count - a.count;
+    });
+    sectors.push({
+      sector_id,
+      sector_label: sector.sector_label,
+      count: industries.reduce((sum, i) => sum + i.count, 0),
+      industries,
+    });
+  }
+  sectors.sort((a, b) => {
+    if (a.sector_id === "OTHER") return 1;
+    if (b.sector_id === "OTHER") return -1;
+    return b.count - a.count;
+  });
+  return sectors;
+}
+
+// ----------------------------------------------------------------------------
+//  Strategy themes — parallel L1 strategy → L2 theme → codes tree built from
+//  the same meta view (data_viz/api/services/live-data/meta) but using the
+//  strategy-primary rows
+//  (is_industry_not_strategy=FALSE).  sector_id/industry_id on those rows
+//  carry the strategy/theme classification.  Tree-building is delegated to
+//  the shared buildStrategyThemesFromRows helper to avoid duplicating the
+//  grouping/sorting logic across services.
+//
+//  Codes are stripped of any exchange suffix (no-op for bare index codes like
+//  "000300"; strips ".SZ"/".SS" from stock codes like "000001.SZ").
+// ----------------------------------------------------------------------------
+export async function listStrategyThemes(
+  secType: LiveDataSecType,
+  exchange?: string | null,
+): Promise<StrategyNode[]> {
+  const rows = await getLiveMetaRows(secType);
+  const exFilter = (exchange ?? "").trim() || null;
+
+  const mappedRows = rows
+    .filter((r) => !exFilter || matchesExchange(r.exchange, exFilter))
+    .map((r) => ({
+      code: stripExchangeSuffix(r.code),
+      name: r.name,
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      industry_id: r.industry_id,
+      industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
+    }));
+
+  return buildStrategyThemesFromRows(mappedRows);
+}
+
+// ----------------------------------------------------------------------------
+//  Combined intraday data — paginated list of (code) intraday bars for ONE
+//  selected date, filtered by L1 sector + L2 industry + exchange.
+//  Mirrors getIndicesCombined but reads the intraday_5min tables instead of
+//  the daily baseline view.
+// ----------------------------------------------------------------------------
+export interface LiveDataCombinedQuery {
+  sector?: string;
+  industry?: string;
+  /** Exact code (e.g. "000300" or "000001.SZ"). Bypasses sector/industry/
+   *  exchange/pagination — returns the matching code with bars for the date. */
+  code?: string;
+  exchange?: string;
+  /** Trading day (YYYY-MM-DD). When omitted, uses the latest available date. */
+  date?: string;
+  /** L1 strategy id (parallel to sector, e.g. "BROAD", "DIV") — when set,
+   *  only strategy-primary codes are returned. */
+  strategy?: string;
+  /** L2 theme slug (parallel to industry, e.g. "broad_csi300") — paired
+   *  with `strategy`. */
+  theme?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export async function getLiveDataCombined(
+  secType: LiveDataSecType,
+  q: LiveDataCombinedQuery,
+): Promise<LiveDataCombinedResponse> {
+  const cfg = TABLES[secType];
+  const sectorFilter = (q.sector ?? "").trim();
+  const industryFilter = (q.industry ?? "").trim();
+  const strategyFilter = (q.strategy ?? "").trim();
+  const themeFilter = (q.theme ?? "").trim();
+  const exchangeFilter = (q.exchange ?? "").trim() || null;
+  const codeFilter = (q.code ?? "").trim().toUpperCase();
+
+  // 1. Fetch all meta rows (codes with intraday data + classification, cached).
+  const metaRows = await getLiveMetaRows(secType);
+
+  // 2. Resolve the requested date — explicit param wins; otherwise use the
+  //    latest available date across ALL codes of this type (so the page
+  //    shows data by default even before the user picks a date).
+  let dateParam = toDateParam(q.date);
+  if (!dateParam) {
+    const dateRows = await querySqlView<{ date: string }>(
+      "data_viz/api/services/live-data/latest_date",
+      { intraday_table: sqlFrag(cfg.table) },
+    );
+    dateParam = dateRows.length > 0 ? dateRows[0].date : null;
+  }
+
+  // 3. Filter meta by sector/industry/strategy/theme + exchange (or by exact
+  //    code when set).
+  const meta = new Map<string, {
+    name: string;
+    sector_id: string;
+    sector_label: string;
+    industry_id: string;
+    industry_label: string;
+    industry_slug: string;
+    is_industry_not_strategy: boolean;
+  }>();
+  const wantedCodes: string[] = [];
+  for (const r of metaRows) {
+    meta.set(r.code, {
+      name: r.name ?? "",
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      industry_id: r.industry_id,
+      industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
+    });
+    if (codeFilter) {
+      // Match with or without exchange suffix (e.g. "000001.SZ" or "000001").
+      const stripped = r.code.toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "");
+      if (r.code.toUpperCase() === codeFilter || stripped === codeFilter) {
+        wantedCodes.push(r.code);
+      }
+      continue;
+    }
+    // Classification filter (sector/industry OR strategy/theme — mutually
+    // exclusive, handled by matchesClassification) + exchange filter.
+    const classOk = matchesClassification(
+      r,
+      sectorFilter,
+      industryFilter,
+      strategyFilter,
+      themeFilter,
+    );
+    const exchangeOk = matchesExchange(r.exchange, exchangeFilter);
+    if (classOk && exchangeOk) wantedCodes.push(r.code);
+  }
+
+  const totalCodes = wantedCodes.length;
+  const pageSize = q.page_size && q.page_size > 0 ? q.page_size : 2;
+  const totalPages = Math.max(1, Math.ceil(totalCodes / pageSize));
+  const page = q.page && q.page > 0 ? Math.min(q.page, totalPages) : 1;
+  const pageCodes = wantedCodes.slice((page - 1) * pageSize, page * pageSize);
+
+  if (pageCodes.length === 0 || !dateParam) {
+    return {
+      type: secType,
+      date: dateParam ?? "",
+      sector_id: sectorFilter,
+      industry_id: industryFilter,
+      codes: [],
+      total_codes: 0,
+      total_pages: 1,
+      page: 1,
+      page_size: pageSize,
+    };
+  }
+
+  // 4. Fetch intraday bars for the page's codes on the requested date.
+  //    The volume column is only present on the stock table — emit NULL
+  //    for indices so the bar type stays uniform. `code` is selected so rows
+  //    can be grouped by code (the page lists multiple codes per page).
+  //    The SELECT lives in the sql view data_viz/api/services/live-data/bars.
+  const volExpr = cfg.hasVolume ? "trading_shares AS volume" : "NULL::numeric AS volume";
+  const dbRows = await querySqlView<DbIntradayBarRow & { code: string }>(
+    "data_viz/api/services/live-data/bars",
+    {
+      codes: pageCodes,
+      date: dateParam,
+      intraday_table: sqlFrag(cfg.table),
+      volume_expr: sqlFrag(volExpr),
+    },
+  );
+
+  // Group bars by code (preserving pageCodes order).
+  const barsByCode = new Map<string, LiveDataIntradayBar[]>();
+  for (const r of dbRows) {
+    if (!barsByCode.has(r.code)) barsByCode.set(r.code, []);
+    barsByCode.get(r.code)!.push({
+      time: r.time,
+      open: toNum(r.open),
+      high: toNum(r.high),
+      low: toNum(r.low),
+      close: toNum(r.close),
+      volume: toNum(r.volume),
+      change: toNum(r.change),
+      change_pct: toNum(r.change_pct),
+    });
+  }
+
+  // 5. Build bundles (skip codes with no bars on this date — e.g. the date
+  //    predates the code's first intraday sample).
+  const codes: LiveDataBundle[] = [];
+  for (const code of pageCodes) {
+    const bars = barsByCode.get(code) ?? [];
+    if (bars.length === 0) continue;
+    const m = meta.get(code)!;
+    codes.push({
+      code,
+      name: m.name,
+      sector_id: m.sector_id,
+      sector_label: m.sector_label,
+      industry_id: m.industry_id,
+      industry_label: m.industry_label,
+      bars,
+    });
+  }
+
+  return {
+    type: secType,
+    date: dateParam,
+    sector_id: sectorFilter,
+    industry_id: industryFilter,
+    codes,
+    total_codes: totalCodes,
+    total_pages: totalPages,
+    page,
+    page_size: pageSize,
+  };
+}

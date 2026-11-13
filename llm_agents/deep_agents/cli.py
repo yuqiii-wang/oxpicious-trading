@@ -127,16 +127,18 @@ async def main() -> None:
     ap.add_argument("--provider", default=None, choices=["zhipu", "dummy"],
                     help="Chat provider override (default: the active "
                          "static.secret_config llm row, else zhipu). "
-                         "'dummy' runs the offline canned-reply test "
-                         "double — zero API spend, deterministic "
-                         "replies keyed by the query text.")
+                         "'dummy' runs the real transport against the "
+                         "resident local-model host's dummy-1 canned-"
+                         "reply simulation — zero provider spend, "
+                         "deterministic replies keyed by the query "
+                         "text (needs the watchdog-supervised host up).")
     ap.add_argument("--dummy-url", default=None,
-                    help="With --provider dummy: a running dummy llm "
-                         "server's chat endpoint (HTTP-sim — the REAL "
-                         "transport/retry layer against the "
-                         "simulation; start one with python -m "
-                         "llm_agents.test.dummy_llm.server). Omit for "
-                         "the in-process dummy (no server needed).")
+                    help="With --provider dummy: the resident local "
+                         "model host's dummy-1 chat endpoint (HTTP-sim "
+                         "— the REAL transport/retry layer against the "
+                         "simulation). Omit to default to the "
+                         "watchdog-supervised host at "
+                         "http://127.0.0.1:8767/v1/chat/completions.")
     ap.add_argument("--max-steps", type=int, default=20,
                     help="Tool-calling steps before giving up "
                          "(default: %(default)s; generous since every "

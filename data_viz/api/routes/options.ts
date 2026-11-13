@@ -3,6 +3,7 @@
  * options; the /api/szse-options URL prefix is kept for client stability).
  */
 import { Router, type Request, type Response } from "express";
+import { wrapAsync, strParam, enumParam, boolParam } from "../lib/http.js";
 import {
   listUnderlyings,
   getOptionsCombined,
@@ -23,325 +24,193 @@ import {
   getOptionsOiCells,
   getOptionsExpiryMeta,
   getOptionsMoneynessSeries,
-} from "../services/options.service.js";
-import { SKEW_TYPES, type SkewType } from "../../shared/types.js";
+} from "../services/market/options.service.js";
+import { SKEW_TYPES } from "../../shared/types.js";
 
 const router = Router();
 
-/** Parse + validate the skew_type query param (defaults to oi_moneyness). */
-function parseSkewType(raw: unknown): SkewType {
-  return typeof raw === "string" && (SKEW_TYPES as string[]).includes(raw)
-    ? (raw as SkewType)
-    : "oi_moneyness";
-}
-
 /** ?fresh=1 — Refresh-button bypass for the version-keyed aggregate cache. */
 function wantsFresh(req: Request): boolean {
-  return req.query.fresh === "1";
+  return boolParam(req, "fresh") === true;
 }
 
-router.get("/underlyings", async (req: Request, res: Response) => {
-  try {
-    const targetType =
-      typeof req.query.target_type === "string" ? req.query.target_type : undefined;
-    const exchange =
-      typeof req.query.exchange === "string" ? req.query.exchange : undefined;
-    res.json(await listUnderlyings(targetType, exchange, wantsFresh(req)));
-  } catch (err) {
-    console.error("[szse-options/underlyings] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/underlyings", wrapAsync(async (req: Request, res: Response) => {
+  const targetType = strParam(req, "target_type");
+  const exchange = strParam(req, "exchange");
+  res.json(await listUnderlyings(targetType, exchange, wantsFresh(req)));
+}));
 
-router.get("/combined", async (req: Request, res: Response) => {
-  try {
-    const query = {
-      underlying: typeof req.query.underlying === "string" ? req.query.underlying : undefined,
-      start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-      target_type: typeof req.query.target_type === "string" ? req.query.target_type : undefined,
-      exchange: typeof req.query.exchange === "string" ? req.query.exchange : undefined,
-    };
-    res.json(await getOptionsCombined(query));
-  } catch (err) {
-    console.error("[szse-options/combined] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/combined", wrapAsync(async (req: Request, res: Response) => {
+  const query = {
+    underlying: strParam(req, "underlying"),
+    start_date: strParam(req, "start_date"),
+    end_date: strParam(req, "end_date"),
+    target_type: strParam(req, "target_type"),
+    exchange: strParam(req, "exchange"),
+  };
+  res.json(await getOptionsCombined(query));
+}));
 
-router.get("/walls", async (req: Request, res: Response) => {
-  try {
-    const query = {
-      underlying: typeof req.query.underlying === "string" ? req.query.underlying : undefined,
-      start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    };
-    res.json(await getOptionsWalls(query));
-  } catch (err) {
-    console.error("[szse-options/walls] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/walls", wrapAsync(async (req: Request, res: Response) => {
+  const query = {
+    underlying: strParam(req, "underlying"),
+    start_date: strParam(req, "start_date"),
+    end_date: strParam(req, "end_date"),
+  };
+  res.json(await getOptionsWalls(query));
+}));
 
 /** Per-plot: the DOMINANT zone wall per (date, side) — the skew panel's
  *  wall shades without the per-expiry bulk (the Options Trend cohort
  *  chart keeps /walls). */
-router.get("/walls-dominant", async (req: Request, res: Response) => {
-  try {
-    const query = {
-      underlying: typeof req.query.underlying === "string" ? req.query.underlying : undefined,
-      start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    };
-    res.json(await getOptionsWallsDominant(query));
-  } catch (err) {
-    console.error("[szse-options/walls-dominant] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/walls-dominant", wrapAsync(async (req: Request, res: Response) => {
+  const query = {
+    underlying: strParam(req, "underlying"),
+    start_date: strParam(req, "start_date"),
+    end_date: strParam(req, "end_date"),
+  };
+  res.json(await getOptionsWallsDominant(query));
+}));
 
-router.get("/etf-ohlcv", async (req: Request, res: Response) => {
-  try {
-    const code = typeof req.query.code === "string" ? req.query.code : "";
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' query parameter" });
-      return;
-    }
-    const data = await getEtfOhlcv(
-      code,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-      typeof req.query.target_type === "string" ? req.query.target_type : undefined,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/etf-ohlcv] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/etf-ohlcv", wrapAsync(async (req: Request, res: Response) => {
+  const code = strParam(req, "code", { required: true });
+  const data = await getEtfOhlcv(
+    code,
+    strParam(req, "start_date"),
+    strParam(req, "end_date"),
+    strParam(req, "target_type"),
+  );
+  res.json(data);
+}));
 
-router.get("/skewness-series", async (req: Request, res: Response) => {
-  try {
-    const underlying =
-      typeof req.query.underlying === "string" ? req.query.underlying : "";
-    if (!underlying) {
-      res.status(400).json({ error: "Missing 'underlying' query parameter" });
-      return;
-    }
-    const skewType = parseSkewType(req.query.skew_type);
-    const data = await getOptionsSkewnessSeries(
-      underlying,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-      skewType,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/skewness-series] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/skewness-series", wrapAsync(async (req: Request, res: Response) => {
+  const underlying = strParam(req, "underlying", { required: true });
+  const skewType = enumParam(req, "skew_type", SKEW_TYPES, { default: "oi_moneyness" });
+  const data = await getOptionsSkewnessSeries(
+    underlying,
+    strParam(req, "start_date"),
+    strParam(req, "end_date"),
+    skewType,
+  );
+  res.json(data);
+}));
 
-router.get("/oi-stats", async (req: Request, res: Response) => {
-  try {
-    const underlying =
-      typeof req.query.underlying === "string" ? req.query.underlying : "";
-    if (!underlying) {
-      res.status(400).json({ error: "Missing 'underlying' query parameter" });
-      return;
-    }
-    const data = await getOptionsOiStats(
-      underlying,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/oi-stats] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/oi-stats", wrapAsync(async (req: Request, res: Response) => {
+  const underlying = strParam(req, "underlying", { required: true });
+  const data = await getOptionsOiStats(
+    underlying,
+    strParam(req, "start_date"),
+    strParam(req, "end_date"),
+  );
+  res.json(data);
+}));
 
-router.get("/bands", async (req: Request, res: Response) => {
-  try {
-    const underlying =
-      typeof req.query.underlying === "string" ? req.query.underlying : "";
-    if (!underlying) {
-      res.status(400).json({ error: "Missing 'underlying' query parameter" });
-      return;
-    }
-    const data = await getOptionsBands(
-      underlying,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/bands] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/bands", wrapAsync(async (req: Request, res: Response) => {
+  const underlying = strParam(req, "underlying", { required: true });
+  const data = await getOptionsBands(
+    underlying,
+    strParam(req, "start_date"),
+    strParam(req, "end_date"),
+  );
+  res.json(data);
+}));
 
-router.get("/iv-skew", async (req: Request, res: Response) => {
-  try {
-    const underlying =
-      typeof req.query.underlying === "string" ? req.query.underlying : "";
-    if (!underlying) {
-      res.status(400).json({ error: "Missing 'underlying' query parameter" });
-      return;
-    }
-    const data = await getOptionsIvSkew(
-      underlying,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/iv-skew] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/iv-skew", wrapAsync(async (req: Request, res: Response) => {
+  const underlying = strParam(req, "underlying", { required: true });
+  const data = await getOptionsIvSkew(
+    underlying,
+    strParam(req, "start_date"),
+    strParam(req, "end_date"),
+  );
+  res.json(data);
+}));
 
 /** Shared query-param parser for the per-plot endpoints. */
 function parsePlotQuery(req: Request) {
   return {
-    underlying: typeof req.query.underlying === "string" ? req.query.underlying : undefined,
-    start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-    end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    target_type: typeof req.query.target_type === "string" ? req.query.target_type : undefined,
-    exchange: typeof req.query.exchange === "string" ? req.query.exchange : undefined,
+    underlying: strParam(req, "underlying"),
+    start_date: strParam(req, "start_date"),
+    end_date: strParam(req, "end_date"),
+    target_type: strParam(req, "target_type"),
+    exchange: strParam(req, "exchange"),
   };
 }
 
 /** Per-plot: distinct trading dates + counters (date picker, caption). */
-router.get("/dates", async (req: Request, res: Response) => {
-  try {
-    res.json(await getOptionsDates(parsePlotQuery(req), wantsFresh(req)));
-  } catch (err) {
-    console.error("[szse-options/dates] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/dates", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await getOptionsDates(parsePlotQuery(req), wantsFresh(req)));
+}));
 
 /** Per-plot: quote rows for one or more specific dates
  *  (?dates=YYYY-MM-DD,YYYY-MM-DD,… — index-narrow per date, no history scan). */
-router.get("/snapshot-rows", async (req: Request, res: Response) => {
-  try {
-    const dates = typeof req.query.dates === "string"
-      ? req.query.dates.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
-    res.json(await getOptionsSnapshotRows(parsePlotQuery(req), dates));
-  } catch (err) {
-    console.error("[szse-options/snapshot-rows] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/snapshot-rows", wrapAsync(async (req: Request, res: Response) => {
+  const rawDates = strParam(req, "dates");
+  const dates = rawDates
+    ? rawDates.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  res.json(await getOptionsSnapshotRows(parsePlotQuery(req), dates));
+}));
 
 /** Per-plot: history-wide strike/expiry-month axes (wall panel) — cached
  *  per underlying/venue, never varies with the selected date. */
-router.get("/snapshot-axes", async (req: Request, res: Response) => {
-  try {
-    res.json(await getOptionsSnapshotAxes(parsePlotQuery(req), wantsFresh(req)));
-  } catch (err) {
-    console.error("[szse-options/snapshot-axes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/snapshot-axes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await getOptionsSnapshotAxes(parsePlotQuery(req), wantsFresh(req)));
+}));
 
 /** Per-plot: per (date × real expiry) smile anchors (ATM + 25Δ/10Δ wings)
  *  for the Smile Chronology panel's Today AND History views — replaces the
  *  panel's in-browser recompute of the full-history /combined blob. */
-router.get("/skew-daily", async (req: Request, res: Response) => {
-  try {
-    res.json(await getOptionsSkewDaily(parsePlotQuery(req), wantsFresh(req)));
-  } catch (err) {
-    console.error("[szse-options/skew-daily] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/skew-daily", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await getOptionsSkewDaily(parsePlotQuery(req), wantsFresh(req)));
+}));
 
 /** Per-plot: per (date × expiry) call/put OI + spot (trend charts). */
-router.get("/oi-daily", async (req: Request, res: Response) => {
-  try {
-    res.json(await getOptionsOiDaily(parsePlotQuery(req), wantsFresh(req)));
-  } catch (err) {
-    console.error("[szse-options/oi-daily] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/oi-daily", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await getOptionsOiDaily(parsePlotQuery(req), wantsFresh(req)));
+}));
 
 /** Per-plot: per (date × expiry × strike) OI cells for the selected
- * expiry cohorts (?expiries=YYYY-MM-DD,YYYY-MM-DD,…). */
-router.get("/oi-cells", async (req: Request, res: Response) => {
-  try {
-    const expiries = typeof req.query.expiries === "string"
-      ? req.query.expiries.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
-    res.json(await getOptionsOiCells(parsePlotQuery(req), expiries));
-  } catch (err) {
-    console.error("[szse-options/oi-cells] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+ *  expiry cohorts (?expiries=YYYY-MM-DD,YYYY-MM-DD,…). */
+router.get("/oi-cells", wrapAsync(async (req: Request, res: Response) => {
+  const rawExpiries = strParam(req, "expiries");
+  const expiries = rawExpiries
+    ? rawExpiries.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  res.json(await getOptionsOiCells(parsePlotQuery(req), expiries));
+}));
 
 /** Per-plot: per-contract final OI expiry markers (cohort totals are
  *  derived client-side from /oi-daily). */
-router.get("/expiry-meta", async (req: Request, res: Response) => {
-  try {
-    res.json(await getOptionsExpiryMeta(parsePlotQuery(req), wantsFresh(req)));
-  } catch (err) {
-    console.error("[szse-options/expiry-meta] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/expiry-meta", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await getOptionsExpiryMeta(parsePlotQuery(req), wantsFresh(req)));
+}));
 
 /** Per-plot: server-computed oi_moneyness skew series (spot + groups). */
-router.get("/oi-moneyness-series", async (req: Request, res: Response) => {
-  try {
-    res.json(await getOptionsMoneynessSeries(parsePlotQuery(req), wantsFresh(req)));
-  } catch (err) {
-    console.error("[szse-options/oi-moneyness-series] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/oi-moneyness-series", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await getOptionsMoneynessSeries(parsePlotQuery(req), wantsFresh(req)));
+}));
 
-router.get("/vol-index", async (req: Request, res: Response) => {
-  try {
-    // underlying optional — omitting it returns every underlying's series
-    // (cross-asset comparison chart).
-    const underlying =
-      typeof req.query.underlying === "string" && req.query.underlying
-        ? req.query.underlying
-        : undefined;
-    const data = await getOptionsVolIndex(
-      underlying,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/vol-index] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/vol-index", wrapAsync(async (req: Request, res: Response) => {
+  // underlying optional — omitting it returns every underlying's series
+  // (cross-asset comparison chart).
+  const underlying = strParam(req, "underlying");
+  const data = await getOptionsVolIndex(
+    underlying,
+    strParam(req, "start_date"),
+    strParam(req, "end_date"),
+  );
+  res.json(data);
+}));
 
-router.get("/vol-index-corr", async (req: Request, res: Response) => {
-  try {
-    // underlying optional — omitting it returns every underlying's series.
-    const underlying =
-      typeof req.query.underlying === "string" && req.query.underlying
-        ? req.query.underlying
-        : undefined;
-    const data = await getOptionsVolIndexCorr(
-      underlying,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/vol-index-corr] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/vol-index-corr", wrapAsync(async (req: Request, res: Response) => {
+  // underlying optional — omitting it returns every underlying's series.
+  const underlying = strParam(req, "underlying");
+  const data = await getOptionsVolIndexCorr(
+    underlying,
+    strParam(req, "start_date"),
+    strParam(req, "end_date"),
+  );
+  res.json(data);
+}));
 
 export default router;

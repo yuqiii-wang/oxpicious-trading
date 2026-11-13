@@ -9,7 +9,7 @@ pays zero fetches, same as its zero LLM):
   bundle in; the supervisor now fetches its ONE row itself),
 * the kit's type-4 description rows (``fetch_tool_prompts`` filtered to
   ``tools.KIT_DB_KEYS``) — the same per-tool instruction overrides the
-  delegation hooks hand the fork kits.
+  delegation hooks hand the spawn kits.
 
 Every read fail-softs to None/empty — the built-in
 ``SUPERVISOR_SYSTEM_PROMPT`` and each tool's ``DEFAULT_DESCRIPTION``

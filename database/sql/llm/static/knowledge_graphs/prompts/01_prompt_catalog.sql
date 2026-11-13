@@ -1,7 +1,7 @@
 -- ============================================================================
 --  Knowledge-graph seed — namespace 1 (PROMPTS): the deep agent's prompt
 --  catalog describes itself. One of the static/knowledge_graphs/ seed
---  files — DDL: 13_kg_hypergraph.sql; sibling scope: db_semantics/ (ns 0).
+--  files — DDL: kg_entities.sql + kg_edges.sql; sibling scope: db_semantics/ (ns 0).
 --
 --  Namespace-1 conventions (what its records mean):
 --    - ONE ENTITY = ONE CATALOGED PROMPT ROW of llm.ai_prompts
@@ -85,14 +85,14 @@ INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VA
      'Ground every claim in the database — inspect schemas and run narrow aggregates with the metric db_keywords recipes before writing.'),
     (1, 'rarity-ranking', 'skill', ARRAY['db_query', 'percentile', 'rank', 'own history', '分位', '极值'],
      'Weigh every metric against its own trailing ~10y history and call out top/bottom-tail readings explicitly.'),
-    (1, 'forked-evidence-search', 'skill', ARRAY['online_search', 'corpus lane', 'online lane', 'subagent fork', '外部证据', '联网检索'],
-     'Fork every external-evidence question into parallel corpus-lane and online-lane subagents and attribute each fact to its lane.'),
+    (1, 'spawned-evidence-search', 'skill', ARRAY['online_search', 'corpus lane', 'online lane', 'subagent spawn', '外部证据', '联网检索'],
+     'Spawn every external-evidence question into parallel corpus-lane and online-lane subagents and attribute each fact to its lane.'),
     (1, 'cross-item-synthesis', 'skill', ARRAY['biz_guide', 'cross-item', 'synthesis', 'combined picture', '交叉引用', '综合'],
      'Cross-reference findings across the selected items and close with the combined market picture, not per-item summaries.'),
     (1, 'volume-price-guide', 'skill', ARRAY['biz_guide', '放量', '缩量', '量价', 'participation', 'volume', 'market share'],
      'The house 放量/缩量 volume vocabulary and the participation gauge (trading-amount market share vs its own MA).'),
-    (1, 'ma-spread-guide', 'skill', ARRAY['biz_guide', '均线', '移动平均', 'MA20', 'moving average', 'ma alignment', 'ma spread', 'golden cross', 'death cross', 'trend regime'],
-     'What the moving-average state means for trading — alignment, extension vs the security''s own history, crossing semantics and the trend regime.'),
+    (1, 'ma-spread-guide', 'skill', ARRAY['biz_guide', '均线', '移动平均', 'MA20', 'moving average', 'ma alignment', 'ma spread', 'golden cross', 'death cross', 'trend regime', 'alignment', '排列', '多头排列', '空头排列', '间距', '均线间距', '长短均线'],
+     'What the moving-average state means for trading — alignment (多头排列/空头排列), the 长短均线间距 (spread) and its extension vs the security''s own history, crossing semantics and the trend regime.'),
     (1, 'roof-floor-guide', 'skill', ARRAY['biz_guide', '压力', '支撑', '顶底', 'roof floor levels', 'support resistance', 'donchian', 'level breach', 'consensus level'],
      'The roof/floor levels'' trading meaning — wick vs consensus levels and the measured breach semantics (anchoring support, capitulation V-bottom, controlled dip).'),
     (1, 'rf-break-signal-guide', 'skill', ARRAY['biz_guide', 'rf_break', '突破', '箱体', 'rf break', 'breakout signal', 'roof floor breakout', 'rule cells', 'turtle breakout'],
@@ -125,12 +125,12 @@ INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VA
      'How to mine the house text corpus — AI market QA and sentiment news — for sentiment readings with dates and sources.'),
     (1, 'db-table-map', 'skill', ARRAY['backend_tech', 'db tables', 'table map', 'ohlcv views', 'study conventions', '表映射'],
      'What DB tables a study queries — the daily OHLCV views, the precomputed stats/analysis tables and their conventions.'),
-    (1, 'sandbox-study-kit', 'skill', ARRAY['backend_tech', 'sandbox', 'study_kit', 'study calculations', 'daily bars', '沙箱'],
-     'The finished study_kit in the sandbox — read-only queries, daily bars and the standard calculations, plus the session workspace layout.'),
+    (1, 'sandbox-study-kit', 'skill', ARRAY['backend_tech', 'sandbox', 'study_kit', 'study calculations', 'daily bars', 'spread stats', 'fetch_spread_stats', '沙箱'],
+     'The finished study_kit in the sandbox — read-only queries, daily bars, the MATERIALIZED MA-spread stats (fetch_spread_stats: trailing pct_rank / zscore / verdict) and the standard calculations; match-first reuse, plus the session workspace layout.'),
     (1, 'ai-qa-audit', 'skill', ARRAY['text_corpus', '问答', 'AI回答', 'qa', 'ai qa', 'qa audit', 'qa sampling', 'answer audit', 'llm_qa', 'knowledge base'],
-     'Audit the AI QA corpus: fix the dates of interest, sample a few answers, verify claims against the DB, fork a subagent on anything suspicious.'),
+     'Audit the AI QA corpus: fix the dates of interest, sample a few answers, verify claims against the DB, spawn a subagent on anything suspicious.'),
     (1, 'news-audit', 'skill', ARRAY['text_corpus', '新闻', '资讯', '舆情', 'news audit', 'news sampling', 'news comments', 'engagement', 'most commented', 'thumbs up', 'news corpus'],
-     'Audit the news corpus: fix the dates of interest, sample the hottest articles (most votes/comments), verify against the data, fork a subagent on anything suspicious.'),
+     'Audit the news corpus: fix the dates of interest, sample the hottest articles (most votes/comments), verify against the data, spawn a subagent on anything suspicious.'),
     -- prompt_type 2 — plan --------------------------------------------------
     (1, 'study-codes', 'plan', ARRAY['goal', 'scope', 'named codes', '指定代码', '范围'],
      'Default scope when the run names codes: study the named codes themselves only - their own readings, compared side by side; no market sweep, no related ring.'),

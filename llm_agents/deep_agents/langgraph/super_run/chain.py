@@ -15,12 +15,17 @@ from typing import Any, Dict, List, Optional
 
 from langgraph.store.base import BaseStore
 
+from llm_agents.deep_agents import events
 from llm_agents.deep_agents.core.mcp import McpToolClient
+from llm_agents.deep_agents.langgraph.decision.engine import (
+    JevDecisionEngine,
+)
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 from llm_agents.deep_agents.core.loop import AgentResult
 from llm_agents.deep_agents.langgraph.runner import (
     CUSTOM_OUTPUT_SPEC, RESULT_OUTPUT_SPEC, _RunContext,
-    build_execution_graph, build_plan_graph, ThreadRunResult,
+    build_execution_graph, build_plan_graph, build_result_graph,
+    ThreadRunResult,
 )
 from llm_agents.deep_agents.langgraph.prompts import finding_line
 from llm_agents.deep_agents.langgraph.state_store import (
@@ -66,6 +71,8 @@ class SuperGraphRunner:
         enable_sandbox: bool = True,
         thread_id: Optional[str] = None,
         plan_template_id: Optional[int] = None,
+        sandbox: Optional[Any] = None,
+        decision_engine: Optional[Any] = None,
     ) -> None:
         self._provider = provider
         self._mcp = mcp
@@ -75,6 +82,16 @@ class SuperGraphRunner:
         self._system = system
         self._temperature = temperature
         self._enable_sandbox = enable_sandbox
+        # An INJECTED sandbox client (the duck-typed seam a test/probe
+        # passes — the ScenarioSandbox) pre-fills the run's sandbox
+        # cell, so every lane walks the seam instead of the docker
+        # Sandbox() the cell would otherwise mint. Explicit beats the
+        # enable flag: an injected client IS the run's sandbox.
+        self._sandbox = sandbox
+        # An INJECTED System One decision engine (the same duck-typed
+        # seam shape): every lane's jev gates ask IT — None keeps the
+        # production wiring (``JevDecisionEngine.active()``, the knob).
+        self._decision_engine = decision_engine
         self._plan_template_id = plan_template_id
         # The chain's ROOT thread (P) — caller-supplied when the caller
         # needs it before the run ends (the server registers the run
@@ -89,7 +106,12 @@ class SuperGraphRunner:
             max_steps if max_steps is not None
             else run_limits().max_conversation_steps))
         # The chain's minted threads in order (P first) — the cancel /
-        # engine-failure settles walk it.
+        # engine-failure settles walk it. The /ws chain stamp (the bus's
+        # frame enrichment with this run's root id) is kept current by
+        # the STORE's mint writes themselves (states.py
+        # _register_chain_key — registration precedes each write's own
+        # state_created events, whatever order the threads mint in);
+        # this unwind is the only chain.py seam: the drop at run end.
         self._chain_threads: List[str] = [self._thread_id]
 
     # -- the run ---------------------------------------------------------
@@ -155,8 +177,9 @@ class SuperGraphRunner:
         # super-scoped read and keys its reviews there); its exit runs
         # the final sweep.
         repair: RepairChannel = RepairChannel()
-        # ONE sandbox session per RUN shared by every graph's hops.
-        sandbox_cell: List[Any] = [None]
+        # ONE sandbox session per RUN shared by every graph's hops
+        # (pre-filled when the caller injected a sandbox client).
+        sandbox_cell: List[Any] = [self._sandbox]
         # The run's TOTAL wall-clock anchor — ONE budget across all
         # three graphs (each graph's step lane checks it every hop).
         run_started = time.monotonic()
@@ -173,7 +196,14 @@ class SuperGraphRunner:
                 model=self._model,
                 writer_factory=lambda llm=False: NodeRunWriter(
                     store, self.super_thread_id, NODE_SUPERVISOR,
-                    model=self._model, llm=llm))
+                    model=self._model, llm=llm),
+                # The SYSTEM ONE decision engine (langgraph.decision) —
+                # the composing layer's wiring; an INJECTED engine (the
+                # test/probe seam) wins, None (knob off / JEV_DECISIONS=0)
+                # keeps the generative lanes.
+                decision_engine=(self._decision_engine
+                                 if self._decision_engine is not None
+                                 else JevDecisionEngine.active()))
             supervisor_task = asyncio.create_task(
                 supervisor_agent.session(
                     self._provider, store, goal=self._goal, channel=repair,
@@ -214,7 +244,8 @@ class SuperGraphRunner:
             graph = build_execution_graph(
                 self._provider, self._mcp, run_ctx, store=store,
                 repair=repair, sandbox_cell=sandbox_cell,
-                output=CUSTOM_OUTPUT_SPEC, degraded_lane=True)
+                output=CUSTOM_OUTPUT_SPEC, degraded_lane=True,
+                decision_engine=self._decision_engine)
             graph_config: Dict[str, Any] = {
                 "recursion_limit": run_limits().recursion_limit}
             if custom_thread_id:
@@ -230,18 +261,20 @@ class SuperGraphRunner:
                         run_started=run_started)},
                     graph_config)
             except asyncio.CancelledError:
-                await self._settle_chain_items()
+                await self._settle_chain_items(store)
                 raise
 
-            # -- GRAPH 3 — THE RESULT GRAPH (thread R; ALWAYS after C) --
-            if plan_result.plan_ok:
-                values = await self._run_result_graph(
-                    run_ctx=run_ctx, store=store, repair=repair,
-                    sandbox_cell=sandbox_cell,
-                    plan_result=plan_result, values_c=values,
-                    system=system, agent_prompts=agent_prompts,
-                    tool_prompts=tool_prompts,
-                    run_started=run_started)
+            # -- GRAPH 3 — THE RESULT GRAPH (thread R; ALWAYS after C,
+            # full chain AND degraded no-plan runs alike: the four
+            # review seats + the output seat read whatever the
+            # execution lane produced) ------------------------------
+            values = await self._run_result_graph(
+                run_ctx=run_ctx, store=store, repair=repair,
+                sandbox_cell=sandbox_cell,
+                plan_result=plan_result, values_c=values,
+                system=system, agent_prompts=agent_prompts,
+                tool_prompts=tool_prompts,
+                run_started=run_started)
 
             # -- THE SUPERVISOR SESSION'S EXIT (the final sweep) --------
             try:
@@ -256,7 +289,7 @@ class SuperGraphRunner:
                 supervisor_task.cancel()
                 with _suppress_cancel():
                     await supervisor_task
-                await self._settle_chain_items()
+                await self._settle_chain_items(store)
                 raise
             except Exception:  # noqa: BLE001 — belt; session self-guards
                 logger.warning("supervisor session exit failed",
@@ -269,9 +302,16 @@ class SuperGraphRunner:
             # the graphs' finalize never runs — the caller's stop
             # handler settles the chain's STATE rows (settle_thread is
             # chain-aware); here the runner-lane node items close while
-            # the store is still in scope. The planning row on a
-            # mid-plan stop stays in_progress on purpose (the stop
-            # settle closes it as 'stopped by user').
+            # the store is still in scope. This handler also catches a
+            # cancel that unwound the PLAN graph (graphs 2/3 carry
+            # their own handlers below) — a mid-plan stop must close
+            # the plan/supervisor node items too, or they read as
+            # 'running' forever and the UI's live chip + Stop button
+            # never clear. The planning row on a mid-plan stop stays
+            # in_progress on purpose (the stop settle closes it as
+            # 'stopped by user').
+            with _suppress_cancel():
+                await self._settle_chain_items(store)
             raise
         except BaseException:
             # A graph ENGINE failed — nothing will ever settle the
@@ -280,7 +320,7 @@ class SuperGraphRunner:
             # the chain's node items, then let the original failure
             # propagate (the pre-begin_thread contract).
             with _suppress_cancel():
-                await self._settle_chain_items()
+                await self._settle_chain_items(store)
             with _suppress_cancel():
                 await PLAN_STORE.settle_plan_state(
                     thread_id, "failed",
@@ -295,6 +335,18 @@ class SuperGraphRunner:
                 supervisor_task.cancel()
                 with _suppress_cancel():
                     await supervisor_task
+                # THE LATE SETTLE — the except-path settle ran BEFORE this
+                # cancel, so anything the still-running supervisor session
+                # wrote between the two (a belt-scanned worker's marker
+                # begin) would read 'running' forever: the UI's live chip,
+                # Stop button and poll loop never clear on the chain. One
+                # fail-soft pass after the join closes that window (a no-op
+                # on the normal path — nothing is running after the sweep).
+                with _suppress_cancel():
+                    await self._settle_chain_items(store)
+            # The run is over (every exit path lands here) — its frames
+            # stop; the chain stamp registration goes with it.
+            events.drop_chain(list(self._chain_threads))
 
         # The execute failure (if any) settles in finalize first; the
         # ORIGINAL exception then propagates to the caller.
@@ -380,16 +432,21 @@ class SuperGraphRunner:
         run_started: float,
     ) -> Dict[str, Any]:
         """GRAPH 3 — the RESULT graph (thread R), ALWAYS run after the
-        custom graph completes: its four REVIEW SEATS come from the
-        type-result template row (fail-soft to the built-in wave
-        constants), its findings bridge is SEEDED with the custom
-        graph's output-node synthesis (the handoff document the reviews
-        read first), and its own output node writes the run's
-        final-result document. A dead custom graph (no answer, no
-        findings) skips the wave — R routes straight to finalize and
+        execution lane (the custom graph on a full chain, the degraded
+        execute lane in P when planning failed — the run answers
+        through the review wave + output seat either way). Its seats
+        come from the type-result template row (fail-soft to the
+        built-in wave constants) and compile as ONE REAL parallel
+        LangGraph node per seat (``build_result_graph`` — the graph is
+        literally as saved from the langgraph template); its findings
+        bridge is SEEDED with the execution lane's synthesis (the
+        handoff document the reviews read first — on a degraded run the
+        lane's own answer/findings), and its output node writes the
+        run's final-result document. A dead execution lane (no answer,
+        no findings) skips the wave — R routes straight to finalize and
         its output node records the failure. Fail-soft: a persistence
         failure before the wave means no result graph — the run still
-        answers through the orchestrator's return (the old
+        answers through the execution lane's output (the old
         never-block contract)."""
         seats = review_wave_steps()
         template_name = "builtin-wave"
@@ -413,26 +470,27 @@ class SuperGraphRunner:
                  "super_thread_id": self.super_thread_id,
                  "template": {"name": template_name},
                  "steps": plan_payload_steps(seats)})
-            await PLAN_STORE.create_thread_states(
+            seat_rows = await PLAN_STORE.create_thread_states(
                 result_thread_id, seats,
                 super_thread_id=self.super_thread_id)
         except Exception as exc:  # noqa: BLE001 — never fail the answer
             logger.warning("result graph persistence failed (%s) — the "
-                           "run answers on the custom graph's output",
+                           "run answers on the execution lane's output",
                            exc)
             return values_c
         self._chain_threads.append(result_thread_id)
-        # The HANDOFF SEED: the custom graph's synthesis rides the
+        # The HANDOFF SEED: the execution lane's synthesis rides the
         # findings bridge as the reviews' first line (ordinal 0), the
         # raw findings after it; the digest (if C compacted) carries
         # over so the reviews read the whole evidence lane.
         seeded: List[str] = (
             [finding_line(0, "Custom graph output", answer_c)]
             if answer_c else []) + findings_c
-        graph = build_execution_graph(
+        graph = build_result_graph(
             self._provider, self._mcp, run_ctx, store=store,
             repair=repair, sandbox_cell=sandbox_cell,
-            output=RESULT_OUTPUT_SPEC, degraded_lane=False)
+            output=RESULT_OUTPUT_SPEC, seats=seat_rows,
+            decision_engine=self._decision_engine)
         config = {
             "recursion_limit": run_limits().recursion_limit,
             "configurable": {"thread_id": result_thread_id},
@@ -464,17 +522,21 @@ class SuperGraphRunner:
                  },
                 config)
         except asyncio.CancelledError:
-            await self._settle_chain_items()
+            await self._settle_chain_items(store)
             raise
 
-    async def _settle_chain_items(self) -> None:
+    async def _settle_chain_items(self, store: Optional[BaseStore]) -> None:
         """Close every chain thread's still-running node items — the
         cancel/unwind path (the STATE rows settle in the caller's stop
         handler through the chain-aware ``settle_thread``). One call
-        per thread, fail-soft each."""
+        per thread, fail-soft each. The store handle is REQUIRED: the
+        module-level door treats ``store=None`` as a no-op, and the
+        former None call left every stopped run's node lane 'running'
+        forever (the UI's live chip + the Thread Graph's Stop button
+        never cleared)."""
         for tid in list(self._chain_threads):
             try:
-                await settle_node_items(None, tid, failure=STOP_FAILURE)
+                await settle_node_items(store, tid, failure=STOP_FAILURE)
             except Exception as exc:  # noqa: BLE001 — best-effort close
                 logger.warning("chain node-item settle failed (%s): %s",
                                tid, exc)

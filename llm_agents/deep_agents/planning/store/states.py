@@ -4,13 +4,13 @@ LIFECYCLE WRITES (the StateStoreMixin).
 BESIDE the initial open, the plan is MUTABLE at runtime
 (``tools/plan_tools/`` holds the model-facing tools over the
 permission model, ``authorities.PlanAuthority``): ``add_plan_states``
-appends pending steps mid-run (main-lane or under a fork),
+appends pending steps mid-run (main-lane or under a spawn),
 ``revise_pending_state`` rewrites a not-yet-run step,
 ``skip_pending_states`` drops pending steps (audit-preserving), and
 ``fetch_state`` / ``list_thread_states`` read the CURRENT tree the
 tick/update handlers resolve against. The MAIN thread owns pending
-top-level nodes and may terminate running forks; a subagent owns only
-the nodes it minted under its own forked path.
+top-level nodes and may terminate running spawns; a subagent owns only
+the nodes it minted under its own spawned path.
 
 Every write announces a deep-agent event (``events.publish`` — the
 daemon's /ws WebSocket channel); the publishes are fire-and-forget
@@ -31,6 +31,23 @@ from llm_agents.deep_agents.planning.store.models import (
     _STATE_COLUMNS, _NOTE_MAX, _kind, _tokenize_tags_sync,
     PlannedStep, StateRow, ThreadPlan, _normalize_notes, extract_critical,
 )
+
+
+def _register_chain_key(thread_id: str,
+                        super_thread_id: Optional[str]) -> None:
+    """Keep the /ws bus's chain registry current with the row's own chain
+    stamp: the frames these writes publish are keyed to the thread they
+    wrote, and the UI matches the run's node updates by the CHAIN ROOT it
+    opened the graph with — so every mint/append write that accepts
+    ``super_thread_id`` registers the (member → root) mapping here, ahead
+    of its rows' own state_created events, whatever order the runner
+    mints the chain's threads in. In-memory, synchronous, trivially
+    fail-safe (a bus with no subscribers is the common case)."""
+    if super_thread_id:
+        members = [thread_id]
+        if super_thread_id != thread_id:
+            members.append(super_thread_id)
+        events.register_chain(members, super_thread_id)
 
 
 class StateStoreMixin(_StoreBase):
@@ -56,6 +73,7 @@ class StateStoreMixin(_StoreBase):
         own rows carry its own id). Returns the state id (the runner stamps
         the plan node's LLM context onto the row), or None when the insert
         degraded — never worth failing the run over."""
+        _register_chain_key(thread_id, super_thread_id)
         conn = await self._connect()
         try:
             write = render_sql_write(
@@ -153,6 +171,7 @@ class StateStoreMixin(_StoreBase):
         append through :func:`add_plan_states` on the custom thread; the
         complete plan payload lands at the plan graph's output node
         (:func:`replace_plan_payload`)."""
+        _register_chain_key(custom_thread_id, super_thread_id)
         conn = await self._connect()
         states: List[StateRow] = []
         try:
@@ -234,6 +253,7 @@ class StateStoreMixin(_StoreBase):
         the plan context row moved to :func:`record_plan_context` in the
         plan thread). Each step-input entry keys to its own step node and
         the plan conversation's ONE chained context."""
+        _register_chain_key(thread_id, super_thread_id)
         conn = await self._connect()
         states: List[StateRow] = []
         try:
@@ -321,7 +341,7 @@ class StateStoreMixin(_StoreBase):
         state_id: int,
     ) -> Tuple[Optional[str], bool]:
         """A step's delegation goal and independence mark from its input
-        context payload — the step-graph engine's fork/wave detector. Works
+        context payload — the step-graph engine's spawn/wave detector. Works
         for planned AND runtime-added steps (both store the flags in the
         step-input payload; goal None = an inline step, parallel False =
         ordered — only consecutive delegated-or-parallel steps wave)."""
@@ -345,7 +365,7 @@ class StateStoreMixin(_StoreBase):
 
     async def _thread_super(self, conn, thread_id: str) -> Optional[str]:
         """The chain id this thread's rows already carry — runtime adds
-        (plan tools, fork children) inherit it instead of every caller
+        (plan tools, spawn children) inherit it instead of every caller
         threading the super id through (None on legacy threads)."""
         return await conn.fetchval(
             "SELECT super_thread_id FROM llm.deep_agent_states "
@@ -361,17 +381,25 @@ class StateStoreMixin(_StoreBase):
         after_ordinal: Optional[int] = None,
         llm_context_id: Optional[str] = None,
         super_thread_id: Optional[str] = None,
+        stamp_state_context: bool = True,
     ) -> List[StateRow]:
         """Insert new PENDING states at RUNTIME — the plan-update tool's
         write (a mid-run investigation add, parent- or subagent-initiated).
 
         Top-level steps (parent None) take ordinals ``after_ordinal + 1..``
         with later rows shifted up, or append past the current last ordinal
-        when *after_ordinal* is None. Fork children carry ordinal 0 under
+        when *after_ordinal* is None. Spawn children carry ordinal 0 under
         their parent (sibling order is state_id, the create_child_state
         convention). *llm_context_id* stamps the conversation that owns the
         new nodes — the main execute context for main-lane adds, the
-        subagent's own context for fork extensions. *super_thread_id* stamps
+        subagent's own context for spawn extensions; the step-INPUT context
+        rows always carry it (the conversation that produced the entry),
+        the STATE rows only when *stamp_state_context* (the default).
+        Pass False when the caller's conversation merely PRODUCED the
+        steps and does not run them (the plan session's proposal batches —
+        its pre-stamp blocked the hop's own NULL-guarded stamp, so the
+        run's biggest conversations went invisible on their state rows,
+        run 532c6a78's 982K finalization). *super_thread_id* stamps
         the chain id; when None it derives from the thread's existing rows
         (the plan tools never know it)."""
         if not steps:
@@ -381,6 +409,9 @@ class StateStoreMixin(_StoreBase):
         try:
             if super_thread_id is None:
                 super_thread_id = await self._thread_super(conn, thread_id)
+            # After the derive above — the registered key must be the
+            # same chain id the new rows carry.
+            _register_chain_key(thread_id, super_thread_id)
             if parent_state_id is None:
                 n = len(steps)
                 if after_ordinal is not None:
@@ -409,10 +440,10 @@ class StateStoreMixin(_StoreBase):
                         node=step.node, llm_context_id=llm_context_id)
                 write = render_sql_write(
                     "llm_agents/deep_agents/planning/store/"
-                    "deep_agent_states/insert_pending_step_fork",
+                    "deep_agent_states/insert_pending_step_spawn",
                     thread_id, super_thread_id, parent_state_id, step.node,
                     step.title, next_ordinal + offset, input_context_id,
-                    llm_context_id,
+                    llm_context_id if stamp_state_context else None,
                 )
                 record = await conn.fetchrow(write.sql, *write.params)
                 state = self._state_row(record)
@@ -444,7 +475,7 @@ class StateStoreMixin(_StoreBase):
         a notes/delegate change mints a NEW step-input context and repoints
         the row (contexts are append-only), keyed to the step's node/task
         and the revising conversation's chained context. *delegate*
-        semantics: None = untouched, ``''`` clears the fork marker, a string
+        semantics: None = untouched, ``''`` clears the spawn marker, a string
         sets it. Returns the revised row, or None when the row is gone or
         not pending."""
         conn = await self._connect()
@@ -603,7 +634,7 @@ class StateStoreMixin(_StoreBase):
         settle's reason — a delegation failure, a step exception) lands on
         the row's error column (COALESCE — an existing error is never
         blanked). *critical* (the model's flag that the note carries a
-        CRITICAL DISCOVERY — the fork tick tool's explicit argument, or the
+        CRITICAL DISCOVERY — the spawn tick tool's explicit argument, or the
         [CRITICAL] reply marker parsed by the caller) rides into the
         payload as "critical": true, which _insert_context lifts into the
         row's is_critical column. Unknown statuses raise (the caller
@@ -652,19 +683,23 @@ class StateStoreMixin(_StoreBase):
         thread_id: str, parent_state_id: Optional[int], node: str, title: str,
         *,
         llm_context_id: Optional[str] = None,
+        child_kind: Optional[int] = None,
     ) -> int:
         """A spawned subagent's child state — already running under the
         step that was in_progress at spawn time (LangGraph's subgraph). The
         child mints its OWN llm_context_id (its conversation is not the
         parent node's); the registry item lands in the store when the
-        output hook settles the child."""
+        output hook settles the child. ``child_kind`` — the
+        ``agent_child_kind`` label code (0 spawn | 1 fork, 2026-11-13):
+        how the child was raised; None reads as spawn (also the legacy
+        rows' value)."""
         conn = await self._connect()
         try:
             write = render_sql_write(
                 "llm_agents/deep_agents/planning/store/"
                 "deep_agent_states/insert_child_running",
                 thread_id, await self._thread_super(conn, thread_id),
-                parent_state_id, node, title, llm_context_id,
+                parent_state_id, node, title, llm_context_id, child_kind,
             )
             child_id = await conn.fetchval(write.sql, *write.params)
         finally:
@@ -712,20 +747,22 @@ class StateStoreMixin(_StoreBase):
         llm_context_id: Optional[str] = None,
     ) -> None:
         """Settle a child state; the subagent's final answer (or error)
-        becomes its subagent-result context, keyed to the fork's task
-        (*state_id*, *node* — the fork slug) and the CHILD's OWN chained
+        becomes its subagent-result context, keyed to the spawn's task
+        (*state_id*, *node* — the spawn slug) and the CHILD's OWN chained
         context (*llm_context_id* — the entry links the subagent
         conversation's llm_requests rows). The answer is the child's RAW
-        final reply: a trailing [CRITICAL] marker line (the fork prompts'
+        final reply: a trailing [CRITICAL] marker line (the spawn prompts'
         critical-discovery contract) is parsed out here — the row's
         is_critical lifts from the payload the marker produces. A FAILED
-        child also ends its fork path: every pending node the subagent
-        added under this fork settles skipped 'not run — its fork path
+        child also ends its spawn path: every pending node the subagent
+        added under this spawn settles skipped 'not run — its spawn path
         failed' (the grey tail on the thread canvas), the same settle
-        finalize would apply but immediate, so a dead fork's subtree never
+        finalize would apply but immediate, so a dead spawn's subtree never
         reads as to-be-run."""
-        if status not in ("completed", "failed"):
-            raise ValueError(f"child status must be completed|failed, got {status!r}")
+        if status not in ("completed", "failed", "skipped"):
+            raise ValueError(
+                f"child status must be completed|failed|skipped, "
+                f"got {status!r}")
         conn = await self._connect()
         try:
             payload: Optional[Dict[str, Any]] = None
@@ -749,7 +786,7 @@ class StateStoreMixin(_StoreBase):
             await conn.execute(write.sql, *write.params)
             n_not_run = 0
             if status == "failed":
-                # The whole subtree below the failed fork (a sub-sub fork's
+                # The whole subtree below the failed spawn (a sub-sub spawn's
                 # own children included — the CTE walks parent_state_id to
                 # the leaves), in case the dying subagent left unticked
                 # nodes behind.

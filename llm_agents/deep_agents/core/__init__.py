@@ -16,7 +16,7 @@ module beside it —
   * ``delegation``— the subagent contract (schemas, SubagentRun/
     SubagentRequest, the supervision hooks) — the Task-tool layer;
   * ``loop``      — DeepAgent: the loop itself, the spawner (sync +
-    background forks + collect + the programmatic run_delegation), and
+    background spawns + collect + the programmatic run_delegation), and
     the answer-gating / no-orphan-task policies;
   * ``sandbox``   — the code-execution CLIENT (one scratch directory
     per run; the sandbox_* tools that drive it are tool-layer objects,

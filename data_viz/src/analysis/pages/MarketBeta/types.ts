@@ -15,15 +15,15 @@ export type PoolSize = "all" | "small" | "mid" | "large";
 /** Correlation window selector — MA-W curves correlated over the W trading
  *  days starting on start_date (window starts every `interval` trading
  *  days on the calendar grid). */
-export type CorrWindow = "20d" | "60d" | "255d";
+export type CorrWindow = "20d" | "60d" | "252d";
 
 /** Rolling-days selector for the BenchmarkPriceChart shade overlay.
  *  Each value picks one of the 6 pre-materialized
  *  benchmark_non_this_industry_rolling_{N}days_price columns from
  *  analysis.industry_attributions. The dropdown lets the user pick which
- *  trailing window (5 / 20 / 60 / 120 / 255 / 500 trading days) drives the
+ *  trailing window (5 / 20 / 60 / 120 / 252 / 504 trading days) drives the
  *  non-this-industry shade. 120d (~6 months) is the default. */
-export type RollingDays = 5 | 20 | 60 | 120 | 255 | 500;
+export type RollingDays = 5 | 20 | 60 | 120 | 252 | 504;
 
 /**
  * One industry's precomputed aggregation set, used to render a per-industry
@@ -179,4 +179,17 @@ export interface IndexAllocationViewProps {
   /** L3-selected index codes (empty → use ALL member indices of the selected
    *  industries). */
   selectedItemCodes: string[];
+}
+
+/** Props for the StockAttributionView component (the "Stock Attribution"
+ *  mode — the per-industry rise/drop audit: member stocks counted into
+ *  the 12 daily pct-change buckets of the 'stock_change_bucket' label
+ *  domain). */
+export interface StockAttributionViewProps {
+  /** Selected industries ({ id, label }) — one histogram each. Includes
+   *  both LEFT-column industries and RIGHT-column strategy themes. */
+  industries: Array<{ id: string; label: string }>;
+  /** Page-level refresh counter (the SecNavShell Refresh button) — bumps
+   *  the parallel per-industry fetch effect. */
+  refreshKey: number;
 }

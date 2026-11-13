@@ -3,7 +3,7 @@
  * + strategy.strategy_risk_period + strategy.strategy_risk_factors
  * (computed by `python -m strategy._risks`).
  */
-import { formatDate, toNum } from "../db.service.js";
+import { formatDate, toNum } from "../infra/db.service.js";
 import { querySqlView } from "@api/lib/sql-views";
 import type {
   MaSpreadSecType,

@@ -84,8 +84,10 @@ run.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -104,11 +106,18 @@ from _common.db_commons import get_db_connection
 WATCHDOG_SERVICE = "database.stream_watchdog"
 
 MONITORED_SERVICES: dict[str, tuple[str, str | None]] = {
-    "downloads.stream.sse.price": ("downloads", "stream"),
-    "downloads.stream.szse.price": ("downloads", "stream"),
-    "downloads.stream.bse.price": ("downloads", "stream"),
-    "downloads.stream.csindex.price": ("downloads", "stream"),
-    "downloads.stream.cnindex.price": ("downloads", "stream"),
+    # The cluster SERVERS (server_cluster/, python -m server_cluster.<area>)
+    # moved OUT of this registry 2026-11 — THREE-LEVEL supervision now: the
+    # pollers went to the downloader server's resident table and the other
+    # seven servers (downloader/builder/analyzer/strategist/llm/config/
+    # maintainer) to the monitor server's resident table
+    # (server_cluster/_common/resident_supervisor.py — desired state, crash
+    # backoff, persisted manual stops, adoption; the central watchdog
+    # unconditionally revives, the area supervisor does not). Only
+    # ``server_cluster.monitor`` stays here: a server cannot supervise
+    # itself, so the watchdog → monitor → residents chain needs the
+    # watchdog to keep the monitor alive.
+    "server_cluster.monitor": ("server_cluster", "monitor"),
     # DB health sampler (database/db_health.py) — always-on like the
     # pollers; the watchdog restarts it when its beat goes stale. Grouped
     # under the stream sub-scope (the always-on services) rather than a
@@ -138,17 +147,26 @@ MONITORED_SERVICES: dict[str, tuple[str, str | None]] = {
     # always-on services); the service name IS the module name (spawn
     # contract).
     "llm_agents.deep_agents.server": ("database", "stream"),
-    # Dummy-LLM provider simulation (llm_agents/test/dummy_llm/server.py,
-    # python -m llm_agents.test.dummy_llm.server) — always-on FastAPI
-    # chat-completions ENDPOINT (127.0.0.1:8768) the offline harness
-    # tests and HTTP-sim runs point the real ZhipuChatProvider at (the
-    # seeded always-present llm/dummy secret_config row; rate-limit
-    # error injection via POST /control). Kept live by the watchdog
-    # like the other daemons so a test never waits on a cold server;
-    # grouped under the stream sub-scope; the service name IS the
-    # module name (spawn contract).
-    "llm_agents.test.dummy_llm.server": ("database", "stream"),
     WATCHDOG_SERVICE: ("database", "monitoring"),
+}
+
+# Per-service SOURCE-FINGERPRINT roots — the repo-relative directories
+# whose *.py files define the code a monitored service runs. The process
+# stamps their hash on its heartbeat at registration (one fingerprint per
+# LIFE — it never recomputes), and database/stream_watchdog.py recomputes
+# it from disk each scan: a mismatch means the sources moved under a
+# running process (the stale-process incident of 2026-11-13 — a daemon
+# started Nov 12 silently ignored the fresh RunRequest.provider field and
+# ran requests on the wrong provider until manually restarted). Default
+# roots for an unlisted service: its TOP-LEVEL package directory + the
+# shared _common tree (see fingerprint_roots_for).
+FINGERPRINT_ROOTS: dict[str, tuple[str, ...]] = {
+    "server_cluster.monitor": ("server_cluster", "_common"),
+    "database.db_health": ("database", "_common"),
+    "llm_agents.mcp": ("llm_agents", "_common"),
+    "llm_agents.sandbox": ("llm_agents", "_common"),
+    "llm_agents.deep_agents.server": ("llm_agents", "_common"),
+    WATCHDOG_SERVICE: ("database", "_common"),
 }
 
 # A service counts as stale — dead or wedged — once its beat is this old.
@@ -165,12 +183,17 @@ HEARTBEAT_INTERVAL_S = 60.0
 # life after restart). started_at is NOT touched on conflict: the run's
 # start is stamped once by _CLAIM_SQL when the new life takes over the
 # row — updating it here would make started_at tick with every beat and
-# "Last run started" drift forward while the process runs.
+# "Last run started" drift forward while the process runs. The same
+# per-life logic applies to code_fingerprint: the process computes it
+# ONCE at registration (source_fingerprint over its FINGERPRINT_ROOTS)
+# and re-writes the SAME value every beat — database/stream_watchdog.py
+# recomputes it from DISK per scan, so a drifting value under a live
+# beat is the stale-process signal.
 _BEAT_SQL = f"""
 INSERT INTO {HEARTBEAT_TABLE}
     (service, scope, sub_scope, pid, started_at, beat_at,
-     stop_reason, is_normal_exit, stopped_at)
-VALUES (%s, %s, %s, %s, now(), now(), NULL, NULL, NULL)
+     stop_reason, is_normal_exit, stopped_at, code_fingerprint)
+VALUES (%s, %s, %s, %s, now(), now(), NULL, NULL, NULL, %s)
 ON CONFLICT (service) DO UPDATE
 SET scope = EXCLUDED.scope,
     sub_scope = EXCLUDED.sub_scope,
@@ -178,7 +201,8 @@ SET scope = EXCLUDED.scope,
     beat_at = now(),
     stop_reason = NULL,
     is_normal_exit = NULL,
-    stopped_at = NULL
+    stopped_at = NULL,
+    code_fingerprint = EXCLUDED.code_fingerprint
 """
 
 # The stop write is an UPSERT too: a process that dies before its first
@@ -214,7 +238,7 @@ WHERE id = %s
 
 def beat_once(
     service: str, scope: str | None = None, sub_scope: str | None = None,
-    pid: int | None = None,
+    pid: int | None = None, code_fingerprint: str | None = None,
 ) -> None:
     """One synchronous RUNNING-beat upsert (tests; the watchdog thread
     covers its own service in production)."""
@@ -229,6 +253,7 @@ def beat_once(
                     reg_scope or "unknown",
                     reg_sub,
                     pid if pid is not None else os.getpid(),
+                    code_fingerprint,
                 ),
             )
     finally:
@@ -283,6 +308,50 @@ def pid_alive_for_service(pid: int, service: str) -> bool:
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def fingerprint_roots_for(service: str) -> tuple[str, ...]:
+    """The repo-relative source roots whose *.py files fingerprint a
+    service's running code — the FINGERPRINT_ROOTS entry when listed,
+    else the module's TOP-LEVEL package directory + the shared _common
+    tree (``downloads.stream.szse.price`` → ("downloads", "_common"))."""
+    listed = FINGERPRINT_ROOTS.get(service)
+    if listed is not None:
+        return listed
+    top = service.split(".")[0] if service else ""
+    return (top, "_common") if top else ("_common",)
+
+
+def source_fingerprint(roots: tuple[str, ...]) -> str:
+    """A content hash over the *.py sources under ``roots`` — the code
+    fingerprint a heartbeat life stamps at registration and the stream
+    watchdog recomputes from disk per scan. md5 over the files' sorted
+    relative paths + sizes + contents: content-based on purpose, since
+    this repo is edited on Windows and run in WSL and the cross-boundary
+    mtime check is already known unreliable (the __pycache__ convention
+    exists for it). Fail-soft: any walk/read problem returns "unknown"
+    (the staleness check treats it as uncheckable — a fingerprinting
+    error must never restart a healthy service)."""
+    try:
+        digest = hashlib.md5()
+        for root in roots:
+            base = _REPO_ROOT / root
+            if not base.is_dir():
+                continue  # a missing root contributes nothing (stable)
+            for path in sorted(base.rglob("*.py")):
+                rel = path.relative_to(_REPO_ROOT).as_posix()
+                data = path.read_bytes()
+                digest.update(rel.encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(str(len(data)).encode("ascii"))
+                digest.update(b"\0")
+                digest.update(data)
+        return digest.hexdigest()
+    except Exception:  # noqa: BLE001 — fail-soft to uncheckable
+        return "unknown"
+
+
+_SERVICE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
 def service_from_module_path(module: str) -> tuple[str, str, str | None]:
     """Dotted module path → (service, scope, sub_scope).
 
@@ -291,11 +360,22 @@ def service_from_module_path(module: str) -> tuple[str, str, str | None]:
                                  "monitoring"). scope is the top-level
     pipeline area (first segment), sub_scope the second — the same
     taxonomy the MONITORED_SERVICES registry uses.
+
+    Segments must fit the static service_config tree's dotted-prefix
+    charset ([A-Za-z0-9_-] — the same contract
+    data_viz/api/services/static-config.service.ts enforces): a name
+    outside it raises ValueError so autoregister() degrades to
+    unmonitored instead of writing a row the monitor API cannot map
+    back to a config (a stdin-run script's ``__main__.__file__`` is the
+    literal ``<stdin>`` — registered as-is 2026-11-07, it 500'd
+    GET /api/monitor/stream until the row was purged).
     """
     parts = module.split(".")
     if parts and parts[-1] == "__main__":
         parts = parts[:-1]
-    if not parts or not all(parts):
+    if not parts or not all(parts) or not all(
+        _SERVICE_SEGMENT_RE.fullmatch(p) for p in parts
+    ):
         raise ValueError(f"cannot derive a service name from {module!r}")
     service = ".".join(parts)
     scope = parts[0]
@@ -362,12 +442,14 @@ class HeartbeatThread(threading.Thread):
     def __init__(
         self, service: str, scope: str, sub_scope: str | None,
         interval_s: float = HEARTBEAT_INTERVAL_S,
+        code_fingerprint: str | None = None,
     ):
         super().__init__(name=f"heartbeat-{service}", daemon=True)
         self._service = service
         self._scope = scope
         self._sub_scope = sub_scope
         self._interval_s = interval_s
+        self._code_fingerprint = code_fingerprint
         self._halt = threading.Event()
         self._last_warn = 0.0
 
@@ -397,7 +479,8 @@ class HeartbeatThread(threading.Thread):
                 with conn.cursor() as cur:
                     cur.execute(
                         _BEAT_SQL,
-                        (self._service, self._scope, self._sub_scope, os.getpid()),
+                        (self._service, self._scope, self._sub_scope,
+                         os.getpid(), self._code_fingerprint),
                     )
             except Exception as e:  # noqa: BLE001
                 self._warn(f"beat failed, reconnecting: {e}")
@@ -595,6 +678,30 @@ def max_parallel_for(service: str) -> int:
             if isinstance(cap, int) and cap >= 1:
                 return cap
     return DEFAULT_MAX_PARALLEL
+
+
+DEFAULT_STALE_PROCESS_CHECK = True
+
+
+def stale_check_for(service: str) -> bool:
+    """Whether the stream watchdog may restart this service for a STALE
+    PROCESS (its heartbeat's code_fingerprint no longer matches the
+    on-disk sources — the service kept running old code after an edit).
+    The service's own service_config/ file's ``stale_process_check``
+    when present (false opts OUT — e.g. a service whose restarts must
+    be strictly manual), else the tree-root default.json's, else
+    DEFAULT_STALE_PROCESS_CHECK. Same read-fail-soft contract as
+    max_parallel_for: a config problem never disables supervision."""
+    for file in _service_config_files(service):
+        try:
+            doc = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            flag = doc.get("stale_process_check")
+            if isinstance(flag, bool):
+                return flag
+    return DEFAULT_STALE_PROCESS_CHECK
 
 
 def _clean_parallel_entries(value: object) -> tuple[str, ...]:
@@ -1034,7 +1141,15 @@ def register_service(
             flush=True,
         )
 
-    thread = HeartbeatThread(service, reg_scope, reg_sub, interval_s)
+    thread = HeartbeatThread(
+        service, reg_scope, reg_sub, interval_s,
+        # The code fingerprint is per LIFE: computed once here from the
+        # on-disk sources this process was (about to be) loaded from,
+        # then written unchanged by every beat — the stream watchdog's
+        # stale-process check compares it against a FRESH disk hash per
+        # scan and restarts the service when the two drift apart.
+        code_fingerprint=source_fingerprint(fingerprint_roots_for(service)),
+    )
     _threads[service] = thread
     thread.start()
     return thread

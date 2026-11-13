@@ -1,6 +1,6 @@
 """llm_agents.kg.hotpaths — llm.kg_hotpaths, the PROMOTED hot-path
 layer of the kg_search chain cache (DDL
-``database/sql/llm/16_kg_hotpaths.sql``).
+``database/sql/llm/kg_hotpaths.sql``).
 
 kg_search replays from THIS table, not from llm.kg_queries: a query
 lands here only after its result chain has proven REPEATABLE — the

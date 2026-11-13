@@ -36,7 +36,7 @@ def render_added(states: List[StateRow]) -> str:
 
 def render_plan(states: List[StateRow]) -> str:
     """The MAIN lane as the model reads it: ordinal, status, node, title
-    (children of forks are deliberately absent — their lanes belong to
+    (children of spawns are deliberately absent — their lanes belong to
     the subagents that own them)."""
     if not states:
         return "(the plan has no steps)"
@@ -48,36 +48,36 @@ def render_plan(states: List[StateRow]) -> str:
 class PlanAuthority:
     """One conversation's write scope over the thread's plan graph.
 
-    ``main`` authorities own the pending top-level lane plus fork
+    ``main`` authorities own the pending top-level lane plus spawn
     termination; ``sub`` authorities own exactly the nodes they minted
-    under their fork state. The runner mints one per conversation and
+    under their spawn state. The runner mints one per conversation and
     the plan tools (``tools.plan_tools``) close over it — the model
     never sees a scope choice."""
 
     thread_id: str
     # The MAIN-lane in-progress tracker the runner's spawn parenting
     # reads (shared mutable cell — [current_state_id]). The LAST-TICK
-    # cell beside it is the parenting FALLBACK: a fork spawned in the
+    # cell beside it is the parenting FALLBACK: a spawn created in the
     # same step as its tick (sibling calls race the tracker) parents to
     # the step the tick just touched instead of polluting the top lane.
     current_state_id: Optional[List[Optional[int]]] = None
     last_state_id: Optional[List[Optional[int]]] = None
-    # MAIN only: terminate background forks — the runner binds the
+    # MAIN only: terminate background spawns — the runner binds the
     # execute agent's canceller here after the agent exists (None =
-    # every running fork; each id also settles its fork state). Async
+    # every running spawn; each id also settles its spawn state). Async
     # or sync callable; returns the ids that actually stopped.
     cancel_runs: Optional[Callable[[Optional[List[str]]],
                                    Union[List[str], Any]]] = None
-    # SUB only: the fork state every add parents to, the context the
+    # SUB only: the spawn state every add parents to, the context the
     # nodes run in, and the ids this authority has minted (its tick
     # scope — nothing else in the tree is addressable).
-    fork_state_id: Optional[int] = None
+    spawn_state_id: Optional[int] = None
     llm_context_id: Optional[str] = None
     minted: Set[int] = field(default_factory=set)
 
     @property
     def is_main(self) -> bool:
-        return self.fork_state_id is None
+        return self.spawn_state_id is None
 
     @staticmethod
     async def _main_lane_states(thread_id: str) -> List[StateRow]:
@@ -123,7 +123,7 @@ class PlanAuthority:
         GUARANTEES (what the caller may rely on): settled rows are history —
         nothing here changes a status, a timestamp or a context pointer;
         later rows only shift ORDINALS (the living plan's position
-        semantics); fork subtrees are untouched (the shift filters
+        semantics); spawn subtrees are untouched (the shift filters
         parent_state_id IS NULL, adds are top-level); and the running graph
         executes the new nodes on its next hop (the router re-reads the
         tree between hops). Raises ExternalPlanError with the actionable
@@ -167,7 +167,7 @@ class PlanAuthority:
 
     async def rendered(self) -> str:
         """The authority's lane AS THE MODEL SEES IT — the main lane for
-        a main authority, the sub's minted nodes only for a fork."""
+        a main authority, the sub's minted nodes only for a spawn."""
         if not self.is_main:
             nodes: List[StateRow] = []
             for state_id in sorted(self.minted):
@@ -175,37 +175,37 @@ class PlanAuthority:
                 if state is not None:
                     nodes.append(state)
             return render_added(nodes) if nodes \
-                else "(no nodes under your fork)"
+                else "(no nodes under your spawn)"
         return render_plan(await self._main_lane_states(self.thread_id))
 
     async def sub_add(self, args: Dict[str, Any]) -> List[str]:
-        """The SUB scope: adds under its own fork, nothing else.
-        Delegation markers are refused (a fork node is worked by the
-        subagent itself — forking a sub-sub agent goes through the spawn
-        tool, whose child state lands under this fork anyway), the fork
+        """The SUB scope: adds under its own spawn, nothing else.
+        Delegation markers are refused (a spawn node is worked by the
+        subagent itself — spawning a sub-sub agent goes through the spawn
+        tool, whose child state lands under this spawn anyway), the spawn
         cap bounds runaway investigation, and the minted-id set grows so
-        the fork's tick tool can address exactly these nodes."""
+        the spawn's tick tool can address exactly these nodes."""
         steps, error = self._parse_add_steps(args, key="add_nodes")
         if error:
             return [error]
         if not steps:
             return ["update_plan error: this call added nothing — pass "
-                    "add_nodes (your fork's only update)"]
+                    "add_nodes (your spawn's only update)"]
         if any(s.delegate for s in steps):
-            return ["update_plan error: fork nodes are worked by "
-                    "yourself — fork a sub-sub agent with spawn_subagent "
+            return ["update_plan error: spawn nodes are worked by "
+                    "yourself — spawn a sub-sub agent with spawn_subagent "
                     "instead of marking a node delegated"]
-        existing = await PLAN_STORE.fetch_state(int(self.fork_state_id or 0))
+        existing = await PLAN_STORE.fetch_state(int(self.spawn_state_id or 0))
         if existing is None:
-            return ["update_plan error: your fork state is gone"]
-        max_fork = run_limits().max_fork_children
-        if len(self.minted) + len(steps) > max_fork:
-            return [f"update_plan error: your fork is capped at "
-                    f"{max_fork} nodes"]
+            return ["update_plan error: your spawn state is gone"]
+        max_spawn = run_limits().max_spawn_children
+        if len(self.minted) + len(steps) > max_spawn:
+            return [f"update_plan error: your spawn is capped at "
+                    f"{max_spawn} nodes"]
         added = await PLAN_STORE.add_plan_states(
             self.thread_id, steps,
-            parent_state_id=self.fork_state_id,
+            parent_state_id=self.spawn_state_id,
             llm_context_id=self.llm_context_id)
         self.minted.update(s.state_id for s in added)
-        return [f"added {len(added)} node(s) under your fork "
+        return [f"added {len(added)} node(s) under your spawn "
                 f"(tick them by state id):", render_added(added)]

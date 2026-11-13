@@ -16,7 +16,7 @@ SOURCE
   series built by builds.industry — the former mean_price column,
   rehooked 2026-08-24).
 
-WINDOW SEMANTICS (corr_ma{W}_{W}d, W in WINDOWS = [20, 60, 255])
+WINDOW SEMANTICS (corr_ma{W}_{W}d, W in WINDOWS = [20, 60, 252])
   For each industry the MA-W curve is the trailing W-trading-day rolling
   mean of mean_close. Window starts sit on the pool calendar GRID:
   start indices 0, INTERVAL_DAYS, 2*INTERVAL_DAYS, ... (INTERVAL_DAYS =
@@ -121,7 +121,7 @@ ANALYSIS_DESCRIPTION = (
     "curves of mean_close (stats.industry_basic_stats.mean_close, built "
     "by builds.industry — the former mean_price column, rehooked). One "
     "row per (industry_id, benchmark_industry_id, pool_size, start_date, "
-    "interval) with corr_ma20_20d / corr_ma60_60d / corr_ma255_255d. "
+    "interval) with corr_ma20_20d / corr_ma60_60d / corr_ma252_252d. "
     "Windows start on the pool calendar grid every `interval` (default "
     "20) trading days; corr_ma{W}_{W}d correlates the two industries' "
     "MA-W curves over the W trading days starting on start_date. Both "
@@ -142,7 +142,7 @@ POOL_SIZES = [POOL_SIZE_CODE[p] for p in ("small", "mid", "large", "all")]
 # Window lengths in trading days. The MA-{W} curve is the trailing W-day
 # rolling mean of mean_close; corr_ma{W}_{W}d correlates the two industries'
 # MA-W curves over the W-day window starting on start_date.
-WINDOWS = [20, 60, 255]
+WINDOWS = [20, 60, 252]
 
 # Stride in trading days between consecutive window starts on the pool
 # calendar grid (stored as the `interval` column, default 20).
@@ -204,7 +204,7 @@ async def find_missing_corr_window_ends(
     # Covered end of a row = the calendar date at (calendar index of
     # start_date) + W - 1 — TRADING-day arithmetic. A plain
     # ``start_date + (W - 1)`` adds CALENDAR days and lands on the wrong
-    # date (off by ~1 day per 3 trading days, ~106 days for W=255), so
+    # date (off by ~1 day per 3 trading days, ~105 days for W=252), so
     # covered ends would never match the grid's potential ends.
     cov_selects = " UNION ".join(
         f"SELECT c2.date AS d FROM {TABLE} t "
@@ -611,9 +611,9 @@ async def run_correlations(
                 "interval": INTERVAL_DAYS,
                 "corr_ma20_20d": c20,
                 "corr_ma60_60d": c60,
-                "corr_ma255_255d": c255,
+                "corr_ma252_252d": c252,
             }
-            for a, b, d, c20, c60, c255 in zip(
+            for a, b, d, c20, c60, c252 in zip(
                 ind_l, bench_l, sd_l, val_l[0], val_l[1], val_l[2],
             )
         )

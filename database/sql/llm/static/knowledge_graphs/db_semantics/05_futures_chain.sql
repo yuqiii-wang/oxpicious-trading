@@ -2,26 +2,23 @@
 --  Knowledge-graph seed — namespace 0 (DB semantics): the futures chain —
 --  identity, daily bars, the basis-vs-underlying study and its quintile
 --  summary. Conventions: .agents/skills/kg-db-semantics. DDL:
---  13_kg_hypergraph.sql.
+--  kg_entities.sql + kg_edges.sql.
 --
 --  Idempotent — entities upsert on uq_kg_entities_ns_type_name; edges
 --  insert only when the (relation, sub_relation, entity_ids) triple is
 --  absent. Also carries stats.v_futures_daily's edges (the view entity is
 --  seeded in 03, its member entities here).
 -- ============================================================================
+--  2026-11-09: the 'table' entities migrated to the corpus rule
+--  db_semantics_tables; since 2026-11-10 the payloads live in the
+--  tables' own database/sql/ DDL files — ONE TABLE = ONE FILE, payload
+--  in the leading banner (formerly the parallel database/kg_tables/
+--  corpus, filename = the schema-qualified name). This seed keeps
+--  only what doesn't fit a rule: the edge INSERTs and the DB
+--  view entities. The rule's ledger owns the migrated tables;
+--  edges here still resolve them BY NAME.
 
-INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VALUES
-    (0, 'stats.futures_identity',        'table', ARRAY['futures', '期货', 'identity', '标识', 'reference', '参考'],
-     'Which futures contract traded on which day, with its product, maturity and underlying mapping — the shared identity for all futures daily tables.'),
-    (0, 'stats.futures_basic_stats',     'table', ARRAY['futures', '期货', 'ohlcv', 'K线', 'settlement', '结算价', 'open interest', '持仓量'],
-     'Each futures contract''s daily OHLC with settlement price, traded volume and open interest.'),
-    (0, 'analysis.futures_ext',          'table', ARRAY['futures', '期货', 'basis', '基差', 'convergence', '收敛', 'mean reversion', '均值回归'],
-     'Each futures contract''s daily basis versus its underlying — the price gap, its convergence rate, correlation and mean-reversion speed.'),
-    (0, 'analysis.futures_gap_quintiles','table', ARRAY['futures', '期货', 'basis', '基差', 'quintile', '分位', 'convergence', '收敛'],
-     'How the futures basis moves over the following days per starting-gap quintile — the basis-convergence pattern summary per contract type.')
-ON CONFLICT (namespace, entity_type, name) DO UPDATE
-    SET description = EXCLUDED.description,
-        tags        = EXCLUDED.tags;
+
 
 INSERT INTO llm.kg_edges (namespace, relation, sub_relation, entity_ids)
 SELECT 0, e.relation, e.sub_relation, ARRAY[a.entity_id, b.entity_id]::BIGINT[]

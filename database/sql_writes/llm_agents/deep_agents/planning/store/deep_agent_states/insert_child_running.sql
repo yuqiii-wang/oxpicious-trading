@@ -10,16 +10,20 @@
 --   $1 thread_id        TEXT — the owning (custom) thread
 --   $2 super_thread_id  TEXT | NULL — the chain id (derived host-side
 --                       from the thread's rows)
---   $3 parent_state_id  BIGINT — the fork parent's state row
---   $4 node             TEXT — the fork's node slug
+--   $3 parent_state_id  BIGINT — the spawn parent's state row
+--   $4 node             TEXT — the child's node slug (spawn_… | fork_…)
 --   $5 title            TEXT — the child's title
 --   $6 llm_context_id   TEXT | NULL — the child conversation's ONE
 --                       chained context
+--   $7 child_kind       SMALLINT | NULL — the child KIND
+--                       (agent_child_kind: 0 spawn | 1 fork; NULL only
+--                       when the caller could not classify — reads as
+--                       spawn)
 --
 -- Returns the new state_id (the registry item lands in the store when
 -- the output hook settles the child).
 INSERT INTO llm.deep_agent_states
     (thread_id, super_thread_id, parent_state_id, node, title,
-     status, ordinal, started_at, llm_context_id)
-VALUES ($1, $2, $3, $4, $5, 'in_progress', 0, now(), $6)
+     status, ordinal, started_at, llm_context_id, child_kind)
+VALUES ($1, $2, $3, $4, $5, 'in_progress', 0, now(), $6, $7)
 RETURNING state_id

@@ -9,12 +9,12 @@ import {
 import type { IndustryCorrOffsetRow } from "@shared/types";
 
 export type PoolSize = "all" | "small" | "mid" | "large";
-export type CorrWindow = "20d" | "60d" | "255d";
+export type CorrWindow = "20d" | "60d" | "252d";
 /** The charted metrics — the opposite score (1 − offset) / 2 is a pure
  *  rescale of the offset correlation, so it is not a separate metric. */
 export type OffsetMetric = "overall" | "sub";
 
-export const WINDOWS: CorrWindow[] = ["20d", "60d", "255d"];
+export const WINDOWS: CorrWindow[] = ["20d", "60d", "252d"];
 
 /** Default page seed — 红利 (DIV_GENERAL) + 科技 (TECH_GENERAL) only, so
  * first paint fetches ONE pair instead of a quadratic selection. Falls
@@ -40,12 +40,12 @@ export const METRIC_COLS: Record<OffsetMetric, Record<CorrWindow, string>> = {
   overall: {
     "20d": "overall_corr_ma20_20d",
     "60d": "overall_corr_ma60_60d",
-    "255d": "overall_corr_ma255_255d",
+    "252d": "overall_corr_ma252_252d",
   },
   sub: {
     "20d": "offset_sub_corr_ma20_20d",
     "60d": "offset_sub_corr_ma60_60d",
-    "255d": "offset_sub_corr_ma255_255d",
+    "252d": "offset_sub_corr_ma252_252d",
   },
 };
 
@@ -61,7 +61,7 @@ export const METRIC_LABELS: Record<OffsetMetric, string> = {
 export const WIN_END_COLS: Record<CorrWindow, string> = {
   "20d": "end_ma20_20d",
   "60d": "end_ma60_60d",
-  "255d": "end_ma255_255d",
+  "252d": "end_ma252_252d",
 };
 
 /** X key of a row for the given window (its END date), or null when the

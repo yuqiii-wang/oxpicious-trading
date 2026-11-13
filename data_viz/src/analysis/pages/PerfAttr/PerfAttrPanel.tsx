@@ -10,7 +10,7 @@
  *   2. %/Abs toggle for the time-series charts (shown after a bar is clicked).
  *   3. Index Trading Amt Contribution (benchmark vs subject ETF turnover)
  *   4. Close Price History Trend (subject vs benchmark) with rolling
- *      close correlations (5/20/60/255d) in the tooltip.
+ *      close correlations (5/20/60/252d) in the tooltip.
  *
  * Returns are NOT stored in the DB — benchmark_return and subject_return
  * are computed on-the-fly in the attribution SQL via LATERAL joins to
@@ -343,7 +343,7 @@ export function PerfAttrPanel({ code, name, secType }: PanelProps) {
                  turnover) — tooltip surfaces the bench/code liquidity ratio,
                  its 5-day MA, and the subject's share (1/ratio).
               2. Close price history trend (subject vs benchmark) — tooltip
-                 surfaces the rolling 5/20/60/255-day close-price correlations.
+                 surfaces the rolling 5/20/60/252-day close-price correlations.
               The %/Abs toggle applies to both charts: "percentage" rebases
               both curves to 0% at the first common date; "absolute" shows raw
               values (亿元 / close price). */}

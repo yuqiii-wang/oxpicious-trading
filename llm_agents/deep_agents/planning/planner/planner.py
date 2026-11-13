@@ -107,7 +107,7 @@ class Planner:
         # The init-message builder inputs (the slim-retry path rebuilds
         # the FIRST user message without its heaviest blocks when the
         # request overruns the per-request budget). A session built
-        # from explicit messages (the fork pre-planner) has no
+        # from explicit messages (the spawn pre-planner) has no
         # components — its input is already tiny, so the slim-retry
         # never applies (a budget overrun there just propagates).
         self._from_messages = messages is not None
@@ -121,7 +121,7 @@ class Planner:
             ])
 
     @classmethod
-    async def preplan_fork(
+    async def preplan_spawn(
         cls,
         chat_complete: Callable[..., Any],
         delegate: str,
@@ -131,29 +131,29 @@ class Planner:
         system_prompt: Optional[str] = None,
         repair_template: Optional[str] = None,
     ) -> List[PlannedStep]:
-        """One delegated fork's PRE-PLANNED sub-steps — the small parent-
-        side proposal call that breaks a fork's "plan yourself, then work"
+        """One delegated spawn's PRE-PLANNED sub-steps — the small parent-
+        side proposal call that breaks a spawn's "plan yourself, then work"
         big task into (this tiny plan call) + (an executor that works
         pre-laid-out nodes). The structural fix for the measured failure
-        (2026-11-03 run: 3 of 4 forks burned their whole conversation-hop
-        budget exploring and never called update_plan — the fork's
+        (2026-11-03 run: 3 of 4 spawns burned their whole conversation-hop
+        budget exploring and never called update_plan — the spawn's
         planning child row failed at the step limit and the section was
         lost).
 
         The session reuses the Planner over ``subplan_system_prompt`` (the
-        SHORT fork-scoped contract — one JSON reply, no batches): its input
-        is the fork goal + the run's business framing alone, far under the
+        SHORT spawn-scoped contract — one JSON reply, no batches): its input
+        is the spawn goal + the run's business framing alone, far under the
         per-request budget. ``system_prompt`` is the fetched
         ``deep-agent-subplan-system`` row and ``repair_template`` the
         fetched ``deep-agent-plan-repair-message`` frame (both from the
         run's agent_prompts map; None = the built-in constants). Sub-steps
         come back INLINE (delegate markers stripped — they run in the
-        fork's own conversation, not as spawns). Raises on any failure;
+        spawn's own conversation, not as spawns). Raises on any failure;
         the delegated hop's fail-soft wrapper then falls back to the
         child self-planning contract."""
         framing = PlanPromptAssembler("", data, []).framing()
         user = delegate if not framing else (
-            f"{delegate}\n\n[The fork's slice of the run's context]\n{framing}")
+            f"{delegate}\n\n[The spawn's slice of the run's context]\n{framing}")
         planner = cls(
             chat_complete,
             messages=[

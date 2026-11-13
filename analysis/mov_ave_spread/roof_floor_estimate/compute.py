@@ -60,7 +60,7 @@ def compute_estimate_columns(df: pd.DataFrame) -> pd.DataFrame:
     Args:
         df: step frame with columns [sec_type, code, date, price, high,
             low], the FULL per-code history (rolling methods need up to
-            1275 prior rows per code).
+            1260 prior rows per code).
 
     Returns:
         The same df with the estimate columns added in place (and the

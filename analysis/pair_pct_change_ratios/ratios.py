@@ -131,7 +131,7 @@ _MIN_PERIODS: Dict[int, int] = {N: -(-9 * N // 10) for N in RATIO_WINDOWS}
 
 # The rolling needs max(RATIO_WINDOWS) trailing common days before the
 # earliest sampled grid date.
-LOOKBACK_TRADING_DAYS: int = max(RATIO_WINDOWS)  # 255
+LOOKBACK_TRADING_DAYS: int = max(RATIO_WINDOWS)  # 252
 
 # NUMERIC(10,6) bound backstop — huge ratios drop to NULL instead of
 # erroring the bulk write.
@@ -381,7 +381,7 @@ async def run_pair_pct_change_ratios(
         return
 
     # ---- Fetch member closes + market benchmark closes with a
-    # 255-trading-day lookback before the earliest sampled grid date.
+    # 252-trading-day lookback before the earliest sampled grid date.
     start_date: Optional[datetime.date] = recent_trading_day_cutoff(
         LOOKBACK_TRADING_DAYS, ref=min(target))
     logger.info(f"\n[1/3] Fetching closes from {start_date.isoformat()} "

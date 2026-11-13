@@ -27,13 +27,13 @@
       {{high_expr}} AS high,
       {{low_expr}} AS low,
       {{trading_amt_expr}} AS trading_amount,
-      t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+      t.ma5, t.ma20, t.ma60, t.ma120, t.ma252,
       d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
-      d.price_vs_ma120, d.price_vs_ma255,
-      d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255,
+      d.price_vs_ma120, d.price_vs_ma252,
+      d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma252,
       d.price_slope, d.ma5_slope, d.ma20_slope,
       d.price_curvature, d.ma5_curvature, d.ma20_curvature,
-      d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days
+      d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_252days
     FROM d
     {{chart_joins}}
     ORDER BY d.date ASC

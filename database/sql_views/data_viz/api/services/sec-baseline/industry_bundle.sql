@@ -29,6 +29,6 @@
     AVG(s.close) OVER (PARTITION BY s.industry_id ORDER BY s.date
       ROWS BETWEEN 119 PRECEDING AND CURRENT ROW)::float8 AS ma120,
     AVG(s.close) OVER (PARTITION BY s.industry_id ORDER BY s.date
-      ROWS BETWEEN 254 PRECEDING AND CURRENT ROW)::float8 AS ma255
+      ROWS BETWEEN 254 PRECEDING AND CURRENT ROW)::float8 AS ma252
   FROM src s
   ORDER BY s.date

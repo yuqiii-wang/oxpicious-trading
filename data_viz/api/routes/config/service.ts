@@ -5,6 +5,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { HttpError } from "../../lib/http.js";
 import {
   deleteServiceConfigEntry,
   readDefaultServiceConfig,
@@ -12,7 +13,7 @@ import {
   validParallelServiceEntries,
   writeServiceConfigEntry,
   type ServiceConfigEntry,
-} from "../../services/static-config.service.js";
+} from "../../services/infra/static-config.service.js";
 
 const router = Router();
 
@@ -63,21 +64,16 @@ function toServicePayload(e: ServiceConfigEntry): ServiceConfigPayload {
 /** GET /api/config/service — the whole service-config inventory plus the
  *  default.json fallback entry. */
 router.get("/service", (_req: Request, res: Response) => {
-  try {
-    res.json({
-      success: true,
-      generatedAt: new Date().toISOString(),
-      rows: readServiceConfig().map(toServicePayload),
-      default: toServicePayload(readDefaultServiceConfig()),
-    });
-  } catch (err) {
-    console.error("[config/service GET] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    rows: readServiceConfig().map(toServicePayload),
+    default: toServicePayload(readDefaultServiceConfig()),
+  });
 });
 
-/** Validate + normalize a service-config entry from the wire (throws on
- *  bad input with a user-presentable message). */
+/** Validate + normalize a service-config entry from the wire (throws
+ *  HttpError 400 INVALID_PARAM with a user-presentable message). */
 function parseServiceEntry(body: unknown): ServiceConfigEntry {
   const b = (typeof body === "object" && body != null ? body : {}) as Record<string, unknown>;
   const service = typeof b.service === "string" ? b.service.trim() : "";
@@ -85,11 +81,11 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
     service !== "default" &&
     !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(service)
   ) {
-    throw new Error("service must be a dotted name like builds.etf (or 'default')");
+    throw new HttpError(400, "INVALID_PARAM","service must be a dotted name like builds.etf (or 'default')");
   }
   const maxParallel = Number(b.maxParallel);
   if (!Number.isInteger(maxParallel) || maxParallel < 1) {
-    throw new Error("maxParallel must be an integer >= 1");
+    throw new HttpError(400, "INVALID_PARAM","maxParallel must be an integer >= 1");
   }
   // The in-service RUN cap (the deep-agents summary generation today):
   // null = unset (the code default of one at a time) or an integer >= 1.
@@ -99,12 +95,12 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
   if (b.maxParallelRuns != null) {
     maxParallelRuns = Number(b.maxParallelRuns);
     if (!Number.isInteger(maxParallelRuns) || maxParallelRuns < 1) {
-      throw new Error("maxParallelRuns must be an integer >= 1 or null");
+      throw new HttpError(400, "INVALID_PARAM","maxParallelRuns must be an integer >= 1 or null");
     }
   }
   const freq = typeof b.freq === "string" ? b.freq : "";
   if (!(FREQ_VALUES as readonly string[]).includes(freq)) {
-    throw new Error(`freq must be one of: ${FREQ_VALUES.join(" | ")}`);
+    throw new HttpError(400, "INVALID_PARAM",`freq must be one of: ${FREQ_VALUES.join(" | ")}`);
   }
   // Parallel-services lists: arrays of rooted dotted prefixes that must
   // NAME a real scope / sub-scope path / service — the valid-entry set is
@@ -115,19 +111,19 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
   const parseParallelList = (v: unknown, field: string): string[] => {
     if (v == null) return [];
     if (!Array.isArray(v) || v.some((e) => typeof e !== "string")) {
-      throw new Error(`${field} must be an array of dotted names`);
+      throw new HttpError(400, "INVALID_PARAM",`${field} must be an array of dotted names`);
     }
     const out: string[] = [];
     for (const e of v as string[]) {
       const entry = e.trim();
       if (entry === "") continue;
       if (!/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(entry)) {
-        throw new Error(
+        throw new HttpError(400, "INVALID_PARAM",
           `${field} entries must be dotted names (scope, sub-scope path, or full service name), got '${entry}'`,
         );
       }
       if (!validEntries.has(entry)) {
-        throw new Error(
+        throw new HttpError(400, "INVALID_PARAM",
           `${field} entry '${entry}' matches no scope, sub-scope path, or service in the service_config tree`,
         );
       }
@@ -148,18 +144,18 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
   // this is the non-UI backstop).
   const both = included.filter((e) => excluded.includes(e));
   if (both.length > 0) {
-    throw new Error(
+    throw new HttpError(400, "INVALID_PARAM",
       `entries cannot be in both parallel lists: ${both.join(", ")}`,
     );
   }
   const strOrNull = (v: unknown, field: string): string | null => {
     if (v == null) return null;
-    if (typeof v !== "string") throw new Error(`${field} must be a string or null`);
+    if (typeof v !== "string") throw new HttpError(400, "INVALID_PARAM",`${field} must be a string or null`);
     return v;
   };
   const sourceRef = strOrNull(b.sourceRef, "sourceRef");
   if (sourceRef == null || sourceRef === "") {
-    throw new Error("sourceRef is required (relative file paths, ';'-separated)");
+    throw new HttpError(400, "INVALID_PARAM","sourceRef is required (relative file paths, ';'-separated)");
   }
   return {
     service,
@@ -179,33 +175,21 @@ function parseServiceEntry(body: unknown): ServiceConfigEntry {
  *  service name picks the tree file; "default" edits the fallback).
  *  updated_at is stamped server-side. */
 router.put("/service", (req: Request, res: Response) => {
-  try {
-    const saved = writeServiceConfigEntry(parseServiceEntry(req.body));
-    res.json({ success: true, entry: toServicePayload(saved) });
-  } catch (err) {
-    console.error("[config/service PUT] error:", err);
-    res.status(400).json({ success: false, error: String(err) });
-  }
+  const saved = writeServiceConfigEntry(parseServiceEntry(req.body));
+  res.json({ success: true, entry: toServicePayload(saved) });
 });
 
 /** DELETE /api/config/service/:service — remove a service's tree file so
  *  the default.json fallback applies to it again. */
 router.delete("/service/:service", (req: Request, res: Response) => {
   const service = req.params.service ?? "";
-  try {
-    const existed = deleteServiceConfigEntry(service);
-    if (!existed) {
-      res.status(404).json({
-        success: false,
-        error: `no service_config file for ${service} (fallback already applies)`,
-      });
-      return;
-    }
-    res.json({ success: true });
-  } catch (err) {
-    console.error("[config/service DELETE] error:", err);
-    res.status(400).json({ success: false, error: String(err) });
+  const existed = deleteServiceConfigEntry(service);
+  if (!existed) {
+    throw HttpError.notFound(
+      `no service_config file for ${service} (fallback already applies)`,
+    );
   }
+  res.json({ success: true });
 });
 
 export default router;

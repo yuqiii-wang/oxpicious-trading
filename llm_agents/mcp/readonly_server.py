@@ -199,8 +199,10 @@ class DbReadonlyServer:
                 "large-text tables carry a GIN-indexed search_tsv that "
                 "hand-written ILIKE cannot use on Chinese text. Results are "
                 "capped at "
-                f"{self.MAX_ROWS_HARD_CAP} rows — aggregate or filter in "
-                "SQL instead of fetching wide sweeps. web_search / "
+                f"{self.MAX_ROWS_HARD_CAP} rows — filter narrowly and "
+                "fetch small, then aggregate downstream (in pandas or a "
+                "follow-up small query) instead of one wide sweep or a "
+                "multi-CTE monolith. web_search / "
                 "web_summarize run LIVE web searches (no DB): search "
                 "returns normalized references; summarize answers the "
                 "query with an LLM over them, inline [来源：ref_N] "
@@ -403,8 +405,8 @@ class DbReadonlyServer:
 
     @staticmethod
     def _search_opts(engine: str | None, count: int, recency: str,
-                     domain: str | None,
-                     content_size: str) -> "SearchOptions":
+                     domain: str | None, content_size: str,
+                     ref_recency_days: int) -> "SearchOptions":
         """Build + validate the shared search knobs."""
         from llm_agents.online_search_summary.core.models import (
             SearchOptions,
@@ -412,9 +414,37 @@ class DbReadonlyServer:
 
         opts = SearchOptions(
             engine=engine, count=count, recency=recency, domain=domain,
-            content_size=content_size)
+            content_size=content_size, ref_recency_days=ref_recency_days)
         opts.validate()
         return opts
+
+    # web tools: the default POST-SEARCH ref pre-filter window (~3
+    # months — the recency DOUBLE CHECK; the engine's own recency knob
+    # is coarse and noLimit lets years-old SEO pages rank in, which the
+    # 2026-11-07 research study measured being cited as current state).
+    # 0 disables per call for deliberately historical questions.
+    WEB_REF_RECENCY_DAYS = 92
+
+    @staticmethod
+    def _stale_text_refs(references: list[dict]) -> list[str]:
+        """Reference tags whose whole text (title + snippet) only
+        mentions years older than this year — the regex date scan over
+        what the caller is about to read (``core.date_scan``)."""
+        import datetime
+
+        from llm_agents.online_search_summary.core.date_scan import (
+            DateScanner,
+        )
+        from llm_agents.online_search_summary.core.models import SHANGHAI_TZ
+
+        scanner = DateScanner()
+        today = datetime.datetime.now(SHANGHAI_TZ).date()
+        return [
+            r.get("refer") for r in references
+            if scanner.scan(
+                f"{r.get('title')}\n{r.get('content') or ''}"
+            ).is_all_older(today)
+        ]
 
     # ------------------------------------------------------------------
     # MCP server: tools and lifecycle
@@ -435,7 +465,14 @@ class DbReadonlyServer:
         SHOW / TABLE / VALUES) and return {"columns", "rows", "metadata"}.
         metadata carries row_count, truncated, data_size_bytes, and the
         head/tail 5 rows. Params are positional, matched to $1/$2/... Use
-        the schema-qualified table name (e.g. stats.sec_info)."""
+        the schema-qualified table name (e.g. stats.sec_info). RETRIEVE
+        SMALL, AGGREGATE DOWNSTREAM: prefer several SMALL statements —
+        one narrow SELECT per fetch (just the needed columns, filtered
+        on the table's key grain) — then aggregate/derive in pandas or
+        a follow-up small query. A multi-CTE monolith (joins + window
+        functions + percentiles in one statement) fails as a whole and
+        burns a full round per bug; iterate small and check each
+        result's shape before building on it."""
         try:
             return self.run_query(sql, params=params, max_rows=max_rows)
         except ValueError as exc:
@@ -660,22 +697,54 @@ class DbReadonlyServer:
         engine: str | None = None, count: int = 10,
         recency: str = "noLimit", domain: str | None = None,
         content_size: str = "medium",
+        ref_recency_days: int = WEB_REF_RECENCY_DAYS,
     ) -> dict:
         """Search the open web (LIVE network call, no DB) and return the
         normalized references WITHOUT summarizing:
         {"provider", "engine", "request_id", "created", "intents",
         "references": [{refer, title, content, link, media,
-        publish_date}]}. Knobs: provider zhipu|zhihu; count 1-50
-        (default 10); recency oneDay|oneWeek|oneMonth|oneYear|noLimit;
-        content_size medium|high; domain restricts to one site (e.g.
-        www.sohu.com); engine is provider-specific (zhipu: search_std /
-        search_pro / search_pro_sogou / search_pro_quark, default
-        search_pro). Nothing is persisted."""
+        publish_date}], "stale_refs_dropped", "stale_text_refs"}.
+        stale_text_refs (present only when non-empty) lists references
+        whose WHOLE TEXT only mentions years older than this year —
+        double check those before citing them for current state. THE
+        QUERY MUST CARRY THE
+        TWO FACTS A SEARCH NEEDS: the OBJECT OF INTEREST (the exact
+        industry/index/stock/company name, not a paraphrase) AND THE
+        DATE it is about (年月, e.g. "2026年11月" — a bare topic makes
+        engines resolve to years-old pages). Knobs: provider
+        zhipu|zhihu; count 1-50 (default 10); recency
+        oneDay|oneWeek|oneMonth|oneYear|noLimit (engine-side);
+        ref_recency_days (default 92, 0 disables) is the POST-SEARCH
+        DOUBLE CHECK — references whose publish date is older than this
+        window are dropped before you see them (survivors renumbered
+        ref_1..ref_K; the count dropped rides back as
+        stale_refs_dropped); content_size medium|high; domain restricts
+        to one site (e.g. www.sohu.com); engine is provider-specific
+        (zhipu: search_std / search_pro / search_pro_sogou /
+        search_pro_quark, default search_pro). Nothing is persisted."""
         try:
             opts = self._search_opts(engine, count, recency, domain,
-                                     content_size)
+                                     content_size, ref_recency_days)
             resp = await self._provider(provider).search(query, opts)
-            return resp.to_dict()
+            out = resp.to_dict()
+            if ref_recency_days > 0 and resp.hits:
+                # Lazy like the web tools themselves (see the class
+                # docstring): matching is pure but lives under the
+                # search package's storage half.
+                from llm_agents.online_search_summary.storage.matching \
+                    import RefRecencyFilter
+                outcome = RefRecencyFilter(
+                    window_days=ref_recency_days).apply(resp.hits)
+                out["references"] = [h.to_dict() for h in outcome.hits]
+                out["stale_refs_dropped"] = outcome.n_dropped
+            # Whole-text date scan: references whose ENTIRE text only
+            # mentions years older than this year (an undated snippet
+            # describing 2023 for a 2026 question) — named so the caller
+            # can double check them before citing current state.
+            flagged = self._stale_text_refs(out.get("references") or [])
+            if flagged:
+                out["stale_text_refs"] = flagged
+            return out
         except (ValueError, ImportError, LlmProviderError) as exc:
             return {"error": str(exc)}
 
@@ -685,25 +754,33 @@ class DbReadonlyServer:
         engine: str | None = None, count: int = 10,
         recency: str = "noLimit", domain: str | None = None,
         content_size: str = "medium",
+        ref_recency_days: int = WEB_REF_RECENCY_DAYS,
     ) -> dict:
         """Search the open web (LIVE network call, no DB), then answer
         the query with an LLM summary over the retrieved references.
         Returns {"question", "answer", "cited_refs", "references",
         "provider", "model", "mode", ...} — the answer carries inline
         [来源：ref_N] markers whose ref_N tags match the references.
-        mode compose (default) = search, then a separate LLM pass over
-        the references (refs cannot go missing); native = the
-        provider's one-shot search-in-chat. lang sets the answer
-        language (zh default, e.g. en); model overrides the provider's
-        default chat model; the web_search knobs apply as there.
-        Nothing is persisted — text.* storage stays with the CLI
+        THE QUERY MUST CARRY THE OBJECT OF INTEREST (its exact name)
+        AND THE DATE it is about (年月, e.g. "2026年11月"). For
+        current-state questions the references are PRE-FILTERED to the
+        recent window before the LLM reads them (ref_recency_days,
+        default 92 ≈ the last 3 months; 0 disables) and the summary
+        prompt instructs the model to cite only in-window sources for
+        current facts. mode compose (default) = search, then a separate
+        LLM pass over the references (refs cannot go missing; native =
+        the provider's one-shot search-in-chat — there the engine-side
+        recency knob + the prompt rule are the levers). lang sets the
+        answer language (zh default, e.g. en); model overrides the
+        provider's default chat model; the web_search knobs apply as
+        there. Nothing is persisted — text.* storage stays with the CLI
         --store path."""
         try:
             if mode not in ("native", "compose"):
                 raise ValueError(f"mode must be native|compose, got "
                                  f"{mode!r}")
             opts = self._search_opts(engine, count, recency, domain,
-                                     content_size)
+                                     content_size, ref_recency_days)
             summary = await self._provider(provider).summarize(
                 query, model=model, opts=opts, mode=mode, lang=lang)
             return summary.to_dict()

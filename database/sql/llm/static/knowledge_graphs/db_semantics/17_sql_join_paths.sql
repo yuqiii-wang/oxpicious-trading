@@ -1,7 +1,7 @@
 -- ============================================================================
 --  Knowledge-graph seed — namespace 0 (DB semantics): the OFTEN-USED SQL
 --  JOIN PATHS (2026-11-05). One of the static/knowledge_graphs/ seed
---  files — DDL: 13_kg_hypergraph.sql; conventions: the kg-db-semantics
+--  files — DDL: kg_entities.sql + kg_edges.sql; conventions: the kg-db-semantics
 --  skill.
 --
 --  Scope: edges that answer "how do I JOIN these two tables" — the
@@ -11,6 +11,10 @@
 --    relation 'joins_on', sub_relation = the JOIN KEY:
 --      for_code_date  ON a.code = b.code AND a.date = b.date
 --      for_code       ON cls.code = h.code (classification routing)
+--      for_contract_code_date
+--                     ON a.contract_code = b.contract_code
+--                        AND a.date = b.date (the options chain's
+--                        fact↔fact composition key)
 --
 --  SYMMETRIC like similar_to — seed one direction, walkers traverse
 --  either way (a join has no direction). Distinct from the existing
@@ -28,6 +32,12 @@
 --                              stats.etf_liquidity_margin (same key)
 --        AMT_SOURCE['stock']:  stats.stock_basic_stats LEFT JOIN
 --                              stats.stock_liquidity_margin (same key)
+--        analysis.mov_ave_spreads_detail ⋈
+--        analysis.mov_ave_spreads_detail_trailing —
+--        llm_agents/sandbox/study_kit/db/fetch_spread_stats.py: the
+--        split tables combined on their shared grain
+--        (t.sec_type = d.sec_type AND t.code = d.code
+--         AND t.date = d.date)
 --    for_code — the classification routing joins:
 --      stats.sec_composition ⋈ stats.sec_classification
 --        analysis/market_beta/attributions/sql_member_index.py and
@@ -41,10 +51,19 @@
 --      margin sources (config.py SRC_TABLE_ETF / SRC_TABLE_STOCK)
 --      routed to industries via sec_classification on code
 --      ("Stock → industry_id via sec_classification").
+--    for_contract_code_date — the options chain's fact↔fact peer
+--      joins, hub stats.options_terms to each satellite (2026-11-09):
+--      data_viz/api/services/options/combined.sql (all four satellites
+--      JOINed off terms t: JOIN/LEFT JOIN … ON …contract_code =
+--      t.contract_code AND …date = t.date), combined_snapshot_rows.sql,
+--      skew_daily.sql, expiry_meta.sql, snapshot_axes_strikes.sql.
 --
 --  Identity-grain joins (v_debt_daily on date, the *_daily views on
---  (date, code), options on (date, contract_code)) are already the
---  anchored_by edges' own contract — not duplicated here.
+--  (date, code), the options satellites → stats.options_identity on
+--  (date, contract_code)) are already the anchored_by edges' own
+--  contract — not duplicated here; the options HUB↔SATELLITE fact
+--  joins below are the peer composition path those anchors don't
+--  name.
 --
 --  Idempotent — edges insert only when the same (namespace, relation,
 --  sub_relation, entity_ids) shape is absent; entities are NOT
@@ -58,11 +77,20 @@ FROM (VALUES
     ('stats.etf_basic_stats',       'stats.etf_adjustment',        'joins_on', 'for_code_date'),
     ('stats.etf_basic_stats',       'stats.etf_liquidity_margin',  'joins_on', 'for_code_date'),
     ('stats.stock_basic_stats',     'stats.stock_liquidity_margin','joins_on', 'for_code_date'),
+    -- the 2026-11-08 detail split pair (fetch_spread_stats.py)
+    ('analysis.mov_ave_spreads_detail', 'analysis.mov_ave_spreads_detail_trailing', 'joins_on', 'for_code_date'),
     -- the classification routing joins (code → industry)
     ('stats.sec_composition',       'stats.sec_classification',    'joins_on', 'for_code'),
     ('stats.index_basic_stats',     'stats.sec_classification',    'joins_on', 'for_code'),
     ('stats.etf_liquidity_margin',  'stats.sec_classification',    'joins_on', 'for_code'),
-    ('stats.stock_liquidity_margin','stats.sec_classification',    'joins_on', 'for_code')
+    ('stats.stock_liquidity_margin','stats.sec_classification',    'joins_on', 'for_code'),
+    -- the options chain's hub↔satellite peer joins (2026-11-09:
+    -- contract_code, date — the satellites→identity grain stays
+    -- anchored_by, per the note above)
+    ('stats.options_terms',         'stats.options_strike',        'joins_on', 'for_contract_code_date'),
+    ('stats.options_terms',         'stats.options_settlement',    'joins_on', 'for_contract_code_date'),
+    ('stats.options_terms',         'stats.options_greeks',        'joins_on', 'for_contract_code_date'),
+    ('stats.options_terms',         'stats.options_volume_oi',     'joins_on', 'for_contract_code_date')
 ) AS e(subject, object, relation, sub_relation)
 JOIN llm.kg_entities a ON a.namespace = 0 AND a.name = e.subject
 JOIN llm.kg_entities b ON b.namespace = 0 AND b.name = e.object

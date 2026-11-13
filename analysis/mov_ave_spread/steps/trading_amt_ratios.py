@@ -167,7 +167,7 @@ def compute_trading_amt_slope_vs_price_ratios(df: pd.DataFrame) -> pd.DataFrame:
       col[2] = (trading_amt_ma20 / 1M) / ma20_slope
       col[3] = (trading_amt_ma60 / 1M) / ma60_slope
       col[4] = (trading_amt_ma120 / 1M) / ma120_slope
-      col[5] = (trading_amt_ma255 / 1M) / ma255_slope
+      col[5] = (trading_amt_ma252 / 1M) / ma252_slope
 
     Trading amount is divided by 1,000,000 to express capital in millions.
     Matching-timescale: numerator and denominator use the same window.

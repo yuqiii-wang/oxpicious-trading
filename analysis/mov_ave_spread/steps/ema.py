@@ -9,7 +9,7 @@ std_{5,12,26}days) for ETF + Index + Stock + Industry. One row per
 (Exponential MA) is still using non-typical ema, which is wrong"): the
 pair vocabulary covers exactly the TYPICAL EMA spans {6, 12, 26} (6 the
 A-share short, 12/26 the classic MACD pair — precomputed in tech_stats
-since the same day); the SMA-convention windows (20/60/120/255) stay in
+since the same day); the SMA-convention windows (20/60/120/252) stay in
 the Simple-MA section/detail table.
 
 Source: stats.{etf,index,stock}_tech_stats.ema{6,12,26} (already
@@ -36,7 +36,7 @@ assembles the final wide row.
 ordered by date) + 2 EMA curvature columns (2nd derivative = diff of
 slope), windows 6/12. NULL on first date (slope) / first two dates
 (curvature) of each code; the 26 leg carries no derivatives (the SMA
-table's 60/120/255 precedent). The price leg's derivatives live on the
+table's 60/120/252 precedent). The price leg's derivatives live on the
 SMA detail table (mov_ave_spreads_detail.price_slope).
 
 3 rolling population σ columns (std_{5,12,26}days) — Bollinger
@@ -104,7 +104,7 @@ EMA_DESCRIPTION = (
     "long_value) / long_value, plus 1st derivative (slope) and 2nd "
     "derivative (curvature) of the EMA6 and EMA12 lines (each a DIRECT "
     "diff — emaW[t] − emaW[t−1] and that slope's diff; the 26 leg "
-    "carries no derivatives, the SMA table's 60/120/255 precedent; the "
+    "carries no derivatives, the SMA table's 60/120/252 precedent; the "
     "price leg's derivatives live on the SMA detail table) computed per "
     "code ordered by date, plus 3 rolling population σ columns "
     "(std_{5,12,26}days) used for Bollinger-style envelopes (EMA ± k×σ) "
@@ -216,7 +216,7 @@ class EmaStep(TableStep):
     loaded by the parent mov_ave_spread.
 
     Reuses the caller's DB connection and source DataFrame (the ``price``
-    and ``ema{6,20,60,120,255}`` columns are reused — no second DB
+    and ``ema{6,20,60,120,252}`` columns are reused — no second DB
     fetch). The DataFrame must contain the FULL per-code history (not
     filtered to target_dates) so the rolling σ columns are correct for
     the first target date of each code.

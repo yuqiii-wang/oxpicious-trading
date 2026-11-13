@@ -135,6 +135,30 @@ function fmtMetricDelta(m: AiAskInsightMetric): string {
   return `${sign}${fmtNum(Math.abs(m.delta))}${m.unit === "%" ? "pp" : ""}`;
 }
 
+/** Δ 60d cell — the value vs the past-60d window's OPEN (the
+ *  60-session change), signed 2dp (pp for %-unit metrics). The
+ *  vs-max / vs-min extremes ride the row tooltip. */
+function fmtMetricDelta60(m: AiAskInsightMetric): string {
+  if (m.delta_60d_open === null || m.value === null) return "–";
+  const sign = m.delta_60d_open >= 0 ? "+" : "−";
+  return `${sign}${fmtNum(Math.abs(m.delta_60d_open))}${m.unit === "%" ? "pp" : ""}`;
+}
+
+/** Row tooltip suffix for the Δ 60d cell — the window's full stats:
+ *  the open/max/min the deltas read against, plus the sample size. */
+function metricWindowTitle(m: AiAskInsightMetric): string {
+  if (m.win_n === null || m.win_open === null) return "";
+  const f = (v: number | null) => (v === null ? "–" : fmtNum(v));
+  const d = (v: number | null) =>
+    v === null ? "–" : `${v >= 0 ? "+" : "−"}${fmtNum(Math.abs(v))}`;
+  return (
+    ` — 60d window (n=${m.win_n}): open ${f(m.win_open)} / ` +
+    `max ${f(m.win_max)} / min ${f(m.win_min)} — ` +
+    `Δ vs open ${d(m.delta_60d_open)} / vs max ${d(m.delta_60d_max)} / ` +
+    `vs min ${d(m.delta_60d_min)}`
+  );
+}
+
 /** Rarity cell — the value's prior-history percentile as pNN (p95 = only
  *  5% of the trailing history sat higher). Tails (≤p5 / ≥p95) are the
  *  rare readings and render highlighted. */
@@ -590,7 +614,8 @@ export default function AiAskModal({
           {/* insight metrics table — for registered analysis pages this
               REPLACES the tags strips: the page's metrics of
               particular interest (translated from the registry jsonb),
-              values from the analysis tables (Δ vs the previous date) or
+              values from the analysis tables (Δ vs the previous date,
+              Δ 60d vs the past-60d window's open/max/min) or
               computed on demand ("*"). Non-registry charts (and a failed
               fetch) keep the state + series tags strips instead. */}
           {showInsightTable && (
@@ -605,7 +630,8 @@ export default function AiAskModal({
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
-                    {["Metric", "Value", "Δ", "Rarity", "As of"].map((h, i) => (
+                    {["Metric", "Value", "Δ", "Δ 60d", "Rarity", "As of"].map(
+                      (h, i) => (
                       <TableCell
                         key={h}
                         align={i === 0 ? "left" : "right"}
@@ -626,7 +652,7 @@ export default function AiAskModal({
                   {insightLoading ? (
                     [0, 1, 2, 3, 4].map((i) => (
                       <TableRow key={i}>
-                        {[0, 1, 2, 3, 4].map((c) => (
+                        {[0, 1, 2, 3, 4, 5].map((c) => (
                           <TableCell key={c} sx={{ py: 0.5 }}>
                             <Skeleton height={14} />
                           </TableCell>
@@ -642,6 +668,7 @@ export default function AiAskModal({
                         title={
                           m.description +
                           metricRankTitle(m) +
+                          metricWindowTitle(m) +
                           (m.unresolved ? ` — ${m.unresolved}` : "")
                         }
                       >
@@ -688,6 +715,23 @@ export default function AiAskModal({
                           }}
                         >
                           {fmtMetricDelta(m)}
+                        </TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{
+                            py: 0.25,
+                            fontSize: "0.75rem",
+                            whiteSpace: "nowrap",
+                            color:
+                              m.delta_60d_open === null ||
+                              m.delta_60d_open === 0
+                                ? "var(--chart-subtitle)"
+                                : m.delta_60d_open > 0
+                                  ? "success.main"
+                                  : "error.main",
+                          }}
+                        >
+                          {fmtMetricDelta60(m)}
                         </TableCell>
                         <TableCell
                           align="right"

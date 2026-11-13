@@ -3,7 +3,7 @@
 -- analysis_composites.industry_corr_benchmark_offsets, one row per
 -- (start_date, lexicographic pair, benchmark) for every pair where both
 -- endpoints are in the user-selected industry_ids set. The `cal` CTE
--- maps each window's start date to its trading-day index so the 20/60/255
+-- maps each window's start date to its trading-day index so the 20/60/252
 -- window END dates can be joined back (idx + 19/59/254).
 -- The WHERE tail is assembled in the service and passed as a fragment:
 -- the pair IN-list carries a VARIABLE number of $n placeholders (2 per
@@ -28,14 +28,14 @@
       t.start_date,
       e20.date AS end_ma20_20d,
       e60.date AS end_ma60_60d,
-      e255.date AS end_ma255_255d,
+      e255.date AS end_ma252_252d,
       t."interval",
       t.overall_corr_ma20_20d,
       t.overall_corr_ma60_60d,
-      t.overall_corr_ma255_255d,
+      t.overall_corr_ma252_252d,
       t.offset_sub_corr_ma20_20d,
       t.offset_sub_corr_ma60_60d,
-      t.offset_sub_corr_ma255_255d
+      t.offset_sub_corr_ma252_252d
     FROM analysis_composites.industry_corr_benchmark_offsets t
     JOIN cal c ON c.date = t.start_date
     LEFT JOIN cal e20 ON e20.idx = c.idx + 19

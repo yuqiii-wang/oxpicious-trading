@@ -70,7 +70,7 @@ export async function getBenchmarkPriceChart(
 //  still contain benchmark_close + benchmark_rolling so the chart can render
 //  the benchmark line alone.
 //
-//  The 5 rolling_Xdays_price columns (5/20/60/255/500) are returned as-is;
+//  The 5 rolling_Xdays_price columns (5/20/60/252/504) are returned as-is;
 //  the frontend dropdown picks which one drives the shade overlay.
 // ----------------------------------------------------------------------------
 interface DbAttributionPriceRow extends QueryResultRow {
@@ -82,8 +82,8 @@ interface DbAttributionPriceRow extends QueryResultRow {
   non_this_industry_rolling_20days_price: number | null;
   non_this_industry_rolling_60days_price: number | null;
   non_this_industry_rolling_120days_price: number | null;
-  non_this_industry_rolling_255days_price: number | null;
-  non_this_industry_rolling_500days_price: number | null;
+  non_this_industry_rolling_252days_price: number | null;
+  non_this_industry_rolling_504days_price: number | null;
   benchmark_shared_weight: number | null;
   industry_label: string | null;
   benchmark_name: string | null;
@@ -125,8 +125,8 @@ export async function getIndustryAttributionPriceSeries(
       non_this_industry_rolling_20days_price: toNum(r.non_this_industry_rolling_20days_price),
       non_this_industry_rolling_60days_price: toNum(r.non_this_industry_rolling_60days_price),
       non_this_industry_rolling_120days_price: toNum(r.non_this_industry_rolling_120days_price),
-      non_this_industry_rolling_255days_price: toNum(r.non_this_industry_rolling_255days_price),
-      non_this_industry_rolling_500days_price: toNum(r.non_this_industry_rolling_500days_price),
+      non_this_industry_rolling_252days_price: toNum(r.non_this_industry_rolling_252days_price),
+      non_this_industry_rolling_504days_price: toNum(r.non_this_industry_rolling_504days_price),
       benchmark_shared_weight: toNum(r.benchmark_shared_weight),
     })),
   };

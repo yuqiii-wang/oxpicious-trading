@@ -27,7 +27,7 @@ interface DbPerfAttrChartRow extends QueryResultRow {
   benchmark_close: number | null;
   corr_20d: number | null;
   corr_60d: number | null;
-  corr_255d: number | null;
+  corr_252d: number | null;
 }
 
 /** Per-sec_type subject source-table JOIN + price expression for the
@@ -118,7 +118,7 @@ export async function getPerfAttrChart(
       benchmark_close: toNum(r.benchmark_close),
       corr_20d: toNum(r.corr_20d),
       corr_60d: toNum(r.corr_60d),
-      corr_255d: toNum(r.corr_255d),
+      corr_252d: toNum(r.corr_252d),
     })),
     benchmark_linked_etfs: benchLinkedEtfs.map((r) => ({
       code: r.code,

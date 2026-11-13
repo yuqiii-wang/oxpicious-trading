@@ -7,8 +7,9 @@ deleted 2026-11-06. Every ``BaseLlmProvider`` resolves its key through
 ``get_secret`` (``base.py::_resolve_api_key`` — after the env chain,
 which stays first for externally-set environments), keyed by the
 provider's ``name`` + its ``SECRET_TYPE`` class var (the audit's
-selected-domain contract: llm rows decode provider via
-'ext_llm_provider', web_search rows via 'ext_http_source').
+selected-domain contract: llm / jev / tokenization rows decode
+provider via 'ext_llm_provider', web_search rows via
+'ext_http_source').
 
 Caching: a small TTL (default 30s) per (secret_type, provider) — the
 registry is STARTUP config (a provider resolves its key once at
@@ -109,7 +110,8 @@ SELECT c.api_key_enc
   FROM static.secret_config c
   JOIN static.label_dim st ON st.domain = 'secret_type' AND st.code = c.secret_type
   JOIN static.label_dim ld ON ld.domain = (
-          CASE WHEN st.label = 'llm' THEN 'ext_llm_provider'
+          CASE WHEN st.label IN ('llm', 'jev', 'tokenization')
+               THEN 'ext_llm_provider'
                ELSE 'ext_http_source' END)
        AND ld.code = c.provider
  WHERE c.is_active

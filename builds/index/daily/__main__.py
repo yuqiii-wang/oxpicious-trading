@@ -11,7 +11,7 @@ trend snapshots (~200 SSE indices), and CNINDEX history (399303 / 399310 /
 SSE trend > SZSE > 1m > history), then PE is backfilled from CSIndex rows
 that lost the dedup.
 
-Computes moving averages (ma5, ma20, ma60, ma120, ma255) from daily close.
+Computes moving averages (ma5, ma20, ma60, ma120, ma252) from daily close.
 
 NOTE: 5-minute intraday bars (stats.index_intraday_5min) are NO LONGER built
 here. Intraday is now streamed in real time by stream_sse_price.py. The

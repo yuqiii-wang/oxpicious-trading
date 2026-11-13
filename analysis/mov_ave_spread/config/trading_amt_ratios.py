@@ -42,7 +42,7 @@ TRADING_AMT_RATIOS_DESCRIPTION = (
 #   col[2] = (trading_amt_ma20 / 1M) / ma20_slope
 #   col[3] = (trading_amt_ma60 / 1M) / ma60_slope
 #   col[4] = (trading_amt_ma120 / 1M) / ma120_slope
-#   col[5] = (trading_amt_ma255 / 1M) / ma255_slope
+#   col[5] = (trading_amt_ma252 / 1M) / ma252_slope
 # Interpretation: how many millions of capital accompany one unit of
 # price movement — the reciprocal of the Amihud (2002) illiquidity
 # measure (higher = deeper market). Matching-timescale (no
@@ -58,7 +58,7 @@ TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS = (
     "trading_amt_ma20_vs_price_ma20_slope_ratio",
     "trading_amt_ma60_vs_price_ma60_slope_ratio",
     "trading_amt_ma120_vs_price_ma120_slope_ratio",
-    "trading_amt_ma255_vs_price_ma255_slope_ratio",
+    "trading_amt_ma252_vs_price_ma252_slope_ratio",
 )
 
 # Source price-slope column names needed by the ratio computation.
@@ -70,7 +70,7 @@ TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS = (
     "ma20_slope",
     "ma60_slope",
     "ma120_slope",
-    "ma255_slope",
+    "ma252_slope",
 )
 
 # High-low range ratio column (raw timescale). Capital per unit of

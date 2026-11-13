@@ -12,7 +12,7 @@ database/sql/analysis/analysis_composites/):
     start (k = MA_X[s] / MA_B[s]) and SUBTRACTED (common market factor
     removed); prices are recomputed from the offset trends (rebased to
     100 at the window start) and pairwise Pearson correlations are
-    audited over 20/60/255 trading-day windows next to the RAW
+    audited over 20/60/252 trading-day windows next to the RAW
     (overall) correlation, plus the derived opposite score
     (1 - offset_sub_corr) / 2 in [0, 1].
 

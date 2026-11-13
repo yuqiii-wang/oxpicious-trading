@@ -6,7 +6,10 @@
  * external-resource request audit aggregates.
  *
  *   GET /api/monitor/stream
- *     → heartbeat state of the monitored services (scope + sub_scope per
+ *     → heartbeat state of the resident processes (the RESIDENT service
+ *       catalog = the always-on services the stream watchdog supervises:
+ *       the five downloads.stream.* pollers, the db_health sampler, the
+ *       llm_agents daemons, the watchdog itself — scope + sub_scope per
  *       row, stop tracking: stopReason/isNormalExit/stoppedAt, and the
  *       per-service live_parallel from the heartbeat row + max_parallel
  *       from the static JSON config) plus
@@ -57,32 +60,29 @@
  *       other registration.
  *
  *   POST /api/monitor/orchestration/run  { file, dryRun? }
- *     → fire-and-forget spawn of the Orchestration config tab's tier run:
- *       `bash scripts/run_steps.sh scripts/orchestration/<file>` — the
- *       shared serial runner the scripts/<tier>.sh guards delegate to, so
- *       a manual tier run skips the trading-day/time gate. Steps spawn
- *       one by one and heartbeat onto Pipeline processes as they start;
+ *     → start the Orchestration config tab's tier run on the monitor
+ *       area (server_cluster/monitor POST /orchestration/run — the
+ *       server-side run_steps.sh): steps run one by one through its job
+ *       registry, each heartbeating onto Pipeline processes as it
+ *       starts. GET /orchestration/runs/:tag polls step statuses;
  *       dryRun=true echoes the plan without executing (smoke only).
  *
  *   POST /api/monitor/health-check
- *     → force-trigger `python -m database.monitoring` (the point-in-time
- *       alert check: replica sync, replay backlog, slot WAL retention,
- *       pg_wal dir size vs max_wal_size, downloads-stream liveness) and
- *       return its [ok] / [ALERT] lines + the health verdict. The UI's
- *       refresh button on the Service Monitor page fires this.
+ *     → the monitor area's GET /health-check (database.monitoring's
+ *       probes — replica sync, replay backlog, slot WAL retention,
+ *       pg_wal dir size vs max_wal_size, always-on liveness) and return
+ *       its [ok] / [ALERT] lines + the health verdict. The UI's refresh
+ *       button on the Service Monitor page fires this.
  *
  *   POST /api/monitor/stream-always
- *     → bring the always-on stream up: the idempotent watchdog starter
- *       (scripts/stream_watchdog.sh) then the staggered poller starter
- *       (scripts/stream_always.sh — nohup the five downloads.stream.*
- *       pollers, sleep 1 apart) inside a HIDDEN keeper wsl.exe session
- *       that parks on sleep infinity and holds the services alive (a WSL
- *       session's nohup'd children die with its wsl.exe client, so the
- *       client — held by this API server — must stay connected; an API
- *       restart takes the stream down, the button is the recovery).
- *       Spawned through the shared py-runner, fire-and-forget, deduped
- *       by process-id-tag. The UI's "Start stream always" button fires
- *       this.
+ *     → bring the always-on fleet up via the monitor area's POST
+ *       /residents/ensure-up: every desired-running-but-down resident
+ *       gets an explicit start, a stale stream watchdog is spawned.
+ *       Idempotent over a healthy fleet. Recurring supervision stays the
+ *       stream watchdog's (every ~60s) plus the maintainer area's daily
+ *       07:00 China-time pass (migrated from the monitor area 2026-11;
+ *       it fires this same endpoint). The UI's "Start stream always"
+ *       button fires this.
  *
  *   GET /api/monitor/ext-resources/stats?days=30
  *     → every monitor.external_resource_stats row in the trailing window
@@ -166,6 +166,6 @@ router.use(aiAuditRouter);
 
 // Re-exported for server.ts, which imports the boot auto-start helpers
 // from routes/monitor/index.js.
-export { ensureStreamsAtBoot, startStreamAlwaysKeeper, checkStreamProcessesAlive } from "./stream-always.js";
+export { ensureStreamsAtBoot, checkStreamProcessesAlive } from "./stream-always.js";
 
 export default router;

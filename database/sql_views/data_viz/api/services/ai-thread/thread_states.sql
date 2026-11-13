@@ -1,12 +1,16 @@
 -- Thread Graph — one thread's deep-agent plan-step and spawned-subagent
 -- state rows (llm.deep_agent_states), plan order. The BIGINT id columns
 -- cast to int because node-postgres hands int8 back as STRING while the
--- UI contract is number.
+-- UI contract is number. child_kind is the raw agent_child_kind code
+-- (NULL top-level | 0 spawn | 1 fork — the UI decodes from its label
+-- mirror); the canvas draws a fork child's edge THICKER than a spawn's
+-- (the inherit-context cue).
 -- Serves GET /api/ai/threads/:threadId (the states block).
 -- args:
 --   thread_id: value text — the deep-agent thread (uuid hex)
 SELECT state_id::int AS state_id, thread_id,
-            parent_state_id::int AS parent_state_id, node, title, status,
+            parent_state_id::int AS parent_state_id, child_kind, node,
+            title, status,
             ordinal, input_context_id::int AS input_context_id,
             result_context_id::int AS result_context_id, error,
             llm_context_id,

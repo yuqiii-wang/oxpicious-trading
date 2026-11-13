@@ -13,7 +13,7 @@
 --      offset by adding / subtracting a broad-market benchmark (rebased to
 --      the industry's level at each window start), prices are recomputed
 --      from the offset trends, and pairwise Pearson correlations are
---      audited over 20 / 60 / 255 trading-day windows next to the raw
+--      audited over 20 / 60 / 252 trading-day windows next to the raw
 --      (overall) correlation.
 --
 --  Population convention:
@@ -27,4 +27,4 @@
 
 CREATE SCHEMA IF NOT EXISTS analysis_composites;
 
-COMMENT ON SCHEMA analysis_composites IS 'Composite analyses — multi-factor blends combining several upstream series into single audited views. First table: industry_corr_benchmark_offsets (opposite industry correlations by benchmark offset — industry MA trends offset by ± a broad-market benchmark, prices recomputed from the offset trends, pairwise correlations audited over 20/60/255d windows). Populated by python -m analysis.analysis_composites (incremental / --force / --industry filtered).';
+COMMENT ON SCHEMA analysis_composites IS 'Composite analyses — multi-factor blends combining several upstream series into single audited views. First table: industry_corr_benchmark_offsets (opposite industry correlations by benchmark offset — industry MA trends offset by ± a broad-market benchmark, prices recomputed from the offset trends, pairwise correlations audited over 20/60/252d windows). Populated by python -m analysis.analysis_composites (incremental / --force / --industry filtered).';

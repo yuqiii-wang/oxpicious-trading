@@ -17,7 +17,7 @@ import {
   MA20_COLOR,
   MA60_COLOR,
   MA120_COLOR,
-  MA255_COLOR,
+  MA252_COLOR,
   UP_COLOR,
   DOWN_COLOR,
   SPOT_COLOR,
@@ -56,7 +56,7 @@ import { buildGapInfo } from "./ohlcGaps";
 import { buildAmtTooltipFormatter } from "./tooltipFormatter";
 
 /** Trading-amount MA windows in canonical order. */
-const AMT_MA_WINDOWS = [5, 20, 60, 120, 255] as const;
+const AMT_MA_WINDOWS = [5, 20, 60, 120, 252] as const;
 
 /** Color for each trading_amt_ma window. */
 const AMT_MA_COLORS: Record<number, string> = {
@@ -64,7 +64,7 @@ const AMT_MA_COLORS: Record<number, string> = {
   20:  MA20_COLOR,
   60:  MA60_COLOR,
   120: MA120_COLOR,
-  255: MA255_COLOR,
+  252: MA252_COLOR,
 };
 
 export interface BuildAmtEnvelopeOptionArgs {
@@ -147,7 +147,7 @@ export function buildAmtEnvelopeOption({
     20:  rows.map((r) => r.trading_amt_ma20),
     60:  rows.map((r) => r.trading_amt_ma60),
     120: rows.map((r) => r.trading_amt_ma120),
-    255: rows.map((r) => r.trading_amt_ma255),
+    252: rows.map((r) => r.trading_amt_ma252),
   };
   // Slopes / market shares are per-date values shared across pairs — read
   // from the chart response's `shared` row at the same index.

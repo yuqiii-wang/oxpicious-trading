@@ -12,7 +12,7 @@ WINDOW) grid:
            methods per (date, period): the cross-method CONSENSUS
            level (smoother than the raw extreme; catches breaks the
            lone donchian wick-extreme misses).
-  window   {60, 120, 255, 500} trading days.
+  window   {60, 120, 252, 504} trading days.
 
 THE 2026-10-26 LEGACY CLEANUP (user-directed "remove roof for buy,
 floor for sell decisions, but totally replace with the above
@@ -38,12 +38,12 @@ precedent — this family carries no sell at all):
       (temp_scripts/rf_depth_split_study.py): the breach-depth
       gradient is monotone UP — >1-2% beyond the roof measures ~2x
       the catch-all's forward blend (+2.00% @65.6 hit vs +0.90 on
-      rf255_med) — the regime-change claim the shallow band dilutes.
+      rf252_med) — the regime-change claim the shallow band dilutes.
   rf{W}{infix}_floor_deep BUY — the CAPITULATION V-BOTTOM: close
       below the floor PAST the k bar (grid RF_FLOOR_DEEP_BARS
       {2, 3, 5}%). The study REVERSED the hypothesized deep-floor
       sell: the deeper below the consensus floor, the harder the
-      forward bounce (rf500_med deep5: sell pool -4.66% = forward
+      forward bounce (rf504_med deep5: sell pool -4.66% = forward
       +4.66% @85% up-rate) — the falling knife reverses at depth.
       Measured gap-AGNOSTIC (the 2026-10-26 two-method gap study:
       flat across |donchian − median| terciles — the washout works
@@ -73,9 +73,9 @@ re-measures every floor cell.
 
 NO cross-window carving: each (method, window) breach fires its own
 sub type — the windows are different CLAIM STRENGTHS (a new 60d high
-and the simultaneous new 255d high are different facts), and the
+and the simultaneous new 252d high are different facts), and the
 first-build A/B measured the carve-out variant STARVING the mid
-windows (the 255d cells lost their strongest days to the 500d claim
+windows (the 252d cells lost their strongest days to the 500d claim
 and fell below the gate floor — the 2024-09-30 events vanished with
 them), so every window keeps its own full population and the gate
 decides. The trigger day's own level never sets its own bar (the

@@ -162,8 +162,8 @@ def ma_series_for(bars_close: np.ndarray,
                   pre: Dict[str, np.ndarray], method: str,
                   window: int) -> Tuple[np.ndarray, bool]:
     """The MA series at one window — the view's PRECOMPUTED column
-    when it covers the window (ma5/20/60/120/255 SMA,
-    ema6/12/20/26/60/120/255), else computed here. Returns
+    when it covers the window (ma5/20/60/120/252 SMA,
+    ema6/12/20/26/60/120/252), else computed here. Returns
     (series, computed_flag)."""
     if method == "sma" and f"ma{window}" in pre:
         return pre[f"ma{window}"], False

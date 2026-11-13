@@ -3,7 +3,7 @@
 -- Serves GET /api/analysis/industry-hypes-and-drains.
 -- args:
 --   benchmark_code: value text — the benchmark index code
---   period_days: value int — the ranking window (5/20/60/120/255/500)
+--   period_days: value int — the ranking window (5/20/60/120/252/504)
 --   weighting_code: value smallint — weighting's static.label_dim code
     SELECT DISTINCT season_qkey, season_start, season_end
     FROM analysis.industry_hypes_seasonal

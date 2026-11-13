@@ -6,7 +6,7 @@
 --     " AND date <= $n::date" bounds (numbering continues after $1)
 
     SELECT date, open, high, low, close, trading_shares, trading_amount, change_pct,
-           pe, cons_number, ma5, ma20, ma60, ma120, ma255, has_intraday_5mins
+           pe, cons_number, ma5, ma20, ma60, ma120, ma252, has_intraday_5mins
       FROM stats.v_index_daily
      WHERE code = {{code}}{{date_where}}
      ORDER BY date ASC

@@ -85,7 +85,7 @@ Usage:
 
 The entry point is the :class:`SzseStreamDaemon` DownloadJob — the former
 ``main()`` body after argparse is split across its ``execute()`` override
-(the startup logs + the conditional register_service) and ``run()`` (the
+(the startup logs + the conditional register_pipeline) and ``run()`` (the
 ``asyncio.run`` dispatch); the former ``stream()`` coroutine is the
 ``SzseStreamLoop.stream`` method.
 """
@@ -101,7 +101,7 @@ import time as _time
 from typing import Optional
 
 from downloads._common import DownloadJob, setup_logger
-from _common.service_heartbeat import register_service
+from _common.service_heartbeat import register_pipeline
 
 from ._constants import (
     B_PRIORITY_TOP_N,
@@ -138,7 +138,7 @@ logger.info("[startup] module loaded; top-level imports done @ %.2fs.",
 class SzseStreamDaemon(DownloadJob):
     """DownloadJob for the SZSE price streamer — the former ``main()`` body
     after argparse parse, verbatim: the startup timing logs and the
-    conditional register_service live in the ``execute()`` override, the
+    conditional register_pipeline live in the ``execute()`` override, the
     ``asyncio.run(SzseStreamLoop().stream(...))`` dispatch in ``run()``.
 
     execute() override: the base DownloadJob.execute() would call the lazy
@@ -146,10 +146,10 @@ class SzseStreamDaemon(DownloadJob):
     heartbeat ONLY for the long-running mode (--once exits before a beat
     would matter — a beat from a dying one-shot would make the watchdog
     think the real service is alive). autoregister derives the same
-    "downloads.stream.szse.price" name (register_service itself is
+    "downloads.stream.szse.price" name (register_pipeline itself is
     idempotent per process), but --once runs would GAIN a registration they
     never had, so the base hook is skipped and the former conditional
-    ``register_service`` call is kept verbatim. No single-instance lock
+    ``register_pipeline`` call is kept verbatim. No single-instance lock
     existed before — ``service`` stays "".
     """
 
@@ -173,7 +173,7 @@ class SzseStreamDaemon(DownloadJob):
                             help="Run one round then exit (dev/test).")
 
     def execute(self, argv: Optional[list] = None) -> None:
-        """parse → conditional register_service (verbatim former main()) → run()."""
+        """parse → conditional register_pipeline (verbatim former main()) → run()."""
         t_main = _time.time()
         logger.info("[startup] main() entered @ %.2fs after module load.",
                     _time.time() - _MODULE_LOAD_T0)
@@ -187,7 +187,7 @@ class SzseStreamDaemon(DownloadJob):
         # Liveness heartbeat for database/stream_watchdog.py — long-running
         # mode only; --once exits before a beat would matter.
         if not args.once:
-            register_service(SERVICE)
+            register_pipeline(SERVICE)
         self.run()
 
     def run(self) -> None:

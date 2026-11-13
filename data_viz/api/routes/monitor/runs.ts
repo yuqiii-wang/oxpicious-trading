@@ -8,9 +8,10 @@ import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import path from "path";
 import { Router, type Request, type Response } from "express";
+import { HttpError, intParam, strParam, wrapAsync } from "../../lib/http.js";
 import {
   getReadPool,
-} from "../../services/db.service.js";
+} from "../../services/infra/db.service.js";
 import { renderSqlView } from "@api/lib/sql-views";
 import { isRunnableModule, REPO_ROOT } from "./_shared.js";
 
@@ -33,40 +34,31 @@ interface AuditLifeRow {
  *  per-service history with its own limit — the UI dropped the global
  *  recent-runs table because the shared window crowded each service out
  *  (~50 rows across ~30 registered services ≈ 2 runs each). */
-router.get("/stream/runs", async (req: Request, res: Response) => {
-  const service = typeof req.query.service === "string" ? req.query.service.trim() : "";
-  const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
-  if (!service) {
-    res.status(400).json({ success: false, error: "query param 'service' is required" });
-    return;
-  }
-  try {
-    const pool = getReadPool();
-    const { sql, params } = renderSqlView(
-      "data_viz/api/routes/monitor/stream_runs",
-      { service, limit },
-    );
-    const rows = await pool.query<AuditLifeRow>(sql, params);
-    res.json({
-      success: true,
-      service,
-      runs: rows.rows.map((r) => ({
-        id: r.id,
-        service: r.service,
-        scope: r.scope,
-        subScope: r.sub_scope,
-        pid: r.pid,
-        startedAt: r.started_at.toISOString(),
-        endedAt: r.ended_at ? r.ended_at.toISOString() : null,
-        exitReason: r.exit_reason,
-        isNormalExit: r.is_normal_exit,
-      })),
-    });
-  } catch (err) {
-    console.error("[monitor/stream/runs] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+router.get("/stream/runs", wrapAsync(async (req: Request, res: Response) => {
+  const service = strParam(req, "service", { required: true });
+  const limit = intParam(req, "limit", { default: 10, clamp: [1, 100] });
+  const pool = getReadPool();
+  const { sql, params } = renderSqlView(
+    "data_viz/api/routes/monitor/stream_runs",
+    { service, limit },
+  );
+  const rows = await pool.query<AuditLifeRow>(sql, params);
+  res.json({
+    success: true,
+    service,
+    runs: rows.rows.map((r) => ({
+      id: r.id,
+      service: r.service,
+      scope: r.scope,
+      subScope: r.sub_scope,
+      pid: r.pid,
+      startedAt: r.started_at.toISOString(),
+      endedAt: r.ended_at ? r.ended_at.toISOString() : null,
+      exitReason: r.exit_reason,
+      isNormalExit: r.is_normal_exit,
+    })),
+  });
+}));
 
 // ---------------------------------------------------------------------------
 //  Run logs — GET /stream/runs/log?service=…&date=YYYY-MM-DD
@@ -156,85 +148,80 @@ async function logComponentCandidates(service: string): Promise<string[]> {
  *  the legacy per-component names for pre-refactor dates. `file` is
  *  relative to the repo root; a huge log arrives truncated to the last
  *  `tail` lines with `totalLines` / `sizeBytes` for the notice. */
-router.get("/stream/runs/log", async (req: Request, res: Response) => {
-  const service = typeof req.query.service === "string" ? req.query.service.trim() : "";
-  const date = typeof req.query.date === "string" ? req.query.date.trim() : "";
-  const tail = Math.min(Math.max(Number(req.query.tail) || 2000, 50), 20000);
+router.get("/stream/runs/log", wrapAsync(async (req: Request, res: Response) => {
+  const service = strParam(req, "service") ?? "";
+  const date = strParam(req, "date") ?? "";
+  const tail = intParam(req, "tail", { default: 2000, clamp: [50, 20000] });
   if (!service || !/^[A-Za-z0-9_.-]+$/.test(service) || !isRunnableModule(service)) {
-    res.status(400).json({
-      success: false,
-      error: `service must be a runnable dotted module path, got '${service}'`,
-    });
-    return;
+    throw new HttpError(
+      400,
+      "INVALID_PARAM",
+      `service must be a runnable dotted module path, got '${service}'`,
+    );
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    res.status(400).json({
-      success: false,
-      error: "query param 'date' (YYYY-MM-DD) is required",
-    });
-    return;
+    throw new HttpError(
+      400,
+      "MISSING_PARAM",
+      "query param 'date' (YYYY-MM-DD) is required",
+    );
   }
-  try {
-    const dayDir = path.join(REPO_ROOT, "logs", date);
-    // The direct per-service file first (one date one service one log
-    // file); the legacy per-component candidate scan only on a miss.
-    let file: string | null = null;
-    let candidates: string[] = [];
-    const direct = path.join(dayDir, `${service}.log`);
-    if (existsSync(direct)) {
-      file = direct;
-      candidates = [service];
-    } else {
-      candidates = await logComponentCandidates(service);
-      for (const c of candidates) {
-        const f = path.join(dayDir, `${c}.log`);
-        if (existsSync(f)) {
-          file = f;
-          break;
-        }
+  const dayDir = path.join(REPO_ROOT, "logs", date);
+  // The direct per-service file first (one date one service one log
+  // file); the legacy per-component candidate scan only on a miss.
+  let file: string | null = null;
+  let candidates: string[] = [];
+  const direct = path.join(dayDir, `${service}.log`);
+  if (existsSync(direct)) {
+    file = direct;
+    candidates = [service];
+  } else {
+    candidates = await logComponentCandidates(service);
+    for (const c of candidates) {
+      const f = path.join(dayDir, `${c}.log`);
+      if (existsSync(f)) {
+        file = f;
+        break;
       }
     }
-    if (file == null) {
-      res.json({
-        success: true,
-        service,
-        date,
-        component: null,
-        file: null,
-        candidates,
-        found: false,
-        content: "",
-        truncated: false,
-        totalLines: 0,
-        sizeBytes: 0,
-      });
-      return;
-    }
-    const component = path.basename(file, ".log");
-    const raw = await readFile(file, "utf8");
-    const sizeBytes = Buffer.byteLength(raw, "utf8");
-    const lines = raw.split("\n");
-    if (lines.at(-1) === "") lines.pop();
-    const totalLines = lines.length;
-    const truncated = totalLines > tail;
-    const content = (truncated ? lines.slice(-tail) : lines).join("\n");
+  }
+  if (file == null) {
     res.json({
       success: true,
       service,
       date,
-        component,
-        file: path.relative(REPO_ROOT, file).split(path.sep).join("/"),
+      component: null,
+      file: null,
       candidates,
-      found: true,
-      content,
-      truncated,
-      totalLines,
-      sizeBytes,
+      found: false,
+      content: "",
+      truncated: false,
+      totalLines: 0,
+      sizeBytes: 0,
     });
-  } catch (err) {
-    console.error("[monitor/stream/runs/log] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
+    return;
   }
-});
+  const component = path.basename(file, ".log");
+  const raw = await readFile(file, "utf8");
+  const sizeBytes = Buffer.byteLength(raw, "utf8");
+  const lines = raw.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const totalLines = lines.length;
+  const truncated = totalLines > tail;
+  const content = (truncated ? lines.slice(-tail) : lines).join("\n");
+  res.json({
+    success: true,
+    service,
+    date,
+    component,
+    file: path.relative(REPO_ROOT, file).split(path.sep).join("/"),
+    candidates,
+    found: true,
+    content,
+    truncated,
+    totalLines,
+    sizeBytes,
+  });
+}));
 
 export default router;

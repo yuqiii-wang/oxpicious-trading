@@ -12,7 +12,7 @@ import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix } from "@api/lib/classify-etf";
 import { matchesClassification } from "@api/services/_shared";
-import { labelDecodeSql, POOL_SIZE_SORT_SQL } from "@api/services/label-codes";
+import { labelDecodeSql, POOL_SIZE_SORT_SQL } from "@api/services/infra/label-codes";
 import type {
   MarketBetaIndexRow,
   MarketBetaIndex,

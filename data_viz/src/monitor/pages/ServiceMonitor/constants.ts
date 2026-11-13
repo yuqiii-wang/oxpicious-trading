@@ -4,8 +4,8 @@
  */
 import type {
   ProcessStatus,
+  ResidentProcessStatus,
   ServiceAuditEntry,
-  StreamServiceStatus,
 } from "@/lib/api-client/monitor";
 
 /** Table auto-refresh cadence (beat ages tick client-side every 1s). */
@@ -20,7 +20,7 @@ export const HEALTH_CHECK_TAG = "monitor:health-check";
 export const HC_REMOTE_POLL_MS = 3000;
 
 export const STATE_CHIP: Record<
-  StreamServiceStatus["status"],
+  ResidentProcessStatus["status"],
   { label: string; color: "success" | "warning" | "error" | "default" }
 > = {
   live: { label: "live", color: "success" },

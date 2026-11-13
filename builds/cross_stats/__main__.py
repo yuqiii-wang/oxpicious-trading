@@ -41,7 +41,7 @@ class CrossStatsBuild(DataBuild):
         self.add_force_arg(parser)
         parser.add_argument(
             "--corr", action="store_true",
-            help="Corr-only build: recompute corr_20d/60d/255d on stride-20 "
+            help="Corr-only build: recompute corr_20d/60d/252d on stride-20 "
                  "grid dates and upsert them onto existing rows (the main run "
                  "writes rows with corr OFF by default).",
         )
@@ -69,7 +69,7 @@ class CrossStatsBuild(DataBuild):
                 "table": TABLE,
                 "sec_types": "index",
                 "top_n_non_broad": f"{TOP_N_NON_BROAD}",
-                "mode": "corr-only (upsert corr_20d/60d/255d on grid dates)",
+                "mode": "corr-only (upsert corr_20d/60d/252d on grid dates)",
             }
         self.title = "BUILD CROSS STATS (PAIR + INDUSTRY GRAIN)"
         return {

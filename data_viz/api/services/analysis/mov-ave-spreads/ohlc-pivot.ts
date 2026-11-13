@@ -41,15 +41,15 @@ export const OHLC_SHARED_STEMS = OHLC_STEMS.filter(
 );
 
 /** Windows whose rolling OHLC the DEFAULT chart's shared tooltip metrics
- *  carry — the 4 windows a pair's ma_long can take (ma_long ∈ 20/60/120/255;
+ *  carry — the 4 windows a pair's ma_long can take (ma_long ∈ 20/60/120/252;
  *  the tooltip shows them on SMA pairs matching the window). */
-export const OHLC_SHARED_PERIODS = [20, 60, 120, 255] as const;
+export const OHLC_SHARED_PERIODS = [20, 60, 120, 252] as const;
 
 /** The roof/floor windows the "ohlc" + "bands" extras groups load (the
- *  panel's Roof/Floor Trendlines row): 60…1275 — the 20d is NOT a
+ *  panel's Roof/Floor Trendlines row): 60…1260 — the 20d is NOT a
  *  roof/floor window (the shared tooltip block keeps its own 20d pivot
  *  for the Price/MA20 pair readout). */
-export const ROOF_FLOOR_PERIODS = [60, 120, 255, 500, 750, 1275] as const;
+export const ROOF_FLOOR_PERIODS = [60, 120, 252, 504, 756, 1260] as const;
 
 /** WITH-CTE fragment fetching the requested codes' long-format OHLC rows in
  *  one range scan and pivoting them to `{stem}_{p}d` columns per date. */

@@ -9,7 +9,7 @@ the code's OWN trend state — an int8 ``trend`` column decoding through
 _common.labels.TREND_CODE (0 top / 1 bottom / 2 rise / 3 fall / 5
 unknown):
 
-  top/bottom = the price_vs_ma255 gap beyond its own TRAILING 255d
+  top/bottom = the price_vs_ma252 gap beyond its own TRAILING 252d
     q90/q10 with a matching 20d MA slope — the STATIONED overextended
     extremes (small fluctuation parked at the band edge; the
     mean-reversion reading). A gap-extreme day whose recent leg has
@@ -62,7 +62,7 @@ unknown):
   unknown    = neither episode alive: RSI mid-band, momentum
     dissolved beyond the K window, or the code's warmup head (the
     first ~20 rows before the MA20 slope exists; the top/bottom gap
-    extremes additionally need their 255-row trailing quantiles)
+    extremes additionally need their 252-row trailing quantiles)
 
 The trailing quantiles are SHIFTED one row (no look-ahead — a day is
 never compared against a band that includes itself), and every rolling
@@ -112,7 +112,7 @@ logger = logging.getLogger(__name__)
 # (moved with the classifier — the single source); the SAME window
 # sizes the RSI band edges (one trailing-quantile convention for the
 # whole classifier).
-TREND_GAP_WINDOW = 255
+TREND_GAP_WINDOW = 252
 TREND_TOP_Q = 0.90
 TREND_BOTTOM_Q = 0.10
 
@@ -288,7 +288,7 @@ def attach_trend(df: pd.DataFrame) -> pd.DataFrame:
     the input frame is mutated in place (columns added then removed)
     and returned for chaining."""
     keys = ["code"]
-    for w in (20, 255):
+    for w in (20, 252):
         df[f"_ma{w}"] = grouped_rolling_agg(
             df, keys, "price", w, min_periods=w,
         )
@@ -296,11 +296,11 @@ def attach_trend(df: pd.DataFrame) -> pd.DataFrame:
         df, keys, ["_ma20"], out_names=["_prev20"], periods=1,
     )["_prev20"]
     df["_slope"] = df["_ma20"] - prev20.fillna(df["_ma20"])
-    df["_gap255"] = df["price"] / df["_ma255"] - 1.0
+    df["_gap252"] = df["price"] / df["_ma252"] - 1.0
     for tag, q in (("_q90", TREND_TOP_Q),
                    ("_q10", TREND_BOTTOM_Q)):
         df[f"{tag}_raw"] = grouped_rolling_quantile(
-            df, keys, "_gap255", TREND_GAP_WINDOW,
+            df, keys, "_gap252", TREND_GAP_WINDOW,
             TREND_GAP_WINDOW, q,
         )
         df[tag] = grouped_shift(
@@ -379,7 +379,7 @@ def attach_trend(df: pd.DataFrame) -> pd.DataFrame:
     fall_ep = fall_alive & (last_bot > last_top)
 
     slope = df["_slope"].fillna(0.0)
-    gap = df["_gap255"].fillna(0.0)
+    gap = df["_gap252"].fillna(0.0)
     slope_pos = slope > 0
     slope_neg = slope < 0
     deep_low = df["_q10"].notna() & (gap < df["_q10"].fillna(0.0)) \
@@ -432,7 +432,7 @@ def attach_trend(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=[
         c for c in df.columns
         if c.startswith("_ma") or c.startswith("_q")
-        or c in ("_slope", "_gap255", "_rsi", "_trend_delta", "_prev20",
+        or c in ("_slope", "_gap252", "_rsi", "_trend_delta", "_prev20",
                  "_guard_d", "_cvol", "_hi60", "_lo60")
     ])
 

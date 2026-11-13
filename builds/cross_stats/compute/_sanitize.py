@@ -15,7 +15,7 @@ OUT_COLS: list[str] = [
     "code_sec_shared_weight", "benchmark_sec_shared_weight",
     "code_price_with_benchmark_offset",
     "code_price_with_benchmark_offset_by_weighted_amt",
-    "corr_20d", "corr_60d", "corr_255d",
+    "corr_20d", "corr_60d", "corr_252d",
 ]
 
 # String/non-numeric columns that must NOT be sanitized as numeric.

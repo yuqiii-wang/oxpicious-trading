@@ -1,12 +1,14 @@
 """llm_agents.deep_agents.tools.sandbox_tools — the ``sandbox_*`` tools
 as OBJECTS over the docker py-sandbox client.
 
-Four tools give the model a private scratch directory INSIDE the
+Five tools give the model a private scratch directory INSIDE the
 oxpicious-py-sandbox container (the ``sagacient/cutepandas`` py3.12
-stack) and the four things a scratch directory is for: WRITE a file
-into it (a .py script or the data files a script consumes), RUN one of
-its .py scripts and read stdout/stderr back, READ one produced file
-back, and LIST the directory. Each tool holds the run's
+stack) and the things a scratch directory is for: WRITE a file into it
+(a .py script or the data files a script consumes), RUN one of its .py
+scripts and read stdout/stderr back, READ one produced file back, EDIT
+one existing file in place (a one-block patch — read → replace →
+write composed over the middleware's read/write actions), and LIST the
+directory. Each tool holds the run's
 :class:`~llm_agents.deep_agents.core.sandbox.Sandbox` client (one
 remote session per run, minted lazily, shared with spawned subagents —
 see that module for the delegation chain and the permission model);
@@ -14,7 +16,7 @@ the kit is what the loop and the runner mount.
 
 The schemas' DEFAULT_DESCRIPTION constants are the seed source for the
 tools' ``llm.ai_prompts`` rows (prompt_type 4, sub_type 'sandbox' —
-``database/sql/text/llm/static/ai_prompts/10_tool_prompts.sql``); a kit
+``database/sql/llm/static/ai_prompts/10_tool_prompts.sql``); a kit
 constructed with the run's resolved descriptions map overrides them
 with the DB rows' instructions (fail-soft to the constants).
 ``SANDBOX_PROMPT_ADDENDUM`` (defined on the client module — it teaches
@@ -32,7 +34,7 @@ from llm_agents.deep_agents.tools.base import Tool, ToolKit
 
 
 class _SandboxTool(Tool):
-    """Base of the four sandbox tools: every call mints/reuses the
+    """Base of the five sandbox tools: every call mints/reuses the
     client's remote session, then makes ONE middleware call. Middleware
     or docker failures return error text (the agent's own builtin catch
     is the backstop) — handlers never raise into the loop. ``client``
@@ -74,7 +76,12 @@ class SandboxWriteFileTool(_SandboxTool):
         "fetched or intermediate files, outputs/ for final results, "
         "figures/ for plots — put each file in its lane. Use the "
         "tool for the scripts you will run with sandbox_run and for "
-        "the data files those scripts consume."
+        "the data files those scripts consume. Scripts execute "
+        "top-level — ONE failing query aborts the whole run — so "
+        "structure study scripts with a try/except per query block "
+        "that records the error and continues; when a run then "
+        "fails, patch the one broken block with sandbox_edit_file "
+        "instead of rewriting the file here."
     )
 
     async def run(self, arguments: Dict[str, Any]) -> str:
@@ -130,14 +137,29 @@ class SandboxRunTool(_SandboxTool):
         "readonly_analytics role, so `psycopg.connect()` connects "
         "with SELECT-only rights and DB writes fail. Sibling files "
         "in the sandbox are importable; relative paths the script "
-        "writes land inside the sandbox. The finished study_kit "
-        "package is importable everywhere (`import study_kit`): "
-        "study_kit.db.query(sql) / fetch_daily_bars(sec_type, code, "
-        "start, end) for read-only DB queries and daily bars, "
-        "study_kit.studies (sma, ema, wilder_rsi, macd, roc, zscore, "
-        "trailing_pct_rank, drawdown, forward_return, forward_blend, "
-        "ma_alignment, spread_report) for the standard calculations — "
-        "use the kit instead of re-deriving them per script."
+        "writes land inside the sandbox. MATCH FIRST — before writing "
+        "any calculation function, check what already exists: the "
+        "finished study_kit package is importable everywhere "
+        "(`import study_kit`). study_kit.db.query(sql) / "
+        "fetch_daily_bars(sec_type, code, start, end) for read-only "
+        "DB queries and daily bars; study_kit.db.fetch_spread_stats"
+        "(sec_type, code) retrieves the MATERIALIZED MA-spread "
+        "trailing stats (the 9 price_vs_ma*/ma5_vs_ma* gaps' value + "
+        "trailing-252d pct_rank / zscore / stretched verdict, from "
+        "analysis.mov_ave_spreads_detail joined to "
+        "analysis.mov_ave_spreads_detail_trailing — retrieve, never "
+        "recompute); study_kit.db.fetch_amt_metrics(sec_type, code) "
+        "retrieves the MATERIALIZED trading-amount metrics (amt MAs, "
+        "their Bollinger σ, market share, slopes — the 量能 lane, "
+        "analysis.mov_ave_trading_amt; etf/stock/industry only); "
+        "study_kit.studies (sma, ema, wilder_rsi, macd, kdj, "
+        "bollinger, roc, zscore, trailing_pct_rank, drawdown, "
+        "forward_return, forward_blend, ma_alignment, "
+        "volume_contrast, spread_report) for the rest. "
+        "When a needed calculation matches an existing function or "
+        "materialized column, import and call it AS-IS in the script "
+        "rather than adding a new function — write new code only for "
+        "what the kit and the tables lack."
     )
 
     async def run(self, arguments: Dict[str, Any]) -> str:
@@ -222,8 +244,133 @@ class SandboxListFilesTool(_SandboxTool):
                                 default=str))
 
 
+class SandboxEditFileTool(_SandboxTool):
+    """``sandbox_edit_file`` — patch ONE exact block of an existing
+    sandbox file in place: read → verify → replace → write back,
+    composed over the middleware's read/write actions (no middleware
+    change). The anti-rewrite-loop tool: a one-line SQL fix costs a
+    hundred bytes here instead of a whole-file ``sandbox_write_file``
+    resend (the 2026-11-11 run-e1c366bd failure mode — nine 14.5 KB
+    rewrites chasing eight separate SQL bugs)."""
+
+    name: ClassVar[str] = "sandbox_edit_file"
+    db_key: ClassVar[Tuple[str, str]] = (name, "sandbox")
+    parameters: ClassVar[Dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Sandbox-relative file path.",
+            },
+            "old_text": {
+                "type": "string",
+                "description": "The exact text to replace — copy it "
+                               "verbatim from the file (indentation "
+                               "included; sandbox_read_file the file "
+                               "first if you did not write it this "
+                               "session).",
+            },
+            "new_text": {
+                "type": "string",
+                "description": "The replacement text.",
+            },
+            "expected_count": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "How many occurrences of old_text the "
+                               "file should contain (default 1; pass "
+                               "the count you expect when replacing a "
+                               "repeated block).",
+            },
+        },
+        "required": ["path", "old_text", "new_text"],
+    }
+    DEFAULT_DESCRIPTION: ClassVar[str] = (
+        "Patch an existing sandbox file in place — replace an exact "
+        "old_text block with new_text (path sandbox-relative). The "
+        "tool reads the file, replaces every verified occurrence "
+        "(default: exactly one; pass expected_count for a repeated "
+        "block) and writes the file back — a one-block fix costs a "
+        "hundred bytes instead of rewriting the whole file with "
+        "sandbox_write_file. old_text must match the file "
+        "byte-for-byte (indentation included): sandbox_read_file the "
+        "file first when you did not write it this session. When a "
+        "sandbox_run fails, patch the ONE broken block with this "
+        "tool and re-run — never resend the whole file per fix."
+    )
+
+    # The read side runs at the middleware's hard read cap
+    # (llm_agents/sandbox/runner.py MAX_READ_BYTES, 1 MB); a file this
+    # big that STILL truncates cannot be edited safely from its
+    # head+tail — the run() guard fails-soft to a whole-file write.
+    _READ_MAX_BYTES: ClassVar[int] = 1024 * 1024
+
+    async def run(self, arguments: Dict[str, Any]) -> str:
+        session = await self._client.ensure_session()
+        path = str(arguments.get("path") or "")
+        old_text = arguments.get("old_text")
+        new_text = arguments.get("new_text")
+        if (not path or not isinstance(old_text, str) or not old_text
+                or not isinstance(new_text, str)):
+            return ("MCP tool error: sandbox_edit_file: path, "
+                    "old_text and new_text are required (old_text "
+                    "must be a non-empty string)")
+        expected = arguments.get("expected_count")
+        expected = (int(expected)
+                    if isinstance(expected, (int, float)) else 1)
+        read = await self._client.call("sandbox_read_file", {
+            "session": session,
+            "path": path,
+            "max_bytes": self._READ_MAX_BYTES,
+        })
+        if isinstance(read, dict) and read.get("error"):
+            return f"MCP tool error: sandbox_edit_file: {read['error']}"
+        if not isinstance(read, dict):
+            shown = json.dumps(read, ensure_ascii=False, default=str)
+            return (f"MCP tool error: sandbox_edit_file: unexpected "
+                    f"read result: {shown[:200]}")
+        content = str(read.get("content", ""))
+        total = int(read.get("bytes") or 0)
+        # Truncation is a BYTE-CAP event: the runner head+tail-caps a
+        # read ONLY when the file exceeds the cap this tool passes (1 MB,
+        # == runner MAX_READ_BYTES) and says so with a literal marker.
+        # Comparing bytes against len(content) — a CHAR count —
+        # false-positived on every multi-byte UTF-8 file (a single
+        # em-dash or CJK comment sufficed): the 2026-11-13 run's 7.7 KB
+        # window_diag.py was rejected as "beyond the 1 MB read cap",
+        # forcing whole-file rewrites across that run's spawns.
+        if (total > self._READ_MAX_BYTES
+                or "[truncated: showing first " in content):
+            return (f"MCP tool error: sandbox_edit_file: {path} is "
+                    f"{total:,} bytes — beyond the 1 MB read cap the "
+                    "content came back truncated, so editing from it "
+                    "would corrupt the file; rewrite it whole with "
+                    "sandbox_write_file instead.")
+        count = content.count(old_text)
+        if count == 0:
+            return (f"old_text not found in {path} ({len(content):,} "
+                    "bytes) — sandbox_read_file it and copy old_text "
+                    "verbatim (indentation included), then edit again")
+        if count != expected:
+            return (f"old_text occurs {count} time(s) in {path}, not "
+                    f"the expected {expected} — pass "
+                    f"expected_count={count}, or include more "
+                    "surrounding lines in old_text to disambiguate")
+        edited = content.replace(old_text, new_text)
+        write = await self._client.call("sandbox_write_file", {
+            "session": session,
+            "path": path,
+            "content": edited,
+        })
+        if isinstance(write, dict) and write.get("error"):
+            return (f"MCP tool error: sandbox_edit_file: write-back "
+                    f"failed: {write['error']}")
+        return (f"edited {path}: replaced {count} occurrence(s) "
+                f"({len(content):,} → {len(edited):,} bytes)")
+
+
 class SandboxToolSet(ToolKit):
-    """The four ``sandbox_*`` tools wired to ONE Sandbox client — the
+    """The five ``sandbox_*`` tools wired to ONE Sandbox client — the
     kit the runner/CLI mount (the loop mounts it itself when an agent
     is constructed with ``sandbox=``).
 
@@ -255,6 +402,10 @@ class SandboxToolSet(ToolKit):
                 self._client,
                 description=self.db_description(
                     SandboxListFilesTool.db_key)),
+            SandboxEditFileTool(
+                self._client,
+                description=self.db_description(
+                    SandboxEditFileTool.db_key)),
         ]
 
     def prompt_addendum(self) -> str:
@@ -262,9 +413,10 @@ class SandboxToolSet(ToolKit):
 
     @staticmethod
     def schemas() -> List[Dict[str, Any]]:
-        """The four schemas WITHOUT a client (the CLI's --list-tools —
+        """The five schemas WITHOUT a client (the CLI's --list-tools —
         description overrides need a run's descriptions map; the plain
         constants are the no-DB form)."""
         return [tool_cls(None).schema for tool_cls in (
             SandboxWriteFileTool, SandboxRunTool,
-            SandboxReadFileTool, SandboxListFilesTool)]
+            SandboxReadFileTool, SandboxListFilesTool,
+            SandboxEditFileTool)]

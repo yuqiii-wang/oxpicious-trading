@@ -20,7 +20,7 @@ the blueprint skill's references):
   * WATCHDOG AS A SEPARATE SESSION — the supervisor is not a LangGraph
     node and shares no chain with the graph: the runner watches the
     node states from OUTSIDE (``runner.run_thread``'s watchdog tail)
-    and calls this engine only on a root-path failure. Fork-path
+    and calls this engine only on a root-path failure. Spawn-path
     failures stay local (the parent gathers them), by the existing
     contract.
   * OBSERVE MODE — "unrequested work records what it WOULD have done":
@@ -71,7 +71,7 @@ SUPERVISOR_REVIEW_CHARS = 4000
 def root_path_failures(rows: List[StateRow]) -> List[StateRow]:
     """The TRIGGER FILTER (code, not model): the failed ROOT-PATH rows —
     top-level states (the main lane's steps AND the ordinal-0 planning
-    row; fork children are excluded — their failure stays local to the
+    row; spawn children are excluded — their failure stays local to the
     parent that gathered them) whose status is failed. An error of
     'stopped by user' does not count (a stop is not a defect). Empty
     result = the supervisor stays IDLE."""
@@ -96,7 +96,7 @@ SUPERVISOR_SYSTEM_PROMPT = (
     "Plan/topology: <whether the plan or its shape is implicated — "
     "unchanged (the plan was sound; the failure was operational) | "
     "update-recommended — <the concrete change: split/merge steps, "
-    "reorder, narrow a directive, move work to a fork, drop a step>>\n"
+    "reorder, narrow a directive, move work to a spawn, drop a step>>\n"
     "Overall: no-action | plan-update-recommended\n"
     "Action: retry-step | ignore-step | no-action — include this line "
     "ONLY when the message's repair protocol offers it: retry-step "
@@ -113,7 +113,7 @@ SUPERVISOR_SYSTEM_PROMPT = (
 
 def _tree_block(rows: List[StateRow]) -> str:
     """The plan tree as the watchdog sees it — one title/status line per
-    top-level node (forks collapsed to a count on their parent)."""
+    top-level node (spawns collapsed to a count on their parent)."""
     if not rows:
         return "(no persisted plan — the planning phase itself failed)"
     return "\n".join(

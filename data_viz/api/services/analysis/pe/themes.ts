@@ -13,8 +13,8 @@ import {
   buildIndustryStrategyThemes,
   buildStrategyThemesFromRows,
 } from "@api/services/_shared";
-import { listIndustryEntityClassRows } from "@api/services/classification-cache.js";
-import { LABEL_CODE } from "@api/services/label-codes";
+import { listIndustryEntityClassRows } from "@api/services/infra/classification-cache.js";
+import { LABEL_CODE } from "@api/services/infra/label-codes";
 import type {
   SectorNode,
   IndustryNode,

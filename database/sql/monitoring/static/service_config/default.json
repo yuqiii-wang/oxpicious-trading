@@ -5,7 +5,8 @@
   "excluded_parallel_services": [],
   "freq": "on_demand",
   "schedule": null,
-  "notes": "Repo-wide FALLBACK for services without their own file in this tree: max_parallel cap 1, no fixed schedule (on-demand / ad-hoc runs register ad-hoc by module path). Not a real service — lookups substitute the requesting service's name.",
-  "source_ref": "_common/service_heartbeat.py max_parallel_for",
-  "updated_at": "2026-10-10T06:29:48.410435+00:00"
+  "notes": "Repo-wide FALLBACK for services without their own file in this tree: max_parallel cap 1, no fixed schedule (on-demand / ad-hoc runs register ad-hoc by module path), stale_process_check on (the stream watchdog restarts a service whose heartbeat code_fingerprint no longer matches the on-disk sources). Not a real service - lookups substitute the requesting service's name.",
+  "source_ref": "_common/service_heartbeat.py max_parallel_for / stale_check_for",
+  "updated_at": "2026-11-13T00:00:00.000000+00:00",
+  "stale_process_check": true
 }

@@ -6,15 +6,16 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { HttpError, strParam, wrapAsync } from "../../lib/http.js";
 import {
   getReadPool,
-} from "../../services/db.service.js";
+} from "../../services/infra/db.service.js";
 import { renderSqlView } from "@api/lib/sql-views";
 import {
   isPythonProcessRunning,
   runPythonModule,
-} from "../../services/py-runner.service.js";
-import { serviceConfigFor } from "../../services/static-config.service.js";
+} from "../../services/infra/py-runner.service.js";
+import { serviceConfigLooseFor } from "../../services/infra/static-config.service.js";
 import { FREQ_PERIOD_MS, SKIP_ANY_SUCCESS, STALE_AFTER_S, isRunnableModule } from "./_shared.js";
 
 const router = Router();
@@ -58,7 +59,7 @@ interface FreqGuard {
 /** Evaluate the freq auto-skip guard: the service's static-config freq vs
  *  its last successful exit in monitor.service_audit. */
 async function evaluateFreqGuard(service: string): Promise<FreqGuard> {
-  const cfg = serviceConfigFor(service);
+  const cfg = serviceConfigLooseFor(service);
   const period = FREQ_PERIOD_MS[cfg.freq] ?? null;
   const skipRule: FreqGuard["skipRule"] =
     period === null ? "never" : period === SKIP_ANY_SUCCESS ? "any_success" : "within";
@@ -172,7 +173,7 @@ function blockedBy(
  *  currently live services (read replica — beats lag the primary by
  *  seconds at most; the 240s staleness window dwarfs it). */
 async function evaluateParallelGuard(service: string): Promise<ParallelGuard> {
-  const own = serviceConfigFor(service);
+  const own = serviceConfigLooseFor(service);
   let running: string[] = [];
   let dbError: string | null = null;
   try {
@@ -198,7 +199,9 @@ async function evaluateParallelGuard(service: string): Promise<ParallelGuard> {
         conflicts.push({ running: other, owner: service, ...ownBlocked });
         continue;
       }
-      const otherCfg = serviceConfigFor(other);
+      // Loose lookup: `other` is a live heartbeat name (DB-derived) — an
+      // unusable name must degrade to no lists, not 500 the guard.
+      const otherCfg = serviceConfigLooseFor(other);
       const otherBlocked = blockedBy(
         otherCfg.included_parallel_services,
         otherCfg.excluded_parallel_services,
@@ -234,26 +237,21 @@ function conflictSentence(c: ParallelConflict): string {
  *  parallel-services evaluation the Run dialog previews (freq, last
  *  successful exit, whether a force-less run would be skipped right now;
  *  plus the cross-service parallel verdict against the live services). */
-router.get("/stream/run/guard", async (req: Request, res: Response) => {
-  const service = typeof req.query.service === "string" ? req.query.service.trim() : "";
+router.get("/stream/run/guard", wrapAsync(async (req: Request, res: Response) => {
+  const service = strParam(req, "service") ?? "";
   if (!service || !/^[A-Za-z0-9_.-]+$/.test(service) || !isRunnableModule(service)) {
-    res.status(400).json({
-      success: false,
-      error: `service must be a runnable dotted module path, got '${service}'`,
-    });
-    return;
+    throw new HttpError(
+      400,
+      "INVALID_PARAM",
+      `service must be a runnable dotted module path, got '${service}'`,
+    );
   }
-  try {
-    const [freq, parallel] = await Promise.all([
-      evaluateFreqGuard(service),
-      evaluateParallelGuard(service),
-    ]);
-    res.json({ success: true, ...freq, parallel });
-  } catch (err) {
-    console.error("[monitor/stream/run/guard] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
-});
+  const [freq, parallel] = await Promise.all([
+    evaluateFreqGuard(service),
+    evaluateParallelGuard(service),
+  ]);
+  res.json({ success: true, ...freq, parallel });
+}));
 
 /** POST /api/monitor/stream/run { service, force?, args? } — spawn
  *  `python -m <service> [args...]` (fire-and-forget) unless a guard skips
@@ -266,7 +264,7 @@ router.get("/stream/run/guard", async (req: Request, res: Response) => {
  *  onto one another); the module's own max_parallel + parallel-services
  *  registration claims cover non-UI duplicates (cron + manual),
  *  self-exiting past the cap or on a conflict. */
-router.post("/stream/run", async (req: Request, res: Response) => {
+router.post("/stream/run", wrapAsync(async (req: Request, res: Response) => {
   const service = typeof req.body?.service === "string" ? req.body.service.trim() : "";
   const force = req.body?.force === true;
   const args = Array.isArray(req.body?.args) ? req.body.args : [];
@@ -277,22 +275,21 @@ router.post("/stream/run", async (req: Request, res: Response) => {
         typeof a !== "string" || a === "" || a.length > 64 || !/^[\w.,:=@+-]+$/.test(a),
     )
   ) {
-    res.status(400).json({
-      success: false,
-      error:
-        "args must be <= 8 short CLI tokens (letters/digits/_ . , : = @ + -) — they are joined into the bash -lc command verbatim",
-    });
-    return;
+    throw new HttpError(
+      400,
+      "INVALID_PARAM",
+      "args must be <= 8 short CLI tokens (letters/digits/_ . , : = @ + -) — they are joined into the bash -lc command verbatim",
+    );
   }
   if (!service || !/^[A-Za-z0-9_.-]+$/.test(service) || !isRunnableModule(service)) {
-    res.status(400).json({
-      success: false,
-      error: `service must be a runnable dotted module path, got '${service}'`,
-    });
-    return;
+    throw new HttpError(
+      400,
+      "INVALID_PARAM",
+      `service must be a runnable dotted module path, got '${service}'`,
+    );
   }
   const tag = serviceRunTag(service);
-  if (isPythonProcessRunning(tag)) {
+  if (await isPythonProcessRunning(tag)) {
     res.json({
       success: true,
       started: true,
@@ -304,47 +301,35 @@ router.post("/stream/run", async (req: Request, res: Response) => {
     return;
   }
   if (!force) {
-    try {
-      const guard = await evaluateFreqGuard(service);
-      if (guard.wouldSkip) {
-        res.json({
-          success: true,
-          started: false,
-          skipped: true,
-          ...guard,
-          message: `skipped — last successful exit ${guard.lastSuccessAt} is inside the ${guard.freq} period; enable force rerun to run anyway`,
-        });
-        return;
-      }
-    } catch (err) {
-      console.error("[monitor/stream/run] guard error:", err);
-      res.status(500).json({ success: false, error: String(err) });
+    const guard = await evaluateFreqGuard(service);
+    if (guard.wouldSkip) {
+      res.json({
+        success: true,
+        started: false,
+        skipped: true,
+        ...guard,
+        message: `skipped — last successful exit ${guard.lastSuccessAt} is inside the ${guard.freq} period; enable force rerun to run anyway`,
+      });
       return;
     }
   }
   // Parallel-services conflict — refused on every run (force does not
   // bypass it; a DB problem inside the guard admits the run instead).
-  try {
-    const parallel = await evaluateParallelGuard(service);
-    if (!parallel.allowed) {
-      console.log(
-        `[monitor/stream/run] ${service} blocked by parallel-services guard: ` +
-          parallel.conflicts.map(conflictSentence).join("; "),
-      );
-      res.json({
-        success: true,
-        started: false,
-        blocked: true,
-        parallel,
-        message: `blocked — parallel-services conflict: ${parallel.conflicts
-          .map(conflictSentence)
-          .join("; ")}; edit the service_config lists to lift it`,
-      });
-      return;
-    }
-  } catch (err) {
-    console.error("[monitor/stream/run] parallel guard error:", err);
-    res.status(500).json({ success: false, error: String(err) });
+  const parallel = await evaluateParallelGuard(service);
+  if (!parallel.allowed) {
+    console.log(
+      `[monitor/stream/run] ${service} blocked by parallel-services guard: ` +
+        parallel.conflicts.map(conflictSentence).join("; "),
+    );
+    res.json({
+      success: true,
+      started: false,
+      blocked: true,
+      parallel,
+      message: `blocked — parallel-services conflict: ${parallel.conflicts
+        .map(conflictSentence)
+        .join("; ")}; edit the service_config lists to lift it`,
+    });
     return;
   }
   // Fire-and-forget: the POST resolves immediately; the runner's tag
@@ -367,6 +352,6 @@ router.post("/stream/run", async (req: Request, res: Response) => {
       force ? " (force rerun)" : ""
     } — first heartbeat beat within ~60s`,
   });
-});
+}));
 
 export default router;

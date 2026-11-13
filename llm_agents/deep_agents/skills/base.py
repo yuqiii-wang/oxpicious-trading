@@ -52,7 +52,7 @@ class Skill:
 class SkillBook:
     """The run's selected skills, in fetch (ordinal) order — the
     immutable study-instruction set the planner plans under and every
-    step hop / forked child receives."""
+    step hop / spawned child receives."""
 
     def __init__(self, skills: Iterable[Skill]) -> None:
         self.skills: List[Skill] = list(skills)
@@ -71,7 +71,7 @@ class SkillBook:
             -> Dict[str, str]:
         """The runner's pass-down shape: prompt_key -> RENDERED
         instruction (the dict every step hop's conversation and every
-        forked child's structured data receives)."""
+        spawned child's structured data receives)."""
         return {s.prompt_key: s.render(args or {})
                 for s in self.skills}
 

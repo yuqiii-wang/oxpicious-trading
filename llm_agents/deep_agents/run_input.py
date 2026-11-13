@@ -47,6 +47,18 @@ class RunInput(BaseModel):
     analysis_items: List[Dict[str, Any]] = Field(default_factory=list)
     prompts: List[Any] = Field(default_factory=list)
     prompt_labels: Dict[str, Any] = Field(default_factory=dict)
+    # The FORCED-TABLE-SCOPE (2026-11-11): the DB tables this run may
+    # see through the KG surface (kg_search / kg_expand / the
+    # materialized-data hints) — the KG serving layer filters its
+    # results to these tables (llm_agents.kg.service); empty/absent =
+    # no limitation, every seeded table serves.
+    forced_tables: List[str] = Field(default_factory=list)
+    # The FORCED-SCHEMA-SCOPE (2026-11-11): the DB SCHEMAS this run's
+    # KG surface serves (every schema-qualified entity under one of
+    # them — the AI-summary bridge rides its standing five: analysis /
+    # strategy / stats / text / multi_media). Empty/absent = no
+    # schema limitation.
+    forced_schemas: List[str] = Field(default_factory=list)
 
     @classmethod
     def validate_boundary(cls, data: Optional[Dict[str, Any]],

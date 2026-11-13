@@ -84,7 +84,7 @@ export function MarketRegimesSection({
                       : `${spans.length} span${spans.length === 1 ? "" : "s"} · ${days}d · last ${spans[spans.length - 1].endDate}`
                   }`;
                 })
-                .join(" · ") + " · source: stats.market_regimes (vol_z / amt_z vs own trailing 255d, bars ±1.0σ)"}
+                .join(" · ") + " · source: stats.market_regimes (vol_z / amt_z vs own trailing 252d, bars ±1.0σ)"}
         </Typography>
       )}
     </>

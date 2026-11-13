@@ -47,13 +47,13 @@ export const POOL_COLORS: Record<PoolSize, string> = {
 
 /** Available correlation-window selector values. Each W correlates the two
  *  industries' MA-W curves over the W trading days starting on start_date. */
-export const CORR_WINDOWS: CorrWindow[] = ["20d", "60d", "255d"];
+export const CORR_WINDOWS: CorrWindow[] = ["20d", "60d", "252d"];
 
 /** Available rolling-days selector values for the BenchmarkPriceChart shade
  *  overlay. Each value N corresponds to the pre-materialized column
  *  benchmark_non_this_industry_rolling_{N}days_price in
  *  analysis.industry_attributions. 120d (~6 months) is the default. */
-export const ROLLING_DAYS: RollingDays[] = [5, 20, 60, 120, 255, 500];
+export const ROLLING_DAYS: RollingDays[] = [5, 20, 60, 120, 252, 504];
 
 /** Default rolling-days window for the BenchmarkPriceChart shade overlay.
  *  120 trading days ≈ 6 months — the default for the shade overlay AND for
@@ -66,8 +66,8 @@ export const ROLLING_DAYS_LABELS: Record<RollingDays, string> = {
   20: "20 days",
   60: "60 days",
   120: "120 days (~6m)",
-  255: "255 days (~1y)",
-  500: "500 days (~2y)",
+  252: "252 days (~1y)",
+  504: "504 days (~2y)",
 };
 
 /** Map a RollingDays value to the corresponding row field name on
@@ -78,8 +78,8 @@ export const ROLLING_DAYS_FIELD: Record<RollingDays, string> = {
   20: "non_this_industry_rolling_20days_price",
   60: "non_this_industry_rolling_60days_price",
   120: "non_this_industry_rolling_120days_price",
-  255: "non_this_industry_rolling_255days_price",
-  500: "non_this_industry_rolling_500days_price",
+  252: "non_this_industry_rolling_252days_price",
+  504: "non_this_industry_rolling_504days_price",
 };
 
 /**

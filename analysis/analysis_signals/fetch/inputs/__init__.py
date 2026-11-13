@@ -33,6 +33,7 @@ from ._shared import (
     fetch_market_breadth,
     fetch_options_universe,
     resolve_options_universe,
+    resolve_sec_type_universe,
 )
 from ._mov_rsi import (
     fetch_latest_rsi_date,
@@ -103,4 +104,5 @@ __all__ = [
     "fetch_rsi_codes",
     "fetch_rsi_inputs",
     "resolve_hedge_pair_universe",
+    "resolve_sec_type_universe",
 ]

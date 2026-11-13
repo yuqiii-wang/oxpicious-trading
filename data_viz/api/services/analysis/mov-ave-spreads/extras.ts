@@ -9,7 +9,7 @@ import { formatDate, toNum } from "@api/lib/db";
 import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import { codeVariants } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
-import { labelDecodeSql } from "@api/services/label-codes";
+import { labelDecodeSql } from "@api/services/infra/label-codes";
 import type {
   MovAveSpreadMetric,
   MovAveSpreadExtrasResponse,
@@ -22,6 +22,7 @@ import type {
   MovAveSpreadPxVolVolState,
   MovAveSpreadRsiRankDay,
   MovAveSpreadMomentumDay,
+  MovAveSpreadAlignmentDay,
   MovAveSpreadRoofFloorRebound,
 } from "@shared/types";
 import {
@@ -60,6 +61,7 @@ const EXTRAS_VIEWS = {
   pxvol: "data_viz/api/services/analysis/mov-ave-spreads/extras/price_vs_amt",
   rsiranks: "data_viz/api/services/analysis/mov-ave-spreads/extras/rsi_ranks",
   momentum: "data_viz/api/services/analysis/mov-ave-spreads/extras/momentum",
+  alignment: "data_viz/api/services/analysis/mov-ave-spreads/extras/alignment",
   ohlc: "data_viz/api/services/analysis/mov-ave-spreads/ohlc-extras/extrema_pivot",
   gaps: "data_viz/api/services/analysis/mov-ave-spreads/ohlc-extras/gaps",
   rfest: "data_viz/api/services/analysis/mov-ave-spreads/roof-floor/estimates_pivot",
@@ -69,7 +71,7 @@ const EXTRAS_VIEWS = {
 /** The extras metric groups in canonical order — the /extras route's
  *  `metrics` param is validated against this list. */
 const EXTRAS_METRICS: readonly MovAveSpreadMetric[] = [
-  "amt", "ohlc", "rfest", "rfaudit", "streaks", "pxvol", "gaps", "rsiranks", "momentum",
+  "amt", "ohlc", "rfest", "rfaudit", "streaks", "pxvol", "gaps", "rsiranks", "momentum", "alignment",
 ];
 
 /** Parse + normalize the /extras `metrics` query param (comma-separated).
@@ -117,12 +119,12 @@ interface DbAmtRow {
   trading_amt_ma20: number | null;
   trading_amt_ma60: number | null;
   trading_amt_ma120: number | null;
-  trading_amt_ma255: number | null;
+  trading_amt_ma252: number | null;
   trading_amt_std5: number | null;
   trading_amt_std20: number | null;
   trading_amt_std60: number | null;
   trading_amt_std120: number | null;
-  trading_amt_std255: number | null;
+  trading_amt_std252: number | null;
 }
 
 /** Pick the trading-amount MA value for the given window from an amt
@@ -134,7 +136,7 @@ function pickTradingAmtMa(r: DbAmtRow, window: number): number | null {
     case 20:  return toNum(r.trading_amt_ma20);
     case 60:  return toNum(r.trading_amt_ma60);
     case 120: return toNum(r.trading_amt_ma120);
-    case 255: return toNum(r.trading_amt_ma255);
+    case 252: return toNum(r.trading_amt_ma252);
     default:  return null;
   }
 }
@@ -148,7 +150,7 @@ function pickTradingAmtStd(r: DbAmtRow, window: number): number | null {
     case 20:  return toNum(r.trading_amt_std20);
     case 60:  return toNum(r.trading_amt_std60);
     case 120: return toNum(r.trading_amt_std120);
-    case 255: return toNum(r.trading_amt_std255);
+    case 252: return toNum(r.trading_amt_std252);
     default:  return null;
   }
 }
@@ -205,7 +207,7 @@ function toAmtPairs(rows: DbAmtRow[]): MovAveSpreadPairSeries[] {
         trading_amt_ma20: pickTradingAmtMa(r, 20),
         trading_amt_ma60: pickTradingAmtMa(r, 60),
         trading_amt_ma120: pickTradingAmtMa(r, 120),
-        trading_amt_ma255: pickTradingAmtMa(r, 255),
+        trading_amt_ma252: pickTradingAmtMa(r, 252),
       };
       series.rows.push(amtRow);
     }
@@ -392,6 +394,33 @@ function toMomentumDay(r: DbMomentumRow): MovAveSpreadMomentumDay {
   };
 }
 
+// ---- "alignment" extras group -------------------------------------------------
+
+/** The "alignment" group's query: one code's per-date MA-chain alignment
+ *  rows (analysis.mov_ave_spreads_detail's alignment_score/state). The
+ *  alignment_state SMALLINT code is decoded to its label in the SQL —
+ *  the only decode boundary. The SELECT lives in the sql view
+ *  data_viz/api/services/analysis/mov-ave-spreads/extras/alignment. */
+
+/** One analysis.mov_ave_spreads_detail alignment row (see the
+ *  extras/alignment sql view) — alignment_state arrives decoded. */
+interface DbAlignmentRow {
+  date: Date | string;
+  alignment_score: number | null;
+  alignment_state: string | null;
+}
+
+/** DB row → API shape of the "alignment" extras group (state arrives
+ *  already decoded to its label by the SQL; cast to the union). */
+function toAlignmentDay(r: DbAlignmentRow): MovAveSpreadAlignmentDay {
+  return {
+    date: formatDate(r.date),
+    alignment_score: toNum(r.alignment_score),
+    alignment_state: (r.alignment_state ?? null) as
+      MovAveSpreadAlignmentDay["alignment_state"],
+  };
+}
+
 // ---- dispatcher ---------------------------------------------------------------
 
 /**
@@ -502,6 +531,16 @@ export async function getMovAveSpreadChartExtras(
             regime_decode: sqlFrag(labelDecodeSql("regime", "m.regime")),
           });
           response.momentum = rows.map(toMomentumDay);
+          break;
+        }
+        case "alignment": {
+          const rows = await querySqlView<DbAlignmentRow>(EXTRAS_VIEWS.alignment, {
+            sec_type: secTypeParam(secType),
+            codes: variants,
+            alignment_decode: sqlFrag(
+              labelDecodeSql("ma_alignment", "s.alignment_state")),
+          });
+          response.alignment = rows.map(toAlignmentDay);
           break;
         }
       }

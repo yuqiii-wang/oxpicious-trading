@@ -13,8 +13,8 @@ TRADING_AMT_ANALYSIS_NAME = "mov_ave_trading_amt"
 TRADING_AMT_DESCRIPTION = (
     "Trading-amount analysis (ETF + Index + Stock). For each security "
     "and business date, computes 5 trading-amount MA columns "
-    "(trading_amt_ma{5,20,60,120,255}), 5 trading-amount Bollinger band σ "
-    "columns (trading_amt_std{5,20,60,120,255} — rolling population std of "
+    "(trading_amt_ma{5, 20, 60, 120, 252}), 5 trading-amount Bollinger band σ "
+    "columns (trading_amt_std{5, 20, 60, 120, 252} — rolling population std of "
     "trading_amt_maW over W days, used for Bollinger-style envelopes), "
     "5 market-share MA columns, 6 slope columns (raw trading_amt_slope + "
     "5 fractional MA slopes), and 5 market-share-vs-MA gap columns. "
@@ -37,7 +37,7 @@ TRADING_AMT_MA_COLUMNS = (
     "trading_amt_ma20",
     "trading_amt_ma60",
     "trading_amt_ma120",
-    "trading_amt_ma255",
+    "trading_amt_ma252",
 )
 
 # Trading-amount MARKET-SHARE MA column names (in canonical window order).
@@ -54,7 +54,7 @@ TRADING_AMT_MARKET_SHARE_MA_COLUMNS = (
     "trading_amt_market_share_ma20",
     "trading_amt_market_share_ma60",
     "trading_amt_market_share_ma120",
-    "trading_amt_market_share_ma255",
+    "trading_amt_market_share_ma252",
 )
 
 # Trading-amount MA SLOPE column names (in canonical window order). Each is
@@ -68,7 +68,7 @@ TRADING_AMT_MA_SLOPE_COLUMNS = (
     "trading_amt_ma20_slope",
     "trading_amt_ma60_slope",
     "trading_amt_ma120_slope",
-    "trading_amt_ma255_slope",
+    "trading_amt_ma252_slope",
 )
 
 # Trading-amount RAW (no-MA) SLOPE column. Fractional daily change of
@@ -97,7 +97,7 @@ TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS = (
     "trading_amt_market_share_vs_ma20",
     "trading_amt_market_share_vs_ma60",
     "trading_amt_market_share_vs_ma120",
-    "trading_amt_market_share_vs_ma255",
+    "trading_amt_market_share_vs_ma252",
 )
 
 # Trading-amount Bollinger band σ column names (rolling population std of
@@ -110,7 +110,7 @@ TRADING_AMT_STD_COLUMNS = (
     "trading_amt_std20",
     "trading_amt_std60",
     "trading_amt_std120",
-    "trading_amt_std255",
+    "trading_amt_std252",
 )
 
 # All output column names in the order they appear in the table.

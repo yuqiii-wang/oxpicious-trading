@@ -4,7 +4,7 @@
  * The frontend calls these when the user clicks "Run Strategy" /
  * "Train Model", then reloads data from DB on success.
  */
-import { runPythonModule, type RunScriptResult } from "../py-runner.service.js";
+import { runPythonModule, type RunScriptResult } from "../infra/py-runner.service.js";
 import type { MaSpreadSecType } from "../../../shared/types.js";
 import { DEFAULT_STRATEGY_NAME } from "./_shared.js";
 

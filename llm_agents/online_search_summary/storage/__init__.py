@@ -22,8 +22,9 @@ never on ``providers``.
 from __future__ import annotations
 
 from llm_agents.online_search_summary.storage.matching import (
-    REF_TYPE_EXACT, REF_TYPE_RELEVANT, VIA_CORPUS, VIA_DDGS, VIA_SUMMARY,
-    hit_ref_time, is_exact_article, normalize_text, source_from_url,
+    REF_RECENCY_WINDOW_DAYS, REF_TYPE_EXACT, REF_TYPE_RELEVANT, VIA_CORPUS,
+    VIA_DDGS, VIA_SUMMARY, RefFilterOutcome, RefRecencyFilter, hit_ref_time,
+    in_ref_window, is_exact_article, normalize_text, source_from_url,
 )
 from llm_agents.online_search_summary.storage.fetching import PageFetcher
 from llm_agents.online_search_summary.storage.resolve import (
@@ -37,6 +38,8 @@ __all__ = [
     "REF_TYPE_EXACT", "REF_TYPE_RELEVANT",
     "VIA_SUMMARY", "VIA_CORPUS", "VIA_DDGS",
     "normalize_text", "is_exact_article", "source_from_url", "hit_ref_time",
+    "in_ref_window", "REF_RECENCY_WINDOW_DAYS", "RefFilterOutcome",
+    "RefRecencyFilter",
     "PageFetcher",
     "NEWS_TABLE", "RefResolver", "ResolvedRef", "build_ref_rows",
     "OnlineSearchSummaryStore",

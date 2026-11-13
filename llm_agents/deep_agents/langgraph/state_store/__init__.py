@@ -59,6 +59,7 @@ from llm_agents.deep_agents.supervisor import NODE_SUPERVISOR  # noqa: F401 — 
 from .items import (
     CONTEXT_ITEM_FIELDS, NODE_COMPACT, NODE_EXECUTE, NODE_FINALIZE,
     NODE_ITEM_FIELDS, NODE_OUTPUT, NODE_PLAN, NODE_RESULT, NODE_STATUSES,
+    NODE_REVIEW_JOIN,
     NS_CONTEXTS, NS_ROOT, ContextKind, ContextItemValue, NodeItemValue,
     _closed_value,
 )
@@ -72,7 +73,8 @@ from .writer import NodeRunWriter
 __all__ = [
     "CONTEXT_ITEM_FIELDS", "DeepAgentStore", "NODE_COMPACT", "NODE_EXECUTE",
     "NODE_FINALIZE", "NODE_ITEM_FIELDS", "NODE_OUTPUT", "NODE_PLAN",
-    "NODE_RESULT", "NODE_SUPERVISOR", "NODE_STATUSES", "NS_CONTEXTS",
+    "NODE_RESULT", "NODE_REVIEW_JOIN", "NODE_SUPERVISOR", "NODE_STATUSES",
+    "NS_CONTEXTS",
     "NS_ROOT", "ContextKind",
     "NODE_SUPERVISOR", "NodeItemValue", "NodeRunWriter",
     "ContextItemValue", "_closed_value",

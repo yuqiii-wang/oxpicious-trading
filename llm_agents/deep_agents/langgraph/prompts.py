@@ -15,7 +15,7 @@ module owns what a step hop reads:
     overflow);
   * ``STEP_SYSTEM_ADDENDUM`` + ``step_user_message`` — one step hop's
     conversation: the step contract (work YOUR step, self-contained
-    finding, replan powers, fork powers) and the user message (run
+    finding, replan powers, spawn powers) and the user message (run
     goal + structured context + the selected prompts' texts + the
     step's directive + findings so far — the compacted digest block
     riding BESIDE the raw tail when a compaction has run, see
@@ -81,7 +81,7 @@ def findings_block(findings: List[str]) -> str:
 
 # The per-step system addendum: the step's own lifecycle is runner-side
 # (no ticking tool); the model's plan powers are the living-graph
-# rework and forking its own sub-work; the chain paragraph teaches the
+# rework and spawning its own sub-work; the chain paragraph teaches the
 # cross-graph context reads (2026-11-06 three-graph refactor); the
 # CRITICAL paragraph (2026-11-06 b) teaches the must-check both ways —
 # flag your own discovery, read the run's flagged ones.
@@ -99,7 +99,7 @@ STEP_SYSTEM_ADDENDUM = (
     "search_thread_context with keywords for what you need — it spans "
     "the WHOLE chain over the recorded requests AND the recorded "
     "payloads (the planner's proposal, any earlier step's "
-    "asks/answers/fetches and its full result notes, fork answers, the "
+    "asks/answers/fetches and its full result notes, spawn answers, the "
     "custom graph's final synthesis; hits are labeled [plan|node] / "
     "[custom|node] / [result|node] and the header lists each graph's "
     "thread id). For an EXACT full payload (the plan JSON, a step's "
@@ -112,7 +112,52 @@ STEP_SYSTEM_ADDENDUM = (
     "= a step's directive/result note, graph-output = the custom "
     "graph's synthesis, final-result = the run's answer). Search "
     "first, query second — never redo work an earlier graph already "
-    "finished.\n"
+    "finished. A SYNTHESIS step — weighing earlier steps' verdicts "
+    "into one conclusion — works FROM the findings block and the "
+    "critical-flagged discoveries; re-query only for a number the "
+    "findings actually lack (name that gap in the reply): re-deriving "
+    "settled work with a dozen fresh queries is the failure mode, not "
+    "diligence.\n"
+    "MATERIALIZED ANALYSIS DATA — before writing any script that "
+    "computes an indicator (MA/EMA spread + alignment 排列/间距, RSI, "
+    "momentum, Bollinger σ, OHLC anatomy, roof/floor levels) from raw "
+    "bars, CHECK whether the analysis schema already stores it: "
+    "kg_search '<the concept, trader vocabulary>' (namespace 0) "
+    "returns the table WITH its exact column names + comments inline "
+    "— LOAD it (db_run_query, or study_kit.db.query inside the "
+    "sandbox) instead of recomputing. The ma-spread suite alone covers "
+    "the 9 price-vs-MA / MA5-vs-MA gaps with per-gap trailing-252d "
+    "pct_rank / zscore / stretched verdict (analysis."
+    "mov_ave_spreads_detail ⋈ analysis.mov_ave_spreads_detail_"
+    "trailing — study_kit.db.fetch_spread_stats(sec_type, code) reads "
+    "both), plus the EMA set (mov_ave_spreads_detail_ema), RSI "
+    "(mov_ave_rsi), momentum (mov_ave_momentum), trading-amount "
+    "metrics (mov_ave_trading_amt), OHLC anatomy (mov_ave_spreads_"
+    "detail_ohlc_gaps) and roof/floor levels (mov_ave_spreads_roof_"
+    "floor_estimates / mov_ave_spreads_roof_and_floor_lines). Compute "
+    "ONLY what no table stores — custom windows (e.g. MA250) or "
+    "MA-pair gaps the suite does not carry. Decode SMALLINT label "
+    "codes ONCE per conversation — one static.label_dim query "
+    "covering every domain the work needs (WHERE domain IN (...)), "
+    "the map reused on every later turn, never re-queried per "
+    "question.\n"
+    "SANDBOX SCRIPTS — ITERATE SMALL, FAIL FAST: keep each script to "
+    "one lens/question of your step; run its query blocks under "
+    "try/except that records each error and CONTINUES (scripts "
+    "execute top-level — one bad SQL line must not abort the "
+    "remaining blocks' evidence). Check a table's columns before "
+    "querying it (kg_search returns them inline; db_describe_table). "
+    "Keep each SQL statement SMALL — one narrow retrieval per query "
+    "(just the needed columns, filtered on the table's key grain), "
+    "then aggregate/derive in pandas or a follow-up small query; a "
+    "multi-CTE monolith (joins + window functions + percentiles in "
+    "one statement) fails as a whole and burns a full debug round per "
+    "bug. When a sandbox_run fails, read the traceback's LAST line, patch "
+    "the ONE broken block with sandbox_edit_file, re-run — never "
+    "rewrite the whole file per fix (each whole-file rewrite resends "
+    "kilobytes of tokens and grows this conversation). If the same "
+    "failure keeps repeating, split the work into smaller scripts or "
+    "fall back to db_run_query.\n"
     "CRITICAL DISCOVERIES — a MUST CHECK, both ways. (1) CHECK BEFORE "
     "YOU CONCLUDE: run search_thread_context with critical_only=true "
     "and read every flagged discovery of the run — a finding an "
@@ -132,20 +177,21 @@ STEP_SYSTEM_ADDENDUM = (
     "include the key numbers and the pass/fail verdict; when the goal "
     "proves unanswerable, the finding says why — that settles it).\n"
     "REPLAN: when what you find changes the remaining plan, call "
-    "update_plan — add steps (delegate_goal marks a fork a subagent "
-    "will run), revise or remove steps that have NOT run, terminate "
-    "running forks you spawned when they stopped being relevant. Steps "
+    "update_plan — add steps (delegate_goal marks a step a spawned "
+    "subagent will run), revise or remove steps that have NOT run, "
+    "terminate running spawns you created when they stopped being "
+    "relevant. Steps "
     "already running or settled never move.\n"
-    "FORKS: for self-contained sub-work inside YOUR step, "
+    "SPAWNS: for self-contained sub-work inside YOUR step, "
     "spawn_subagent(background=true) lets it run while you continue; "
     "when the step splits into several NON-OVERLAPPING studies "
     "(different subjects or different indicators), spawn them ALL in "
     "ONE step as sibling calls — sibling spawns run in parallel, "
-    "one-at-a-time spawns serialize. Gather every fork with "
-    "collect_subagents before answering. Every forked subagent "
+    "one-at-a-time spawns serialize. Gather every spawn with "
+    "collect_subagents before answering. Every spawned subagent "
     "automatically receives the run's business context "
     "(subject, focus question, selected prompts) beside its goal — "
-    "write the goal as THIS fork's business question (a SMALLER goal "
+    "write the goal as THIS spawn's business question (a SMALLER goal "
     "cut from your step's goal: the subject + what to settle, plus "
     "the tables/columns it needs), not a repeat of the run."
 )
@@ -251,17 +297,41 @@ class StepPromptContext(BaseModel):
     data: Optional[Dict[str, Any]] = None
     state: StateRow
     delegate_goal: Optional[str] = None
+    # The INSTRUCTED RESUME's block (the supervisor retry verdict's
+    # instruction + prior error) — rendered at the very top of the
+    # directive so the re-run builds on its prior attempt.
+    resume_block: Optional[str] = None
     findings: List[str] = Field(default_factory=list)
     prompt_texts: Dict[str, str] = Field(default_factory=dict)
     prompt_catalog: Dict[str, str] = Field(default_factory=dict)
     node_prompts: Dict[str, str] = Field(default_factory=dict)
+    data_hints: Dict[str, str] = Field(default_factory=dict)
     digest: Optional[str] = None
     n_compacted: int = 0
 
 
+def data_hints_block(hints: Dict[str, str]) -> str:
+    """The MATERIALIZED-DATA hints' render in a step hop's user message
+    (2026-11-09): the analysis tables the step's own directive surfaced
+    through the KG (the runner's read-only ``table_hits`` lane) — the
+    load-before-compute nudge so a step LOADS what the analysis schema
+    already stores instead of recomputing it from raw bars. The exact
+    columns + comments ride one kg_expand (or a kg_search) away — the
+    hint names the table and its business meaning only, keeping the
+    block lean."""
+    if not hints:
+        return ""
+    quoted = "\n".join(f"- {name} — {desc}" for name, desc in hints.items())
+    return ("[Materialized data — these tables already store data your "
+            "step studies; LOAD them (db_run_query, or study_kit.db."
+            "query inside the sandbox) before computing anything from "
+            "raw bars. kg_expand '<name>' shows the exact columns + "
+            "comments]\n" + quoted)
+
+
 def step_user_message(ctx: StepPromptContext) -> str:
     """One step hop's user message: the run goal, the step's directive
-    (title / notes / fork goal), and the accumulated findings of the
+    (title / notes / spawn goal), and the accumulated findings of the
     earlier steps — the only bridge between the per-step
     conversations. ``prompt_texts`` (the rendered texts of the prompts
     the loading ladder LOADED for this run) rides between the context
@@ -275,7 +345,10 @@ def step_user_message(ctx: StepPromptContext) -> str:
     ``digest`` (the compact node's merged evidence, with
     ``n_compacted`` the raw lines it covers) rides BESIDE the raw
     findings tail: the first steps' substance arrives as the digest,
-    the recent ones as full lines."""
+    the recent ones as full lines. ``data_hints`` (the runner's
+    read-only KG table_hits on THIS step's directive — the
+    MATERIALIZED-DATA hints) rides between the structured context and
+    the loaded prompts."""
     parts = [f"[Run goal]\n{ctx.goal}"]
     if ctx.data:
         # The large-payload pre-check rides the hop too: oversized
@@ -290,6 +363,9 @@ def step_user_message(ctx: StepPromptContext) -> str:
         block = guard_notes_block(notes)
         if block:
             parts.append(block)
+    hints_block = data_hints_block(ctx.data_hints)
+    if hints_block:
+        parts.append(hints_block)
     if ctx.prompt_texts:
         parts.append(SkillBook.items_block(
             ctx.prompt_texts.items(),
@@ -302,10 +378,17 @@ def step_user_message(ctx: StepPromptContext) -> str:
             "directive; honor them for this step]"))
     if ctx.prompt_catalog:
         parts.append(prompt_catalog_block(ctx.prompt_catalog))
-    directive = [f"[Your step — work THIS step only]\n"
-                 f"{ctx.state.ordinal}. [{ctx.state.node}] {ctx.state.title}"]
+    directive = []
+    if ctx.resume_block:
+        # The INSTRUCTED RESUME — the supervisor's verdict instruction
+        # and the prior attempt's error ride ABOVE the directive so the
+        # re-run builds on what it already tried (never answers cold).
+        directive.append(ctx.resume_block)
+    directive.append(
+        f"[Your step — work THIS step only]\n"
+        f"{ctx.state.ordinal}. [{ctx.state.node}] {ctx.state.title}")
     if ctx.delegate_goal:
-        directive.append(f"Fork goal: {ctx.delegate_goal}")
+        directive.append(f"Spawn goal: {ctx.delegate_goal}")
     parts.append("\n".join(directive))
     if ctx.digest:
         parts.append(digest_block(ctx.digest, ctx.n_compacted))

@@ -3,7 +3,7 @@
 -- non_this_industry_rolling_*_price) + the non-this-industry price
 -- columns + shared weight for ONE (industry_id, benchmark_code) pair.
 -- Drives the green/red shade overlay on the BenchmarkPriceChart; the
--- rolling_Xdays_price columns (5/20/60/120/255/500) are returned as-is
+-- rolling_Xdays_price columns (5/20/60/120/252/504) are returned as-is
 -- and the frontend dropdown picks which one drives the overlay. Aliases
 -- strip the `benchmark_` prefix so row keys match the response payload;
 -- industry_label / benchmark_name / is_broad_market come from LATERAL
@@ -29,8 +29,8 @@ SELECT
         ia.benchmark_non_this_industry_rolling_20days_price      AS non_this_industry_rolling_20days_price,
         ia.benchmark_non_this_industry_rolling_60days_price      AS non_this_industry_rolling_60days_price,
         ia.benchmark_non_this_industry_rolling_120days_price     AS non_this_industry_rolling_120days_price,
-        ia.benchmark_non_this_industry_rolling_255days_price     AS non_this_industry_rolling_255days_price,
-        ia.benchmark_non_this_industry_rolling_500days_price    AS non_this_industry_rolling_500days_price,
+        ia.benchmark_non_this_industry_rolling_252days_price     AS non_this_industry_rolling_252days_price,
+        ia.benchmark_non_this_industry_rolling_504days_price    AS non_this_industry_rolling_504days_price,
         ia.benchmark_shared_weight,
         sc.industry_label,
         ii.name AS benchmark_name,

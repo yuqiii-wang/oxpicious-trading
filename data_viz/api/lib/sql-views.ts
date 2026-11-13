@@ -12,7 +12,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { queryRows } from "@api/services/db.service.js";
+import { queryRows } from "@api/services/infra/db.service.js";
 import type { QueryResultRow } from "pg";
 
 /** A raw SQL fragment arg — substituted verbatim into the template. */

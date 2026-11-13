@@ -14,7 +14,7 @@ class StepDeps:
     """One inline hop's runner-side collaborators (injected — this
     module imports no langgraph; composition stays in the runner)."""
     # (step_row, broker, parent_context_id) -> the hooks trio for this
-    # hop's subagent lane (langgraph.hooks.ForkHooks pre-bound
+    # hop's subagent lane (langgraph.hooks.SpawnHooks pre-bound
     # runner-side with store/model/state/biz context).
     make_hooks: Callable[[Any, Any, Optional[str]], Any]
     # (step_row, node_prompts, resume_block) -> the hop's user message
@@ -24,7 +24,7 @@ class StepDeps:
     # (plan kit bound to the broker's cancel + the wave's plan lock,
     # plus stats/kg/prompt kits, DB descriptions applied).
     make_tools: Callable[[Any, Any, Optional[Any], Any], Dict[str, Any]]
-    # (thread_id) -> the hop's fork broker (langgraph.hooks.ForkBroker
+    # (thread_id) -> the hop's spawn broker (langgraph.hooks.SpawnBroker
     # — constructed runner-side; the agent stays langgraph-free).
     make_broker: Callable[[str], Any]
     # (directive_text) -> this step's dynamic-rung keyword-matched
@@ -37,7 +37,7 @@ class StepDeps:
     # The DeepAgent kwargs shared by every hop (model / max_steps /
     # temperature / subagent caps / tool_prompts).
     common: Dict[str, Any]
-    # (thread_id) -> the hop's fork broker (langgraph.hooks.ForkBroker
+    # (thread_id) -> the hop's spawn broker (langgraph.hooks.SpawnBroker
     # — constructed runner-side; the agent stays langgraph-free).
     make_broker: Callable[[str], Any]
     # The MCP tool client (injected — core, not langgraph).
@@ -45,3 +45,7 @@ class StepDeps:
     # The conversation engine class (core.loop.DeepAgent; injectable
     # for stub tests).
     agent_factory: Callable[..., Any] = DeepAgent
+    # (directive_text) -> this step's MATERIALIZED-DATA hints (the
+    # runner's read-only KG table_hits on the directive; awaited;
+    # optional so stub-constructed deps without it keep working).
+    get_data_hints: Optional[Callable[[str], Any]] = None

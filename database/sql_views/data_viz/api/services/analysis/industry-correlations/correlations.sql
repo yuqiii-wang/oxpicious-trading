@@ -21,7 +21,7 @@
       "interval",
       corr_ma20_20d,
       corr_ma60_60d,
-      corr_ma255_255d
+      corr_ma252_252d
     FROM analysis.industry_correlations
     WHERE {{filters}}
     ORDER BY start_date ASC, industry_id, benchmark_industry_id

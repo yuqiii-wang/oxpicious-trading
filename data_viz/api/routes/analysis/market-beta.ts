@@ -7,9 +7,11 @@ import { Router, type Request, type Response } from "express";
 import {
   getMarketBetaChart,
   getMarketBetaChartByCode,
+  getMarketParticipation,
   listMarketBetaThemes,
   listMarketBetaStrategyThemes,
 } from "../../services/analysis/index.js";
+import { wrapAsync, strParam, intParam } from "../../lib/http.js";
 
 const router = Router();
 
@@ -31,59 +33,38 @@ const router = Router();
 //     Returns per-index close time series for ONE industry. One entry per
 //     member index, each with its raw daily close series. The frontend
 //     rebases each to 100 at the start of the visible (zoom) window.
-router.get("/market-beta/themes", async (req: Request, res: Response) => {
-  try {
-    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
-    res.json(await listMarketBetaThemes(exchange));
-  } catch (err) {
-    console.error("[analysis/market-beta/themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/market-beta/themes", wrapAsync(async (req: Request, res: Response) => {
+  const exchange = strParam(req, "exchange");
+  res.json(await listMarketBetaThemes(exchange));
+}));
 
 /** GET /api/analysis/market-beta/strategy-themes */
-router.get("/market-beta/strategy-themes", async (req: Request, res: Response) => {
-  try {
-    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
-    res.json(await listMarketBetaStrategyThemes(exchange));
-  } catch (err) {
-    console.error("[analysis/market-beta/strategy-themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/market-beta/strategy-themes", wrapAsync(async (req: Request, res: Response) => {
+  const exchange = strParam(req, "exchange");
+  res.json(await listMarketBetaStrategyThemes(exchange));
+}));
 
-router.get("/market-beta/chart", async (req: Request, res: Response) => {
-  try {
-    const industryId = typeof req.query.industry_id === "string"
-      ? req.query.industry_id.trim()
-      : "";
-    if (!industryId) {
-      res.status(400).json({ error: "Missing 'industry_id' parameter" });
-      return;
-    }
-    res.json(await getMarketBetaChart(industryId));
-  } catch (err) {
-    console.error("[analysis/market-beta/chart] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/market-beta/chart", wrapAsync(async (req: Request, res: Response) => {
+  const industryId = strParam(req, "industry_id", { required: true });
+  res.json(await getMarketBetaChart(industryId));
+}));
 
 /** GET /api/analysis/market-beta/chart-by-code?code=931696
  *  Returns chart data (close series + stock_num) for a single index code.
  *  Used when an L3 index chip is clicked under a strategy/theme —
  *  strategy-primary indices may lack an industry_id classification. */
-router.get("/market-beta/chart-by-code", async (req: Request, res: Response) => {
-  try {
-    const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    res.json(await getMarketBetaChartByCode(code));
-  } catch (err) {
-    console.error("[analysis/market-beta/chart-by-code] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/market-beta/chart-by-code", wrapAsync(async (req: Request, res: Response) => {
+  const code = strParam(req, "code", { required: true });
+  res.json(await getMarketBetaChartByCode(code));
+}));
+
+/** GET /api/analysis/market-beta/participation?days=260
+ *  The Market Participation panel series: latest N trading days of
+ *  analysis.market_participation (whole-market turnover / SSE share /
+ *  advance-decline breadth), oldest first. */
+router.get("/market-beta/participation", wrapAsync(async (req: Request, res: Response) => {
+  const days = intParam(req, "days", { required: true, min: 1, max: 5000, strict: true });
+  res.json(await getMarketParticipation(days));
+}));
 
 export default router;

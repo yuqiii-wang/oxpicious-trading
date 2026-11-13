@@ -3,11 +3,13 @@
 when three curves resonate and make portfolio signal trigger, the
 triggered portfolio signals can set cell level signals — does not need
 to source from existing short term tech signals"), the PORTFOLIO
-tier's one family.
-
-THE TYPICAL SOLUTION on the trio structure: TWO negatively-correlated
-leg curves (the offset-opposite industry composites, greedy-disjoint
-by trailing opposite score) + ONE broad-market curve (000300). ONE
+tier's one family. The universe is ALL INDUSTRY PAIRS since 2026-11-07
+(user-directed "for hedge pairs add all industries (would have
+(n ** 2) / 2 pairs of n industries)") — every unordered pair of the
+pool-'all' industry composites, the freshest offsets score/rho as
+nullable metadata, the pinned showcase pair first; the scored-disjoint
+era (opposite score > 0.5, greedy one-pair-per-industry) is retired
+and the measured gate self-picks the tradable pairs on evidence. ONE
 shipped sub type, ONE simple condition — the RESONANCE:
 
   hp_entry_trio (BUY)  all THREE curves sit in their own Wilder-RSI
@@ -170,8 +172,27 @@ fragments.py (the portfolio-fragment writer, PortfolioFragmentsMixin)
 + dd lenses, benefit/gate audit, member-record helpers). Every run
 step is a method of HedgePairTrioEntry; _commons stays leaf-level
 free helpers.
+
+THE CHUNKED RUN (2026-11-07, the all-industries scale): the ~5.5k-pair
+frame cannot materialize whole on the GPU (~9M rows x the gauge
+columns), so run() walks the universe in HP_PAIR_CHUNK chunks — each
+chunk one self-contained mini-run of the proven per-pair machinery
+(build_pair_chunk -> the forward blends -> trio / spread entry /
+spread exit -> the chunk's fragment collection). Every engine step is
+per-pair or per-(pair, date) — eligible years, tail picks, cell
+measurement, benefit, lenses, member records — so the chunk partition
+changes nothing per pair. The ONE cross-pair coupling is the POOLED
+EVIDENCE TIER: it judges each chunk's own (sub_type, action)
+population (hundreds of pairs -> thousands of measurable triggers per
+pool — statistically the full-universe verdict; the hedge bars are
+the loose family-scoped ones). The registered standalone cells run
+once over the whole comp frame after the chunk loop; the portfolio
+fragment stamping (conditions + params, which read the registered
+rows' vocabulary) runs last.
 """
 from __future__ import annotations
+
+import logging
 
 import pandas as pd
 
@@ -180,7 +201,8 @@ from _common.labels import SIGNAL_TYPE_CODE
 from analysis.analysis_signals import config as cfg
 from analysis.analysis_signals.engines.rule_base import RuleEntry
 from analysis.analysis_signals.fetch.inputs._hedge_pairs import (
-    fetch_hedge_pair_inputs,
+    build_pair_chunk,
+    fetch_hedge_pair_components,
     resolve_hedge_pair_universe,
 )
 
@@ -199,6 +221,8 @@ from analysis.analysis_signals.engines.signal_families.hedge_pairs.standalone im
 from analysis.analysis_signals.engines.signal_families.hedge_pairs.trio import (
     TrioSub,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class HedgePairTrioEntry(TrioSub, SpreadSub, StandaloneSub,
@@ -236,17 +260,37 @@ class HedgePairTrioEntry(TrioSub, SpreadSub, StandaloneSub,
     def __init__(self, conn, sec_type, codes, boost: bool | None = None):
         super().__init__(conn, sec_type, codes, boost=boost)
         self._pairs: list[dict] = []
+        self._legs_df: pd.DataFrame | None = None
         self._comp: pd.DataFrame | None = None
+        # the per-chunk fragment stashes the final portfolio stamping
+        # reads (the chunk frames' host grids live only inside the
+        # chunk loop — the stashes keep the per-pair RESULTS)
+        self._benefit_by_pair: dict[str, dict] = {}
+        self._lens_by_cell: dict[tuple[str, int], dict | None] = {}
 
     async def fetch_frame(self) -> pd.DataFrame:
+        """The COMPONENT frame (the registered standalone cells'
+        population — the market + every leg). The pair universe + the
+        legs' close frame are stashed for run()'s chunked builds."""
         self._pairs = await resolve_hedge_pair_universe(self.conn)
-        pair_frame, comp = await fetch_hedge_pair_inputs(
-            self.conn, self._pairs,
+        legs = sorted(
+            {p["leg_a"] for p in self._pairs}
+            | {p["leg_b"] for p in self._pairs},
         )
-        # the COMPONENT frame stashed for the registered standalone
-        # cells (the mov_rsi grid measured on the market + legs)
-        self._comp = comp
-        return pair_frame
+        self._legs_df, self._comp = await fetch_hedge_pair_components(
+            self.conn, legs,
+        )
+        return self._comp
+
+    async def prepare_frame(self) -> pd.DataFrame:
+        """The hedge family's own prepare — NO trend/regime attaches:
+        every hedge cell is pooled both axes (the trend/regime columns
+        are never read — cell keys are (code,) only), the pair codes
+        are composite (WRITES_TREND_DAYS False — trend_days never sees
+        them), and the pair chunks attach their OWN forward blends at
+        build time (run()). The comp frame rides as fetched (the
+        registered standalone cells measure their own attach)."""
+        return await self.fetch_frame()
 
     def rule_wipe_scopes(self) -> list[tuple[int, list[str], bool | None]]:
         """The family's scopes: its own type at the pair codes, both
@@ -266,27 +310,56 @@ class HedgePairTrioEntry(TrioSub, SpreadSub, StandaloneSub,
         ]
 
     def run(self, frame: pd.DataFrame) -> tuple[list[dict], list[dict]]:
+        """The CHUNKED all-pairs run (see the module docstring's layout):
+        per HP_PAIR_CHUNK chunk one self-contained mini-run of the
+        proven per-pair machinery, then the registered standalone
+        cells (the whole comp frame, once) and the final portfolio
+        fragment stamping (the conditions read the registered rows'
+        vocabulary — after the standalone registration)."""
         rules: list[dict] = []
         history: list[dict] = []
-        if frame.empty:
+        if self._legs_df is None or self._legs_df.empty or frame.empty:
+            logger.warning("[hedge_pairs] no component closes — nothing "
+                           "to do")
             return rules, history
         pair_info = {p["code"]: p for p in self._pairs}
-        # the subs, in the shipped order: the trio co-wash (+ the
-        # measured blow-off mirror check inside it), the spread
-        # convergence entry, the spread top-tail exit; then the
-        # registered standalone mov_rsi cells (the sourced layer) and
-        # the portfolio fragments on the orchestrating rows
-        trio_rules, trio_history = self._run_trio(frame)
-        rules += trio_rules
-        history += trio_history
-        entry_rules, entry_history = self._run_spread_entry(frame)
-        rules += entry_rules
-        history += entry_history
-        exit_rules, exit_history = self._run_spread_exit(frame)
-        rules += exit_rules
-        history += exit_history
+        n_chunks = (len(self._pairs) + cfg.HP_PAIR_CHUNK - 1) \
+            // cfg.HP_PAIR_CHUNK
+        for ci in range(n_chunks):
+            chunk_pairs = self._pairs[
+                ci * cfg.HP_PAIR_CHUNK:(ci + 1) * cfg.HP_PAIR_CHUNK]
+            pair_frame = build_pair_chunk(self._legs_df, chunk_pairs,
+                                          self._comp)
+            if pair_frame.empty:
+                logger.warning(f"[hedge_pairs] chunk {ci + 1}/{n_chunks}: "
+                               f"empty pair frame — skipped")
+                continue
+            logger.info(f"[hedge_pairs] chunk {ci + 1}/{n_chunks}: "
+                        f"{len(chunk_pairs)} pairs, {len(pair_frame)} "
+                        f"rows")
+            # the response axes' forward blends (price + spread — the
+            # trio's pair value and the spread subs' long-short PnL)
+            pair_frame = self._attach_forward(pair_frame)
+            # the subs, in the shipped order: the trio co-wash (+ the
+            # measured blow-off mirror check inside it), the spread
+            # convergence entry, the spread top-tail exit; then the
+            # chunk's fragment collection (grids, benefit, lenses +
+            # the event member records — they read THIS chunk's frame)
+            trio_rules, trio_history = self._run_trio(pair_frame)
+            rules += trio_rules
+            history += trio_history
+            entry_rules, entry_history = self._run_spread_entry(pair_frame)
+            rules += entry_rules
+            history += entry_history
+            exit_rules, exit_history = self._run_spread_exit(pair_frame)
+            rules += exit_rules
+            history += exit_history
+            self._collect_chunk_fragments(pair_frame, rules, history)
+        # the registered standalone mov_rsi cells (the sourced layer)
         s_cells, s_events = self._register_standalone()
         rules += s_cells
         history += s_events
-        self._stamp_portfolio_fragments(rules, history, frame, pair_info)
+        # the portfolio fragments on the orchestrating rows (the stored
+        # rule conditions read the registered cells' vocabulary)
+        self._stamp_portfolio_fragments(rules, history, pair_info)
         return rules, history

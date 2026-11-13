@@ -16,7 +16,10 @@ from _common.build_commons import get_db_or_exit
 from _common.labels import RESEARCH_LOGIC_CODE, RESEARCH_LOGIC_LABEL
 from _common.log_setup import setup_logging
 
-from .generation import DEFAULT_CATEGORY, DEFAULT_SEARCH_COUNT, generate_research_qa
+from .generation import (
+    DEFAULT_CATEGORY, DEFAULT_REF_RECENCY_DAYS, DEFAULT_SEARCH_COUNT,
+    DEFAULT_SEARCH_RECENCY, generate_research_qa,
+)
 from .storage import LOGIC_LABELS, QA_TABLE
 
 logger = setup_logging("llm_qa_by_research")
@@ -84,10 +87,18 @@ async def main() -> None:
     p_gen.add_argument("--language", type=str, default="zh")
     p_gen.add_argument("--count", type=int, default=DEFAULT_SEARCH_COUNT,
                        help="Search hits per dimension request.")
-    p_gen.add_argument("--recency", type=str, default="noLimit",
+    p_gen.add_argument("--recency", type=str, default=DEFAULT_SEARCH_RECENCY,
                        choices=("oneDay", "oneWeek", "oneMonth", "oneYear",
                                 "noLimit"),
-                       help="Search recency filter per dimension request.")
+                       help="Engine-side search recency filter per dimension "
+                            "request (candidate-pool headroom; the hits are "
+                            "still double-checked by --ref-recency-days).")
+    p_gen.add_argument("--ref-recency-days", type=int,
+                       default=DEFAULT_REF_RECENCY_DAYS,
+                       help="POST-SEARCH ref pre-filter: drop references "
+                            "published earlier than this many days (anchored "
+                            "on the qa date) BEFORE the compose LLM request; "
+                            "0 disables the double check.")
     p_gen.add_argument("--force", action="store_true",
                        help="Skip the quarterly cooldown: regenerate even "
                             "when the industry already has an ACTIVE row "
@@ -150,7 +161,8 @@ async def main() -> None:
                 sector_id=_derive_sector(args.industry, args.sector),
                 model=args.model, lang=args.language,
                 category=args.category,
-                search_count=args.count, recency=args.recency)
+                search_count=args.count, recency=args.recency,
+                ref_recency_days=args.ref_recency_days)
             logger.info("stored llm.llm_qa_by_research qa_id=%s", qa_id)
         elif args.cmd == "add":
             from .storage import upsert_qa_by_research

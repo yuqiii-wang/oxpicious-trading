@@ -170,14 +170,19 @@ class SandboxRunner:
             try:
                 if not entry.is_dir():
                     continue
+                # default=0.0: a session dir holding only empty layout
+                # subdirs has no files — trivially stale, GC reaps it
+                # (a bare max() here raised ValueError and crashed
+                # every later new_session).
                 newest = max(
-                    p.stat().st_mtime
-                    for p in entry.rglob("*") if p.is_file())
+                    (p.stat().st_mtime
+                     for p in entry.rglob("*") if p.is_file()),
+                    default=0.0)
                 if newest < cutoff:
                     shutil.rmtree(entry, ignore_errors=True)
                     reaped += 1
             except OSError:
-                continue  # unreadable/empty — leave it alone
+                continue  # unreadable — leave it alone
         return reaped
 
     def _session_dir(self, session: str) -> Path:

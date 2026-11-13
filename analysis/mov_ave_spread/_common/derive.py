@@ -17,13 +17,19 @@ import pandas as pd
 from _common.df_utils import (
     grouped_diff,
     grouped_rolling_agg,
+    grouped_rolling_rank_pct,
     safe_columns,
 )
+from _common.labels import SPREAD_VERDICT_CODE
 from analysis.mov_ave_spread.config import (
     EMA_DERIV_WINDOWS,
     EMA_STD_EXTRA_WINDOWS,
     MA_DERIV_WINDOWS,
     MA_WINDOWS,
+    PAIRS,
+    SPREAD_RANK_HIGH,
+    SPREAD_RANK_LOW,
+    SPREAD_TRAILING_WINDOW,
     TRADING_AMT_MA_COLUMNS,
     TRADING_AMT_MARKET_SHARE_MA_COLUMNS,
     TRADING_AMT_MA_SLOPE_COLUMNS,
@@ -149,7 +155,7 @@ def compute_rolling_stds(df: pd.DataFrame) -> pd.DataFrame:
     overflow for any realistic ETF / index / stock price (σ << price
     because σ ≤ max(|price - mean|) ≤ price range).
 
-    Adds columns: std_5days, std_20days, std_60days, std_120days, std_255days
+    Adds columns: std_5days, std_20days, std_60days, std_120days, std_252days
     (the SMA detail table's set) PLUS the typical EMA longs' own windows
     std_12days / std_26days (EMA_STD_EXTRA_WINDOWS — consumed only by the
     EMA detail step; the SMA write selects its own five).
@@ -178,7 +184,7 @@ def compute_rolling_stds(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_trading_amt_mas(df: pd.DataFrame) -> pd.DataFrame:
     """Add 5 trading-amount moving-average columns
-    (trading_amt_ma{5,20,60,120,255}) per (sec_type, code) ordered by date.
+    (trading_amt_ma{5, 20, 60, 120, 252}) per (sec_type, code) ordered by date.
 
     trading_amt_ma{W}[t] = simple moving average of trading_amount over the
     last W rows. NULL until W rows are available (pandas
@@ -200,7 +206,7 @@ def compute_trading_amt_mas(df: pd.DataFrame) -> pd.DataFrame:
     for "no turnover data available". The alternative (skip NULLs and
     divide by non-NULL count) would over-weight the remaining days and
     hide the data gap; the old behavior (NaN the entire window) was
-    even worse — a single NULL wiped out 255 days of trading_amt_ma255.
+    even worse — a single NULL wiped out 252 days of trading_amt_ma252.
 
     The original trading_amount column is NOT modified — a temporary
     filled column is used for the rolling computation and dropped
@@ -212,12 +218,12 @@ def compute_trading_amt_mas(df: pd.DataFrame) -> pd.DataFrame:
     index_basic_stats, stock_liquidity_margin}.trading_amount.
 
     Same incremental-mode reasoning as compute_rolling_stds: the rolling
-    window needs up to 255 prior rows to populate trading_amt_ma255, so
+    window needs up to 252 prior rows to populate trading_amt_ma252, so
     the caller passes the FULL per-code history and the result is filtered
     to target_dates downstream (in fetch_source_data).
 
     Adds columns: trading_amt_ma5, trading_amt_ma20, trading_amt_ma60,
-    trading_amt_ma120, trading_amt_ma255.
+    trading_amt_ma120, trading_amt_ma252.
 
     Implementation: reuses the shared ``grouped_rolling_agg`` helper so the
     rolling-mean computation runs inside Cython and is cuDF-compatible
@@ -253,7 +259,7 @@ def compute_trading_amt_market_share_mas(
     df: pd.DataFrame, denominator_by_date: dict
 ) -> pd.DataFrame:
     """Add 5 trading-amount MARKET-SHARE moving-average columns
-    (trading_amt_market_share_ma{5,20,60,120,255}) per (sec_type, code).
+    (trading_amt_market_share_ma{5, 20, 60, 120, 252}) per (sec_type, code).
 
     Pipeline:
       1. Map each row's date to a denominator via ``denominator_by_date``
@@ -281,10 +287,10 @@ def compute_trading_amt_market_share_mas(
             stats.exchange_trading_amt by fetch/source.
             _fetch_market_share_denominator.
 
-    Adds columns: trading_amt_market_share_ma5, _ma20, _ma60, _ma120, _ma255.
+    Adds columns: trading_amt_market_share_ma5, _ma20, _ma60, _ma120, _ma252.
 
     Same incremental-mode reasoning as compute_trading_amt_mas: the rolling
-    window needs up to 255 prior rows, so the caller passes the FULL
+    window needs up to 252 prior rows, so the caller passes the FULL
     per-code history and the result is filtered to target_dates downstream.
     """
     if "trading_amount" not in set(safe_columns(df)) or not denominator_by_date:
@@ -327,7 +333,7 @@ def compute_trading_amt_market_share_mas(
 
 def compute_trading_amt_ma_slopes(df: pd.DataFrame) -> pd.DataFrame:
     """Add 5 trading-amount MA SLOPE columns
-    (trading_amt_ma{5,20,60,120,255}_slope) per (sec_type, code).
+    (trading_amt_ma{5, 20, 60, 120, 252}_slope) per (sec_type, code).
 
     Each slope is a RATIO (fractional daily change), NOT a raw difference:
 
@@ -345,11 +351,11 @@ def compute_trading_amt_ma_slopes(df: pd.DataFrame) -> pd.DataFrame:
       - ma[t-1] <= 0         → denominator guard      → slope is NULL
       - first date per code   → no prior row (ma[t-1] missing) → slope is NULL
 
-    Source columns: df["trading_amt_ma{5,20,60,120,255}"] (already computed
+    Source columns: df["trading_amt_ma{5, 20, 60, 120, 252}"] (already computed
     by compute_trading_amt_mas). Must be called AFTER compute_trading_amt_mas.
 
     Adds columns: trading_amt_ma5_slope, _ma20_slope, _ma60_slope,
-    _ma120_slope, _ma255_slope.
+    _ma120_slope, _ma252_slope.
     """
     df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
     grp_keys = ["sec_type", "code"]
@@ -376,7 +382,7 @@ def compute_trading_amt_market_share_vs_mas(
     df: pd.DataFrame, denominator_by_date: dict
 ) -> pd.DataFrame:
     """Add 5 trading-amount MARKET-SHARE-vs-MA gap columns
-    (trading_amt_market_share_vs_ma{5,20,60,120,255}) per (sec_type, code).
+    (trading_amt_market_share_vs_ma{5, 20, 60, 120, 252}) per (sec_type, code).
 
     Each gap is a signed fractional ratio:
 
@@ -411,7 +417,7 @@ def compute_trading_amt_market_share_vs_mas(
             compute_trading_amt_market_share_mas).
 
     Adds columns: trading_amt_market_share_vs_ma5, _vs_ma20, _vs_ma60,
-    _vs_ma120, _vs_ma255.
+    _vs_ma120, _vs_ma252.
     """
     if "trading_amount" not in set(safe_columns(df)) or not denominator_by_date:
         # Defensive: emit NULL columns so downstream assembly doesn't KeyError.
@@ -441,4 +447,72 @@ def compute_trading_amt_market_share_vs_mas(
         df[vs_col] = gap_col(df, tmp_ms, ma_col)
 
     df.drop(columns=[tmp_ms], inplace=True)
+    return df
+
+
+def compute_gap_trailing_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the 27 per-gap trailing-stat columns (2026-11-08) for the 9
+    MA-spread gaps, computed per (sec_type, code) ordered by date.
+
+    For every pair in ``PAIRS`` (gap = (num - ma_long) / ma_long, the
+    same ``gap_col`` semantics as the persisted gap columns):
+
+      - ``{gap}_pct_rank`` — the gap's percentile rank (0..1) within its
+        OWN trailing ``SPREAD_TRAILING_WINDOW`` (252) window, the current
+        point included, min_periods=252 (NULL until realized). The house
+        own-history anchoring, identical to ``study_kit.studies.
+        trailing_pct_rank``.
+      - ``{gap}_zscore`` — (gap - trailing mean) / trailing std, ddof=1,
+        identical to ``study_kit.studies.zscore``.
+      - ``{gap}_verdict`` — the stretched band as its ``spread_verdict``
+        int16 label code (0=stretched_low 1=neutral 2=stretched_high)
+        from the pct_rank's top/bottom decile (>= 0.90 / <= 0.10),
+        identical to ``study_kit.studies.spread_report``'s verdict;
+        float64 NaN = window not realized (the detail step renders the
+        NULL split at its emit boundary).
+
+    Must run over the FULL per-code history (the trailing window needs
+    252 prior rows) — same incremental-mode contract as
+    ``compute_rolling_stds``; callers filter to target dates AFTER this.
+    Trailing-window ranks are correct under incremental upserts (unlike
+    full-history ranks) because each new date's window only looks back.
+
+    cuDF notes: mean/std ride the GPU via ``grouped_rolling_agg``;
+    ``grouped_rolling_rank_pct`` falls back to CPU pandas per call (cuDF
+    lacks rolling-rank — the accepted ``grouped_rolling_quantile``
+    convention). Verdict is cast to float64 BEFORE the null-where (an
+    int64-with-NULLs column degrades every later to_numpy — the
+    rsi_ranks emit-boundary lesson).
+    """
+    df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
+    grp_keys = ["sec_type", "code"]
+    window = SPREAD_TRAILING_WINDOW
+    tmp = "_spread_gap_src"
+    for ma_short, ma_long, gap_name in PAIRS:
+        num_col = "price" if ma_short == 0 else f"ma{ma_short}"
+        df[tmp] = gap_col(df, num_col, f"ma{ma_long}")
+        mean = grouped_rolling_agg(
+            df, grp_keys, tmp, window=window,
+            min_periods=window, agg="mean",
+        )
+        std = grouped_rolling_agg(
+            df, grp_keys, tmp, window=window,
+            min_periods=window, agg="std", ddof=1,
+        )
+        rank = grouped_rolling_rank_pct(
+            df, grp_keys, tmp, window=window, min_periods=window,
+        )
+        df[f"{gap_name}_pct_rank"] = rank.round(6)
+        df[f"{gap_name}_zscore"] = ((df[tmp] - mean) / std).round(6)
+        verdict = np.select(
+            [rank >= SPREAD_RANK_HIGH, rank <= SPREAD_RANK_LOW],
+            [SPREAD_VERDICT_CODE["stretched_high"],
+             SPREAD_VERDICT_CODE["stretched_low"]],
+            default=SPREAD_VERDICT_CODE["neutral"],
+        )
+        df[f"{gap_name}_verdict"] = verdict
+        df[f"{gap_name}_verdict"] = (
+            df[f"{gap_name}_verdict"].astype("float64").where(rank.notna())
+        )
+    df.drop(columns=[tmp], inplace=True)
     return df

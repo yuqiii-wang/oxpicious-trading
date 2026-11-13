@@ -11,9 +11,9 @@
 --   grain: value smallint — encodeLabelParam("pair_grain", grain)
     SELECT date,
            hedge_raw_ma5d, hedge_raw_ma20d, hedge_raw_ma60d,
-           hedge_raw_ma255d,
+           hedge_raw_ma252d,
            hedge_offset_ma5d, hedge_offset_ma20d, hedge_offset_ma60d,
-           hedge_offset_ma255d
+           hedge_offset_ma252d
     FROM analysis.pair_pct_change_ratios
     WHERE code = {{code}} AND benchmark_code = {{benchmark}}
       AND benchmark_market = {{market}} AND "interval" = {{stride}} AND grain = {{grain}}

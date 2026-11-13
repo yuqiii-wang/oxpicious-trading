@@ -1,18 +1,35 @@
 """llm_agents.deep_agents.supervisor.repair — the REPAIR LANE's
-coordination + policy core (2026-11-06): the event-time counterpart of
-the post-run observe sweep.
+coordination + policy core (2026-11-06; 2026-11-11 refactored onto the
+EVENT QUEUE): the event-time counterpart of the post-run observe sweep.
 
-WHY A CHANNEL: a failed step settles its row, skips the remaining
+WHY A WINDOW: a failed step settles its row, skips the remaining
 pending tail and routes the lane to finalize ALL WITHIN ONE SUPERSTEP
 of the looping step node — an external poller flipping rows back can
 never land between those writes. So the step lane itself opens a
 BOUNDED PAUSE WINDOW: on a root-path failure (before the doomed-tail
 settle) it signals this channel and waits up to the run's repair
-grace for the supervisor poller's verdicts. ``retry-step`` verdicts
-re-open the failed rows (``planning.store.reopen_state``) and the
-lane's normal routing re-picks them next hop — the run resumes. Any
-other outcome (no verdict, ``no-action``, grace expiry, repair
-disabled) falls through to the existing failure semantics untouched.
+grace for the supervisor's verdicts. ``retry-step`` verdicts re-open
+the failed rows (``planning.store.reopen_state``) and the lane's
+normal routing re-picks them next hop — the run resumes. Any other
+outcome (no verdict, ``no-action``, grace expiry, repair disabled)
+falls through to the existing failure semantics untouched.
+
+THE QUEUE REFACTOR (2026-11-11): this module keeps the POLICY
+(classifiers, the Action parser, the structural gate) and the LANE
+FACADE (``RepairChannel`` — the lane's two calls are unchanged), while
+the event mechanics moved to ``event_queue.py`` (the coalescing queue
++ the per-window future) and the DECISION moved to ``workers.py`` (the
+RepairWorker the picker launches per classified event). The channel is
+now two things only:
+
+* the WINDOW REGISTRY — at most one open pause window at a time; each
+  carries a future the RepairWorker resolves with the verdict dict
+  (``resolve_window``), and a superseding signal resolves the stale
+  window ``{}`` (its lane wait falls through — nothing waits twice);
+* the LEDGER — the per-run repair bookkeeping (attempts per state,
+  handled/attempted/asked ids, repairs used) that ``should_retry``
+  reads and the workers update, shared by every worker so the final
+  sweep dedupes against mid-run reviews.
 
 CODE FILTERS FIRST, THE MODEL JUDGES AFTER (the Super-agent property
 the watchdog already follows): :func:`is_transient` classifies the
@@ -29,11 +46,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from pydantic import BaseModel, ConfigDict
 
 from llm_agents.deep_agents.limits import run_limits
+from llm_agents.deep_agents.supervisor.event_queue import (
+    EventKind, FailureRef, RepairWindow, SupervisorEvent,
+    SupervisorEventQueue,
+)
 
 # The Action line's accepted values (the verdict contract).
 ACTION_RETRY = "retry-step"
@@ -133,24 +154,19 @@ def should_retry(channel: "RepairChannel", state_id: int,
 
 
 class RepairChannel:
-    """The lane ↔ poller handshake for ONE run. Single lane consumer
-    (the looping step node) and single poller consumer (the
-    supervisor session) by construction — plain Events, no queues.
-
-    Lane side: ``signal_failures`` then ``await_verdicts``; poller
-    side: ``wait_failures`` (wakes on signal OR after the poll
-    interval), then ``set_verdicts`` once. Bookkeeping (attempts,
-    handled ids, repairs used) lives here so the final sweep can
-    dedupe mid-run-handled failures."""
+    """The lane ↔ supervisor handshake for ONE run — now the window
+    registry + supervision ledger OVER the event queue (the mechanics
+    live in ``event_queue.SupervisorEventQueue``, the decisions in the
+    workers the picker launches). The LANE SIDE is unchanged:
+    ``signal_failures`` then ``await_verdicts``, {} on grace 0 /
+    timeout / close. Single lane consumer (the looping step node, and
+    the review join — the graphs never overlap) by construction."""
 
     def __init__(self) -> None:
-        self._lane_wake = asyncio.Event()    # lane -> poller: look now
-        self._poll_wake = asyncio.Event()    # interval/poll -> check DB
-        self._verdict_ready = asyncio.Event()  # poller -> lane
-        self._pending: List[Tuple[int, str]] = []   # (state_id, error)
-        self._verdicts: Dict[int, Verdict] = {}
-        self._closed = False
-        # -- bookkeeping (poller writes; lane reads via await_verdicts) --
+        self.queue = SupervisorEventQueue()
+        self._window: Optional[RepairWindow] = None
+        # -- the ledger (workers write; should_retry and the belt
+        #    filter read) --
         self.attempts: Dict[int, int] = {}   # retries consumed per state
         self.handled: Set[int] = set()       # failures already reviewed
         self.attempted: Set[int] = set()     # one REVIEW attempt per failure
@@ -160,82 +176,92 @@ class RepairChannel:
         # filter once the retry budget is spent either way)
         self.repairs_used: int = 0           # re-opens applied this run
 
-    # ---- lane side -------------------------------------------------
+    # ---- lane side (the contract the lanes call — unchanged) --------
     async def signal_failures(
             self, failures: Sequence[Tuple[int, str]]) -> None:
-        """The lane's PAUSE WINDOW opens: hand the failed (state_id,
-        error) pairs to the poller. Fires the wake BEFORE the lane
-        starts waiting, so a fast poller never misses the window."""
-        if self._closed or not failures:
+        """The lane's PAUSE WINDOW opens: register a fresh window for
+        the failed (state_id, error) pairs and offer the NODE_FAILED
+        event the picker dispatches the RepairWorker for. A stale open
+        window (the same lane signalling twice without an answer) is
+        resolved ``{}`` first — at most one window waits at a time.
+        The offer fires before the lane starts waiting, so a fast
+        picker never misses the window."""
+        if self.queue.closed or not failures:
             return
-        self._pending = list(failures)
-        self._verdicts = {}
-        self._verdict_ready.clear()
-        self._lane_wake.set()
+        pairs = tuple((int(sid), str(err or "")) for sid, err in failures)
+        self._close_window()
+        window = RepairWindow(pairs)
+        self._window = window
+        self.queue.offer(SupervisorEvent(
+            kind=EventKind.NODE_FAILED,
+            failures=[FailureRef(state_id=sid, error=err)
+                      for sid, err in pairs],
+            source="lane", window_id=window.id))
 
     async def await_verdicts(self, *, grace_sec: float) -> Dict[int, Verdict]:
-        """Wait out the pause window for the poller's verdicts.
-        Returns {} when repair is disabled (grace 0), the window
-        times out, or the channel closed — the lane then falls
-        through to its normal failure semantics."""
-        if self._closed or grace_sec <= 0 or not self._pending:
+        """Wait out the pause window for the picker's verdicts.
+        Returns {} when repair is disabled (grace 0), the window times
+        out, or the channel closed — the lane then falls through to
+        its normal failure semantics. The window's future is shielded:
+        a lane-side timeout never cancels the resolution the worker
+        may still land (the DB writes stand either way, as before)."""
+        window = self._window
+        if window is None or grace_sec <= 0 or self.queue.closed:
             return {}
         try:
-            await asyncio.wait_for(self._verdict_ready.wait(),
-                                   timeout=grace_sec)
+            return dict(await asyncio.wait_for(
+                asyncio.shield(window.future), timeout=grace_sec) or {})
         except asyncio.TimeoutError:
             return {}
-        return dict(self._verdicts)
 
-    # ---- poller side -----------------------------------------------
-    async def wait_failures(self, *, interval_sec: float) -> bool:
-        """Block until the lane signals OR the poll interval lapses
-        (False = interval lapse — poll the DB as the independent
-        belt; True = lane signalled — take _pending now)."""
-        self._lane_wake.clear()
-        self._poll_wake.clear()
-        waiters = [asyncio.create_task(self._lane_wake.wait()),
-                   asyncio.create_task(self._poll_wake.wait())]
-        try:
-            done, _ = await asyncio.wait(
-                waiters, timeout=interval_sec,
-                return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            for w in waiters:
-                w.cancel()
-        return bool(done) and waiters[0] in done
+    # ---- worker side -------------------------------------------------
+    def resolve_window(self, window_id: str,
+                       verdicts: Dict[int, Verdict]) -> bool:
+        """The RepairWorker's answer for ONE window — wakes the waiting
+        lane and closes the window. False when the id does not match
+        the open window (superseded/closed — the lane is already
+        released; the worker's DB writes stand)."""
+        window = self._window
+        if window is None or window.id != window_id:
+            return False
+        self._window = None
+        window.resolve(verdicts)
+        return True
 
-    def take_pending(self) -> List[Tuple[int, str]]:
-        """Consume the lane's signalled failures (empty when the wake
-        was the interval — the poller then reads the DB itself)."""
-        pending, self._pending = self._pending, []
-        return pending
+    def is_open(self, window_id: Optional[str]) -> bool:
+        """Is *window_id* still the open window? (The picker drops
+        NODE_FAILED events whose window was superseded/closed — their
+        lane wait already fell through.)"""
+        return (window_id is not None and self._window is not None
+                and self._window.id == window_id)
 
     @property
+    def open_window_id(self) -> Optional[str]:
+        window = self._window
+        return window.id if window is not None else None
+
+    # ---- shared reads --------------------------------------------------
+    @property
     def pending_ids(self) -> Set[int]:
-        """The state ids currently signalled and unanswered — the belt
-        poll excludes them (their verdict belongs to the lane path)."""
-        return {sid for sid, _ in self._pending}
-
-    def set_verdicts(self, verdicts: Dict[int, Verdict]) -> None:
-        """The poller's answer — wakes the waiting lane."""
-        self._verdicts = dict(verdicts)
-        self._verdict_ready.set()
-
-    def poke_poll(self) -> None:
-        """Ask the poller to look at the DB on its next loop tick
-        (used by the session's exit path)."""
-        self._poll_wake.set()
+        """The state ids currently inside the OPEN window — the belt
+        scan excludes them (their verdict belongs to the lane path)."""
+        window = self._window
+        return {sid for sid, _ in window.failures} if window else set()
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        return self.queue.closed
+
+    # ---- lifecycle -------------------------------------------------------
+    def _close_window(self) -> None:
+        """Release the open window with {} (supersede or shutdown)."""
+        window, self._window = self._window, None
+        if window is not None:
+            window.resolve({})
 
     def close(self) -> None:
-        """The run is over — release the lane (its wait returns {})
-        and let the session's final sweep proceed."""
-        self._closed = True
-        self._verdicts = {}
-        self._verdict_ready.set()
-        self._lane_wake.set()
-        self._poll_wake.set()
+        """The run is over — release the lane (its wait returns {}) and
+        offer the terminal RUN_SETTLED event (the picker's sweep
+        dispatch). Idempotent."""
+        self._close_window()
+        self.queue.close()

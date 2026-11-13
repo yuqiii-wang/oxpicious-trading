@@ -26,7 +26,7 @@ from llm_agents.deep_agents.planning.prompt_loading import (
     CatalogRow, PromptLadder, merge_hotpath_matches, planner_scoped_data,
 )
 from llm_agents.deep_agents.planning.session.pass_down import (
-    ForkPassDown, PromptBudget, _catalog_mirror, item_labels,
+    SpawnPassDown, PromptBudget, _catalog_mirror, item_labels,
     plan_payload_steps,
 )
 from llm_agents.deep_agents.planning.session.standing import (
@@ -360,9 +360,19 @@ class PlanSession:
                         plan_state_id=self._plan_state_id,
                         llm_context_id=self._llm_context_id)
                 else:
+                    # The proposal conversation PRODUCED these steps but
+                    # does not run them — stamp the step-INPUT contexts
+                    # only (stamp_state_context=False, 2026-11-10): the
+                    # plan ctx pre-stamp on the STATE rows used to block
+                    # the hop's own NULL-guarded stamp, so later-batch
+                    # steps' real conversations went invisible on their
+                    # rows (run 532c6a78's 982K finalization read as the
+                    # plan's 2-request conversation).
                     added = await PLAN_STORE.add_plan_states(
-                        plan.thread_id, batch, llm_context_id=self._llm_context_id,
-                        super_thread_id=super_id)
+                        plan.thread_id, batch,
+                        llm_context_id=self._llm_context_id,
+                        super_thread_id=super_id,
+                        stamp_state_context=False)
                     plan.states.extend(added)
                     plan.steps.extend(batch)
                 steps.extend(batch)

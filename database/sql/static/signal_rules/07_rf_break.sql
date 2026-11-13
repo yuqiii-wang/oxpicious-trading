@@ -17,13 +17,13 @@ SELECT ld.code,
       "meaning": "A close more than k% above the prior day's 120-day donchian roof",
       "trigger": "close > roof120[t-1] x (1 + k)"
     },
-    "rf255_roof_deep": {
-      "meaning": "A close more than k% above the prior day's 255-day donchian roof",
-      "trigger": "close > roof255[t-1] x (1 + k)"
+    "rf252_roof_deep": {
+      "meaning": "A close more than k% above the prior day's 252-day donchian roof",
+      "trigger": "close > roof252[t-1] x (1 + k)"
     },
-    "rf500_roof_deep": {
-      "meaning": "A close more than k% above the prior day's 500-day donchian roof — the two-year-high continuation",
-      "trigger": "close > roof500[t-1] x (1 + k)"
+    "rf504_roof_deep": {
+      "meaning": "A close more than k% above the prior day's 504-day donchian roof — the two-year-high continuation",
+      "trigger": "close > roof504[t-1] x (1 + k)"
     },
     "rf60_floor_deep": {
       "meaning": "A close more than k% below the prior day's 60-day donchian floor (k self-adaptive in {2,3,5}%)",
@@ -33,13 +33,13 @@ SELECT ld.code,
       "meaning": "A close more than k% below the prior day's 120-day donchian floor",
       "trigger": "close < floor120[t-1] x (1 - k)"
     },
-    "rf255_floor_deep": {
-      "meaning": "A close more than k% below the prior day's 255-day donchian floor",
-      "trigger": "close < floor255[t-1] x (1 - k)"
+    "rf252_floor_deep": {
+      "meaning": "A close more than k% below the prior day's 252-day donchian floor",
+      "trigger": "close < floor252[t-1] x (1 - k)"
     },
-    "rf500_floor_deep": {
-      "meaning": "A close more than k% below the prior day's 500-day donchian floor — the two-year-low washout",
-      "trigger": "close < floor500[t-1] x (1 - k)"
+    "rf504_floor_deep": {
+      "meaning": "A close more than k% below the prior day's 504-day donchian floor — the two-year-low washout",
+      "trigger": "close < floor504[t-1] x (1 - k)"
     },
     "rf60_med_roof_deep": {
       "meaning": "A close more than k% above the prior day's 60-day median-consensus roof",
@@ -49,13 +49,13 @@ SELECT ld.code,
       "meaning": "A close more than k% above the prior day's 120-day median-consensus roof",
       "trigger": "close > mroof120[t-1] x (1 + k)"
     },
-    "rf255_med_roof_deep": {
-      "meaning": "A close more than k% above the prior day's 255-day median-consensus roof",
-      "trigger": "close > mroof255[t-1] x (1 + k)"
+    "rf252_med_roof_deep": {
+      "meaning": "A close more than k% above the prior day's 252-day median-consensus roof",
+      "trigger": "close > mroof252[t-1] x (1 + k)"
     },
-    "rf500_med_roof_deep": {
-      "meaning": "A close more than k% above the prior day's 500-day median-consensus roof",
-      "trigger": "close > mroof500[t-1] x (1 + k)"
+    "rf504_med_roof_deep": {
+      "meaning": "A close more than k% above the prior day's 504-day median-consensus roof",
+      "trigger": "close > mroof504[t-1] x (1 + k)"
     },
     "rf60_med_floor_deep": {
       "meaning": "A close more than k% below the prior day's 60-day median-consensus floor",
@@ -65,13 +65,13 @@ SELECT ld.code,
       "meaning": "A close more than k% below the prior day's 120-day median-consensus floor",
       "trigger": "close < mfloor120[t-1] x (1 - k)"
     },
-    "rf255_med_floor_deep": {
-      "meaning": "A close more than k% below the prior day's 255-day median-consensus floor",
-      "trigger": "close < mfloor255[t-1] x (1 - k)"
+    "rf252_med_floor_deep": {
+      "meaning": "A close more than k% below the prior day's 252-day median-consensus floor",
+      "trigger": "close < mfloor252[t-1] x (1 - k)"
     },
-    "rf500_med_floor_deep": {
-      "meaning": "A close more than k% below the prior day's 500-day median-consensus floor",
-      "trigger": "close < mfloor500[t-1] x (1 - k)"
+    "rf504_med_floor_deep": {
+      "meaning": "A close more than k% below the prior day's 504-day median-consensus floor",
+      "trigger": "close < mfloor504[t-1] x (1 - k)"
     },
     "rf60_floor_bounce": {
       "meaning": "The close breaks the prior day's 60-day MEDIAN consensus floor while the 60-day DONCHIAN wick floor still holds below — the wick-bounded dip",
@@ -81,13 +81,13 @@ SELECT ld.code,
       "meaning": "The close breaks the prior day's 120-day median consensus floor while the donchian wick floor holds",
       "trigger": "close < mfloor120[t-1] AND close >= floor120[t-1]"
     },
-    "rf255_floor_bounce": {
-      "meaning": "The close breaks the prior day's 255-day median consensus floor while the donchian wick floor holds",
-      "trigger": "close < mfloor255[t-1] AND close >= floor255[t-1]"
+    "rf252_floor_bounce": {
+      "meaning": "The close breaks the prior day's 252-day median consensus floor while the donchian wick floor holds",
+      "trigger": "close < mfloor252[t-1] AND close >= floor252[t-1]"
     },
-    "rf500_floor_bounce": {
-      "meaning": "The close breaks the prior day's 500-day median consensus floor while the donchian wick floor holds",
-      "trigger": "close < mfloor500[t-1] AND close >= floor500[t-1]"
+    "rf504_floor_bounce": {
+      "meaning": "The close breaks the prior day's 504-day median consensus floor while the donchian wick floor holds",
+      "trigger": "close < mfloor504[t-1] AND close >= floor504[t-1]"
     }
   }
 }$json$::jsonb,

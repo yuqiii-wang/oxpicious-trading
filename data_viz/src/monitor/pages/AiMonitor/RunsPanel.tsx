@@ -7,13 +7,14 @@
  * component (ThreadGraphView from the analysis AI feature) for that
  * thread — live for a running run (the graph 404-polls until the plan
  * rows persist), settled for a finished one. The AI event channel
- * (subscribeAiEvents) makes both directions instant: lifecycle events
- * refresh the history + running list, and events for the OPEN thread
- * bump the graph's refreshSignal so it refetches immediately instead
- * of waiting out its 3s poll. Each row ends in a delete cross (the AI
- * page's Summary History pattern) wired to DELETE
- * /api/ai/summary-runs/:threadId — disabled while the run is live, the
- * same live-run refusal the server already enforces.
+ * (subscribeAiEvents) was the instant path — 2026-11-11 it is
+ * INTENTIONALLY DISABLED (AI_EVENTS_CHANNEL_DISABLED in aiEvents.ts,
+ * bypassed not removed; its handler sits dormant) and a 60s poll
+ * (AI_EVENTS_FALLBACK_POLL_MS) refreshes the history + running list in
+ * its place; the graph view keeps its own 60s live poll. Each row ends
+ * in a delete cross (the AI page's Summary History pattern) wired to
+ * DELETE /api/ai/summary-runs/:threadId — disabled while the run is
+ * live, the same live-run refusal the server already enforces.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -35,10 +36,14 @@ import {
   deleteSummaryRun,
   fetchSummaryRuns,
   fetchActiveSummaryRuns,
+  stopAnalysisSummary,
   type AiActiveSummaryRun,
   type AiSummaryRun,
 } from "@/lib/api-client/aiSummary";
-import { subscribeAiEvents } from "@/lib/api-client/aiEvents";
+import {
+  subscribeAiEvents,
+  AI_EVENTS_FALLBACK_POLL_MS,
+} from "@/lib/api-client/aiEvents";
 import ThreadGraphView from "@/analysis/pages/Ai/ThreadGraph";
 
 const RUNS_LIMIT = 50;
@@ -104,12 +109,15 @@ export default function RunsPanel() {
 
   useEffect(() => {
     refresh();
-    // The event channel drives the refreshes while the page is open:
-    // lifecycle events (thread_started / thread_settled) re-read the
-    // history + running list, hello re-syncs after a reconnect, and
-    // every event for the OPEN thread bumps the graph's refreshSignal
-    // (its own 3s poll stays the fallback).
-    return subscribeAiEvents((ev) => {
+    // The event channel used to drive the refreshes while the page is
+    // open (lifecycle events re-reading the history + running list,
+    // hello re-syncing after a reconnect, open-thread events bumping
+    // the graph's refreshSignal). 2026-11-11 the channel is
+    // INTENTIONALLY DISABLED (AI_EVENTS_CHANNEL_DISABLED in aiEvents.ts
+    // — bypassed, not removed): no frame ever arrives, so the 60s poll
+    // below IS the refresh path and the handler stays dormant for the
+    // re-enable day.
+    const unsubscribe = subscribeAiEvents((ev) => {
       if (
         ev.type === "thread_started" ||
         ev.type === "thread_settled" ||
@@ -127,6 +135,11 @@ export default function RunsPanel() {
         setGraphSignal((s) => s + 1);
       }
     });
+    const timer = setInterval(refresh, AI_EVENTS_FALLBACK_POLL_MS);
+    return () => {
+      unsubscribe();
+      clearInterval(timer);
+    };
   }, [refresh]);
 
   const activeIds = new Set(active.map((a) => a.thread_id));
@@ -156,6 +169,29 @@ export default function RunsPanel() {
       if (selectedRef.current === threadId) {
         setSelectedThreadId(null);
       }
+    },
+    [refresh],
+  );
+
+  // The embedded ThreadGraphView's Stop (onStop prop): cancel the live
+  // chain the canvas shows, keyed on its super thread id. The view owns
+  // the button's busy state + the graph's post-stop refresh pulses;
+  // this refreshes the panel's own running/history rows so the chips
+  // follow (once now, once after the settle has had time to land — the
+  // stop POST returns before the cancelled run finishes settling).
+  const stopRun = useCallback(
+    async (superThreadId: string) => {
+      try {
+        await stopAnalysisSummary(superThreadId);
+      } catch (err) {
+        setError(
+          `Failed to stop the run: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      refresh();
+      setTimeout(refresh, 3000);
     },
     [refresh],
   );
@@ -397,6 +433,7 @@ export default function RunsPanel() {
             expectLive={activeIds.has(selectedThreadId)}
             onSettled={refresh}
             refreshSignal={graphSignal}
+            onStop={stopRun}
           />
         </Paper>
       )}

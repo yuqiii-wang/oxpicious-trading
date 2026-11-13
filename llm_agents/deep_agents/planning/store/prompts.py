@@ -29,13 +29,13 @@ from llm_agents.deep_agents.planning.store.models import (
 AGENT_PROMPT_PLAN_SYSTEM = "deep-agent-plan-system"
 AGENT_PROMPT_STEP_ADDENDUM = "deep-agent-step-addendum"
 AGENT_PROMPT_SUBAGENT_SYSTEM = "deep-agent-subagent-system"
-AGENT_PROMPT_FORK_PLAN_ADDENDUM = "deep-agent-fork-plan-addendum"
-AGENT_PROMPT_FORK_SPAWN_ADDENDUM = "deep-agent-fork-spawn-addendum"
+AGENT_PROMPT_SPAWN_PLAN_ADDENDUM = "deep-agent-spawn-plan-addendum"
+AGENT_PROMPT_SPAWN_DELEGATE_ADDENDUM = "deep-agent-spawn-delegate-addendum"
 AGENT_PROMPT_SUPERVISOR_SYSTEM = "deep-agent-supervisor-system"
 AGENT_PROMPT_STANDING_SYSTEM = "deep-agent-standing-system"
 # The 2026-11-07 migration round — the output node's two charters (each
 # opening with the output node's place in the three-graph chain), the
-# fork pre-planner's system prompt, the plan session's correction and
+# spawn pre-planner's system prompt, the plan session's correction and
 # batch-followup message frames, the compact node's system prompt, and
 # the supervisor's intervention message frame.
 AGENT_PROMPT_CUSTOM_OUTPUT_DIRECTIVE = "deep-agent-custom-output-directive"
@@ -177,7 +177,7 @@ class PromptStoreMixin(_StoreBase):
         """The ACTIVE internal agent-prompt rows (prompt_type 3) keyed by
         prompt_key — the DB-managed overrides of the deep agent's inline
         prompt constants: the planner's system prompt, the per-step
-        addendum, and the forked child's base prompt and addenda. A missing
+        addendum, and the spawned child's base prompt and addenda. A missing
         key = the consumer's built-in constant; the caller wraps the fetch
         fail-soft (prompt sourcing never fails a run, the same contract as
         fetch_system_prompt)."""

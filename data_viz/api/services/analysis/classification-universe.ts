@@ -14,10 +14,10 @@
  * (empty) analysis tables and the UI shows its "no data" state per code
  * until the pipelines fill them.
  */
-import { cachedRows, listClassificationMetaRows } from "@api/services/classification-cache";
+import { cachedRows, listClassificationMetaRows } from "@api/services/infra/classification-cache";
 import { querySqlView } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
-import type { ClassificationMetaRow } from "@api/services/classification-cache";
+import type { ClassificationMetaRow } from "@api/services/infra/classification-cache";
 
 /** The sec_types these pages expose (the toggle) and their pipelines are
  *  scoped to. */

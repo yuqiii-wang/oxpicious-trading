@@ -9,11 +9,11 @@ through the read replica (``_common.db_commons`` — the study-read
 convention). Numerics arrive as ``::float8`` (never asyncpg Decimal)
 and dates as ISO strings; the view's PRECOMPUTED MA/EMA columns ride
 along so the tools reuse them when they cover the window
-(ma5/20/60/120/255, ema6/12/20/26/60/120/255) and compute their own
+(ma5/20/60/120/252, ema6/12/20/26/60/120/252) and compute their own
 only for the gaps (the 10-day short-term line and friends).
 
 History floor 2020-01-01 (where index history starts): ~1600 bars —
-enough warmup for a MA255 spread to carry a trailing-252-day
+enough warmup for a MA252 spread to carry a trailing-252-day
 percentile, small enough to fetch per call. Calendar gaps are market
 closures, never missing rows.
 
@@ -42,10 +42,14 @@ VIEWS: Dict[str, str] = {
 HISTORY_START = "2020-01-01"
 
 # The view's precomputed columns per sec_type: SMA / EMA ladders (the
-# futures view carries no tech columns — those windows always compute).
+# futures view carries no tech columns — those windows always compute)
+# plus the MACD block (macd_line/signal/hist — NULL in the DB until the
+# builders' --force backfill reaches a row; consumers fall back to
+# computing from close when the stored series does not cover yet).
 _TECH_COLUMNS = (
-    "ma5", "ma20", "ma60", "ma120", "ma255",
-    "ema6", "ema12", "ema20", "ema26", "ema60", "ema120", "ema255",
+    "ma5", "ma20", "ma60", "ma120", "ma252",
+    "ema6", "ema9", "ema12", "ema20", "ema26", "ema60", "ema120", "ema252",
+    "macd_line", "macd_signal", "macd_hist",
 )
 
 

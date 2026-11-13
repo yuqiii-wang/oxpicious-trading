@@ -8,17 +8,13 @@
  *       {{param}} templates the client resolves.
  */
 import { Router } from "express";
-import { listDocs } from "../services/docs.service.js";
+import { wrapAsync } from "../lib/http.js";
+import { listDocs } from "../services/knowledge/docs.service.js";
 
 const router = Router();
 
-router.get("/", async (_req, res) => {
-  try {
-    res.json(await listDocs());
-  } catch (err) {
-    console.error("[docs] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/", wrapAsync(async (_req, res) => {
+  res.json(await listDocs());
+}));
 
 export default router;

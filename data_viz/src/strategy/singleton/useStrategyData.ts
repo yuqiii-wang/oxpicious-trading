@@ -9,7 +9,6 @@ import {
   fetchSingletonBacktest,
   fetchSingletonRisks,
   invalidateCacheForPrefix,
-  type CheckExistingResult,
   type StrategySelection,
 } from "@/lib/api-client";
 import type {

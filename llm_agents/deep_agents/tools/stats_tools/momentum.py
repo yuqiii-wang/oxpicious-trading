@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Dict, Optional, Tuple
 
+import numpy as np
+
 from llm_agents.deep_agents.tools.base import Tool
 from llm_agents.deep_agents.tools.stats_tools import calcs, report
 from llm_agents.deep_agents.tools.stats_tools.bars import BAR_SOURCE
@@ -121,7 +123,10 @@ class StatsMacdTool(Tool):
         "latest move (hist rising with the move) or is FADING "
         "beneath it (the exhaustion caveat). The histogram's "
         "percentile rank and z-score come back against its own "
-        "trailing 252 trading days."
+        "trailing 252 trading days. Reads the view's MATERIALIZED "
+        "macd_line/macd_signal/macd_hist columns when they cover the "
+        "window (stats.*_tech_stats) and computes from close only for "
+        "the not-yet-backfilled tail."
     )
 
     async def run(self, arguments: Dict[str, Any]) -> str:
@@ -129,7 +134,7 @@ class StatsMacdTool(Tool):
             sec_type = str(arguments.get("sec_type") or "index")
             code = str(arguments.get("code") or "").strip()
             bars = await BAR_SOURCE.fetch_bars(sec_type, code)
-            line, sig, hist = calcs.macd_series(bars.close)
+            line, sig, hist = self._macd_series(bars)
             if hist.size < 6:
                 return ("stats_macd error: not enough history for a "
                         "MACD read")
@@ -156,6 +161,20 @@ class StatsMacdTool(Tool):
             return "\n".join(lines)
         except Exception as exc:  # noqa: BLE001 — tool text, not a crash
             return f"stats_macd error: {type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _macd_series(bars) -> tuple:
+        """(line, signal, hist) — the view's MATERIALIZED macd columns
+        when they cover through the last bar (NULL in the DB until the
+        builders' backfill reaches the row), else computed from close
+        (the pre-backfill fallback; identical definitions, shorter
+        warmup)."""
+        pre_line = bars.pre.get("macd_line")
+        if (pre_line is not None and pre_line.size
+                and np.isfinite(pre_line[-1])):
+            return (bars.pre["macd_line"], bars.pre["macd_signal"],
+                    bars.pre["macd_hist"])
+        return calcs.macd_series(bars.close)
 
 
 class StatsRocTool(Tool):

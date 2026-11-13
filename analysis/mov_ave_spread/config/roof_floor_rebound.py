@@ -14,7 +14,7 @@ REBOUND_ANALYSIS_NAME = "mov_ave_spread_roof_floor_rebounds"
 # is not a roof/floor window). NOTE: a W-day trailing extreme needs W
 # lookback rows, so large-W cohorts are empty early in a code's history
 # (a data-window property, not a finding).
-REBOUND_WINDOWS = (60, 120, 255, 500, 750, 1275)
+REBOUND_WINDOWS = (60, 120, 252, 504, 756, 1260)
 
 # Event definition (the 2026-10 study parameterization).
 #   candidate : close[t] is the min/max of close[t-W+1, t+CONFIRM_K]
@@ -83,8 +83,8 @@ REBOUND_DESCRIPTION = (
     "close[t] is the min/max of close[t-W+1, t+10]; candidates within 40 "
     "trading days cluster into one episode; computed on closes), for "
     "side floor (recorded MIN; static.label_dim 'side' bottom) or roof "
-    "(recorded MAX; 'side' top), window ∈ {60, 120, 255, 500, 750, "
-    "1275} trading days. rebound = a close at level*(1±5%) within 60 "
+    "(recorded MAX; 'side' top), window ∈ {60, 120, 252, 504, 756, "
+    "1260} trading days. rebound = a close at level*(1±5%) within 60 "
     "trading days; retest = the first day after the rebound whose low "
     "(floor) / high (roof) enters the ±1% zone; outcome "
     "(static.label_dim 'rf_rebound_outcome'): no_rebound, "

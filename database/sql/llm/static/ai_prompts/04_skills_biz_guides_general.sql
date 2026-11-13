@@ -41,7 +41,14 @@ INSERT INTO llm.ai_prompts (prompt_key, prompt_sub_type, prompt_type, title, ver
      'required confirmation for trend-repair calls, 天量 / 地量 = '
      'the ~10y percentile tails (climax / exhaustion of interest). '
      'Judge every volume claim against the security''s OWN MA or '
-     'percentile, never a fixed level.',
+     'percentile, never a fixed level. DATA: the gauge is '
+     'MATERIALIZED — study_kit.db.fetch_amt_metrics(sec_type, code) '
+     'retrieves the amt MAs / market share / share-vs-MA gaps '
+     '(analysis.mov_ave_trading_amt, etf/stock/industry) and '
+     'analysis.mov_ave_price_vs_amt carries the day''s 量价 cell '
+     '(px_speed × vol_state as SMALLINT codes via static.label_dim); '
+     'the up/down-day contrast the tables lack is '
+     'study_kit.studies.volume_contrast over fetch_daily_bars.',
      'The house 放量/缩量 volume vocabulary and the participation gauge (trading-amount market share vs its own MA).',
      'The cross-cutting volume vocabulary every OHLCV study needs.',
      14)

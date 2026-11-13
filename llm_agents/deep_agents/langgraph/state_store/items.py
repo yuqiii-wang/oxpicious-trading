@@ -56,6 +56,13 @@ NODE_FINALIZE = "finalize"
 # items key node:output; no state row (the seat is graph-level, never
 # a plan step).
 NODE_OUTPUT = "output"
+# The RESULT graph's REVIEW-JOIN node (2026-11-07 — the real parallel
+# wave): the LangGraph fan-in barrier after the four review seats (one
+# REAL node per saved type-result template seat). It merges the seats'
+# reduced outcomes into the findings bridge, runs the supervisor repair
+# window (retry verdicts route back to the failed seat nodes) and
+# routes to finalize. Bookkeeping only (llm=False item).
+NODE_REVIEW_JOIN = "review_join"
 
 NODE_ITEM_FIELDS = (
     "kind", "node", "status", "llm_context_id", "checkpoint_id", "model",

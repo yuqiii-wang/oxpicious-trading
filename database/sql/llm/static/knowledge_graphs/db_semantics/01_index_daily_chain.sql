@@ -1,7 +1,7 @@
 -- ============================================================================
 --  Knowledge-graph seed — namespace 0 (DB semantics): the database describes
 --  itself. One of the static/knowledge_graphs/ seed files — DDL:
---  13_kg_hypergraph.sql.
+--  kg_entities.sql + kg_edges.sql.
 --
 --  Namespace-0 conventions (what its records mean):
 --    - ONE ENTITY = ONE TABLE. entity_type 'table', name = schema-qualified
@@ -33,7 +33,7 @@
 --                       are open TEXT.
 --
 --  namespace 0 is the built-in DB-semantics subgraph. kg_namespace is
---  deliberately NOT yet registered in label_dim (13_kg_hypergraph.sql
+--  deliberately NOT yet registered in label_dim (kg_entities.sql + kg_edges.sql
 --  header) — the codes stay documented in the column comments until the
 --  first KG writer ships.
 --
@@ -44,28 +44,18 @@
 --  reconstructed v_index_daily view, and the analysis studies derived
 --  from them.
 -- ============================================================================
+--  2026-11-09: the 'table' entities migrated to the corpus rule
+--  db_semantics_tables; since 2026-11-10 the payloads live in the
+--  tables' own database/sql/ DDL files — ONE TABLE = ONE FILE, payload
+--  in the leading banner (formerly the parallel database/kg_tables/
+--  corpus, filename = the schema-qualified name). This seed keeps
+--  only what doesn't fit a rule: the edge INSERTs and the DB
+--  view entities. The rule's ledger owns the migrated tables;
+--  edges here still resolve them BY NAME.
 
 INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VALUES
-    (0, 'stats.index_identity',         'table', ARRAY['index', '指数', 'identity', '标识', 'reference', '参考'],
-     'Which index traded on which day — the shared identity for all index daily tables.'),
-    (0, 'stats.index_basic_stats',      'table', ARRAY['index', '指数', 'ohlcv', 'K线', 'trading amount', '成交额', 'price change', '涨跌幅'],
-     'Each index''s daily open / high / low / close, traded shares and amount, and price change.'),
-    (0, 'stats.index_valuation',        'table', ARRAY['index', '指数', 'valuation', '估值', 'pe', '市盈率'],
-     'Each index''s daily price-earnings ratio and constituent count.'),
-    (0, 'stats.index_tech_stats',       'table', ARRAY['index', '指数', 'indicators', '技术指标', 'moving average', '均线', 'ema'],
-     'Each index''s daily moving-average and EMA values.'),
-    (0, 'stats.v_index_daily',          'view',  ARRAY['index', '指数', 'ohlcv', 'K线', 'moving average', '均线', 'valuation', '估值'],
-     'Each index''s full daily record on one row — K-line prices, traded amount, PE and moving averages joined per code per date.'),
-    (0, 'stats.exchange_trading_amt',   'table', ARRAY['trading amount', '成交额', 'market share', '成交占比', 'exchange', '交易所'],
-     'Each exchange''s total traded amount per day — the market-wide participation base behind market-share gauges.'),
-    (0, 'analysis.mov_ave_spreads_detail', 'table', ARRAY['ma-spread', '均线乖离', 'indicators', '技术指标', 'moving average', '均线', 'trend', '趋势'],
-     'How far each security''s price and its short MA sit from its longer moving averages, as nine gap ratios per day.'),
-    (0, 'analysis.mov_ave_rsi',         'table', ARRAY['rsi', 'indicators', '技术指标', 'momentum', '动量'],
-     'Each security''s Wilder relative strength index over six windows, gauging overbought / oversold momentum.'),
-    (0, 'analysis.mov_ave_momentum',    'table', ARRAY['momentum', '动量', 'rate of change', '变动率'],
-     'Each security''s price momentum (rate of change) over fixed one-week / one-month and volatility-adaptive lookbacks.'),
-    (0, 'analysis.hot_stock_momentum',  'table', ARRAY['momentum', '动量', 'hot stock', '热门股'],
-     'The hot-stock momentum curve per index and industry — how strongly speculative interest concentrates in recent leaders.')
+    (0, 'stats.v_index_daily', 'view',  ARRAY['index', '指数', 'ohlcv', 'K线', 'moving average', '均线', 'valuation', '估值'],
+     'Each index''s full daily record on one row — K-line prices, traded amount, PE and moving averages joined per code per date.')
 ON CONFLICT (namespace, entity_type, name) DO UPDATE
     SET description = EXCLUDED.description,
         tags        = EXCLUDED.tags;

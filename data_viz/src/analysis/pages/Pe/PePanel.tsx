@@ -76,7 +76,7 @@ import type { PanelProps } from "./types";import {
 // its tables.) ----
 
 /** Band lookback windows (observations) — mirrors PD_PCT_PERIODS. */
-const STREAK_PERIODS = [255, 500, 750, 1275] as const;
+const STREAK_PERIODS = [252, 504, 756, 1260] as const;
 /** Band tightness levels (percent) — mirrors PD_PCT_TYPES. */
 const STREAK_PCTS = [1, 5, 10] as const;
 /** In-band gap tolerance bridged inside ONE streak (trading days). */
@@ -96,9 +96,9 @@ const STREAK_LOW_ACCENT = "#F9A825";
 const STREAK_METRIC: PeStreakMetric = "pe";
 
 /** Combo preselected on mount and after a code switch — the card opens
- *  listing the 255d / 1% streaks (clicking the active chip still clears
+ *  listing the 252d / 1% streaks (clicking the active chip still clears
  *  the selection). */
-const DEFAULT_STREAK_PERIOD = 255;
+const DEFAULT_STREAK_PERIOD = 252;
 const DEFAULT_STREAK_PCT = 1;
 
 /** Format one streak's pe value (a plain multiple). */
@@ -129,7 +129,7 @@ export function PePanel({
 
   // Streak combo selection: band lookback period + band tightness pct. The
   // metric is FIXED to PE (STREAK_METRIC — no metric filter row). Defaults
-  // to the 255d / 1% combo so the streak table + chart render on open.
+  // to the 252d / 1% combo so the streak table + chart render on open.
   const [streakPeriod, setStreakPeriod] = useState<number | null>(
     DEFAULT_STREAK_PERIOD,
   );

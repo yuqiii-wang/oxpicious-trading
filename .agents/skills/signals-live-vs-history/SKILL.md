@@ -70,12 +70,15 @@ architecture.
 CLI: `--force` (purge the sec_type's rows in both tables and
 re-emit), `--sec-type {index,etf,stock}` (default index),
 `--families` (comma list; `boll_std` aliases `bollinger`),
-`--codes` (default the 10 study indices; ignored for the options
-families — their universe resolves per sec_type from
+`--codes` (default `all` since 2026-11-07 — the sec_type's FULL
+universe resolved from its base stats table, close IS NOT NULL; was
+the 10 study indices, still available via an explicit list; ignored
+for the options families — their universe resolves per sec_type from
 stats.options_terms, options_wall dropping the SSE ETF underlyings
-whose chain OI is an accumulated-volume estimator), `--analyze`,
-`--no-boost` (the ohlcv-boost A/B switch; default = each family's
-OHLCV_BOOST class flag).
+whose chain OI is an accumulated-volume estimator — and for
+hedge_pairs — the ALL-INDUSTRY-PAIRS universe resolves from the
+composites + offsets), `--analyze`, `--no-boost` (the ohlcv-boost
+A/B switch; default = each family's OHLCV_BOOST class flag).
 
 `run.py` orchestrates per family:
 
@@ -288,7 +291,19 @@ engines/). Family-agnostic:
 | momentum | MomentumTailEntry | mom{5,20,short,mid,long}_{1,2,3}pct buy/sell (log-return ln(1+momentum) of analysis.mov_ave_momentum; the vol-adaptive lookbacks + fixed 5/20d anchors) | code×trend×regime, plain absorb | 5 | no |
 | rebound | ReboundEntry | rebound_{capit,fail,reclaim}_{60,255} buy/sell — the drop→rebound→resolution family (2026-10-26, the ma-spread rebound study's graduates): a big drop (≥ the depth candidate {10%, 5%} below the trailing-Wd running max of close, SHIFTED 1) activates the episode; the resolutions are the sub types — capit BUY (the trough-break V-bottom), fail SELL (rollover with recovery ratio R in [0.90, 1.0) — the stall just below the last high, exit timing), reclaim BUY (close above the prior high — the strongest next-leg population); the causal episode machine + the PE trailing-percentile rank are the sanctioned host boundary (engine.py); EACH sub type emits a PLAIN and a PE-CONDITIONED cell set on the is_pe_boosted PK axis (separate run_cells calls — the pe call's masks are AND-gated: capit PE extremes ≤0.4|≥0.6, fail/reclaim not-cheap ≥0.2; bar_def.pe_gate records it; the machine events feed the K=5 detector like any mask) | code×trend (regime 4) × {plain, pe} | 5 | no |
 | macd | MacdCrossEntry | macd_cross_up buy / macd_cross_dn sell — the classic MACD signal-line crossover (2026-10-26, the typical-EMA study's product; the classic 12/26/9 spans, config MACD_EMA_*): the fetch READS the precomputed ema12/ema26 (stats.*_tech_stats, LEFT JOINed — rebased 2026-10-27 from the in-fetch compute_emas recompute, user-directed; the strategy algo's source verbatim) and assembles macd_line = ema12 − ema26 + the EMA9 signal line (the one inline EMA) + the histogram; the horizon branch reads the tech_stats max(date); the engine only shifts/compares — the strategy algo's cross detection, value = histogram pct-of-close vs reference 0.0, depth = |hist| in its own trailing-2550d sigma (shifted 1); one candidate per side; NOT live-wired | code×trend (regime 4) | 5 | no |
-| hedge_pairs | HedgePairTrioEntry (the ONE entry, SIMPLIFIED 2026-10-24 — user-directed "simple conditions when three curves resonate; the triggered portfolio signals set the cell level signals, no sourcing from the short-term-tech tier"): ONE wipe scope (its own type at the pair codes), NO component-code rows, NO source layer (the 304-row mov_rsi TRUE tier from the first cut was purged; no portfolio_role marker) | hp_entry_trio (5828, BUY) — ALL THREE curves (both offset-opposite legs + the broad market 000300) in their own Wilder-RSI(14) capitulation tails the same day, AT-LEAST tail populations over HP_LEG_TAIL_PCTS (NO nested carve — the per-curve tail conditions are monotone, a deeper wash also satisfies a shallower bar and fires inside a shallow winner with more depth confidence) — WIDENED 2026-10-25 {1,2,3} → {1,2,3,5,10} (user-directed "tails 1/2/3% is too strict, portfolio can self pick up rsi as well") then → {1,2,3,5,10,15,20} with the FREQUENCY-FLOOR winner policy (user-directed "the signals are too rare, loosen it to at least once per year": HP_MIN_EVENTS_PER_YEAR = 1.0 — each pair's bar = the DEEPEST gate-passing tail meeting ≥1 trigger/yr over the pair's own frame horizon, the best-dir_ave winner the fallback; 25/30 measured out at pooled +0.24%/+0.14%; the winner's tail rides rule_params.bar_def.tail_pct; value = rsi_mean vs the trio bar mean, response = the pair VALUE's forward blend); the blow-off mirror hp_exit_trio (5829) is the MEASURED asymmetry check, rows discarded every run. Each event's member records are set by the TRIGGERED signal itself — one per-curve WITNESS per curve at the curve's OWN day (its deepest-alive breach run start) carrying the curve's PER-ROLE sub type since 2026-10-25 (user-directed "diff legs or roles should have diff sub types"): hp_rsi_witness_mkt 5831 / _leg_a 5832 / _leg_b 5833 (the shared hp_rsi_witness 5830 stays for old-history decode; payload vocabulary, no rule rows); cell_signals stays empty. Universe data-driven (offsets, disjoint, score > 0.5) PLUS the PINNED showcase DIV_GENERAL~TECH_GENERAL (HP_SHOWCASE_PAIR — the page's default picks; its industries are reserved for each other before the greedy pass, score/rho null in rule_params when the offsets carry no reading). Portfolio tier: the group IS its orchestrating rows (signal_rule_ids = the pair's own rows; pooled = their combined stats; rule_params.name "trio wash" since 2026-10-25), the benefit/gate/dd audit as before | pair (trend 4, regime 4 — both POOLED) | 5 | no |
+| hedge_pairs | HedgePairTrioEntry (the ONE entry, SIMPLIFIED 2026-10-24 — user-directed "simple conditions when three curves resonate; the triggered portfolio signals set the cell level signals, no sourcing from the short-term-tech tier"): ONE wipe scope (its own type at the pair codes), NO component-code rows, NO source layer (the 304-row mov_rsi TRUE tier from the first cut was purged; no portfolio_role marker) | hp_entry_trio (5828, BUY) — ALL THREE curves (both offset-opposite legs + the broad market 000300) in their own Wilder-RSI(14) capitulation tails the same day, AT-LEAST tail populations over HP_LEG_TAIL_PCTS (NO nested carve — the per-curve tail conditions are monotone, a deeper wash also satisfies a shallower bar and fires inside a shallow winner with more depth confidence) — WIDENED 2026-10-25 {1,2,3} → {1,2,3,5,10} (user-directed "tails 1/2/3% is too strict, portfolio can self pick up rsi as well") then → {1,2,3,5,10,15,20} with the FREQUENCY-FLOOR winner policy (user-directed "the signals are too rare, loosen it to at least once per year": HP_MIN_EVENTS_PER_YEAR = 1.0 — each pair's bar = the DEEPEST gate-passing tail meeting ≥1 trigger/yr over the pair's own frame horizon, the best-dir_ave winner the fallback; 25/30 measured out at pooled +0.24%/+0.14%; the winner's tail rides rule_params.bar_def.tail_pct; value = rsi_mean vs the trio bar mean, response = the pair VALUE's forward blend); the blow-off mirror hp_exit_trio (5829) is the MEASURED asymmetry check, rows discarded every run. Each event's member records are set by the TRIGGERED signal itself — one per-curve WITNESS per curve at the curve's OWN day (its deepest-alive breach run start) carrying the curve's PER-ROLE sub type since 2026-10-25 (user-directed "diff legs or roles should have diff sub types"): hp_rsi_witness_mkt 5831 / _leg_a 5832 / _leg_b 5833 (the shared hp_rsi_witness 5830 stays for old-history decode; payload vocabulary, no rule rows); cell_signals stays empty. Universe ALL-INDUSTRY-PAIRS since
+2026-11-07 (user-directed "for hedge pairs add all industries (would
+have (n ** 2) / 2 pairs of n industries)"): every unordered pair of
+the pool-'all' industry composites (106 → 5,565 pairs), the freshest
+offsets score/rho as NULLABLE METADATA (never a filter — the retired
+score > 0.5 floor + greedy one-pair-per-industry pass; the measured
+gate self-picks the tradable pairs on evidence) + the PINNED showcase
+DIV_GENERAL~TECH_GENERAL first (HP_SHOWCASE_PAIR — the page's default
+picks; score/rho null in rule_params when the offsets carry no
+reading). The run walks HP_PAIR_CHUNK (500) chunks — each chunk one
+self-contained mini-run of the per-pair machinery (the ~5.5k-pair
+frame cannot materialize whole on the GPU); every step is per-pair,
+the one cross-pair coupling (the pooled tier) judges per chunk. Portfolio tier: the group IS its orchestrating rows (signal_rule_ids = the pair's own rows; pooled = their combined stats; rule_params.name "trio wash" since 2026-10-25), the benefit/gate/dd audit as before | pair (trend 4, regime 4 — both POOLED) | 5 | no |
 | rf_break | RoofFloorEntry | rf{60,120,255,500}{,_med}_{roof,floor}_deep BUY (the depth tiers) + rf{60,120,255,500}_floor_bounce BUY (the two-method gap study's cross-method leg) — ALL-BUY since the 2026-10-26 legacy cleanup RETIRED the catch-all roof-buy / floor-sell sub types (labels 5600-5633 decode-only; the close vs the PRIOR day's donchian/median level from analysis.mov_ave_spreads_roof_floor_estimates; floor_bounce = median floor broken while the donchian wick floor holds; donchian rf255_roof_deep pooled-rejected, emits nothing) | code×trend (regime 4) | 5 | no |
 
 Nested widest-first carving everywhere: the deeper tail claims first,
@@ -526,7 +541,10 @@ never a detection, no per-family logic (the rules-era rewire of
   subclass (never free functions), and new typed carriers — prepared-bar
   params, gate/confidence constants, row contracts — cross module
   boundaries as pydantic `BaseModel`s, not loose dicts.
-- Study scope: the 10 study indices only (config.STUDY_INDEX_CODES);
+- Study scope: the signals tier's DAILY scope is the FULL index
+  universe since 2026-11-07 (--codes 'all' → the sec_type's base
+  stats-table codes; the 10 study indices remain the OTHER analysis/
+  strategy packages' scope via config.STUDY_INDEX_CODES);
   the options families' universe is data-driven (stats.options_terms).
 - Testing: `--sec-type index --families <one>` first, `--force` for
   real rebuilds; verify row counts per signal_type/sub_type, the
@@ -1312,3 +1330,49 @@ never a detection, no per-family logic (the rules-era rewire of
   four trading-signals endpoints (rules / history / day view /
   portfolio-history), the UI verified on the Short-Term Tech panel
   (main + expansion tables without the variant columns).
+
+- 2026-11-07: the ALL-INDEXES + ALL-INDUSTRY-PAIRS UNIVERSE
+  (user-directed "in analysis signals, only a small num of codes are
+  run daily, now add for all indexes, and for hedge pairs add all
+  industries (would have (n ** 2) / 2 pairs of n industries)"). TWO
+  changes: (1) the standalone families' daily scope left the 10 study
+  indices for the FULL index universe (524 codes) — `--codes` default
+  'all' resolves the sec_type's base-stats codes at run time
+  (fetch/inputs._shared.resolve_sec_type_universe, the new
+  sec_type_universe view; the fetches' per-code ANY($1) scoping and
+  every per-code grouped op are code-local, so per-code outputs are
+  unchanged — the 10 study indices' cells measure identically, the
+  breadth rules already used the whole universe). (2) hedge_pairs'
+  universe left the scored-disjoint 48 pairs for ALL INDUSTRY PAIRS
+  (106 pool-'all' composites → 5,565 unordered pairs): the
+  pair_universe view now enumerates every unordered composite pair
+  with its freshest offsets reading as NULLABLE metadata (the
+  HP_MIN_PAIR_SCORE floor and the greedy one-pair-per-industry pass
+  RETIRED — HP_MIN_PAIR_SCORE left the config; the measured gate
+  self-picks the tradable pairs on evidence), the pinned showcase
+  pair first, sorted score-desc-then-code. THE CHUNKED RUN: the
+  ~5.5k-pair frame (~9M rows × the gauge columns) cannot materialize
+  whole on the 32GB GPU, so the entry fetches the COMPONENT frame
+  once (fetch_hedge_pair_components — the market + every leg) and
+  run() walks HP_PAIR_CHUNK (500) chunks (build_pair_chunk = the
+  verbatim build chain per chunk) — trio / spread entry / spread exit
+  per chunk, the chunk's fragment collection inside the loop
+  (fragments.py SPLIT: _collect_chunk_fragments stamps the event
+  member records + stashes the per-pair benefit/dd-lens while the
+  chunk's grids exist; _stamp_portfolio_fragments runs ONCE after the
+  standalone registration builds the mapped-signals vocabulary), the
+  registered standalone cells once over the whole comp frame, the
+  portfolio fragments last. Every step is per-pair — the A/B against
+  the monolithic build is bit-identical (per-pair md5,
+  temp_scripts/hedge_chunk_ab.py) and the pre-flight reproduced the
+  48-pair production cells + measured evidence exactly
+  (temp_scripts/hedge_engine_preflight.py). The ONE cross-pair
+  coupling, the POOLED evidence tier, judges each chunk's own
+  (sub_type, action) population (hundreds of pairs → thousands of
+  triggers per pool — statistically the full-universe verdict). The
+  sourced-member leg targeting in _write_portfolio_tables gained a
+  leg→groups index (each industry sits in ~n-1 pairs; the per-row
+  group scan would have been O(rows × groups)), and
+  eligible_freq_years went vectorized (packed-key unique passes, the
+  per-row python loop retired — A/B identical). The first rebuild ran
+  --force at index scope.

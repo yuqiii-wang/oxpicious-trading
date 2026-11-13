@@ -15,7 +15,7 @@ ESTIMATE_ANALYSIS_NAME = "mov_ave_spread_roof_floor_estimates"
 # Every method uses the same window region rule as the anchors:
 # [max(0, i-period+1), i] in trading-day positions (partial windows at a
 # code's history start; NaN closes skipped).
-ESTIMATE_WINDOWS = (60, 120, 255, 500, 750, 1275)
+ESTIMATE_WINDOWS = (60, 120, 252, 504, 756, 1260)
 
 # Method registry — labels mirror _common.labels.ROOF_FLOOR_METHOD_CODE /
 # static.label_dim 'roof_floor_method' (trendline=0 donchian=1 quantile=2
@@ -90,7 +90,7 @@ ESTIMATE_BREACHED_WIDE_COLUMNS = tuple(
 ESTIMATE_DESCRIPTION = (
     "Quantitative roof/floor level estimates (ETF + Index + Stock). LONG "
     "format: one row per (security, business date, period, method) with "
-    "period ∈ {60, 120, 255, 500, 750, 1275} trading days and method the "
+    "period ∈ {60, 120, 252, 504, 756, 1260} trading days and method the "
     "static.label_dim 'roof_floor_method' code {trendline, donchian, "
     "quantile, channel, boll, median}. Each row carries the estimated "
     "resistance (roof_estimate) / support (floor_estimate) price level AT "

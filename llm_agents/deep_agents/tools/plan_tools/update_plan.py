@@ -1,7 +1,7 @@
 """llm_agents.deep_agents.tools.plan_tools.update_plan — the two
 ``update_plan`` variants over one name: the MAIN lane's rework tool
-(adds, revise, removes on the not-yet-run part, fork termination) and
-the FORK's extend tool (adds under its own fork state, nothing else —
+(adds, revise, removes on the not-yet-run part, spawn termination) and
+the SPAWN's extend tool (adds under its own spawn state, nothing else —
 authority-narrowed parameters, the model never sees an option it must
 not use).
 """
@@ -25,7 +25,7 @@ from llm_agents.deep_agents.tools.plan_tools.common import (
 
 class UpdatePlanTool(_PlanAuthorityTool):
     """``update_plan`` — the MAIN lane's rework tool: adds, revise,
-    removes on the not-yet-run part, and fork termination."""
+    removes on the not-yet-run part, and spawn termination."""
 
     name: ClassVar[str] = "update_plan"
     db_key: ClassVar[Tuple[str, str]] = (name, "plan_main")
@@ -54,7 +54,7 @@ class UpdatePlanTool(_PlanAuthorityTool):
                         "notes": {"type": "string"},
                         "delegate_goal": {
                             "type": "string",
-                            "description": "Mark the step as a fork: "
+                            "description": "Mark the step as a spawn: "
                                            "the COMPLETE self-"
                                            "contained goal a "
                                            "background subagent "
@@ -101,8 +101,8 @@ class UpdatePlanTool(_PlanAuthorityTool):
                     "notes": {"type": "string"},
                     "delegate_goal": {
                         "type": "string",
-                        "description": "Set/replace the fork goal; "
-                                       "'' clears the fork marker.",
+                        "description": "Set/replace the spawn goal; "
+                                       "'' clears the spawn marker.",
                     },
                 },
                 "required": ["ordinal"],
@@ -129,7 +129,7 @@ class UpdatePlanTool(_PlanAuthorityTool):
     DEFAULT_DESCRIPTION: ClassVar[str] = (
         "Rework the plan's NOT-YET-STARTED part when your findings "
         "change what remains to be done: add steps (optionally "
-        "delegated forks with a self-contained goal), revise or "
+        "delegated spawns with a self-contained goal), revise or "
         "remove pending steps, and terminate running background "
         "subagents when the plan changed fundamentally. Steps "
         "already in_progress/completed/failed are history — they "
@@ -175,7 +175,7 @@ class UpdatePlanTool(_PlanAuthorityTool):
             lines.append(f"(plan read failed: {type(exc).__name__}: {exc})")
 
     async def _main_update(self, args: Dict[str, Any]) -> List[str]:
-        """The MAIN scope: pending-lane removes/revise/adds + fork
+        """The MAIN scope: pending-lane removes/revise/adds + spawn
         termination. Destructive and retargeting ops run FIRST, against
         the numbering the model sees; ADDS run LAST because a mid-plan
         insert shifts later ordinals (the model's remove/revise in the
@@ -267,13 +267,13 @@ class UpdatePlanTool(_PlanAuthorityTool):
 
     async def _cancel(self,
                       run_ids: Optional[List[str]]) -> List[str]:
-        """Terminate background forks — MAIN only. The runner-bound
-        canceller stops the child tasks and settles their fork states
-        (None = every running fork); the outcome line tells the model
+        """Terminate background spawns — MAIN only. The runner-bound
+        canceller stops the child tasks and settles their spawn states
+        (None = every running spawn); the outcome line tells the model
         what actually stopped."""
         authority = self._authority
         if authority.cancel_runs is None:
-            return ["update_plan error: fork cancellation unavailable "
+            return ["update_plan error: spawn cancellation unavailable "
                     "here"]
         try:
             result = authority.cancel_runs(run_ids)
@@ -290,12 +290,12 @@ class UpdatePlanTool(_PlanAuthorityTool):
 
 
 class SubUpdatePlanTool(_PlanAuthorityTool):
-    """``update_plan`` — the FORK's extend tool: adds under its own
-    fork state, nothing else (same tool name, authority-narrowed
+    """``update_plan`` — the SPAWN's extend tool: adds under its own
+    spawn state, nothing else (same tool name, authority-narrowed
     parameters — the model never sees an option it must not use)."""
 
     name: ClassVar[str] = "update_plan"
-    db_key: ClassVar[Tuple[str, str]] = ("update_plan", "plan_fork")
+    db_key: ClassVar[Tuple[str, str]] = ("update_plan", "plan_spawn")
     parameters: ClassVar[Dict[str, Any]] = {
         "type": "object",
         "properties": {
@@ -303,7 +303,7 @@ class SubUpdatePlanTool(_PlanAuthorityTool):
                 "type": "array",
                 "maxItems": MAX_ADDS_PER_CALL,
                 "description": "Investigation nodes to add under "
-                               "your fork, in order.",
+                               "your spawn, in order.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -328,10 +328,10 @@ class SubUpdatePlanTool(_PlanAuthorityTool):
         "required": ["add_nodes"],
     }
     DEFAULT_DESCRIPTION: ClassVar[str] = (
-        "Extend YOUR OWN forked path when your work hits something "
+        "Extend YOUR OWN spawned path when your work hits something "
         "that needs further investigation: add_nodes appends "
-        "investigation nodes under your fork, each node ONE smaller "
-        "goal of your fork's goal (you then work each node and tick "
+        "investigation nodes under your spawn, each node ONE smaller "
+        "goal of your spawn's goal (you then work each node and tick "
         "it completed with update_plan_step only when its goal is "
         "settled). You cannot touch any other node, step, or agent."
     )

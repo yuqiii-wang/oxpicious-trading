@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 # B3 trailing-window fetch: the market-wide DB pull exists to give MA/EMA
 # and corp-action adjustment their trailing context for the new rows. Only
 # that context is needed — not the full 1.02M-row history:
-#   * ma255 needs the 255 trading rows before each new row (~390 calendar
+#   * ma252 needs the 252 trading rows before each new row (~390 calendar
 #     days);
-#   * ema255 (adjust=False, alpha=2/256) residual seed weight after ~740
+#   * ema252 (adjust=False, alpha=2/256) residual seed weight after ~740
 #     trading rows is e^(-2·740/256) ≈ 0.3% — converged;
 #   * corp-action continuity is restored exactly by adj_seeds (the stored
 #     cum_split_factor / cum_dividend_per_share of the last pre-cutoff row

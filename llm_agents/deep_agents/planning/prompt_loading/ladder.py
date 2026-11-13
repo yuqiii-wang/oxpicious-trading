@@ -16,7 +16,7 @@ the ladder's own catalog. The rungs:
      eager/verdict+forced+hotpath skills, catalog order;
   4. PASS-DOWN — the unloaded rows' preview lines (:meth:`pass_down`);
   5. NAMED KEYS — keys named outright in a directive (:meth:`named_in`);
-  6. PER-NODE MATCHES — a hop's/fork's own dynamic rung
+  6. PER-NODE MATCHES — a hop's/spawn's own dynamic rung
      (:meth:`node_matches`), plus the KG-hotpath corroboration
      (:meth:`hotpath_rung` — a promoted chain implicating a row loads
      it like a force).
@@ -174,7 +174,7 @@ class PromptLadder:
         self, rows: Optional[Sequence[CatalogRow]] = None,
     ) -> Dict[str, str]:
         """The unloaded rows' pass-down face: prompt_key -> one preview
-        line (the dict every step hop's message and every forked child's
+        line (the dict every step hop's message and every spawned child's
         structured data carries — plain str -> str, checkpoint-safe)."""
         return {r.prompt_key: r.preview_line() for r in self._rows_for(rows)}
 
@@ -206,9 +206,9 @@ class PromptLadder:
         item_labels: Sequence[str] = (),
         prompt_labels: Optional[Dict[str, Dict[str, Sequence[str]]]] = None,
     ) -> Dict[str, str]:
-        """The DYNAMIC loading rung — one NODE's (step hop's or forked
+        """The DYNAMIC loading rung — one NODE's (step hop's or spawned
         child's) own match over the NOT-YET-LOADED catalog rows, judged
-        from the node's own vocabulary: its directive text (title + fork
+        from the node's own vocabulary: its directive text (title + spawn
         goal — a sub-plan goal naming its study prompts hits
         :meth:`named_in`). Keyword matching stays the HIGHER-priority
         contract it is at plan time: bound-label hits force-load

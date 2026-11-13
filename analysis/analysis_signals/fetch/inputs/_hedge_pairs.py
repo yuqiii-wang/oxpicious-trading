@@ -1,43 +1,56 @@
 """The hedge_pairs family's input fetchers (analysis.analysis_signals.
 fetch.inputs._hedge_pairs) — the fresh typical-solution trio (2026-10-24:
-two negatively-correlated leg curves + one broad-market curve).
+two negatively-correlated leg curves + one broad-market curve), the
+ALL-INDUSTRIES pair universe since 2026-11-07.
 
-  resolve_hedge_pair_universe  the DATA-DRIVEN pair universe (the
-      options families' precedent): each unordered industry pair's
-      FRESHEST offsets reading (analysis_composites.
-      industry_corr_benchmark_offsets, pool 'all', interval 20) with
-      trailing opposite score above HP_MIN_PAIR_SCORE, greedy-disjoint
-      by score (each industry in at most one pair), pair code 'A~B'
-      lexicographic. --codes is ignored for the family.
+  resolve_hedge_pair_universe  the ALL-INDUSTRY-PAIRS universe (the
+      2026-11-07 widening, user-directed "for hedge pairs add all
+      industries (would have (n ** 2) / 2 pairs of n industries)"):
+      every unordered pair of the pool-'all' industry composites
+      (stats.industry_basic_stats, mean_close rows) — n industries ->
+      n(n-1)/2 pairs — each riding its FRESHEST offsets reading as
+      METADATA (score/rho, null where the offsets carry none; never a
+      filter — the scored-disjoint era is retired). The PINNED showcase
+      pair (HP_SHOWCASE_PAIR) is the universe's FIRST entry. Pair code
+      'A~B' lexicographic; sorted by score desc (nulls last) then code.
+      --codes is ignored for the family.
 
-  fetch_hedge_pair_inputs      (pair_frame, comp_frame):
-      - comp_frame — ONE row per (component code, date) over the
-        market (000300) + every pair leg (each industry appears in at
-        most one pair, so legs never repeat): close, the inline Wilder
-        RSI(14) (the analysis.trends kernel — the mov_ave_rsi
-        contract) and the per-code adaptive percentile bars per tail
-        (trailing 10y, one-row-shifted — the mov_rsi convention). The
-        SOURCE layer's frame: the family's member cells are REAL
-        mov_rsi cells over it.
-      - pair_frame — ONE row per (pair code, common leg date): both
-        legs' closes, the market's RSI/bars joined per date, and the
-        INVERSE-VOL LONG-LONG PAIR VALUE (weights over the 60d return
-        vol, lagged one row; value = 100·exp(cumsum(log1p(w·r)))) —
-        the ``price`` column, the orchestrating cells' response axis
-        and the max-drawdown benefit's gauge. Carries the trio
-        conjunction columns (per-curve RSI tail breach bools, the
-        three-curve rsi_mean and bar means) the pair-native engine
-        carves its candidates on, PLUS the long-short SPREAD curve
-        (2026-10-25 spread sub: sr = w_a·r_a − w_b·r_b compounded —
-        the ``spread`` column, leg A long / leg B short, NO market
-        curve) with its own per-window Wilder RSI, adaptive tail bars
-        and breach bools (srsi{suf} / sbar_{b,s}{pct}{suf} /
-        sb{pct}{suf} / ss{pct}{suf}) the spread sub carves on.
+  fetch_hedge_pair_components  (legs_df, comp): the LEGS' composite
+      closes (stats.industry_basic_stats.mean_close, pool 'all') and
+      the COMPONENT frame — ONE row per (component code, date) over
+      the market (000300) + every leg: close, the inline Wilder RSI
+      per window (the analysis.trends kernel — the mov_ave_rsi
+      contract) and the per-code adaptive percentile bars per tail
+      (trailing 10y, one-row-shifted — the mov_rsi convention). The
+      SOURCE layer's frame: the family's registered standalone cells
+      are REAL mov_rsi cells over it.
+
+  build_pair_chunk             ONE chunk's pair frame (HP_PAIR_CHUNK
+      pairs): _build_pair_frames (the per-pair COMMON-DATE merge —
+      one small same-date merge per pair), then the INVERSE-VOL
+      LONG-LONG PAIR VALUE (the ``price`` column — the orchestrating
+      cells' response axis and the max-drawdown benefit's gauge) with
+      the running-max drawdown + trough20 columns, the long-short
+      SPREAD curve (2026-10-25 spread sub — the ``spread`` column)
+      with its own per-window Wilder RSI + adaptive tail bars +
+      breach bools (srsi{suf} / sbar_{b,s}{pct}{suf} / sb{pct}{suf} /
+      ss{pct}{suf}), and the trio conjunction columns joined from the
+      comp frame (per-curve RSI + bars + breach bools per role, the
+      three-curve rsi_mean and bar means). The chunking exists because
+      the ALL-pairs frame (~5.5k pairs x ~1.7k industry dates) cannot
+      materialize whole on the GPU — every step below is per-pair or
+      per-(pair, date), so the chunk partition changes nothing per
+      pair (the one cross-pair coupling, the pooled evidence tier,
+      judges each chunk's own population — engine-side).
+
+  fetch_hedge_pair_inputs      the FULL-universe pair frame — every
+      chunk built and concatenated (the study-script convenience
+      wrapper; the engine consumes the chunked API).
 
 cudf layout: whole-frame grouped ops (rolling quantile / std / cummax
-/ cumsum, groupby diff) over the two long frames; python loops only
-over the structural iterables (the pair list — each iteration ONE
-small same-date merge; the tails). Dates arrive as epoch float8 and
+/ cumsum, groupby diff) over the long frames; python loops only over
+the structural iterables (the pair list — each iteration ONE small
+same-date merge; the tails). Dates arrive as epoch float8 and
 materialize via epoch_col_to_dt64 on BOTH frames (same [us] unit —
 the merges stay on the GPU hash path).
 """
@@ -90,63 +103,57 @@ _COMP_COLUMNS = ["code", "date", "price"] + [
 
 
 async def resolve_hedge_pair_universe(conn) -> list[dict]:
-    """The data-driven negative-correlation pair universe: per
-    unordered industry pair the FRESHEST offsets reading whose
-    trailing opposite score clears HP_MIN_PAIR_SCORE (the maintained
-    negative-correlation score), greedy-disjoint by score desc — each
-    industry sits in at most one pair — PLUS the PINNED showcase pair
-    (HP_SHOWCASE_PAIR, the Hedge Pairs page's default picks), whose
-    industries are reserved for each other before the greedy pass
-    (its freshest readings may carry no score at all). Returns
-    [{leg_a, leg_b, code ('A~B' lexicographic), score, rho}, ...] —
-    score/rho None where the offsets carry no reading (the showcase
-    pair's common case) — sorted by score desc with the showcase
-    first."""
+    """The ALL-INDUSTRY-PAIRS universe (2026-11-07, user-directed "for
+    hedge pairs add all industries"): every unordered pair of the
+    pool-'all' industry composites with close data, each riding its
+    FRESHEST SCORED offsets reading as METADATA (score/rho — null
+    where the offsets carry no scored reading; never a filter — the
+    scored-disjoint era's HP_MIN_PAIR_SCORE floor and greedy
+    one-pair-per-industry pass are retired; the measured gate
+    self-picks the tradable pairs on evidence). The PINNED showcase
+    pair (HP_SHOWCASE_PAIR — the Hedge Pairs page's default picks) is
+    the universe's FIRST entry. Returns [{leg_a, leg_b, code ('A~B'
+    lexicographic), score, rho}, ...] sorted by score desc (nulls
+    last) then pair code."""
     # analysis/analysis_signals/fetch/inputs/_hedge_pairs/pair_universe
     view = render_sql_view(
         "analysis/analysis_signals/fetch/inputs/_hedge_pairs/"
         "pair_universe",
+        industry_stats_table=frag(INDUSTRY_STATS_TABLE),
         offsets_table=frag(cfg.HP_OFFSETS_TABLE),
         pool_size=cfg.HP_OFFSETS_POOL,
         interval=cfg.HP_OFFSETS_INTERVAL,
-        min_score=cfg.HP_MIN_PAIR_SCORE,
     )
     rows = await conn.fetch(view.sql, *view.params)
-    # (A,B) and (B,A) ride as separate DISTINCT-ON groups — dedup the
-    # UNORDERED pair on its best reading
-    best: dict[frozenset, dict] = {}
-    for r in rows:
-        key = frozenset((r["industry_id"], r["benchmark_industry_id"]))
-        cur = best.get(key)
-        if cur is None or float(r["score"]) > cur["score"]:
-            best[key] = {
-                "a": r["industry_id"], "b": r["benchmark_industry_id"],
-                "score": float(r["score"]), "rho": float(r["rho"]),
-            }
-    # the pinned showcase pair first, its industries reserved
+    # the SQL hands over UNORDERED pairs (leg_a < leg_b) with the
+    # freshest reading of either direction joined as metadata
+    pairs: list[dict] = [
+        {"leg_a": r["leg_a"], "leg_b": r["leg_b"],
+         "code": f"{r['leg_a']}~{r['leg_b']}",
+         "score": r["score"], "rho": r["rho"]}
+        for r in rows
+    ]
+    # the pinned showcase pair first; the rest by score desc (nulls
+    # last) then code — a stable order the chunking relies on
     show_a, show_b = sorted(cfg.HP_SHOWCASE_PAIR)
-    show_key = frozenset(cfg.HP_SHOWCASE_PAIR)
-    showcase = best.pop(show_key, None)
-    used: set[str] = {show_a, show_b}
-    pairs: list[dict] = [{
-        "leg_a": show_a, "leg_b": show_b,
-        "code": f"{show_a}~{show_b}",
-        "score": showcase["score"] if showcase else None,
-        "rho": showcase["rho"] if showcase else None,
-    }]
-    for p in sorted(best.values(), key=lambda x: -x["score"]):
-        if p["a"] in used or p["b"] in used:
-            continue
-        used.add(p["a"])
-        used.add(p["b"])
-        leg_a, leg_b = sorted((p["a"], p["b"]))
-        pairs.append({"leg_a": leg_a, "leg_b": leg_b,
-                      "code": f"{leg_a}~{leg_b}",
-                      "score": p["score"], "rho": p["rho"]})
-    logger.info(f"[hedge_pairs] universe: {len(pairs)} disjoint "
-                f"negative-corr pairs (score > {cfg.HP_MIN_PAIR_SCORE}) "
-                f"+ the pinned showcase {pairs[0]['code']}")
-    return pairs
+    show_code = f"{show_a}~{show_b}"
+    showcase = next((p for p in pairs if p["code"] == show_code), None)
+    rest = [p for p in pairs if p["code"] != show_code]
+    rest.sort(key=lambda p: (
+        0 if p["score"] is not None else 1,
+        -(p["score"] or 0.0), p["code"],
+    ))
+    if showcase is None:
+        # a showcase leg with no close rows — the pair builder logs the
+        # skip; the pinned entry still rides first (payload nulls)
+        showcase = {"leg_a": show_a, "leg_b": show_b, "code": show_code,
+                    "score": None, "rho": None}
+    ordered = [showcase] + rest
+    n_scored = sum(1 for p in ordered if p["score"] is not None)
+    logger.info(f"[hedge_pairs] universe: {len(ordered)} industry pairs "
+                f"({n_scored} with an offsets reading) + the pinned "
+                f"showcase {show_code} first")
+    return ordered
 
 
 def _attach_component_rsi(comp: pd.DataFrame) -> pd.DataFrame:
@@ -368,7 +375,7 @@ def _attach_spread(df: pd.DataFrame) -> pd.DataFrame:
     (the _attach_pair_value pattern verbatim). Leg A outperforming leg
     B lifts the curve. Then per RSI window the spread's OWN Wilder RSI
     (per pair code) + its adaptive percentile bars per tail (the
-    mov_rsi convention: trailing 2550d, min 255, one-row-shifted) + the
+    mov_rsi convention: trailing 2520d, min 252, one-row-shifted) + the
     bottom/top breach bools the spread sub's candidates carve on. The
     NO-BENCHMARK trigger axis: the market curve enters nothing here."""
     keys = ["code"]
@@ -402,30 +409,87 @@ def _attach_spread(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+async def fetch_hedge_pair_components(
+        conn, legs: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(legs_df, comp) for the resolved leg universe — see the module
+    docstring. The comp frame sorted by (code, date); dates
+    datetime64[us]; numerics float64 end-to-end."""
+    legs_df = await _fetch_leg_closes(conn, legs)
+    market = await _fetch_market_closes(conn)
+    if legs_df.empty or market.empty:
+        return (legs_df, pd.DataFrame(columns=_COMP_COLUMNS))
+    comp = pd.concat([legs_df, market], ignore_index=True)
+    comp = comp.sort_values(["code", "date"]).reset_index(drop=True)
+    comp = _attach_component_rsi(comp)
+    return legs_df, comp
+
+
+def build_pair_chunk(legs_df: pd.DataFrame, pairs: list[dict],
+                     comp: pd.DataFrame) -> pd.DataFrame:
+    """ONE chunk's pair frame (HP_PAIR_CHUNK pairs — the all-industries
+    scale's memory partition): the per-pair common-date price merges,
+    then the inverse-vol pair value + drawdown gauges, the spread
+    curve + its RSI tail gauges, and the trio columns joined from the
+    component frame. Sorted by (code, date); every step per-pair or
+    per-(pair, date) — the chunk partition changes nothing per pair
+    (see build_pair_chunk_all for the single-frame equivalence)."""
+    if not pairs or legs_df is None or legs_df.empty \
+            or comp is None or comp.empty:
+        return pd.DataFrame(
+            columns=["code", "leg_a", "leg_b", "date", "px_a", "px_b"])
+    pair = _build_pair_frames(legs_df, pairs)
+    if pair.empty:
+        return pair
+    pair = _attach_pair_value(pair)
+    pair = _attach_spread(pair)
+    pair = _attach_trio_columns(pair, comp)
+    return pair
+
+
+def build_pair_chunk_all(legs_df: pd.DataFrame, pairs: list[dict],
+                         comp: pd.DataFrame,
+                         chunk: int | None = None) -> pd.DataFrame:
+    """The FULL-universe pair frame — every chunk built and
+    concatenated (the equivalence the engine's chunked loop relies
+    on: all steps per-pair / per-(pair, date), so the concat of the
+    chunk frames IS the single-frame build). Study-script convenience;
+    the engine consumes the chunked build_pair_chunk loop."""
+    n = chunk if chunk is not None else cfg.HP_PAIR_CHUNK
+    frames = [build_pair_chunk(legs_df, pairs[i:i + n], comp)
+              for i in range(0, len(pairs), n)]
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return pd.DataFrame(
+            columns=["code", "leg_a", "leg_b", "date", "px_a", "px_b"])
+    out = pd.concat(frames, ignore_index=True)
+    # the (code, date) sorted contract the single-frame build kept —
+    # the engine's chunk loop needs only PER-CHUNK contiguity (every
+    # step grouped by pair code), but the full-frame wrapper restores
+    # the global sort so downstream study code sees one contract
+    return out.sort_values(["code", "date"]).reset_index(drop=True)
+
+
 async def fetch_hedge_pair_inputs(conn, pairs: list[dict],
                                   ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(pair_frame, comp_frame) for the resolved pair universe — see
-    the module docstring. Both frames sorted by (code, date); dates
-    datetime64[us]; numerics float64 end-to-end."""
+    """(pair_frame, comp_frame) for the resolved pair universe — the
+    FULL build (every chunk concatenated) + the component frame. The
+    study-script convenience wrapper; the engine fetches the
+    components once and runs build_pair_chunk per chunk instead (the
+    all-pairs frame cannot materialize whole on the GPU)."""
     if not pairs:
         return (pd.DataFrame(columns=["code", "date", "price"]),
                 pd.DataFrame(columns=_COMP_COLUMNS))
     legs = sorted({p["leg_a"] for p in pairs} | {p["leg_b"] for p in pairs})
-    legs_df = await _fetch_leg_closes(conn, legs)
-    market = await _fetch_market_closes(conn)
-    if legs_df.empty or market.empty:
-        return (pd.DataFrame(columns=["code", "date", "price"]),
-                pd.DataFrame(columns=_COMP_COLUMNS))
-    comp = pd.concat([legs_df, market], ignore_index=True)
-    comp = comp.sort_values(["code", "date"]).reset_index(drop=True)
-    comp = _attach_component_rsi(comp)
-
-    pair = _build_pair_frames(legs_df, pairs)
-    pair = _attach_pair_value(pair)
-    pair = _attach_spread(pair)
-    pair = _attach_trio_columns(pair, comp)
+    legs_df, comp = await fetch_hedge_pair_components(conn, legs)
+    if legs_df.empty or comp.empty:
+        return (pd.DataFrame(
+                    columns=["code", "leg_a", "leg_b", "date",
+                             "px_a", "px_b"]),
+                comp)
+    pair = build_pair_chunk_all(legs_df, pairs, comp)
     return pair, comp
 
 
-__all__ = ["resolve_hedge_pair_universe", "fetch_hedge_pair_inputs",
-           "bar_suffix"]
+__all__ = ["resolve_hedge_pair_universe", "fetch_hedge_pair_components",
+           "build_pair_chunk", "build_pair_chunk_all",
+           "fetch_hedge_pair_inputs", "bar_suffix"]

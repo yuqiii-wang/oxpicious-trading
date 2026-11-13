@@ -1,7 +1,7 @@
 /**
  * PxVolSection — the Px-Vol States nested rows (single-select per row):
  * layer 1 = the day's price SPEED (sharp/slow/flat rise/drop — t =
- * ret_1d / the code's own trailing 255-row σ_ret), layer 2 = the day's
+ * ret_1d / the code's own trailing 252-row σ_ret), layer 2 = the day's
  * trading-amount LEVEL STATE (up/flat/down vs the code's own
  * trailing-year amount distribution — z-scored log amount). The two rows
  * are independent picks of ONE state family, not a progressive

@@ -1,5 +1,5 @@
 -- Service Monitor — 24h watchdog-restart count per service (restarts24h
--- badge on the always-on stream rows).
+-- badge on the resident-process rows).
 -- Serves GET /api/monitor/stream.
 -- args: none
 SELECT service, count(*) AS restarts_24h

@@ -54,7 +54,7 @@ class RunLimits(BaseModel):
     max_conversation_steps: int = 40
     # The execute-node clamp: a conversation keeps at least this many
     # hops and at most this many, whatever the run asked for (the
-    # delegated-fork headroom cap reuses the ceiling).
+    # delegated-spawn headroom cap reuses the ceiling).
     min_conversation_steps: int = 4
     max_steps_cap: int = 32
     # The graph invocation's LangGraph superstep bound (plan + hops +
@@ -71,7 +71,7 @@ class RunLimits(BaseModel):
     # budget-exceeded error). The policy: one logical request must
     # finish well under this; a request that overran means the input is
     # too heavy — the caller refactors it into smaller tasks (the
-    # planner's slimmed init message; the fork pre-planner's small
+    # planner's slimmed init message; the spawn pre-planner's small
     # call). Scope: ONE individual LLM request (one chat completion
     # call, its retries included) — NOT a graph node. A node (one step
     # conversation hop) makes MANY such requests across its tool
@@ -81,9 +81,9 @@ class RunLimits(BaseModel):
     llm_request_timeout_sec: float = 300.0
 
     # The plan tree: how many steps the PLANNED plan may hold, how
-    # many of them may carry a fork marker, how many propose→correct
+    # many of them may carry a spawn marker, how many propose→correct
     # rounds the planning session gets, and the replan guards
-    # (update_plan total-node cap, forks-per-node cap).
+    # (update_plan total-node cap, spawns-per-node cap).
     max_plan_nodes: int = 12
     max_delegated_steps: int = 6
     plan_repair_rounds: int = 2
@@ -94,9 +94,9 @@ class RunLimits(BaseModel):
     # (planner.propose_batches; runner._propose_and_persist_plan).
     plan_proposal_batches: int = 6
     max_total_plan_steps: int = 24
-    max_fork_children: int = 8
+    max_spawn_children: int = 8
 
-    # The subagent fan-out: fork-wave width per step hop, the
+    # The subagent fan-out: spawn-wave width per step hop, the
     # per-agent spawn semaphore, the spawn-chain depth cap (an agent
     # AT the depth gets no spawn tool), and the optional wall clock
     # per spawned child.
@@ -104,11 +104,36 @@ class RunLimits(BaseModel):
     max_concurrent_subagents: int = 4
     max_spawn_depth: int = 2
     subagent_timeout_sec: Optional[float] = None
+    # THE FORK INHERITANCE CAP (2026-11-13, core/loop.py): an
+    # inherit-context child (fork_subagent) starts from a deep copy of
+    # the parent's transcript — when that copy holds more messages than
+    # this, the child keeps the FIRST user message (the run goal) plus
+    # the most recent turns with an elision marker between, so the
+    # inherited context stays a bounded budget. 0 disables the cap
+    # (inherit everything).
+    fork_inherit_max_messages: int = 60
 
     # The per-LLM-request output ceiling (the runaway guard) and the
     # output-validation repair rounds per conversation.
     max_output_tokens: int = 8192
     max_output_repairs: int = 1
+
+    # The write-run-fix loop breaker (core/loop.py, 2026-11-11): after
+    # sandbox_failure_nudge_threshold consecutive failed sandbox-tool
+    # outcomes the loop injects ONE user nudge (patch the broken block
+    # with sandbox_edit_file, fail-fast per-block try/except) — at
+    # most sandbox_failure_max_nudges per conversation (0 disables).
+    sandbox_failure_nudge_threshold: int = 3
+    sandbox_failure_max_nudges: int = 1
+    # The breaker's fresh-context escalation (2026-11-11, the user
+    # directive "for twice syntax err sandbox script run, spawn a fresh
+    # context node ... parent node await it"): after
+    # sandbox_spawn_after_failures consecutive TRACEBACK-class script
+    # failures the loop spawns ONE repair subagent (foreground — the
+    # parent awaits) whose context is the compact handoff; at most
+    # sandbox_spawn_max per conversation (0 disables the spawn lane).
+    sandbox_spawn_after_failures: int = 2
+    sandbox_spawn_max: int = 1
 
     # The findings bridge: one finding's char cap and the whole
     # block's cap before older findings age to title lines.
@@ -129,6 +154,17 @@ class RunLimits(BaseModel):
     payload_preview_items: int = 3
     tool_result_max_chars: int = 20000
 
+    # The PREVIEW ENVELOPE knobs (_core/preview.py via payload_guard.py,
+    # 2026-11-12): preview_batch_rows — the head/mid/tail ROW batches
+    # one data envelope carries; preview_stats_sample_rows — the row
+    # sample the per-column mean/std/min/max run over;
+    # preview_jev_classify — the loop seam's soft jev read (sentiment /
+    # domain / industries) riding large TEXT tool results (the
+    # JEV_PREVIEW=0 env kill-switch; needs an injected decision engine).
+    preview_batch_rows: int = 5
+    preview_stats_sample_rows: int = 1000
+    preview_jev_classify: bool = True
+
     # The eager prompt-loading budget: a skills selection at or under
     # this many rows — or whose full texts fit this char budget —
     # loads eagerly without the planner's verdict.
@@ -141,6 +177,12 @@ class RunLimits(BaseModel):
     # top-hit_count chains.
     prompt_hotpath_rows: int = 4
     hotpath_probe_chains: int = 5
+    # The MATERIALIZED-DATA hints (langgraph/runner/base.py,
+    # 2026-11-09): each step hop's directive is KG-searched (read-only
+    # table_hits over the TTL-cached ns0 graph) and the surfaced
+    # analysis tables ride the step message as a load-before-compute
+    # block — at most this many tables (0 disables the lane).
+    data_hints_rows: int = 3
 
     # The SUPERVISOR REPAIR LANE (supervisor/repair.py + poller.py):
     # the per-run poll cadence watching node states; the pause window
@@ -156,6 +198,51 @@ class RunLimits(BaseModel):
     supervisor_max_node_retries: int = 1
     supervisor_max_repairs_per_run: int = 2
     supervisor_retry_throttle_sec: float = 45.0
+
+    # The SYSTEM ONE DECISION LANE (decision/, 2026-11-11): typed
+    # harness judgments answered by the resident host's jev models
+    # (calibrated probabilities, ~0.1s, zero provider spend) — the
+    # repair worker's verdict ask and the loop's repair-spawn gate. Off
+    # (or a read below the floor / host unreachable) the existing
+    # lanes judge unchanged. jev_model: None = the host's single
+    # registered jev model.
+    jev_decisions: bool = True
+    jev_min_confidence: float = 0.6
+    jev_model: Optional[str] = None
+    # The KG RELEVANCE GATE (2026-11-12): kg_search / kg_expand results
+    # judged by one jev choice read (candidates + reject) before the
+    # render enters the conversation — rejected results send only the
+    # synonym-loop nudge; a disabled gate / unavailable host /
+    # below-floor read ships the full render unchanged.
+    jev_kg_gate: bool = True
+    jev_kg_accept_floor: float = 0.15
+    jev_kg_confidence: float = 0.35
+    # THE SYSTEM ONE ROUTER (2026-11-12, core/loop.py): after every LLM
+    # response the injected jev engine routes the NEXT work — inference
+    # (continue) / spawn (a fresh scripting sub node takes over the
+    # proposed sandbox script work, keeping biz conversations off the
+    # coding) / join (a messy scripting node stops and hands back to
+    # the parent chain). Mechanical pre-filters first (sandbox-call
+    # detection for spawn; scripting-role + messiness for join), jev
+    # judges only what passes; every read is affirm-only except the
+    # failure probe (a scripting child's failure joins back and the
+    # parent spawns an AUTHORIZED investigator — handed the failed
+    # node's state id / llm chain id / context refs to inspect — on
+    # every read except a confident NO). JEV_ROUTE=0 is the env
+    # kill-switch for probes that target the un-routed lanes.
+    jev_route: bool = True
+    jev_route_max_spawns: int = 3
+    # The ROUTER's FORK lane (2026-11-13, core/loop.py): when the spawn
+    # read says the proposed coding is a CONTINUATION of this
+    # conversation's own chain (not self-contained), a second noul read
+    # offers the fork — a sub node that INHERITS this conversation's
+    # full context and continues it while the parent awaits. jev_route_
+    # fork is the lane switch, jev_route_max_forks the per-conversation
+    # budget (0 disables).
+    jev_route_fork: bool = True
+    jev_route_max_forks: int = 1
+    jev_route_join: bool = True
+    jev_route_probe_max: int = 1
 
     @classmethod
     def from_doc(cls, doc: Any) -> "RunLimits":
@@ -195,18 +282,27 @@ class RunLimits(BaseModel):
                 num("plan_proposal_batches", 6, 1, 24)),
             max_total_plan_steps=int(
                 num("max_total_plan_steps", 24, 1, 1000)),
-            max_fork_children=int(num("max_fork_children", 8, 0, 200)),
+            max_spawn_children=int(num("max_spawn_children", 8, 0, 200)),
             max_parallel_delegated_steps=int(
                 num("max_parallel_delegated_steps", 4, 1, 64)),
             max_concurrent_subagents=int(
                 num("max_concurrent_subagents", 4, 1, 64)),
             max_spawn_depth=int(num("max_spawn_depth", 2, 0, 8)),
+            fork_inherit_max_messages=int(
+                num("fork_inherit_max_messages", 60, 0, 400)),
             subagent_timeout_sec=(
                 None if doc.get("subagent_timeout_sec") is None
                 else float(num("subagent_timeout_sec", 0.0, 0)
                            ) or None),
             max_output_tokens=int(num("max_output_tokens", 8192, 256)),
             max_output_repairs=int(num("max_output_repairs", 1, 0, 5)),
+            sandbox_failure_nudge_threshold=int(
+                num("sandbox_failure_nudge_threshold", 3, 1, 10)),
+            sandbox_failure_max_nudges=int(
+                num("sandbox_failure_max_nudges", 1, 0, 5)),
+            sandbox_spawn_after_failures=int(
+                num("sandbox_spawn_after_failures", 2, 0, 10)),
+            sandbox_spawn_max=int(num("sandbox_spawn_max", 1, 0, 3)),
             finding_max_chars=int(num("finding_max_chars", 1200, 50)),
             findings_block_max_chars=int(
                 num("findings_block_max_chars", 12000, 100)),
@@ -217,10 +313,15 @@ class RunLimits(BaseModel):
             payload_preview_items=int(
                 num("payload_preview_items", 3, 1, 50)),
             tool_result_max_chars=int(num("tool_result_max_chars", 20000, 500)),
+            preview_batch_rows=int(num("preview_batch_rows", 5, 1, 50)),
+            preview_stats_sample_rows=int(
+                num("preview_stats_sample_rows", 1000, 10, 100000)),
+            preview_jev_classify=bool(doc.get("preview_jev_classify", True)),
             prompt_eager_rows=int(num("prompt_eager_rows", 4, 0, 100)),
             prompt_eager_chars=int(num("prompt_eager_chars", 4000, 0)),
             prompt_hotpath_rows=int(num("prompt_hotpath_rows", 4, 0, 50)),
             hotpath_probe_chains=int(num("hotpath_probe_chains", 5, 1, 20)),
+            data_hints_rows=int(num("data_hints_rows", 3, 0, 20)),
             supervisor_poll_interval_sec=num(
                 "supervisor_poll_interval_sec", 10.0, 2.0, 60.0),
             supervisor_repair_grace_sec=num(
@@ -231,6 +332,25 @@ class RunLimits(BaseModel):
                 num("supervisor_max_repairs_per_run", 2, 0, 6)),
             supervisor_retry_throttle_sec=num(
                 "supervisor_retry_throttle_sec", 45.0, 0.0, 300.0),
+            jev_decisions=bool(doc.get("jev_decisions", True)),
+            jev_min_confidence=num(
+                "jev_min_confidence", 0.6, 0.0, 1.0),
+            jev_model=(str(doc["jev_model"]).strip() or None
+                       if isinstance(doc.get("jev_model"), str) else None),
+            jev_kg_gate=bool(doc.get("jev_kg_gate", True)),
+            jev_kg_accept_floor=num(
+                "jev_kg_accept_floor", 0.15, 0.0, 1.0),
+            jev_kg_confidence=num(
+                "jev_kg_confidence", 0.35, 0.0, 1.0),
+            jev_route=bool(doc.get("jev_route", True)),
+            jev_route_max_spawns=int(
+                num("jev_route_max_spawns", 3, 0, 10)),
+            jev_route_fork=bool(doc.get("jev_route_fork", True)),
+            jev_route_max_forks=int(
+                num("jev_route_max_forks", 1, 0, 10)),
+            jev_route_join=bool(doc.get("jev_route_join", True)),
+            jev_route_probe_max=int(
+                num("jev_route_probe_max", 1, 0, 3)),
         )
         # Cross-field fixups: the clamp ceiling never sits under the
         # floor; the findings block never under one finding.

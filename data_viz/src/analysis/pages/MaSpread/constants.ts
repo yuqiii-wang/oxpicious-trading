@@ -31,7 +31,7 @@ export const RSI_SHADE_BASE_OPACITY = 0.18;
  * degenerate) — it lives only in the DB table (the shared tooltip
  * metrics' 20d pivot reads the same lines table).
  */
-export const ROOF_FLOOR_WINDOWS = [60, 120, 255, 500, 750, 1275] as const;
+export const ROOF_FLOOR_WINDOWS = [60, 120, 252, 504, 756, 1260] as const;
 
 /**
  * Chip labels of the Roof/Floor section's Est-levels method picker — one
@@ -57,7 +57,7 @@ export const RF_ESTIMATE_DEFAULT_METHOD = "median";
  * HIGH_LOW_PCT_PERIODS in analysis/mov_ave_spread/config.py and the
  * analysis.mov_ave_high_low_pct period values.
  */
-export const HIGH_LOW_STREAK_PERIODS = [60, 120, 255, 500, 750, 1275] as const;
+export const HIGH_LOW_STREAK_PERIODS = [60, 120, 252, 504, 756, 1260] as const;
 
 /**
  * High/low band-BREAK streak tightness buttons (percent) — the second
@@ -149,7 +149,7 @@ export function momentumChipLabel(
  * aligned by long MA (so Price/MA60 and MA5/MA60 share one column). The
  * MA5 row leaves the MA5 column empty (no MA5/MA5 pair exists).
  */
-export const LONG_MA_ORDER = [5, 20, 60, 120, 255] as const;
+export const LONG_MA_ORDER = [5, 20, 60, 120, 252] as const;
 
 /**
  * The TYPICAL EMA pair grid (2026-10-26 rebase — user-directed "the
@@ -168,10 +168,10 @@ export const EMA_PAIR_GRID: readonly (readonly [
 ];
 
 /**
- * Shared period-column grid — one column per period (5, 20, 60, 120, 255,
- * 500, 750, 1275) so every button row aligns vertically by period. Pair
- * rows only fill the first 5 columns (their long MAs stop at 255); the
- * Roof/Floor Trendlines row spans the full width (its 60d … 1275d buttons
+ * Shared period-column grid — one column per period (5, 20, 60, 120, 252,
+ * 504, 756, 1260) so every button row aligns vertically by period. Pair
+ * rows only fill the first 5 columns (their long MAs stop at 252); the
+ * Roof/Floor Trendlines row spans the full width (its 60d … 1260d buttons
  * continue into the extra columns under their matching periods).
  */
 export const PERIOD_GRID_SX: CSSProperties = {

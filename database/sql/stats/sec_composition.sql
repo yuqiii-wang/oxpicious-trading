@@ -1,0 +1,67 @@
+-- ============================================================================
+--  Security Composition — ALL constituent holdings per ETF or INDEX per
+--  composition snapshot.
+--
+--  Source: build_szse_sse_etf_and_margin.py
+--    · Full composition (comp_long): ALL holdings for ETFs, rank 1..N
+--    · Index composition (CSI closeweight): ALL constituents for CSI indices
+--
+--  source_type distinguishes the data origin:
+--    'etf'   — ETF holdings (code = bare ETF code, e.g. 159001)
+--    'index' — Index composition (code = bare index code, e.g. 930606)
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- Table: sec_composition
+--   One row per (code, snapshot_date, rank).
+--   - For ETFs (source_type='etf'): code = "159001" (bare 6-digit ETF code)
+--   - For indices (source_type='index'): code = "930606" (bare 6-digit index code)
+--   stock_code = constituent code WITH exchange suffix ("000001.SZ"), matching
+--   the convention of stock_identity / stock_basic_stats (suffix required so
+--   joins against those tables need no stripping).
+--   rank = 1 is the largest weight; rank can exceed 5 for full composition data.
+-- ----------------------------------------------------------------------------
+-- kg entity (ns0 db_semantics_tables reads the payload below):
+-- description: Each ETF's or index's constituent holdings per composition snapshot — who is in the basket and at what weight.
+-- tags: composition, 成分, holdings, 持仓, weight, 权重, constituents, 成分股, reference, 参考
+
+CREATE TABLE IF NOT EXISTS stats.sec_composition (
+    snapshot_date             DATE          NOT NULL,
+    code                      TEXT          NOT NULL,
+    source_type               TEXT          NOT NULL DEFAULT 'etf',
+    rank                      SMALLINT      NOT NULL,
+    stock_code                TEXT,
+    stock_name                TEXT,
+    weight_pct                NUMERIC(10,6) NOT NULL DEFAULT 0,
+
+    CONSTRAINT pk_sec_composition PRIMARY KEY (code, snapshot_date, rank),
+    CONSTRAINT chk_sec_composition_code
+        CHECK (code ~ '^(\d{6}|H\d{5})$'),
+    CONSTRAINT chk_sec_composition_source
+        CHECK (source_type IN ('etf', 'index'))
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'sec_composition', 8);
+
+
+COMMENT ON TABLE  stats.sec_composition                IS 'ALL constituent holdings per ETF or INDEX per composition snapshot. Native HASH partitioned by code.';
+COMMENT ON COLUMN stats.sec_composition.snapshot_date   IS 'Composition snapshot date (one snapshot per ETF/index, applied forward via merge_asof).';
+COMMENT ON COLUMN stats.sec_composition.code            IS 'ETF code (bare, e.g. 159001) or index code (e.g. 930606, H30007 for CSI cross-market).';
+COMMENT ON COLUMN stats.sec_composition.source_type     IS 'Data origin: "etf" = ETF holdings, "index" = index composition (CSI closeweight).';
+COMMENT ON COLUMN stats.sec_composition.rank            IS 'Holding rank (1 = largest weight). Rank > 5 for full composition data.';
+
+CREATE INDEX IF NOT EXISTS idx_sec_composition_snapshot_code
+    ON stats.sec_composition (snapshot_date, code);
+
+CREATE INDEX IF NOT EXISTS idx_sec_composition_stock
+    ON stats.sec_composition (stock_code)
+    WHERE stock_code IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_sec_composition_source
+    ON stats.sec_composition (source_type);
+
+COMMENT ON COLUMN stats.sec_composition.stock_code
+    IS 'Constituent code WITH exchange suffix (e.g. 000001.SZ), matching stock_identity/stock_basic_stats.';
+

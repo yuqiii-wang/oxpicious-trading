@@ -25,7 +25,7 @@ export const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
     description:
       "Industry MA trends with the broad-market benchmark removed, auditing " +
       "raw vs benchmark-removed correlation and the opposite score over " +
-      "20/60/255-day windows.",
+      "20/60/252-day windows.",
   },
   {
     slug: "ai-market-qa",

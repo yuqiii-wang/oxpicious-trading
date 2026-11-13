@@ -2,7 +2,7 @@
 plan-JSON contract, the proposal session, its persistence, and the
 mutation authorities.
 
-The thread's plan is a living graph with a MAIN LANE and FORKED PATHS,
+The thread's plan is a living graph with a MAIN LANE and SPAWNED PATHS,
 persisted as the ``llm.deep_agent_states`` tree (SQL-first DDL
 ``database/sql/text/llm/07_deep_agent_states.sql``). This layer owns
 the whole contract:
@@ -23,7 +23,7 @@ the whole contract:
   * ``session``     — the plan agent's ENGINE (:class:`PlanSession`, a
     subpackage): the batched proposal stream persisting each validated
     batch NOW, the gradual prompt-loading ladder resolved alongside,
-    the fork pass-down and the standing opening prompt. Run by
+    the spawn pass-down and the standing opening prompt. Run by
     ``agents.plan_agent.PlanAgent`` BEFORE the graphs invoke;
   * ``prompt_loading`` — the gradual discretionary prompt-loading
     ladder (a subpackage): catalog previews → keyword match → the
@@ -35,8 +35,8 @@ the whole contract:
     and the prompt accessors (system / agent / tool / plan rows over
     ``llm.ai_prompts``);
   * ``authorities`` — WHO may mutate what: the main lane may rework
-    not-yet-run steps and terminate forks; a forked subagent is
-    structurally confined to the nodes it minted under its own fork.
+    not-yet-run steps and terminate spawns; a spawned subagent is
+    structurally confined to the nodes it minted under its own spawn.
     The model-facing tools over an authority (schemas + handlers +
     kits) live in the tool layer (``tools.plan_tools``); permission
     stays enforced in code here, never trusted to the prompt;
@@ -48,7 +48,7 @@ the whole contract:
     consult of the promoted ``llm.kg_hotpaths`` chains).
 
 Purely domain-level: no LangGraph, no agent loop — ``core`` (the
-subagent fork kit), ``skills`` (the selected-prompt objects), the tool
+subagent spawn kit), ``skills`` (the selected-prompt objects), the tool
 layer (the plan kits) and ``graph`` (the orchestration) consume it; it
 imports none of them back.
 

@@ -8,7 +8,7 @@ import pandas as pd
 
 from _common.build_commons import rec_col
 from _common.df_utils import (
-    compute_moving_averages, compute_emas, safe_columns,
+    compute_moving_averages, compute_emas, compute_macd, safe_columns,
     compute_trading_amt_per_move,
 )
 
@@ -61,19 +61,24 @@ def prepare_features(
     merged = apply_split_adjustment(merged, verbose=True, adj_seeds=adj_seeds)
     compute_moving_averages(
         merged, group_key="code", value_col="adj_close",
-        windows=[5, 20, 60, 120, 255],
+        windows=[5, 20, 60, 120, 252],
     )
     compute_emas(
         merged, group_key="code", value_col="adj_close",
-        spans=[6, 12, 20, 26, 60, 120, 255],
+        spans=[6, 9, 12, 20, 26, 60, 120, 252],
     )
+    # MACD block from the EMAs just computed (macd_line = ema12 - ema26;
+    # macd_signal = 9-span EMA of the macd_line series; macd_hist =
+    # line - signal) — stats.etf_tech_stats.macd_* columns.
+    compute_macd(merged, group_key="code")
     # trading_amt_per_pct_change = trading_amount / (adj_close - adj_open),
     # signed. Adjusted-space move (matching the MA/EMA columns): raw
     # close-open carries the split / ex-dividend gap on corp-action days.
     compute_trading_amt_per_move(
         merged, open_col="adj_open", close_col="adj_close")
-    logger.info(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma255; "
-          f"EMA columns added: ema6, ema12, ema20, ema26, ema60, ema120, ema255")
+    logger.info(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma252; "
+          f"EMA columns added: ema6, ema9, ema12, ema20, ema26, ema60, ema120, ema252; "
+          f"MACD columns added: macd_line, macd_signal, macd_hist")
     return merged
 
 

@@ -7,7 +7,7 @@
   SELECT trade_date, unrealized_pnl, total_pnl, realized_pnl_cum,
          total_qty, position_value, normalized_mean_buy_period,
          return_rate,
-         sharpe_ratio, sharpe_ratio_255d, sharpe_ratio_500d
+         sharpe_ratio, sharpe_ratio_252d, sharpe_ratio_504d
   FROM strategy.strategy_daily
   WHERE seq_id = {{seq_id}}
   ORDER BY trade_date ASC

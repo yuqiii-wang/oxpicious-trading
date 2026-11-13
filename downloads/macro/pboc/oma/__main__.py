@@ -434,6 +434,22 @@ class PbocOmaDownload(DownloadJob):
     description = "Download and parse PBoC OMA news"
     component = "pboc_oma_news"
 
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        """CLI surface — restores the former inline-``__main__`` options
+        (the DownloadJob template owns parsing; ``run()`` reads them)."""
+        parser.add_argument("--start-date", type=str, default=None,
+                            help="Reparse window start (YYYY-MM-DD)")
+        parser.add_argument("--end-date", type=str, default=None,
+                            help="Reparse window end (YYYY-MM-DD)")
+        parser.add_argument("--years", type=int, default=None,
+                            help="Lookback window in years (default: module constant)")
+        parser.add_argument("--reparse", action="store_true", default=False,
+                            help="Reparse existing local files instead of fetching")
+        parser.add_argument("--no-convert-csv", action="store_true", default=False,
+                            help="Skip xls/html→csv conversion after download")
+        parser.add_argument("--no-build-csv", action="store_true", default=False,
+                            help="Skip the combined-CSV build after download")
+
     # ============================================================================
     # List-page fetching & pagination (adapted from LPR / repo news)
     # ============================================================================

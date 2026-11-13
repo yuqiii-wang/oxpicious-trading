@@ -24,7 +24,7 @@
 import { formatDate, toNum } from "../../lib/db.js";
 import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
-import { encodeLabelParam, labelDecodeSql } from "../label-codes.js";
+import { encodeLabelParam, labelDecodeSql } from "../infra/label-codes.js";
 import type {
   IndustryHypesAndDrainsResponse,
   HypesDrainsBenchmarkRow,
@@ -33,7 +33,7 @@ import type {
   SeasonInfo,
 } from "../../../shared/types.js";
 
-const VALID_PERIODS = new Set([5, 20, 60, 120, 255, 500]);
+const VALID_PERIODS = new Set([5, 20, 60, 120, 252, 504]);
 const VALID_WEIGHTINGS = new Set(["equal", "amt"]);
 
 // ----------------------------------------------------------------------------
@@ -187,7 +187,7 @@ export async function getIndustryHypesAndDrains(
     throw new Error("Missing 'benchmark_code' parameter");
   }
   if (!VALID_PERIODS.has(periodDays)) {
-    throw new Error(`Invalid period_days: must be one of 5, 20, 60, 120, 255, 500, got ${periodDays}`);
+    throw new Error(`Invalid period_days: must be one of 5, 20, 60, 120, 252, 504, got ${periodDays}`);
   }
   if (!VALID_WEIGHTINGS.has(weighting)) {
     throw new Error(`Invalid weighting: must be 'equal' or 'amt', got '${weighting}'`);

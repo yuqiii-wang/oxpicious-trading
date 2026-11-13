@@ -17,6 +17,15 @@ resolve every registered metric's value:
     view (close / pct_change / wilder_rsi / ma_gap_pct /
     dist_from_high_low); ``compute.args`` may pin code/sec_type.
 
+Past-60d window stats (every numeric resolved row): over the metric's
+own PRIOR series (same scope filters, one row per date — the rarity
+window's dedupe convention), the trailing ``WINDOW_BARS`` observations
+STRICTLY PRIOR to ``value_date`` give ``win_open`` (the window's
+earliest value), ``win_max`` and ``win_min``; the ``delta_60d_open /
+_max / _min`` family is value minus each stat (value above the 60d max
+= new-high territory). Compute-kind metrics derive their own trailing
+series (the metric recomputed per prior bar).
+
 These semantics are the CONTRACT mirrored by
 ``data_viz/api/services/analysis-insights.service.ts`` (the Express
 fast path for table metrics — the spec jsonb drives both, keep them in
@@ -37,7 +46,7 @@ from _common.labels import SEC_TYPE_CODE, SEC_TYPE_LABEL
 
 TABLE = "analysis_insight_metrics.insight_templates"
 
-# per-sec_type daily baseline views (close + ma{5,20,60,120,255} cols)
+# per-sec_type daily baseline views (close + ma{5, 20, 60, 120, 252} cols)
 DAILY_VIEWS = {
     "etf": "stats.v_etf_margin",
     "index": "stats.v_index_daily",
@@ -58,7 +67,18 @@ RANK_WINDOW_YEARS = 10
 # extreme. pct_rank_n rides along so readers can discount further.
 RANK_MIN_N = 120
 # Close-history cap for the python-side ranks (≈10y of sessions).
-RANK_MAX_BARS = 2550
+RANK_MAX_BARS = 2520
+
+# The past-60d window stats (win_open / win_max / win_min / win_n + the
+# delta_60d_* family): the metric's own prior series — same scope
+# filters, one row per date — over the trailing WINDOW_BARS observations
+# STRICTLY PRIOR to the value's own date (the rarity window's
+# strictly-prior convention at recent-range scale). Mirrored by the
+# Express fast path and the metric_window_stats sql view.
+WINDOW_BARS = 60
+# Prior observations below this leave the window stats unstamped — a
+# thinner window would overstate every move as a range extreme.
+WINDOW_MIN_N = 20
 
 
 def normalize_as_of(raw: Optional[str]) -> Optional[dt.date]:
@@ -192,6 +212,78 @@ def _apply_prior_rank(
         out["pct_rank_n"] = int(n)
 
 
+def _window_stats_sql(
+    value_col: str, date_col: str, filter_sql: str,
+) -> str:
+    """The past-60d window-stats query for one metric (the inline mirror
+    of the metric_window_stats sql view): the OPEN (earliest), MAX and
+    MIN of the trailing WINDOW_BARS deduped rows strictly prior to the
+    value's own date. Args order: the filter args, then value_date, then
+    the window size."""
+    return (
+        "SELECT (ARRAY_AGG(v ORDER BY d ASC))[1], MAX(v), MIN(v),"
+        " COUNT(*)::int FROM (SELECT d, v FROM ("
+        f"  SELECT {date_col} AS d, {value_col} AS v,"
+        f"         ROW_NUMBER() OVER (PARTITION BY {date_col}"
+        f"                            ORDER BY {value_col} DESC NULLS LAST) AS rn"
+        f"  FROM {{table}} WHERE {filter_sql}"
+        ") t WHERE rn = 1 AND v IS NOT NULL"
+        " ORDER BY d DESC LIMIT %s) w"
+    )
+
+
+def _stamp_window_stats(
+    out: Dict[str, Any], prior_seq: Sequence[Any],
+) -> None:
+    """Stamp win_* + delta_60d_* from the metric's own PRIOR series
+    (CHRONOLOGICAL, oldest → newest, the current value NOT included):
+    the trailing WINDOW_BARS observations' open / max / min, gated on
+    the numeric value and the WINDOW_MIN_N sample floor. Never raises."""
+    value = out.get("value")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return
+    try:
+        window = [float(v) for v in prior_seq[-WINDOW_BARS:]
+                  if v is not None]
+    except (TypeError, ValueError):
+        return
+    if len(window) < WINDOW_MIN_N:
+        return
+    win_open, win_max, win_min = window[0], max(window), min(window)
+    out.update({
+        "win_open": win_open, "win_max": win_max, "win_min": win_min,
+        "win_n": len(window),
+        "delta_60d_open": value - win_open,
+        "delta_60d_max": value - win_max,
+        "delta_60d_min": value - win_min,
+    })
+
+
+def _apply_window_stats(
+    conn, out: Dict[str, Any], sql: str, args: List[Any],
+) -> None:
+    """Run one window-stats query and stamp win_* / delta_60d_* onto the
+    result (numeric values only, above the sample floor — same gates as
+    the rarity rank)."""
+    with conn.cursor() as cur:
+        cur.execute(sql, args)
+        win_open, win_max, win_min, n = cur.fetchone()
+    if n is None or int(n) < WINDOW_MIN_N or win_open is None:
+        return
+    stats = [_plain(win_open), _plain(win_max), _plain(win_min)]
+    if not all(isinstance(s, (int, float)) and not isinstance(s, bool)
+               for s in stats):
+        return
+    value = out["value"]
+    out.update({
+        "win_open": stats[0], "win_max": stats[1], "win_min": stats[2],
+        "win_n": int(n),
+        "delta_60d_open": value - stats[0],
+        "delta_60d_max": value - stats[1],
+        "delta_60d_min": value - stats[2],
+    })
+
+
 def _resolve_table_metric(
     conn, spec: Dict[str, Any], ctx: AskContext, rank: bool = True,
 ) -> Dict[str, Any]:
@@ -290,7 +382,7 @@ def _resolve_table_metric(
         if isinstance(out["value"], (int, float)) and isinstance(prev, (int, float)):
             out["delta"] = out["value"] - prev
     if rank and filter_preds and out.get("value_date"):
-        value_date = out["value_date"]
+        value_date = out.get("value_date")
         if isinstance(value_date, str):
             value_date = dt.date.fromisoformat(value_date)
         filter_sql = " AND ".join(filter_preds) + (
@@ -300,6 +392,19 @@ def _resolve_table_metric(
             out["value"], *filter_args, value_date,
             _shift_years(value_date, -RANK_WINDOW_YEARS),
         ])
+    # Past-60d window stats: the same deduped series, the trailing
+    # WINDOW_BARS observations strictly prior to the value's own date
+    # (the gates live in _apply_window_stats; categorical rank:false
+    # rows skip here for symmetry with the rarity rank).
+    if rank and out.get("value_date"):
+        value_date = out.get("value_date")
+        if isinstance(value_date, str):
+            value_date = dt.date.fromisoformat(value_date)
+        win_preds = [*filter_preds, f"{date_col} < %s"]
+        win_sql = _window_stats_sql(
+            value_col, date_col, " AND ".join(win_preds)).format(table=table)
+        _apply_window_stats(conn, out, win_sql, [
+            *filter_args, value_date, WINDOW_BARS])
     return out
 
 
@@ -336,11 +441,16 @@ def _fetch_closes(
         return [(row[0], float(row[1])) for row in cur.fetchall()]
 
 
-def _wilder_rsi(closes: Sequence[float], window: int) -> Optional[float]:
-    """Classic Wilder RSI at the series' last point (SMA seed + recursion)."""
+def _wilder_rsi_series(
+    closes: Sequence[float], window: int,
+) -> List[float]:
+    """Classic Wilder RSI at EVERY bar from the SMA seed onward (SMA
+    seed + recursion), CHRONOLOGICAL (oldest → newest; the input closes
+    arrive newest-first). Empty when the series can't seed — the same
+    recursion the single-value form used, kept as a series so the
+    past-60d window stats see the metric's own prior values."""
     if len(closes) < window + 1:
-        return None
-    # closes are newest-first; walk oldest → newest
+        return []
     seq = list(reversed(closes))
     gains = losses = 0.0
     for i in range(1, window + 1):
@@ -350,14 +460,19 @@ def _wilder_rsi(closes: Sequence[float], window: int) -> Optional[float]:
         else:
             losses -= change
     avg_gain, avg_loss = gains / window, losses / window
+
+    def _rsi(ag: float, al: float) -> float:
+        if al == 0:
+            return 100.0
+        return 100.0 - 100.0 / (1.0 + ag / al)
+
+    out = [_rsi(avg_gain, avg_loss)]
     for i in range(window + 1, len(seq)):
         change = seq[i] - seq[i - 1]
         avg_gain = (avg_gain * (window - 1) + max(change, 0.0)) / window
         avg_loss = (avg_loss * (window - 1) + max(-change, 0.0)) / window
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - 100.0 / (1.0 + rs)
+        out.append(_rsi(avg_gain, avg_loss))
+    return out
 
 
 def _rank_among(values: List[float], today: float) -> Optional[tuple]:
@@ -387,30 +502,37 @@ def _resolve_compute(
             return {"unresolved": "not enough close history"}
         out: Dict[str, Any] = {"value": (last / first - 1.0) * 100.0,
                                "value_date": _iso(closes[0][0])}
-        if rank:
-            # Rarity: today's N-day change among its own prior daily values
-            # (the same N-day change computed on each prior bar, 10y window).
-            hist = _fetch_closes(
-                conn, view, code, ctx.as_of, days + 1 + RANK_MAX_BARS)
-            seq = [c for _, c in reversed(hist)]  # oldest → newest
-            if len(seq) > days + 1:
-                changes = [
-                    (seq[i] / seq[i - days] - 1.0) * 100.0
-                    for i in range(days, len(seq))
-                    if seq[i - days]
-                ]
-                ranked = _rank_among(changes[:-1], changes[-1])
-                if ranked:
-                    out["pct_rank"], out["pct_rank_n"] = ranked
+        # The metric's own prior series — the same N-day change computed
+        # on each prior bar (chronological) — feeds BOTH the rarity rank
+        # (10y window) and the past-60d window stats.
+        hist = _fetch_closes(
+            conn, view, code, ctx.as_of,
+            days + 1 + (RANK_MAX_BARS if rank else WINDOW_BARS + 1))
+        seq = [c for _, c in reversed(hist)]  # oldest → newest
+        changes: List[float] = []
+        if len(seq) > days + 1:
+            changes = [
+                (seq[i] / seq[i - days] - 1.0) * 100.0
+                for i in range(days, len(seq))
+                if seq[i - days]
+            ]
+        if rank and changes:
+            ranked = _rank_among(changes[:-1], changes[-1])
+            if ranked:
+                out["pct_rank"], out["pct_rank_n"] = ranked
+        _stamp_window_stats(out, changes[:-1])
         return out
     if fn == "wilder_rsi":
         closes = _fetch_closes(
-            conn, view, code, ctx.as_of, min(MAX_BARS, window * 5 + 10))
+            conn, view, code, ctx.as_of,
+            min(MAX_BARS, max(window * 5 + 10, WINDOW_BARS + 1)))
         values = [c for _, c in closes if c is not None]
-        rsi = _wilder_rsi(values, window)
-        if rsi is None:
+        series = _wilder_rsi_series(values, window)
+        if not series:
             return {"unresolved": "not enough close history"}
-        return {"value": rsi, "value_date": _iso(closes[0][0])}
+        out = {"value": series[-1], "value_date": _iso(closes[0][0])}
+        _stamp_window_stats(out, series[:-1])
+        return out
     if fn == "ma_gap_pct":
         ma_col = f"ma{window}"
         sql = (f"SELECT date, close, {_q(ma_col)} FROM {_qt(view)} "
@@ -419,20 +541,34 @@ def _resolve_compute(
         if ctx.as_of is not None:
             sql += " AND date <= %s"
             params.append(ctx.as_of)
-        sql += " ORDER BY date DESC LIMIT 1"
+        sql += " ORDER BY date DESC LIMIT %s"
+        params.append(WINDOW_BARS + 1)
         with conn.cursor() as cur:
             cur.execute(sql, params)
-            row = cur.fetchone()
-        if not row:
+            rows = cur.fetchall()
+        if not rows:
             return {"unresolved": "no baseline row"}
-        _, close, ma = row
-        if ma is None or not ma:
+        rows_chrono = list(reversed(rows))  # oldest → newest
+        # the metric's own per-bar gap series (view ma column present)
+        gaps = [(float(c) / float(m) - 1.0) * 100.0
+                for _, c, m in rows_chrono if m is not None and m]
+        d_last, c_last, m_last = rows_chrono[-1]
+        prior_gaps = gaps[:-1]
+        if m_last is None or not m_last:
+            # manual-mean fallback keeps the VALUE contract for rows the
+            # view's ma column hasn't reached; the window stats then see
+            # only the bars the view itself scored
             closes = _fetch_closes(conn, view, code, ctx.as_of, window)
             if len(closes) < window:
                 return {"unresolved": "not enough close history"}
             ma = sum(c for _, c in closes) / window
-        return {"value": (float(close) / float(ma) - 1.0) * 100.0,
-                "value_date": _iso(row[0])}
+            value = (float(c_last) / ma - 1.0) * 100.0
+            prior_gaps = gaps
+        else:
+            value = (float(c_last) / float(m_last) - 1.0) * 100.0
+        out = {"value": value, "value_date": _iso(d_last)}
+        _stamp_window_stats(out, prior_gaps)
+        return out
     if fn == "dist_from_high_low":
         closes = _fetch_closes(conn, view, code, ctx.as_of, window)
         if len(closes) < window:
@@ -445,16 +581,19 @@ def _resolve_compute(
         return {"value": (close / edge - 1.0) * 100.0,
                 "value_date": _iso(closes[0][0])}
     # fn == "close"
-    closes = _fetch_closes(conn, view, code, ctx.as_of, 1)
+    closes = _fetch_closes(
+        conn, view, code, ctx.as_of,
+        RANK_MAX_BARS if rank else WINDOW_BARS + 1)
     if not closes or closes[0][1] is None:
         return {"unresolved": "no baseline row"}
     out = {"value": float(closes[0][1]), "value_date": _iso(closes[0][0])}
+    prior = [c for _, c in closes[1:] if c is not None]  # newest-first
     if rank:
-        hist = _fetch_closes(conn, view, code, ctx.as_of, RANK_MAX_BARS)
-        prior = [c for _, c in hist[1:] if c is not None]
         ranked = _rank_among(prior, float(closes[0][1]))
         if ranked:
             out["pct_rank"], out["pct_rank_n"] = ranked
+    # chronological (oldest → newest) for the window stamp
+    _stamp_window_stats(out, list(reversed(prior)))
     return out
 
 
@@ -497,6 +636,15 @@ def resolve_page(
             "delta": None,
             "pct_rank": None,
             "pct_rank_n": None,
+            # past-60d window stats (the metric's own prior series —
+            # see the module docstring; None until stamped)
+            "win_open": None,
+            "win_max": None,
+            "win_min": None,
+            "win_n": None,
+            "delta_60d_open": None,
+            "delta_60d_max": None,
+            "delta_60d_min": None,
             "source_kind": spec.get("source", {}).get("kind", "table"),
             # generated db-search recipe (table / index / conditions jsonb)
             "db_keywords": tpl.get("db_keywords") or {},

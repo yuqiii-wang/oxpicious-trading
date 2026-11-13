@@ -19,9 +19,9 @@ SELECT ld.code,
       "meaning": "The raw-gap band breach below MA120 (the Bollinger band-breach architecture on the raw gap axis); the engine picks the gap bar per (code, trend) from {3, 5, 8}%",
       "trigger": "gap120 <= the cell's gap bar"
     },
-    "ma255_gap": {
-      "meaning": "The raw-gap band breach below the YEAR window MA255 — the deepest-trend discount; the engine picks the gap bar per (code, trend) from {3, 5, 8}%",
-      "trigger": "gap255 <= the cell's gap bar"
+    "ma252_gap": {
+      "meaning": "The raw-gap band breach below the YEAR window MA252 — the deepest-trend discount; the engine picks the gap bar per (code, trend) from {3, 5, 8}%",
+      "trigger": "gap252 <= the cell's gap bar"
     }
   }
 }$json$::jsonb,

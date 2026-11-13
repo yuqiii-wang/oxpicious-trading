@@ -1,5 +1,5 @@
 /**
- * ServiceRow — one always-on stream service of the liveness table: the
+ * ServiceRow — one always-on resident process of the liveness table: the
  * heartbeat state chip (hover for the stop reason), an expandable row
  * revealing the service's watchdog restart trail (client-side filter over
  * the payload's recentRestarts window), and a ROW-CLICK log opener — the
@@ -12,7 +12,7 @@
 import { Box, Chip, Collapse, Table, TableBody, TableCell, TableHead, TableRow, Tooltip, Typography } from "@mui/material";
 import { ExpandLess, ExpandMore } from "@mui/icons-material";
 import { fmtTimeShanghai } from "@/shared/datetime";
-import type { StreamRestartEntry, StreamServiceStatus } from "@/lib/api-client/monitor";
+import type { ResidentProcessStatus, StreamRestartEntry } from "@/lib/api-client/monitor";
 import { STATE_CHIP } from "./constants";
 import { fmtAge, liveAge } from "./fmt";
 
@@ -24,7 +24,7 @@ export default function ServiceRow({
   onOpenLog,
   restarts,
 }: {
-  svc: StreamServiceStatus;
+  svc: ResidentProcessStatus;
   nowMs: number;
   open: boolean;
   /** Toggle the watchdog restart trail (the chevron). */

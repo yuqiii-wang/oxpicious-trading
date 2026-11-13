@@ -15,7 +15,7 @@
  *    breaks on dates where the selection has no data, while the x-axis
  *    keeps the full trading range for zoom/tooltip alignment
  *
- * Per-plot loading (one plot, one SQL — see api/services/options.service.ts
+ * Per-plot loading (one plot, one SQL — see api/services/market/options.service.ts
  * "Per-plot queries"): the panel fetches its own aggregates instead of
  * consuming the full-history /combined row blob:
  *   • /oi-daily          — per (date × expiry) call/put OI + spot (charts'

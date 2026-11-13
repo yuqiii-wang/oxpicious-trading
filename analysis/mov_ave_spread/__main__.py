@@ -7,9 +7,11 @@ Pipeline
      every sec_type in SEC_TYPES (active-universe pre-filter applied).
   2. Compute 9 wide gap columns + 6 derivative columns per row
      (price + ma5/20 x slope/curv — direct diffs of the series lines;
-     the 60..255-day MA derivatives are not persisted — filtered to
+     the 60..252-day MA derivatives are not persisted — filtered to
      target_dates in incremental mode).
-  3. Upsert detail.
+  3. Upsert detail (CORE: analysis.mov_ave_spreads_detail) + the
+     same-grain TRAILING companion (analysis.mov_ave_spreads_detail_
+     trailing — the 27 per-gap trailing stats; split 2026-11-08).
   4. Upsert analysis_identity.
   5. INTERNAL STEP: compute Wilder RSI (3/6/10/14/20/60d)
      from the SAME source price data already loaded in Step 1 ->
@@ -33,7 +35,7 @@ Pipeline
      same DB connection + source DataFrame.
   8. INTERNAL STEP: compute rolling OHLC detail (today_close +
      open/high/low/second-high/second-low over 7 windows:
-     20/60/120/255/500/750/1275 trading days)
+     20/60/120/252/504/756/1260 trading days)
      from the SAME source data ->
      analysis.mov_ave_spreads_roof_and_floor_lines (renamed 2026-10 from
      mov_ave_spreads_detail_ohlc)
@@ -78,7 +80,7 @@ Pipeline
      BANDS (one row per security x calendar month x period x pct_type
      1/5/10: low_val = the pct_type-th percentile of daily lows,
      high_val = the (100-pct_type)-th percentile of daily highs over
-     the trailing `period`-row window — 255/500/750/1275 = ~1/2/3/5
+     the trailing `period`-row window — 252/504/756/1260 = ~1/2/3/5
      trading years — ending at the month's last trading row) from the
      SAME source data (high/low columns) ->
      analysis.mov_ave_high_low_pct (see steps/high_low_pct.py). Trailing
@@ -167,6 +169,7 @@ from analysis.mov_ave_spread.config import (
     SEC_TYPE_IDENTITY_TABLE,
     TRADING_AMT_RATIOS_TABLE,
     TRADING_AMT_TABLE,
+    TRAILING_TABLE,
 )
 from analysis.mov_ave_spread.fetch import fetch_source_data
 from analysis.mov_ave_spread._common.steps import (
@@ -179,6 +182,7 @@ from analysis.mov_ave_spread.steps import (
     RSI_TABLE,
     MOMENTUM_TABLE,
     build_detail_frame,
+    build_trailing_frame,
     refresh_codes_summary,
     EmaStep,
     HighLowPctStep,
@@ -247,7 +251,8 @@ class MovAveSpreadAnalysis(DataAnalysis):
     def header_fields(self) -> dict:
         return {
             "detail_table": DETAIL_TABLE,
-            "pairs": f"{len(PAIRS)} (5 Price/MA + 4 MA5/MA)",
+            "trailing_table": TRAILING_TABLE,
+            "pairs": f"{len(PAIRS)} (5 Price/MA + 4 MA5/MA + 3 senior inter-MA)",
             "sec_types": ", ".join(self.resolve_sec_types()),
             "mode": (
                 f"SINGLE-CODE {self.args.code} (full recompute for this security)"
@@ -283,6 +288,42 @@ class MovAveSpreadAnalysis(DataAnalysis):
         for step in self.STEPS:
             await step.execute(run, df, sec_type=st)
 
+    async def _insert_detail_tables(
+        self, df: pd.DataFrame, st: str, *, force: bool,
+        sec_types: tuple[str, ...], label: str,
+    ) -> int:
+        """Build + COPY-insert the SAME source rows into BOTH detail
+        targets — the CORE table (9 gaps + 6 derivatives + 5 σ) and the
+        TRAILING companion (27 per-gap trailing stats; the 2026-11-08
+        split of the former wide frame). Identical date-chunking for
+        both, so the two tables keep the same coverage; each write's
+        incremental skip-filter keys on its own target table.
+
+        Returns the number of CORE detail rows inserted."""
+        n_detail = await build_and_insert_chunked_df(
+            self.conn, self.pool, df,
+            lambda sub: build_detail_frame(sub),
+            table_name=DETAIL_TABLE,
+            force=force,
+            sec_types=sec_types,
+            chunk_target_rows=100_000,
+            max_concurrent=self.pool_size,
+            label=f"detail[{label}]",
+        )
+        logger.info(f"  [{st}]   inserted {n_detail:,} detail rows")
+        n_trailing = await build_and_insert_chunked_df(
+            self.conn, self.pool, df,
+            lambda sub: build_trailing_frame(sub),
+            table_name=TRAILING_TABLE,
+            force=force,
+            sec_types=sec_types,
+            chunk_target_rows=100_000,
+            max_concurrent=self.pool_size,
+            label=f"trailing[{label}]",
+        )
+        logger.info(f"  [{st}]   inserted {n_trailing:,} trailing rows")
+        return n_detail
+
     async def _process_one_sec_type(
         self, st: str, target_dates_st, force: bool,
     ) -> int:
@@ -313,20 +354,10 @@ class MovAveSpreadAnalysis(DataAnalysis):
         # ---- Build + insert detail (chunked by date) -----------------------
         if target_dates_st is not None and len(target_dates_st) == 0:
             # Empty set means force mode — compute ALL dates (no filtering).
-            logger.info(f"\n  [{st}] Computing + inserting detail rows (FORCE mode, all dates)...")
-            detail_df = df
-            n_detail = await build_and_insert_chunked_df(
-                self.conn, self.pool, detail_df,
-                lambda sub: build_detail_frame(sub),
-                table_name=DETAIL_TABLE,
-                force=force,
-                sec_types=(st,),
-                chunk_target_rows=100_000,  # wide table — no melt, keep big chunks
-                max_concurrent=self.pool_size,
-                label=f"detail[{st}]",
-            )
-            logger.info(f"  [{st}]   inserted {n_detail:,} detail rows")
-            del detail_df
+            logger.info(f"\n  [{st}] Computing + inserting detail rows "
+                        f"(FORCE mode, all dates)...")
+            n_detail = await self._insert_detail_tables(
+                df, st, force=force, sec_types=(st,), label=st)
         elif target_dates_st is None:
             logger.info(f"\n  [{st}] Detail up-to-date; skipping detail "
                   f"computation.")
@@ -350,17 +381,8 @@ class MovAveSpreadAnalysis(DataAnalysis):
             logger.info(f"  [{st}]   building {len(detail_df):,} detail rows "
                   f"(COPY per chunk)")
 
-            n_detail = await build_and_insert_chunked_df(
-                self.conn, self.pool, detail_df,
-                lambda sub: build_detail_frame(sub),
-                table_name=DETAIL_TABLE,
-                force=force,
-                sec_types=(st,),
-                chunk_target_rows=100_000,  # wide table — no melt, keep big chunks
-                max_concurrent=self.pool_size,
-                label=f"detail[{st}]",
-            )
-            logger.info(f"  [{st}]   inserted {n_detail:,} detail rows")
+            n_detail = await self._insert_detail_tables(
+                detail_df, st, force=force, sec_types=(st,), label=st)
 
             del detail_df
 
@@ -402,6 +424,7 @@ class MovAveSpreadAnalysis(DataAnalysis):
         # only covers the skip case (RSI step finds no source data).
         for table in (
             HOLIDAY_TABLE, RSI_TABLE, RSI_RANKS_TABLE, DETAIL_TABLE,
+            TRAILING_TABLE,
             EMA_DETAIL_TABLE,
             OHLC_TABLE, OHLC_GAPS_TABLE, ESTIMATE_TABLE,
             REBOUND_TABLE, TRADING_AMT_TABLE,
@@ -428,17 +451,11 @@ class MovAveSpreadAnalysis(DataAnalysis):
             return 0
 
         # ---- Step 3: detail + all internal steps -----------------------------
-        n_detail = await build_and_insert_chunked_df(
-            self.conn, self.pool, df,
-            lambda sub: build_detail_frame(sub),
-            table_name=DETAIL_TABLE,
-            force=False,
+        n_detail = await self._insert_detail_tables(
+            df, st, force=False,
             sec_types=(),  # bypass per-sec_type skip-filter (rows pre-deleted)
-            chunk_target_rows=100_000,  # wide table — no melt, keep big chunks
-            max_concurrent=self.pool_size,
-            label=f"detail[{st}:{code}]",
+            label=f"{st}:{code}",
         )
-        logger.info(f"  [{st}]   inserted {n_detail:,} detail rows")
 
         await self._run_steps(df, st, force=False, code_filter=code)
 
@@ -476,7 +493,7 @@ class MovAveSpreadAnalysis(DataAnalysis):
                 logger.info("\n[0/4] Force mode: truncating detail "
                       "tables...")
                 await self.truncate_tables((
-                    DETAIL_TABLE, TRADING_AMT_TABLE,
+                    DETAIL_TABLE, TRAILING_TABLE, TRADING_AMT_TABLE,
                     TRADING_AMT_RATIOS_TABLE, HOLIDAY_TABLE,
                     PRICE_VS_AMT_TABLE, HIGH_LOW_PCT_TABLE,
                     OHLC_GAPS_TABLE, MOMENTUM_TABLE, ESTIMATE_TABLE,
@@ -489,7 +506,8 @@ class MovAveSpreadAnalysis(DataAnalysis):
                 logger.info(f"\n[0/4] Force mode: deleting "
                       f"{', '.join(sec_types)} rows from detail tables "
                       f"(other sec_types untouched)...")
-                for table in (DETAIL_TABLE, TRADING_AMT_TABLE,
+                for table in (DETAIL_TABLE, TRAILING_TABLE,
+                              TRADING_AMT_TABLE,
                               TRADING_AMT_RATIOS_TABLE, HOLIDAY_TABLE,
                               PRICE_VS_AMT_TABLE,
                               HIGH_LOW_PCT_TABLE,
@@ -521,8 +539,20 @@ class MovAveSpreadAnalysis(DataAnalysis):
                 td_st = await find_missing_analysis_dates(
                     conn, DETAIL_TABLE, [src_tbl], sec_type=SEC_TYPE_CODE[st],
                 )
+                # The split tables move in lockstep, but each write's
+                # coverage is its own — union the companion's missing
+                # dates so a partial pass (detail written, trailing not,
+                # or the reverse) self-heals on the next run; each
+                # insert's own per-table skip-filter drops the dates its
+                # table already has.
+                td_trailing = await find_missing_analysis_dates(
+                    conn, TRAILING_TABLE, [src_tbl],
+                    sec_type=SEC_TYPE_CODE[st],
+                )
+                td_st = td_st | td_trailing
                 target_dates_per_st[st] = td_st
-                logger.info(f"    -> {st}: detail {len(td_st)} missing dates")
+                logger.info(f"    -> {st}: detail+trailing "
+                            f"{len(td_st)} missing dates")
                 # Each gate step reports whether IT has work for this
                 # sec_type (missing dates / repair dates / pair-keyed
                 # bands / wholesale empty checks — per-step granularity

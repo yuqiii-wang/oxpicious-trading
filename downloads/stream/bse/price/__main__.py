@@ -88,7 +88,7 @@ from downloads._common.exchanges.bjs import (
     fetch_bse_index_realtime,
 )
 from _common.db_commons import bulk_upsert, get_db_connection
-from _common.service_heartbeat import register_service
+from _common.service_heartbeat import register_pipeline
 
 from ._model import (
     BseStream,
@@ -342,10 +342,10 @@ class BseStreamDaemon(DownloadJob):
     heartbeat ONLY for the long-running mode (also --index-only; --once
     exits before a beat would matter — a beat from a dying one-shot would
     make the watchdog think the real service is alive). autoregister derives
-    the same "downloads.stream.bse.price" name (register_service itself is
+    the same "downloads.stream.bse.price" name (register_pipeline itself is
     idempotent per process), but --once runs would GAIN a registration they
     never had, so the base hook is skipped and the former conditional
-    ``register_service`` call is kept verbatim. No single-instance lock
+    ``register_pipeline`` call is kept verbatim. No single-instance lock
     existed before — ``service`` stays "".
     """
 
@@ -379,7 +379,7 @@ class BseStreamDaemon(DownloadJob):
                                  "pass where the stock flow is already complete.")
 
     def execute(self, argv: Optional[list] = None) -> None:
-        """parse → conditional register_service (verbatim former main()) → run()."""
+        """parse → conditional register_pipeline (verbatim former main()) → run()."""
         if self.args is None:
             self.parse_argv(argv)
         else:
@@ -387,7 +387,7 @@ class BseStreamDaemon(DownloadJob):
         # Liveness heartbeat for database/stream_watchdog.py — long-running
         # mode only (also --index-only); --once exits before a beat would matter.
         if not self.args.once:
-            register_service(SERVICE)
+            register_pipeline(SERVICE)
         self.run()
 
     # -----------------------------------------------------------------------

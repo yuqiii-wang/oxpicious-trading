@@ -20,7 +20,7 @@
  * (benchmark MA rebased to the industry's MA level at each window start,
  * then SUBTRACTED — the common market factor removed; prices recomputed
  * starting at 100) and the pairwise Pearson correlations are charted per
- * 20/60/255-trading-day window next to the RAW overall correlation:
+ * 20/60/252-trading-day window next to the RAW overall correlation:
  *
  *   Overall   — raw pairwise MA-curve correlation (benchmark still in).
  *   Benchmark Offset — correlation after the benchmark is subtracted from

@@ -46,7 +46,7 @@ OHLC_ANALYSIS_NAME = "mov_ave_spread_ohlc"
 # of W with a 20-trading-day floor for W >= 60. SEMANTICS CHANGE — rows
 # written by the 10% rule are not detectable by find_ohlc_repair_dates
 # and must be recomputed via a --force rebuild of the OHLC step.
-OHLC_WINDOWS = (20, 60, 120, 255, 500, 750, 1275)
+OHLC_WINDOWS = (20, 60, 120, 252, 504, 756, 1260)
 
 # 2nd-anchor time-distance gap (1st -> 2nd extreme), in trading days:
 # gap = ceil(0.20 * W), with a 20-trading-day floor for windows
@@ -152,7 +152,7 @@ OHLC_DESCRIPTION = (
     "2026-10 from mov_ave_spread_ohlc (table mov_ave_spreads_detail_ohlc). "
     "LONG format: one row "
     "per (security, business date, period) with period ∈ {20, 60, 120, "
-    "255, 500, 750, 1275} trading days. Stores today_close plus the "
+    "252, 504, 756, 1260} trading days. Stores today_close plus the "
     "rolling-window anchors for that period. The window "
     "[date-period+1, date] is cut in HALF (h = L // 2 in trading-day "
     "positions; for odd L the 2nd half gets the extra day). "

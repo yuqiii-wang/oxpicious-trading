@@ -9,7 +9,7 @@ BOUNDED loop over the plain ``chat_complete`` callable that dispatches
 ``BuiltinTool`` handlers (the same schema + handler pairs the
 ``ToolKit.builtin_tools()`` contract yields, so a kit mounts with zero
 adaptation and its DB description overrides ride along exactly as the
-delegation hooks stamp them on forks).
+delegation hooks stamp them on spawns).
 
 Bounds: ``SUPERVISOR_MAX_TOOL_ROUNDS`` tool rounds total — when the
 model still asks for tools past the bound, the remaining calls are
@@ -51,7 +51,7 @@ class BoundedToolLoop:
     :meth:`run` drives one conversation through them. The same schema +
     handler pairs the ``ToolKit.builtin_tools()`` contract yields, so a
     kit mounts with zero adaptation and its DB description overrides
-    ride along exactly as the delegation hooks stamp them on forks."""
+    ride along exactly as the delegation hooks stamp them on spawns."""
 
     def __init__(
         self,

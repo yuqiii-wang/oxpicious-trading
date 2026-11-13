@@ -10,13 +10,18 @@ runner.py; every class/function body moved byte-identical):
     captures + the shared sandbox cell + the DYNAMIC prompt-loading
     rung (catalog rows + the raw-instruction cache);
   * ``step_lane.py``   — the ``StepLane`` mixin: the looping step lane
-    (inline hops, delegated forks, the parallel wave);
+    (inline hops, delegated spawns, the parallel wave);
   * ``nodes.py``       — the ``TailNodes`` mixin: compact / degraded
     execute / the FINAL OUTPUT NODE / finalize / routers / ``build``;
   * ``execution.py``   — the assembled
     ``class ExecutionGraphBuilder(...)`` + ``build_execution_graph``;
   * ``plan_builder.py``— ``PlanGraphBuilder`` + ``build_plan_graph``
-    (the chain's first graph).
+    (the chain's first graph);
+  * ``review_lane.py`` — the RESULT graph's builder (2026-11-07):
+    ``ResultGraphBuilder`` + ``build_result_graph`` — ONE REAL node per
+    saved type-result template seat, the reviews as a true parallel
+    wave into the ``review_join`` barrier (the findings merge + the
+    supervisor repair window), then the shared finalize/output tail.
 """
 from __future__ import annotations
 
@@ -30,20 +35,27 @@ from llm_agents.deep_agents.supervisor import (  # noqa: F401 (tests)
 )
 
 from .state import (
-    CUSTOM_OUTPUT_SPEC, RESULT_OUTPUT_SPEC, GraphOutputSpec, ThreadRunResult,
-    ThreadState, _RunContext,
+    CUSTOM_OUTPUT_SPEC, RESULT_OUTPUT_SPEC, GraphOutputSpec, ResultGraphState,
+    ThreadRunResult, ThreadState, _RunContext,
 )
 from .base import ExecutionGraphBuilderBase
 from .step_lane import StepLane
 from .nodes import TailNodes
 from .execution import ExecutionGraphBuilder, build_execution_graph
 from .plan_builder import PlanGraphBuilder, build_plan_graph
+from .review_lane import (
+    REVIEW_JOIN_MAX_PASSES, ResultGraphBuilder, ReviewLane,
+    build_result_graph,
+)
 
 __all__ = [
     "CUSTOM_OUTPUT_SPEC", "RESULT_OUTPUT_SPEC", "GraphOutputSpec",
     "ExecutionGraphBuilder", "ExecutionGraphBuilderBase", "PlanGraphBuilder",
+    "ResultGraphBuilder", "ResultGraphState", "ReviewLane",
+    "REVIEW_JOIN_MAX_PASSES",
     "StepLane", "TailNodes", "ThreadRunResult", "ThreadState",
-    "build_execution_graph", "build_plan_graph", "settle_thread",
+    "build_execution_graph", "build_plan_graph", "build_result_graph",
+    "settle_thread",
 ]
 
 

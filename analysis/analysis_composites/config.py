@@ -16,7 +16,7 @@ ANALYSIS_NAME_OFFSETS = "industry_corr_benchmark_offsets"
 ANALYSIS_DESCRIPTION_OFFSETS = (
     "Opposite industry correlations by benchmark offset: pairwise Pearson "
     "correlation of two industries' MA curves of mean_close "
-    "(stats.industry_basic_stats) audited over 20/60/255 trading-day "
+    "(stats.industry_basic_stats) audited over 20/60/252 trading-day "
     "windows, RAW (overall_corr_ma{W}_{W}d) and after the common "
     "benchmark move is removed (offset_sub_corr_*): the offset curves are "
     "the CONSOLIDATED stats.cross_stats primitive "
@@ -55,7 +55,7 @@ POOL_SIZES = [POOL_SIZE_CODE[p] for p in ("small", "mid", "large", "all")]
 
 # Window lengths in trading days: *_ma{W}_{W}d audits the W-day window
 # starting on start_date over the W-day MA curves.
-WINDOWS = [20, 60, 255]
+WINDOWS = [20, 60, 252]
 
 # Stride in trading days between consecutive window starts on the pool
 # calendar grid (stored as the `interval` column, default 20).

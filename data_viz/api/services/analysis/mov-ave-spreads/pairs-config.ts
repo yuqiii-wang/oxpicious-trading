@@ -19,7 +19,7 @@ import type { MovAveSpreadPairKind } from "@shared/types";
 //  selects trading_amt_maW. There is NO pre-computed gap_column for amt
 //  pairs — the gap (trading_amount vs trading_amt_maW) is computed
 //  client-side at response-build time (simple division). The 5 amt pairs
-//  mirror the Price/MA row (5 columns: Amt/MA5 … Amt/MA255) and are
+//  mirror the Price/MA row (5 columns: Amt/MA5 … Amt/MA252) and are
 //  shown as a separate row of chips beneath the 9 price pairs when the
 //  trading-amt toggle is ON.
 // ----------------------------------------------------------------------------
@@ -30,14 +30,14 @@ export const PAIR_ORDER: PairSpec[] = [
   [0, 20,  "price_vs_ma20"],
   [0, 60,  "price_vs_ma60"],
   [0, 120, "price_vs_ma120"],
-  [0, 255, "price_vs_ma255"],
+  [0, 252, "price_vs_ma252"],
   [5, 20,  "ma5_vs_ma20"],
   [5, 60,  "ma5_vs_ma60"],
   [5, 120, "ma5_vs_ma120"],
-  [5, 255, "ma5_vs_ma255"],
+  [5, 252, "ma5_vs_ma252"],
 ];
 
-/** 5 trading-amount pairs (Amt/MA5 … Amt/MA255). ma_short = -1 is the
+/** 5 trading-amount pairs (Amt/MA5 … Amt/MA252). ma_short = -1 is the
  *  trading-amount sentinel. gap_column is "" — amt-pair gap_value is
  *  computed at response-build time, not read from a detail column. */
 export const AMT_PAIR_ORDER: PairSpec[] = [
@@ -45,7 +45,7 @@ export const AMT_PAIR_ORDER: PairSpec[] = [
   [-1, 20,  ""],
   [-1, 60,  ""],
   [-1, 120, ""],
-  [-1, 255, ""],
+  [-1, 252, ""],
 ];
 
 /** 6 TYPICAL Exponential MA pairs (EMA). gap_column is the EMA detail table
@@ -93,19 +93,19 @@ export interface DbChartRow {
   ma20: number | null;
   ma60: number | null;
   ma120: number | null;
-  ma255: number | null;
+  ma252: number | null;
   // 9 gap columns from the detail row.
   price_vs_ma5: number | null;
   price_vs_ma20: number | null;
   price_vs_ma60: number | null;
   price_vs_ma120: number | null;
-  price_vs_ma255: number | null;
+  price_vs_ma252: number | null;
   ma5_vs_ma20: number | null;
   ma5_vs_ma60: number | null;
   ma5_vs_ma120: number | null;
-  ma5_vs_ma255: number | null;
+  ma5_vs_ma252: number | null;
   // Derivative columns: price (the 1-day leg) + the persisted MA windows
-  // 5/20 — direct diffs of the series lines (the 60/120/255-day
+  // 5/20 — direct diffs of the series lines (the 60/120/252-day
   // derivatives were dropped across 2026-09).
   price_slope: number | null;
   ma5_slope: number | null;
@@ -118,11 +118,16 @@ export interface DbChartRow {
   std_20days: number | null;
   std_60days: number | null;
   std_120days: number | null;
-  std_255days: number | null;
+  std_252days: number | null;
   // 3 TYPICAL EMA value columns from stats.{sec_type}_tech_stats (alias `t`).
   ema6: number | null;
   ema12: number | null;
   ema26: number | null;
+  // The MATERIALIZED MACD(12,26,9) block from the same tech_stats table
+  // (alias `t`; shared-block tooltip only — NULL for industry composites).
+  macd_line: number | null;
+  macd_signal: number | null;
+  macd_hist: number | null;
   // 6 EMA gap columns from analysis.mov_ave_spreads_detail_ema (alias `ema`).
   price_vs_ema6: number | null;
   price_vs_ema12: number | null;
@@ -163,15 +168,15 @@ export interface DbChartRow {
   trading_amt_ma20_slope: number | null;
   trading_amt_ma60_slope: number | null;
   trading_amt_ma120_slope: number | null;
-  trading_amt_ma255_slope: number | null;
+  trading_amt_ma252_slope: number | null;
   trading_amt_market_share_ma5: number | null;
   trading_amt_market_share_ma20: number | null;
   trading_amt_market_share_ma60: number | null;
   trading_amt_market_share_ma120: number | null;
-  trading_amt_market_share_ma255: number | null;
+  trading_amt_market_share_ma252: number | null;
   // Rolling OHLC of the pair-matching windows (open/high/low per window)
   // from the OHLC pivot (alias `sh`) — shared tooltip metrics. Only the 4
-  // windows a pair's ma_long can take (20/60/120/255); the full 7-window
+  // windows a pair's ma_long can take (20/60/120/252); the full 7-window
   // extrema (anchors + line slopes) load on demand via the "ohlc" extras group.
   sh_open_20d: number | null;
   sh_high_20d: number | null;
@@ -182,9 +187,9 @@ export interface DbChartRow {
   sh_open_120d: number | null;
   sh_high_120d: number | null;
   sh_low_120d: number | null;
-  sh_open_255d: number | null;
-  sh_high_255d: number | null;
-  sh_low_255d: number | null;
+  sh_open_252d: number | null;
+  sh_high_252d: number | null;
+  sh_low_252d: number | null;
   [column: string]: unknown;
 }
 
@@ -195,14 +200,14 @@ export function pickLong(r: DbChartRow, maLong: number): number | null {
     case 20:  return toNum(r.ma20);
     case 60:  return toNum(r.ma60);
     case 120: return toNum(r.ma120);
-    case 255: return toNum(r.ma255);
+    case 252: return toNum(r.ma252);
     default:  return null;
   }
 }
 
 /** Pick the slope (1st derivative) of MA{window} from a chart row — a
  *  direct diff of the MA line (MA{W}[t] - MA{W}[t-1]). Only the
- *  persisted windows 5/20 return a value; 60/120/255 return null (their
+ *  persisted windows 5/20 return a value; 60/120/252 return null (their
  *  derivative columns were dropped across 2026-09). */
 export function pickSlope(r: DbChartRow, window: number): number | null {
   switch (window) {
@@ -232,7 +237,7 @@ export function pickStd(r: DbChartRow, window: number): number | null {
     case 20:  return toNum(r.std_20days);
     case 60:  return toNum(r.std_60days);
     case 120: return toNum(r.std_120days);
-    case 255: return toNum(r.std_255days);
+    case 252: return toNum(r.std_252days);
     default:  return null;
   }
 }

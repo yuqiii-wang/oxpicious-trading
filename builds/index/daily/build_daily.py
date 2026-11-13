@@ -9,8 +9,8 @@ SZSE / SSE / CNINDEX supplements (see loaders.py), then:
      appended (priority: CNINDEX > SSE trend > SZSE > 1m > history).
   3. Backfills PE from CSIndex rows that lost the dedup (e.g. SSE trend won
      OHLCV for 000xxx codes but its PE is NULL).
-  4. Computes moving averages (ma5, ma20, ma60, ma120, ma255) and exponential
-     moving averages (ema6, ema12, ema20, ema26, ema60, ema120, ema255 — the
+  4. Computes moving averages (ma5, ma20, ma60, ma120, ma252) and exponential
+     moving averages (ema6, ema12, ema20, ema26, ema60, ema120, ema252 — the
      classic MACD spans 12/26 included) over the
      FULL per-code history (must use ALL rows, not just missing, for correctness).
   5. Filters to rows that are NEW vs the DB: date > the code's latest DB
@@ -58,7 +58,7 @@ from _common.importance import order_codes_or_sorted
 
 from builds._commons.safe_parse import safe_to_datetime, safe_to_numeric
 from _common.df_utils import (
-    compute_moving_averages, compute_emas, safe_columns,
+    compute_moving_averages, compute_emas, compute_macd, safe_columns,
     compute_trading_amt_per_move,
 )
 
@@ -78,9 +78,9 @@ logger = logging.getLogger(__name__)
 # B6 tail-read window: the CSIndex history archive is the full corpus
 # (per-code files), yet only the most recent dates are ever missing from
 # the DB. Trailing context requirements:
-#   * ma255 needs the 255 rows before each new row (probe: tail == full,
+#   * ma252 needs the 252 rows before each new row (probe: tail == full,
 #     Δ=0 on all sampled codes);
-#   * ema255 (adjust=False, alpha=2/256) warm-start residual after N rows
+#   * ema252 (adjust=False, alpha=2/256) warm-start residual after N rows
 #     is e^(-2·N/256): 800 rows → 0.19% (abs Δ up to 0.56 index points on
 #     the probe), 1200 rows → 0.0085% (Δ ≈ 0.02 — below any analytical
 #     significance). 1200 trailing rows satisfy both, and short files are
@@ -600,7 +600,7 @@ class DailyFrameBuilder:
             combined,
             group_key="code",
             value_col="close",
-            windows=[5, 20, 60, 120, 255],
+            windows=[5, 20, 60, 120, 252],
         )
         # Compute EMAs over full per-code history (same correctness constraint).
         # Stays on pandas: cuDF lacks grouped-ewm support (see
@@ -609,8 +609,12 @@ class DailyFrameBuilder:
             combined,
             group_key="code",
             value_col="close",
-            spans=[6, 12, 20, 26, 60, 120, 255],
+            spans=[6, 9, 12, 20, 26, 60, 120, 252],
         )
+        # MACD block from the EMAs just computed (macd_line = ema12 - ema26;
+        # macd_signal = 9-span EMA of the macd_line series; macd_hist =
+        # line - signal) — stats.index_tech_stats.macd_* columns.
+        compute_macd(combined, group_key="code")
 
         # trading_amt_per_pct_change = trading_amount / (close - open), signed.
         # Row-wise — no lookback state. `open` always exists here

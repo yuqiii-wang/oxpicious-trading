@@ -1,7 +1,7 @@
 /**
  * AuditTable — the shared ExpandedTable for the Opposite Industry
  * Correlations page's latest-window audit: layered group headers Overall /
- * Benchmark Offset over the 20d/60d/255d sub-columns, per-column header
+ * Benchmark Offset over the 20d/60d/252d sub-columns, per-column header
  * filters, zebra rows. (The DB's opposite_score_* = (1 − offset) / 2 is not
  * shown — a pure rescale of the Benchmark Offset columns; most-opposite
  * rows sort first.)

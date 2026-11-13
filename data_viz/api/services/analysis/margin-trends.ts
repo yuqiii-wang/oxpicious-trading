@@ -41,7 +41,7 @@ import { formatDate, toNum } from "../../lib/db.js";
 import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
 import { buildStrategyThemesFromRows } from "../_shared.js";
-import { labelDecodeSql } from "../label-codes.js";
+import { labelDecodeSql } from "../infra/label-codes.js";
 import type {
   MarginIndustrySeriesResponse,
   MarginTrendsShadeResponse,

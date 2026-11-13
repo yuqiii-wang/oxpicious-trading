@@ -1,6 +1,6 @@
 """builds.stock.tech_stats.runner — conn-scoped stock tech-stats runner.
 
-Computes MA5/20/60/120/255 + MA5 ratio + EMA6/12/20/26/60/120/255 from
+Computes MA5/20/60/120/252 + MA5 ratio + EMA6/12/20/26/60/120/252 from
 stats.stock_basic_stats.close, plus trading_amt_per_pct_change
 (trading_amount / (close - open), signed — trading_amount LEFT JOINed
 from stats.stock_liquidity_margin), storing results in
@@ -51,7 +51,7 @@ from _common.df_utils._activate import activate
 activate()
 
 from _common.df_utils import (
-    compute_moving_averages, compute_emas, epoch_col_to_dt64,
+    compute_moving_averages, compute_emas, compute_macd, epoch_col_to_dt64,
     compute_trading_amt_per_move,
 )
 import pandas as pd
@@ -64,9 +64,9 @@ SOURCE_TABLE = "stats.stock_basic_stats"
 DEFAULT_CHUNK_CODES = 500
 
 # Lookback: enough calendar days to cover max MA/EMA period × convergence
-# factor. Max period = 255; EMA needs ~3× span for stable convergence.
-# 255 × 3 = 765 trading days → ~1115 calendar days.
-_MAX_INDICATOR_PERIOD = 255
+# factor. Max period = 252; EMA needs ~3× span for stable convergence.
+# 252 × 3 = 756 trading days → ~1095 calendar days.
+_MAX_INDICATOR_PERIOD = 252
 _LOOKBACK_TRADING_DAYS = _MAX_INDICATOR_PERIOD * 3  # 765
 _LOOKBACK_CALENDAR_DAYS = round(_LOOKBACK_TRADING_DAYS * 365 / 250)  # 1115
 
@@ -302,8 +302,9 @@ class TechStatsRunner:
             # Build rows dict — vectorized: column-wise NaN→None conversion,
             # then single to_dict(records) call.
             _numeric_cols = [
-                "ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
-                "ema6", "ema12", "ema20", "ema26", "ema60", "ema120", "ema255",
+                "ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma252",
+                "ema6", "ema9", "ema12", "ema20", "ema26", "ema60", "ema120", "ema252",
+                "macd_line", "macd_signal", "macd_hist",
                 "trading_amt_per_pct_change",
             ]
             _out_cols = ["date", "code"] + _numeric_cols
@@ -351,12 +352,16 @@ class TechStatsRunner:
 def _compute_tech_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = compute_moving_averages(
         df, group_key="code", value_col="close",
-        windows=[5, 20, 60, 120, 255],
+        windows=[5, 20, 60, 120, 252],
     )
     df = compute_emas(
         df, group_key="code", value_col="close",
-        spans=[6, 12, 20, 26, 60, 120, 255],
+        spans=[6, 9, 12, 20, 26, 60, 120, 252],
     )
+    # MACD block from the EMAs just computed (macd_line = ema12 - ema26;
+    # macd_signal = 9-span EMA of the macd_line series; macd_hist =
+    # line - signal) — stats.stock_tech_stats.macd_* columns.
+    df = compute_macd(df, group_key="code")
     # trading_amt_per_pct_change = trading_amount / (close - open), signed.
     # Row-wise — no lookback state, safe on the windowed incremental load.
     compute_trading_amt_per_move(df)

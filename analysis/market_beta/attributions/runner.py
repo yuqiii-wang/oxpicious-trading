@@ -106,7 +106,7 @@ async def run_attributions(
     INCREMENTAL LOOKBACK CAP (B-A5, implemented 2026-08-30): the merged
     INSERT's stock/benchmark history scans read only LOOKBACK_TRADING_DAYS
     (510) broad-benchmark trading days before the earliest target date
-    (500 window rows + LAG row + grid margin, shifted back by
+    (504 window rows + LAG row + grid margin, shifted back by
     LOOKBACK_EXTRA_CALENDAR_DAYS for per-stock LAG suspension slack)
     instead of full history since 2020. The chain is additionally pruned
     to the (industry, benchmark) pairs that actually occur at the target

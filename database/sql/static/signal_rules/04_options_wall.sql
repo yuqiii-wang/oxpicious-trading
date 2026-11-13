@@ -5,7 +5,7 @@ SELECT ld.code,
   "sub_signals": {
     "ow_put_025pct": {
       "meaning": "The VRP-gated put-wall breach — the capitulation-rebound trade",
-      "trigger": "close <= put_wall_low x (1 - width) AND vrp_ratio >= its trailing-255d 60th-percentile bar (shifted); width is the single 0.10% (the 2026-10-19 grid collapse)"
+      "trigger": "close <= put_wall_low x (1 - width) AND vrp_ratio >= its trailing-252d 60th-percentile bar (shifted); width is the single 0.10% (the 2026-10-19 grid collapse)"
     },
     "ow_put_025pct_rej": {
       "meaning": "The VRP-FAIL twin — the same breach with cheap implied vol (the falling knife); observational only",

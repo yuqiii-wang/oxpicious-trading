@@ -1,19 +1,20 @@
 /**
- * GET /stream — always-on stream heartbeat/watchdog status + the batch
- * pipeline process rows (last-run state + never-run registrations).
- * Full route docs: see index.ts.
+ * GET /stream — the resident (always-on) processes' heartbeat/watchdog
+ * status + the batch pipeline process rows (last-run state + never-run
+ * registrations). Full route docs: see index.ts.
  */
 
 import { Router, type Request, type Response } from "express";
+import { wrapAsync } from "../../lib/http.js";
 import {
   getReadPool,
-} from "../../services/db.service.js";
+} from "../../services/infra/db.service.js";
 import { renderSqlView } from "@api/lib/sql-views";
 import {
   maxParallelFor,
   readServiceConfig,
-  serviceConfigFor,
-} from "../../services/static-config.service.js";
+  serviceConfigLooseFor,
+} from "../../services/infra/static-config.service.js";
 import { FREQ_PERIOD_MS, SERVICE_CATALOG, STALE_AFTER_S, WATCHDOG_SERVICE } from "./_shared.js";
 
 const router = Router();
@@ -44,7 +45,11 @@ interface RestartRow {
   sub_scope: string | null;
 }
 
-export interface StreamServiceStatus {
+/** One resident process row (SERVICE_CATALOG — the always-on services
+ *  the stream watchdog supervises): liveness + the watchdog restart
+ *  trail. The category was called "stream services" back when the
+ *  resident set was only the market-data pollers. */
+export interface ResidentProcessStatus {
   service: string;
   scope: string;
   subScope: string | null;
@@ -63,7 +68,7 @@ export interface StreamServiceStatus {
   maxParallel: number | null;
 }
 
-/** Non-stream pipeline process (batch builds / downloads / analyses /
+/** Non-resident pipeline process (batch builds / downloads / analyses /
  * llm / live runs): the heartbeat table's LAST-RUN state. "stale" means
  * the beat went quiet with no stop record — died without a record until
  * the watchdog's orphan pass marks it stopped. "never" marks a registered
@@ -101,8 +106,11 @@ export interface MonitorStreamResponse {
   success: true;
   generatedAt: string;
   staleAfterS: number;
-  watchdog: StreamServiceStatus | null;
-  services: StreamServiceStatus[];
+  watchdog: ResidentProcessStatus | null;
+  /** The resident processes (SERVICE_CATALOG): always-on pollers,
+   *  db_health, the llm_agents daemons — everything the stream watchdog
+   *  supervises, minus the watchdog itself. */
+  services: ResidentProcessStatus[];
   processes: ProcessStatus[];
   recentRestarts: Array<{
     service: string;
@@ -120,7 +128,7 @@ function toStatus(
   expected: { service: string; scope: string; subScope: string | null },
   beat: BeatRow | undefined,
   restarts24h: Map<string, number>,
-): StreamServiceStatus {
+): ResidentProcessStatus {
   if (!beat) {
     return {
       service: expected.service,
@@ -139,7 +147,7 @@ function toStatus(
       maxParallel: maxParallelFor(expected.service), // static JSON config
     };
   }
-  const status: StreamServiceStatus["status"] =
+  const status: ResidentProcessStatus["status"] =
     beat.stop_reason != null
       ? "stopped"
       : beat.beat_age_s <= STALE_AFTER_S
@@ -174,135 +182,132 @@ function freqPeriodMsFor(freq: string): number | null {
 }
 
 /** GET /api/monitor/stream */
-router.get("/stream", async (_req: Request, res: Response) => {
-  try {
-    const pool = getReadPool();
-    const beatsView = renderSqlView("data_viz/api/routes/monitor/stream_heartbeats");
-    const restartsView = renderSqlView(
-      "data_viz/api/routes/monitor/stream_watchdog_restarts",
-    );
-    const counts24hView = renderSqlView(
-      "data_viz/api/routes/monitor/stream_restarts_24h",
-    );
-    const beats = await pool.query<BeatRow>(beatsView.sql, beatsView.params);
-    // The watchdog restart trail, merged into service_audit: the dead
-    // life's row closed with a 'watchdog restart: …' exit_reason.
-    const restarts = await pool.query<RestartRow>(
-      restartsView.sql,
-      restartsView.params,
-    );
-    const counts = await pool.query<{ service: string; restarts_24h: string }>(
-      counts24hView.sql,
-      counts24hView.params,
-    );
-    const restarts24h = new Map(
-      counts.rows.map((r) => [r.service, Number(r.restarts_24h)]),
-    );
-    const byService = new Map(beats.rows.map((r) => [r.service, r]));
+router.get("/stream", wrapAsync(async (_req: Request, res: Response) => {
+  const pool = getReadPool();
+  const beatsView = renderSqlView("data_viz/api/routes/monitor/stream_heartbeats");
+  const restartsView = renderSqlView(
+    "data_viz/api/routes/monitor/stream_watchdog_restarts",
+  );
+  const counts24hView = renderSqlView(
+    "data_viz/api/routes/monitor/stream_restarts_24h",
+  );
+  const beats = await pool.query<BeatRow>(beatsView.sql, beatsView.params);
+  // The watchdog restart trail, merged into service_audit: the dead
+  // life's row closed with a 'watchdog restart: …' exit_reason.
+  const restarts = await pool.query<RestartRow>(
+    restartsView.sql,
+    restartsView.params,
+  );
+  const counts = await pool.query<{ service: string; restarts_24h: string }>(
+    counts24hView.sql,
+    counts24hView.params,
+  );
+  const restarts24h = new Map(
+    counts.rows.map((r) => [r.service, Number(r.restarts_24h)]),
+  );
+  const byService = new Map(beats.rows.map((r) => [r.service, r]));
 
-    const statuses = SERVICE_CATALOG.map((c) =>
-      toStatus(c, byService.get(c.service), restarts24h),
-    );
+  const statuses = SERVICE_CATALOG.map((c) =>
+    toStatus(c, byService.get(c.service), restarts24h),
+  );
 
-    // Batch pipelines: heartbeat rows outside the always-on catalog —
-    // their LAST-RUN state (run history is /stream/runs on demand).
-    const catalog = new Set(SERVICE_CATALOG.map((c) => c.service));
-    const processes: ProcessStatus[] = beats.rows
-      .filter((r) => !catalog.has(r.service))
-      .map((r): ProcessStatus => {
-        const status: ProcessStatus["status"] =
-          r.stop_reason != null
-            ? "stopped"
-            : r.beat_age_s <= STALE_AFTER_S
-              ? "running"
-              : "stale";
-        // Supposed-run cadence from the service_config/ static tree (the
-        // default.json fallback supplies on_demand for unlisted services).
-        const cfg = serviceConfigFor(r.service);
-        return {
-          service: r.service,
-          scope: r.scope || "unknown",
-          subScope: r.sub_scope,
-          pid: r.pid,
-          startedAt: r.started_at.toISOString(),
-          beatAt: r.beat_at.toISOString(),
-          beatAgeS: r.beat_age_s,
-          status,
-          stopReason: r.stop_reason,
-          isNormalExit: r.is_normal_exit,
-          stoppedAt: r.stopped_at ? r.stopped_at.toISOString() : null,
-          liveParallel: r.live_parallel,
-          maxParallel: maxParallelFor(r.service), // static JSON config
-          freq: cfg.freq,
-          freqPeriodMs: freqPeriodMsFor(cfg.freq),
-          schedule: cfg.schedule,
-          notes: cfg.notes,
-          sourceRef: cfg.source_ref,
-        };
-      });
-    // Registered services that NEVER ran: config-tree entries without any
-    // heartbeat row (and outside the always-on catalog) — "never" rows so
-    // the full-history catalog covers the whole registration, not just
-    // what has beaten.
-    const beatServices = new Set(beats.rows.map((r) => r.service));
-    for (const c of readServiceConfig()) {
-      if (c.service === "default" || catalog.has(c.service) || beatServices.has(c.service)) {
-        continue;
-      }
-      processes.push({
-        service: c.service,
-        // No registration → no recorded scope; the dotted name's head is
-        // the natural grouping the scope filter already uses.
-        scope: c.service.split(".")[0] ?? "unknown",
-        subScope: null,
-        pid: null,
-        startedAt: null,
-        beatAt: null,
-        beatAgeS: null,
-        status: "never",
-        stopReason: null,
-        isNormalExit: null,
-        stoppedAt: null,
-        liveParallel: 0,
-        maxParallel: c.max_parallel,
-        freq: c.freq,
-        freqPeriodMs: freqPeriodMsFor(c.freq),
-        schedule: c.schedule,
-        notes: c.notes,
-        sourceRef: c.source_ref,
-      });
-    }
-    processes.sort((a, b) => {
-      if (a.status !== b.status) {
-        const rank = (s: ProcessStatus["status"]) =>
-          s === "running" ? 0 : s === "never" ? 2 : 1;
-        return rank(a.status) - rank(b.status);
-      }
-      return a.service.localeCompare(b.service);
-    });
-
-    const body: MonitorStreamResponse = {
-      success: true,
-      generatedAt: new Date().toISOString(),
-      staleAfterS: STALE_AFTER_S,
-      watchdog:
-        statuses.find((s) => s.service === WATCHDOG_SERVICE) ?? null,
-      services: statuses.filter((s) => s.service !== WATCHDOG_SERVICE),
-      processes,
-      recentRestarts: restarts.rows.map((r) => ({
+  // Batch pipelines: heartbeat rows outside the resident catalog —
+  // their LAST-RUN state (run history is /stream/runs on demand).
+  const catalog = new Set(SERVICE_CATALOG.map((c) => c.service));
+  const processes: ProcessStatus[] = beats.rows
+    .filter((r) => !catalog.has(r.service))
+    .map((r): ProcessStatus => {
+      const status: ProcessStatus["status"] =
+        r.stop_reason != null
+          ? "stopped"
+          : r.beat_age_s <= STALE_AFTER_S
+            ? "running"
+            : "stale";
+      // Supposed-run cadence from the service_config/ static tree (the
+      // default.json fallback supplies on_demand for unlisted services).
+      // Loose lookup: the service name comes from the heartbeat table —
+      // a row with an unusable name must degrade to defaults, not 500.
+      const cfg = serviceConfigLooseFor(r.service);
+      return {
         service: r.service,
-        scope: r.scope,
+        scope: r.scope || "unknown",
         subScope: r.sub_scope,
-        restartedAt: r.ended_at.toISOString(),
         pid: r.pid,
-        reason: r.exit_reason,
-      })),
-    };
-    res.json(body);
-  } catch (err) {
-    console.error("[monitor/stream] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
+        startedAt: r.started_at.toISOString(),
+        beatAt: r.beat_at.toISOString(),
+        beatAgeS: r.beat_age_s,
+        status,
+        stopReason: r.stop_reason,
+        isNormalExit: r.is_normal_exit,
+        stoppedAt: r.stopped_at ? r.stopped_at.toISOString() : null,
+        liveParallel: r.live_parallel,
+        maxParallel: cfg.max_parallel, // static JSON config
+        freq: cfg.freq,
+        freqPeriodMs: freqPeriodMsFor(cfg.freq),
+        schedule: cfg.schedule,
+        notes: cfg.notes,
+        sourceRef: cfg.source_ref,
+      };
+    });
+  // Registered services that NEVER ran: config-tree entries without any
+  // heartbeat row (and outside the resident catalog) — "never" rows so
+  // the full-history catalog covers the whole registration, not just
+  // what has beaten.
+  const beatServices = new Set(beats.rows.map((r) => r.service));
+  for (const c of readServiceConfig()) {
+    if (c.service === "default" || catalog.has(c.service) || beatServices.has(c.service)) {
+      continue;
+    }
+    processes.push({
+      service: c.service,
+      // No registration → no recorded scope; the dotted name's head is
+      // the natural grouping the scope filter already uses.
+      scope: c.service.split(".")[0] ?? "unknown",
+      subScope: null,
+      pid: null,
+      startedAt: null,
+      beatAt: null,
+      beatAgeS: null,
+      status: "never",
+      stopReason: null,
+      isNormalExit: null,
+      stoppedAt: null,
+      liveParallel: 0,
+      maxParallel: c.max_parallel,
+      freq: c.freq,
+      freqPeriodMs: freqPeriodMsFor(c.freq),
+      schedule: c.schedule,
+      notes: c.notes,
+      sourceRef: c.source_ref,
+    });
   }
-});
+  processes.sort((a, b) => {
+    if (a.status !== b.status) {
+      const rank = (s: ProcessStatus["status"]) =>
+        s === "running" ? 0 : s === "never" ? 2 : 1;
+      return rank(a.status) - rank(b.status);
+    }
+    return a.service.localeCompare(b.service);
+  });
+
+  const body: MonitorStreamResponse = {
+    success: true,
+    generatedAt: new Date().toISOString(),
+    staleAfterS: STALE_AFTER_S,
+    watchdog:
+      statuses.find((s) => s.service === WATCHDOG_SERVICE) ?? null,
+    services: statuses.filter((s) => s.service !== WATCHDOG_SERVICE),
+    processes,
+    recentRestarts: restarts.rows.map((r) => ({
+      service: r.service,
+      scope: r.scope,
+      subScope: r.sub_scope,
+      restartedAt: r.ended_at.toISOString(),
+      pid: r.pid,
+      reason: r.exit_reason,
+    })),
+  };
+  res.json(body);
+}));
 
 export default router;

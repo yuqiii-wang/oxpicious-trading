@@ -1,7 +1,7 @@
 """llm_agents.deep_agents.tools.stats_tools.trend — ``stats_ma``, the
 moving-average study tool: the house MA ladder INCLUDING the 10-day
 short-term line the precomputed columns never carried (tech_stats has
-ma5/20/60/120/255 and ema6/12/20/26/60/120/255 — anything else
+ma5/20/60/120/252 and ema6/12/20/26/60/120/252 — anything else
 computes from the bars).
 """
 from __future__ import annotations
@@ -13,8 +13,8 @@ from llm_agents.deep_agents.tools.stats_tools import calcs, report
 from llm_agents.deep_agents.tools.stats_tools.bars import BAR_SOURCE
 
 # The house ladders (stats.index_tech_stats coverage).
-SMA_LADDER = (5, 10, 20, 60, 120, 255)
-EMA_LADDER = (6, 10, 12, 20, 26, 60, 120, 255)
+SMA_LADDER = (5, 10, 20, 60, 120, 252)
+EMA_LADDER = (6, 10, 12, 20, 26, 60, 120, 252)
 _MAX_WINDOWS = 8
 
 
@@ -65,8 +65,8 @@ class StatsMaTool(Tool):
                           "maximum": 500},
                 "maxItems": 8,
                 "description": "Subset of the house ladder to report "
-                               "(sma 5/10/20/60/120/255, ema "
-                               "6/10/12/20/26/60/120/255); omit for "
+                               "(sma 5/10/20/60/120/252, ema "
+                               "6/10/12/20/26/60/120/252); omit for "
                                "the full ladder.",
             },
             "adjusted": {
@@ -80,8 +80,8 @@ class StatsMaTool(Tool):
     DEFAULT_DESCRIPTION: ClassVar[str] = (
         "Moving-average study for ONE security at the house windows — "
         "INCLUDING the 10-day short-term line the precomputed stats "
-        "columns never carried (sma 5/10/20/60/120/255, ema "
-        "6/10/12/20/26/60/120/255; precomputed columns are reused when "
+        "columns never carried (sma 5/10/20/60/120/252, ema "
+        "6/10/12/20/26/60/120/252; precomputed columns are reused when "
         "they cover the window, anything else computes from the daily "
         "bars). Per window: the MA level, the close-vs-MA spread %, "
         "its percentile rank and z-score within the security's OWN "
@@ -91,7 +91,13 @@ class StatsMaTool(Tool):
         "Ends with the alignment verdict over the requested windows "
         "(bullish 多头排列 = close > ma(w1) > ma(w2) > …, pullbacks "
         "into the stack are the buyable zones; bearish 空头排列 "
-        "reversed — rallies get sold into; else mixed)."
+        "reversed — rallies get sold into; else mixed). For the "
+        "MATERIALIZED gap set — the 9 price-vs-MA / MA5-vs-MA pairs "
+        "with their own-history trailing ranks — LOAD analysis."
+        "mov_ave_spreads_detail ⋈ analysis.mov_ave_spreads_detail_"
+        "trailing (kg_search '均线 ma spread' shows the exact columns) "
+        "instead of recomputing; stats_ma covers the windows and "
+        "bar-level alignment the tables do not store."
 
     )
 

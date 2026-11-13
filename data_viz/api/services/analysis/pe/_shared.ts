@@ -7,8 +7,8 @@
  */
 import { querySqlView, sqlFrag } from "@api/lib/sql-views";
 import type { QueryResultRow } from "pg";
-import { cachedRows } from "@api/services/classification-cache";
-import { LABEL_CODE } from "@api/services/label-codes";
+import { cachedRows } from "@api/services/infra/classification-cache";
+import { LABEL_CODE } from "@api/services/infra/label-codes";
 import type { PeSecType } from "@shared/types";
 
 // ----------------------------------------------------------------------------

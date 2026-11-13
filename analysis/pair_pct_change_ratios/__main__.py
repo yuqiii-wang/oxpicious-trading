@@ -5,7 +5,7 @@ pairs (grain 1 only, static.label_dim 'pair_grain'; the per-index grain
 was dropped in the 2026-10-17 rework): the EXCESS pct change — the
 daily measure is the DIFFERENCE of the two industry-aggregate pct
 changes (ind_pct(code, d) — ind_pct(benchmark, d); null-skipped
-member means), and the stored value is the trailing 5/20/60/255-day
+member means), and the stored value is the trailing 5/20/60/252-day
 MEAN of the daily differences. No division anywhere (quotient forms
 were numerically fragile on near-flat denominators). Null days (either
 industry missing data) are skipped, never zero-filled; a window with

@@ -7,17 +7,18 @@ runs are stored and queried under their own name.
 
 Two modes
 ---------
-BINARY (single algo): ``--algo macd``. The collector delegates
-fetch/apply/backtest to that one algo. The strategy_name stored in the DB
-is the algo name itself.
+BINARY (single family): ``--algo macd``. The collector delegates
+fetch/apply/backtest to that one family's algo. The strategy_name stored
+in the DB is the family name itself.
 
-MIXED (weighted blend): ``--algo macd:0.5,bb:0.5``. Two phases:
-  1. Phase 1 — ``run_sub_algos``: each sub-algo runs INDEPENDENTLY on its
+MIXED (equal blend — weighting REMOVED 2026-11-07, user-directed):
+``--algo macd,mov_rsi``. Two phases:
+  1. Phase 1 — ``run_sub_algos``: each family runs INDEPENDENTLY on its
      own pooled connection (async gather), writing its own strategy_identity
-     (strategy_name = algo_name) with skip-if-already-found.
+     (strategy_name = family name) with skip-if-already-found.
   2. Phase 2 — ``build_algo_portfolio``: the collector (mixed mode) runs
-     the blended backtest under a new ``portfolio:macd*0.5``
-     strategy_name.
+     the blended backtest under a new ``portfolio:macd+mov_rsi``
+     strategy_name (equal weights — no weight suffixes).
 
 After both phases, risks are computed for every strategy_name
 (sub-algos + portfolio).
@@ -71,25 +72,26 @@ _TRADING_LAYER_KEYS = ("min_holding_period", "buy_notional", "fault_tolerance")
 
 
 def _parse_algo_arg(raw: str) -> dict:
-    """Parse the --algo CLI value into ``{algo_name: weight}``.
+    """Parse the --algo CLI value into ``{algo_name: 1.0}`` (NO weights).
 
-    Accepted formats:
-      - "macd"                        -> {"macd": 1.0}  (binary)
-      - "macd:0.5,bb:0.5"            -> {"macd": 0.5, "bb": 0.5}  (mixed)
-      - "macd:1,bb:2"                -> {"macd": 1.0, "bb": 2.0}  (weights normalized later)
+    Accepted format: a comma list of signal family names —
 
-    Weights default to 1.0 when omitted (e.g. "macd,bb" -> both 1.0).
+      - "macd"            -> {"macd": 1.0}          (binary)
+      - "macd,mov_rsi"    -> {"macd": 1.0, "mov_rsi": 1.0}  (mixed)
+
+    Weighting was REMOVED (2026-11-07, user-directed "remove weighting
+    from signals"): a mixed selection blends the picked-up events at
+    EQUAL weight (the collector normalizes). A legacy ":weight" suffix
+    ("macd:0.5") is tolerated and IGNORED (stripped) so stale callers
+    don't crash. Names may be any analysis signal family (see
+    ``registry.get_algo``).
     """
     selection: dict = {}
     for part in raw.split(","):
-        part = part.strip()
-        if not part:
+        name = part.split(":", 1)[0].strip()
+        if not name:
             continue
-        if ":" in part:
-            name, w = part.split(":", 1)
-            selection[name.strip()] = float(w.strip())
-        else:
-            selection[part] = 1.0
+        selection[name] = 1.0
     if not selection:
         raise ValueError(f"--algo '{raw}' parsed to an empty selection")
     return selection
@@ -109,9 +111,10 @@ class SingletonTradingStrategy(StrategyPipeline):
         parser.add_argument(
             "--algo", default=DEFAULT_ALGO,
             help=(
-                f"Signal algo (registered in factors_and_algos). "
-                f"Default: {DEFAULT_ALGO}. Binary: 'macd'. "
-                f"Mixed (weighted blend): 'macd:0.5,bb:0.5'."
+                f"Analysis signal family(ies) whose recorded events drive "
+                f"the backtest (picked up from analysis_signals.history_"
+                f"signals). Default: {DEFAULT_ALGO}. Binary: 'macd'. "
+                f"Mixed (equal blend): 'macd,mov_rsi'."
             ),
         )
         parser.add_argument("--sec-type", choices=("index", "etf", "stock"), default=None)
@@ -177,12 +180,13 @@ class SingletonTradingStrategy(StrategyPipeline):
             strategy_name = append_ft_suffix(algo_name, ft)
             collector = AlgoSignalCollector({algo_name: 1.0})
 
-            # Trading-layer defaults + the algo's model-param defaults. The
+            # Trading-layer defaults + the algo's DEFAULT_PARAMS. The
             # codes_by_st branch below re-merges DB algo_configs on top;
             # without an explicit code list there is no (sec_type, code) to
             # load a config for, so the algo defaults ARE the params (the
-            # former bare STRATEGY_PARAMS copy hit apply_signals without
-            # ema_signal/hist_threshold and crashed on every all-codes run).
+            # algo's model params were retired with the 2026-11-07
+            # signals-picked-up refactor — DEFAULT_PARAMS now documents
+            # the analysis_signals source only).
             from strategy.factors_and_algos import get_algo
             params = {
                 **get_algo(algo_name).DEFAULT_PARAMS,

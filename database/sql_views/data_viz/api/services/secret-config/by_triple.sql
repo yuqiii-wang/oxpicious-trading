@@ -5,9 +5,11 @@
 -- Serves POST /api/config/secrets (and PUT /api/config/secrets/:id).
 -- args:
 --   secret_type: value smallint — static.label_dim 'secret_type' code
---   provider: value smallint — static.label_dim 'ext_llm_provider' code
+--   provider: value smallint — the code of the domain SELECTED BY
+--     secret_type ('ext_llm_provider' when llm / jev / tokenization,
+--     'ext_http_source' when web_search)
 --   model_name: value text — nullable model name ('' == NULL)
-SELECT secret_id, secret_type, provider, model_name, context_length,
+SELECT secret_id, secret_type, provider, sub_type, model_name, context_length,
        api_url, api_key_enc, api_key_hint, is_active, notes, updated_at
   FROM static.secret_config
  WHERE secret_type = {{secret_type}}::smallint AND provider = {{provider}}::smallint

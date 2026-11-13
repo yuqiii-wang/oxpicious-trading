@@ -120,7 +120,7 @@ class ToolKit(ABC):
     descriptions map applied), renders the ``builtin_tools`` dict the
     loop consumes, and carries the kit-level system-prompt addendum.
     The runner mounts the sandbox kit + the main plan kit on every
-    inline step conversation; the delegation hooks stamp the fork kit
+    inline step conversation; the delegation hooks stamp the spawn kit
     on every spawned child's request.
     """
 

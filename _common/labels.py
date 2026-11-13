@@ -163,7 +163,7 @@ ACTION_CODE: dict[str, int] = {"buy": 0, "sell": 1, "wait": 2}  # 2 wait (rename
 # (the PK member that makes rule_params per-PK — the same sub signal
 # type measures asymmetric populations in different trends). Since
 # 2026-10-15 classified off the RSI RE-ENTRY episodes (top/bottom stay
-# the MA255-gap extremes): rise/fall = a Wilder-RSI10 zone episode
+# the MA252-gap extremes): rise/fall = a Wilder-RSI10 zone episode
 # alive through <= K out-of-band rows under the Kaufman net-change
 # efficiency guard, with the DEEP-ANCHOR TURN (a
 # deep RSI <=30/>=70 touch opens a 40-row window where the
@@ -231,21 +231,21 @@ SIGNAL_SUB_TYPE_SERIES: dict[str, int] = {
     "ma20_retest": 11,
     "ma60_retest": 12,
     "ma120_deep": 13,
-    "ma255_deep": 14,
+    "ma252_deep": 14,
     "ma20_ecross": 15,
     "ma60_ecross": 16,
     "ma20_eretest": 17,
     "ma60_eretest": 18,
     "ma120_edeep": 19,
-    "ma255_edeep": 20,
+    "ma252_edeep": 20,
     "ma20_gap": 21,
     "ma60_gap": 22,
     "ma120_gap": 23,
-    "ma255_gap": 24,
+    "ma252_gap": 24,
     "ma20_egap": 25,
     "ma60_egap": 26,
     "ma120_egap": 27,
-    "ma255_egap": 28,
+    "ma252_egap": 28,
     # options_wall (2026-10-12): ow_put the put-wall BUY series /
     # ow_call the call-wall SELL series (thresholds only, no curve
     # rows — the per-code breach cells sit far under the curve emit
@@ -311,8 +311,8 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "ma60_retest": 12,
     "ma120_d8pct": 1400,
     "ma120_d12pct": 1401,
-    "ma255_d8pct": 1500,
-    "ma255_d12pct": 1501,
+    "ma252_d8pct": 1500,
+    "ma252_d12pct": 1501,
     "ma20_es11": 1600,
     "ma20_es21": 1601,
     "ma20_es42": 1602,
@@ -335,8 +335,8 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "ma60_eretest": 18,
     "ma120_ed8pct": 2000,
     "ma120_ed12pct": 2001,
-    "ma255_ed8pct": 2100,
-    "ma255_ed12pct": 2101,
+    "ma252_ed8pct": 2100,
+    "ma252_ed12pct": 2101,
     "ma20_g3pct": 2200,
     "ma20_g5pct": 2201,
     "ma20_g8pct": 2202,
@@ -346,9 +346,9 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "ma120_g3pct": 2400,
     "ma120_g5pct": 2401,
     "ma120_g8pct": 2402,
-    "ma255_g3pct": 2500,
-    "ma255_g5pct": 2501,
-    "ma255_g8pct": 2502,
+    "ma252_g3pct": 2500,
+    "ma252_g5pct": 2501,
+    "ma252_g8pct": 2502,
     "ma20_eg3pct": 2600,
     "ma20_eg5pct": 2601,
     "ma20_eg8pct": 2602,
@@ -358,9 +358,9 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     "ma120_eg3pct": 2800,
     "ma120_eg5pct": 2801,
     "ma120_eg8pct": 2802,
-    "ma255_eg3pct": 2900,
-    "ma255_eg5pct": 2901,
-    "ma255_eg8pct": 2902,
+    "ma252_eg3pct": 2900,
+    "ma252_eg5pct": 2901,
+    "ma252_eg8pct": 2902,
     # options_wall (2026-10-12): the OI-wall breach bars — the close
     # beyond the chain-dominant zone wall edge by the pct width
     # (ow_put_025pct BUY VRP-gated / ow_call_025pct + ow_call_100pct
@@ -429,20 +429,20 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # methods (method 5)
     "rf60_roof": 5600,
     "rf120_roof": 5601,
-    "rf255_roof": 5602,
-    "rf500_roof": 5603,
+    "rf252_roof": 5602,
+    "rf504_roof": 5603,
     "rf60_floor": 5610,
     "rf120_floor": 5611,
-    "rf255_floor": 5612,
-    "rf500_floor": 5613,
+    "rf252_floor": 5612,
+    "rf504_floor": 5613,
     "rf60_med_roof": 5620,
     "rf120_med_roof": 5621,
-    "rf255_med_roof": 5622,
-    "rf500_med_roof": 5623,
+    "rf252_med_roof": 5622,
+    "rf504_med_roof": 5623,
     "rf60_med_floor": 5630,
     "rf120_med_floor": 5631,
-    "rf255_med_floor": 5632,
-    "rf500_med_floor": 5633,
+    "rf252_med_floor": 5632,
+    "rf504_med_floor": 5633,
     # rf_break deep tiers (2026-10-26, the depth-split study's
     # graduates): the DEEP breach legs as their own sub types —
     # roof_deep BUY (the depth-gated continuation: > the k bar beyond
@@ -453,20 +453,20 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # config grids (the ma_cross gdepth precedent)
     "rf60_roof_deep": 5640,
     "rf120_roof_deep": 5641,
-    "rf255_roof_deep": 5642,
-    "rf500_roof_deep": 5643,
+    "rf252_roof_deep": 5642,
+    "rf504_roof_deep": 5643,
     "rf60_floor_deep": 5650,
     "rf120_floor_deep": 5651,
-    "rf255_floor_deep": 5652,
-    "rf500_floor_deep": 5653,
+    "rf252_floor_deep": 5652,
+    "rf504_floor_deep": 5653,
     "rf60_med_roof_deep": 5660,
     "rf120_med_roof_deep": 5661,
-    "rf255_med_roof_deep": 5662,
-    "rf500_med_roof_deep": 5663,
+    "rf252_med_roof_deep": 5662,
+    "rf504_med_roof_deep": 5663,
     "rf60_med_floor_deep": 5670,
     "rf120_med_floor_deep": 5671,
-    "rf255_med_floor_deep": 5672,
-    "rf500_med_floor_deep": 5673,
+    "rf252_med_floor_deep": 5672,
+    "rf504_med_floor_deep": 5673,
     # rf_break floor bounce (2026-10-26, the gap study's graduate):
     # the close breaks the prior day's MEDIAN consensus floor while
     # the DONCHIAN wick floor still holds below it — the
@@ -476,8 +476,8 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # sub types 5600-5633 above (decode-only vocabulary now)
     "rf60_floor_bounce": 5680,
     "rf120_floor_bounce": 5681,
-    "rf255_floor_bounce": 5682,
-    "rf500_floor_bounce": 5683,
+    "rf252_floor_bounce": 5682,
+    "rf504_floor_bounce": 5683,
     # ovix_atr_break (2026-10-16): the volatility-expansion breakout —
     # the spot day-return in close-to-close ATR units beyond the k bar
     # while vol slope5 fires (the 2026-10-15 low-base repricing class)
@@ -499,7 +499,7 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # nested deepest-claim carving); harvest = the staged volatility-
     # harvest exits (|ratio z| >= 1.5/2 sells the relatively-high leg;
     # the laggard reaching its own z >= 1/2 sells the second leg);
-    # stops = the beta stop (market >= 20/30% below its 255d high) +
+    # stops = the beta stop (market >= 20/30% below its 252d high) +
     # the hedge-regime break (offset corr >= 0 within 60d of a
     # <= -0.30 reading); regime_flip = the observational hedgeable
     # turn-on (offset corr <= -0.30 episode first day, ungated buy).
@@ -549,12 +549,12 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     # ENTRY (the weak leg closing back above its own MA60 — the
     # reclaim mirror of the catch-up sell; MA20 measured worse on
     # both lenses). The 2026-10-21 dedup retired the per-window trio
-    # hp_entry_wash{60,120,255} (5815-5817) — the W window is a
+    # hp_entry_wash{60,120,252} (5815-5817) — the W window is a
     # run_cells candidate, not an identity (labels stay registered;
     # rows purged by the next --force run)
     "hp_entry_wash60": 5815,
     "hp_entry_wash120": 5816,
-    "hp_entry_wash255": 5817,
+    "hp_entry_wash252": 5817,
     "hp_entry_wash120_mkt": 5818,
     "hp_entry_rho50": 5819,
     "hp_entry_catchup_reclaim60": 5820,
@@ -678,11 +678,11 @@ SIGNAL_SUB_TYPE_THRESHOLD: dict[str, int] = {
     #          next rebound measures the strongest, the study's H2
     #          graduate; a mid/rich-PE phenomenon).
     "rebound_capit_60": 5900,
-    "rebound_capit_255": 5901,
+    "rebound_capit_252": 5901,
     "rebound_fail_60": 5902,
-    "rebound_fail_255": 5903,
+    "rebound_fail_252": 5903,
     "rebound_reclaim_60": 5904,
-    "rebound_reclaim_255": 5905,
+    "rebound_reclaim_252": 5905,
     # the MACD family (2026-10-26, the typical-EMA study's product):
     # the classic signal-line crossover sub types over the classic
     # 12/26/9 spans — macd_cross_up BUY (the bullish crossover, the
@@ -697,11 +697,46 @@ SIGNAL_SUB_TYPE_CODE: dict[str, int] = {
 WEIGHTING_CODE: dict[str, int] = {"equal": 0, "amt": 1}
 PAIR_GRAIN_CODE: dict[str, int] = {"index": 0, "industry": 1}
 RANK_SIDE_CODE: dict[str, int] = {"HYPE": 0, "DRAIN": 1}
+# The daily pct-change distribution bucket of
+# analysis.industry_stock_change_dist (the Stock Attribution audit).
+# Bucket k = [edge[k-1], edge[k]) over the 11 edges below (percent);
+# code order is SEMANTIC (most-negative tail -> most-positive tail) and
+# doubles as the presentation order; pct_change == 0 falls in bucket 6.
+STOCK_CHANGE_BUCKET_EDGES: tuple[float, ...] = (
+    -17.5, -12.5, -7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5, 12.5, 17.5,
+)
+STOCK_CHANGE_BUCKET_CODE: dict[str, int] = {
+    "<-17.5%": 0,
+    "-17.5~-12.5%": 1,
+    "-12.5~-7.5%": 2,
+    "-7.5~-5%": 3,
+    "-5~-2.5%": 4,
+    "-2.5~0%": 5,
+    "0~2.5%": 6,
+    "2.5~5%": 7,
+    "5~7.5%": 8,
+    "7.5~12.5%": 9,
+    "12.5~17.5%": 10,
+    ">=17.5%": 11,
+}
 POOL_SIZE_CODE: dict[str, int] = {"small": 0, "mid": 1, "large": 2, "all": 3}
 PX_SPEED_CODE: dict[str, int] = {
     "sharp_dn": 0, "slow_dn": 1, "flat": 2, "slow_up": 3, "sharp_up": 4,
 }
 VOL_STATE_CODE: dict[str, int] = {"shrink": 0, "normal": 1, "heavy": 2}
+# The MA-spread gap verdict — analysis.mov_ave_spreads_detail
+# {price_vs_ma,ma5_vs_ma}{W}_verdict: the day's gap sitting in its own
+# trailing-252d percentile tails (top/bottom decile = stretched).
+SPREAD_VERDICT_CODE: dict[str, int] = {
+    "stretched_low": 0, "neutral": 1, "stretched_high": 2,
+}
+# The five-leg MA-chain alignment verdict —
+# analysis.mov_ave_spreads_detail.alignment_state: all five legs
+# (close>ma5>ma20>ma60>ma120>ma252) positive = bullish 多头排列, all
+# negative = bearish 空头排列, anything between = mixed 纠缠.
+MA_ALIGNMENT_CODE: dict[str, int] = {
+    "bearish": 0, "mixed": 1, "bullish": 2,
+}
 # The ohlc_gaps pattern vocabulary — the day's classified OHLC shape.
 # The DB column (analysis.mov_ave_spreads_detail_ohlc_gaps.pattern) is
 # deliberately TEXT, NOT a label_dim domain (the label-map-only TEXT
@@ -753,12 +788,22 @@ EXT_HTTP_SOURCE_CODE: dict[str, int] = {
     "other": 99,
 }
 EXT_LLM_PROVIDER_CODE: dict[str, int] = {"zhipu": 0, "dummy": 1,
-                                    "other": 99}
+                                    "local": 2, "other": 99}
 # static.secret_config.secret_type — the credential family a secret row
-# serves; the row's provider domain is selected by it (llm ->
-# ext_llm_provider, web_search -> ext_http_source — the audit's
-# selected-domain pattern).
-SECRET_TYPE_CODE: dict[str, int] = {"llm": 0, "web_search": 1}
+# serves; the row's provider domain is selected by it (llm / jev /
+# tokenization -> ext_llm_provider, web_search -> ext_http_source — the
+# audit's selected-domain pattern). jev = the local-model host's Jev /
+# System One decision model (onejev-1.6-4b, /v1/systemone);
+# tokenization = its StructBERT word segmenter (word-segmenter-zh,
+# /v1/tokenization/segment) — both retyped out of llm 2026-11-11 (the
+# deep agent's chat config reads ONLY llm rows).
+SECRET_TYPE_CODE: dict[str, int] = {"llm": 0, "web_search": 1,
+                                    "jev": 2, "tokenization": 3}
+# static.secret_config.sub_type — the credential SERVICE TIER, one
+# shared domain across both secret_types (general = the standard tier
+# — glm flash chat models, the offline dummy, generic content search;
+# pro = the paid-pro tier — the zhipu search_pro web-search engine).
+SECRET_SUB_TYPE_CODE: dict[str, int] = {"general": 0, "pro": 1}
 # DB health sampler (monitor.db_health) — replication_state is the WAL
 # shipping state as seen from the SAMPLED instance (primary: the standby's
 # pg_stat_replication.state; replica: pg_stat_wal_receiver.status);
@@ -768,6 +813,11 @@ DB_REPLICATION_STATE_CODE: dict[str, int] = {
     "streaming": 0, "catchup": 1, "startup": 2, "backup": 3,
     "stopping": 4, "connecting": 5, "stopped": 6, "none": 99,
 }
+# Maintainer backup audit (maintenance.src_data_backup) — the robocopy
+# batch's scope and outcome; status derives from robocopy's exit code
+# bits (0-3 ok, 4-7 mismatches present, 8+ copy failures / fatal).
+BACKUP_MODE_CODE: dict[str, int] = {"full": 0, "incremental": 1}
+BACKUP_STATUS_CODE: dict[str, int] = {"ok": 0, "partial": 1, "failed": 2}
 # the generic analysis intermediate-result cache
 # (analysis_signals.analysis_cache.kind) — which analysis owns the row's
 # cache jsonb
@@ -815,7 +865,7 @@ RESEARCH_LOGIC_CODE: dict[str, int] = {
 # run: 0 system = the run's standing prompt, 1 skills = an approach
 # instruction (the UI Skills picker's rows), 2 plan = a generation-plan
 # prompt, 3 internal = the agent's own machinery prompt (planner system,
-# step addendum, fork addenda — seeded from the Python constants, hidden
+# step addendum, spawn addenda — seeded from the Python constants, hidden
 # from the Skills picker), 4 tool = a tool description (one row per
 # model-callable tool — seeded from the deep-agent tool classes'
 # DEFAULT_DESCRIPTION constants by static/ai_prompts/10_tool_prompts.sql,
@@ -848,6 +898,38 @@ AGENT_CONTEXT_KIND_CODE: dict[str, int] = {
 # vocabulary converted (2026-11-06)
 LANGGRAPH_TYPE_CODE: dict[str, int] = {
     "plan": 0, "custom": 1, "result": 2,
+}
+# The Thread Graph's "agent steps" list (sql_views .../ai-thread/
+# state_agent_steps.sql) — which kind of step a row is (2026-11-12):
+# 0 inference = one LLM request (a chat completion through the
+# provider), 1 spawn = one spawned sub node collapsed — input is the
+# fresh prompt the spawn was given, output is the sub node's FINAL
+# output (its answer or error); the sub node's own intermediates stay
+# at the child node. 2 decision = one System One (jev) decision read,
+# 3 tokenization = one StructBERT segmentation op — both recorded in
+# llm.deep_agent_aux_steps and NEVER loaded into an LLM context
+# (UI-display only). Sixth llm.* vocabulary
+AGENT_STEP_TYPE_CODE: dict[str, int] = {
+    "inference": 0, "spawn": 1, "decision": 2, "tokenization": 3,
+    # 4 fork (2026-11-13) = one inherit-context sub node collapsed — the
+    # child CONTINUED a deep copy of its parent's transcript
+    # (deep_agent_states.child_kind 1) instead of starting fresh.
+    "fork": 4,
+}
+# llm.deep_agent_states.child_kind — how a child state row
+# (parent_state_id set) was raised (2026-11-13): 0 spawn = a
+# FRESH-context sub node (spawn_subagent — goal + business context
+# only, never the parent transcript), 1 fork = an INHERIT-context sub
+# node (fork_subagent — continues a deep copy of the parent's
+# transcript plus a fork directive, foreground — the parent awaits).
+# NULL = a top-level row (not a child); child rows predating the
+# column read as spawn. 2 abandoned (2026-11-13) = the drift fork's
+# ABANDONED pre-fork tail stub — the drifted segment after the fork
+# point, settled skipped with the drift note; the canvas demotes it to
+# the right-side edge path beside the forked continuation. Seventh
+# llm.* vocabulary
+AGENT_CHILD_KIND_CODE: dict[str, int] = {
+    "spawn": 0, "fork": 1, "abandoned": 2,
 }
 # text.search_lexicon_df.search_table — which searchable table a high-DF
 # lexeme row's document frequency counts. Code order = TSV_SPECS order
@@ -929,8 +1011,11 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "rank_side": RANK_SIDE_CODE,
     "pool_size": POOL_SIZE_CODE,
     "pair_grain": PAIR_GRAIN_CODE,
+    "stock_change_bucket": STOCK_CHANGE_BUCKET_CODE,
     "px_speed": PX_SPEED_CODE,
     "vol_state": VOL_STATE_CODE,
+    "spread_verdict": SPREAD_VERDICT_CODE,
+    "ma_alignment": MA_ALIGNMENT_CODE,
     "board": BOARD_CODE,
     "sec_owner_type": SEC_OWNER_TYPE_CODE,
     "option_type": OPTION_TYPE_CODE,
@@ -943,8 +1028,11 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "ext_http_source": EXT_HTTP_SOURCE_CODE,
     "ext_llm_provider": EXT_LLM_PROVIDER_CODE,
     "secret_type": SECRET_TYPE_CODE,
+    "secret_sub_type": SECRET_SUB_TYPE_CODE,
     "db_instance": DB_INSTANCE_CODE,
     "db_replication_state": DB_REPLICATION_STATE_CODE,
+    "backup_mode": BACKUP_MODE_CODE,
+    "backup_status": BACKUP_STATUS_CODE,
     "analysis_cache_kind": ANALYSIS_CACHE_KIND_CODE,
     "portfolio_type": PORTFOLIO_TYPE_CODE,
     "portfolio_sub_type": PORTFOLIO_SUB_TYPE_CODE,
@@ -954,6 +1042,8 @@ LABEL_MAPS: dict[str, dict[str, int]] = {
     "prompt_type": PROMPT_TYPE_CODE,
     "agent_context_kind": AGENT_CONTEXT_KIND_CODE,
     "langgraph_type": LANGGRAPH_TYPE_CODE,
+    "agent_step_type": AGENT_STEP_TYPE_CODE,
+    "agent_child_kind": AGENT_CHILD_KIND_CODE,
     "search_table": SEARCH_TABLE_CODE,
     "kw_category_type": KW_CATEGORY_TYPE_CODE,
     "kw_market": KW_MARKET_CODE,
@@ -977,6 +1067,7 @@ SIGNAL_SUB_TYPE_LABEL: dict[int, str] = CODE_MAPS["signal_sub_type"]
 WEIGHTING_LABEL: dict[int, str] = CODE_MAPS["weighting"]
 RANK_SIDE_LABEL: dict[int, str] = CODE_MAPS["rank_side"]
 POOL_SIZE_LABEL: dict[int, str] = CODE_MAPS["pool_size"]
+STOCK_CHANGE_BUCKET_LABEL: dict[int, str] = CODE_MAPS["stock_change_bucket"]
 PX_SPEED_LABEL: dict[int, str] = CODE_MAPS["px_speed"]
 VOL_STATE_LABEL: dict[int, str] = CODE_MAPS["vol_state"]
 BOARD_LABEL: dict[int, str] = CODE_MAPS["board"]
@@ -991,8 +1082,11 @@ EXT_RESOURCE_LABEL: dict[int, str] = CODE_MAPS["ext_resource"]
 EXT_HTTP_SOURCE_LABEL: dict[int, str] = CODE_MAPS["ext_http_source"]
 EXT_LLM_PROVIDER_LABEL: dict[int, str] = CODE_MAPS["ext_llm_provider"]
 SECRET_TYPE_LABEL: dict[int, str] = CODE_MAPS["secret_type"]
+SECRET_SUB_TYPE_LABEL: dict[int, str] = CODE_MAPS["secret_sub_type"]
 DB_INSTANCE_LABEL: dict[int, str] = CODE_MAPS["db_instance"]
 DB_REPLICATION_STATE_LABEL: dict[int, str] = CODE_MAPS["db_replication_state"]
+BACKUP_MODE_LABEL: dict[int, str] = CODE_MAPS["backup_mode"]
+BACKUP_STATUS_LABEL: dict[int, str] = CODE_MAPS["backup_status"]
 ANALYSIS_CACHE_KIND_LABEL: dict[int, str] = CODE_MAPS["analysis_cache_kind"]
 PORTFOLIO_TYPE_LABEL: dict[int, str] = CODE_MAPS["portfolio_type"]
 PORTFOLIO_SUB_TYPE_LABEL: dict[int, str] = CODE_MAPS["portfolio_sub_type"]
@@ -1019,8 +1113,13 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "rank_side": tuple(RANK_SIDE_CODE),
     "pool_size": ("all", "large", "mid", "small"),
     "pair_grain": ("index", "industry"),
+    # code order is the semantic + presentation order (drop tail ->
+    # rise tail), so the plain dict tuple IS the display order here
+    "stock_change_bucket": tuple(STOCK_CHANGE_BUCKET_CODE),
     "px_speed": ("sharp_dn", "slow_dn", "flat", "slow_up", "sharp_up"),
     "vol_state": ("shrink", "normal", "heavy"),
+    "spread_verdict": ("stretched_low", "neutral", "stretched_high"),
+    "ma_alignment": ("bearish", "mixed", "bullish"),
     "board": ("MAIN", "STAR", "GEM", "BSE"),
     "sec_owner_type": tuple(SEC_OWNER_TYPE_CODE),
     "option_type": ("CALL", "PUT"),
@@ -1034,8 +1133,11 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "ext_http_source": tuple(EXT_HTTP_SOURCE_CODE),
     "ext_llm_provider": tuple(EXT_LLM_PROVIDER_CODE),
     "secret_type": tuple(SECRET_TYPE_CODE),
+    "secret_sub_type": tuple(SECRET_SUB_TYPE_CODE),
     "db_instance": tuple(DB_INSTANCE_CODE),
     "db_replication_state": tuple(DB_REPLICATION_STATE_CODE),
+    "backup_mode": tuple(BACKUP_MODE_CODE),
+    "backup_status": tuple(BACKUP_STATUS_CODE),
     "analysis_cache_kind": tuple(ANALYSIS_CACHE_KIND_CODE),
     "portfolio_type": tuple(PORTFOLIO_TYPE_CODE),
     "portfolio_sub_type": tuple(PORTFOLIO_SUB_TYPE_CODE),
@@ -1045,6 +1147,8 @@ LABEL_ORDER: dict[str, tuple[str, ...]] = {
     "prompt_type": tuple(PROMPT_TYPE_CODE),
     "agent_context_kind": tuple(AGENT_CONTEXT_KIND_CODE),
     "langgraph_type": tuple(LANGGRAPH_TYPE_CODE),
+    "agent_step_type": tuple(AGENT_STEP_TYPE_CODE),
+    "agent_child_kind": tuple(AGENT_CHILD_KIND_CODE),
     "search_table": tuple(SEARCH_TABLE_CODE),
     "kw_category_type": tuple(KW_CATEGORY_TYPE_CODE),
     "kw_market": tuple(KW_MARKET_CODE),

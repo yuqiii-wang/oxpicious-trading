@@ -2,35 +2,24 @@
 --  Knowledge-graph seed — namespace 0 (DB semantics): the market-beta /
 --  industry study chain — pairwise industry correlations (raw and
 --  benchmark-offset), composition-overlap attributions, hype/drain rankings
---  (daily and seasonal), ETF turnover contribution, and the industry-pair
---  hedge ratios. Conventions: .agents/skills/kg-db-semantics. DDL:
---  13_kg_hypergraph.sql.
+--  (daily and seasonal), ETF turnover contribution, the industry-pair
+--  hedge ratios, and the per-industry stock rise/drop distribution audit.
+--  Conventions: .agents/skills/kg-db-semantics. DDL: kg_entities.sql + kg_edges.sql.
 --
 --  Idempotent — entities upsert on uq_kg_entities_ns_type_name; edges
 --  insert only when the (relation, sub_relation, entity_ids) triple is
 --  absent.
 -- ============================================================================
+--  2026-11-09: the 'table' entities migrated to the corpus rule
+--  db_semantics_tables; since 2026-11-10 the payloads live in the
+--  tables' own database/sql/ DDL files — ONE TABLE = ONE FILE, payload
+--  in the leading banner (formerly the parallel database/kg_tables/
+--  corpus, filename = the schema-qualified name). This seed keeps
+--  only what doesn't fit a rule: the edge INSERTs and the DB
+--  view entities. The rule's ledger owns the migrated tables;
+--  edges here still resolve them BY NAME.
 
-INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VALUES
-    (0, 'analysis.industry_correlations', 'table', ARRAY['industry', '行业', 'correlation', '相关性', 'market beta', '市场贝塔'],
-     'How two composite industries'' price trends co-move over rolling audit windows.'),
-    (0, 'analysis_composites.industry_corr_benchmark_offsets', 'table', ARRAY['industry', '行业', 'correlation', '相关性', 'benchmark offset', '基准对冲', 'opposite moves', '反向运动'],
-     'Pairwise industry correlations after removing the broad-market factor — the opposite-moves pairing behind offset hedges.'),
-    (0, 'analysis.industry_attributions', 'table', ARRAY['industry', '行业', 'attribution', '归因', 'composition overlap', '持仓重合', 'shared weights', '共享权重', 'benchmark', '基准'],
-     'How much composition overlap each industry shares with each benchmark index, and the non-shared remainder.'),
-    (0, 'analysis.industry_member_index_map', 'table', ARRAY['industry', '行业', 'member indices', '成员指数', 'shared weights', '共享权重', 'reference', '参考'],
-     'Each industry''s member indices with their composition-derived shared weights, frozen for fast attribution.'),
-    (0, 'analysis.industry_hypes_and_drains', 'table', ARRAY['hype', '炒作', 'drain', '失血', 'industry', '行业', 'market beta', '市场贝塔', 'rank', '排名'],
-     'The top-hype and top-drain industries per day — which themes beat or lag the broad benchmark over each trailing window.'),
-    (0, 'analysis.industry_hypes_seasonal', 'table', ARRAY['seasonal', '季节性', 'hype', '炒作', 'drain', '失血', 'industry', '行业', 'month', '月份'],
-     'The seasonal (monthly) hype and drain industry rankings — which themes consistently beat the benchmark in each calendar month.'),
-    (0, 'analysis.industry_etf_contribution', 'table', ARRAY['etf', 'turnover', '成交额', 'industry', '行业'],
-     'How much ETF turnover each industry''s member indices attract per day.'),
-    (0, 'analysis.pair_pct_change_ratios', 'table', ARRAY['hedge ratio', '对冲比率', 'industry', '行业', 'pair', '配对', 'market beta', '市场贝塔'],
-     'Industry-pair hedge ratios over trailing windows — how many units of one industry offset another, raw and market-offset.')
-ON CONFLICT (namespace, entity_type, name) DO UPDATE
-    SET description = EXCLUDED.description,
-        tags        = EXCLUDED.tags;
+
 
 INSERT INTO llm.kg_edges (namespace, relation, sub_relation, entity_ids)
 SELECT 0, e.relation, e.sub_relation, ARRAY[a.entity_id, b.entity_id]::BIGINT[]
@@ -54,7 +43,16 @@ FROM (VALUES
     -- ETF turnover contribution aggregates index_exts
     ('analysis.industry_etf_contribution', 'stats.index_exts', 'computed_from', 'for_etf_turnover'),
     -- Hedge ratios over industry aggregate daily changes
-    ('analysis.pair_pct_change_ratios', 'stats.industry_basic_stats', 'computed_from', 'for_pct_change')
+    ('analysis.pair_pct_change_ratios', 'stats.industry_basic_stats', 'computed_from', 'for_pct_change'),
+    -- Stock change distribution: buckets each stock's daily pct_change
+    -- (stats.stock_basic_stats) into the industry it maps to via
+    -- sec_classification (per analysis/market_beta/stock_attribution)
+    ('analysis.industry_stock_change_dist', 'stats.stock_basic_stats',  'computed_from', 'for_pct_change'),
+    ('analysis.industry_stock_change_dist', 'stats.sec_classification', 'computed_from', 'for_industry_map'),
+    -- Same breadth concept as the market-wide adv/dec counts — the
+    -- whole-universe rise/drop split vs the per-industry buckets
+    -- (SYMMETRIC family; seed one direction)
+    ('analysis.industry_stock_change_dist', 'analysis.market_participation', 'similar_to', 'about_breadth')
 ) AS e(subject, object, relation, sub_relation)
 JOIN llm.kg_entities a ON a.namespace = 0 AND a.name = e.subject
 JOIN llm.kg_entities b ON b.namespace = 0 AND b.name = e.object

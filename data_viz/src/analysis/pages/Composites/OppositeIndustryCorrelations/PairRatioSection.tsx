@@ -2,13 +2,13 @@
  * Pair pct-change ratio panel for the Opposite Industry Correlations
  * page — an industry × industry pair selector (subject industry ×
  * benchmark industry) plus the three stride-grid rolling means
- * (20/60/255d) of the daily pct-change ratio from
+ * (20/60/252d) of the daily pct-change ratio from
  * analysis.pair_pct_change_ratios.
  *
  * THREE CODES: subject industry (hedging instrument) x benchmark
  * industry (the position) x broad-market index (the offset mode's
  * market factor). The chart plots the MINIMUM-VARIANCE HEDGE RATIO
- * h* = −Cov(A,B)/Var(A) per trailing window (20/60/255d), in a
+ * h* = −Cov(A,B)/Var(A) per trailing window (20/60/252d), in a
  * selectable mode: RAW (industry aggregate pct changes) or MARKET
  * OFFSET (each side minus the market pct — where the negative
  * opposite-moves correlation the page's offset table detects becomes
@@ -214,7 +214,7 @@ export default function PairRatioSection({ industryIds }: Props) {
         Hedge ratio, industry vs industry (three codes: subject industry = the hedging
         instrument, benchmark industry = the position, plus a broad-market index for the
         offset mode): the plotted value is the minimum-variance hedge
-        h&sup2; = &minus;Cov(A,B) / Var(A) over trailing 20/60/255-day windows — how many
+        h&sup2; = &minus;Cov(A,B) / Var(A) over trailing 20/60/252-day windows — how many
         units of the subject industry to hold per unit long of the benchmark industry.
         Above 0 = BUY the subject (negative covariance — the opposite-moves regime the
         offset correlations above detect); below 0 = short it. <b>Raw</b> mode uses the

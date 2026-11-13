@@ -8,7 +8,7 @@ its own module, so a definition module can import back from here without
 circular-import cycles."""
 
 _EXPORTS = {
-    "ForkBroker": "fork_broker",
+    "SpawnBroker": "spawn_broker",
 }
 
 __all__ = sorted(_EXPORTS)

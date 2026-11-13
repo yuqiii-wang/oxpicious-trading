@@ -7,6 +7,7 @@ import type {
   AllIndustriesAttributionResponse,
   MemberIndexAttributionResponse,
   IndustryHypesAndDrainsResponse,
+  IndustryStockAttributionResponse,
 } from "@shared/types";
 
 /**
@@ -65,7 +66,7 @@ export function fetchBenchmarkPriceChart(
 /**
  * Fetch the non-this-industry price series for ONE (industry, benchmark) pair.
  * Returns benchmark close + benchmark_rolling + non_this_industry_price +
- * 5 rolling_Xdays_price columns (5/20/60/255/500) per date. Drives the
+ * 5 rolling_Xdays_price columns (5/20/60/252/504) per date. Drives the
  * green/red shade overlay on the BenchmarkPriceChart — the frontend dropdown
  * picks which rolling window drives the shade.
  */
@@ -129,5 +130,25 @@ export function fetchMemberIndexAttribution(
   if (date) params.set("date", date);
   return fetchJson<MemberIndexAttributionResponse>(
     `/api/analysis/industry-attribution/member-indices?${params.toString()}`,
+  );
+}
+
+/** Fetch the per-industry daily pct-change bucket distribution (the
+ *  rise/drop audit) for ONE industry at a specific (or latest) date.
+ *  Reads analysis.industry_stock_change_dist: all 12 'stock_change_bucket'
+ *  buckets with stock_count + pct_of_industry, the denormalized
+ *  total_stocks, and the 90 most recent available dates (the date
+ *  dropdown). Drives the per-industry histograms in "Stock Attribution"
+ *  mode on the MarketBeta page. */
+export function fetchIndustryStockAttribution(
+  industryId: string,
+  date?: string | null,
+): Promise<IndustryStockAttributionResponse> {
+  const params = new URLSearchParams();
+  if (industryId) params.set("industry_id", industryId);
+  if (date) params.set("date", date);
+  const qs = params.toString();
+  return fetchJson<IndustryStockAttributionResponse>(
+    `/api/analysis/industry-stock-attribution?${qs}`,
   );
 }

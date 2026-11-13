@@ -18,7 +18,7 @@ from builds.cross_stats.config import CORR_WINDOWS
 import logging
 logger = logging.getLogger(__name__)
 
-_MAX_CORR_WINDOW: int = max(CORR_WINDOWS)  # 255 trading days
+_MAX_CORR_WINDOW: int = max(CORR_WINDOWS)  # 252 trading days
 LOOKBACK_TRADING_DAYS: int = _MAX_CORR_WINDOW  # (the former +5 MA5 buffer
 # for the etf ratio MA5 went away with the ETF amount columns, 2026-09-07)
 

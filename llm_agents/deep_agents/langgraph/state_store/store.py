@@ -130,8 +130,8 @@ class DeepAgentStore(BaseStore):
     ) -> None:
         """A spawned subagent's OWN context registry item (one node one
         context: the child's conversation is not the parent's). *node* is
-        the child state's business slug (``fork_<topic>``), passed by the
-        output hook so the registry row names the fork's topic the same
+        the child state's business slug (``spawn_<topic>``), passed by the
+        output hook so the registry row names the spawn's topic the same
         way the states row does."""
         await self.put_context_item(
             thread_id, context_id, kind="subagent",
@@ -155,7 +155,13 @@ class DeepAgentStore(BaseStore):
         (``runtime.settle_node_items(store, ...)`` — the ``store=None``
         no-op lives there)."""
         items = await self.asearch(
-            thread_namespace(thread_id), filter={"kind": "node"}, limit=10)
+            thread_namespace(thread_id),
+            # The status filter (scalar JSONB equality) is the exhaustiveness
+            # point: the settle must see EVERY still-running lane, and a long
+            # execution thread's newest-10 window can bury one under settled
+            # steps — the running-only filter keeps the candidate set inside
+            # the cap whatever the thread's item count.
+            filter={"kind": "node", "status": "running"}, limit=10)
         settled = 0
         for item in items:
             value = dict(item.value)

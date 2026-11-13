@@ -16,9 +16,9 @@
  *   • subject close (or % change)  • benchmark close (or % change)
  *   • active return / spread (subj − bench) — computed client-side from
  *     close-price diffs (returns are no longer stored in the DB).
- *   • corr_20d / corr_60d / corr_255d — the Pearson correlation
+ *   • corr_20d / corr_60d / corr_252d — the Pearson correlation
  *     between the two close-price series over the trailing 20 / 60 /
- *     255 trading days ending at the hovered date (materialized on
+ *     252 trading days ending at the hovered date (materialized on
  *     stride-20 grid dates only; NULL elsewhere).
  */
 import type { EChartsOption } from "echarts";
@@ -61,7 +61,7 @@ export function buildComparisonOption(
   });
   const corr20d = data.rows.map((r) => r.corr_20d);
   const corr60d = data.rows.map((r) => r.corr_60d);
-  const corr255d = data.rows.map((r) => r.corr_255d);
+  const corr252d = data.rows.map((r) => r.corr_252d);
   const subjectName = data.name || data.code;
   const benchmarkName = data.benchmark_name || data.benchmark_code;
 
@@ -185,7 +185,7 @@ export function buildComparisonOption(
         const ar = sr == null || br == null ? null : sr - br;
         const c20 = corr20d[idx];
         const c60 = corr60d[idx];
-        const c255 = corr255d[idx];
+        const c252 = corr252d[idx];
 
         // Header + close-price/correlation block is common to both modes.
         // Only the middle section (value lines) differs.
@@ -212,7 +212,7 @@ export function buildComparisonOption(
           ${valueLines}
           <div style="margin-top:2px;opacity:0.85">Rolling close correlation (stride-20 grid):</div>
           <div style="opacity:0.85">  20d: <b style="color:${corrColor(c20)}">${c20 == null ? "—" : fmtNum(c20, 4)}</b>  ·  60d: <b style="color:${corrColor(c60)}">${c60 == null ? "—" : fmtNum(c60, 4)}</b></div>
-          <div style="opacity:0.85">  255d: <b style="color:${corrColor(c255)}">${c255 == null ? "—" : fmtNum(c255, 4)}</b></div>
+          <div style="opacity:0.85">  252d: <b style="color:${corrColor(c252)}">${c252 == null ? "—" : fmtNum(c252, 4)}</b></div>
         `;
       },
     },

@@ -3,7 +3,9 @@
 Moving-Average Spread Analysis (ETF + Index + Stock + Industry).
 
 Loads every business date's MA-gap values for every ETF, every index, and
-every stock into the wide-format detail table analysis.mov_ave_spreads_detail.
+every stock into the detail table analysis.mov_ave_spreads_detail (the
+CORE gap/derivative/σ frame) and its same-grain trailing-stat companion
+analysis.mov_ave_spreads_detail_trailing (2026-11-08 split).
 
 The ``sec_type`` column discriminates the source universe. The schema
 CHECK allows four values ('etf' | 'index' | 'stock' | 'industry'):
@@ -26,11 +28,18 @@ CHECK allows four values ('etf' | 'index' | 'stock' | 'industry'):
             comparable to the raw-price sec_types.
 
 9 gap pairs (canonical order):
-  - 5 Price-vs-MA pairs:  gap = (price - maX) / maX,  X in {5,20,60,120,255}
-  - 4 MA5-vs-MA pairs:    gap = (ma5  - maX) / maX,  X in {20,60,120,255}
+  - 5 Price-vs-MA pairs:  gap = (price - maX) / maX,  X in {5, 20, 60, 120, 252}
+  - 4 MA5-vs-MA pairs:    gap = (ma5  - maX) / maX,  X in {20, 60, 120, 252}
 """
 ANALYSIS_NAME = "mov_ave_spread"
 DETAIL_TABLE = "analysis.mov_ave_spreads_detail"
+# The detail table's TRAILING-STAT companion (2026-11-08 split — one row
+# per (sec_type, code, date), the SAME grain and PK: the 27 per-gap
+# trailing stats ({gap}_pct_rank / _zscore / _verdict over the trailing
+# 252-trading-day window). Written by the same detail pass as
+# DETAIL_TABLE; the trading-amount columns the former wide detail table
+# mirrored were dropped — their single home is TRADING_AMT_TABLE.
+TRAILING_TABLE = "analysis.mov_ave_spreads_detail_trailing"
 # Per-code summary of DETAIL_TABLE (see database/sql/analysis/mov_ave_spreads/
 # 10_mov_ave_spreads_codes.sql) — maintained by the pipeline's
 # steps/codes_summary.refresh_codes_summary() so the /mov-ave-spread/codes +
@@ -47,12 +56,12 @@ DESCRIPTION = (
     "5/20-day MA legs — price_slope/price_curvature and ma{5,20}_slope / "
     "ma{5,20}_curvature, each a DIRECT diff of the series line "
     "(value[t] - value[t-1]; curvature = that slope's diff — not an "
-    "average of the close-price diff; the 60/120/255-day derivatives "
+    "average of the close-price diff; the 60/120/252-day derivatives "
     "were dropped across 2026-09, their slopes surviving only in-memory "
     "as trading_amt_ratios denominators) — computed per code "
     "ordered by date, plus 5 rolling "
     "population σ columns (std_5days / "
-    "std_20days / std_60days / std_120days / std_255days) used for "
+    "std_20days / std_60days / std_120days / std_252days) used for "
     "Bollinger-style envelopes (MA ± k×σ) around each Price/MA pair chart. "
     "The sec_type column discriminates the source universe; the schema "
     "CHECK allows 'etf' | 'index' | 'stock' | 'industry'. 'etf' uses "
@@ -63,9 +72,13 @@ DESCRIPTION = (
     "uses the rebased-to-100 composite OHLC of stats.industry_basic_stats "
     "(pool 'all' slice) for price with the MAs/EMAs computed by the "
     "pipeline itself (no industry tech_stats). Detail table stores one "
-    "wide row per (sec_type, code, date) with all 9 gap values + 6 "
+    "row per (sec_type, code, date) with all 9 gap values + 6 "
     "derivative columns (price + ma5/20 x slope/curv) + 5 rolling σ "
-    "columns."
+    "columns; the 27 per-gap trailing stats (pct_rank / zscore / "
+    "verdict) live in the same-grain companion "
+    "analysis.mov_ave_spreads_detail_trailing (written in the same "
+    "pass), and the trading-amount liquidity metrics in "
+    "analysis.mov_ave_trading_amt."
 )
 
 # stats.*_tech_stats column names by MA window (identical for etf and index).
@@ -74,7 +87,7 @@ TECH_STATS_MA_COLUMNS = {
     20:  "ma20",
     60:  "ma60",
     120: "ma120",
-    255: "ma255",
+    252: "ma252",
 }
 
 # stats.*_tech_stats EMA column names by EMA window. EMAs come from the same
@@ -93,33 +106,64 @@ TECH_STATS_EMA_COLUMNS = {
 # frame. ALL 5 feed the trading_amt_ratios denominators
 # (TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS) in-memory; only the
 # MA_DERIV_WINDOWS subset is persisted to the detail table.
-MA_WINDOWS = (5, 20, 60, 120, 255)
+MA_WINDOWS = (5, 20, 60, 120, 252)
 
 # MA windows whose slope AND curvature are persisted to
 # analysis.mov_ave_spreads_detail as ma{W}_slope / ma{W}_curvature
-# (2026-09: derivatives trimmed twice — first 120/255, then everything —
+# (2026-09: derivatives trimmed twice — first 120/252, then everything —
 # then restored for the 5/20-day legs: slope = maW[t] − maW[t−1], a
 # DIRECT diff of the MA line (not an average of the close-price diff),
 # curvature = that slope's diff. The MA-spread UI overlay reads these
-# stored columns. ma60/120/255 slopes live on only in-memory as
+# stored columns. ma60/120/252 slopes live on only in-memory as
 # trading_amt_ratios denominators).
 MA_DERIV_WINDOWS = (5, 20)
 
-# 9 (ma_short, ma_long, gap_column_name) tuples in canonical order.
+# 12 (ma_short, ma_long, gap_column_name) tuples in canonical order.
 # ma_short = 0 is the price sentinel (short_value = price); ma_short = 5
 # uses ma5. gap_column_name matches the column in
-# analysis.mov_ave_spreads_detail.
+# analysis.mov_ave_spreads_detail. The 3 senior inter-MA legs (2026-11-09,
+# the real-run round) complete the close>ma5>ma20>ma60>ma120>ma252 chain
+# so any 排列/alignment construction derives from stored signs.
 PAIRS = [
     (0, 5,   "price_vs_ma5"),
     (0, 20,  "price_vs_ma20"),
     (0, 60,  "price_vs_ma60"),
     (0, 120, "price_vs_ma120"),
-    (0, 255, "price_vs_ma255"),
+    (0, 252, "price_vs_ma252"),
     (5, 20,  "ma5_vs_ma20"),
     (5, 60,  "ma5_vs_ma60"),
     (5, 120, "ma5_vs_ma120"),
-    (5, 255, "ma5_vs_ma255"),
+    (5, 252, "ma5_vs_ma252"),
+    (20, 60,  "ma20_vs_ma60"),
+    (60, 120, "ma60_vs_ma120"),
+    (120, 252, "ma120_vs_ma252"),
 ]
+
+# The five canonical alignment legs (into PAIRS' gap names): the
+# close>ma5>ma20>ma60>ma120>ma252 chain whose signs feed
+# analysis.mov_ave_spreads_detail.alignment_score / alignment_state
+# (the 排列 aggregate the deep-agent studies recomputed from raw MA
+# columns; the ma_alignment label domain decodes the state).
+ALIGNMENT_LEG_GAPS = (
+    "price_vs_ma5",
+    "ma5_vs_ma20",
+    "ma20_vs_ma60",
+    "ma60_vs_ma120",
+    "ma120_vs_ma252",
+)
+
+# Trailing-window spread stats (2026-11-08) — the per-gap own-history
+# anchoring materialized on analysis.mov_ave_spreads_detail_trailing as
+# {gap}_pct_rank / {gap}_zscore / {gap}_verdict (semantics shared with
+# study_kit.studies.spread_report / trailing_pct_rank / zscore, so
+# sandbox studies can RETRIEVE instead of recomputing). Recorded build
+# parameters: window 252 (min_periods=252, rank includes the current
+# point), z ddof=1, verdict thresholds the rank's top/bottom decile.
+SPREAD_TRAILING_WINDOW = 252
+SPREAD_RANK_HIGH = 0.90
+SPREAD_RANK_LOW = 0.10
+GAP_COLUMNS = [name for _, _, name in PAIRS]
+SPREAD_VERDICT_COLUMNS = [f"{name}_verdict" for name in GAP_COLUMNS]
 
 # Security types computed by this script. The DB schema allows
 # ('etf', 'index', 'stock', 'industry') on the mov_ave-family sec_type
@@ -159,7 +203,7 @@ SEC_TYPE_IDENTITY_TABLE = {
 # the row is still written with its other (valid) columns.
 NUMERIC_MAX_ABS = 10000.0
 
-# Wider bound for trading_amt_ma{5,20,60,120,255} columns, declared
+# Wider bound for trading_amt_ma{5, 20, 60, 120, 252} columns, declared
 # NUMERIC(24,4) — |value| < 10^(24-4) = 10^20 after rounding to 4 dp.
 # Matches the source column precision (stats.{etf_liquidity_margin,
 # index_basic_stats,stock_liquidity_margin}.trading_amount is NUMERIC(24,4))

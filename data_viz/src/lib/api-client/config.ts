@@ -8,9 +8,9 @@
  * MUTATE the underlying files, so every read after a save must hit the
  * server — a 10-min TTL cache would serve the pre-save state.
  *
- * The secrets registry (static.secret_config — llm + web_search
- * credentials) is the one DB-backed WRITABLE tab here — same
- * plain-fetch rule applies.
+ * The secrets registry (static.secret_config — llm / jev /
+ * tokenization / web_search credentials) is the one DB-backed WRITABLE
+ * tab here — same plain-fetch rule applies.
  */
 
 // ---------------------------------------------------------------------------
@@ -292,7 +292,7 @@ export interface DeepAgentLimits {
   planRepairRounds: number;
   planProposalBatches: number;
   maxTotalPlanSteps: number;
-  maxForkChildren: number;
+  maxSpawnChildren: number;
   maxParallelDelegatedSteps: number;
   maxConcurrentSubagents: number;
   maxSpawnDepth: number;
@@ -352,10 +352,16 @@ export function saveDeepAgentLimits(
 
 /** The closed secret_type vocabulary (mirror of
  *  static.label_dim 'secret_type'; the provider column's label domain
- *  is SELECTED BY the type — the audit pattern: llm →
- *  ext_llm_provider, web_search → ext_http_source). */
-export const SECRET_TYPES = ["llm", "web_search"] as const;
+ *  is SELECTED BY the type — the audit pattern: llm / jev /
+ *  tokenization → ext_llm_provider, web_search → ext_http_source). */
+export const SECRET_TYPES = ["llm", "web_search", "jev", "tokenization"] as const;
 export type SecretType = (typeof SECRET_TYPES)[number];
+
+/** The closed sub_type vocabulary (mirror of
+ *  static.label_dim 'secret_sub_type') — the credential service tier:
+ *  general = the standard tier, pro = the paid-pro tier. */
+export const SECRET_SUB_TYPES = ["general", "pro"] as const;
+export type SecretSubType = (typeof SECRET_SUB_TYPES)[number];
 
 /** One credential row. NO key material ever crosses to the client:
  *  `apiKeyHint` is the masked preview (•••••••• + last 4) the server
@@ -364,13 +370,19 @@ export interface SecretEntry {
   secretId: number;
   secretType: SecretType;
   secretTypeCode: number;
-  /** Decoded provider label (domain selected by secretType: llm →
-   *  zhipu | other; web_search → zhipu | zhihu | other). */
+  /** Decoded provider label (domain selected by secretType: the
+   *  LLM-host families → zhipu | local | other; web_search → zhipu |
+   *  zhihu | other). */
   provider: string;
   providerCode: number;
-  /** llm: the model id (required); web_search: the engine or null. */
+  /** Decoded service tier (general | pro). */
+  subType: SecretSubType;
+  subTypeCode: number;
+  /** llm / jev: the model id (required); tokenization: the host's
+   *  model id (informational); web_search: the engine or null. */
   modelName: string | null;
-  /** llm only: max context window in tokens; null = unspecified. */
+  /** Chat (llm) rows only: max context window in tokens; null =
+   *  unspecified. */
   contextLength: number | null;
   /** The credential's endpoint; null = the consumer's built-in default. */
   apiUrl: string | null;
@@ -395,6 +407,7 @@ export interface SecretListResponse {
 export interface SecretSaveBody {
   secretType: SecretType;
   provider: string;
+  subType: SecretSubType;
   modelName: string | null;
   contextLength: number | null;
   apiUrl: string | null;
@@ -535,6 +548,11 @@ export interface KgGraphResponse {
 export const KG_NAMESPACES = [
   { code: 0, label: "DB semantics", hint: "tables/views + how they relate" },
   { code: 1, label: "Prompts", hint: "skills & plan prompts + how they relate" },
+  {
+    code: 2,
+    label: "Data & labels",
+    hint: "static.label_dim vocabularies + the tables they type",
+  },
 ] as const;
 
 export function fetchKgGraph(namespace: number): Promise<KgGraphResponse> {

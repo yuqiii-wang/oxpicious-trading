@@ -15,6 +15,7 @@ from analysis.mov_ave_spread._common.guards import (
 )
 from analysis.mov_ave_spread._common.derive import (
     compute_ema_slopes_curvatures,
+    compute_gap_trailing_stats,
     compute_rolling_stds,
     compute_slopes_curvatures,
     compute_trading_amt_ma_slopes,
@@ -36,7 +37,8 @@ __all__ = [
     # guards
     "gap_col", "null_if_overflow", "null_if_overflow_counted", "safe_ratio",
     # derive
-    "compute_ema_slopes_curvatures", "compute_rolling_stds",
+    "compute_ema_slopes_curvatures", "compute_gap_trailing_stats",
+    "compute_rolling_stds",
     "compute_slopes_curvatures", "compute_trading_amt_ma_slopes",
     "compute_trading_amt_mas", "compute_trading_amt_market_share_mas",
     "compute_trading_amt_market_share_vs_mas",

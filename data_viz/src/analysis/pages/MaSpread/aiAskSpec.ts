@@ -91,7 +91,7 @@ export function buildMaSpreadAiAskSpec(
           S("price"),
           S("amtAbove"),
           S("amtBelow"),
-          ...[5, 20, 60, 120, 255].map((w) => S("amtMa", { w })),
+          ...[5, 20, 60, 120, 252].map((w) => S("amtMa", { w })),
         ])
       : compactDefined([
           S("shortLeg", { name: shortName }),

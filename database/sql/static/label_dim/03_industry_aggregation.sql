@@ -6,7 +6,8 @@
 --  _seasonal (weighting, rank_side), stats.industry_basic_stats,
 --  analysis.industry_correlations / industry_etf_contribution,
 --  analysis_composites.industry_corr_benchmark_offsets (pool_size),
---  analysis.pair_pct_change_ratios (pair_grain);
+--  analysis.pair_pct_change_ratios (pair_grain),
+--  analysis.industry_stock_change_dist (stock_change_bucket);
 --  attribution_type is PENDING (analysis.industry_attributions).
 -- ============================================================================
 
@@ -33,4 +34,23 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- (AVG over the industry's member-index rows; the cross_stats
     -- industry-grain pattern)
     ('pair_grain', 0, 'index',    0),
-    ('pair_grain', 1, 'industry', 1);
+    ('pair_grain', 1, 'industry', 1),
+    -- stock_change_bucket: the daily pct-change distribution bucket of
+    -- analysis.industry_stock_change_dist (the Stock Attribution audit —
+    -- per (industry, date) the number of member stocks in each bucket).
+    -- Bucket k = [edge[k-1], edge[k]) over edges -17.5/-12.5/-7.5/-5/
+    -- -2.5/0/2.5/5/7.5/12.5/17.5 (percent); code order is SEMANTIC
+    -- (most-negative tail -> most-positive tail) and doubles as the
+    -- presentation order. pct_change == 0 falls in bucket 6 ('0~2.5%').
+    ('stock_change_bucket',  0, '<-17.5%',      0),
+    ('stock_change_bucket',  1, '-17.5~-12.5%', 1),
+    ('stock_change_bucket',  2, '-12.5~-7.5%',  2),
+    ('stock_change_bucket',  3, '-7.5~-5%',     3),
+    ('stock_change_bucket',  4, '-5~-2.5%',     4),
+    ('stock_change_bucket',  5, '-2.5~0%',      5),
+    ('stock_change_bucket',  6, '0~2.5%',       6),
+    ('stock_change_bucket',  7, '2.5~5%',       7),
+    ('stock_change_bucket',  8, '5~7.5%',       8),
+    ('stock_change_bucket',  9, '7.5~12.5%',    9),
+    ('stock_change_bucket', 10, '12.5~17.5%',  10),
+    ('stock_change_bucket', 11, '>=17.5%',     11);

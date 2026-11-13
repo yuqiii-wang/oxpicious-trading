@@ -11,7 +11,7 @@ import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange } from "@api/lib/classify-etf";
 import { stripped } from "@api/services/analysis/_shared";
 import { matchesClassification } from "@api/services/_shared";
-import { LABEL_CODE } from "@api/services/label-codes";
+import { LABEL_CODE } from "@api/services/infra/label-codes";
 import type {
   ValuationCodeRow,
   ValuationCodesResponse,

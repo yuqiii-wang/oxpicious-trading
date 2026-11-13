@@ -161,31 +161,31 @@ class _RowView:
 def _last_day_sell_price(cd: pd.DataFrame, n: int) -> float | None:
     """Projected last-day SELL fill price (vol-scaled momentum):
 
-        sell = last_close + (std255 / std20) × (ma20 − close_20d_ago)
+        sell = last_close + (std252 / std20) × (ma20 − close_20d_ago)
 
-    ma20 / std20 / std255 are rolling stats of CLOSE PRICE LEVELS over the
-    last 20 / 20 / 255 bars; close_20d_ago is the close 20 trading bars
-    before the last one. The std ratio over price levels ≈ sqrt(255/20)
+    ma20 / std20 / std252 are rolling stats of CLOSE PRICE LEVELS over the
+    last 20 / 20 / 252 bars; close_20d_ago is the close 20 trading bars
+    before the last one. The std ratio over price levels ≈ sqrt(252/20)
     under a random walk, so the term extrapolates the recent 20-day move
     to a ~1-year horizon: an up-trend sells above the last close, a
     down-trend below. Returns None when there isn't enough clean history
     (or std20 = 0) — the caller then falls back to the worst-case OHLC
     sell fill.
     """
-    if n < 255:
+    if n < 252:
         return None
     closes = cd["close_price"]
     win20 = closes.iloc[n - 20:n]
-    win255 = closes.iloc[n - 255:n]
+    win252 = closes.iloc[n - 252:n]
     ma20 = float(win20.mean())
     std20 = float(win20.std())
-    std255 = float(win255.std())
+    std252 = float(win252.std())
     last_close = float(closes.iloc[n - 1])
     close_20d_ago = float(closes.iloc[n - 21])
-    vals = (ma20, std20, std255, last_close, close_20d_ago)
+    vals = (ma20, std20, std252, last_close, close_20d_ago)
     if any(v != v for v in vals) or std20 <= 0.0:
         return None
-    return last_close + (std255 / std20) * (ma20 - close_20d_ago)
+    return last_close + (std252 / std20) * (ma20 - close_20d_ago)
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +461,7 @@ def backtest_single_code(
                 "signal_value": _round6(_RowView(bars, last_i).get("signal_value")),
                 "signal_reason": ("LAST DAY SELL: liquidate all remaining qty "
                                   f"({qty_sold:.4f}) at projected fill "
-                                  "close + (std255/std20)×(ma20 − close_20d_ago)"),
+                                  "close + (std252/std20)×(ma20 − close_20d_ago)"),
             })
             cash = cash_after
             total_qty = 0.0
@@ -520,17 +520,17 @@ def compute_total_buy_cost(decisions: List[Dict[str, Any]]) -> float:
 
 
 # ---------------------------------------------------------------------------
-#  Sharpe ratios (daily Δtotal_pnl, annualized ×√255)
+#  Sharpe ratios (daily Δtotal_pnl, annualized ×√252)
 # ---------------------------------------------------------------------------
 def _compute_sharpe_ratios(daily_rows: List[Dict[str, Any]]) -> None:
-    """Compute sharpe_ratio / sharpe_ratio_255d / sharpe_ratio_500d from
+    """Compute sharpe_ratio / sharpe_ratio_252d / sharpe_ratio_504d from
     daily Δtotal_pnl and write them onto each row IN-PLACE.
 
-    Sharpe = mean(Δtotal_pnl) / std(Δtotal_pnl) × √255  (annualized, rf=0).
+    Sharpe = mean(Δtotal_pnl) / std(Δtotal_pnl) × √252  (annualized, rf=0).
 
       - sharpe_ratio      — cumulative over ALL history up to this trade_date
-      - sharpe_ratio_255d — rolling 255-trading-day window (~1 year)
-      - sharpe_ratio_500d — rolling 500-trading-day window (~2 years)
+      - sharpe_ratio_252d — rolling 252-trading-day window (~1 year)
+      - sharpe_ratio_504d — rolling 504-trading-day window (~2 years)
 
     Δtotal_pnl = total_pnl[t] − total_pnl[t−1] captures both realized
     gains/losses (from SELLs) and mark-to-market changes. The first day has
@@ -538,8 +538,8 @@ def _compute_sharpe_ratios(daily_rows: List[Dict[str, Any]]) -> None:
     """
     for row in daily_rows:
         row.setdefault("sharpe_ratio", 0.0)
-        row.setdefault("sharpe_ratio_255d", 0.0)
-        row.setdefault("sharpe_ratio_500d", 0.0)
+        row.setdefault("sharpe_ratio_252d", 0.0)
+        row.setdefault("sharpe_ratio_504d", 0.0)
 
     if len(daily_rows) < 2:
         return
@@ -557,7 +557,7 @@ def _compute_sharpe_ratios(daily_rows: List[Dict[str, Any]]) -> None:
     SHARPE_CAP = 1e6
 
     def _sharpe(mean: pd.Series, std: pd.Series) -> pd.Series:
-        """mean / std × √255, guarded against 0/NaN/inf + capped at ±1e6."""
+        """mean / std × √252, guarded against 0/NaN/inf + capped at ±1e6."""
         ratio = (mean / std * sqrt_255)
         ratio = ratio.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
         return ratio.clip(-SHARPE_CAP, SHARPE_CAP)
@@ -567,12 +567,12 @@ def _compute_sharpe_ratios(daily_rows: List[Dict[str, Any]]) -> None:
         deltas.expanding(min_periods=2).std(ddof=1),
     )
     sharpe_255 = _sharpe(
-        deltas.rolling(window=255, min_periods=2).mean(),
-        deltas.rolling(window=255, min_periods=2).std(ddof=1),
+        deltas.rolling(window=252, min_periods=2).mean(),
+        deltas.rolling(window=252, min_periods=2).std(ddof=1),
     )
     sharpe_500 = _sharpe(
-        deltas.rolling(window=500, min_periods=2).mean(),
-        deltas.rolling(window=500, min_periods=2).std(ddof=1),
+        deltas.rolling(window=504, min_periods=2).mean(),
+        deltas.rolling(window=504, min_periods=2).std(ddof=1),
     )
 
     # One host-array unwrap per window — the former three ``.iloc[i]``
@@ -583,8 +583,8 @@ def _compute_sharpe_ratios(daily_rows: List[Dict[str, Any]]) -> None:
 
     for row, v, v255, v500 in zip(daily_rows, full_a, arr255, arr500):
         row["sharpe_ratio"] = _round6(float(v)) if v == v else 0.0
-        row["sharpe_ratio_255d"] = _round6(float(v255)) if v255 == v255 else 0.0
-        row["sharpe_ratio_500d"] = _round6(float(v500)) if v500 == v500 else 0.0
+        row["sharpe_ratio_252d"] = _round6(float(v255)) if v255 == v255 else 0.0
+        row["sharpe_ratio_504d"] = _round6(float(v500)) if v500 == v500 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +606,7 @@ def compute_daily_rows(
       = P&L if ALL remaining position were sold at the day's close price.
     - total_pnl = realized_pnl_cum + unrealized_pnl
     - return_rate = ANNUALIZED return on capital = (total_pnl /
-      capital_deployed / max(mean_holding_days, 1)) × 255, where
+      capital_deployed / max(mean_holding_days, 1)) × 252, where
       capital_deployed = (total_qty / 100) × cost_basis_norm (current
       cost basis × shares) and mean_holding_days = (trade_date −
       first_buy_date).days − mean_buy_period. 0 when total_qty = 0 (no
@@ -744,8 +744,8 @@ def compute_daily_rows(
             "decision_no": decision_no,
         })
 
-    # Compute annualized Sharpe ratios (×√255, rf=0) of daily Δtotal_pnl over
-    # three windows (full history, 255d, 500d) and write them onto each row.
+    # Compute annualized Sharpe ratios (×√252, rf=0) of daily Δtotal_pnl over
+    # three windows (full history, 252d, 500d) and write them onto each row.
     _compute_sharpe_ratios(daily_rows)
 
     return daily_rows

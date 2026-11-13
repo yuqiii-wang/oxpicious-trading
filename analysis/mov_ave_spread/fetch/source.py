@@ -36,6 +36,7 @@ from _common.labels import SEC_TYPE_CODE
 from _common.sql_views import render_sql_view
 
 from analysis.mov_ave_spread.config import (
+    GAP_COLUMNS,
     MA_WINDOWS,
     SEC_TYPE_IDENTITY_TABLE,
     TECH_STATS_EMA_COLUMNS,
@@ -43,6 +44,7 @@ from analysis.mov_ave_spread.config import (
 from analysis.mov_ave_spread._common import (
     compute_slopes_curvatures,
     compute_ema_slopes_curvatures,
+    compute_gap_trailing_stats,
     compute_rolling_stds,
     compute_trading_amt_mas,
     compute_trading_amt_market_share_mas,
@@ -65,7 +67,7 @@ _SLOPE_LOOKBACK_ROWS = 2
 # tables.
 _TECH_SOURCE_COLUMNS = [
     "code", "date", "price", "open", "low", "high",
-    "ma5", "ma20", "ma60", "ma120", "ma255",
+    "ma5", "ma20", "ma60", "ma120", "ma252",
     "ema6", "ema12", "ema26",
     "trading_amount",
     "is_ohl_estimated",
@@ -99,7 +101,7 @@ def _source_fetch_view(sec_type: str) -> str:
 
     ETFs JOIN etf_identity + etf_basic_stats + LEFT JOIN etf_adjustment
     (for adj_close) + JOIN etf_tech_stats + JOIN etf_liquidity_margin
-    (for trading_amount — used to compute trading_amt_ma{5,20,60,120,255}).
+    (for trading_amount — used to compute trading_amt_ma{5, 20, 60, 120, 252}).
 
     Indices JOIN index_identity + index_basic_stats (close + trading_amount)
     + JOIN index_tech_stats (no adjustment table — indices have no
@@ -194,30 +196,30 @@ async def fetch_source_data(
         All rows for active codes are returned (no date filtering).
 
     Returns a DataFrame with columns:
-        sec_type, code, date, price, ma5, ma20, ma60, ma120, ma255,
+        sec_type, code, date, price, ma5, ma20, ma60, ma120, ma252,
         ema6, ema12, ema26,
         trading_amount,
         is_ohl_estimated,
         price_slope, price_curvature,
-        ma5_slope, ma20_slope, ma60_slope, ma120_slope, ma255_slope,
+        ma5_slope, ma20_slope, ma60_slope, ma120_slope, ma252_slope,
         ma5_curvature, ma20_curvature,
         ema6_slope, ema12_slope,
         ema6_curvature, ema12_curvature,
         std_5days, std_12days, std_26days, std_20days, std_60days,
-        std_120days, std_255days,
+        std_120days, std_252days,
         trading_amt_ma5, trading_amt_ma20, trading_amt_ma60,
-        trading_amt_ma120, trading_amt_ma255,
+        trading_amt_ma120, trading_amt_ma252,
         trading_amt_market_share_ma5, trading_amt_market_share_ma20,
         trading_amt_market_share_ma60, trading_amt_market_share_ma120,
-        trading_amt_market_share_ma255,
+        trading_amt_market_share_ma252,
         trading_amt_ma5_slope, trading_amt_ma20_slope,
         trading_amt_ma60_slope, trading_amt_ma120_slope,
-        trading_amt_ma255_slope,
+        trading_amt_ma252_slope,
         trading_amt_market_share_vs_ma5, trading_amt_market_share_vs_ma20,
         trading_amt_market_share_vs_ma60, trading_amt_market_share_vs_ma120,
-        trading_amt_market_share_vs_ma255
+        trading_amt_market_share_vs_ma252
 
-    NOTE: ma{60,120,255}_slope are carried for the trading_amt_ratios
+    NOTE: ma{60,120,252}_slope are carried for the trading_amt_ratios
     step's denominators (TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS) but are
     NOT persisted to the detail table. The persisted derivatives are
     price + ma{5,20} slope/curvature (detail table) and ema{6,12}
@@ -246,37 +248,37 @@ async def fetch_source_data(
     if not active_codes:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
-                                     "ma5", "ma20", "ma60", "ma120", "ma255",
+                                     "ma5", "ma20", "ma60", "ma120", "ma252",
                                      "ema6", "ema12", "ema26",
                                      "trading_amount",
                                      "is_ohl_estimated",
                                      "price_slope", "price_curvature",
                                      "ma5_slope", "ma20_slope", "ma60_slope",
-                                     "ma120_slope", "ma255_slope",
+                                     "ma120_slope", "ma252_slope",
                                      "ma5_curvature", "ma20_curvature",
                                      "ema6_slope", "ema12_slope",
                                      "ema6_curvature", "ema12_curvature",
                                      "std_5days", "std_12days", "std_26days",
                                      "std_20days", "std_60days",
-                                     "std_120days", "std_255days",
+                                     "std_120days", "std_252days",
                                      "trading_amt_ma5", "trading_amt_ma20",
                                      "trading_amt_ma60", "trading_amt_ma120",
-                                     "trading_amt_ma255",
+                                     "trading_amt_ma252",
                                      "trading_amt_market_share_ma5",
                                      "trading_amt_market_share_ma20",
                                      "trading_amt_market_share_ma60",
                                      "trading_amt_market_share_ma120",
-                                     "trading_amt_market_share_ma255",
+                                     "trading_amt_market_share_ma252",
                                      "trading_amt_ma5_slope",
                                      "trading_amt_ma20_slope",
                                      "trading_amt_ma60_slope",
                                      "trading_amt_ma120_slope",
-                                     "trading_amt_ma255_slope",
+                                     "trading_amt_ma252_slope",
                                      "trading_amt_market_share_vs_ma5",
                                      "trading_amt_market_share_vs_ma20",
                                      "trading_amt_market_share_vs_ma60",
                                      "trading_amt_market_share_vs_ma120",
-                                     "trading_amt_market_share_vs_ma255"])
+                                     "trading_amt_market_share_vs_ma252"])
 
     # Fetch the per-date market-share denominator (SUM of primary-exchange
     # representative-index trading amounts from stats.exchange_trading_amt).
@@ -296,37 +298,37 @@ async def fetch_source_data(
     if not rows:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
-                                     "ma5", "ma20", "ma60", "ma120", "ma255",
+                                     "ma5", "ma20", "ma60", "ma120", "ma252",
                                      "ema6", "ema12", "ema26",
                                      "trading_amount",
                                      "is_ohl_estimated",
                                      "price_slope", "price_curvature",
                                      "ma5_slope", "ma20_slope", "ma60_slope",
-                                     "ma120_slope", "ma255_slope",
+                                     "ma120_slope", "ma252_slope",
                                      "ma5_curvature", "ma20_curvature",
                                      "ema6_slope", "ema12_slope",
                                      "ema6_curvature", "ema12_curvature",
                                      "std_5days", "std_12days", "std_26days",
                                      "std_20days", "std_60days",
-                                     "std_120days", "std_255days",
+                                     "std_120days", "std_252days",
                                      "trading_amt_ma5", "trading_amt_ma20",
                                      "trading_amt_ma60", "trading_amt_ma120",
-                                     "trading_amt_ma255",
+                                     "trading_amt_ma252",
                                      "trading_amt_market_share_ma5",
                                      "trading_amt_market_share_ma20",
                                      "trading_amt_market_share_ma60",
                                      "trading_amt_market_share_ma120",
-                                     "trading_amt_market_share_ma255",
+                                     "trading_amt_market_share_ma252",
                                      "trading_amt_ma5_slope",
                                      "trading_amt_ma20_slope",
                                      "trading_amt_ma60_slope",
                                      "trading_amt_ma120_slope",
-                                     "trading_amt_ma255_slope",
+                                     "trading_amt_ma252_slope",
                                      "trading_amt_market_share_vs_ma5",
                                      "trading_amt_market_share_vs_ma20",
                                      "trading_amt_market_share_vs_ma60",
                                      "trading_amt_market_share_vs_ma120",
-                                     "trading_amt_market_share_vs_ma255"])
+                                     "trading_amt_market_share_vs_ma252"])
     # One positional-unpack pass over the asyncpg records (repo
     # convention) — the per-row ``dict(r)`` construction is O(rows)
     # python and per-row proxy dispatch under cudf.pandas. The etf /
@@ -390,7 +392,7 @@ async def fetch_source_data(
     # Compute slope (1st derivative) and curvature (2nd derivative) per code.
     # This is computed over the FULL per-code history so the diff() values
     # are correct for the first target date of each code (incremental mode).
-    # Persisted: price + ma{5,20} slope/curvature; the ma{60,120,255} slopes
+    # Persisted: price + ma{5,20} slope/curvature; the ma{60,120,252} slopes
     # are in-memory trading_amt_ratios denominators.
     df = compute_slopes_curvatures(df)
     # Compute EMA slope + curvature for the persisted 6/20-day windows
@@ -400,33 +402,40 @@ async def fetch_source_data(
     df = compute_ema_slopes_curvatures(df)
     # Compute rolling population σ (Bollinger band widths) per code over the
     # FULL per-code history. Same incremental-mode reasoning as slopes: the
-    # rolling window needs up to 255 prior rows to populate σ_255days, so we
+    # rolling window needs up to 252 prior rows to populate σ_252days, so we
     # compute over the full history then filter to target_dates below.
     df = compute_rolling_stds(df)
     # Compute trading-amount moving averages (trading_amt_ma{5,20,60,120,
-    # 255}) per code over the FULL per-code history. Same incremental-mode
-    # reasoning as slopes/rolling-stds: needs up to 255 prior rows to
-    # populate trading_amt_ma255.
+    # 252}) per code over the FULL per-code history. Same incremental-mode
+    # reasoning as slopes/rolling-stds: needs up to 252 prior rows to
+    # populate trading_amt_ma252.
     df = compute_trading_amt_mas(df)
     # Compute trading-amount MARKET-SHARE moving averages
-    # (trading_amt_market_share_ma{5,20,60,120,255}) per code over the FULL
+    # (trading_amt_market_share_ma{5, 20, 60, 120, 252}) per code over the FULL
     # per-code history. Same incremental-mode reasoning as trading_amt_mas:
-    # needs up to 255 prior rows.
+    # needs up to 252 prior rows.
     df = compute_trading_amt_market_share_mas(df, denominator_by_date)
-    # Compute trading-amount MA SLOPES (trading_amt_ma{5,20,60,120,255}_slope)
+    # Compute trading-amount MA SLOPES (trading_amt_ma{5, 20, 60, 120, 252}_slope)
     # — fractional daily change (ma[t]-ma[t-1])/ma[t-1] per code. Must run
     # AFTER compute_trading_amt_mas (reads the ma columns). Same incremental-
-    # mode reasoning: needs 1 prior row (not 255), but computed over the
+    # mode reasoning: needs 1 prior row (not 252), but computed over the
     # full history for consistency.
     df = compute_trading_amt_ma_slopes(df)
     # Compute trading-amount MARKET-SHARE-vs-MA gaps
-    # (trading_amt_market_share_vs_ma{5,20,60,120,255}) — signed fractional
+    # (trading_amt_market_share_vs_ma{5, 20, 60, 120, 252}) — signed fractional
     # ratio (market_share - market_share_ma{W}) / market_share_ma{W} per code.
     # Must run AFTER compute_trading_amt_market_share_mas (reads the ma
     # columns). Same incremental-mode reasoning: no extra lookback rows
     # needed (gap is computed from same-row values), but computed over the
     # full history for consistency.
     df = compute_trading_amt_market_share_vs_mas(df, denominator_by_date)
+    # Compute the per-gap TRAILING STATS (pct_rank / zscore / verdict over
+    # the gap's own trailing-252d window) per code over the FULL per-code
+    # history — same incremental-mode reasoning as rolling-stds: the
+    # trailing window needs up to 252 prior rows of the gap series. The
+    # detail build projects these columns straight through (no compute at
+    # chunk-build time — chunks are date-bounded slices).
+    df = compute_gap_trailing_stats(df)
 
     # ---- Incremental filter: keep only target_dates rows ----------------
     if target_dates is not None and len(target_dates) > 0:
@@ -441,27 +450,33 @@ async def fetch_source_data(
 
     # Reorder columns for readability.
     df = df[["sec_type", "code", "date", "price", "open", "low", "high",
-             "ma5", "ma20", "ma60", "ma120", "ma255",
+             "ma5", "ma20", "ma60", "ma120", "ma252",
              "ema6", "ema12", "ema26",
              "trading_amount",
              "is_ohl_estimated",
              "price_slope", "price_curvature",
-             "ma5_slope", "ma20_slope", "ma60_slope", "ma120_slope", "ma255_slope",
+             "ma5_slope", "ma20_slope", "ma60_slope", "ma120_slope", "ma252_slope",
              "ma5_curvature", "ma20_curvature",
              "ema6_slope", "ema12_slope",
              "ema6_curvature", "ema12_curvature",
-             "std_5days", "std_12days", "std_26days", "std_20days", "std_60days", "std_120days", "std_255days",
+             "std_5days", "std_12days", "std_26days", "std_20days", "std_60days", "std_120days", "std_252days",
+             # 27 per-gap trailing stats (compute_gap_trailing_stats) —
+             # the detail build projects them straight through, so they
+             # must survive this reorder
+             *[f"{g}_pct_rank" for g in GAP_COLUMNS],
+             *[f"{g}_zscore" for g in GAP_COLUMNS],
+             *[f"{g}_verdict" for g in GAP_COLUMNS],
              "trading_amt_ma5", "trading_amt_ma20", "trading_amt_ma60",
-             "trading_amt_ma120", "trading_amt_ma255",
+             "trading_amt_ma120", "trading_amt_ma252",
              "trading_amt_market_share_ma5", "trading_amt_market_share_ma20",
              "trading_amt_market_share_ma60", "trading_amt_market_share_ma120",
-             "trading_amt_market_share_ma255",
+             "trading_amt_market_share_ma252",
              "trading_amt_ma5_slope", "trading_amt_ma20_slope",
              "trading_amt_ma60_slope", "trading_amt_ma120_slope",
-             "trading_amt_ma255_slope",
+             "trading_amt_ma252_slope",
              "trading_amt_market_share_vs_ma5",
              "trading_amt_market_share_vs_ma20",
              "trading_amt_market_share_vs_ma60",
              "trading_amt_market_share_vs_ma120",
-             "trading_amt_market_share_vs_ma255"]]
+             "trading_amt_market_share_vs_ma252"]]
     return df

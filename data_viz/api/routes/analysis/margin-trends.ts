@@ -12,6 +12,7 @@ import {
   getMarginTrends,
   getFuturesExt,
 } from "../../services/analysis/index.js";
+import { wrapAsync, HttpError } from "../../lib/http.js";
 
 const router = Router();
 
@@ -32,77 +33,50 @@ const router = Router();
 //     reads analysis.margin_industry_stats (the industry's OWN margin
 //     curve, ONE series with code = industry_id; ?normalize=true switches
 //     it to the SUM of the per-side member AVERAGES — the *_norm cols).
-router.get("/margin-trends/themes", async (req: Request, res: Response) => {
-  try {
-    const attribution = (req.query.attribution as string | undefined) ?? "index";
-    res.json(await listMarginTrendThemes(attribution));
-  } catch (err) {
-    console.error("[analysis/margin-trends/themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/margin-trends/themes", wrapAsync(async (req: Request, res: Response) => {
+  const attribution = (req.query.attribution as string | undefined) ?? "index";
+  res.json(await listMarginTrendThemes(attribution));
+}));
 
-router.get("/margin-trends/strategy-themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listMarginTrendStrategyThemes());
-  } catch (err) {
-    console.error("[analysis/margin-trends/strategy-themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/margin-trends/strategy-themes", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listMarginTrendStrategyThemes());
+}));
 
 //   GET /api/analysis/margin-trends/underlyings
 //     ALL broad-market index codes (stats.sec_index_tags.is_broad_market)
 //     for the exchange attribution's mapped-underlying dropdown.
-router.get("/margin-trends/underlyings", async (req: Request, res: Response) => {
-  try {
-    res.json(await listMarginTrendUnderlyings());
-  } catch (err) {
-    console.error("[analysis/margin-trends/underlyings] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
+router.get("/margin-trends/underlyings", wrapAsync(async (req: Request, res: Response) => {
+  res.json(await listMarginTrendUnderlyings());
+}));
 
-router.get("/margin-trends/industry-series", async (req: Request, res: Response) => {
-  try {
-    const industryId = (req.query.industry_id as string | undefined) ?? "";
-    if (!industryId.trim()) {
-      res.status(400).json({ error: "Missing 'industry_id' parameter" });
-      return;
-    }
-    const attribution = (req.query.attribution as string | undefined) ?? "index";
-    // 'exchange' only — the mapped broad-market underlying for the
-    // close / turnover / regime joins (validated + defaulted in the SQL).
-    const underlying = req.query.underlying as string | undefined;
-    // 'industry' only — normalized curve: SUM of the per-side member
-    // AVERAGES (*_norm cols in margin_industry_stats) instead of the
-    // raw SUM(stock+etf).
-    const normalize = req.query.normalize as string | undefined;
-    res.json(await getMarginIndustrySeries(industryId, attribution, underlying, normalize));
-  } catch (err) {
-    console.error("[analysis/margin-trends/industry-series] error:", err);
-    res.status(500).json({ error: String(err) });
+router.get("/margin-trends/industry-series", wrapAsync(async (req: Request, res: Response) => {
+  const industryId = (req.query.industry_id as string | undefined) ?? "";
+  if (!industryId.trim()) {
+    throw HttpError.missingParam("industry_id");
   }
-});
+  const attribution = (req.query.attribution as string | undefined) ?? "index";
+  // 'exchange' only — the mapped broad-market underlying for the
+  // close / turnover / regime joins (validated + defaulted in the SQL).
+  const underlying = req.query.underlying as string | undefined;
+  // 'industry' only — normalized curve: SUM of the per-side member
+  // AVERAGES (*_norm cols in margin_industry_stats) instead of the
+  // raw SUM(stock+etf).
+  const normalize = req.query.normalize as string | undefined;
+  res.json(await getMarginIndustrySeries(industryId, attribution, underlying, normalize));
+}));
 
 //   GET /api/analysis/margin-trends/trends?industry_id=BANKS&attribution=index
 //     Sustained UP/DOWN trend episode date ranges for the securities in one
 //     industry + attribution. Used by the 1st plot to render light shade
 //     (markArea) over each trend window.
-router.get("/margin-trends/trends", async (req: Request, res: Response) => {
-  try {
-    const industryId = (req.query.industry_id as string | undefined) ?? "";
-    if (!industryId.trim()) {
-      res.status(400).json({ error: "Missing 'industry_id' parameter" });
-      return;
-    }
-    const attribution = (req.query.attribution as string | undefined) ?? "index";
-    res.json(await getMarginTrends(industryId, attribution));
-  } catch (err) {
-    console.error("[analysis/margin-trends/trends] error:", err);
-    res.status(500).json({ error: String(err) });
+router.get("/margin-trends/trends", wrapAsync(async (req: Request, res: Response) => {
+  const industryId = (req.query.industry_id as string | undefined) ?? "";
+  if (!industryId.trim()) {
+    throw HttpError.missingParam("industry_id");
   }
-});
+  const attribution = (req.query.attribution as string | undefined) ?? "index";
+  res.json(await getMarginTrends(industryId, attribution));
+}));
 
 // ---- Futures Analysis — basis + correlation per (date, code) for a product
 //   analysis.futures_ext JOIN stats.futures_identity on product_code
@@ -110,35 +84,29 @@ router.get("/margin-trends/trends", async (req: Request, res: Response) => {
 //   GET /api/analysis/futures/ext?product=IF
 //     Returns FuturesExtResponse: gapByCodeDate (for 1st plot tooltip),
 //     corrByCodeDate (for 2nd plot correlation chart), and flat rows.
-router.get("/futures/ext", async (req: Request, res: Response) => {
-  try {
-    const product = (req.query.product as string | undefined) ?? "";
-    if (!product.trim()) {
-      res.status(400).json({ error: "Missing 'product' parameter" });
-      return;
-    }
-    const ext = await getFuturesExt(product);
-    // Serialize Maps to plain objects for JSON
-    const gapObj: Record<string, Record<string, number | null>> = {};
-    ext.gapByCodeDate.forEach((dateMap, code) => {
-      gapObj[code] = {};
-      dateMap.forEach((val, date) => { gapObj[code][date] = val; });
-    });
-    const corrObj: Record<string, Record<string, number | null>> = {};
-    ext.corrByCodeDate.forEach((dateMap, code) => {
-      corrObj[code] = {};
-      dateMap.forEach((val, date) => { corrObj[code][date] = val; });
-    });
-    res.json({
-      product: ext.product,
-      gapByCodeDate: gapObj,
-      corrByCodeDate: corrObj,
-      rows: ext.rows,
-    });
-  } catch (err) {
-    console.error("[analysis/futures/ext] error:", err);
-    res.status(500).json({ error: String(err) });
+router.get("/futures/ext", wrapAsync(async (req: Request, res: Response) => {
+  const product = (req.query.product as string | undefined) ?? "";
+  if (!product.trim()) {
+    throw HttpError.missingParam("product");
   }
-});
+  const ext = await getFuturesExt(product);
+  // Serialize Maps to plain objects for JSON
+  const gapObj: Record<string, Record<string, number | null>> = {};
+  ext.gapByCodeDate.forEach((dateMap, code) => {
+    gapObj[code] = {};
+    dateMap.forEach((val, date) => { gapObj[code][date] = val; });
+  });
+  const corrObj: Record<string, Record<string, number | null>> = {};
+  ext.corrByCodeDate.forEach((dateMap, code) => {
+    corrObj[code] = {};
+    dateMap.forEach((val, date) => { corrObj[code][date] = val; });
+  });
+  res.json({
+    product: ext.product,
+    gapByCodeDate: gapObj,
+    corrByCodeDate: corrObj,
+    rows: ext.rows,
+  });
+}));
 
 export default router;

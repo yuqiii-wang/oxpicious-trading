@@ -45,7 +45,7 @@ def attach_trendline_estimates(df: pd.DataFrame, windows) -> None:
     Args:
         df: step frame sorted by [sec_type, code, date] with columns
             [sec_type, code, date, price, high, low] (the FULL per-code
-            history — the anchors need up to 1275 prior rows).
+            history — the anchors need up to 1260 prior rows).
         windows: rolling window sizes (trading days).
     """
     real_pd_df = getattr(pd.DataFrame, "_fsproxy_slow", pd.DataFrame)

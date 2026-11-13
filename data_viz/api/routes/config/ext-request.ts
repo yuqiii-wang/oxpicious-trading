@@ -5,13 +5,14 @@
  */
 
 import { Router, type Request, type Response } from "express";
-import { decodeLabel, encodeLabelParam } from "../../services/label-codes.js";
+import { HttpError } from "../../lib/http.js";
+import { decodeLabel, encodeLabelParam } from "../../services/infra/label-codes.js";
 import {
   readDefaultExtRequestConfig,
   readExternalRequestConfig,
   writeExtRequestRowsFor,
   type ExtRequestConfigRow,
-} from "../../services/static-config.service.js";
+} from "../../services/infra/static-config.service.js";
 
 const router = Router();
 
@@ -84,14 +85,15 @@ const NUMERIC_FIELDS: Array<
 ];
 
 /** Validate + encode ONE row from the wire (decoded resourceType label
- * → file's SMALLINT code; numbers ≥ 0 or null; booleans required). */
+ * → file's SMALLINT code; numbers ≥ 0 or null; booleans required; throws
+ * HttpError 400 INVALID_PARAM). */
 function parseExtRequestRow(body: unknown, service: string): ExtRequestConfigRow {
   const b = (typeof body === "object" && body != null ? body : {}) as Record<string, unknown>;
   const requestType = typeof b.requestType === "string" ? b.requestType.trim() : "";
-  if (requestType === "") throw new Error("requestType must be a non-empty string");
+  if (requestType === "") throw new HttpError(400, "INVALID_PARAM","requestType must be a non-empty string");
   const resourceLabel = typeof b.resourceType === "string" ? b.resourceType : "";
   const resourceType = encodeLabelParam("ext_resource", resourceLabel);
-  if (resourceType == null) throw new Error("resourceType must be 'http' or 'llm'");
+  if (resourceType == null) throw new HttpError(400, "INVALID_PARAM","resourceType must be 'http' or 'llm'");
   const row: ExtRequestConfigRow = {
     service,
     request_type: requestType,
@@ -115,7 +117,7 @@ function parseExtRequestRow(body: unknown, service: string): ExtRequestConfigRow
   };
   if (b.urls != null) {
     if (typeof b.urls !== "object" || Array.isArray(b.urls)) {
-      throw new Error("urls must be an object of {role: url} strings");
+      throw new HttpError(400, "INVALID_PARAM","urls must be an object of {role: url} strings");
     }
     const urls: Record<string, string> = {};
     for (const [rawRole, rawUrl] of Object.entries(
@@ -124,7 +126,7 @@ function parseExtRequestRow(body: unknown, service: string): ExtRequestConfigRow
       const role = rawRole.trim();
       const url = typeof rawUrl === "string" ? rawUrl.trim() : "";
       if (role === "" || url === "") {
-        throw new Error(
+        throw new HttpError(400, "INVALID_PARAM",
           `urls entry "${rawRole}" must be a non-empty role = url pair`,
         );
       }
@@ -137,14 +139,14 @@ function parseExtRequestRow(body: unknown, service: string): ExtRequestConfigRow
     if (v == null) continue;
     const n = Number(v);
     if (!Number.isFinite(n) || n < 0) {
-      throw new Error(`${wire} must be a number >= 0 or null`);
+      throw new HttpError(400, "INVALID_PARAM",`${wire} must be a number >= 0 or null`);
     }
     (row as unknown as Record<string, number | null>)[file] = n;
   }
   if (typeof b.notes === "string") row.notes = b.notes;
   const sourceRef = typeof b.sourceRef === "string" ? b.sourceRef : "";
   if (sourceRef === "") {
-    throw new Error("sourceRef is required (relative file paths, ';'-separated)");
+    throw new HttpError(400, "INVALID_PARAM","sourceRef is required (relative file paths, ';'-separated)");
   }
   row.source_ref = sourceRef;
   return row;
@@ -154,17 +156,12 @@ function parseExtRequestRow(body: unknown, service: string): ExtRequestConfigRow
  *  pacing inventory (decoded resourceType) plus the default.json
  *  fallback rows. */
 router.get("/ext-request", (_req: Request, res: Response) => {
-  try {
-    res.json({
-      success: true,
-      generatedAt: new Date().toISOString(),
-      rows: readExternalRequestConfig().map(toExtRequestPayload),
-      defaultRows: readDefaultExtRequestConfig().map(toExtRequestPayload),
-    });
-  } catch (err) {
-    console.error("[config/ext-request GET] error:", err);
-    res.status(500).json({ success: false, error: String(err) });
-  }
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    rows: readExternalRequestConfig().map(toExtRequestPayload),
+    defaultRows: readDefaultExtRequestConfig().map(toExtRequestPayload),
+  });
 });
 
 /** PUT /api/config/ext-request — write ONE service's whole row list (the
@@ -172,35 +169,30 @@ router.get("/ext-request", (_req: Request, res: Response) => {
  *  fallback). An empty row list for a real service DELETES its file so
  *  the fallback applies again. updated_at is stamped on every row. */
 router.put("/ext-request", (req: Request, res: Response) => {
-  try {
-    const b = (typeof req.body === "object" && req.body != null ? req.body : {}) as Record<string, unknown>;
-    const service = typeof b.service === "string" ? b.service.trim() : "";
-    if (
-      service !== "default" &&
-      !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(service)
-    ) {
-      throw new Error("service must be a dotted name like downloads.etf.huatai_pb.trend (or 'default')");
-    }
-    if (!Array.isArray(b.rows)) {
-      throw new Error("body must be { service, rows: [...] }");
-    }
-    const now = new Date().toISOString();
-    const rows = b.rows.map((r) => ({
-      ...parseExtRequestRow(r, service),
-      updated_at: now,
-    }));
-    writeExtRequestRowsFor(service, rows);
-    const saved =
-      service === "default" ? readDefaultExtRequestConfig() : rows;
-    res.json({
-      success: true,
-      service,
-      rows: saved.map(toExtRequestPayload),
-    });
-  } catch (err) {
-    console.error("[config/ext-request PUT] error:", err);
-    res.status(400).json({ success: false, error: String(err) });
+  const b = (typeof req.body === "object" && req.body != null ? req.body : {}) as Record<string, unknown>;
+  const service = typeof b.service === "string" ? b.service.trim() : "";
+  if (
+    service !== "default" &&
+    !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(service)
+  ) {
+    throw new HttpError(400, "INVALID_PARAM", "service must be a dotted name like downloads.etf.huatai_pb.trend (or 'default')");
   }
+  if (!Array.isArray(b.rows)) {
+    throw new HttpError(400, "INVALID_PARAM", "body must be { service, rows: [...] }");
+  }
+  const now = new Date().toISOString();
+  const rows = b.rows.map((r) => ({
+    ...parseExtRequestRow(r, service),
+    updated_at: now,
+  }));
+  writeExtRequestRowsFor(service, rows);
+  const saved =
+    service === "default" ? readDefaultExtRequestConfig() : rows;
+  res.json({
+    success: true,
+    service,
+    rows: saved.map(toExtRequestPayload),
+  });
 });
 
 export default router;

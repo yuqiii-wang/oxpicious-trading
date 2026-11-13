@@ -13,10 +13,10 @@ HIGH_LOW_PCT_TABLE = "analysis.mov_ave_high_low_pct"
 HIGH_LOW_PCT_ANALYSIS_NAME = "mov_ave_high_low_pct"
 
 # Lookback window lengths in trading rows (the `period` PK column):
-# 60 / 120 / 255 / 500 / 750 / 1275 = ~0.25 / 0.5 / 1 / 2 / 3 / 5 trading
-# years (the ma255 yearly-window precedent). The window is TRAILING
+# 60 / 120 / 252 / 504 / 756 / 1260 = ~0.25 / 0.5 / 1 / 2 / 3 / 5 trading
+# years (the ma252 yearly-window precedent). The window is TRAILING
 # (backward-only), ending inclusive at the month's last trading row.
-HIGH_LOW_PCT_PERIODS = (60, 120, 255, 500, 750, 1275)
+HIGH_LOW_PCT_PERIODS = (60, 120, 252, 504, 756, 1260)
 
 # Band tightness levels (percent). The LOW leg uses the pct_type-th
 # percentile of daily low prices; the HIGH leg the (100 - pct_type)-th
@@ -26,13 +26,13 @@ HIGH_LOW_PCT_PERIODS = (60, 120, 255, 500, 750, 1275)
 # in database/sql/analysis/mov_ave_spreads/07_mov_ave_high_low_pct.sql.
 HIGH_LOW_PCT_TYPES = (1, 5, 10)
 
-# Minimum observations for a band: 255 rows (1 trading year) shared by
-# all periods >= 255; shorter windows (60 / 120) use their own window
+# Minimum observations for a band: 252 rows (1 trading year) shared by
+# all periods >= 252; shorter windows (60 / 120) use their own window
 # length (pandas requires min_periods <= window). Windows near a code's
-# history start are naturally truncated; fewer than 255 rows yields no
+# history start are naturally truncated; fewer than 252 rows yields no
 # pair EXPECTATION at detection time (the month is skipped —
 # high_val/low_val are NOT NULL).
-HIGH_LOW_PCT_MIN_PERIODS = 255
+HIGH_LOW_PCT_MIN_PERIODS = 252
 
 # Rows per (sec_type, code, date_year_month) pair when complete: one
 # band per (period, pct_type). The missing-pair detection counts rows
@@ -58,8 +58,8 @@ HIGH_LOW_PCT_DESCRIPTION = (
     "percentile of daily LOW prices, high_val = the (100 - pct_type)-"
     "th percentile of daily HIGH prices (linear interpolation), both "
     "over the TRAILING (backward-only) window of `period` trading "
-    "rows (60/120/255/500/750/1275 = ~0.25/0.5/1/2/3/5 trading years "
-    "— the ma255 yearly-window precedent) ENDING at date_year_month's "
+    "rows (60/120/252/504/756/1260 = ~0.25/0.5/1/2/3/5 trading years "
+    "— the ma252 yearly-window precedent) ENDING at date_year_month's "
     "last trading row. pct_type 1 = near-full range of the window "
     "([1st pct of lows, 99th pct of highs]); pct_type 10 = core "
     "envelope ([10th, 90th]). One band per calendar month, anchored at "
@@ -67,7 +67,7 @@ HIGH_LOW_PCT_DESCRIPTION = (
     "day — 18 bands (6 periods x 3 pct_types) per (sec_type, code, "
     "month). Windows near a code's history start are naturally "
     "truncated (a period needs only its own window length of "
-    "observations); pair detection expects a month only once 255 rows "
+    "observations); pair detection expects a month only once 252 rows "
     "(1 trading year) of history exist. Trailing windows make "
     "historical bands immutable once computed — only missing "
     "(code, month) pairs are computed incrementally (a pair is "

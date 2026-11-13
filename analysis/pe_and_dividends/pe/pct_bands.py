@@ -17,8 +17,8 @@ card.)
 For each calendar month m of a code's history, anchor the window at the
 month's LAST observation row (the last row whose pe value is non-NULL)
 and look BACK over a TRAILING window of `period` non-NULL observations
-ending there, for each period in PE_PCT_PERIODS (255 / 500 / 750 / 1275
-= ~1 / 2 / 3 / 5 trading years — the ma255 yearly-window precedent).
+ending there, for each period in PE_PCT_PERIODS (252 / 504 / 756 / 1260
+= ~1 / 2 / 3 / 5 trading years — the ma252 yearly-window precedent).
 Over that window:
 
     low_val[m, period, pct]  = pct-th percentile (linear interpolation)
@@ -57,10 +57,10 @@ consequences drive the rebuild semantics (identical to the price bands):
    therefore re-flags that month on EVERY run (its previous rows are
    wiped and re-inserted), while completed months stay incremental.
 
-Detection also requires PE_PCT_MIN_PERIODS (255) cumulative non-NULL pe
+Detection also requires PE_PCT_MIN_PERIODS (252) cumulative non-NULL pe
 observations through the month's end — fewer rows yield no band
 (truncated window; high_val/low_val are NOT NULL). All periods share
-the same 255-observation minimum, so triple expectation is
+the same 252-observation minimum, so triple expectation is
 period-independent. Windows near a code's history start are naturally
 truncated to the available observations. The code universe is the run's
 processed scope (the parent's active universe), so delisted codes'
@@ -140,7 +140,7 @@ async def _find_missing_triples(
       - the code is in the given ``codes`` universe (the run's processed
         scope — the parent's active universe; delisted codes are outside
         the pipeline's universe and would never converge),
-      - the code has >= PE_PCT_MIN_PERIODS (255) cumulative NON-NULL pe
+      - the code has >= PE_PCT_MIN_PERIODS (252) cumulative NON-NULL pe
         observations in analysis.pe through the month's end (fewer rows
         yield no band — the truncated window cannot satisfy min_periods;
         all periods share this minimum, so the expectation is
@@ -254,7 +254,7 @@ def compute_pe_pct_bands(df: pd.DataFrame) -> pd.DataFrame:
     Args:
       df: the daily detail frame (build_detail_rows output) with columns
           [sec_type, code, date, pe, dividend_yield] — the FULL
-          per-code history (the trailing windows need up to 1275 prior
+          per-code history (the trailing windows need up to 1260 prior
           observations per anchor). NULL-pe rows are dropped inside.
 
     Returns:
@@ -472,7 +472,7 @@ async def run_pe_pct_bands(
     Reuses the caller's DB connection and the in-memory detail DataFrame
     (the pe column — no second DB fetch of source values). The frame
     must contain the FULL per-code history so each month anchor's
-    trailing windows see up to 1275 prior observations. The in-progress
+    trailing windows see up to 1260 prior observations. The in-progress
     last month anchors on its latest observation and is re-computed on
     every run (the detection always re-flags it).
 

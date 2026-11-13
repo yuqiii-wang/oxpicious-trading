@@ -33,7 +33,7 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- an approach instruction (the UI Skills picker's rows), 2 plan = a
     -- generation-plan prompt (steps the agent lays out and follows),
     -- 3 internal = the agent's own machinery prompt (planner system,
-    -- step addendum, fork addenda — seeded from the Python constants,
+    -- step addendum, spawn addenda — seeded from the Python constants,
     -- editable in the prompt view, hidden from the Skills picker which
     -- lists only skills/plan labels), 4 tool = a tool description
     -- (one row per model-callable tool — the tool classes' schema
@@ -75,6 +75,44 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('langgraph_type', 0, 'plan',   0),
     ('langgraph_type', 1, 'custom', 1),
     ('langgraph_type', 2, 'result', 2),
+    -- agent_step_type: the Thread Graph's "agent steps" list
+    -- (sql_views .../ai-thread/state_agent_steps.sql) — which kind of
+    -- step a row is: 0 inference = one LLM request (a chat completion
+    -- through the provider), 1 spawn = one spawned sub node collapsed —
+    -- input is the fresh prompt the spawn was given, output is the sub
+    -- node's FINAL output (its answer or error); the sub node's own
+    -- intermediates stay at the child node. 2 decision = one System
+    -- One (jev) decision read (typed facts in, calibrated verdict out
+    -- — llm.deep_agent_aux_steps), 3 tokenization = one StructBERT
+    -- segmentation op (search_tsv / context_tags / query_segment
+    -- lanes) — both NEVER loaded into an LLM context, UI-display
+    -- only. Sixth llm.* vocabulary (2026-11-12; aux types 2026-11-13)
+    ('agent_step_type', 0, 'inference', 0),
+    ('agent_step_type', 1, 'spawn', 1),
+    ('agent_step_type', 2, 'decision', 2),
+    ('agent_step_type', 3, 'tokenization', 3),
+    -- 4 fork (2026-11-13) = one inherit-context sub node collapsed (the
+    -- FORK counterpart of code 1: the child CONTINUED a deep copy of
+    -- its parent's transcript — llm.deep_agent_states.child_kind 1 —
+    -- instead of starting fresh; the UI's agent-steps list and the
+    -- Thread Graph canvas label it fork)
+    ('agent_step_type', 4, 'fork', 4),
+    -- agent_child_kind: llm.deep_agent_states.child_kind — how a child
+    -- state row (parent_state_id set) was raised (2026-11-13). 0 spawn
+    -- = a FRESH-context sub node (spawn_subagent / the router's
+    -- scripting handoff: goal + business context only, never the
+    -- parent transcript); 1 fork = an INHERIT-context sub node
+    -- (fork_subagent / the router's drift-fork lane: continues a deep
+    -- copy of the parent's PRE-DRIFT transcript plus a fork directive,
+    -- foreground — the parent awaits); 2 abandoned = the drift fork's
+    -- ABANDONED pre-fork tail stub (the drifted segment after the fork
+    -- point, settled skipped with the drift note — the canvas demotes
+    -- it to the right-side edge path beside the forked continuation).
+    -- NULL = a top-level row (not a child); child rows predating the
+    -- column read as spawn. Seventh llm.* vocabulary
+    ('agent_child_kind', 0, 'spawn', 0),
+    ('agent_child_kind', 1, 'fork', 1),
+    ('agent_child_kind', 2, 'abandoned', 2),
     -- search_table: text.search_lexicon_df.search_table — which
     -- searchable table a high-DF lexeme row counts. Code order =
     -- TSV_SPECS order (_common/tokenization/search_indexing.py): the

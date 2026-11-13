@@ -3,7 +3,7 @@ analysis.mov_ave_spread.
 
 Target table: analysis.mov_ave_spreads_roof_floor_estimates (LONG — one
 row per (sec_type, code, date, period, method)). For every roof/floor
-window period ∈ {60, 120, 255, 500, 750, 1275} this step estimates, per
+window period ∈ {60, 120, 252, 504, 756, 1260} this step estimates, per
 (date, method), the RESISTANCE (roof) and SUPPORT (floor) price level AT
 that date from the strictly-causal rolling window ending there — the
 quantitative counterpart of the trendlines drawn by the Ma-Spread UI's

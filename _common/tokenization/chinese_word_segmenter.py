@@ -14,6 +14,21 @@ service for pipelines:
   additionally synthesizes number+unit words (``1830.5元``, ``2024年``,
   ``3.5万亿美元``).  Studies: temp_scripts/probe_postproc_number_fix.py,
   probe_regex_postproc_opt.py.
+- Host-first serving (2026-11 migration): the segmenter is served by the
+  resident local-model host (``server_cluster.llm`` — the server
+  cluster's llm area, migrated from ``llm_agents.local_model_host``),
+  model ``word-segmenter-zh`` — ``segment_batch`` posts its CJK texts to
+  ``POST /v1/tokenization/segment`` and only falls back to the in-process
+  torch path below when the host is unreachable (a retry cooldown stops
+  per-batch hammering; a monitoring outage must never stop a pipeline,
+  so the fallback stays). Set ``use_host=False`` / env
+  ``LOCAL_MODEL_HOST_TOKENIZE=0`` to pin in-process. Consumers
+  (``SearchIndexer`` and everything above it) need no change.
+- Managed mode: the host's serving backend constructs this class with
+  ``managed=True`` (and ``use_host=False`` — the engine must never
+  HTTP-call its own host): the internal idle-offload watchdog below is
+  suppressed and the host's ModelManager drives the lifecycle via the
+  public :meth:`load` / :meth:`offload` / :meth:`status`.
 - Idle offload: a watchdog thread moves the model to RAM and empties the
   CUDA cache after ``idle_offload_s`` seconds (default 3600 — one hour)
   without calls; every segment call resets the countdown, so an
@@ -21,8 +36,9 @@ service for pipelines:
   The next call after an offload moves the model back to GPU
   transparently (weights stay resident in RAM).
 - Auto-download: the model lives under the gitignored
-  ``llm_agents/local_models/`` checkout; when its files are missing, first
-  use downloads them from ModelScope (:func:`ensure_model_downloaded`).
+  ``server_cluster/llm/local_models/`` weights subdir; when its
+  files are missing, first use downloads them from ModelScope
+  (:func:`ensure_model_downloaded`).
 - Logging: one summary line per large batch call (>= SUMMARY_LOG_MIN texts),
   DEBUG for smaller ones — never per text.  Lifecycle events (load, GPU
   offload/rehydrate) log at INFO.
@@ -40,6 +56,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -53,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_DIR = (
-    REPO_ROOT / "llm_agents" / "local_models" / "iic"
+    REPO_ROOT / "server_cluster" / "llm" / "local_models" / "iic"
     / "nlp_structbert_word-segmentation_chinese-base"
 )
 
@@ -75,6 +92,20 @@ _UNIT_CHAIN_MAX = 3
 
 MAX_TOKENS = 512  # model max_position_embeddings (incl. [CLS]/[SEP])
 SUMMARY_LOG_MIN = 100  # batch sizes from here up log an INFO summary
+
+# After the host fails once, skip the HTTP attempt for this long (the
+# in-process fallback serves meanwhile) — a down host must not tax every
+# batch with a connection timeout.
+HOST_RETRY_COOLDOWN_S = 60.0
+
+
+def _resolve_use_host(use_host: bool | None) -> bool:
+    """Explicit arg wins; otherwise env LOCAL_MODEL_HOST_TOKENIZE
+    (default on — the resident host is the serving path)."""
+    if use_host is not None:
+        return bool(use_host)
+    return os.environ.get("LOCAL_MODEL_HOST_TOKENIZE", "1").strip().lower() \
+        not in ("0", "false", "no")
 
 # Canonical ModelScope repo for the weights (the .msc/.mv metadata in the
 # model dir come from it; no HuggingFace mirror exists for this model).
@@ -152,6 +183,8 @@ class ChineseWordSegmenter:
         aggressive: bool = False,
         idle_offload_s: float = 3600.0,
         batch_size: int = 16,
+        use_host: bool | None = None,
+        managed: bool = False,
     ) -> "ChineseWordSegmenter":
         with cls._instance_lock:
             if cls._instance is None:
@@ -161,6 +194,8 @@ class ChineseWordSegmenter:
                     aggressive=aggressive,
                     idle_offload_s=idle_offload_s,
                     batch_size=batch_size,
+                    use_host=use_host,
+                    managed=managed,
                 )
             return cls._instance
 
@@ -171,12 +206,20 @@ class ChineseWordSegmenter:
         aggressive: bool = False,
         idle_offload_s: float = 3600.0,
         batch_size: int = 16,
+        use_host: bool | None = None,
+        managed: bool = False,
     ) -> None:
         self._model_dir = Path(model_dir)
         self._device = device or "cuda"
         self._aggressive = aggressive
         self._idle_offload_s = float(idle_offload_s)
         self._batch_size = int(batch_size)
+        # Host-first serving (see module docstring); the host's own
+        # engine is constructed with use_host=False + managed=True.
+        self._use_host = _resolve_use_host(use_host) and not managed
+        self._managed = bool(managed)
+        self._host_client = None
+        self._host_down_until = 0.0
 
         ensure_model_downloaded(self._model_dir)
         # label map straight from the model dir's config.json — decode_words
@@ -208,9 +251,11 @@ class ChineseWordSegmenter:
     def segment_batch(
         self, texts: list[str], batch_size: int | None = None
     ) -> list[list[str]]:
-        """Batch API.  Chinese texts are segmented, non-Chinese texts pass
-        through unchanged; order is preserved.  One summary log per call
-        (INFO for large batches, DEBUG below SUMMARY_LOG_MIN)."""
+        """Batch API.  Chinese texts are segmented (via the resident
+        local-model host when reachable — the in-process torch path is
+        the fallback), non-Chinese texts pass through unchanged; order
+        is preserved.  One summary log per call (INFO for large batches,
+        DEBUG below SUMMARY_LOG_MIN)."""
         if not texts:
             return []
         self._touch()
@@ -223,16 +268,21 @@ class ChineseWordSegmenter:
 
         t0 = time.perf_counter()
         truncated = 0
-        with self._lock:
-            self._ensure_loaded()
-            model_inputs: list[tuple[int, str]] = [(i, texts[i]) for i in seg_idx]
-            for c in range(0, len(model_inputs), bs):
-                chunk = model_inputs[c : c + bs]
-                self._last_use = time.monotonic()  # keep-alive on long corpora
-                words_per_text = self._forward_chunk([t for _, t in chunk])
-                truncated += sum(1 for _, t in chunk if len(t) > MAX_TOKENS - 12)
-                for (i, _), words in zip(chunk, words_per_text):
-                    results[i] = words
+        host_served = False
+        if seg_idx and self._use_host:
+            host_served = self._segment_via_host(
+                texts, seg_idx, results, batch_size)
+        if not host_served:
+            with self._lock:
+                self._ensure_loaded()
+                model_inputs: list[tuple[int, str]] = [(i, texts[i]) for i in seg_idx]
+                for c in range(0, len(model_inputs), bs):
+                    chunk = model_inputs[c : c + bs]
+                    self._last_use = time.monotonic()  # keep-alive on long corpora
+                    words_per_text = self._forward_chunk([t for _, t in chunk])
+                    truncated += sum(1 for _, t in chunk if len(t) > MAX_TOKENS - 12)
+                    for (i, _), words in zip(chunk, words_per_text):
+                        results[i] = words
         for i in pass_idx:
             results[i] = [texts[i]]
 
@@ -252,6 +302,75 @@ class ChineseWordSegmenter:
         else:
             logger.debug(msg, *args)
         return results
+
+    def _segment_via_host(
+        self, texts: list[str], seg_idx: list[int],
+        results: list[list[str]], batch_size: int | None,
+    ) -> bool:
+        """One host round trip for the CJK subset — fills ``results`` in
+        place.  False = the host is unreachable/cooldown (caller runs the
+        in-process path); the cooldown spares every batch a connection
+        timeout while the watchdog restarts the host.  Never raises."""
+        if time.monotonic() < self._host_down_until:
+            return False
+        try:
+            from server_cluster.llm.client import LocalModelHostClient
+
+            if self._host_client is None:
+                self._host_client = LocalModelHostClient()
+            words = self._host_client.segment_batch(
+                [texts[i] for i in seg_idx],
+                aggressive=self._aggressive, batch_size=batch_size)
+        except Exception as exc:  # noqa: BLE001 — the fallback must win
+            self._host_down_until = time.monotonic() + HOST_RETRY_COOLDOWN_S
+            logger.warning(
+                "word segmenter: local model host unusable (%r) — "
+                "in-process fallback for the next %.0fs",
+                exc, HOST_RETRY_COOLDOWN_S)
+            return False
+        for i, w in zip(seg_idx, words):
+            results[i] = w
+        return True
+
+    def load(self) -> None:
+        """Weights onto the device (the host manager's warm-up / admin
+        load entry point)."""
+        with self._lock:
+            self._ensure_loaded()
+
+    def offload(self) -> None:
+        """Idle-offload: weights to CPU (RAM keeps them), CUDA cache
+        emptied; the next segment call rehydrates.  Idempotent — a no-op
+        unless the model is loaded and on GPU."""
+        with self._lock:
+            if not self._loaded or not self._on_gpu:
+                return
+            import torch
+
+            assert self._model is not None
+            self._model.to("cpu")
+            torch.cuda.empty_cache()
+            self._on_gpu = False
+            logger.info(
+                "word segmenter: GPU offload after %.0fs idle "
+                "(weights kept in RAM)",
+                time.monotonic() - self._last_use)
+
+    def status(self) -> dict:
+        """Lifecycle snapshot for the host's ModelStatus detail."""
+        idle = (max(0.0, time.monotonic() - self._last_use)
+                if self._last_use else None)
+        return {
+            "loaded": self._loaded,
+            "on_gpu": self._on_gpu,
+            "device": self._resolved_device,
+            "idle_for_s": idle,
+            "managed": self._managed,
+            "use_host": self._use_host,
+            "aggressive": self._aggressive,
+            "batch_size": self._batch_size,
+            "model_dir": str(self._model_dir),
+        }
 
     def close(self) -> None:
         """Stop the idle-offload watchdog (model stays wherever it is)."""
@@ -379,7 +498,9 @@ class ChineseWordSegmenter:
             self._model = model.to(self._resolved_device).eval()
             self._loaded = True
             self._on_gpu = self._resolved_device == "cuda"
-            if self._watchdog is None:
+            # The internal watchdog owns offload ONLY in unmanaged mode;
+            # the host's ModelManager drives the lifecycle there.
+            if self._watchdog is None and not self._managed:
                 self._watchdog = threading.Thread(
                     target=self._idle_watchdog_loop, name="seg-idle-watchdog", daemon=True
                 )

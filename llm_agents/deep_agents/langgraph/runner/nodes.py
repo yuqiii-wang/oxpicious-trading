@@ -32,8 +32,7 @@ from llm_agents.deep_agents.core.loop import (
 )
 from llm_agents.deep_agents.core.mcp import McpToolClient
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
-from llm_agents.deep_agents.core.sandbox import Sandbox
-from llm_agents.deep_agents.langgraph.hooks import ForkBroker, ForkHooks
+from llm_agents.deep_agents.langgraph.hooks import SpawnBroker, SpawnHooks
 from llm_agents.deep_agents.langgraph.compaction import compact_findings, should_compact
 from llm_agents.deep_agents.langgraph.prompts import (
     CUSTOM_OUTPUT_DIRECTIVE, RESULT_OUTPUT_DIRECTIVE, STEP_SYSTEM_ADDENDUM,
@@ -60,14 +59,14 @@ from llm_agents.deep_agents.planning.prompt_loading import (
     CatalogRow, PromptLadder,
 )
 from llm_agents.deep_agents.planning.session import (
-    ForkPassDown, PlanSessionResult,
+    SpawnPassDown, PlanSessionResult,
     item_labels,
 )
 from llm_agents.deep_agents.planning.store import (
     AGENT_PROMPT_COMPACT_SYSTEM,
     AGENT_PROMPT_CUSTOM_OUTPUT_DIRECTIVE,
-    AGENT_PROMPT_FORK_PLAN_ADDENDUM,
-    AGENT_PROMPT_FORK_SPAWN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_PLAN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_DELEGATE_ADDENDUM,
     AGENT_PROMPT_PLAN_BATCH_FOLLOWUP,
     AGENT_PROMPT_PLAN_REPAIR_MESSAGE,
     AGENT_PROMPT_PLAN_SYSTEM,
@@ -83,7 +82,10 @@ from llm_agents.deep_agents.planning.store import (
     extract_critical,
     PLAN_STORE,
 )
-from llm_agents.deep_agents.tools.kg_tools import KgToolSet
+from llm_agents.deep_agents.tools.ad_hoc_tools import AdHocRequestToolKit
+from llm_agents.deep_agents.tools.kg_tools import (
+    KgToolSet, schema_scope_from_data, table_scope_from_data,
+)
 from llm_agents.deep_agents.tools.plan_tools import MainPlanToolKit
 from llm_agents.deep_agents.tools.prompt_tools import PromptLoadToolKit
 from llm_agents.deep_agents.tools.stats_tools import StatsToolSet
@@ -249,8 +251,15 @@ class TailNodes:
                 max_concurrent_subagents=(
                     run_limits().max_concurrent_subagents),
                 subagent_timeout=run_limits().subagent_timeout_sec,
-                sandbox=(Sandbox() if state.get("sandbox_enabled", True)
-                         else None),
+                # Through the shared cell — an INJECTED sandbox (the
+                # run_thread sandbox= seam) must reach the degraded
+                # lane like every other lane; the cell mints the docker
+                # Sandbox() only when nothing was injected.
+                sandbox=self.run_sandbox(state),
+                # The degraded lane has no spawn hooks — a spawned child
+                # would run unregistered (no child state row, no
+                # supervision), so the lane carries no spawn tool.
+                allow_subagents=False,
                 # The ladder's dynamic rung rides the degraded lane too
                 # (the plan node resolved the budget even when the plan
                 # itself failed — the catalog is the conversation's menu),
@@ -258,8 +267,15 @@ class TailNodes:
                 # every lane).
                 builtin_tools={
                     **self._prompt_kit(state).builtin_tools(),
+                    **self._ad_hoc_kit(state).builtin_tools(),
                     **KgToolSet(
-                        descriptions=dict(state.get("tool_prompts") or {})
+                        descriptions=dict(state.get("tool_prompts") or {}),
+                        table_scope=table_scope_from_data(
+                            state.get("data")),
+                        schema_scope=schema_scope_from_data(
+                            state.get("data")),
+                        decision_engine=getattr(
+                            self, "_decision_engine", None),
                     ).builtin_tools()},
                 tool_prompts=dict(state.get("tool_prompts") or {}))
             with bind_request_chain(writer.context_id):
@@ -323,7 +339,7 @@ class TailNodes:
         # standing + base + step addendum; tools = stats/kg/prompt
         # fetch, NO plan kit — nothing is left to rework at an self._output
         # seat; no subagent lane — the seat has no state row to parent
-        # forks under). ONE writer, inside the agent (the node==agent
+        # spawns under). ONE writer, inside the agent (the node==agent
         # contract): its context is the handoff row's chain.
         agent_prompts = dict(state.get("agent_prompts") or {})
         base = render_template(
@@ -363,9 +379,13 @@ class TailNodes:
                     descriptions=dict(state.get("tool_prompts") or {})
                 ).builtin_tools(),
                 **KgToolSet(
-                    descriptions=dict(state.get("tool_prompts") or {})
+                    descriptions=dict(state.get("tool_prompts") or {}),
+                    table_scope=table_scope_from_data(state.get("data")),
+                    schema_scope=schema_scope_from_data(state.get("data")),
+                    decision_engine=getattr(self, "_decision_engine", None),
                 ).builtin_tools(),
                 **self._prompt_kit(state).builtin_tools(),
+                **self._ad_hoc_kit(state).builtin_tools(),
             },
             sandbox=lambda: self.run_sandbox(state),
             system=(f"{standing_system(agent_prompts)}\n\n"

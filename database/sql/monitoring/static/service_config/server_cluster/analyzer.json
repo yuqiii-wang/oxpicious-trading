@@ -1,0 +1,11 @@
+{
+  "service": "server_cluster.analyzer",
+  "max_parallel": 1,
+  "included_parallel_services": [],
+  "excluded_parallel_services": [],
+  "freq": "always",
+  "schedule": "always-on daemon (FastAPI on 127.0.0.1:8771) started by the stream watchdog like the other daemons",
+  "notes": "Server-cluster analyzer (python -m server_cluster.analyzer): the resident FastAPI API entry over the analysis.* area's cmds — POST /jobs/run (detached spawn of any analysis.* module, tag-deduped), /jobs/status + /jobs/result (service-log tail), /jobs/{tag}/stop. No residents (analysis.* are one-shot batch pipelines). The server process never imports pipeline packages — children run detached with output appended to logs/<date>/<module>.log and do their own cudf bootstrap; orphaned children are re-adopted at startup from open monitor.service_audit rows. One instance only — the registration guard auto-exits a second run.",
+  "source_ref": "server_cluster/__init__.py;server_cluster/_common/server.py;server_cluster/_common/routers/;server_cluster/analyzer/__main__.py",
+  "updated_at": "2026-11-11T00:00:00.000000+00:00"
+}

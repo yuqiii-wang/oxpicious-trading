@@ -3,46 +3,35 @@ import type {
   MaSpreadSecType,
   StrategyBacktestResponse,
   StrategyRiskResponse,
-  StrategyDecision,
 } from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Strategy — singleton backtest
 //  TTL-only cache (ephemeral backtest, no DB write).
 //
-//  Algo selection: the user picks a WEIGHT per algo (0.0-1.0, summing to 1.0).
-//  Binary mode (one algo at 1.0, rest 0): strategy_name = algo name (e.g.
-//  "macd"). Mixed mode (multiple non-zero weights): strategy_name =
-//  "portfolio:macd*0.5" (built by portfolioName(), mirrors the Python
-//  portfolio_name() in strategy/factors_and_algos/portfolio.py).
+//  Signal selection (signals-picked-up era, 2026-11-07): the user picks a
+//  SET of analysis signal families as TAGS — NO weights (weighting was
+//  removed, user-directed). The families are DATA-DRIVEN from the
+//  analysis tier (analysis_signals.history_signals events; see
+//  fetchSignalFamilies).
+//
+//  - Single family: strategy_name = the family name (e.g. "macd").
+//  - Multiple families: strategy_name = "portfolio:macd+mov_rsi" (equal
+//    blend; built by selectionToStrategyName, mirrors the Python
+//    portfolio_name in strategy/factors_and_algos/portfolio.py).
 //
 //  The resolved strategy_name drives the DATA load (backtest/risks
 //  SQL-filter on strategy_name). The Run button passes the SERIALIZED
-//  selection ("macd:0.5,bb:0.5") to Python's --algo arg, which
-//  the Python _parse_algo_arg already understands.
+//  selection ("macd,mov_rsi") to Python's --algo arg.
 //
-//  Default: { macd: 1.0 } — binary MACD.
+//  Default: ["macd"].
 // ---------------------------------------------------------------------------
-export type StrategyAlgo = "macd";
-export const STRATEGY_ALGOS: StrategyAlgo[] = ["macd"];
 
-/** Per-algo weight selection. Weights are 0.0-1.0 and SHOULD sum to 1.0. */
-export type StrategySelection = Record<StrategyAlgo, number>;
+/** The signal-family selection: family names, NO weights. */
+export type StrategySelection = string[];
 
-/** Default selection: MACD-only (binary). User can mix from there. */
-export const DEFAULT_STRATEGY_SELECTION: StrategySelection = {
-  macd: 1.0,
-};
-
-/** Human-readable label for an algo (for the weight menu UI). */
-export const ALGO_LABELS: Record<StrategyAlgo, string> = {
-  macd: "MACD",
-};
-
-/** Abbreviation used in portfolio strategy_name (mirrors Python _ABBR). */
-const ALGO_ABBR: Record<StrategyAlgo, string> = {
-  macd: "macd",
-};
+/** Default selection: MACD only. User can add families from there. */
+export const DEFAULT_STRATEGY_SELECTION: StrategySelection = ["macd"];
 
 /** Build the _ft{N} suffix for a fault tolerance percentage (0-20).
  *  0 → "" (no suffix); 10 → "_ft10". Mirrors Python append_ft_suffix(). */
@@ -51,64 +40,68 @@ export function ftSuffix(ft: number): string {
   return `_ft${Math.round(ft)}`;
 }
 
-/** Build the portfolio strategy_name from a selection (mirrors Python
+/** Build the strategy_name from a family selection (mirrors Python
  *  portfolio_name() in strategy/factors_and_algos/portfolio.py).
- *  - Binary (one algo non-zero): returns the algo name (e.g. "macd").
- *  - Mixed (multiple non-zero): returns "portfolio:macd*0.5".
- *  - All zero: returns "" (invalid — caller should guard).
+ *  - Single family: returns the family name (e.g. "macd").
+ *  - Multiple families: returns "portfolio:macd+mov_rsi" (equal blend,
+ *    names sorted for stability — no weights).
+ *  - Empty: returns "" (invalid — caller should guard).
  *  When ft > 0, appends _ft{N} suffix (e.g. "macd_ft10") so the FT variant
  *  is a distinct strategy in the DB. */
 export function selectionToStrategyName(
   selection: StrategySelection,
   ft: number = 0,
 ): string {
-  const active = STRATEGY_ALGOS.filter((a) => selection[a] > 0);
+  const active = [...new Set(selection)].sort();
   if (active.length === 0) return "";
-  // Binary: one algo at any non-zero weight — treat as that algo's binary run.
-  // (Python normalizes a single-algo selection to weight 1.0 regardless.)
-  let base: string;
-  if (active.length === 1) {
-    base = active[0];
-  } else {
-    // Mixed: build portfolio:name*weight+...
-    const parts = active.map((a) => `${ALGO_ABBR[a]}*${selection[a]}`);
-    base = "portfolio:" + parts.join("+");
-  }
+  const base = active.length === 1 ? active[0] : `portfolio:${active.join("+")}`;
   return base + ftSuffix(ft);
 }
 
 /** Serialize a selection for the Python --algo CLI arg.
- *  Format: "macd:0.5,bb:0.5" (understood by _parse_algo_arg). */
+ *  Format: "macd,mov_rsi" (family names only — no weights). */
 export function serializeSelection(selection: StrategySelection): string {
-  return STRATEGY_ALGOS
-    .filter((a) => selection[a] > 0)
-    .map((a) => `${a}:${selection[a]}`)
-    .join(",");
+  return [...new Set(selection)].sort().join(",");
 }
 
-/** True when exactly one algo has a non-zero weight (binary mode). */
-export function isBinarySelection(selection: StrategySelection): boolean {
-  return STRATEGY_ALGOS.filter((a) => selection[a] > 0).length === 1;
-}
-
-/** Sum of all weights (should be 1.0 for a valid selection). */
-export function selectionSum(selection: StrategySelection): number {
-  return STRATEGY_ALGOS.reduce((s, a) => s + (selection[a] || 0), 0);
-}
-
-/** Build a short label for the selection (for the menu button).
- *  "MACD 100%" or "MACD 50% + BB 50%" or "Invalid (sum=0.8)".
- *  Appends " FT{N}%" when fault tolerance is enabled. */
+/** Build a short label for the selection (for running alerts).
+ *  "macd" or "macd + mov_rsi". Appends " FT{N}%" when FT is enabled. */
 export function selectionLabel(
   selection: StrategySelection,
   ft: number = 0,
 ): string {
-  const active = STRATEGY_ALGOS.filter((a) => selection[a] > 0);
-  if (active.length === 0) return "No algo";
-  const base = active
-    .map((a) => `${ALGO_ABBR[a]} ${Math.round(selection[a] * 100)}%`)
-    .join(" + ");
+  const active = [...new Set(selection)].sort();
+  if (active.length === 0) return "No signal family";
+  const base = active.join(" + ");
   return ft && ft > 0 ? `${base} · FT${Math.round(ft)}%` : base;
+}
+
+// ---------------------------------------------------------------------------
+//  Signal family tags (GET /api/strategy/singleton/signal-families)
+// ---------------------------------------------------------------------------
+
+/** One selectable signal family: name + evidence footprint. */
+export interface SignalFamilyInfo {
+  /** The family label — also the Python algo name + single-run
+   *  strategy_name (e.g. "macd", "mov_rsi"). */
+  name: string;
+  /** Recorded standalone-tier events for this sec_type. */
+  n_events: number;
+  /** Distinct codes with events. */
+  n_codes: number;
+  /** Newest event date (the data horizon). */
+  latest_date: string | null;
+}
+
+/** Fetch the selectable signal families for a sec_type — the analysis
+ *  families with recorded standalone-tier events (the tag menu options;
+ *  data-driven from the analysis signals tier). */
+export function fetchSignalFamilies(
+  secType: MaSpreadSecType,
+): Promise<SignalFamilyInfo[]> {
+  return fetchJson<{ sec_type: string; families: SignalFamilyInfo[] }>(
+    `/api/strategy/singleton/signal-families?sec_type=${secType}`,
+  ).then((j) => j.families ?? []);
 }
 
 export function fetchSingletonBacktest(
@@ -177,8 +170,7 @@ export function singletonTrainTag(
   secType: MaSpreadSecType,
   selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
 ): string {
-  const algoName = serializeSelection(selection).split(",")[0].split(":")[0].trim() ||
-    STRATEGY_ALGOS[0];
+  const algoName = [...new Set(selection)].sort()[0] ?? DEFAULT_STRATEGY_SELECTION[0];
   return `singleton-train:${secType}:${code}:${algoName}`;
 }
 
@@ -243,8 +235,8 @@ export async function checkExistingStrategy(
  * spawning the Python scripts via the backend. Returns when both processes
  * exit. NOT cached (always a fresh POST).
  *
- * The selection is serialized as "macd:0.5,bb:0.5" and passed
- * to Python's --algo arg (which _parse_algo_arg understands).
+ * The selection is serialized as "macd,mov_rsi" (family names, no
+ * weights) and passed to Python's --algo arg.
  *
  * When `force` is true (default), passes --force to Python so existing
  * rows are deleted and replaced. When false, the Python script skips
@@ -281,13 +273,11 @@ export async function runSingletonStrategy(
 /**
  * Train Model — run the Optuna param optimizer
  * (`python -m strategy.factors_and_algos._optm_engine`) for one
- * (code, secType) via the backend. The study minimizes
- * 0.8·(−pnl) + 0.2·risk over the algo's tunable space + the common
- * trading space, then upserts the best params into strategy.algo_configs
- * (the NEXT Run Strategy uses them automatically). Training writes no
- * backtest rows, so there is no PK conflict path.
+ * (code, secType) via the backend, then upserts the best params into
+ * strategy.algo_configs (the NEXT Run Strategy uses them automatically).
+ * Training writes no backtest rows, so there is no PK conflict path.
  *
- * Training is binary-mode: the FIRST algo of the selection is trained.
+ * Training is single-family: the FIRST family of the selection is trained.
  */
 export async function trainStrategyModel(
   code: string,
@@ -372,9 +362,9 @@ export interface TrainInfoResponse {
 }
 
 /**
- * Fetch the Train Model info bundle from the DB: the algo's default
- * config row, the trained config rows, the training run headers, and
- * the per-point trial log (both loss types) of the latest run — or of
+ * Fetch the Train Model info bundle from the DB: the family's default
+ * config row, the trained config rows, the training run headers, and the
+ * per-point trial log (both loss types) of the latest run — or of
  * `runId` when given (the UI run selector re-fetches on change).
  *
  * NOT cached (plain fetch) — must be fresh right after a training run.

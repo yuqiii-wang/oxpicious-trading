@@ -82,6 +82,27 @@ class ChainStoreMixin(OutputStoreMixin):
         return out
 
 
+    async def list_unsettled_super_threads(self) -> List[str]:
+        """The super thread ids of chains still holding pending /
+        in_progress state rows — the daemon-boot ORPHAN sweep's input: a
+        fresh daemon process owns zero runs, so any unsettled chain at
+        boot belongs to a dead one (killed mid-run by a crash, OOM kill
+        or a forced recycle — their rows used to read as a live run
+        forever, keeping the UI's live chip + Stop button up). Legacy
+        single-thread runs (super_thread_id NULL) resolve to their own
+        thread_id."""
+        conn = await self._connect()
+        try:
+            records = await conn.fetch(
+                "SELECT DISTINCT COALESCE(super_thread_id, thread_id) AS sid "
+                "FROM llm.deep_agent_states "
+                "WHERE status IN ('pending', 'in_progress')",
+            )
+        finally:
+            await conn.close()
+        return [str(r["sid"]) for r in records]
+
+
     async def purge_super_thread(self, thread_id: str) -> None:
         """Remove ONE RUN'S WHOLE CHAIN (the three-graph refactor: the
         delete crosses every thread the run minted — the plan thread the
@@ -112,6 +133,10 @@ class ChainStoreMixin(OutputStoreMixin):
                 "llm_agents/deep_agents/planning/store/"
                 "llm_requests/delete_chains_for_thread",
                 thread_id)
+            await conn.execute(write.sql, *write.params)
+            write = render_sql_write(
+                "llm_agents/_core/aux_steps/deep_agent_aux_steps/"
+                "delete_for_thread", thread_id)
             await conn.execute(write.sql, *write.params)
             write = render_sql_write(
                 "llm_agents/deep_agents/planning/store/"

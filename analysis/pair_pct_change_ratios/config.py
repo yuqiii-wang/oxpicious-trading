@@ -18,7 +18,7 @@ ANALYSIS_DESCRIPTION = (
     "exposure industry (the position), benchmark_market = the "
     "broad-market index whose pct change is subtracted in the offset "
     "mode. The stored value is the MINIMUM-VARIANCE hedge ratio "
-    "h* = −Cov(A, B) / Var(A) over trailing 5/20/60/255-day windows "
+    "h* = −Cov(A, B) / Var(A) over trailing 5/20/60/252-day windows "
     "— how many units of the subject to hold per unit long of the "
     "benchmark industry so the combined position's variance is "
     "minimal; h* > 0 (negative covariance — the opposite-moves "
@@ -65,7 +65,7 @@ INTERVAL_DAYS = 20
 
 # Trailing window lengths (trading days) of the rolling Cov/Var hedge
 # ratio, per mode.
-RATIO_WINDOWS = (5, 20, 60, 255)
+RATIO_WINDOWS = (5, 20, 60, 252)
 
 # Broad-market benchmark INDEX codes materialized as benchmark_market
 # (the offset mode's market factor — its own-calendar pct change is

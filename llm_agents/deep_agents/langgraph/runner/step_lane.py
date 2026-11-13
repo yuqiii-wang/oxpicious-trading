@@ -1,6 +1,6 @@
 """llm_agents.deep_agents.langgraph.runner.step_lane — the STEP LANE mixin (the looping heart of every
 execution graph): ONE planned step per hop — inline conversations,
-delegated forks, the parallel wave — with the fresh-tree routing
+delegated spawns, the parallel wave — with the fresh-tree routing
 between hops.
 
 """
@@ -33,7 +33,7 @@ from llm_agents.deep_agents.core.loop import (
 from llm_agents.deep_agents.core.mcp import McpToolClient
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 from llm_agents.deep_agents.core.sandbox import Sandbox
-from llm_agents.deep_agents.langgraph.hooks import ForkBroker, ForkHooks
+from llm_agents.deep_agents.langgraph.hooks import SpawnBroker, SpawnHooks
 from llm_agents.deep_agents.langgraph.compaction import compact_findings, should_compact
 from llm_agents.deep_agents.langgraph.prompts import (
     CUSTOM_OUTPUT_DIRECTIVE, RESULT_OUTPUT_DIRECTIVE, STEP_SYSTEM_ADDENDUM,
@@ -60,14 +60,14 @@ from llm_agents.deep_agents.planning.prompt_loading import (
     CatalogRow, PromptLadder,
 )
 from llm_agents.deep_agents.planning.session import (
-    ForkPassDown, PlanSessionResult,
+    SpawnPassDown, PlanSessionResult,
     item_labels,
 )
 from llm_agents.deep_agents.planning.store import (
     AGENT_PROMPT_COMPACT_SYSTEM,
     AGENT_PROMPT_CUSTOM_OUTPUT_DIRECTIVE,
-    AGENT_PROMPT_FORK_PLAN_ADDENDUM,
-    AGENT_PROMPT_FORK_SPAWN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_PLAN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_DELEGATE_ADDENDUM,
     AGENT_PROMPT_PLAN_BATCH_FOLLOWUP,
     AGENT_PROMPT_PLAN_REPAIR_MESSAGE,
     AGENT_PROMPT_PLAN_SYSTEM,
@@ -83,6 +83,7 @@ from llm_agents.deep_agents.planning.store import (
     extract_critical,
     PLAN_STORE,
 )
+from llm_agents.deep_agents.tools.ad_hoc_tools import AdHocRequestToolKit
 from llm_agents.deep_agents.tools.kg_tools import KgToolSet
 from llm_agents.deep_agents.tools.plan_tools import MainPlanToolKit
 from llm_agents.deep_agents.tools.prompt_tools import PromptLoadToolKit
@@ -111,7 +112,7 @@ class StepLane:
 
         THE PARALLEL WAVE: when the head of the runnable lane is
         delegated or parallel-marked, every CONSECUTIVE eligible step
-        joins one parallel wave — sibling fork goals are fixed at plan
+        joins one parallel wave — sibling spawn goals are fixed at plan
         time and parallel marks carry the planner's independence
         assertion, so neither can depend on sibling findings; the wave
         stops at the first unmarked inline step (the dependency
@@ -160,27 +161,7 @@ class StepLane:
             # settled.
             return {"next": "finalize"}
         step = runnable[0]
-        limits = run_limits()
-        common = dict(
-            model=state.get("model"),
-            # Per-conversation cap: generous since every request now
-            # carries the self._provider's per-request token ceiling (the
-            # runaway guard lives THERE — core.self._provider — not in step
-            # counts). The run-level bound is the plan itself (≤ the
-            # configured max_plan_nodes hops); this clamp only keeps
-            # one conversation from eating the whole run (live runs
-            # showed 12 starving delegated data pulls; 20 still bit
-            # deep studies).
-            max_steps=max(limits.min_conversation_steps, min(
-                int(state.get("max_steps")
-                    or limits.max_conversation_steps),
-                limits.max_steps_cap)),
-            temperature=state.get("temperature"),
-            # The parent-side supervision policy (propagates to every
-            # spawned child with the hooks).
-            max_concurrent_subagents=limits.max_concurrent_subagents,
-            subagent_timeout=limits.subagent_timeout_sec,
-        )
+        common = self._hop_common(state)
 
         async def _fetch_delegate(
                 state_row: StateRow) -> Tuple[Optional[str], bool]:
@@ -194,13 +175,13 @@ class StepLane:
         findings = list(state.get("findings") or [])
         n_tool_calls = int(state.get("n_tool_calls") or 0)
         n_llm_calls = int(state.get("steps") or 0)
-        # The fork pass-down: the run's business context + the loaded
+        # The spawn pass-down: the run's business context + the loaded
         # prompts' rendered texts + the not-loaded rows' catalog lines —
         # every child this hop spawns (and every sub-sub child below
         # it) receives them beside its goal.
         prompt_texts = dict(state.get("prompt_texts") or {})
         prompt_catalog = dict(state.get("prompt_catalog") or {})
-        biz_context = ForkPassDown.pack(
+        biz_context = SpawnPassDown.pack(
             state.get("goal", ""), state.get("data"), prompt_texts,
             prompt_catalog).to_context()
         # The internal prompt rows resolved at run start (missing key =
@@ -211,7 +192,7 @@ class StepLane:
         # One delegated step's execution — the wave member and (wave of
         # one) the plain delegated hop. Never raises: every failure
         # settles this member's row failed and returns its finding, so
-        # one bad fork never takes the wave (or the lane) down.
+        # one bad spawn never takes the wave (or the lane) down.
         # ------------------------------------------------------------------
         async def _delegated_hop(step_row: StateRow,
                                  delegate: str) -> Tuple[str, str, int, int]:
@@ -227,11 +208,11 @@ class StepLane:
             except Exception as exc:  # noqa: BLE001 — bookkeeping
                 logger.warning("step in_progress tick failed (%s): %s",
                                step_row.state_id, exc)
-            # The fork pass-down: the run's business context + the
+            # The spawn pass-down: the run's business context + the
             # selected prompts' rendered texts — every child this hop
             # spawns (and every sub-sub child below it) receives it
             # beside its goal. THE DYNAMIC RUNG rides the GOAL: a
-            # delegated goal is this fork's whole directive, and a
+            # delegated goal is this spawn's whole directive, and a
             # sub-plan goal NAMES its study prompt keys — those (and
             # any label hits on the goal's vocabulary) load for THIS
             # child ahead of its conversation, merged into its
@@ -240,15 +221,18 @@ class StepLane:
             # the code could not see.
             node_prompts = await self._node_prompts(state, delegate)
             child_biz_context = (
-                ForkPassDown.pack(
+                SpawnPassDown.pack(
                     state.get("goal", ""), state.get("data"),
                     {**prompt_texts, **node_prompts},
                     {k: v for k, v in prompt_catalog.items()
                      if k not in node_prompts}).to_context()
                 if node_prompts else biz_context)
-            load_tools = self._prompt_kit(state).builtin_tools()
-            # THE FORK PRE-PLANNER: one small parent-side call proposes
-            # the fork's sub-steps NOW (see _preplan_fork) — the child
+            load_tools = {
+                **self._prompt_kit(state).builtin_tools(),
+                **self._ad_hoc_kit(state).builtin_tools(),
+            }
+            # THE SPAWN PRE-PLANNER: one small parent-side call proposes
+            # the spawn's sub-steps NOW (see _preplan_spawn) — the child
             # registers with its plan already materialized and works
             # instead of spending its conversation budget planning.
             # Fail-soft: any failure (transport, budget, bad JSON after
@@ -256,25 +240,25 @@ class StepLane:
             # contract unchanged.
             preplanned: Optional[List[PlannedStep]] = None
             try:
-                preplanned = await Planner.preplan_fork(
+                preplanned = await Planner.preplan_spawn(
                     self._provider.chat_complete, delegate, state.get("data"),
                     model=state.get("model"),
                     system_prompt=agent_prompts.get(AGENT_PROMPT_SUBPLAN_SYSTEM),
                     repair_template=agent_prompts.get(
                         AGENT_PROMPT_PLAN_REPAIR_MESSAGE))
-                logger.info("fork %s pre-planned: %d sub-step(s)",
+                logger.info("spawn %s pre-planned: %d sub-step(s)",
                             step_row.state_id, len(preplanned))
             except Exception as exc:  # noqa: BLE001 — child plans itself
-                logger.warning("fork pre-plan failed for step %s (%s) — "
+                logger.warning("spawn pre-plan failed for step %s (%s) — "
                                "the child plans itself",
                                step_row.state_id, exc)
-            broker = ForkBroker(thread_id=thread_id)
+            broker = SpawnBroker(thread_id=thread_id)
             try:
-                # A fork step: NO main conversation — the subagent IS
+                # A spawn step: NO main conversation — the subagent IS
                 # the engine. The step hop carries no context of its
                 # own; the child mints its own (registry + requests all
                 # hang off the child's id).
-                hooks = ForkHooks(
+                hooks = SpawnHooks(
                     thread_id, step_row.state_id,
                     store=self._store, parent_context_id=None,
                     model=state.get("model"),
@@ -284,7 +268,9 @@ class StepLane:
                     agent_prompts=agent_prompts,
                     tool_prompts=dict(state.get("tool_prompts") or {}),
                     extra_builtin_tools=load_tools,
-                    preplanned_steps=preplanned)
+                    preplanned_steps=preplanned,
+                    decision_engine=getattr(
+                        self, "_decision_engine", None))
                 agent = DeepAgent(
                     self._provider, self._mcp,
                     allow_subagents=True,
@@ -297,11 +283,11 @@ class StepLane:
                     subagent_run_wrapper=hooks.run_wrapper,
                     **common)
                 broker.agent = agent
-                # A delegated fork (a sub-plan section) spends its first
+                # A delegated spawn (a sub-plan section) spends its first
                 # conversation turns planning its own subtree (add_nodes
                 # + per-node ticks) before the study begins — give it
                 # bounded headroom over the inline clamp (live 2026-11-03
-                # run: 12-step forks starved exactly there).
+                # run: 12-step spawns starved exactly there).
                 finding = await agent.run_delegation(
                     delegate, max_steps=min(
                         common["max_steps"] + 8,
@@ -327,8 +313,8 @@ class StepLane:
                                     n_states=1)
             finally:
                 end_request_chain(writer.context_id)
-            # The delegation's answer may end with the fork's [CRITICAL]
-            # marker (the fork addendum's contract) — strip it from the
+            # The delegation's answer may end with the spawn's [CRITICAL]
+            # marker (the spawn addendum's contract) — strip it from the
             # finding and flag the step's result row with it (the child's
             # own subagent-result row flags at its settle, hooks.py).
             critical, finding = extract_critical(finding)
@@ -360,64 +346,22 @@ class StepLane:
         # members' update_plan writes (None on the sequential lane).
         # Never raises — same contract as _delegated_hop.
         # ------------------------------------------------------------------
-        # THE STEP AGENT (2026-11-06): the inline hop's conversation
-        # as an agent object (agents/step_agent.py — ONE agent == ONE
-        # node: identity + its own chained context + resume()). The
-        # deps bundle carries this closure scope's collaborators
-        # (hooks factory, message builder, tool kits, sandbox, system)
-        # so the agent module stays langgraph-free.
-        def _step_system() -> str:
-            system_args = template_args(state.get("data"))
-            base = render_template(
-                state.get("system") or DEFAULT_SYSTEM_PROMPT,
-                system_args)
-            step_addendum = (agent_prompts.get(AGENT_PROMPT_STEP_ADDENDUM)
-                             or STEP_SYSTEM_ADDENDUM)
-            return (f"{standing_system(agent_prompts)}\n\n"
-                    f"{base}\n\n{step_addendum}")
+        # THE STEP DEPS (2026-11-07 — extracted to base.build_step_deps,
+        # shared with the result graph's review seats): the inline hop's
+        # conversation collaborators over THIS hop's state snapshot; the
+        # findings bridge below is the pre-hop evidence the wave members
+        # share (never each other's lines).
+        step_deps = self.build_step_deps(
+            state, thread_id=thread_id, findings=findings)
 
-        step_deps = StepDeps(
-            make_hooks=lambda step_row, broker, parent_context_id: ForkHooks(
-                thread_id, step_row.state_id,
-                store=self._store, parent_context_id=parent_context_id,
-                model=state.get("model"),
-                state_by_run=broker.state_by_run,
-                context_by_run=broker.context_by_run,
-                biz_context=biz_context,
-                agent_prompts=agent_prompts,
-                tool_prompts=dict(state.get("tool_prompts") or {}),
-                extra_builtin_tools=self._prompt_kit(state).builtin_tools()),
-            build_message=lambda step_row, node_prompts, resume_block: (
-                step_user_message(StepPromptContext(
-                    goal=state.get("goal", ""), data=state.get("data"),
-                    state=step_row, findings=findings,
-                    prompt_texts=prompt_texts,
-                    prompt_catalog=prompt_catalog,
-                    node_prompts=node_prompts,
-                    digest=state.get("findings_digest"),
-                    n_compacted=int(state.get("n_compacted") or 0)))
-                + (f"\n\n{resume_block}" if resume_block else "")),
-            make_tools=lambda step_row, broker, plan_lock, writer: {
-                **MainPlanToolKit(
-                    thread_id, writer.context_id, broker.cancel, plan_lock,
-                    descriptions=dict(state.get("tool_prompts") or {})
-                ).builtin_tools(),
-                **StatsToolSet(
-                    descriptions=dict(state.get("tool_prompts") or {})
-                ).builtin_tools(),
-                **KgToolSet(
-                    descriptions=dict(state.get("tool_prompts") or {})
-                ).builtin_tools(),
-                **self._prompt_kit(state).builtin_tools(),
-            },
-            make_broker=lambda tid: ForkBroker(thread_id=tid),
-            get_node_prompts=lambda directive: self._node_prompts(
-                state, directive),
-            sandbox=lambda: self.run_sandbox(state),
-            system=_step_system(),
-            common=common,
-            mcp=self._mcp,
-        )
+        # THE INSTRUCTED RESUME's NODE-SCOPE map: the state's
+        # carried-forward entries plus every verdict this invocation
+        # writes. _inline_hop reads THIS — the state's own copy only
+        # refreshes at node return, and the repair window's re-pick of
+        # a reopened row happens INSIDE the same invocation (the hop
+        # loop continues right after the window).
+        resume_map: Dict[str, Dict[str, str]] = dict(
+            state.get("resume_instructions") or {})
 
         async def _inline_hop(
                 step_row: StateRow,
@@ -433,10 +377,9 @@ class StepLane:
                     model=state.get("model"), llm=True,
                     state_id=step_row.state_id))
             # THE INSTRUCTED RESUME: a supervisor retry verdict left
-            # this step's instruction in the state's resume map — the
-            # agent re-runs WITH its prior context instead of cold.
-            info = (state.get("resume_instructions") or {}).get(
-                str(step_row.state_id))
+            # this step's instruction in the node-scope resume map —
+            # the agent re-runs WITH its prior context instead of cold.
+            info = resume_map.get(str(step_row.state_id))
             if info:
                 return await agent.resume(
                     step_row,
@@ -462,7 +405,7 @@ class StepLane:
             # THE PARALLEL WAVE: collect the maximal run of CONSECUTIVE
             # delegated-or-parallel steps, then execute them
             # concurrently under the wave slots — a delegated member
-            # runs its fork engine, an inline member its own
+            # runs its spawn engine, an inline member its own
             # conversation (their update_plan writes serialized by one
             # lock). THE JOIN — LangGraph's parallel-node semantics:
             # the merge node after the wave waits for ALL of the wave's
@@ -547,8 +490,11 @@ class StepLane:
         # does not end the path — the synthesis runs on the reviews
         # that returned and notes the failed one.
         failed_rows: List[Tuple[StateRow, str]] = []
-        # Bound on EVERY hop (the update's carry-forward reads it even
-        # when no failure opened a self._repair window — the live 467cc run
+        # The entries THIS hop's verdicts wrote (they survive the
+        # settled-ids pruning below — a row that settled failed and
+        # then re-opened is exactly the one still runnable). Bound on
+        # EVERY hop (the update's carry-forward reads it even when no
+        # failure opened a self._repair window — the live 467cc run
         # caught the UnboundLocalError on healthy hops).
         resume_instructions: Dict[str, Dict[str, str]] = {}
         if head_delegate is not None or head_parallel:
@@ -570,17 +516,10 @@ class StepLane:
             "findings": findings,
             "steps": n_llm_calls,
             "n_tool_calls": n_tool_calls,
-            # THE RESUME MAP's carry-forward: this hop's new retry
-            # instructions merge in; entries whose rows settled this
-            # hop (resumed to completed/failed, ignored, or stale)
-            # drop — only instructions for rows still runnable ride
-            # to the next hop (str keys, checkpoint-safe).
-            "resume_instructions": {
-                **{k: v for k, v in (
-                    state.get("resume_instructions") or {}).items()
-                    if int(k) not in settled_ids_this_hop},
-                **resume_instructions,
-            },
+            # resume_instructions is NOT set here: the repair window
+            # below writes this hop's verdict entries, and a dict
+            # display would snapshot them before they exist — the
+            # carry-forward is assembled just before the return.
         }
         # The run's answer is the LAST COMPLETED step's finding — a
         # failed tail step must not overwrite the best document the run
@@ -641,10 +580,18 @@ class StepLane:
                     # the reopened row off the fresh tree — reads it;
                     # the hop consumes its entry there.
                     for sid in retried_ids:
-                        resume_instructions[str(sid)] = {
+                        entry = {
                             "instruction": verdicts[sid].instruction,
                             "prior_error": prior_errors.get(sid, ""),
                         }
+                        # BOTH maps: the per-hop dict rides the node
+                        # return (fresh entries beat the settled-ids
+                        # pruning); the node-scope map feeds the
+                        # SAME-INVOCATION re-pick — the hop loop
+                        # continues right after the window and
+                        # _inline_hop reads this, not the state.
+                        resume_instructions[str(sid)] = entry
+                        resume_map[str(sid)] = entry
                     tree = await PLAN_STORE.list_thread_states(thread_id)
             # PATH ENDERS — the failures that still end the main path:
             # a non-review step left failed (no self._repair, no ignore). A
@@ -701,5 +648,17 @@ class StepLane:
         except Exception as exc:  # noqa: BLE001 — cannot re-read: stop
             logger.warning("step lane: plan re-read failed: %s", exc)
             update["next"] = "finalize"
+        # THE RESUME MAP's carry-forward — assembled AFTER the repair
+        # window (its verdict entries are written during it): the
+        # node-scope map pruned of entries whose rows settled this hop,
+        # with this hop's fresh verdict entries merged last — a row
+        # that settled failed and then re-opened is exactly the one
+        # still runnable, so its new instruction always rides (str
+        # keys, checkpoint-safe).
+        update["resume_instructions"] = {
+            **{k: v for k, v in resume_map.items()
+               if int(k) not in settled_ids_this_hop},
+            **resume_instructions,
+        }
         return update
 

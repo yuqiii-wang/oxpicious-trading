@@ -23,7 +23,7 @@ class StockTechStatsBuild(StockBuild):
     """``python -m builds.stock.tech_stats`` — lifecycle + delegation."""
 
     title = ("BUILD STOCK TECH_STATS  ·  "
-             "MA5/20/60/120/255 + EMA6/12/20/26/60/120/255 from close")
+             "MA5/20/60/120/252 + EMA6/12/20/26/60/120/252 from close")
     component = "tech_stats"
     # StockBuild delegates argv to its pipeline.cli (allow_unknown_args
     # True); this child owns its argparse — restore the strict default.

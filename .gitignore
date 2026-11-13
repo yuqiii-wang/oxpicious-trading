@@ -18,4 +18,11 @@ nohup.out
 
 startup_on_login.bat
 
-llm_agents/local_models/*
+# local model host: the resident serving process (server_cluster/
+# llm/*.py — migrated from llm_agents/local_model_host 2026-11) is
+# tracked; the downloaded WEIGHTS under its local_models/ subdir are not
+server_cluster/llm/local_models/*
+
+# server cluster: the code is tracked; the runtime state (resident
+# desired-state drift under server_cluster/_state/) is not
+server_cluster/_state/

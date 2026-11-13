@@ -36,6 +36,25 @@ ask the user to double-check the proposed fix first.
 
 ## Python
 
+### Bytecode caches (`__pycache__`) — clear on source edit
+
+After editing any `.py` source file, delete the stale bytecode for it
+before the next run — remove the module's `__pycache__` directory (or the
+whole package's caches in one go):
+
+```
+rm -rf analysis/market_beta/__pycache__      # one package
+find analysis _common builds -name __pycache__ -type d \
+  -exec rm -rf {} +                          # tree-wide sweep
+```
+
+This repo is edited on Windows but run through WSL conda (`/mnt/e/...`).
+Python reuses a cached `.pyc` when its recorded source mtime matches, and
+cross-boundary edits can defeat that check — so a run can silently execute
+old code, and a module renamed or deleted on disk keeps importing from its
+orphaned `.pyc`. Clearing the cache forces a recompile from the real
+source; it is cheap and safe (caches regenerate on the next run).
+
 ### Entry points (`__main__.py`)
 
 Every new `__main__.py` starts with the cudf.pandas activation, before the
@@ -165,10 +184,14 @@ Throwaway scripts and their outputs (console output, screenshots) go in
 `temp_scripts/`.
 
 LLM-touching tests and probes (deep agents, langgraph) run on the DUMMY
-LLM — `llm_agents/test/dummy_llm` (`DummyLlmProvider` in-process, or
-`python -m llm_agents.test.dummy_llm.server` + `--provider dummy
---dummy-url ...` for HTTP-sim with rate-limit error injection) — zero
-provider spend, deterministic; details in `deep-agent-blueprint`.
+LLM double — `test/dummy_llm` at the project root (`DummyLlmProvider`
+in-process: matched request → the feature dataset's canned reply; the
+kg/jev cucumber assertion datasets live in the sibling
+`test/dummy_langgraph`), or `--provider dummy` for
+HTTP-sim against the resident local-model host's dummy-1 model
+(default endpoint http://127.0.0.1:8767/v1/chat/completions, rate-limit
+error injection via its POST /control) — zero provider spend,
+deterministic; details in `deep-agent-blueprint`.
 
 ## Verification
 

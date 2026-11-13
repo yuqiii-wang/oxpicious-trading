@@ -2,7 +2,7 @@
 
 One deep-agent run studies a business ask, lays out research steps, and
 executes them as a LangGraph node chain — each step its own
-conversation, forks delegated to supervised subagents, the whole living
+conversation, spawns delegated to supervised subagents, the whole living
 plan observable and mutable while it runs.
 
 ARCHITECTURE — the layering follows what the modern agent harnesses
@@ -19,7 +19,7 @@ record — each live in exactly one layer here:
 
   core/      the RUNTIME — the loop and its capabilities
                loop (DeepAgent: one message list, one provider call per
-               step, until a no-tool reply; sync + background-fork
+               step, until a no-tool reply; sync + background-spawn
                spawning, collect, answer-gating, no-orphan cleanup),
                delegation (the Task-tool contract + supervision hooks),
                provider + mcp (the model and tool transports),
@@ -35,11 +35,21 @@ record — each live in exactly one layer here:
                mounts per conversation role (sandbox_tools /
                plan_tools / thread_search / delegation_tools; the
                spawn/collect handlers stay loop methods — their
-               supervision state lives in the loop).
+               supervision state lives in the loop;
+               ad_hoc_tools 2026-11-10: the model-facing face of the
+               package-root ``ad_hoc_llm_request`` module — the ONE
+               independent fresh-context request lane (a two-message
+               [system, user] context per ask, tools=None, its OWN
+               one-row request-log chain so an ask never rides the
+               ambient conversation's chain nor pollutes its
+               cache-token rollup), mounted beside load_prompt on
+               every conversation for self-contained side questions
+               that would otherwise be worked through the big
+               history).
   skills/    the SKILL LAYER — the run's selected study instructions
                (llm.ai_prompts rows) as objects: one Skill per row,
                one SkillBook per run (the LOADED set rendered as the
-               pass-down every step conversation and fork receives;
+               pass-down every step conversation and spawn receives;
                the quoted selected-prompts block builder). WHICH rows
                load is the GRADUAL LOADING LADDER's decision
                (planning/prompt_loading: catalog previews → keyword
@@ -49,8 +59,8 @@ record — each live in exactly one layer here:
                (validation + repair), the plan tree persistence
                (llm.deep_agent_states + contexts + identities), and
                the mutation AUTHORITIES (the main lane reworks
-               not-yet-run steps and terminates forks; a subagent is
-               structurally confined to its own forked path — the
+               not-yet-run steps and terminates spawns; a subagent is
+               structurally confined to its own spawned path — the
                model-facing tools over an authority live in tools/).
   agents/ the AGENT LAYER (2026-11-06) — ONE agent == ONE graph node:
                NodeAgent (agents/base.py) owns a node's identity
@@ -88,7 +98,7 @@ record — each live in exactly one layer here:
                NodeRunWriter factory, so only langgraph composes), the
                prompt surfaces (business framing, per-step directives,
                the findings bridge between step conversations), the
-               delegation hooks + fork broker, and the deep-agent
+               delegation hooks + spawn broker, and the deep-agent
                LangGraph store (one node one LLM context; states and
                context references persisted, message data never).
 

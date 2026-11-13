@@ -19,7 +19,7 @@ Two seats use it:
 
 No plan-mutation tools (there is no plan left to rework at an output
 seat) and no subagent spawning (the node has no state row to parent
-fork children under) — the stats / kg / prompt-fetch kits ride, so a
+spawn children under) — the stats / kg / prompt-fetch kits ride, so a
 synthesis can still re-check a cited number or load a skill. No state
 row is ticked: the seat is graph-level, not a plan step.
 """
@@ -84,6 +84,10 @@ class OutputAgent(NodeAgent):
                 system=deps.system,
                 builtin_tools=deps.make_tools(),
                 sandbox=deps.sandbox(),
+                # The output node parents no spawn children (no state
+                # row under which a spawn could register — the module
+                # docstring's contract), so it carries no spawn tool.
+                allow_subagents=False,
                 **deps.common)
             with self.chain(writer):
                 result = await agent.run(deps.build_message())

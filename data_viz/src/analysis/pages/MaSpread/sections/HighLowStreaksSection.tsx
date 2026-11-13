@@ -1,6 +1,6 @@
 /**
  * HighLowStreaksSection — the nested High/Low Streaks row: layer 1 holds
- * the band lookback periods (60/120/255/500/750/1275d, period-column
+ * the band lookback periods (60/120/252/504/756/1260d, period-column
  * aligned with the OHLC row); clicking one expands layer 2 — band
  * tightness pcts (1/5/10%). Selecting a pct fills the LATEST date's
  * trailing period-row window with its top/bottom pct% price zones (light
@@ -57,7 +57,7 @@ export function HighLowStreaksSection({
         {/* Row label */}
         <SectionLabel id="highLowStreaks" active={streakPeriod != null} />
         {/* Layer 1 — periods, columns 3-8 (aligned with the OHLC row's
-            60d/120d/255d/500d/750d/1275d buttons). */}
+            60d/120d/252d/500d/750d/1275d buttons). */}
         {HIGH_LOW_STREAK_PERIODS.map((w, col) => (
           <Chip
             key={w}

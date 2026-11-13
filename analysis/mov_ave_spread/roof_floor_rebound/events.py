@@ -212,6 +212,16 @@ def compute_rebound_events(df: pd.DataFrame) -> pd.DataFrame:
         low = host_array(g["low"].to_numpy()).astype("float64")
         # one unit for the whole column (generic NaT below is [ns])
         dates = host_array(g["date"].to_numpy()).astype("datetime64[ns]")
+        # Non-positive prices are degenerate rows (0/NULL closes in the
+        # source — e.g. 920039.BJ 2023-03, 600491.SS 2026-08-27), not
+        # tradeable prices: a floor at level=0 makes close/level → inf
+        # and the amplitude COPY overflows NUMERIC. Treat those days as
+        # missing so they can never become episode extremes.
+        keep = np.isfinite(close) & (close > 0)
+        if not keep.all():
+            close, high, low, dates = close[keep], high[keep], low[keep], dates[keep]
+            if len(close) == 0:
+                continue
         st = int(st_code)
         code_str = str(code)
         for side, side_code in ((1, REBOUND_SIDE_BOTTOM), (-1, REBOUND_SIDE_TOP)):

@@ -5,7 +5,7 @@
  * the PAIR_RATIO_* constants — one consumer became two).
  *
  * The charted metrics are the minimum-variance hedge ratio
- * h* = −Cov(A,B)/Var(A) per trailing window (20/60/255d) from
+ * h* = −Cov(A,B)/Var(A) per trailing window (20/60/252d) from
  * analysis.pair_pct_change_ratios, in a selectable mode: RAW (industry
  * aggregate pct changes) or MARKET OFFSET (each side minus the market
  * pct). See the sibling services for the table semantics.
@@ -27,7 +27,7 @@ import type { PairPctRatioRow } from "@shared/types";
 // ---- Pair pct-change ratios (analysis.pair_pct_change_ratios) -----------
 /** The charted rolling windows of the hedge ratio (the DB's 5d window is
  *  not surfaced — too noisy to read). */
-export const PAIR_RATIO_WINDOWS = ["ma20d", "ma60d", "ma255d"] as const;
+export const PAIR_RATIO_WINDOWS = ["ma20d", "ma60d", "ma252d"] as const;
 export type PairRatioWindow = (typeof PAIR_RATIO_WINDOWS)[number];
 
 /** The two hedge modes: RAW (industry aggregate pct changes) and
@@ -41,12 +41,12 @@ export const PAIR_RATIO_MODE_COLS: Record<PairRatioMode, Record<PairRatioWindow,
   raw: {
     ma20d: "hedge_raw_ma20d",
     ma60d: "hedge_raw_ma60d",
-    ma255d: "hedge_raw_ma255d",
+    ma252d: "hedge_raw_ma252d",
   },
   offset: {
     ma20d: "hedge_offset_ma20d",
     ma60d: "hedge_offset_ma60d",
-    ma255d: "hedge_offset_ma255d",
+    ma252d: "hedge_offset_ma252d",
   },
 };
 
@@ -59,17 +59,17 @@ export const PAIR_RATIO_MODE_LABELS: Record<PairRatioMode, string> = {
 export const PAIR_RATIO_LABELS: Record<PairRatioWindow, string> = {
   ma20d: "20d",
   ma60d: "60d",
-  ma255d: "255d",
+  ma252d: "252d",
 };
 
 /**
  * Chart option for the pair hedge-ratio panel — the minimum-variance
- * hedge ratio h* = -Cov(A,B)/Var(A) per trailing window (20/60/255d)
+ * hedge ratio h* = -Cov(A,B)/Var(A) per trailing window (20/60/252d)
  * for the selected industry pair, in the selected mode (raw or
  * market-offset), with an axis tooltip listing all three windows and a
  * dashed zero line (h* = 0: no hedge; h* > 0 = buy the subject to hedge
  * the exposure industry). The three windows share one hue at graded
- * darkness (windowBlueColor: dark = 20d, light = 255d) — the futures
+ * darkness (windowBlueColor: dark = 20d, light = 252d) — the futures
  * dark-near/light-far ramp convention.
  */
 export function buildPairRatioChartOption(
@@ -83,7 +83,7 @@ export function buildPairRatioChartOption(
   const cols = PAIR_RATIO_MODE_COLS[hedgeMode];
 
   const series = PAIR_RATIO_WINDOWS.map((w, i) => {
-    // One blue family at graded darkness (dark = 20d … light = 255d), the
+    // One blue family at graded darkness (dark = 20d … light = 252d), the
     // futures expiry-ramp convention — the three windows are horizons of ONE
     // metric, not unrelated series.
     const color = windowBlueColor(i, PAIR_RATIO_WINDOWS.length);

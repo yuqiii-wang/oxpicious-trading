@@ -31,6 +31,7 @@ import {
   runSingletonStrategy,
   trainStrategyModel,
   fetchStrategyProcessStatus,
+  serializeSelection,
   singletonRunTag,
   singletonTrainTag,
   DEFAULT_STRATEGY_SELECTION,
@@ -55,7 +56,7 @@ import {
 export default function SingletonStrategyPage() {
   const themeMode = useChartThemeMode();
 
-  // Per-algo weight selection + fault tolerance
+  // Signal-family tag selection (no weights — the tags input) + FT
   const [selection, setSelection] = useState<StrategySelection>(DEFAULT_STRATEGY_SELECTION);
   const [faultTolerance, setFaultTolerance] = useState(10);
 
@@ -197,7 +198,7 @@ export default function SingletonStrategyPage() {
         : undefined,
       series: docs.series("ui.strategy.singleton"),
       state: {
-        algo_weights: Object.entries(selection).map(([k, v]) => `${k}:${v}`).join(","),
+        signal_families: serializeSelection(selection),
         fault_tolerance: faultTolerance,
         selected_period: selectedPeriod
           ? `${selectedPeriod.periodType} ${selectedPeriod.periodValue}`

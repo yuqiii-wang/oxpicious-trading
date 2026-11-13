@@ -17,7 +17,7 @@ end; never raises into the runner (CancelledError returns).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from llm_agents.deep_agents.agents.base import NodeAgent
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
@@ -41,6 +41,14 @@ class SupervisorAgent(NodeAgent):
         factory (the ctor factory's llm defaults False for the marker;
         the poller prefers this hook when the agent provides it)."""
         return self._writer_factory(True)
+
+    def __init__(self, *args, decision_engine: Optional[Any] = None,
+                 **kwargs) -> None:
+        # The SYSTEM ONE decision engine (langgraph.decision, None = the
+        # legacy lanes judge) — INJECTED by the composing layer
+        # (super_run.chain); this agents module imports no langgraph.
+        self.decision_engine = decision_engine
+        super().__init__(*args, **kwargs)
 
     async def session(
         self,
@@ -76,4 +84,5 @@ class SupervisorAgent(NodeAgent):
             model=model or self.model,
             intervention_agent=self,
             super_thread_id=super_thread_id,
+            decision_engine=self.decision_engine,
         ).run()

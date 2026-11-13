@@ -1,6 +1,6 @@
 """llm_agents.kg.query_log — the llm.kg_queries search log / two-hit
 evidence table behind the KG service (DDL
-``database/sql/llm/14_kg_queries.sql``).
+``database/sql/llm/kg_queries.sql``).
 
 Every successful traversal is logged here: :meth:`QueryLog.log_chain`
 replaces the (query, namespace) key's chain (DELETE + INSERT in one

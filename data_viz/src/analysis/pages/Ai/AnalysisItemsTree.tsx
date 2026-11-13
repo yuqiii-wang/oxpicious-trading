@@ -2,24 +2,27 @@
  * AnalysisItemsTree — the summary page's first left foldable, "Scopes":
  * the SUMMARY SUBJECTS section on top (the run's scope tags + their add
  * input — default-linked to the classification nav's multi-selected
- * items; see AnalysisSummaryPage's scope wiring), then the analysis
- * items as a nested checkbox list grouped by their top-nav category
- * (Commons / Derivatives / Composites / Signals).
+ * items; see AnalysisSummaryPage's scope wiring), then — REPLACING the
+ * former analysis-item checkbox tree (2026-11-11) — the SELECTED
+ * TABLES as a nested tick tree over the KG's table corpus: one
+ * tri-state row per SCHEMA (the group) with its tables under it, the
+ * same nested tick hierarchy the former All/Commons/… tree ran. The
+ * ticked tables ARE the run's scope: they ride the request as
+ * analysis_items (one section per table) and as forced_tables (the KG
+ * surface — kg_search / kg_expand / the data hints — serves only
+ * them), both structurally filtered by the deep-agent serving layer.
+ * The underlying list is the SHARED KG table corpus (useKgScopeTables
+ * — one session fetch, the same data the Knowledge Graph config page's
+ * dropdown renders).
  *
  * The panel folds HORIZONTALLY: collapsed it is a slim vertical strip on
  * the far left (icon + rotated title + selected/total count), and a
  * click expands it to the RIGHT; the expanded header's chevron folds it
- * back. On narrow screens (xs) there is no room to grow sideways, so the
- * strip becomes a full-width bar and the fold falls back to vertical.
+ * back. The panel starts EXPANDED (the fold state persists in
+ * localStorage — usePanelFold). On narrow screens (xs) there is no room
+ * to grow sideways, so the strip becomes a full-width bar and the fold
+ * falls back to vertical.
  * The panel stretches to the summary card's height; its body scrolls.
- * Inside, every item starts CHECKED ("select all" default). Each category
- * row is a tri-state checkbox (checked = all items, indeterminate = some)
- * that also toggles the group open/closed via the chevron; the master
- * "All" row on top spans every category. Item keys are
- * `categorySlug/itemSlug` so the selection set is ready to feed the
- * summary generation when it lands. Every item row carries its own Ask AI
- * "?" (AnalysisItemAskButton) that opens the shared ask modal scoped to
- * that analysis.
  */
 import { useState } from "react";
 import {
@@ -42,13 +45,11 @@ import {
   ExpandLess,
   ExpandMore,
 } from "@mui/icons-material";
-import AnalysisItemAskButton from "./AnalysisItemAskButton";
 import {
-  ALL_ANALYSIS_ITEM_KEYS,
-  ANALYSIS_CATEGORIES,
-  analysisItemKey,
-  type AnalysisCategoryEntry,
-} from "./constants";
+  kgNameSchema,
+  useKgScopeTables,
+} from "@/shared/components/kg-table-scope";
+import { usePanelFold } from "./usePanelFold";
 
 /** Folded strip width vs expanded panel width (px, sm+). */
 const STRIP_WIDTH = 46;
@@ -70,11 +71,6 @@ export interface ScopeSubjectEntry {
 }
 
 export interface AnalysisItemsTreeProps {
-  /** Checked leaf keys (`categorySlug/itemSlug`); all-checked by default. */
-  selectedKeys: Set<string>;
-  onToggleItem: (key: string, checked: boolean) => void;
-  onToggleCategory: (category: AnalysisCategoryEntry, checked: boolean) => void;
-  onToggleAll: (checked: boolean) => void;
   /** The run's scope subjects — DEFAULT-LINKED to the classification
    *  nav's multi-selected items; the input bar below adds more (typed
    *  codes resolve their names from the trees when they carry them). */
@@ -87,6 +83,11 @@ export interface AnalysisItemsTreeProps {
   /** The subject kind label (Index / ETF / Stock / Industry) for the
    *  input hint; absent in the "all" sec_type (no subjects then). */
   subjectKind?: string;
+  /** The run's SELECTED TABLES (2026-11-11) — the nested tick tree's
+   *  state: they ride the request as analysis_items AND as
+   *  forced_tables (the KG surface serves only them). */
+  forcedTables: string[];
+  onChangeForcedTables: (next: string[]) => void;
 }
 
 /** The subjects section — the scope tags + their add input. Kept as a
@@ -197,26 +198,53 @@ function SubjectsSection({
 
 export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
   const {
-    selectedKeys,
-    onToggleItem,
-    onToggleCategory,
-    onToggleAll,
     subjects,
     onRemoveSubject,
     onAddSubject,
     subjectSuggestions,
     subjectKind,
+    forcedTables,
+    onChangeForcedTables,
   } = props;
-  // The panel starts folded into a left strip — a click expands it
-  // rightward; the expanded header's chevron folds it back.
-  const [expanded, setExpanded] = useState(false);
-  // All categories start expanded — nothing hides behind a second
+  // Starts expanded (first visit) — the header's chevron folds it into
+  // a left strip, a strip click expands it rightward; the state persists.
+  const [expanded, toggleExpanded] = usePanelFold("scopes", true);
+  // All schema groups start expanded — nothing hides behind a second
   // collapsed level inside the open panel.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
-  const allCount = ALL_ANALYSIS_ITEM_KEYS.length;
-  const allChecked = selectedKeys.size === allCount;
-  const someChecked = selectedKeys.size > 0 && !allChecked;
+  // The nested tick tree's universe: the SHARED KG table corpus
+  // (schema groups; one session fetch, fail-soft to []).
+  const { groups, ready } = useKgScopeTables();
+  const allTables = groups.flatMap((g) => g.tables);
+  const allCount = allTables.length;
+  const selected = new Set(forcedTables);
+  const allChecked = allCount > 0 && forcedTables.length === allCount;
+  const someChecked = forcedTables.length > 0 && !allChecked;
+
+  const toggleTable = (name: string, checked: boolean) => {
+    const next = new Set(selected);
+    if (checked) {
+      next.add(name);
+    } else {
+      next.delete(name);
+    }
+    onChangeForcedTables([...next]);
+  };
+  const toggleSchema = (tables: string[], checked: boolean) => {
+    const next = new Set(selected);
+    for (const name of tables) {
+      if (checked) {
+        next.add(name);
+      } else {
+        next.delete(name);
+      }
+    }
+    onChangeForcedTables([...next]);
+  };
+  const toggleAllTables = (checked: boolean) => {
+    onChangeForcedTables(checked ? allTables : []);
+  };
 
   const toggleCollapsed = (slug: string) => {
     setCollapsed((prev) => {
@@ -233,7 +261,7 @@ export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
   return (
     <Paper
       variant="outlined"
-      onClick={expanded ? undefined : () => setExpanded(true)}
+      onClick={expanded ? undefined : toggleExpanded}
       sx={{
         width: { xs: "100%", sm: expanded ? PANEL_WIDTH : STRIP_WIDTH },
         flexShrink: 0,
@@ -267,14 +295,14 @@ export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
               Scopes
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {selectedKeys.size}/{allCount}
+              {forcedTables.length}/{allCount}
             </Typography>
             <IconButton
               size="small"
               aria-label="Collapse scopes"
               onClick={(e) => {
                 e.stopPropagation();
-                setExpanded(false);
+                toggleExpanded();
               }}
               sx={{ p: 0.25 }}
             >
@@ -283,8 +311,8 @@ export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
           </Box>
           <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", p: 1 }}>
             {/* Summary subjects — the scope tags + input bar (top of the
-                panel: the scope pick governs the whole run, the item
-                checkboxes below say which analyses it covers). */}
+                panel: the scope pick governs the whole run, the table
+                ticks below say which analyses it covers). */}
             <SubjectsSection
               subjects={subjects}
               onRemoveSubject={onRemoveSubject}
@@ -292,74 +320,93 @@ export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
               subjectSuggestions={subjectSuggestions}
               subjectKind={subjectKind}
             />
-            {/* Master row — spans every category. */}
+            {/* The SELECTED TABLES tree — one tri-state row per schema
+                group, its tables under it; the ticks ride the request as
+                the run's analysis_items AND forced_tables. */}
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+              Ticked tables = the run's KG scope — kg_search / kg_expand /
+              the data hints serve only them; each tick is also a summary
+              section.
+            </Typography>
             <Box sx={{ display: "flex", alignItems: "center" }}>
               <Checkbox
                 size="small"
                 checked={allChecked}
                 indeterminate={someChecked}
-                onChange={(e) => onToggleAll(e.target.checked)}
-                inputProps={{ "aria-label": "Select all analyses" }}
+                onChange={(e) => toggleAllTables(e.target.checked)}
+                inputProps={{ "aria-label": "Select all tables" }}
                 sx={{ py: 0.5 }}
               />
               <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                All
+                All tables
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
-                {selectedKeys.size}/{allCount}
+                {forcedTables.length}/{allCount}
               </Typography>
             </Box>
-            {ANALYSIS_CATEGORIES.map((category) => {
-              const checkedCount = category.items.filter((item) =>
-                selectedKeys.has(analysisItemKey(category, item)),
-              ).length;
-              const categoryAll = checkedCount === category.items.length;
-              const isCollapsed = collapsed.has(category.slug);
+            {!ready && (
+              <Typography variant="caption" color="text.secondary" sx={{ px: 4, py: 1 }}>
+                loading the KG tables…
+              </Typography>
+            )}
+            {ready && groups.length === 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ px: 4, py: 1 }}>
+                The KG table corpus is unavailable — check the Knowledge
+                Graph tab.
+              </Typography>
+            )}
+            {groups.map((group) => {
+              const groupChecked =
+                group.tables.length > 0 &&
+                group.tables.every((t) => selected.has(t));
+              const groupSome = group.tables.some((t) => selected.has(t));
+              const isCollapsed = collapsed.has(group.schema);
               return (
-                <Box key={category.slug}>
+                <Box key={group.schema}>
                   <Box sx={{ display: "flex", alignItems: "center" }}>
                     <Checkbox
                       size="small"
-                      checked={categoryAll}
-                      indeterminate={checkedCount > 0 && !categoryAll}
-                      onChange={(e) => onToggleCategory(category, e.target.checked)}
-                      inputProps={{ "aria-label": `Select all ${category.title} analyses` }}
+                      checked={groupChecked}
+                      indeterminate={groupSome && !groupChecked}
+                      onChange={(e) => toggleSchema(group.tables, e.target.checked)}
+                      inputProps={{ "aria-label": `Select all ${group.schema} tables` }}
                       sx={{ py: 0.5 }}
                     />
                     <Typography
                       variant="body2"
-                      onClick={() => toggleCollapsed(category.slug)}
+                      onClick={() => toggleCollapsed(group.schema)}
                       sx={{ fontWeight: 600, cursor: "pointer", userSelect: "none", flexGrow: 1 }}
                     >
-                      {category.title}
+                      {group.schema}
                     </Typography>
-                    <IconButton size="small" onClick={() => toggleCollapsed(category.slug)} sx={{ p: 0.25 }}>
+                    <IconButton size="small" onClick={() => toggleCollapsed(group.schema)} sx={{ p: 0.25 }}>
                       {isCollapsed ? <ExpandMore fontSize="small" /> : <ExpandLess fontSize="small" />}
                     </IconButton>
                   </Box>
                   <Collapse in={!isCollapsed}>
                     <Box sx={{ pl: 3 }}>
-                      {category.items.map((item) => {
-                        const key = analysisItemKey(category, item);
+                      {group.tables.map((name) => {
+                        const bare = kgNameSchema(name)[1];
                         return (
-                          <Box key={key} sx={{ display: "flex", alignItems: "center" }}>
+                          <Box key={name} sx={{ display: "flex", alignItems: "center" }}>
                             <Checkbox
                               size="small"
-                              checked={selectedKeys.has(key)}
-                              onChange={(e) => onToggleItem(key, e.target.checked)}
-                              inputProps={{ "aria-label": item.title }}
+                              checked={selected.has(name)}
+                              onChange={(e) => toggleTable(name, e.target.checked)}
+                              inputProps={{ "aria-label": name }}
                               sx={{ py: 0.25 }}
                             />
-                            <Typography
-                              variant="body2"
-                              color="text.secondary"
-                              noWrap
-                              onClick={() => onToggleItem(key, !selectedKeys.has(key))}
-                              sx={{ cursor: "pointer", userSelect: "none", flexGrow: 1 }}
-                            >
-                              {item.title}
-                            </Typography>
-                            <AnalysisItemAskButton category={category} item={item} />
+                            <Tooltip title={name}>
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                                noWrap
+                                onClick={() => toggleTable(name, !selected.has(name))}
+                                sx={{ cursor: "pointer", userSelect: "none", flexGrow: 1 }}
+                              >
+                                {bare}
+                              </Typography>
+                            </Tooltip>
                           </Box>
                         );
                       })}
@@ -397,7 +444,7 @@ export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
               color="text.secondary"
               sx={{ writingMode: "vertical-rl" }}
             >
-              {selectedKeys.size}/{allCount}
+              {forcedTables.length}/{allCount}
             </Typography>
             <ChevronRight fontSize="small" color="action" sx={{ mt: "auto" }} />
           </Box>
@@ -416,7 +463,7 @@ export default function AnalysisItemsTree(props: AnalysisItemsTreeProps) {
               Scopes
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {selectedKeys.size}/{allCount}
+              {forcedTables.length}/{allCount}
             </Typography>
             <ExpandMore fontSize="small" color="action" />
           </Box>

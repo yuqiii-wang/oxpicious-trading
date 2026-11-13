@@ -23,8 +23,8 @@
  *          they share one date axis).
  *
  * 9 pairs (canonical order):
- *   Price/MA5, Price/MA20, Price/MA60, Price/MA120, Price/MA255,
- *   MA5/MA20, MA5/MA60, MA5/MA120, MA5/MA255
+ *   Price/MA5, Price/MA20, Price/MA60, Price/MA120, Price/MA252,
+ *   MA5/MA20, MA5/MA60, MA5/MA120, MA5/MA252
  */
 import SecCodesPageShell from "@/analysis/pages/shared/SecCodesPageShell";
 import { useDocs } from "@/shared/docs";

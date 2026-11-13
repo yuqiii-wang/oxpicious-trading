@@ -2,23 +2,22 @@
 --  Knowledge-graph seed — namespace 0 (DB semantics): the price-trend
 --  classification chain (trend states and RSI tail episodes, both owned by
 --  the analysis.trends component) and the market-crowdedness gauge.
---  Conventions: .agents/skills/kg-db-semantics. DDL: 13_kg_hypergraph.sql.
+--  Conventions: .agents/skills/kg-db-semantics. DDL: kg_entities.sql + kg_edges.sql.
 --
 --  Idempotent — entities upsert on uq_kg_entities_ns_type_name; edges
 --  insert only when the (relation, sub_relation, entity_ids) triple is
 --  absent.
 -- ============================================================================
+--  2026-11-09: the 'table' entities migrated to the corpus rule
+--  db_semantics_tables; since 2026-11-10 the payloads live in the
+--  tables' own database/sql/ DDL files — ONE TABLE = ONE FILE, payload
+--  in the leading banner (formerly the parallel database/kg_tables/
+--  corpus, filename = the schema-qualified name). This seed keeps
+--  only what doesn't fit a rule: the edge INSERTs and the DB
+--  view entities. The rule's ledger owns the migrated tables;
+--  edges here still resolve them BY NAME.
 
-INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VALUES
-    (0, 'analysis.trend_days',          'table', ARRAY['trend', '趋势', 'rise fall', '涨跌', 'state', '状态', 'top bottom', '顶底'],
-     'Each security-day''s price trend classification — rising, falling, topped or bottomed, from RSI momentum episodes and overextension versus its own range.'),
-    (0, 'analysis.trend_episode_days',  'table', ARRAY['rsi', 'episode', '趋势段', 'tail', '尾部', 'momentum', '动量'],
-     'The RSI-tail episode days per security — which days sit in the extreme ranks of the code''s own RSI history and whether they passed the side-mirrored pattern test.'),
-    (0, 'analysis.market_crowdedness',  'table', ARRAY['crowdedness', '拥挤度', 'concentration', '集中度', 'comovement', '共振', 'market sentiment', '市场情绪'],
-     'Each index or industry''s daily crowdedness score — how concentrated, inflowed, co-moving and expensive its hottest names are versus the pool''s own history.')
-ON CONFLICT (namespace, entity_type, name) DO UPDATE
-    SET description = EXCLUDED.description,
-        tags        = EXCLUDED.tags;
+
 
 INSERT INTO llm.kg_edges (namespace, relation, sub_relation, entity_ids)
 SELECT 0, e.relation, e.sub_relation, ARRAY[a.entity_id, b.entity_id]::BIGINT[]

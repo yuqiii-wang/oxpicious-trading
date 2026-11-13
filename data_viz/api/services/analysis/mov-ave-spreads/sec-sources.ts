@@ -4,7 +4,7 @@
  * machinery shared by the chart blocks and the extras groups.
  * Split out of the former monolithic mov-ave-spreads.ts.
  */
-import { LABEL_CODE } from "@api/services/label-codes";
+import { LABEL_CODE } from "@api/services/infra/label-codes";
 import type { MaSpreadSecType } from "@shared/types";
 
 const VALID_SEC_TYPES: ReadonlySet<MaSpreadSecType> = new Set(["etf", "index", "stock", "industry"]);
@@ -156,10 +156,13 @@ export const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
             AVG(mean_close) OVER (PARTITION BY industry_id ORDER BY date
               ROWS BETWEEN 119 PRECEDING AND CURRENT ROW) AS ma120,
             AVG(mean_close) OVER (PARTITION BY industry_id ORDER BY date
-              ROWS BETWEEN 254 PRECEDING AND CURRENT ROW) AS ma255,
+              ROWS BETWEEN 254 PRECEDING AND CURRENT ROW) AS ma252,
             NULL::double precision AS ema6,
             NULL::double precision AS ema12,
-            NULL::double precision AS ema26
+            NULL::double precision AS ema26,
+            NULL::double precision AS macd_line,
+            NULL::double precision AS macd_signal,
+            NULL::double precision AS macd_hist
           FROM stats.industry_basic_stats
           WHERE pool_size = 3 AND mean_close IS NOT NULL
         )`,

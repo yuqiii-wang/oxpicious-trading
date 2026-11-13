@@ -52,26 +52,21 @@ def portfolio_name(
     selection: Dict[str, float],
     fault_tolerance: float = 0,
 ) -> str:
-    """Build the portfolio strategy_name from the algo->weight selection.
+    """Build the portfolio strategy_name from the family selection.
 
-    e.g. {"macd": 0.5} -> "portfolio:macd*0.5"
-    With fault_tolerance=10 -> "portfolio:macd*0.5_ft10"
+    e.g. {"macd": 1.0, "mov_rsi": 1.0} -> "portfolio:macd+mov_rsi"
+    With fault_tolerance=10 -> "portfolio:macd+mov_rsi_ft10"
 
-    Algos with weight 0 are omitted from the name. The name is stable
-    (sorted by algo name) so the same selection always maps to the same
-    strategy_name — this is what makes the portfolio idempotent (skip-if-
-    already-found in strategy_identity).
+    Weighting was REMOVED (2026-11-07, user-directed "remove weighting
+    from signals"): a mixed selection blends at EQUAL weight and the
+    name carries ONLY the family names (a legacy weight value in the
+    dict is ignored — the CLI no longer produces one). The name is
+    stable (sorted by family name) so the same selection always maps to
+    the same strategy_name — this is what makes the portfolio idempotent
+    (skip-if-already-found in strategy_identity).
     """
-    parts = []
-    for name in sorted(selection):
-        weight = selection[name]
-        if weight == 0:
-            continue
-        parts.append(f"{short_name(name)}*{weight:g}")
-    if not parts:
-        base = "portfolio:empty"
-    else:
-        base = "portfolio:" + "+".join(parts)
+    parts = [short_name(name) for name in sorted(selection)]
+    base = "portfolio:" + ("+".join(parts) if parts else "empty")
     return append_ft_suffix(base, fault_tolerance)
 
 

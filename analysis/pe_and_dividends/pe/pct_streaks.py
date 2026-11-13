@@ -12,7 +12,7 @@ half with the PE-only Valuation Streaks card.)
   FINANCIAL SEMANTICS
 =======================================================================
 
-For each (period, pct_type) band — 255/500/750/1275 observations x
+For each (period, pct_type) band — 252/504/756/1260 observations x
 pct_type 1/5/10 — each banded TRADING day is tested with a VALUE-based
 breakout: a day is OUT-OF-BAND when its pe value falls ABOVE the day's
 own month-band ``high_val`` or BELOW ``low_val``. A high streak = PE is

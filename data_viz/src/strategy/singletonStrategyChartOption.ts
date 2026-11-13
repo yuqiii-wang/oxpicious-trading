@@ -380,8 +380,8 @@ export function buildSingletonStrategyOption({
                 `${daily.return_rate >= 0 ? "+" : ""}${fmtNum(daily.return_rate * 100, 2)}%/yr`)),
             `Hold: ${fmtNum(daily.normalized_mean_buy_period, 1)}d`,
             `Sharpe (full): ${fmtNum(daily.sharpe_ratio, 2)}`,
-            `Sharpe (255d): ${fmtNum(daily.sharpe_ratio_255d, 2)}`,
-            `Sharpe (500d): ${fmtNum(daily.sharpe_ratio_500d, 2)}`,
+            `Sharpe (252d): ${fmtNum(daily.sharpe_ratio_252d, 2)}`,
+            `Sharpe (500d): ${fmtNum(daily.sharpe_ratio_504d, 2)}`,
           );
         }
         const children: React.ReactNode[] = rows.map((rowItem) => React.createElement("div", null, rowItem));

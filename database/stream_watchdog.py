@@ -31,6 +31,19 @@ Loop (every ``--interval``, default 60s), for each service in
         ...) — not trustworthy.
       → pid alive below ``--hung-after``: ALERT only (give a slow startup
         or a brief DB outage time to recover).
+  - STALE PROCESS (on a healthy, fresh beat): the heartbeat row carries
+    the process life's ``code_fingerprint`` (a content hash over the
+    service's source roots, stamped once at registration —
+    _common/service_heartbeat.py); a mismatching FRESH disk hash means
+    the sources moved under the running process, which keeps executing
+    its startup-time code forever (observed live 2026-11-13: a daemon
+    predating the provider plumbing silently ignored the fresh
+    ``RunRequest.provider`` field). First sighting ALERTS only; when the
+    same mismatch persists one scan (sources quiet), the process is
+    SIGTERM'd (grace) / SIGKILL'd and restarted on the fresh sources —
+    the same burst guard as any restart. Per-service opt-out:
+    ``stale_process_check: false`` in the service's service_config/
+    JSON.
 
   - Every restart is merged into ``monitor.service_audit``: the dead
     life's still-open audit row is closed with a ``watchdog restart: …``
@@ -74,7 +87,8 @@ import signal
 import subprocess
 import sys
 import threading
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from _common.db_commons import get_db_connection
@@ -84,9 +98,12 @@ from _common.service_heartbeat import (
     MONITORED_SERVICES,
     STALE_AFTER_S,
     WATCHDOG_SERVICE,
+    fingerprint_roots_for,
     pid_alive,
     pid_alive_for_service,
     register_service,
+    source_fingerprint,
+    stale_check_for,
 )
 
 logger = setup_logging("stream_watchdog")
@@ -108,6 +125,23 @@ RESTART_BURST_LIMIT = 3
 RESTART_BURST_WINDOW_S = 900
 RESTART_BACKOFF_S = 600
 
+# STALE-PROCESS restart — a service whose heartbeat's code_fingerprint
+# (stamped once per life at registration) no longer matches a FRESH disk
+# hash over its FINGERPRINT_ROOTS is executing startup-time code while
+# the sources have moved on (observed live 2026-11-13: a deep-agents
+# daemon predating the provider plumbing silently ignored the fresh
+# RunRequest.provider field and ran requests on the wrong provider).
+# SIGTERM first — a graceful unwind lets uvicorn close and the
+# deep-agents daemon settle its in-flight run chains — bounded by this
+# grace, then SIGKILL.
+STALE_TERM_GRACE_S = 15.0
+
+# Debounce for the stale-process restart: the mismatching DISK
+# fingerprint must repeat on a later scan (sources quiet for one full
+# interval) before the restart fires — a mid-edit storm then never
+# kills the service under the developer's hands. service → disk hash.
+_STALE_SEEN: dict[str, str] = {}
+
 _STOP = threading.Event()
 
 _HEARTBEATS_SQL = f"""
@@ -116,7 +150,8 @@ SELECT service,
        EXTRACT(EPOCH FROM (now() - beat_at))::bigint AS beat_age_s,
        scope,
        sub_scope,
-       stop_reason
+       stop_reason,
+       code_fingerprint
 FROM {HEARTBEAT_TABLE}
 WHERE service = ANY(%s)
 """
@@ -165,6 +200,24 @@ SET ended_at = GREATEST(a.started_at, %s),
 WHERE a.service = %s
   AND a.ended_at IS NULL
   AND a.pid <> %s
+"""
+
+# The STALE-process path's audit override: SIGTERM is a graceful stop, so
+# the dying process's own exit hook closes its audit life FIRST ('signal
+# SIGTERM') and the close-above (ended_at IS NULL only) never touches it —
+# the restart trail would read as a plain manual stop and the crash-loop
+# burst count (keyed on the 'watchdog restart: ' prefix) would never see
+# stale restarts. Re-point the just-closed row at the watchdog's reason:
+# bounded to the dead pid, to rows closed since the stale decision began,
+# and to the SIGTERM reason (never a differently-recorded exit).
+_AUDIT_STALE_OVERRIDE_SQL = """
+UPDATE monitor.service_audit
+SET exit_reason = %s,
+    is_normal_exit = false
+WHERE service = %s
+  AND pid = %s
+  AND ended_at >= %s
+  AND exit_reason = 'signal SIGTERM'
 """
 
 # Open audit lives of ANY service (not just the supervised streams) with
@@ -405,6 +458,97 @@ def reconcile_audit_orphans() -> int:
     return closed
 
 
+def _terminate_stale(pid: int) -> None:
+    """Stop a LIVE stale process: SIGTERM first — the graceful unwind is
+    the point (uvicorn closes its servers; the deep-agents daemon's
+    in-flight runs settle their chains through the cancellation path) —
+    bounded by STALE_TERM_GRACE_S, then SIGKILL whatever is left."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.monotonic() + STALE_TERM_GRACE_S
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return
+        time.sleep(0.5)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _check_stale_code(
+    conn, module: str, pid: int, row_fingerprint: str | None, dry_run: bool,
+) -> int:
+    """The stale-process gate, run on every HEALTHY beat (fresh beat +
+    live pid): compare the heartbeat's per-life code fingerprint against
+    a fresh disk hash of the service's source roots. Returns the alert
+    count (0 or 1). NULL / "unknown" on either side is uncheckable —
+    pre-column rows adopt out, a fingerprinting failure never restarts
+    anything. A first mismatch only ALERTS; the restart fires when the
+    same mismatching disk hash is still there one scan later (the
+    debounce keeps a mid-edit storm from killing the service under the
+    developer's hands)."""
+    if not stale_check_for(module):
+        return 0
+    if not row_fingerprint or row_fingerprint == "unknown":
+        return 0
+    disk_fingerprint = source_fingerprint(fingerprint_roots_for(module))
+    if disk_fingerprint == "unknown":
+        return 0
+    if disk_fingerprint == row_fingerprint:
+        _STALE_SEEN.pop(module, None)
+        return 0
+    if _STALE_SEEN.get(module) != disk_fingerprint:
+        _STALE_SEEN[module] = disk_fingerprint
+        logger.warning(
+            "[ALERT] %s: code changed under the running process (pid %d) — "
+            "restarting next scan if the sources stay unchanged",
+            module, pid,
+        )
+        return 1
+    _STALE_SEEN.pop(module, None)
+    if dry_run:
+        logger.warning(
+            "[ALERT] %s: WOULD restart (stale process — pid %d runs "
+            "startup-time code, the sources moved on)", module, pid,
+        )
+        return 1
+    logger.warning(
+        "[ALERT] %s: stale process (pid %d) — code changed since start and "
+        "stayed changed for one scan; terminating (SIGTERM, %.0fs grace) "
+        "and restarting on the fresh sources.",
+        module, pid, STALE_TERM_GRACE_S,
+    )
+    reason = (
+        f"watchdog restart: stale process (pid {pid} ran startup-time "
+        "code) — restarted on the fresh sources"
+    )
+    stale_since = datetime.now(timezone.utc)
+    _terminate_stale(pid)
+    # The SIGTERM'd process closed its own audit life ('signal SIGTERM')
+    # before dying — re-point it at the watchdog's reason (the restart
+    # trail AND the crash-loop burst count read this).
+    with conn.cursor() as cur:
+        cur.execute(
+            _AUDIT_STALE_OVERRIDE_SQL,
+            (reason, module, pid, stale_since),
+        )
+    _mark_stop(
+        conn, module,
+        "stopped by stream_watchdog (stale process — code changed since "
+        "process start)",
+    )
+    _reset_live_parallel(conn, module)
+    return _restart(
+        conn, module,
+        reason[len(RESTART_REASON_PREFIX):],
+        dry_run,
+        ended_hint_s=0,
+    )
+
+
 def check_once(
     stale_after_s: float,
     hung_after_s: float,
@@ -419,7 +563,8 @@ def check_once(
         with conn.cursor() as cur:
             cur.execute(_HEARTBEATS_SQL, (list(services),))
             beats = {
-                row[0]: row[1:]  # (pid, beat_age_s, scope, sub_scope, stop_reason)
+                row[0]: row[1:]  # (pid, beat_age_s, scope, sub_scope,
+                #                 stop_reason, code_fingerprint)
                 for row in cur.fetchall()
             }
 
@@ -442,18 +587,33 @@ def check_once(
                     )
                 continue
 
-            pid, beat_age_s, _scope, _sub_scope, stop_reason = row
-            if beat_age_s <= stale_after_s and pid_alive(pid):
+            pid, beat_age_s, _scope, _sub_scope, stop_reason, row_fingerprint = row
+            # Liveness IS pid + service name (pid_alive_for_service), never
+            # bare /proc existence: after a distro reboot the heartbeat
+            # row's pid routinely points at an UNRELATED recycled process,
+            # and a bare alive verdict there turns the stale-beat pass into
+            # a "wedged runtime" SIGKILL of an innocent process (observed
+            # live 2026-11-10: a freshly-spawned poller was killed seconds
+            # after the post-reboot fleet restart).
+            if beat_age_s <= stale_after_s and pid_alive_for_service(pid, module):
                 logger.info("[ok] %s: beat %.0fs ago (pid %d)", module, beat_age_s, pid)
+                # Alive and beating is NOT the whole health story: the
+                # process may be executing startup-time code while the
+                # sources have moved on (the heartbeat's per-life
+                # code_fingerprint vs a fresh disk hash).
+                alerts += _check_stale_code(
+                    conn, module, pid, row_fingerprint, dry_run,
+                )
                 continue
 
-            if not pid_alive(pid):
-                # A dead pid is dead regardless of beat freshness — a beat
-                # cannot be newer than the process's death. Restart now
-                # instead of waiting out the stale window. The no-response
-                # check IS pid + service name: a dead process cannot
-                # release its own live_parallel slot, so reset the counter
-                # from host liveness before the fresh process claims one.
+            if not pid_alive_for_service(pid, module):
+                # A dead (or recycled) pid is dead regardless of beat
+                # freshness — a beat cannot be newer than the process's
+                # death. Restart now instead of waiting out the stale
+                # window. The no-response check IS pid + service name: a
+                # dead process cannot release its own live_parallel slot,
+                # so reset the counter from host liveness before the fresh
+                # process claims one.
                 if stop_reason is None and not dry_run:
                     _mark_stop(
                         conn, module,

@@ -75,7 +75,7 @@ IMPLEMENTATION
                       the whole step runs in one transaction), with the
                       stock/benchmark history scans capped at
                       LOOKBACK_TRADING_DAYS (510) broad-benchmark trading
-                      days before the earliest target date (500 window
+                      days before the earliest target date (504 window
                       rows + LAG row + grid margin, plus a 45-calendar-day
                       per-stock LAG suspension margin), the heavy chain
                       pruned to the (industry, benchmark) pairs that

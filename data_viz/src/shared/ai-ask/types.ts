@@ -198,6 +198,20 @@ export interface AiAskInsightMetric {
    *  pct_rank_n = the prior sample size behind it. */
   pct_rank: number | null;
   pct_rank_n: number | null;
+  /** Past-60d window stats: the metric's own trailing 60 observations
+   *  (same scope filters, one row per date) STRICTLY PRIOR to value_date —
+   *  win_open = the window's earliest value (the 60d open), win_max /
+   *  win_min its extremes, win_n the sample size; delta_60d_open/_max/_min
+   *  = value − each stat (value above win_max = new-high territory).
+   *  NULL for non-numeric values, thin windows (<20 prior observations),
+   *  or spec `"rank": false` (categorical codes). */
+  win_open: number | null;
+  win_max: number | null;
+  win_min: number | null;
+  win_n: number | null;
+  delta_60d_open: number | null;
+  delta_60d_max: number | null;
+  delta_60d_min: number | null;
   source_kind: string;
   /** Generated db-search recipe (table / index / conditions) from the
    *  registry — rides along for the Ask AI db search. */

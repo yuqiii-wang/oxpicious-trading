@@ -77,7 +77,7 @@ export function fetchMarketBetaChartByCode(
  * Fetch windowed pairwise correlation time series between selected
  * industries' MA curves of mean_close. Returns one row per (start_date,
  * pair) for every lexicographic (a<b) pair from `industryIds`, with
- * corr_ma20_20d / corr_ma60_60d / corr_ma255_255d (Pearson correlation of
+ * corr_ma20_20d / corr_ma60_60d / corr_ma252_252d (Pearson correlation of
  * the two industries' MA-W curves over the W trading days starting on
  * start_date; window starts every `interval` trading days). Drives the
  * expandable Correlation chart on the MarketBeta page — only
@@ -137,4 +137,47 @@ export async function runIndustryCorrelationsRefresh(
   } catch (e) {
     return { success: false, stderr_tail: String(e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+//  Analysis Commons — Market Participation (whole-market turnover /
+//  SSE share / advance-decline breadth; analysis.market_participation)
+// ---------------------------------------------------------------------------
+
+/** One market-participation day row (numbers arrive as strings from the
+ *  pg wire for NUMERIC columns; the option builder maps them). */
+export interface MarketParticipationDay {
+  date: string;
+  total_trading_amount: string | null;
+  ss_trading_amount: string | null;
+  sz_trading_amount: string | null;
+  total_amt_vs_ma5: string | null;
+  total_amt_vs_ma20: string | null;
+  total_amt_vs_ma60: string | null;
+  total_amt_pct_rank_252: string | null;
+  ss_share: string | null;
+  ss_share_ma5: string | null;
+  ss_share_ma20: string | null;
+  ss_share_ma60: string | null;
+  ss_share_vs_ma20_pp: string | null;
+  ss_share_slope20_pp: string | null;
+  adv_count: number | null;
+  dec_count: number | null;
+  flat_count: number | null;
+  ad_ratio: string | null;
+  median_pct_change: string | null;
+  mean_pct_change: string | null;
+  ad_ratio_ma5: string | null;
+  ad_ratio_ma20: string | null;
+  ad_ratio_pct_rank_252: string | null;
+}
+
+/** Latest `days` trading days of market participation (oldest first),
+ *  driving the Market Beta page's Market Participation panel. */
+export function fetchMarketParticipation(
+  days = 260,
+): Promise<MarketParticipationDay[]> {
+  return fetchJson<MarketParticipationDay[]>(
+    `/api/analysis/market-beta/participation?days=${days}`,
+  );
 }

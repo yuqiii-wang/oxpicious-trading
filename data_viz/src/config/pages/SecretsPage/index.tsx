@@ -12,9 +12,16 @@
  * fetch — the shared client cache must never serve a pre-save state).
  *
  * Types (secret_type, mirror of static.label_dim 'secret_type'): llm
- * (chat credentials — provider domain ext_llm_provider, model
- * REQUIRED) and web_search (search credentials — provider domain
- * ext_http_source, model = the engine, optional).
+ * (chat credentials — model REQUIRED), jev (the local-model host's
+ * Jev / System One decision model — model REQUIRED) and tokenization
+ * (its StructBERT word segmenter — model informational) all draw
+ * their provider from ext_llm_provider; web_search (search
+ * credentials) draws from ext_http_source with model = the engine,
+ * optional. Each row also carries a sub_type (mirror of
+ * static.label_dim 'secret_sub_type') — the credential's service
+ * tier: general (the standard tier — glm flash chat, the offline
+ * dummy, the local host's models, generic content search) or pro
+ * (the paid-pro tier — the zhipu search_pro engine).
  *
  * Secret handling: the API key never crosses back to the client — the
  * table shows the masked hint (•••••••• + last 4) only, and the edit
@@ -64,6 +71,7 @@ import {
   updateSecret,
   type SecretEntry,
   type SecretSaveBody,
+  type SecretSubType,
   type SecretTestResult,
   type SecretType,
 } from "@/lib/api-client/config";
@@ -84,12 +92,21 @@ import { fmtDateTimeShanghai } from "@/shared/datetime";
  *  sources of truth (database/sql/static/label_dim/
  *  06_monitoring_infra.sql, _common/labels.py, api label-codes.ts).
  *  The provider domain is SELECTED BY the type (the audit pattern):
- *  llm → ext_llm_provider, web_search → ext_http_source. The API
- *  re-validates via encodeLabelParam, so an out-of-mirror pick is a
- *  400, not a bad row. */
+ *  llm / jev / tokenization → ext_llm_provider, web_search →
+ *  ext_http_source. The API re-validates via encodeLabelParam, so an
+ *  out-of-mirror pick is a 400, not a bad row. */
 const PROVIDER_OPTIONS: Record<SecretType, Array<{ code: number; label: string }>> = {
   llm: [
     { code: 0, label: "zhipu" },
+    { code: 2, label: "local" },
+    { code: 99, label: "other" },
+  ],
+  jev: [
+    { code: 2, label: "local" },
+    { code: 99, label: "other" },
+  ],
+  tokenization: [
+    { code: 2, label: "local" },
     { code: 99, label: "other" },
   ],
   web_search: [
@@ -102,7 +119,26 @@ const PROVIDER_OPTIONS: Record<SecretType, Array<{ code: number; label: string }
 /** The type-select's options with the human hints. */
 const TYPE_OPTIONS: Array<{ value: SecretType; hint: string }> = [
   { value: "llm", hint: "chat credentials (deep agent, Ask AI)" },
+  { value: "jev", hint: "decision-model credentials (the local host's System One surface)" },
+  { value: "tokenization", hint: "segmenter credentials (the local host's word segmenter)" },
   { value: "web_search", hint: "search credentials (online search providers)" },
+];
+
+/** Types whose provider decodes via ext_llm_provider (the audit's
+ *  selected-domain pattern; web_search is the ext_http_source one). */
+const isLlmHostType = (t: SecretType): boolean => t !== "web_search";
+
+/** Types whose model id the request payload NEEDS (llm chat payloads;
+ *  jev's systemone `model` routing). tokenization resolves the host's
+ *  single segmenter without one, web_search rows carry an engine. */
+const isModelRequiredType = (t: SecretType): boolean =>
+  t === "llm" || t === "jev";
+
+/** The sub-type-select's options ('secret_sub_type' mirror — the
+ *  credential service tier). */
+const SUB_TYPE_OPTIONS: Array<{ value: SecretSubType; hint: string }> = [
+  { value: "general", hint: "standard tier (glm flash, dummy, generic search)" },
+  { value: "pro", hint: "paid-pro tier (the search_pro engine)" },
 ];
 
 /** The edit field's DISPLAY value while a key is stored — pure mask,
@@ -116,6 +152,7 @@ const API_KEY_MASK = "••••••••••••";
 interface SecretForm {
   secretType: SecretType;
   provider: string;
+  subType: SecretSubType;
   modelName: string;
   contextLength: string;
   apiUrl: string;
@@ -128,6 +165,7 @@ function emptyForm(type: SecretType): SecretForm {
   return {
     secretType: type,
     provider: PROVIDER_OPTIONS[type][0].label,
+    subType: "general",
     modelName: "",
     contextLength: "",
     apiUrl: "",
@@ -141,6 +179,7 @@ function toForm(e: SecretEntry): SecretForm {
   return {
     secretType: e.secretType,
     provider: e.provider,
+    subType: e.subType,
     modelName: e.modelName ?? "",
     contextLength: e.contextLength == null ? "" : String(e.contextLength),
     apiUrl: e.apiUrl ?? "",
@@ -233,7 +272,7 @@ export default function SecretsPage() {
   const save = useCallback(async () => {
     if (form == null) return;
     const formErr = firstRuleError([
-      ["Model / engine", form.secretType === "llm" ? REQUIRED_TEXT : FREE_TEXT_OR_NULL, form.modelName],
+      ["Model / engine", isModelRequiredType(form.secretType) ? REQUIRED_TEXT : FREE_TEXT_OR_NULL, form.modelName],
       ["Context length", INT_GTE1_OR_NULL, form.contextLength],
       ["API URL", HTTP_URL_OR_NULL, form.apiUrl],
     ]);
@@ -264,6 +303,7 @@ export default function SecretsPage() {
     const body: SecretSaveBody = {
       secretType: form.secretType,
       provider: form.provider,
+      subType: form.subType,
       modelName: form.modelName.trim() === "" ? null : form.modelName.trim(),
       contextLength: numOrNull(form.contextLength),
       apiUrl: urlOrNull(form.apiUrl),
@@ -297,7 +337,7 @@ export default function SecretsPage() {
   const runTest = useCallback(async () => {
     if (form == null) return;
     const formErr = firstRuleError([
-      ["Model / engine", form.secretType === "llm" ? REQUIRED_TEXT : FREE_TEXT_OR_NULL, form.modelName],
+      ["Model / engine", isModelRequiredType(form.secretType) ? REQUIRED_TEXT : FREE_TEXT_OR_NULL, form.modelName],
       ["API URL", HTTP_URL_OR_NULL, form.apiUrl],
     ]);
     if (formErr != null) {
@@ -338,7 +378,7 @@ export default function SecretsPage() {
         <Typography variant="h6">Secrets</Typography>
         <Typography variant="caption" color="text.secondary">
           {rows != null
-            ? `${rows.length} credentials · type + provider + model/engine + endpoint + API key (encrypted at rest, masked here) · source: static.secret_config — read by the Python consumers at startup`
+            ? `${rows.length} credentials · type + provider + sub type + model/engine + endpoint + API key (encrypted at rest, masked here) · source: static.secret_config — read by the Python consumers at startup`
             : "loading…"}
         </Typography>
         <Box sx={{ flexGrow: 1 }} />
@@ -370,10 +410,11 @@ export default function SecretsPage() {
       <ConfigServiceTable
         name="Credentials"
         rows={tableRows}
-        searchText={(r) => `${r.secretType} ${r.provider} ${r.modelName ?? ""} ${r.apiUrl ?? ""}`}
+        searchText={(r) => `${r.secretType} ${r.provider} ${r.subType} ${r.modelName ?? ""} ${r.apiUrl ?? ""}`}
         filters={[
           { label: "Type", rowValue: (r) => r.secretType },
           { label: "Provider", rowValue: (r) => r.provider },
+          { label: "Sub type", rowValue: (r) => r.subType },
         ]}
         showDirFilter={false}
         searchPlaceholder="Search type / provider / model / url…"
@@ -384,6 +425,7 @@ export default function SecretsPage() {
               <TableRow>
                 <TableCell>Type</TableCell>
                 <TableCell>Provider</TableCell>
+                <TableCell>Sub type</TableCell>
                 <TableCell>Model / engine</TableCell>
                 <TableCell align="right">Context length</TableCell>
                 <TableCell>API URL</TableCell>
@@ -406,6 +448,14 @@ export default function SecretsPage() {
                     />
                   </TableCell>
                   <TableCell>{r.provider}</TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={r.subType}
+                      color={r.subType === "pro" ? "warning" : "default"}
+                      variant="outlined"
+                    />
+                  </TableCell>
                   <TableCell sx={{ fontFamily: "monospace", color: r.modelName == null ? "text.disabled" : undefined }}>
                     {r.modelName ?? "—"}
                   </TableCell>
@@ -461,7 +511,7 @@ export default function SecretsPage() {
               ))}
               {rows != null && visible.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={10} align="center">
+                  <TableCell colSpan={11} align="center">
                     <Typography variant="caption" color="text.secondary" sx={{ my: 2, display: "inline-block" }}>
                       {rows.length === 0
                         ? "No credential rows yet — add one (providers fall back to their built-in constants)"
@@ -530,7 +580,7 @@ export default function SecretsPage() {
               value={form?.provider ?? ""}
               onChange={(e) => setForm((f) => (f == null ? f : { ...f, provider: e.target.value }))}
               helperText={
-                form?.secretType === "llm"
+                isLlmHostType(form?.secretType ?? "llm")
                   ? "ext_llm_provider label (shares the request-audit vocabulary)"
                   : "ext_http_source label (shares the request-audit vocabulary)"
               }
@@ -543,15 +593,35 @@ export default function SecretsPage() {
                 </MenuItem>
               ))}
             </TextField>
+            <TextField
+              select
+              label="Sub type"
+              value={form?.subType ?? "general"}
+              onChange={(e) =>
+                setForm((f) => (f == null ? f : { ...f, subType: e.target.value as SecretSubType }))
+              }
+              helperText={SUB_TYPE_OPTIONS.find((t) => t.value === form?.subType)?.hint}
+              sx={{ width: 190 }}
+            >
+              {SUB_TYPE_OPTIONS.map((t) => (
+                <MenuItem key={t.value} value={t.value}>
+                  {t.value}
+                </MenuItem>
+              ))}
+            </TextField>
             <RuleTextField
-              rule={form?.secretType === "llm" ? REQUIRED_TEXT : FREE_TEXT_OR_NULL}
-              label={form?.secretType === "llm" ? "Model name" : "Search engine"}
+              rule={isModelRequiredType(form?.secretType ?? "llm") ? REQUIRED_TEXT : FREE_TEXT_OR_NULL}
+              label={form?.secretType === "web_search" ? "Search engine" : "Model name"}
               value={form?.modelName ?? ""}
               onChange={(v) => setForm((f) => (f == null ? f : { ...f, modelName: v }))}
               hint={
                 form?.secretType === "llm"
                   ? "the provider's model id, e.g. glm-5.3-flash"
-                  : "the search engine, e.g. search_pro · blank = none (zhihu names none)"
+                  : form?.secretType === "jev"
+                    ? "the host's registered model id, e.g. onejev-1.6-4b"
+                    : form?.secretType === "tokenization"
+                      ? "the host's model id, e.g. word-segmenter-zh · blank ok (the endpoint serves one segmenter)"
+                      : "the search engine, e.g. search_pro · blank = none (zhihu names none)"
               }
               disabled={!isNew || (form?.secretType === "web_search" && form.provider === "zhihu")}
               sx={{ width: 220, fontFamily: "monospace" }}
@@ -561,7 +631,7 @@ export default function SecretsPage() {
               label="Context length"
               value={form?.contextLength ?? ""}
               onChange={(v) => setForm((f) => (f == null ? f : { ...f, contextLength: v }))}
-              hint="llm only · integer ≥ 1 · max context window in tokens · blank = unspecified"
+              hint="chat (llm) rows only · integer ≥ 1 · max context window in tokens · blank = unspecified"
               inputProps={{ inputMode: "numeric" }}
               sx={{ width: 190 }}
             />
@@ -627,7 +697,7 @@ export default function SecretsPage() {
               {test.busy ? "Testing…" : "Test connection"}
             </Button>
             <Typography variant="caption" color="text.secondary">
-              one real request per type (chat ping / 1-hit search) with the values as typed · an empty key field uses the stored key, else the root .env fallback
+              one real request per type (chat ping / 1-hit search / decision ping / segment ping) with the values as typed · an empty key field uses the stored key, else the root .env fallback
             </Typography>
           </Box>
           {test.result != null &&

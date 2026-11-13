@@ -2,36 +2,23 @@
 --  Knowledge-graph seed — namespace 0 (DB semantics): the debt / money-rate
 --  chain (stats.debt_identity + the PBoC and market rate tables) and the
 --  PBoC open-market announcements. Conventions:
---  .agents/skills/kg-db-semantics. DDL: 13_kg_hypergraph.sql.
+--  .agents/skills/kg-db-semantics. DDL: kg_entities.sql + kg_edges.sql.
 --
 --  Idempotent — entities upsert on uq_kg_entities_ns_type_name; edges
 --  insert only when the (relation, sub_relation, entity_ids) triple is
 --  absent. Also carries stats.v_debt_daily's edges (the view entity is
 --  seeded in 03, its member entities here).
 -- ============================================================================
+--  2026-11-09: the 'table' entities migrated to the corpus rule
+--  db_semantics_tables; since 2026-11-10 the payloads live in the
+--  tables' own database/sql/ DDL files — ONE TABLE = ONE FILE, payload
+--  in the leading banner (formerly the parallel database/kg_tables/
+--  corpus, filename = the schema-qualified name). This seed keeps
+--  only what doesn't fit a rule: the edge INSERTs and the DB
+--  view entities. The rule's ledger owns the migrated tables;
+--  edges here still resolve them BY NAME.
 
-INSERT INTO llm.kg_entities (namespace, name, entity_type, tags, description) VALUES
-    (0, 'stats.debt_identity',     'table', ARRAY['debt', '债券', 'rates', '利率', 'identity', '标识', 'reference', '参考'],
-     'Which trading days carry debt-market data — the shared date identity for all debt rate and liquidity tables.'),
-    (0, 'stats.debt_omo',          'table', ARRAY['debt', '债券', 'central bank', '央行', 'open market operations', '公开市场操作', 'reverse repo', '逆回购', 'liquidity', '流动性'],
-     'The central bank''s open-market reverse-repo operations — the size, rate and maturity of each daily liquidity injection.'),
-    (0, 'stats.debt_repo',         'table', ARRAY['debt', '债券', 'reverse repo', '逆回购', 'outstanding balance', '余额'],
-     'The running stock of outstanding central-bank reverse repos — how much short-term liquidity is still deployed.'),
-    (0, 'stats.debt_outright_repo','table', ARRAY['debt', '债券', 'central bank', '央行', 'bond buying', '买断式逆回购', 'liquidity', '流动性'],
-     'The central bank''s outright repo purchases — the longer-tenor bond-buying liquidity injections.'),
-    (0, 'stats.debt_mlf',          'table', ARRAY['debt', '债券', 'mlf', '中期借贷便利', 'central bank', '央行'],
-     'The central bank''s medium-term lending facility tenders — the size and rate of each MLF injection.'),
-    (0, 'stats.debt_shibor',       'table', ARRAY['debt', '债券', 'shibor', '拆借利率', 'interbank', '银行间', 'rates', '利率'],
-     'The daily SHIBOR interbank offered rates across tenors.'),
-    (0, 'stats.debt_treasury',     'table', ARRAY['debt', '债券', 'treasury', '国债', 'yield curve', '收益率曲线', 'rates', '利率'],
-     'China treasury bond yields across maturities per day — the risk-free curve.'),
-    (0, 'stats.debt_lpr',          'table', ARRAY['debt', '债券', 'lpr', '贷款市场报价利率', 'rates', '利率', 'central bank', '央行'],
-     'The monthly loan prime rate announcement — the 1Y and 5Y+ lending benchmarks.'),
-    (0, 'stats.pboc_oma',          'table', ARRAY['central bank', '央行', 'policy', '政策', 'announcement', '公告', 'liquidity', '流动性'],
-     'The central bank''s open-market policy announcements — the high-level notices that set the liquidity stance.')
-ON CONFLICT (namespace, entity_type, name) DO UPDATE
-    SET description = EXCLUDED.description,
-        tags        = EXCLUDED.tags;
+
 
 INSERT INTO llm.kg_edges (namespace, relation, sub_relation, entity_ids)
 SELECT 0, e.relation, e.sub_relation, ARRAY[a.entity_id, b.entity_id]::BIGINT[]

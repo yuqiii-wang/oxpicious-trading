@@ -22,15 +22,22 @@ from analysis.mov_ave_spread.config.price_sources import (  # noqa: F401
 )
 
 from analysis.mov_ave_spread.config.pipeline import (
+    ALIGNMENT_LEG_GAPS,
     ANALYSIS_NAME,
     CODES_SUMMARY_TABLE,
     DESCRIPTION,
     DETAIL_TABLE,
+    TRAILING_TABLE,
     MA_DERIV_WINDOWS,
     MA_WINDOWS,
     NUMERIC_MAX_ABS,
     NUMERIC_WIDE_MAX_ABS,
     PAIRS,
+    GAP_COLUMNS,
+    SPREAD_RANK_HIGH,
+    SPREAD_RANK_LOW,
+    SPREAD_TRAILING_WINDOW,
+    SPREAD_VERDICT_COLUMNS,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
     TECH_STATS_EMA_COLUMNS,
@@ -174,6 +181,7 @@ from analysis.mov_ave_spread.config.high_low_pct import (
 __all__ = [
     # pipeline
     "ANALYSIS_NAME", "CODES_SUMMARY_TABLE", "DESCRIPTION", "DETAIL_TABLE",
+    "TRAILING_TABLE",
     "MA_DERIV_WINDOWS", "MA_WINDOWS", "NUMERIC_MAX_ABS",
     "NUMERIC_WIDE_MAX_ABS", "PAIRS", "SEC_TYPES",
     "SEC_TYPE_IDENTITY_TABLE", "TECH_STATS_EMA_COLUMNS",

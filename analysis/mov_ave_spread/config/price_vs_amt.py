@@ -36,7 +36,7 @@ PRICE_VS_AMT_ANALYSIS_NAME = "mov_ave_price_vs_amt"
 # moments; PX_VOL_LB_WINDOW is the classic 量比 base window
 # (trading_amount mean of t-lb_window..t-1) — evidence-only since the
 # log_level refactor. All shifted 1 row before use.
-PX_VOL_SIGMA_WINDOW = 255
+PX_VOL_SIGMA_WINDOW = 252
 PX_VOL_SIGMA_MIN_DAYS = 60
 PX_VOL_LB_WINDOW = 5
 
@@ -111,11 +111,11 @@ PRICE_VS_AMT_DESCRIPTION = (
     "Per-(code, date) Price × Trading-Amount state registry (ETF + "
     "Index + Stock): every day with valid inputs joins exactly ONE of "
     "the 15 px_speed × vol_state categories — the σ-standardized 1-day "
-    "price change (t = ret_1d / the code's own rolling-255 σ_ret "
+    "price change (t = ret_1d / the code's own rolling-252 σ_ret "
     "ddof=1, min 60, shifted 1 row; σ below sigma_floor 0.005 excludes "
     "bond-like codes: sharp_up t > 2.0 / slow_up 1.26 < t <= 2.0 / "
     "flat / slow_dn / sharp_dn t < -2.0) × the z-scored log "
-    "trading-amount LEVEL (z vs the rolling-255 moments of "
+    "trading-amount LEVEL (z vs the rolling-252 moments of "
     "log(trading_amount) shifted 1 row: heavy z > 2.0 / normal / "
     "shrink z < -0.92 — a LEVEL statement vs the code's own "
     "trailing-year amount distribution; the retired 量比-ratio z "

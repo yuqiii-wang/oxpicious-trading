@@ -137,11 +137,11 @@ class ValueSources:
     ) -> dict[tuple[int, int, str], float]:
         """The mov_rsi per-code ADAPTIVE bars for this check, keyed
         (window, tail_pct, 'buy' | 'sell'): for each (window, pct, side)
-        the trailing RSI_BAR_WINDOW_DAYS (2550) quantile SHIFTED one row —
+        the trailing RSI_BAR_WINDOW_DAYS (2520) quantile SHIFTED one row —
         fetched as the newest 2551 daily rsi rows at-or-before ``as_of``,
         DROPPING the newest (the current value's anchor row, mirroring the
         engine's shift so the bar never includes the day it gates), then
-        the linear-interpolated quantile over the rest (min_periods=255;
+        the linear-interpolated quantile over the rest (min_periods=252;
         thinner windows carry no bar — never invented)."""
         if not windows or not pcts:
             return {}

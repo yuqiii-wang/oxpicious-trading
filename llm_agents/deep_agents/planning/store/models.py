@@ -106,15 +106,15 @@ class PlannedStep(BaseModel):
     model_config = ConfigDict(frozen=True)
     """One validated step of the model's plan JSON.
 
-    ``delegate`` (the delegation goal) marks a FORK step: the execute
+    ``delegate`` (the delegation goal) marks a SPAWN step: the execute
     node's agent runs it by spawning a subagent with this self-contained
     goal instead of working it inline — the subagent's child state (and
-    any nodes the subagent itself adds under it) is the forked path of
+    any nodes the subagent itself adds under it) is the spawned path of
     the step. None = an ordinary inline step.
 
     ``parallel`` marks an INDEPENDENT step: one whose work does not need
     any earlier step's findings, so consecutive parallel/delegated steps
-    may execute as ONE concurrent wave (the runner's fork-wave lane). A
+    may execute as ONE concurrent wave (the runner's spawn-wave lane). A
     delegated step is parallel by construction; the flag is how an
     INLINE step joins a wave."""
 
@@ -228,11 +228,11 @@ def _normalize_notes(
 # The payload key _insert_context lifts into the is_critical column.
 CRITICAL_KEY = "critical"
 
-# The reply-line marker the step / fork / output prompts teach: the
+# The reply-line marker the step / spawn / output prompts teach: the
 # reply's LAST line "[CRITICAL] <the discovery in one line>" — parsed
 # fail-soft out of the raw LLM reply BEFORE the payload is built (the
 # same marker-line contract as the supervisor repair lane's Action:
-# line). The fork tick tool instead passes an explicit critical
+# line). The spawn tick tool instead passes an explicit critical
 # argument (a tool schema beats prose there).
 CRITICAL_MARKER = "[CRITICAL]"
 

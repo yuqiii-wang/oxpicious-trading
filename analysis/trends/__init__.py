@@ -16,7 +16,7 @@ write-back onto analysis.mov_ave_rsi):
                    (TYPICAL_ISOLATED_DAYS / REENTRY_EXIT_DAYS /
                    RSI_TYPICAL_BAND).
   trend_state.py   the family-agnostic per-(code, date) price TREND
-                   classification (top / bottom the MA255-gap extremes,
+                   classification (top / bottom the MA252-gap extremes,
                    rise / fall the RSI re-entry episodes, unknown the
                    unclaimed bucket — attach_trend) + its parameters.
   rsi_episode_days.py  the RSI reading of the episode anatomy as its

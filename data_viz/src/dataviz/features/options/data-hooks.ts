@@ -1,6 +1,6 @@
 /**
  * Per-plot data hooks for the options dashboards — each plot loads its own
- SQL aggregate (one plot, one query; see api/services/options.service.ts
+ SQL aggregate (one plot, one query; see api/services/market/options.service.ts
  * "Per-plot queries") instead of consuming the full-history /combined blob.
  *
  * The hooks are cancellation-safe (cancelled flags on unmount/re-run) and

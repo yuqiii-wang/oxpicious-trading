@@ -67,7 +67,7 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- force for a rules cell — the PK member that makes rule_params
     -- per-PK (the same sub signal type measures asymmetric populations
     -- in different trends). Classified in-engine per code: top/bottom
-    -- the price_vs_ma255 extremes beyond their own trailing-255d
+    -- the price_vs_ma252 extremes beyond their own trailing-252d
     -- q90/q10 with matching slope; rise/fall the Wilder-RSI10
     -- RE-ENTRY episodes (fixed 50±12.5 momentum zones, <= 5-row
     -- re-entry absorb, the Kaufman net-change efficiency guard, and
@@ -105,21 +105,21 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 11, 'ma20_retest', 11),
     ('signal_sub_type', 12, 'ma60_retest', 12),
     ('signal_sub_type', 13, 'ma120_deep', 13),
-    ('signal_sub_type', 14, 'ma255_deep', 14),
+    ('signal_sub_type', 14, 'ma252_deep', 14),
     ('signal_sub_type', 15, 'ma20_ecross', 15),
     ('signal_sub_type', 16, 'ma60_ecross', 16),
     ('signal_sub_type', 17, 'ma20_eretest', 17),
     ('signal_sub_type', 18, 'ma60_eretest', 18),
     ('signal_sub_type', 19, 'ma120_edeep', 19),
-    ('signal_sub_type', 20, 'ma255_edeep', 20),
+    ('signal_sub_type', 20, 'ma252_edeep', 20),
     ('signal_sub_type', 21, 'ma20_gap', 21),
     ('signal_sub_type', 22, 'ma60_gap', 22),
     ('signal_sub_type', 23, 'ma120_gap', 23),
-    ('signal_sub_type', 24, 'ma255_gap', 24),
+    ('signal_sub_type', 24, 'ma252_gap', 24),
     ('signal_sub_type', 25, 'ma20_egap', 25),
     ('signal_sub_type', 26, 'ma60_egap', 26),
     ('signal_sub_type', 27, 'ma120_egap', 27),
-    ('signal_sub_type', 28, 'ma255_egap', 28),
+    ('signal_sub_type', 28, 'ma252_egap', 28),
     ('signal_sub_type', 100, 'rsi3_1pct', 100),
     ('signal_sub_type', 101, 'rsi3_2pct', 101),
     ('signal_sub_type', 102, 'rsi3_3pct', 102),
@@ -161,8 +161,8 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 1102, 'ma60_s42', 1102),
     ('signal_sub_type', 1400, 'ma120_d8pct', 1400),
     ('signal_sub_type', 1401, 'ma120_d12pct', 1401),
-    ('signal_sub_type', 1500, 'ma255_d8pct', 1500),
-    ('signal_sub_type', 1501, 'ma255_d12pct', 1501),
+    ('signal_sub_type', 1500, 'ma252_d8pct', 1500),
+    ('signal_sub_type', 1501, 'ma252_d12pct', 1501),
     ('signal_sub_type', 1600, 'ma20_es11', 1600),
     ('signal_sub_type', 1601, 'ma20_es21', 1601),
     ('signal_sub_type', 1602, 'ma20_es42', 1602),
@@ -183,8 +183,8 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 3302, 'ma60_ex3pct', 3302),
     ('signal_sub_type', 2000, 'ma120_ed8pct', 2000),
     ('signal_sub_type', 2001, 'ma120_ed12pct', 2001),
-    ('signal_sub_type', 2100, 'ma255_ed8pct', 2100),
-    ('signal_sub_type', 2101, 'ma255_ed12pct', 2101),
+    ('signal_sub_type', 2100, 'ma252_ed8pct', 2100),
+    ('signal_sub_type', 2101, 'ma252_ed12pct', 2101),
     ('signal_sub_type', 2200, 'ma20_g3pct', 2200),
     ('signal_sub_type', 2201, 'ma20_g5pct', 2201),
     ('signal_sub_type', 2202, 'ma20_g8pct', 2202),
@@ -194,9 +194,9 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 2400, 'ma120_g3pct', 2400),
     ('signal_sub_type', 2401, 'ma120_g5pct', 2401),
     ('signal_sub_type', 2402, 'ma120_g8pct', 2402),
-    ('signal_sub_type', 2500, 'ma255_g3pct', 2500),
-    ('signal_sub_type', 2501, 'ma255_g5pct', 2501),
-    ('signal_sub_type', 2502, 'ma255_g8pct', 2502),
+    ('signal_sub_type', 2500, 'ma252_g3pct', 2500),
+    ('signal_sub_type', 2501, 'ma252_g5pct', 2501),
+    ('signal_sub_type', 2502, 'ma252_g8pct', 2502),
     ('signal_sub_type', 2600, 'ma20_eg3pct', 2600),
     ('signal_sub_type', 2601, 'ma20_eg5pct', 2601),
     ('signal_sub_type', 2602, 'ma20_eg8pct', 2602),
@@ -206,9 +206,9 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     ('signal_sub_type', 2800, 'ma120_eg3pct', 2800),
     ('signal_sub_type', 2801, 'ma120_eg5pct', 2801),
     ('signal_sub_type', 2802, 'ma120_eg8pct', 2802),
-    ('signal_sub_type', 2900, 'ma255_eg3pct', 2900),
-    ('signal_sub_type', 2901, 'ma255_eg5pct', 2901),
-    ('signal_sub_type', 2902, 'ma255_eg8pct', 2902),
+    ('signal_sub_type', 2900, 'ma252_eg3pct', 2900),
+    ('signal_sub_type', 2901, 'ma252_eg5pct', 2901),
+    ('signal_sub_type', 2902, 'ma252_eg8pct', 2902),
     -- options_wall (2026-10-12): the OI-wall breach family — SERIES
     -- 40/41 (ow_put the put-wall BUY series, ow_call the call-wall
     -- SELL series; thresholds only, no curve rows — the per-code
@@ -300,20 +300,20 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- period) (method 5)
     ('signal_sub_type', 5600, 'rf60_roof', 5600),
     ('signal_sub_type', 5601, 'rf120_roof', 5601),
-    ('signal_sub_type', 5602, 'rf255_roof', 5602),
-    ('signal_sub_type', 5603, 'rf500_roof', 5603),
+    ('signal_sub_type', 5602, 'rf252_roof', 5602),
+    ('signal_sub_type', 5603, 'rf504_roof', 5603),
     ('signal_sub_type', 5610, 'rf60_floor', 5610),
     ('signal_sub_type', 5611, 'rf120_floor', 5611),
-    ('signal_sub_type', 5612, 'rf255_floor', 5612),
-    ('signal_sub_type', 5613, 'rf500_floor', 5613),
+    ('signal_sub_type', 5612, 'rf252_floor', 5612),
+    ('signal_sub_type', 5613, 'rf504_floor', 5613),
     ('signal_sub_type', 5620, 'rf60_med_roof', 5620),
     ('signal_sub_type', 5621, 'rf120_med_roof', 5621),
-    ('signal_sub_type', 5622, 'rf255_med_roof', 5622),
-    ('signal_sub_type', 5623, 'rf500_med_roof', 5623),
+    ('signal_sub_type', 5622, 'rf252_med_roof', 5622),
+    ('signal_sub_type', 5623, 'rf504_med_roof', 5623),
     ('signal_sub_type', 5630, 'rf60_med_floor', 5630),
     ('signal_sub_type', 5631, 'rf120_med_floor', 5631),
-    ('signal_sub_type', 5632, 'rf255_med_floor', 5632),
-    ('signal_sub_type', 5633, 'rf500_med_floor', 5633),
+    ('signal_sub_type', 5632, 'rf252_med_floor', 5632),
+    ('signal_sub_type', 5633, 'rf504_med_floor', 5633),
     -- rf_break deep tiers (2026-10-26, the depth-split study's
     -- graduates, temp_scripts/rf_depth_split_study.py): the DEEP
     -- breach legs as their own sub types, BOTH action BUY.
@@ -326,20 +326,20 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- sell). Bars self-adaptive per cell from the config grids
     ('signal_sub_type', 5640, 'rf60_roof_deep', 5640),
     ('signal_sub_type', 5641, 'rf120_roof_deep', 5641),
-    ('signal_sub_type', 5642, 'rf255_roof_deep', 5642),
-    ('signal_sub_type', 5643, 'rf500_roof_deep', 5643),
+    ('signal_sub_type', 5642, 'rf252_roof_deep', 5642),
+    ('signal_sub_type', 5643, 'rf504_roof_deep', 5643),
     ('signal_sub_type', 5650, 'rf60_floor_deep', 5650),
     ('signal_sub_type', 5651, 'rf120_floor_deep', 5651),
-    ('signal_sub_type', 5652, 'rf255_floor_deep', 5652),
-    ('signal_sub_type', 5653, 'rf500_floor_deep', 5653),
+    ('signal_sub_type', 5652, 'rf252_floor_deep', 5652),
+    ('signal_sub_type', 5653, 'rf504_floor_deep', 5653),
     ('signal_sub_type', 5660, 'rf60_med_roof_deep', 5660),
     ('signal_sub_type', 5661, 'rf120_med_roof_deep', 5661),
-    ('signal_sub_type', 5662, 'rf255_med_roof_deep', 5662),
-    ('signal_sub_type', 5663, 'rf500_med_roof_deep', 5663),
+    ('signal_sub_type', 5662, 'rf252_med_roof_deep', 5662),
+    ('signal_sub_type', 5663, 'rf504_med_roof_deep', 5663),
     ('signal_sub_type', 5670, 'rf60_med_floor_deep', 5670),
     ('signal_sub_type', 5671, 'rf120_med_floor_deep', 5671),
-    ('signal_sub_type', 5672, 'rf255_med_floor_deep', 5672),
-    ('signal_sub_type', 5673, 'rf500_med_floor_deep', 5673),
+    ('signal_sub_type', 5672, 'rf252_med_floor_deep', 5672),
+    ('signal_sub_type', 5673, 'rf504_med_floor_deep', 5673),
     -- rf_break floor bounce (2026-10-26, the two-method gap study's
     -- graduate, temp_scripts/rf_gap_study.py): the close breaks the
     -- prior day's MEDIAN consensus floor while the DONCHIAN wick
@@ -351,8 +351,8 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- (5600-5633) — the family is ALL-BUY now
     ('signal_sub_type', 5680, 'rf60_floor_bounce', 5680),
     ('signal_sub_type', 5681, 'rf120_floor_bounce', 5681),
-    ('signal_sub_type', 5682, 'rf255_floor_bounce', 5682),
-    ('signal_sub_type', 5683, 'rf500_floor_bounce', 5683),
+    ('signal_sub_type', 5682, 'rf252_floor_bounce', 5682),
+    ('signal_sub_type', 5683, 'rf504_floor_bounce', 5683),
     -- options_vix addition (2026-10-16): ovix_atr_break BUY — the
     -- volatility-EXPANSION breakout: the spot day-return in close-to-
     -- close ATR units beyond the k bar while the vol index slope5
@@ -386,7 +386,7 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- harvest = the volatility-harvest staged exits on the pair
     -- ratio z (|z| >= 1.5 / 2 sells the relatively-HIGH leg; the
     -- laggard reaching its OWN leg z >= 1 / 2 sells the second leg);
-    -- stops = the beta stop (market >= 20/30% below its 255d high)
+    -- stops = the beta stop (market >= 20/30% below its 252d high)
     -- and the hedge-regime break (offset corr >= 0 within 60d of a
     -- <= -0.30 reading); regime_flip = the observational hedgeable-
     -- regime turn-on (offset corr <= -0.30 episode first day,
@@ -448,7 +448,7 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- --force run)
     ('signal_sub_type', 5815, 'hp_entry_wash60', 5815),
     ('signal_sub_type', 5816, 'hp_entry_wash120', 5816),
-    ('signal_sub_type', 5817, 'hp_entry_wash255', 5817),
+    ('signal_sub_type', 5817, 'hp_entry_wash252', 5817),
     ('signal_sub_type', 5818, 'hp_entry_wash120_mkt', 5818),
     ('signal_sub_type', 5819, 'hp_entry_rho50', 5819),
     ('signal_sub_type', 5820, 'hp_entry_catchup_reclaim60', 5820),
@@ -475,7 +475,7 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- (5819) is the hedgeable turn-on's one record
     ('signal_sub_type', 5823, 'hp_harvest', 5823),
     -- hp_entry_wash (2026-10-21 dedup): the per-window washout trio
-    -- hp_entry_wash60/120/255 (5815-5817, labels stay registered)
+    -- hp_entry_wash60/120/252 (5815-5817, labels stay registered)
     -- merged into ONE sub — the W window is a run_cells candidate
     -- (bar_def.window, the per-cell winner picks it), not an
     -- identity; the recorded value is the fetch's combined washdepth
@@ -570,11 +570,11 @@ INSERT INTO static.label_dim (domain, code, label, sort_order) VALUES
     -- PE); reclaim = the FULL RECLAIM (close above the prior high —
     -- the next rebound measures the strongest, H2's graduate).
     ('signal_sub_type', 5900, 'rebound_capit_60', 5900),
-    ('signal_sub_type', 5901, 'rebound_capit_255', 5901),
+    ('signal_sub_type', 5901, 'rebound_capit_252', 5901),
     ('signal_sub_type', 5902, 'rebound_fail_60', 5902),
-    ('signal_sub_type', 5903, 'rebound_fail_255', 5903),
+    ('signal_sub_type', 5903, 'rebound_fail_252', 5903),
     ('signal_sub_type', 5904, 'rebound_reclaim_60', 5904),
-    ('signal_sub_type', 5905, 'rebound_reclaim_255', 5905),
+    ('signal_sub_type', 5905, 'rebound_reclaim_252', 5905),
     -- signal_type 10 (2026-10-26): the MACD family — the typical-EMA
     -- study's product (the most typical EMA usage is the classic MACD
     -- set 12/26/9; the tech_stats tables carry ema12/ema26 since the

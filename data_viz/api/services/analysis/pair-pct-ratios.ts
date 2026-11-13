@@ -11,7 +11,7 @@
  * skipped, never zero-filled). The daily measure is the DIFFERENCE
  * diff(d) = ind_pct(code, d) − ind_pct(benchmark_code, d) (excess pct
  * change; e.g. A −1%, −2%, +3% vs B +1%, +1%, +1.5% → −2%, −3%,
- * +1.5%), and the stored value is the trailing 5/20/60/255-day MEAN
+ * +1.5%), and the stored value is the trailing 5/20/60/252-day MEAN
  * of the daily differences — no division anywhere (quotient forms
  * were numerically fragile on near-flat denominators). A day missing
  * on either side is null data — skipped by the mean, never
@@ -37,7 +37,7 @@ import type {
   PairPctRatioUniverseResponse,
   PairPctRatiosResponse,
 } from "../../../shared/types.js";
-import { encodeLabelParam } from "../label-codes.js";
+import { encodeLabelParam } from "../infra/label-codes.js";
 
 const DEFAULT_INTERVAL = 20;
 const DEFAULT_GRAIN: PairPctRatioGrain = "industry";
@@ -134,11 +134,11 @@ interface DbRatioRow extends QueryResultRow {
   hedge_raw_ma5d: string | number | null;
   hedge_raw_ma20d: string | number | null;
   hedge_raw_ma60d: string | number | null;
-  hedge_raw_ma255d: string | number | null;
+  hedge_raw_ma252d: string | number | null;
   hedge_offset_ma5d: string | number | null;
   hedge_offset_ma20d: string | number | null;
   hedge_offset_ma60d: string | number | null;
-  hedge_offset_ma255d: string | number | null;
+  hedge_offset_ma252d: string | number | null;
 }
 
 export async function getPairPctRatios(
@@ -180,11 +180,11 @@ export async function getPairPctRatios(
     hedge_raw_ma5d: toNum(r.hedge_raw_ma5d),
     hedge_raw_ma20d: toNum(r.hedge_raw_ma20d),
     hedge_raw_ma60d: toNum(r.hedge_raw_ma60d),
-    hedge_raw_ma255d: toNum(r.hedge_raw_ma255d),
+    hedge_raw_ma252d: toNum(r.hedge_raw_ma252d),
     hedge_offset_ma5d: toNum(r.hedge_offset_ma5d),
     hedge_offset_ma20d: toNum(r.hedge_offset_ma20d),
     hedge_offset_ma60d: toNum(r.hedge_offset_ma60d),
-    hedge_offset_ma255d: toNum(r.hedge_offset_ma255d),
+    hedge_offset_ma252d: toNum(r.hedge_offset_ma252d),
   }));
   return {
     code, benchmark_code: benchmark, benchmark_market: market,

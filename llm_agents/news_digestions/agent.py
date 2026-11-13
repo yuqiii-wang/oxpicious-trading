@@ -18,8 +18,8 @@ database/sql/text/04_news_digestions.sql):
 
 The LLM call itself is delegated to a registered online-search provider's
 ``_chat_complete`` (plain chat completion — no web search involved; zhihu
-delegates to its chat provider). Digestions are content-only, so the model
-never sees anything beyond the stored article.
+delegates to its chat provider). Digestions are content-only, so the
+model never sees anything beyond the stored article.
 """
 from __future__ import annotations
 

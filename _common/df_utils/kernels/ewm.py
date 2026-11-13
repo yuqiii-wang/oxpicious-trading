@@ -14,7 +14,7 @@ output and leave the recurrence state unchanged).
 Parity: bit-identical to pandas
 ``groupby(...).ewm(alpha, adjust=False, min_periods,
 ignore_na=True).mean()`` — verified in temp_scripts/test_ewm_kernel.py
-(NaN gaps, warm-up heads, sub-min_periods groups, 6/255 windows).
+(NaN gaps, warm-up heads, sub-min_periods groups, 6/252 windows).
 
 Contract (caller obligations):
     - groups are CONTIGUOUS blocks of rows (df pre-sorted by

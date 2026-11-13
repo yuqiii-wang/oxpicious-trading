@@ -1,0 +1,154 @@
+-- ============================================================================
+--  Table: stats.market_regimes  (daily market-REGIME state registry)
+--
+--  REPLACES stats.mov_ave_market_hypes (the boolean episode detector —
+--  dropped below; builds/market_hypes is superseded by
+--  builds/market_regimes). One row per (sec_type, code, TRADING date) —
+--  the DAILY regime label every downstream consumer splits by
+--  (analysis_forecasts bucket axes, analysis_signals strategies /
+--  history rows, live.live_signals, the data_viz regime shading).
+--
+--  REGIME TAXONOMY (4 exhaustive states; the 2026-09 market_regimes
+--  study, docs/market_regimes_study.md + the Phase-A acceptance):
+--    'hot'    vol_z >  vol_bar AND amt_z >  amt_bar  — elevated
+--             volatility WITH volume expansion (the old "hyped")
+--    'panic'  vol_z >  vol_bar AND amt_z <= amt_bar  — elevated
+--             volatility WITHOUT volume expansion (exhaustion /
+--             unwind; the old AND-gated boolean could NEVER flag it)
+--    'quiet'  vol_z <= vol_bar AND amt_z >  amt_bar  — volume
+--             expansion without price movement (accumulation /
+--             distribution)
+--    'calm'   everything else (the old "not hyped")
+--
+--  DETECTOR (all inputs TRAILING + SHIFTED 1 row — no look-ahead, the
+--  px_vol log_level convention; the RETIRED market_hypes build used a
+--  look-ahead CENTERED ±10y percentile base, inconsistent between
+--  backtest and live):
+--    vol leg  vol = sqrt(EWMA(ret_1d^2, span=vol_span, min_periods=
+--             vol_min_periods)) per code; vol_z = (vol - mu)/sigma of
+--             vol's own trailing vol_z_window-row moments (shift 1,
+--             min vol_z_min_periods). RETURN-based — replaces the old
+--             rolling sigma of the PRICE LEVEL, which conflated trend
+--             with volatility and lagged turmoils (the reason the old
+--             build needed a 30th-pct std bandaid).
+--    amt leg  amt_z = (log(trading_amount) - mu)/sigma of the code's
+--             own trailing amt_z_window-row log-amount moments (shift
+--             1, min amt_z_min_periods) — the px_vol family's
+--             log_level metric verbatim (one shared volume-state
+--             definition across the repo).
+--
+--  NO-STATE days (the code's first vol_z_min_periods rows): a row IS
+--  written with regime='calm' and NULL vol_z/amt_z — an explicit label
+--  instead of a hidden consumer-side default (old semantics: young
+--  codes were simply never hyped). Every (code, date) with a positive
+--  trading_amount therefore has exactly one row.
+--
+--  The recorded build-parameter columns (vol_span / vol_min_periods /
+--  vol_z_window / vol_z_min_periods / amt_z_window / amt_z_min_periods
+--  / vol_bar / amt_bar) mirror the mov_ave_price_vs_amt registry's
+--  parameter convention — consumers can audit the classification.
+--
+--  REBUILD SEMANTICS (margin_changes precedent — also the old
+--  market_hypes convention): trailing-window stats never change past
+--  rows, but ETF adj_close back-adjustments DO rewrite history, so
+--  every run DELETEs the whole scope (one sec_type, or one code in
+--  --code mode) and recomputes from the FULL per-code history.
+--
+--  sec_type is its static.label_dim ('sec_type' domain) SMALLINT code
+--  (the label-code contract: 0 etf / 1 index / 2 stock / 3 industry) —
+--  converted from TEXT 2026-10-18. Decode at the API boundary only
+--  (data_viz label-codes / labelDecodeSql); consumers binding the
+--  column use the code (the _common.labels.SEC_TYPE_CODE mirror).
+--
+--  Derived table: stats.market_regime_spans — one row per CONTIGUOUS
+--  same-regime run over this table, MATERIALIZED by builds.market_regimes
+--  (the same run collapses the daily states it just wrote). The UI
+--  shading source that replaces the old episode rows.
+--
+--  POPULATION: python -m builds.market_regimes (ETF + Index + Stock
+--  + Industry composite in one table, sec_type discriminates; 'industry'
+--  rows classify the stats.industry_basic_stats pool_size=3 'all' slice
+--  keyed as code = industry_id — the Margin Trends industry attribution's
+--  regime-split source).
+-- ============================================================================
+
+-- stats.market_regime_spans used to be a VIEW (gaps-and-islands
+-- recomputed on every query); it is a TABLE now. DROP VIEW and DROP
+-- TABLE each reject the other's relkind even with IF EXISTS, so drop
+-- the legacy view form conditionally before the unconditional table
+-- drop — the file stays re-runnable from either prior state.
+-- kg entity (ns0 db_semantics_tables reads the payload below):
+-- description: Each security-day classified into one market regime — hot, panic, quiet or calm — with the volatility and traded-amount evidence.
+-- tags: market, 市场, regime, 市场状态, volatility, 波动率
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'stats'
+          AND c.relname = 'market_regime_spans'
+          AND c.relkind = 'v'
+    ) THEN
+        DROP VIEW stats.market_regime_spans;
+    END IF;
+END
+$$;
+DROP TABLE IF EXISTS stats.market_regimes CASCADE;
+-- RETIRED by this file (replaced by stats.market_regimes +
+-- stats.market_regime_spans; builds.market_hypes -> builds.market_regimes).
+DROP TABLE IF EXISTS stats.mov_ave_market_hypes CASCADE;
+
+CREATE TABLE stats.market_regimes (
+    sec_type        SMALLINT     NOT NULL,  -- label code (static.label_dim 'sec_type'): 0=etf 1=index 2=stock 3=industry
+    code            TEXT         NOT NULL,
+    date            DATE         NOT NULL,
+    regime          SMALLINT     NOT NULL,  -- label code (static.label_dim 'regime'): 0=calm 1=hot 2=panic 3=quiet
+
+    -- evidence (NULL on no-state days — regime defaults to 'calm')
+    vol             DOUBLE PRECISION,       -- sqrt(EWMA(ret_1d^2)) level
+    vol_z           DOUBLE PRECISION,       -- z vs own trailing moments (shift 1)
+    amt_z           DOUBLE PRECISION,       -- z of log(trading_amount), shift 1
+
+    -- recorded build parameters (defaults = the study's Phase-A calibration)
+    vol_span                 SMALLINT   NOT NULL DEFAULT 20,
+    vol_min_periods          SMALLINT   NOT NULL DEFAULT 10,
+    vol_z_window             SMALLINT   NOT NULL DEFAULT 252,
+    vol_z_min_periods        SMALLINT   NOT NULL DEFAULT 60,
+    amt_z_window             SMALLINT   NOT NULL DEFAULT 252,
+    amt_z_min_periods        SMALLINT   NOT NULL DEFAULT 60,
+    vol_bar                  NUMERIC(6,4) NOT NULL DEFAULT 1.0,
+    amt_bar                  NUMERIC(6,4) NOT NULL DEFAULT 1.0,
+
+    CONSTRAINT pk_market_regimes PRIMARY KEY (code, sec_type, date),
+    CONSTRAINT ck_market_regimes_regime
+        CHECK (regime BETWEEN 0 AND 3)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed on code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'market_regimes', 8);
+
+COMMENT ON TABLE  stats.market_regimes IS 'Daily market-REGIME state registry: one row per (sec_type, code, trading date) classifying the day into ONE of four exhaustive regimes — hot (vol_z > vol_bar AND amt_z > amt_bar: elevated volatility WITH volume expansion, the retired boolean "hyped"), panic (vol_z > vol_bar AND amt_z <= amt_bar: elevated volatility WITHOUT volume expansion — exhaustion/unwind, invisible to the old AND-gated hype boolean), quiet (vol_z <= vol_bar AND amt_z > amt_bar: volume expansion without price movement) or calm (everything else). vol_z = z of the code''s EWMA realized return-volatility (sqrt(EWMA(ret_1d^2, span=20))) vs its own trailing 252-row moments, amt_z = z of log(trading_amount) vs its own trailing 252-row moments — BOTH legs shifted 1 row (no look-ahead; the px_vol log_level convention — unlike the retired stats.mov_ave_market_hypes centered ±10y look-ahead percentile base). Days without state yet (first 60 rows) carry regime=''calm'' with NULL evidence. The parameter columns record the build''s calibration. Replaces stats.mov_ave_market_hypes (dropped); built by builds.market_regimes, wholesale-rebuilt per scope on every run (margin_changes
+precedent). Derived shading table: stats.market_regime_spans,
+materialized by the same build.';
+COMMENT ON COLUMN stats.market_regimes.sec_type IS 'Security type as its static.label_dim (''sec_type'' domain) SMALLINT code: 0 = etf (ETF), 1 = index (CSI-style index), 2 = stock (individual equity), 3 = industry (composite industry: the stats.industry_basic_stats pool_size=3 ''all'' slice — mean_close + total_trading_amount, code = industry_id; the Margin Trends industry attribution''s regime-split source). Part of the PK; decode to strings only at the API boundary.';
+COMMENT ON COLUMN stats.market_regimes.regime IS 'The day''s regime as its static.label_dim (''regime'' domain) SMALLINT code — 0 calm, 1 hot, 2 panic, 3 quiet (code order == label order, so ORDER BY regime is unchanged from the TEXT era). hot = vol_z > vol_bar AND amt_z > amt_bar; panic = vol_z > vol_bar AND amt_z <= amt_bar; quiet = vol_z <= vol_bar AND amt_z > amt_bar; calm = everything else. No-state days (NULL z''s) are code 0 (calm). Decode to strings only at the API boundary (data_viz label-codes).';
+COMMENT ON COLUMN stats.market_regimes.vol     IS 'Evidence: sqrt(EWMA(ret_1d^2, span=vol_span, min_periods=vol_min_periods)) — the EWMA realized volatility level the vol leg z-scores.';
+COMMENT ON COLUMN stats.market_regimes.vol_z   IS 'Evidence: (vol - mu)/sigma of the code''s own trailing vol_z_window-row vol moments, SHIFTED 1 row (no look-ahead). NULL on no-state days.';
+COMMENT ON COLUMN stats.market_regimes.amt_z   IS 'Evidence: (log(trading_amount) - mu)/sigma of the code''s own trailing amt_z_window-row log-amount moments, SHIFTED 1 row (no look-ahead — the px_vol log_level metric). NULL on no-state days.';
+COMMENT ON COLUMN stats.market_regimes.vol_bar IS 'Recorded build parameter: the vol_z bar separating elevated from normal volatility (the hot/panic vs calm/quiet split). NOT part of the PK; changing it requires a wholesale rebuild.';
+COMMENT ON COLUMN stats.market_regimes.amt_bar IS 'Recorded build parameter: the amt_z bar separating volume expansion from normal (the hot/quiet vs calm/panic split). NOT part of the PK; changing it requires a wholesale rebuild.';
+
+
+-- Idempotent migration (2026-09-30): strip the exchange suffix from ETF
+-- codes — ETF codes are BARE 6-digit everywhere now (stock rows keep
+-- their suffix; index codes were already bare). NOTE: this file is a
+-- destructive DROP+CREATE (fresh-init / 00_init.sql only) — against the
+-- live DB run these two UPDATEs standalone; the owning build also
+-- wholesale-rebuilds its scope every run, so a --force regen converges
+-- here as well. (sec_type has been its SMALLINT code since 2026-10-18;
+-- 0 = etf.)
+UPDATE stats.market_regimes
+   SET code = split_part(code, '.', 1)
+ WHERE sec_type = 0 AND code ~ '^\d{6}\.';

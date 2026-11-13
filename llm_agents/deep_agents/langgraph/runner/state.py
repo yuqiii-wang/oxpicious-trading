@@ -34,14 +34,15 @@ from __future__ import annotations
 from __future__ import annotations
 
 import asyncio
+import operator
 import time
 import contextlib
 import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import (Any, Callable, Dict, List, Optional, Set, Tuple,
-                     TypedDict)
+from typing import (Annotated, Any, Callable, Dict, List, Optional, Set,
+                    Tuple, TypedDict)
 
 from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
@@ -58,7 +59,7 @@ from llm_agents.deep_agents.core.loop import (
 from llm_agents.deep_agents.core.mcp import McpToolClient
 from llm_agents.deep_agents.core.provider import ZhipuChatProvider
 from llm_agents.deep_agents.core.sandbox import Sandbox
-from llm_agents.deep_agents.langgraph.hooks import ForkBroker, ForkHooks
+from llm_agents.deep_agents.langgraph.hooks import SpawnBroker, SpawnHooks
 from llm_agents.deep_agents.langgraph.compaction import compact_findings, should_compact
 from llm_agents.deep_agents.langgraph.prompts import (
     CUSTOM_OUTPUT_DIRECTIVE, RESULT_OUTPUT_DIRECTIVE, STEP_SYSTEM_ADDENDUM,
@@ -85,14 +86,14 @@ from llm_agents.deep_agents.planning.prompt_loading import (
     CatalogRow, PromptLadder,
 )
 from llm_agents.deep_agents.planning.session import (
-    ForkPassDown, PlanSessionResult,
+    SpawnPassDown, PlanSessionResult,
     item_labels,
 )
 from llm_agents.deep_agents.planning.store import (
     AGENT_PROMPT_COMPACT_SYSTEM,
     AGENT_PROMPT_CUSTOM_OUTPUT_DIRECTIVE,
-    AGENT_PROMPT_FORK_PLAN_ADDENDUM,
-    AGENT_PROMPT_FORK_SPAWN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_PLAN_ADDENDUM,
+    AGENT_PROMPT_SPAWN_DELEGATE_ADDENDUM,
     AGENT_PROMPT_PLAN_BATCH_FOLLOWUP,
     AGENT_PROMPT_PLAN_REPAIR_MESSAGE,
     AGENT_PROMPT_PLAN_SYSTEM,
@@ -140,7 +141,7 @@ class ThreadState(TypedDict, total=False):
     # (plan rows + eager/forced/verdict skills; see
     # planning.prompt_loading), resolved AT THE PLAN NODE (the verdict
     # exists only after the proposal) and passed down to every step
-    # hop's conversation and every forked child's input. Plain dict of
+    # hop's conversation and every spawned child's input. Plain dict of
     # str, so it rides the checkpointer fine.
     prompt_texts: Dict[str, str]
     # The NOT-loaded selected rows as catalog lines (prompt_key -> one
@@ -184,6 +185,16 @@ class ThreadState(TypedDict, total=False):
     # persisted plan's thread id, or None (degraded / no plan prompts —
     # the response contract: no thread unless the plan phase persisted).
     thread_id: Optional[str]
+    # THE ENTRY FLAG (2026-11-07 — DECLARED, it never was): the
+    # orchestrator's initial state carries it (the plan session's
+    # outcome for the custom/degraded graph; the execution lane's
+    # evidence for the result graph) and the START routers read it —
+    # but it was never a declared key, and langgraph's branch reader
+    # delivers DECLARED channels only, so the annotated routers never
+    # saw it (route_entry only ever met its default-True — the degraded
+    # execute lane silently never routed; route_result_entry met
+    # default-False and skipped the review wave). Plain bool.
+    plan_ok: bool
     # The RUNNING PLANNING NODE's state row (begin_thread — the ordinal-0
     # 'plan' row that exists from run start; the plan node stamps its
     # context onto it and closes it). None when that insert degraded.
@@ -239,6 +250,30 @@ class ThreadState(TypedDict, total=False):
     # view displays). None until the result node ran (or it recorded
     # nothing: no answer and no error).
     result_context_id: Optional[int]
+
+
+class ResultGraphState(ThreadState):
+    """The RESULT graph's state (2026-11-07 — the real parallel wave):
+    the shared ``ThreadState`` keys PLUS ONE reducer-carrying channel —
+    ``review_results``. The four+ review seats run as REAL parallel
+    LangGraph nodes in one superstep; concurrent updates to a plain key
+    would raise (no reducer on the shared state, which the custom
+    graph's linear lane relies on), so each seat reports ONLY through
+    this channel and the ``review_join`` barrier (its single writer)
+    folds the outcomes into ``findings`` / counters / ``answer``.
+
+    Every value stays plain JSON-ish (the STATE SERIALIZABILITY
+    contract): an outcome is a plain dict — node / state_id / ordinal /
+    title / status / finding / n_llm / n_tool."""
+
+    # One seat outcome per (pass, seat) — the join keeps the LATEST
+    # entry per state_id (later appends are later passes) and sorts the
+    # selected ones by (ordinal, state_id), so the findings bridge reads
+    # in ordinal order whatever the completion order.
+    review_results: Annotated[List[Dict[str, Any]], operator.add]
+    # The review-join's repair-window pass count (retry verdicts route
+    # back to the failed seat nodes; bounded, see review_lane).
+    review_passes: int
 
 
 

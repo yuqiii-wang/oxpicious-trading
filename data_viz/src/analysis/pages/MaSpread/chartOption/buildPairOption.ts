@@ -67,6 +67,7 @@ import type {
 import {
   makeFmtPrice,
   pctBaseOf,
+  sharedColumn,
   sharedNum,
   shadeOverlaySeries,
 } from "./_common";
@@ -286,6 +287,13 @@ export function buildPairOption({
     rsiArrays, rsiWindows, rsiPopulation, rsiFlags,
   );
 
+  // ---- MACD tooltip arrays ----------------------------------------------
+  // The MATERIALIZED tech_stats MACD block (shared tooltip readout —
+  // never drawn; the curves stay the pair's own series).
+  const macdLine = sharedColumn(shared, n, "macd_line");
+  const macdSignal = sharedColumn(shared, n, "macd_signal");
+  const macdHist = sharedColumn(shared, n, "macd_hist");
+
   // ---- derivTrend group --------------------------------------------------
   // One scale SHARED by all the family's lines so their magnitudes stay
   // comparable (see derivTrend/scale.ts).
@@ -295,11 +303,11 @@ export function buildPairOption({
   // The long window's amt-MA slope / market share (tooltip readouts) and
   // the null-cleared bar data.
   const amtMaSlopeOfLong = rows.map((_, i) =>
-    sharedNum(shared, i, SHARED_AMT_SLOPE_KEYS[pair.ma_long] ?? "trading_amt_ma255_slope"),
+    sharedNum(shared, i, SHARED_AMT_SLOPE_KEYS[pair.ma_long] ?? "trading_amt_ma252_slope"),
   );
 
   const amtMarketShareOfLong = rows.map((_, i) =>
-    sharedNum(shared, i, SHARED_AMT_SHARE_KEYS[pair.ma_long] ?? "trading_amt_market_share_ma255"),
+    sharedNum(shared, i, SHARED_AMT_SHARE_KEYS[pair.ma_long] ?? "trading_amt_market_share_ma252"),
   );
 
   const ohlcOpens = rows.map((_, i) => sharedNum(shared, i, `open_${pair.ma_long}d` as keyof MovAveSpreadSharedMetricsRow));
@@ -611,6 +619,9 @@ export function buildPairOption({
     rsi14: rsiArrays[14],
     rsi20: rsiArrays[20],
     rsi60: rsiArrays[60],
+    macdLine,
+    macdSignal,
+    macdHist,
     amtMaSlopeOfLong,
     amtMarketShareOfLong,
     ohlcOpens,
